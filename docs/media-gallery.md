@@ -169,19 +169,19 @@ Each variable stays in R.
 <img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="1440" height="881">
 
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
-Editing mode currently supports Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length,
-and Lowercase.
+Editing mode currently supports Filter Rows, Sort Rows, Rename Column, Drop Columns, Select Columns, Clone Column,
+Convert type, Text Length, and Lowercase. A viewing filter or sort can be copied into a cleaning draft.
 Select keeps the order in which the columns were chosen. Text Length counts Unicode characters. Lowercase can update a
 character or factor column or create a new character column. Convert type supports string, integer, float, boolean,
-date, and datetime targets. Values that cannot be converted become `NA`. All seven use draft preview, generated R,
+date, and datetime targets. Values that cannot be converted become `NA`. All nine use draft preview, generated R,
 apply, discard, inspection, latest-step editing, and undo. Generated R can be copied, saved as a `.R` script, or
 inserted into the notebook or `.R` file that opened the dataframe.
 
 <img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="1440" height="900">
 
-The image shows Rename Column in VS Code. Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length,
-and Lowercase use the same editing controls in VS Code and Cursor. These seven operations work with base data frames, tibbles, and keyed data
-tables; the other R cleaning operations are not available yet.
+The image shows Rename Column in VS Code. Filter Rows, Sort Rows, Drop Columns, ordered Select Columns, Clone Column,
+Convert type, Text Length, and Lowercase use the same editing controls in VS Code and Cursor. These nine operations
+work with base data frames, tibbles, and keyed data tables; the other R cleaning operations are not available yet.
 
 <a href="images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png"><img alt="Generated R cleaning code inserted as an R cell in the notebook that opened the dataframe" src="images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png" width="1440" height="430"></a>
 
@@ -189,9 +189,9 @@ The inserted cell comes from the current Code Preview. Existing notebook cells a
 
 Convert type does not replace an active `data.table` key column. Clone that column first, then convert the copy.
 
-Default frames made with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing base-data-frame, tibble, and data-table
-paths. Grouped `GRP_df` objects are not supported. Other R cleaning operations, cleaned-data export, Quarto, and R
-Markdown are not supported yet.
+Default frames made with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing base-data-frame, tibble, and
+data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` objects are not supported. Other R
+cleaning operations, cleaned-data export, Quarto, and R Markdown are not supported yet.
 
 Direct `.R` execution currently requires macOS or Linux. R notebooks remain available on Windows.
 

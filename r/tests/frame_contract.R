@@ -2029,6 +2029,192 @@ assert_identical(
   "a duplicate column name was not resolved by positional ID"
 )
 
+committed_row_frame <- data.frame(
+  duplicate = c("b", "a", "a", "b", NA, "a", "a"),
+  duplicate = c(2, 1, 1, 1, 9, NA, NaN),
+  `non syntactic` = seq_len(7L),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+committed_row_before <- unserialize(serialize(committed_row_frame, NULL, version = 3L))
+committed_row_capture <- openwrangler_r_frame_contract$capture_frame(committed_row_frame)
+committed_sort <- openwrangler_r_frame_contract$transform_rows(
+  committed_row_capture,
+  view_query(sorts = list(
+    sort_rule("r:c:0", "duplicate", "asc", "last"),
+    sort_rule("r:c:1", "duplicate", "desc", "first")
+  ))
+)
+assert_identical(
+  committed_sort$sourcePositions,
+  c(6L, 7L, 2L, 3L, 1L, 4L, 5L),
+  "committed multi-sort changed priority, missing placement, or stable ties"
+)
+assert_identical(
+  committed_sort$frame[[3L]],
+  c(6L, 7L, 2L, 3L, 1L, 4L, 5L),
+  "committed multi-sort returned the wrong rows"
+)
+assert_identical(
+  names(committed_sort$frame),
+  c("duplicate", "duplicate", "non syntactic"),
+  "committed sorting repaired duplicate or non-syntactic names"
+)
+committed_sort_capture <- openwrangler_r_frame_contract$capture_frame(
+  committed_sort$frame,
+  nullability_source = committed_row_capture,
+  source_row_positions = committed_sort$sourcePositions
+)
+committed_sort_page <- openwrangler_r_frame_contract$materialize_page(
+  committed_sort_capture,
+  row_limit = 7L,
+  column_limit = 3L
+)
+assert_identical(
+  vapply(committed_sort_page$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", c(5L, 6L, 1L, 2L, 0L, 3L, 4L)),
+  "committed sorting regenerated row identities from output positions"
+)
+assert_identical(
+  committed_sort_capture$descriptor$shape$rows,
+  7L,
+  "committed sorting changed the source row-identity domain"
+)
+assert_identical(committed_row_frame, committed_row_before, "committed sorting mutated its source dataframe")
+
+committed_filter_model <- view_query(filters = list(column_filter(
+  "r:c:0",
+  "duplicate",
+  "string",
+  value_filter = list(
+    kind = "values",
+    selectedValues = list("a"),
+    includeNulls = FALSE,
+    includeNaN = FALSE
+  )
+)))
+committed_filter <- openwrangler_r_frame_contract$transform_rows(
+  committed_row_capture,
+  committed_filter_model
+)
+assert_identical(
+  committed_filter$sourcePositions,
+  c(2L, 3L, 6L, 7L),
+  "committed filtering changed non-float includeNaN=FALSE semantics"
+)
+committed_filter_capture <- openwrangler_r_frame_contract$capture_frame(
+  committed_filter$frame,
+  nullability_source = committed_row_capture,
+  source_row_positions = committed_filter$sourcePositions
+)
+committed_filter_page <- openwrangler_r_frame_contract$materialize_page(
+  committed_filter_capture,
+  row_limit = 4L,
+  column_limit = 3L
+)
+assert_identical(
+  vapply(committed_filter_page$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", c(1L, 2L, 5L, 6L)),
+  "committed filtering regenerated surviving row identities"
+)
+
+empty_named_frame <- data.frame(value = 1:2, row.names = c("named-a", "named-b"))
+empty_named_capture <- openwrangler_r_frame_contract$capture_frame(empty_named_frame)
+empty_named_filter <- openwrangler_r_frame_contract$transform_rows(
+  empty_named_capture,
+  view_query(filters = list(column_filter(
+    "r:c:0", "value", "integer", list(predicate("gt", 99L))
+  )))
+)
+assert_identical(empty_named_filter$sourcePositions, integer(), "the empty R filter retained source rows")
+empty_named_derived <- openwrangler_r_frame_contract$capture_frame(
+  empty_named_filter$frame,
+  nullability_source = empty_named_capture,
+  source_row_positions = empty_named_filter$sourcePositions
+)
+assert_identical(
+  empty_named_derived$descriptor$frameSemantics$rowNames,
+  "explicit",
+  "an empty derived frame lost the source explicit-row-name contract"
+)
+empty_named_page <- openwrangler_r_frame_contract$materialize_page(
+  empty_named_derived,
+  row_limit = 2L,
+  column_limit = 1L
+)
+assert_identical(empty_named_page$page$totalRows, 0L, "the empty derived frame reported source rows")
+assert_identical(empty_named_page$page$rows, I(list()), "the empty derived frame returned row payloads")
+nonempty_automatic_rows <- data.frame(value = 1:2)
+nonempty_mismatched_capture <- openwrangler_r_frame_contract$capture_frame(
+  nonempty_automatic_rows,
+  nullability_source = empty_named_capture,
+  source_row_positions = 1:2
+)
+assert_identical(
+  nonempty_mismatched_capture$descriptor$frameSemantics$rowNames,
+  "positional",
+  "derived row-name preservation was incorrectly extended to a non-empty frame"
+)
+
+committed_null <- openwrangler_r_frame_contract$transform_rows(
+  committed_row_capture,
+  view_query(filters = list(column_filter(
+    "r:c:1", "duplicate", "float", list(predicate("isNull"))
+  )))
+)
+committed_nan <- openwrangler_r_frame_contract$transform_rows(
+  committed_row_capture,
+  view_query(filters = list(column_filter(
+    "r:c:1", "duplicate", "float", list(predicate("isNaN"))
+  )))
+)
+assert_identical(committed_null$sourcePositions, 6L, "committed filtering did not keep float NA separate")
+assert_identical(committed_nan$sourcePositions, 7L, "committed filtering did not keep float NaN separate")
+
+committed_tibble <- tibble::as_tibble(committed_row_frame, .name_repair = "minimal")
+committed_tibble_before <- unserialize(serialize(committed_tibble, NULL, version = 3L))
+committed_tibble_filter <- openwrangler_r_frame_contract$transform_rows(
+  openwrangler_r_frame_contract$capture_frame(committed_tibble),
+  committed_filter_model
+)
+assert_identical(
+  class(committed_tibble_filter$frame),
+  c("tbl_df", "tbl", "data.frame"),
+  "committed filtering changed the tibble class"
+)
+assert_identical(committed_tibble, committed_tibble_before, "committed filtering mutated its source tibble")
+
+committed_table <- data.table::data.table(
+  primary_key = c(1L, 1L, 2L, 2L),
+  secondary_key = c(1L, 2L, 1L, 2L),
+  score = c(2, NA, 3, 1)
+)
+data.table::setkey(committed_table, primary_key, secondary_key)
+committed_table_before <- data.table::copy(committed_table)
+committed_table_capture <- openwrangler_r_frame_contract$capture_frame(committed_table)
+committed_table_filter <- openwrangler_r_frame_contract$transform_rows(
+  committed_table_capture,
+  view_query(filters = list(column_filter(
+    "r:c:0", "primary_key", "integer", list(predicate("equals", 1L))
+  )))
+)
+assert_identical(
+  data.table::key(committed_table_filter$frame),
+  c("primary_key", "secondary_key"),
+  "committed filtering discarded a still-valid data.table key"
+)
+committed_table_sort <- openwrangler_r_frame_contract$transform_rows(
+  committed_table_capture,
+  view_query(sorts = list(sort_rule("r:c:2", "score", "desc", "last")))
+)
+assert_identical(data.table::key(committed_table_sort$frame), NULL, "committed sorting retained a stale data.table key")
+assert_identical(
+  committed_table_sort$sourcePositions,
+  c(3L, 1L, 4L, 2L),
+  "committed data.table sorting changed row order or missing placement"
+)
+assert_true(identical(committed_table, committed_table_before), "committed row operations mutated the source data.table")
+
 sort_window <- openwrangler_r_frame_contract$materialize_view_page(
   sort_capture,
   view_query = view_query(sorts = list(sort_rule("r:c:0", "group"))),

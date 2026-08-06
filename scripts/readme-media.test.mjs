@@ -510,11 +510,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Unsaved editor changes are included\./u);
   assert.match(
     readme,
-    /The R workbench supports paging, filters, multi-column sorts, value search, profiles, and seven cleaning operations:\s+\*\*Rename Column\*\*, \*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Convert type\*\*, \*\*Text Length\*\*, and\s+\*\*Lowercase\*\*/u
+    /The R workbench supports paging, filters, multi-column sorts, value search, profiles, and nine cleaning operations:\s+\*\*Filter Rows\*\*, \*\*Sort Rows\*\*, \*\*Rename Column\*\*, \*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Convert\s+type\*\*, \*\*Text Length\*\*, and \*\*Lowercase\*\*/u
   );
-  assert.match(readme, /inserted into the notebook or `\.R` document that opened the dataframe/u);
+  assert.match(readme, /inserted into the notebook or `\.R` document that opened the\s+dataframe/u);
   assert.match(readme, /The default outputs from `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
-  assert.match(readme, /grouped `GRP_df` objects are not supported/u);
+  assert.match(readme, /Grouped `GRP_df` objects are not supported/u);
   assert.match(readme, /R notebooks remain available on Windows; direct `\.R` execution is not yet available there/u);
   assert.match(readme, /\| R \(v2 development\)\s+\|/u);
   assert.match(
@@ -679,11 +679,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /Direct `\.R` execution currently requires macOS or Linux/u);
   assert.match(
     gallery,
-    /Editing mode currently supports Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length,\s+and Lowercase\.[\s\S]{0,420}All seven use draft preview, generated R,\s+apply, discard, inspection, latest-step editing, and undo/u
+    /Editing mode currently supports Filter Rows, Sort Rows, Rename Column, Drop Columns, Select Columns, Clone Column,\s+Convert type, Text Length, and Lowercase\.[\s\S]{0,420}All nine use draft preview, generated R,\s+apply, discard, inspection, latest-step editing, and undo/u
   );
   assert.match(
     gallery,
-    /The image shows Rename Column in VS Code\. Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length,\s+and Lowercase use the same editing controls in VS Code and Cursor/u
+    /The image shows Rename Column in VS Code\. Filter Rows, Sort Rows, Drop Columns, ordered Select Columns, Clone Column,\s+Convert type, Text Length, and Lowercase use the same editing controls in VS Code and Cursor/u
   );
   assert.match(
     gallery,
@@ -691,7 +691,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /Default frames made with `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`[\s\S]{0,180}Grouped `GRP_df` objects are not supported\.[\s\S]{0,160}Other R cleaning operations, cleaned-data export, Quarto, and R\s+Markdown are not supported yet/u
+    /Default frames made with `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`[\s\S]{0,320}Grouped `GRP_df` objects are not supported\.[\s\S]{0,200}Other R\s+cleaning operations, cleaned-data export, Quarto, and R\s+Markdown are not supported yet/u
   );
   assert.match(gallery, /vscode-notebook-r-code-insertion-detail-dark\.png/u);
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);

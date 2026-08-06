@@ -442,6 +442,39 @@ openwrangler_r_kernel_agent <- local({
     step_id <- bounded_text(step$id, "request.payload.step.id", maximum_step_id_bytes)
     if (identical(step_id, "")) abort("invalid_request", "request.payload.step.id may not be empty")
     kind <- bounded_text(step$kind, "request.payload.step.kind", 64L)
+    if (identical(kind, "sortRows")) {
+      params <- exact_record(step$params, "rules", "request.payload.step.params")
+      rules <- decode_sort_rules(params$rules, limits)
+      if (length(rules) == 0L) {
+        abort("invalid_request", "request.payload.step.params.rules must not be empty")
+      }
+      return(list(id = step_id, kind = kind, params = list(rules = rules)))
+    }
+    if (identical(kind, "filterRows")) {
+      params <- exact_record(step$params, "filterModel", "request.payload.step.params")
+      model <- exact_record(
+        params$filterModel,
+        c("filters", "sort"),
+        "request.payload.step.params.filterModel",
+        optional_fields = "logic"
+      )
+      view <- list(filters = model$filters, sorts = model$sort)
+      if ("logic" %in% names(model)) view$logic <- model$logic
+      decoded <- decode_view(view, limits)
+      filter_ids <- vapply(decoded$filters, function(filter) filter$column$id, character(1L), USE.NAMES = FALSE)
+      if (anyDuplicated(filter_ids)) {
+        abort("invalid_request", "request.payload.step.params.filterModel.filters repeats a column identity")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(filterModel = list(
+          logic = decoded$logic,
+          filters = decoded$filters,
+          sort = decoded$sorts
+        ))
+      ))
+    }
     if (kind %in% c("renameColumn", "cloneColumn")) {
       params <- exact_record(step$params, c("column", "newName"), "request.payload.step.params")
       new_name <- bounded_text(params$newName, "request.payload.step.params.newName", maximum_variable_name_bytes)
@@ -737,8 +770,83 @@ openwrangler_r_kernel_agent <- local({
     list(id = step$id, kind = step$kind, columns = columns, removedNames = removed_names)
   }
 
+  bind_row_sort_rule <- function(capture, rule) {
+    column <- capture$descriptor$schema[[rule$position]]
+    list(
+      position = as.integer(rule$position),
+      name = column$name,
+      semanticsKind = column$semantics$kind,
+      direction = rule$direction,
+      nulls = rule$nulls
+    )
+  }
+
+  bind_row_filter <- function(capture, filter) {
+    column <- capture$descriptor$schema[[filter$position]]
+    predicates <- lapply(filter$predicates, function(predicate) {
+      bound <- list(operator = predicate$operator)
+      if ("valueKey" %in% names(predicate)) bound$valueKey <- predicate$valueKey
+      if ("secondValueKey" %in% names(predicate)) bound$secondValueKey <- predicate$secondValueKey
+      bound
+    })
+    value_filter <- if (is.null(filter$valueFilter)) {
+      NULL
+    } else {
+      list(
+        selectedKeys = unname(filter$valueFilter$selectedKeys),
+        includeNulls = isTRUE(filter$valueFilter$includeNulls),
+        includeNaN = isTRUE(filter$valueFilter$includeNaN)
+      )
+    }
+    list(
+      position = as.integer(filter$position),
+      name = column$name,
+      type = column$type,
+      semanticsKind = column$semantics$kind,
+      units = column$semantics$units,
+      logic = filter$logic,
+      predicates = predicates,
+      valueFilter = value_filter
+    )
+  }
+
+  bind_row_step <- function(capture, step, resolved) {
+    rules <- lapply(resolved$sorts, function(rule) bind_row_sort_rule(capture, rule))
+    if (identical(step$kind, "sortRows")) {
+      return(list(id = step$id, kind = step$kind, rules = rules))
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      filterModel = list(
+        logic = resolved$logic,
+        filters = lapply(resolved$filters, function(filter) bind_row_filter(capture, filter)),
+        sort = rules
+      )
+    )
+  }
+
   apply_step <- function(frame_contract, capture, step) {
     source <- get("snapshot", envir = capture, inherits = FALSE)
+    if (step$kind %in% c("sortRows", "filterRows")) {
+      view <- if (identical(step$kind, "sortRows")) {
+        list(filters = list(), sorts = step$params$rules)
+      } else {
+        model <- step$params$filterModel
+        list(logic = model$logic, filters = model$filters, sorts = model$sort)
+      }
+      transformed <- frame_contract$transform_rows(capture, view)
+      bound <- bind_row_step(capture, step, transformed$resolved)
+      return(list(
+        capture = frame_contract$capture_frame(
+          transformed$frame,
+          nullability_source = capture,
+          source_positions = seq_along(capture$descriptor$schema),
+          source_row_positions = transformed$sourcePositions
+        ),
+        bound = bound
+      ))
+    }
     if (identical(step$kind, "renameColumn")) {
       bound <- bind_rename_step(capture, step)
       result <- frame_contract$rename_column_at(source, bound$position, bound$oldName, bound$newName)
@@ -891,6 +999,295 @@ openwrangler_r_kernel_agent <- local({
     encodeString(value, quote = "\"", justify = "none", na.encode = FALSE)
   }
 
+  r_character_vector <- function(values) {
+    if (length(values) == 0L) return("character()")
+    sprintf(
+      "c(%s)",
+      paste(vapply(values, r_string, character(1L), USE.NAMES = FALSE), collapse = ", ")
+    )
+  }
+
+  row_type_guard <- function(variable, specification) {
+    condition <- switch(
+      specification$semanticsKind,
+      factor = sprintf("is.factor(%s)", variable),
+      integer64 = sprintf("inherits(%s, \"integer64\")", variable),
+      datetime = sprintf("inherits(%s, \"POSIXct\")", variable),
+      date = sprintf("inherits(%s, \"Date\")", variable),
+      difftime = sprintf("inherits(%s, \"difftime\")", variable),
+      logical = sprintf("is.logical(%s)", variable),
+      integer = sprintf("is.integer(%s) && !is.factor(%s)", variable, variable),
+      double = sprintf(
+        "is.double(%s) && !inherits(%s, c(\"integer64\", \"POSIXct\", \"Date\", \"difftime\"))",
+        variable,
+        variable
+      ),
+      character = sprintf("is.character(%s)", variable),
+      abort("runtime_error", "Generated R code received an unsupported row-column type")
+    )
+    sprintf(
+      "  if (!(%s)) stop(\"Open Wrangler column type is stale\", call. = FALSE)",
+      condition
+    )
+  }
+
+  row_column_lines <- function(specification, variable) {
+    lines <- c(
+      sprintf(
+        "  if (ncol(.ow_result) < %dL || !identical(names(.ow_result)[[%dL]], %s)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+        specification$position,
+        specification$position,
+        r_string(specification$name)
+      ),
+      sprintf("  %s <- .ow_result[[%dL]]", variable, specification$position),
+      row_type_guard(variable, specification)
+    )
+    if (identical(specification$semanticsKind, "difftime")) {
+      lines <- c(
+        lines,
+        sprintf(
+          "  if (!identical(attr(%s, \"units\", exact = TRUE), %s)) stop(\"Open Wrangler duration units are stale\", call. = FALSE)",
+          variable,
+          r_string(specification$units)
+        )
+      )
+    }
+    lines
+  }
+
+  row_comparable <- function(variable, specification) {
+    switch(
+      specification$semanticsKind,
+      logical = variable,
+      integer = sprintf("as.double(%s)", variable),
+      integer64 = variable,
+      double = variable,
+      character = variable,
+      factor = sprintf("as.character(%s)", variable),
+      date = sprintf("as.double(%s)", variable),
+      datetime = sprintf("as.double(%s)", variable),
+      difftime = sprintf("as.double(%s, units = %s)", variable, r_string(specification$units)),
+      abort("runtime_error", "Generated R code received an unsupported row comparison")
+    )
+  }
+
+  row_target <- function(value_key, specification) {
+    switch(
+      specification$semanticsKind,
+      logical = if (identical(value_key, "TRUE")) "TRUE" else "FALSE",
+      integer = sprintf("as.double(%s)", r_string(value_key)),
+      integer64 = sprintf("bit64::as.integer64(%s)", r_string(value_key)),
+      double = sprintf("as.double(%s)", r_string(value_key)),
+      character = r_string(value_key),
+      factor = r_string(value_key),
+      date = sprintf("as.double(%s)", r_string(value_key)),
+      datetime = sprintf("as.double(%s)", r_string(value_key)),
+      difftime = sprintf("as.double(%s)", r_string(value_key)),
+      abort("runtime_error", "Generated R code received an unsupported row comparison target")
+    )
+  }
+
+  row_targets <- function(value_keys, specification) {
+    if (length(value_keys) == 0L) return("NULL")
+    switch(
+      specification$semanticsKind,
+      logical = sprintf(
+        "c(%s)",
+        paste(ifelse(value_keys == "TRUE", "TRUE", "FALSE"), collapse = ", ")
+      ),
+      integer64 = sprintf("bit64::as.integer64(%s)", r_character_vector(value_keys)),
+      integer = sprintf("as.double(%s)", r_character_vector(value_keys)),
+      double = sprintf("as.double(%s)", r_character_vector(value_keys)),
+      date = sprintf("as.double(%s)", r_character_vector(value_keys)),
+      datetime = sprintf("as.double(%s)", r_character_vector(value_keys)),
+      difftime = sprintf("as.double(%s)", r_character_vector(value_keys)),
+      character = r_character_vector(value_keys),
+      factor = r_character_vector(value_keys),
+      abort("runtime_error", "Generated R code received unsupported selected row values")
+    )
+  }
+
+  row_predicate_expression <- function(predicate, specification, variable, null_mask, nan_mask) {
+    operator <- predicate$operator
+    if (identical(operator, "isNull")) return(null_mask)
+    if (identical(operator, "isNotNull")) return(sprintf("!%s", null_mask))
+    if (identical(operator, "isNaN")) return(nan_mask)
+    if (identical(operator, "isNotNaN")) return(sprintf("!%s", nan_mask))
+    present <- sprintf("(!%s & !%s)", null_mask, nan_mask)
+    values <- row_comparable(variable, specification)
+    if (identical(operator, "contains")) {
+      folded <- chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", predicate$valueKey)
+      return(sprintf(
+        "%s & grepl(%s, chartr(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", \"abcdefghijklmnopqrstuvwxyz\", as.character(%s)), fixed = TRUE)",
+        present,
+        r_string(folded),
+        variable
+      ))
+    }
+    if (identical(operator, "startsWith")) {
+      return(sprintf("%s & startsWith(as.character(%s), %s)", present, variable, r_string(predicate$valueKey)))
+    }
+    if (identical(operator, "endsWith")) {
+      return(sprintf("%s & endsWith(as.character(%s), %s)", present, variable, r_string(predicate$valueKey)))
+    }
+    comparison <- switch(
+      operator,
+      equals = "==",
+      notEquals = "!=",
+      gt = ">",
+      gte = ">=",
+      lt = "<",
+      lte = "<=",
+      between = NULL,
+      abort("runtime_error", "Generated R code received an unsupported row predicate")
+    )
+    if (identical(operator, "between")) {
+      return(sprintf(
+        "%s & %s >= %s & %s <= %s",
+        present,
+        values,
+        row_target(predicate$valueKey, specification),
+        values,
+        row_target(predicate$secondValueKey, specification)
+      ))
+    }
+    sprintf(
+      "%s & %s %s %s",
+      present,
+      values,
+      comparison,
+      row_target(predicate$valueKey, specification)
+    )
+  }
+
+  row_filter_code_lines <- function(model) {
+    lines <- "  # Filter rows"
+    filter_masks <- character()
+    for (filter_index in seq_along(model$filters)) {
+      filter <- model$filters[[filter_index]]
+      variable <- sprintf(".ow_filter_column_%d", filter_index)
+      null_mask <- sprintf(".ow_filter_null_%d", filter_index)
+      nan_mask <- sprintf(".ow_filter_nan_%d", filter_index)
+      lines <- c(lines, row_column_lines(filter, variable))
+      if (identical(filter$semanticsKind, "double")) {
+        lines <- c(
+          lines,
+          sprintf("  %s <- is.nan(%s)", nan_mask, variable),
+          sprintf("  %s <- is.na(%s) & !%s", null_mask, variable, nan_mask)
+        )
+      } else {
+        lines <- c(
+          lines,
+          sprintf("  %s <- is.na(%s)", null_mask, variable),
+          sprintf("  %s <- rep(FALSE, length(%s))", nan_mask, variable)
+        )
+      }
+      conditions <- character()
+      value_filter <- filter$valueFilter
+      if (!is.null(value_filter) && (
+        length(value_filter$selectedKeys) > 0L ||
+          isTRUE(value_filter$includeNulls) ||
+          isTRUE(value_filter$includeNaN)
+      )) {
+        parts <- character()
+        if (length(value_filter$selectedKeys) > 0L) {
+          parts <- c(parts, sprintf(
+            "((!%s & !%s) & %s %%in%% %s)",
+            null_mask,
+            nan_mask,
+            row_comparable(variable, filter),
+            row_targets(value_filter$selectedKeys, filter)
+          ))
+        }
+        if (isTRUE(value_filter$includeNulls)) parts <- c(parts, null_mask)
+        if (isTRUE(value_filter$includeNaN)) parts <- c(parts, nan_mask)
+        conditions <- c(conditions, sprintf("(%s)", paste(parts, collapse = " | ")))
+      }
+      for (predicate in filter$predicates) {
+        conditions <- c(
+          conditions,
+          row_predicate_expression(predicate, filter, variable, null_mask, nan_mask)
+        )
+      }
+      if (length(conditions) > 0L) {
+        mask <- sprintf(".ow_filter_mask_%d", filter_index)
+        join <- if (identical(filter$logic, "or")) " | " else " & "
+        lines <- c(lines, sprintf("  %s <- (%s)", mask, paste(conditions, collapse = join)))
+        filter_masks <- c(filter_masks, mask)
+      }
+    }
+    if (length(filter_masks) == 0L) {
+      return(c(lines, "  .ow_rows <- seq_len(nrow(.ow_result))"))
+    }
+    join <- if (identical(model$logic, "or")) " | " else " & "
+    c(
+      lines,
+      sprintf("  .ow_keep <- (%s)", paste(filter_masks, collapse = join)),
+      "  .ow_rows <- which(.ow_keep)"
+    )
+  }
+
+  row_sort_code_lines <- function(rules, initialize = TRUE) {
+    lines <- if (isTRUE(initialize)) c("  # Sort rows", "  .ow_rows <- seq_len(nrow(.ow_result))") else "  # Sort filtered rows"
+    for (rule_index in rev(seq_along(rules))) {
+      rule <- rules[[rule_index]]
+      lines <- c(
+        lines,
+        row_column_lines(rule, ".ow_sort_column"),
+        "  .ow_sort_values <- .ow_sort_column[.ow_rows]",
+        "  .ow_sort_missing <- is.na(.ow_sort_values)",
+        "  .ow_sort_present <- which(!.ow_sort_missing)",
+        sprintf(
+          "  .ow_sort_levels <- sort(unique(.ow_sort_values[.ow_sort_present]), decreasing = %s, na.last = NA, method = \"radix\")",
+          if (identical(rule$direction, "desc")) "TRUE" else "FALSE"
+        ),
+        "  .ow_sort_order <- base::order(match(.ow_sort_values[.ow_sort_present], .ow_sort_levels), method = \"radix\")",
+        "  .ow_sorted_rows <- .ow_rows[.ow_sort_present[.ow_sort_order]]",
+        sprintf(
+          "  .ow_rows <- %s",
+          if (identical(rule$nulls, "first")) {
+            "c(.ow_rows[.ow_sort_missing], .ow_sorted_rows)"
+          } else {
+            "c(.ow_sorted_rows, .ow_rows[.ow_sort_missing])"
+          }
+        )
+      )
+    }
+    lines
+  }
+
+  row_step_code_lines <- function(step) {
+    if (identical(step$kind, "sortRows")) {
+      lines <- row_sort_code_lines(step$rules)
+      sorted <- TRUE
+    } else {
+      lines <- row_filter_code_lines(step$filterModel)
+      sorted <- length(step$filterModel$sort) > 0L
+      if (sorted) lines <- c(lines, row_sort_code_lines(step$filterModel$sort, initialize = FALSE))
+    }
+    specifications <- if (identical(step$kind, "sortRows")) {
+      step$rules
+    } else {
+      c(step$filterModel$filters, step$filterModel$sort)
+    }
+    if (any(vapply(
+      specifications,
+      function(specification) identical(specification$semanticsKind, "integer64"),
+      logical(1L),
+      USE.NAMES = FALSE
+    ))) {
+      lines <- c(
+        "  if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required for this row operation\", call. = FALSE)",
+        lines
+      )
+    }
+    c(
+      lines,
+      "  .ow_result <- if (inherits(.ow_result, \"data.table\")) .ow_result[.ow_rows] else .ow_result[.ow_rows, , drop = FALSE]",
+      if (sorted) "  if (inherits(.ow_result, \"data.table\")) data.table::setkey(.ow_result, NULL)" else character()
+    )
+  }
+
   cast_code_helper_lines <- function() {
     c(
       "  .ow_cast_kind <- function(.ow_value) {",
@@ -1037,7 +1434,11 @@ openwrangler_r_kernel_agent <- local({
       lines <- c(lines, cast_code_helper_lines())
     }
     for (step in bound_plan) {
-      if (identical(step$kind, "renameColumn")) {
+      if (identical(step$kind, "sortRows")) {
+        lines <- c(lines, row_step_code_lines(step))
+      } else if (identical(step$kind, "filterRows")) {
+        lines <- c(lines, row_step_code_lines(step))
+      } else if (identical(step$kind, "renameColumn")) {
         lines <- c(
           lines,
           sprintf(
@@ -1239,7 +1640,26 @@ openwrangler_r_kernel_agent <- local({
     changed_cells <- 0L
     cells <- list()
     truncated <- FALSE
-    if (bound$kind %in% c("lowerText", "castColumn") && isTRUE(bound$inPlace)) {
+    added_rows <- 0L
+    removed_rows <- 0L
+    if (bound$kind %in% c("sortRows", "filterRows")) {
+      if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
+        abort("runtime_error", "The R row transform diff is missing its bounded page context")
+      }
+      if (is.null(before_page)) before_page <- materialize(frame_contract, before, page)
+      if (is.null(after_page)) after_page <- materialize(frame_contract, after, page)
+      before_rows <- before$descriptor$shape$rows
+      after_rows <- after$descriptor$shape$rows
+      added_rows <- as.integer(max(0, after_rows - before_rows))
+      removed_rows <- as.integer(max(0, before_rows - after_rows))
+      before_complete <-
+        before_page$page$offset == 0 &&
+          length(before_page$page$rows) == before_page$page$totalRows
+      after_complete <-
+        after_page$page$offset == 0 &&
+          length(after_page$page$rows) == after_page$page$totalRows
+      truncated <- !(before_complete && after_complete)
+    } else if (bound$kind %in% c("lowerText", "castColumn") && isTRUE(bound$inPlace)) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R in-place transform diff is missing its bounded page context")
       }
@@ -1284,8 +1704,8 @@ openwrangler_r_kernel_agent <- local({
         changed_cells > length(cells)
     }
     list(
-      addedRows = 0L,
-      removedRows = 0L,
+      addedRows = added_rows,
+      removedRows = removed_rows,
       addedColumns = I(added_columns),
       removedColumns = I(removed_columns),
       changedCells = changed_cells,
@@ -1340,6 +1760,7 @@ openwrangler_r_kernel_agent <- local({
       "cast_column_at",
       "drop_columns_at",
       "select_columns_at",
+      "transform_rows",
       "materialize_view_page",
       "materialize_summaries",
       "materialize_dataset_stats",

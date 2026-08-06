@@ -72,22 +72,31 @@ the current viewing filters, and the private dataset-statistics response binds i
 from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
 user to reopen the frame.
 
-Editing currently supports Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. The first draft
-takes an isolated original;
-base data frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps
-committed and draft results separate, resolves every target by stable ID and captured name, and advances the session
-revision for preview, apply, discard, latest-step replacement, and undo. Applied-step inspection replays only the selected plan
-prefix. The kernel returns its code, input page, and output page separately, so two large pages are never forced into
-one response. Page responses omit schemas; the host restores the exact schemas it retained for that plan step before
-publishing the inspection. Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves
-the chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
+Editing currently supports Filter Rows, Sort Rows, Rename Column, Drop Columns, Select Columns, Clone Column, Convert
+type, Text Length, and Lowercase. The first draft takes an isolated original; base data frames and tibbles use R
+serialization, while data tables use `data.table::copy()`. The runtime keeps committed and draft results separate,
+resolves every target by stable ID and captured name, and advances the session revision for preview, apply, discard,
+latest-step replacement, and undo. Applied-step inspection replays only the selected plan prefix. The kernel returns
+its code, input page, and output page separately, so two large pages are never forced into one response. Page
+responses omit schemas; the host restores the exact schemas it retained for that plan step before publishing the
+inspection.
+
+Filter Rows and Sort Rows use the same typed rules as the read-only view, but become explicit cleaning steps only
+when the user creates a draft. Each source row has a private stable identity that survives filtering, sorting, plan
+history, and diff inspection. Active row counts are tracked separately from that source identity domain. Sort keys
+are applied in priority order with stable ties and independent missing-value placement. Filtering distinguishes `NA`
+from `NaN`. A filter keeps a compatible `data.table` key; an explicit sort clears it because the new row order no
+longer follows that key.
+
+Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the
+chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
 Text Length operation accepts character and factor columns, keeps `NA` values, and appends a derived integer column
 whose stable ID can be used by later steps. It counts Unicode characters rather than encoded bytes. The operations
 keep compatible data-table keys. Lowercase accepts character and factor columns, keeps `NA`, and either updates the
 column or appends a character column with a stable derived ID. An in-place change to a data-table key column is
-rejected; choosing a new output column keeps the key and row order. Generated R repeats the position and name checks and returns a copied
-result. Native, cross-language, and packaged-editor tests cover source isolation, executable code, keyed data tables,
-duplicate names, non-syntactic names, and mixed plans.
+rejected; choosing a new output column keeps the key and row order. Generated R repeats the position and name checks
+and returns a copied result. Native, cross-language, and packaged-editor tests cover source isolation, executable
+code, keyed data tables, duplicate names, non-syntactic names, row identity, and mixed plans.
 
 Convert type replaces one column while keeping its stable ID, name, and position. It supports character, integer,
 double, logical, Date, and UTC POSIXct output. An `integer64` source stays `integer64` when the target is integer.
@@ -133,9 +142,11 @@ Quarto and R Markdown may be advertised only after their document-aware helpers 
 - The grid and transformation model can be shared, but execution, object ownership, type handling, and generated code
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
-  currently adds Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase with generated R code.
-  Generated R can be inserted into its originating IRkernel notebook or `.R` source. Other cleaning operations,
-  cleaned-data export, Quarto, and R Markdown remain unsupported.
+  currently adds Filter Rows, Sort Rows, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text
+  Length, and Lowercase with generated R code. Generated R can be inserted into its originating IRkernel notebook or
+  `.R` source. Other cleaning operations, cleaned-data export, Quarto, and R Markdown remain unsupported.
+- Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
+  data-table paths. Grouped `GRP_df` objects are outside the supported class contract.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
 - R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and

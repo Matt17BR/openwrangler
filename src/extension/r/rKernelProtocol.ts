@@ -53,6 +53,12 @@ export interface RKernelSortRule {
   readonly nulls: "first" | "last";
 }
 
+export interface RKernelTransformFilterModel {
+  readonly logic?: "and" | "or";
+  readonly filters: readonly RKernelColumnFilter[];
+  readonly sort: readonly RKernelSortRule[];
+}
+
 export interface RKernelColumnFilter {
   readonly column: RKernelColumnReference;
   readonly type: RColumnType;
@@ -154,7 +160,25 @@ export interface RKernelSelectColumnsStep {
   }>;
 }
 
+export interface RKernelSortRowsStep {
+  readonly id: string;
+  readonly kind: "sortRows";
+  readonly params: Readonly<{
+    readonly rules: readonly [RKernelSortRule, ...RKernelSortRule[]];
+  }>;
+}
+
+export interface RKernelFilterRowsStep {
+  readonly id: string;
+  readonly kind: "filterRows";
+  readonly params: Readonly<{
+    readonly filterModel: RKernelTransformFilterModel;
+  }>;
+}
+
 export type RKernelTransformStep =
+  | RKernelSortRowsStep
+  | RKernelFilterRowsStep
   | RKernelRenameColumnStep
   | RKernelCloneColumnStep
   | RKernelCastColumnStep
@@ -772,6 +796,16 @@ function validateRequest(request: RKernelRequest): void {
 function validateTransformStep(value: unknown): void {
   const step = exactRecord(value, ["id", "kind", "params"], "R kernel transform step");
   boundedText(step.id, "request.payload.step.id", maximumStepIdBytes, false);
+  if (step.kind === "sortRows") {
+    const params = exactRecord(step.params, ["rules"], "R kernel sort-rows parameters");
+    validateSorts(params.rules, "request.payload.step.params.rules", false);
+    return;
+  }
+  if (step.kind === "filterRows") {
+    const params = exactRecord(step.params, ["filterModel"], "R kernel filter-rows parameters");
+    validateTransformFilterModel(params.filterModel);
+    return;
+  }
   if (step.kind === "renameColumn" || step.kind === "cloneColumn") {
     const operation = step.kind === "renameColumn" ? "rename" : "clone";
     const params = exactRecord(step.params, ["column", "newName"], `R kernel ${operation} parameters`);
@@ -847,7 +881,8 @@ function validateMutationDiff(
     "cells",
     "truncated"
   ]);
-  if (diff.addedRows !== 0 || diff.removedRows !== 0) fail("R kernel row-changing diff is unsupported.");
+  const addedRows = boundedInteger(diff.addedRows, "response.diff.addedRows", R_FRAME_CONTRACT_LIMITS.rows);
+  const removedRows = boundedInteger(diff.removedRows, "response.diff.removedRows", R_FRAME_CONTRACT_LIMITS.rows);
   const changedCells = boundedInteger(
     diff.changedCells,
     "response.diff.changedCells",
@@ -913,8 +948,8 @@ function validateMutationDiff(
     return Object.freeze({ rowNumber, columnId, column, before, after });
   });
   const result: DataDiff = {
-    addedRows: 0,
-    removedRows: 0,
+    addedRows,
+    removedRows,
     addedColumns,
     removedColumns,
     changedCells,
@@ -1018,17 +1053,29 @@ function validateViewQuery(value: unknown): void {
   if (view.logic !== undefined && view.logic !== "and" && view.logic !== "or") {
     fail("R kernel view logic is invalid.");
   }
-  if (!Array.isArray(view.filters) || view.filters.length > R_FRAME_CONTRACT_LIMITS.filters) {
+  validateFilters(view.filters, "request.view.filters", false);
+  validateSorts(view.sorts, "request.view.sorts");
+}
+
+function validateTransformFilterModel(value: unknown): void {
+  const model = exactRecord(value, ["filters", "sort"], ["logic"], "R kernel transform filter model");
+  if (model.logic !== undefined && model.logic !== "and" && model.logic !== "or") {
+    fail("R kernel transform filter logic is invalid.");
+  }
+  validateFilters(model.filters, "request.payload.step.params.filterModel.filters", true);
+  validateSorts(model.sort, "request.payload.step.params.filterModel.sort");
+}
+
+function validateFilters(values: unknown, label: string, requireUniqueColumns: boolean): void {
+  if (!Array.isArray(values) || values.length > R_FRAME_CONTRACT_LIMITS.filters) {
     fail("R kernel view filters exceed the supported limit.");
   }
-  for (const [index, value] of view.filters.entries()) {
-    const filter = exactRecord(
-      value,
-      ["column", "type", "predicates"],
-      ["logic", "valueFilter"],
-      `R kernel view filter ${index}`
-    );
-    validateColumnReference(filter.column, `request.view.filters[${index}].column`);
+  const seen = new Set<string>();
+  for (const [index, value] of values.entries()) {
+    const filter = exactRecord(value, ["column", "type", "predicates"], ["logic", "valueFilter"], `${label}[${index}]`);
+    const column = validateColumnReference(filter.column, `${label}[${index}].column`);
+    if (requireUniqueColumns && seen.has(column.id)) fail("R kernel filters contain a repeated column identity.");
+    seen.add(column.id);
     if (!isRColumnType(filter.type)) fail("R kernel view filter type is invalid.");
     if (filter.logic !== undefined && filter.logic !== "and" && filter.logic !== "or") {
       fail("R kernel column-filter logic is invalid.");
@@ -1037,13 +1084,12 @@ function validateViewQuery(value: unknown): void {
       fail("R kernel view predicates exceed the supported limit.");
     }
     for (const [predicateIndex, predicate] of filter.predicates.entries()) {
-      validatePredicate(predicate, `request.view.filters[${index}].predicates[${predicateIndex}]`, filter.type);
+      validatePredicate(predicate, `${label}[${index}].predicates[${predicateIndex}]`, filter.type);
     }
     if (filter.valueFilter !== undefined) {
-      validateValueFilter(filter.valueFilter, `request.view.filters[${index}].valueFilter`, filter.type);
+      validateValueFilter(filter.valueFilter, `${label}[${index}].valueFilter`, filter.type);
     }
   }
-  validateSorts(view.sorts, "request.view.sorts");
 }
 
 function validatePredicate(value: unknown, label: string, columnType: RColumnType): void {
@@ -1250,8 +1296,12 @@ function validatePage(value: unknown): void {
   validateViewQuery(page.view);
 }
 
-function validateSorts(values: unknown, label: string): void {
-  if (!Array.isArray(values) || values.length > R_FRAME_CONTRACT_LIMITS.sortRules) {
+function validateSorts(values: unknown, label: string, allowEmpty = true): void {
+  if (
+    !Array.isArray(values) ||
+    (!allowEmpty && values.length === 0) ||
+    values.length > R_FRAME_CONTRACT_LIMITS.sortRules
+  ) {
     fail("R page sorts exceed the supported limit.");
   }
   const seen = new Set<string>();

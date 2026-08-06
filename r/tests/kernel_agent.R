@@ -35,6 +35,11 @@ cast_table_session_id <- "16161616-1616-4616-8616-161616161616"
 cast_off_page_session_id <- "17171717-1717-4717-8717-171717171717"
 large_factor_session_id <- "18181818-1818-4818-8818-181818181818"
 large_cells_session_id <- "19191919-1919-4919-8919-191919191919"
+row_session_id <- "20202020-2020-4020-8020-202020202020"
+row_tibble_session_id <- "21212121-2121-4121-8121-212121212121"
+row_table_session_id <- "23232323-2323-4323-8323-232323232323"
+row_active_view_session_id <- "24242424-2424-4424-8424-242424242424"
+row_empty_named_session_id <- "25252525-2525-4525-8525-252525252525"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -146,7 +151,13 @@ inspect_step <- function(session_id, revision, step_id, page) {
     stepIndex = info$stepIndex,
     inputPage = input$page,
     outputPage = output$page,
-    diff = list(changedCells = changed_cells),
+    diff = list(
+      addedRows = max(0L, output$page$page$totalRows - input$page$page$totalRows),
+      removedRows = max(0L, input$page$page$totalRows - output$page$page$totalRows),
+      changedCells = changed_cells,
+      truncated = input$page$page$totalRows > length(input$page$page$rows) ||
+        output$page$page$totalRows > length(output$page$page$rows)
+    ),
     code = info$code
   )
 }
@@ -2512,6 +2523,447 @@ assert_identical(
   "the native data.table rename changed the source key"
 )
 
+row_sort_rule <- function(id, name, direction = "asc", nulls = "last") {
+  list(column = list(id = id, name = name), direction = direction, nulls = nulls)
+}
+row_sort_step <- function(rules, id = "row-sort-step") {
+  list(id = id, kind = "sortRows", params = list(rules = I(rules)))
+}
+row_filter_step <- function(operator = "isNaN", id = "row-filter-step") {
+  list(
+    id = id,
+    kind = "filterRows",
+    params = list(filterModel = list(
+      logic = "and",
+      filters = I(list(
+        list(
+          column = list(id = "r:c:0", name = "duplicate"),
+          type = "string",
+          predicates = I(list()),
+          valueFilter = list(
+            kind = "values",
+            selectedValues = I(list("a")),
+            includeNulls = FALSE,
+            includeNaN = FALSE
+          )
+        ),
+        list(
+          column = list(id = "r:c:1", name = "duplicate"),
+          type = "float",
+          predicates = I(list(list(kind = "predicate", operator = operator)))
+        )
+      )),
+      sort = I(list())
+    ))
+  )
+}
+
+source_environment$row_frame <- data.frame(
+  duplicate = c("b", "a", "a", "b", NA, "a", "a"),
+  duplicate = c(2, 1, 1, 1, 9, NA, NaN),
+  `non syntactic` = seq_len(7L),
+  check.names = FALSE,
+  row.names = paste0("row-", seq_len(7L)),
+  stringsAsFactors = FALSE
+)
+row_source_before <- unserialize(serialize(source_environment$row_frame, NULL, version = 3L))
+row_open <- dispatch(
+  "openSession",
+  list(sessionId = row_session_id, variableName = "row_frame", page = page_window(row_limit = 7L))
+)
+assert_identical(row_open$kind, "page", "the R row-operation session did not open")
+sort_step <- row_sort_step(list(
+  row_sort_rule("r:c:0", "duplicate", "asc", "last"),
+  row_sort_rule("r:c:1", "duplicate", "desc", "first")
+))
+row_sort_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_session_id,
+    revision = 0L,
+    step = sort_step,
+    page = page_window(row_limit = 7L)
+  )
+)
+assert_identical(row_sort_preview$kind, "stepPreview", "committed R multi-sort did not preview")
+assert_identical(
+  vapply(row_sort_preview$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", c(5L, 6L, 1L, 2L, 0L, 3L, 4L)),
+  "committed R multi-sort changed priority, missing placement, stable ties, or row identities"
+)
+assert_identical(row_sort_preview$diff$removedRows, 0L, "sorting reported removed rows")
+assert_identical(row_sort_preview$diff$truncated, FALSE, "a complete sort preview was marked truncated")
+row_sort_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = row_session_id, revision = 1L, page = page_window(row_limit = 7L))
+)
+assert_identical(row_sort_discard$action, "discard", "the first R sort draft did not discard")
+assert_identical(
+  vapply(row_sort_discard$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", 0:6),
+  "discarding an R sort did not restore original row identities"
+)
+
+row_sort_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_session_id,
+    revision = 2L,
+    step = sort_step,
+    page = page_window(row_limit = 7L)
+  )
+)
+row_sort_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = row_session_id, revision = 3L, page = page_window(row_limit = 7L))
+)
+assert_identical(row_sort_apply$action, "apply", "the R sort draft did not apply")
+row_sort_inspection <- inspect_step(
+  row_session_id,
+  4L,
+  "row-sort-step",
+  page_window(row_limit = 7L)
+)
+assert_identical(row_sort_inspection$diff$removedRows, 0L, "sort inspection reported removed rows")
+assert_identical(row_sort_inspection$diff$truncated, FALSE, "complete sort inspection was marked truncated")
+assert_identical(
+  vapply(row_sort_inspection$outputPage$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", c(5L, 6L, 1L, 2L, 0L, 3L, 4L)),
+  "sort inspection lost stable source-row identities"
+)
+
+row_filter_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_session_id,
+    revision = 4L,
+    step = row_filter_step(),
+    page = page_window(row_limit = 7L)
+  )
+)
+assert_identical(row_filter_preview$kind, "stepPreview", "committed R filtering did not preview")
+assert_identical(row_filter_preview$page$page$totalRows, 1L, "R filtering confused NA and NaN")
+assert_identical(row_filter_preview$page$page$rows[[1L]]$id, "r:r:6", "R filtering regenerated row identity")
+assert_identical(row_filter_preview$page$page$rows[[1L]]$rowLabel, "row-7", "R filtering lost the source row label")
+assert_identical(row_filter_preview$diff$removedRows, 6L, "R filtering reported the wrong removed-row count")
+assert_identical(row_filter_preview$diff$truncated, FALSE, "a complete filter preview was marked truncated")
+row_filter_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = row_session_id, revision = 5L, page = page_window(row_limit = 7L))
+)
+assert_identical(row_filter_apply$action, "apply", "the R filter draft did not apply")
+row_filter_inspection <- inspect_step(
+  row_session_id,
+  6L,
+  "row-filter-step",
+  page_window(row_limit = 7L)
+)
+assert_identical(row_filter_inspection$diff$removedRows, 6L, "filter inspection reported the wrong row count")
+assert_identical(row_filter_inspection$diff$truncated, FALSE, "complete filter inspection was marked truncated")
+assert_identical(
+  row_filter_inspection$outputPage$page$rows[[1L]]$id,
+  "r:r:6",
+  "filter inspection changed the retained row identity"
+)
+assign("row_frame", source_environment$row_frame, envir = .GlobalEnv)
+eval(parse(text = row_filter_apply$code), envir = .GlobalEnv)
+row_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(row_generated[[3L]], 7L, "generated R sort/filter code returned the wrong row")
+assert_identical(
+  names(row_generated),
+  c("duplicate", "duplicate", "non syntactic"),
+  "generated R row code repaired duplicate or non-syntactic names"
+)
+assert_identical(
+  get("row_frame", envir = .GlobalEnv, inherits = FALSE),
+  row_source_before,
+  "generated R row code mutated its source dataframe"
+)
+rm("row_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+edited_row_filter <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_session_id,
+    revision = 6L,
+    step = row_filter_step("isNull"),
+    replaceStepId = "row-filter-step",
+    page = page_window(row_limit = 7L)
+  )
+)
+assert_identical(edited_row_filter$revision, 7L, "editing the R filter did not advance the revision")
+assert_identical(edited_row_filter$page$page$rows[[1L]]$id, "r:r:5", "edited R filter confused NA and NaN")
+edited_row_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = row_session_id, revision = 7L, page = page_window(row_limit = 7L))
+)
+assert_identical(edited_row_discard$action, "discard", "the edited R filter did not discard")
+assert_identical(
+  edited_row_discard$page$page$rows[[1L]]$id,
+  "r:r:6",
+  "discarding an edited R filter did not restore the committed result"
+)
+row_filter_undo <- dispatch(
+  "undoStep",
+  list(sessionId = row_session_id, revision = 8L, page = page_window(row_limit = 7L))
+)
+assert_identical(row_filter_undo$action, "undo", "the committed R filter did not undo")
+assert_identical(row_filter_undo$page$page$totalRows, 7L, "undoing R filtering did not restore all rows")
+assert_identical(
+  vapply(row_filter_undo$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", c(5L, 6L, 1L, 2L, 0L, 3L, 4L)),
+  "undoing R filtering did not restore the committed sort"
+)
+row_sort_undo <- dispatch(
+  "undoStep",
+  list(sessionId = row_session_id, revision = 9L, page = page_window(row_limit = 7L))
+)
+assert_identical(
+  vapply(row_sort_undo$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", 0:6),
+  "undoing R sorting did not restore original order"
+)
+assert_identical(source_environment$row_frame, row_source_before, "the R row lifecycle mutated its source dataframe")
+invisible(dispatch("closeSession", list(sessionId = row_session_id)))
+
+source_environment$row_active_view <- data.frame(id = 1:4, keep = c(TRUE, FALSE, TRUE, FALSE))
+row_active_view_before <- unserialize(serialize(source_environment$row_active_view, NULL, version = 3L))
+row_active_filter <- list(
+  column = list(id = "r:c:1", name = "keep"),
+  type = "boolean",
+  predicates = I(list(list(kind = "predicate", operator = "equals", value = TRUE)))
+)
+row_active_page <- page_window(filters = list(row_active_filter), row_limit = 2L)
+invisible(dispatch(
+  "openSession",
+  list(
+    sessionId = row_active_view_session_id,
+    variableName = "row_active_view",
+    page = page_window(row_limit = 4L)
+  )
+))
+row_active_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_active_view_session_id,
+    revision = 0L,
+    step = list(
+      id = "row-active-filter-step",
+      kind = "filterRows",
+      params = list(filterModel = list(
+        filters = I(list(row_active_filter)),
+        sort = I(list())
+      ))
+    ),
+    page = row_active_page
+  )
+)
+assert_identical(row_active_preview$kind, "stepPreview", "filtering an already narrowed R view did not preview")
+assert_identical(row_active_preview$page$page$totalRows, 2L, "the narrowed R draft returned the wrong row count")
+assert_identical(
+  vapply(row_active_preview$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  c("r:r:0", "r:r:2"),
+  "the narrowed R draft changed stable row identities"
+)
+assert_identical(row_active_preview$diff$removedRows, 2L, "the narrowed R draft lost its cleaning row count")
+assert_identical(
+  row_active_preview$diff$truncated,
+  FALSE,
+  "a full current view matching the committed filter was incorrectly marked truncated"
+)
+assert_identical(
+  source_environment$row_active_view,
+  row_active_view_before,
+  "previewing a filter from an already narrowed view mutated its source"
+)
+row_active_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = row_active_view_session_id, revision = 1L, page = row_active_page)
+)
+row_active_code_lines <- strsplit(sub("\n$", "", row_active_apply$code), "\n", fixed = TRUE)[[1L]]
+if (length(row_active_code_lines) > 28L || nchar(row_active_apply$code, type = "bytes") > 1800L) {
+  stop("generated R filter code is no longer concise", call. = FALSE)
+}
+if (
+  !grepl("# Filter rows", row_active_apply$code, fixed = TRUE) ||
+    !grepl(".ow_keep <-", row_active_apply$code, fixed = TRUE)
+) {
+  stop("generated R filter code lost its readable native statements", call. = FALSE)
+}
+assign("row_active_view", source_environment$row_active_view, envir = .GlobalEnv)
+eval(parse(text = row_active_apply$code), envir = .GlobalEnv)
+row_active_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(row_active_generated$id, c(1L, 3L), "generated R filtering returned the wrong rows")
+assert_identical(
+  get("row_active_view", envir = .GlobalEnv, inherits = FALSE),
+  row_active_view_before,
+  "generated R filtering mutated its source dataframe"
+)
+rm("row_active_view", "open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = row_active_view_session_id)))
+
+source_environment$row_empty_named <- data.frame(
+  value = 1:2,
+  row.names = c("named-a", "named-b")
+)
+row_empty_named_before <- unserialize(serialize(source_environment$row_empty_named, NULL, version = 3L))
+row_empty_named_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = row_empty_named_session_id,
+    variableName = "row_empty_named",
+    page = page_window(row_limit = 2L, column_limit = 1L)
+  )
+)
+assert_identical(
+  row_empty_named_open$page$frameSemantics$rowNames,
+  "explicit",
+  "the empty-filter source did not start with explicit row names"
+)
+row_empty_named_step <- list(
+  id = "row-empty-named-step",
+  kind = "filterRows",
+  params = list(filterModel = list(
+    filters = I(list(list(
+      column = list(id = "r:c:0", name = "value"),
+      type = "integer",
+      predicates = I(list(list(kind = "predicate", operator = "gt", value = 99L)))
+    ))),
+    sort = I(list())
+  ))
+)
+row_empty_named_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_empty_named_session_id,
+    revision = 0L,
+    step = row_empty_named_step,
+    page = page_window(row_limit = 2L, column_limit = 1L)
+  )
+)
+assert_identical(row_empty_named_preview$kind, "stepPreview", "an empty named-row filter did not preview")
+assert_identical(row_empty_named_preview$page$page$totalRows, 0L, "the empty named-row filter retained rows")
+assert_identical(
+  row_empty_named_preview$page$frameSemantics$rowNames,
+  "explicit",
+  "an empty named-row filter changed the published row-name contract"
+)
+row_empty_named_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = row_empty_named_session_id,
+    revision = 1L,
+    page = page_window(row_limit = 2L, column_limit = 1L)
+  )
+)
+assert_identical(
+  row_empty_named_apply$page$frameSemantics$rowNames,
+  "explicit",
+  "applying an empty named-row filter changed the row-name contract"
+)
+row_empty_named_inspection <- inspect_step(
+  row_empty_named_session_id,
+  2L,
+  "row-empty-named-step",
+  page_window(row_limit = 2L, column_limit = 1L)
+)
+assert_identical(
+  row_empty_named_inspection$outputPage$frameSemantics$rowNames,
+  "explicit",
+  "inspecting an empty named-row filter changed the row-name contract"
+)
+assert_identical(
+  source_environment$row_empty_named,
+  row_empty_named_before,
+  "filtering an explicit-row-name frame to zero rows mutated its source"
+)
+invisible(dispatch("closeSession", list(sessionId = row_empty_named_session_id)))
+
+assert_native_row_sort_isolated <- function(variable_name, isolated_session_id, source_before, column_name) {
+  opened <- dispatch(
+    "openSession",
+    list(sessionId = isolated_session_id, variableName = variable_name, page = page_window())
+  )
+  assert_identical(opened$kind, "page", sprintf("%s did not open for native row sorting", variable_name))
+  previewed <- dispatch(
+    "previewStep",
+    list(
+      sessionId = isolated_session_id,
+      revision = 0L,
+      step = row_sort_step(list(row_sort_rule("r:c:1", column_name, "desc", "last")), paste0(variable_name, "-sort")),
+      page = page_window()
+    )
+  )
+  assert_identical(previewed$kind, "stepPreview", sprintf("%s sort did not preview", variable_name))
+  applied <- dispatch(
+    "applyDraft",
+    list(sessionId = isolated_session_id, revision = 1L, page = page_window())
+  )
+  assert_identical(
+    get(variable_name, envir = source_environment, inherits = FALSE),
+    source_before,
+    sprintf("the %s row operation mutated its source", variable_name)
+  )
+  assign(variable_name, get(variable_name, envir = source_environment, inherits = FALSE), envir = .GlobalEnv)
+  eval(parse(text = applied$code), envir = .GlobalEnv)
+  generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_identical(
+    get(variable_name, envir = .GlobalEnv, inherits = FALSE),
+    source_before,
+    sprintf("generated %s row code mutated its source", variable_name)
+  )
+  rm(list = c(variable_name, "open_wrangler_result"), envir = .GlobalEnv)
+  invisible(dispatch("closeSession", list(sessionId = isolated_session_id)))
+  list(applied = applied, generated = generated)
+}
+
+source_environment$row_tibble <- tibble::tibble(id = c(3L, 1L, 2L), score = c(1, 3, 2))
+row_tibble_before <- unserialize(serialize(source_environment$row_tibble, NULL, version = 3L))
+row_tibble_result <- assert_native_row_sort_isolated(
+  "row_tibble",
+  row_tibble_session_id,
+  row_tibble_before,
+  "score"
+)
+row_tibble_code_lines <- strsplit(sub("\n$", "", row_tibble_result$applied$code), "\n", fixed = TRUE)[[1L]]
+if (length(row_tibble_code_lines) > 32L || nchar(row_tibble_result$applied$code, type = "bytes") > 2250L) {
+  stop("generated R sort code is no longer concise", call. = FALSE)
+}
+if (
+  !grepl("# Sort rows", row_tibble_result$applied$code, fixed = TRUE) ||
+    !grepl("base::order", row_tibble_result$applied$code, fixed = TRUE)
+) {
+  stop("generated R sort code lost its readable native statements", call. = FALSE)
+}
+assert_identical(
+  class(row_tibble_result$generated),
+  c("tbl_df", "tbl", "data.frame"),
+  "generated R sorting changed the tibble class"
+)
+assert_identical(row_tibble_result$generated$id, c(1L, 2L, 3L), "generated tibble sorting returned wrong rows")
+
+source_environment$row_table <- data.table::data.table(primary_key = 1:3, score = c(2, 1, 3))
+data.table::setkey(source_environment$row_table, primary_key)
+row_table_before <- data.table::copy(source_environment$row_table)
+row_table_result <- assert_native_row_sort_isolated(
+  "row_table",
+  row_table_session_id,
+  row_table_before,
+  "score"
+)
+assert_identical(
+  row_table_result$applied$page$frameSemantics$keyColumnIds,
+  list(),
+  "committed data.table sorting retained stale key metadata"
+)
+assert_identical(data.table::key(row_table_result$generated), NULL, "generated data.table sorting retained a stale key")
+assert_identical(row_table_result$generated$primary_key, c(3L, 1L, 2L), "generated data.table sorting returned wrong rows")
+assert_identical(
+  data.table::key(source_environment$row_table),
+  "primary_key",
+  "R sorting changed the source data.table key"
+)
+
 source_environment$wide <- as.data.frame(
   setNames(replicate(256L, seq_len(401L), simplify = FALSE), sprintf("column_%03d", seq_len(256L))),
   optional = TRUE
@@ -2545,6 +2997,7 @@ missing_package_contract <- list(
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
+  transform_rows = function(...) stop("unexpected row transform", call. = FALSE),
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
   materialize_summaries = function(...) stop("unexpected summary materialization", call. = FALSE),
   materialize_dataset_stats = function(...) stop("unexpected dataset profile", call. = FALSE),
@@ -2595,6 +3048,21 @@ if (
     !identical(conditionMessage(missing_cast_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without Cast support", call. = FALSE)
+}
+missing_transform_rows_contract <- missing_package_contract
+missing_transform_rows_contract$transform_rows <- NULL
+missing_transform_rows_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_transform_rows_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_transform_rows_error) ||
+    !identical(conditionMessage(missing_transform_rows_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without row-transform support", call. = FALSE)
 }
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(

@@ -312,6 +312,127 @@ describe("native R kernel protocol", () => {
     ).toThrow("bounded string");
   });
 
+  it("validates committed R sort/filter requests and bounded row-changing diffs", () => {
+    const sortRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "sort-step",
+          kind: "sortRows",
+          params: {
+            rules: [
+              {
+                column: { id: "r:c:0", name: "non syntactic" },
+                direction: "desc",
+                nulls: "first"
+              },
+              {
+                column: { id: "r:c:1", name: "duplicate" },
+                direction: "asc",
+                nulls: "last"
+              }
+            ]
+          }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(sortRequest))).toEqual(sortRequest);
+
+    const filterRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      ...sortRequest,
+      payload: {
+        ...sortRequest.payload,
+        step: {
+          id: "filter-step",
+          kind: "filterRows",
+          params: {
+            filterModel: {
+              logic: "or",
+              filters: [
+                {
+                  column: { id: "r:c:0", name: "non syntactic" },
+                  type: "string",
+                  predicates: [],
+                  valueFilter: {
+                    kind: "values",
+                    selectedValues: ["alpha"],
+                    includeNulls: false,
+                    includeNaN: false
+                  }
+                },
+                {
+                  column: { id: "r:c:1", name: "duplicate" },
+                  type: "float",
+                  predicates: [{ kind: "predicate", operator: "isNaN" }]
+                }
+              ],
+              sort: [
+                {
+                  column: { id: "r:c:1", name: "duplicate" },
+                  direction: "desc",
+                  nulls: "last"
+                }
+              ]
+            }
+          }
+        }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(filterRequest))).toEqual(filterRequest);
+
+    const emptySort = structuredClone(sortRequest) as unknown as {
+      payload: { step: { params: { rules: unknown[] } } };
+    };
+    emptySort.payload.step.params.rules = [];
+    expect(() => encodeRKernelRequest(emptySort as unknown as RKernelRequest)).toThrow("sorts exceed");
+
+    const repeatedSort = structuredClone(sortRequest) as unknown as {
+      payload: { step: { params: { rules: Array<{ column: { id: string; name: string } }> } } };
+    };
+    repeatedSort.payload.step.params.rules[1]!.column = { id: "r:c:0", name: "non syntactic" };
+    expect(() => encodeRKernelRequest(repeatedSort as unknown as RKernelRequest)).toThrow("repeated column identity");
+
+    const malformedFilter = structuredClone(filterRequest) as unknown as {
+      payload: { step: { params: { filterModel: Record<string, unknown> } } };
+    };
+    malformedFilter.payload.step.params.filterModel.sorts = [];
+    expect(() => encodeRKernelRequest(malformedFilter as unknown as RKernelRequest)).toThrow("invalid fields");
+
+    const filteredPreview = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalFramePage(),
+      diff: { ...minimalRenameDiff(), removedRows: 1, truncated: true },
+      code: "open_wrangler_result <- frame\n"
+    };
+    expect(
+      decodeRKernelResponseJson(JSON.stringify(filteredPreview), previewRequestId, {
+        inputSchema: minimalFramePage().schema
+      })
+    ).toMatchObject({
+      kind: "stepPreview",
+      diff: { addedRows: 0, removedRows: 1, changedCells: 0, truncated: true }
+    });
+
+    for (const removedRows of [-1, R_FRAME_CONTRACT_LIMITS.rows + 1, 1.5]) {
+      expect(() =>
+        decodeRKernelResponseJson(
+          JSON.stringify({ ...filteredPreview, diff: { ...filteredPreview.diff, removedRows } }),
+          previewRequestId,
+          { inputSchema: minimalFramePage().schema }
+        )
+      ).toThrow("response.diff.removedRows");
+    }
+  });
+
   it("validates projected profile identities before dispatch", () => {
     const request: RKernelRequest = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

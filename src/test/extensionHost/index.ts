@@ -1873,6 +1873,8 @@ async function exerciseReleasedRJupyterExtension(
       profile: true,
       columnValues: true,
       supportedOperations: [
+        "sortRows",
+        "filterRows",
         "selectColumns",
         "dropColumns",
         "renameColumn",
@@ -2005,6 +2007,8 @@ async function exerciseReleasedRJupyterExtension(
       );
       assert.equal(session.metadata.mode, "editing");
       assert.deepEqual(session.metadata.capabilities.supportedOperations, [
+        "sortRows",
+        "filterRows",
         "selectColumns",
         "dropColumns",
         "renameColumn",
@@ -2256,6 +2260,8 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
       profile: true,
       columnValues: true,
       supportedOperations: [
+        "sortRows",
+        "filterRows",
         "selectColumns",
         "dropColumns",
         "renameColumn",
@@ -3036,6 +3042,349 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   if (groupFirst.kind === "page") assert.equal(groupFirst.page.rows[0]?.values[0]?.display, "602");
 }
 
+async function exerciseReleasedRPersistentRowsJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  phase: "jupyter-r" | "jupyter-r-remote"
+): Promise<void> {
+  recordAcceptanceProgress(`${phase}:editing:persistent-sort`);
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the R persistent-sort session");
+  const sortDraftId = await previewReleasedRSortRows(testing, app, sessionId);
+  let active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep?.kind === "sortRows", "The R Sort rows preview must retain its draft.");
+  assert.equal(active.metadata.draftStep.id, sortDraftId);
+  assert.deepEqual(
+    active.metadata.draftStep.params.rules.map((rule) => ({
+      column: rule.column.name,
+      direction: rule.direction,
+      nulls: rule.nulls
+    })),
+    [
+      { column: "group", direction: "asc", nulls: "last" },
+      { column: "score", direction: "desc", nulls: "last" }
+    ]
+  );
+  assertReleasedRRowGeneratedCode(active.code ?? "", "sortRows");
+  let first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-sort-draft`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    { id: "r:r:601", label: "case-0602", values: ["602", "A", "602"] }
+  );
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Sort rows draft");
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.steps.length === 1 &&
+        current.metadata.steps[0]?.kind === "sortRows" &&
+        current.metadata.steps[0].id === sortDraftId &&
+        current.metadata.shape.rows === 1_205
+      );
+    },
+    30_000,
+    "applying the native R Sort rows step"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Sort rows step must reach its exact renderer before inspection."
+  );
+  await vscode.commands.executeCommand("openWrangler.selectStep", sortDraftId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === sortDraftId,
+    30_000,
+    "the applied native R Sort rows inspection"
+  );
+  let inspection = testing.activeSession()?.stepInspection;
+  assert.ok(inspection, "The applied R Sort rows step must publish its inspection.");
+  assert.deepEqual(inspection.diff, {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: true
+  });
+  assert.equal(inspection.inputPage.rows[0]?.id, "r:r:0");
+  assert.equal(inspection.outputPage.rows[0]?.id, "r:r:601");
+  assertReleasedRRowGeneratedCode(inspection.code, "sortRows");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Sort rows session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Sort rows inspection"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Sort rows session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.shape.rows === 1_205 &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the native R Sort rows step"
+  );
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-sort-undone`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, value: first.values[0]?.display },
+    { id: "r:r:0", label: "case-0001", value: "1" }
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:persistent-filter-view`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before building a filtered view");
+  const profiles = app.getByRole("button", { name: "Column profiles and filters", exact: true });
+  await profiles.click();
+  let drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  let filterPanel = drawer.locator(".filterSortPanel").first();
+  const advanced = filterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
+  if ((await advanced.count()) > 0) await advanced.click();
+  await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+  await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
+  await filterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+  await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.metadata.filteredShape.rows === 603 &&
+        current.viewState.filterModel.filters.length === 1 &&
+        current.viewState.filterModel.filters[0]?.column === "group"
+      );
+    },
+    30_000,
+    "the R group viewing filter"
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  active = testing.activeSession();
+  assert.ok(active, "The R persistent-filter journey requires its active view.");
+  assert.equal(active.metadata.shape.rows, 1_205);
+  assert.equal(active.metadata.filteredShape.rows, 603);
+  assert.equal(active.viewState.filterModel.filters.length, 1);
+  assert.deepEqual(
+    active.viewState.filterModel.sort.map((rule) => ({
+      column: rule.column,
+      direction: rule.direction,
+      nulls: rule.nulls
+    })),
+    [
+      { column: "score", direction: "desc", nulls: "last" },
+      { column: "group", direction: "asc", nulls: "last" }
+    ]
+  );
+  const viewingModel = JSON.parse(JSON.stringify(active.viewState.filterModel)) as FilterModel;
+  const expectedFilteredFirst = {
+    id: "r:r:1204",
+    label: "case-1205",
+    values: ["1205", "B", "1205"]
+  };
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-view`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:persistent-filter-discard`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R view before Filter rows preview");
+  const discardedFilterId = await previewReleasedRFilterRows(testing, app, sessionId);
+  active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep?.kind === "filterRows", "The R Filter rows preview must retain its draft.");
+  assert.equal(active.metadata.draftStep.id, discardedFilterId);
+  assert.equal(active.metadata.shape.rows, 603);
+  assert.deepEqual(active.viewState.filterModel, viewingModel);
+  assertReleasedRRowGeneratedCode(active.code ?? "", "filterRows");
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-draft`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Filter rows draft before discard");
+  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.shape.rows === 1_205 &&
+        current.metadata.filteredShape.rows === 603 &&
+        isDeepStrictEqual(current.viewState.filterModel, viewingModel) &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "discarding the native R Filter rows preview without changing its view"
+  );
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-discarded`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:persistent-filter-apply`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R view before applying Filter rows");
+  const filterStepId = await previewReleasedRFilterRows(testing, app, sessionId);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Filter rows draft before apply");
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.steps.length === 1 &&
+        current.metadata.steps[0]?.kind === "filterRows" &&
+        current.metadata.steps[0].id === filterStepId &&
+        current.metadata.shape.rows === 603 &&
+        current.metadata.filteredShape.rows === 603 &&
+        isDeepStrictEqual(current.viewState.filterModel, viewingModel)
+      );
+    },
+    30_000,
+    "applying the native R Filter rows step"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Filter rows step must reach its exact renderer before inspection."
+  );
+  await vscode.commands.executeCommand("openWrangler.selectStep", filterStepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === filterStepId,
+    30_000,
+    "the applied native R Filter rows inspection"
+  );
+  inspection = testing.activeSession()?.stepInspection;
+  assert.ok(inspection, "The applied R Filter rows step must publish its inspection.");
+  assert.deepEqual(inspection.diff, {
+    addedRows: 0,
+    removedRows: 602,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: true
+  });
+  assert.equal(inspection.inputPage.rows[0]?.id, "r:r:0");
+  assert.equal(inspection.outputPage.rows[0]?.id, "r:r:1204");
+  assertReleasedRRowGeneratedCode(inspection.code, "filterRows");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Filter rows session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Filter rows inspection"
+  );
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-applied`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Filter rows session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.shape.rows === 1_205 &&
+        current.metadata.filteredShape.rows === 603 &&
+        isDeepStrictEqual(current.viewState.filterModel, viewingModel) &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the native R Filter rows step without changing its view"
+  );
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-undone`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before clearing its test view");
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.metadata.filteredShape.rows === 1_205 &&
+        current.viewState.filterModel.filters.length === 0 &&
+        current.viewState.filterModel.sort.length === 0
+      );
+    },
+    30_000,
+    "clearing the native R persistent-row acceptance view"
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-persistent-rows-cleanup`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, value: first.values[0]?.display },
+    { id: "r:r:0", label: "case-0001", value: "1" }
+  );
+}
+
+async function releasedRFirstVisibleRow(
+  testing: TestApi,
+  sessionId: string,
+  requestId: string
+): Promise<GridPage["rows"][number]> {
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, "The native R row check must retain its exact session.");
+  assert.ok(active, "The native R row check requires one active session.");
+  const response = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: requestId,
+    offset: 0,
+    limit: 1,
+    filterModel: active.viewState.filterModel
+  });
+  assert.equal(response.kind, "page");
+  if (response.kind !== "page") throw new Error("The native R first-row request did not return a page.");
+  const row = response.page.rows[0];
+  assert.ok(row, "The native R first-row request must return one row.");
+  return row;
+}
+
 async function exerciseReleasedREditingJourney(
   testing: TestApi,
   workbench: Page,
@@ -3071,6 +3420,8 @@ async function exerciseReleasedREditingJourney(
     profile: true,
     columnValues: true,
     supportedOperations: [
+      "sortRows",
+      "filterRows",
       "selectColumns",
       "dropColumns",
       "renameColumn",
@@ -3088,6 +3439,11 @@ async function exerciseReleasedREditingJourney(
   assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
   await app.getByRole("button", { name: "Add step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+
+  if (phase === "jupyter-r") {
+    await exerciseReleasedRPersistentRowsJourney(testing, workbench, sessionId, phase);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after persistent row operations");
+  }
 
   recordAcceptanceProgress(`${phase}:editing:preview-discard`);
   const discarded = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
@@ -3988,6 +4344,93 @@ async function exerciseReleasedREditingJourney(
       }
     );
   }
+}
+
+async function previewReleasedRSortRows(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Sort rows/u }).click();
+  await dialog.getByLabel("Column 1", { exact: true }).selectOption({ label: "group" });
+  await dialog.getByLabel("Direction", { exact: true }).nth(0).selectOption("asc");
+  await dialog.getByLabel("Missing", { exact: true }).nth(0).selectOption("last");
+  await dialog.getByRole("button", { name: "Add sort column", exact: true }).click();
+  await dialog.getByLabel("Column 2", { exact: true }).selectOption({ label: "score" });
+  await dialog.getByLabel("Direction", { exact: true }).nth(1).selectOption("desc");
+  await dialog.getByLabel("Missing", { exact: true }).nth(1).selectOption("last");
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "sortRows" &&
+        draft.params.rules.length === 2 &&
+        draft.params.rules[0]?.column.name === "group" &&
+        draft.params.rules[1]?.column.name === "score" &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.shape.rows === 1_205
+      );
+    },
+    30_000,
+    "the native R Sort rows preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Sort rows preview must reach its exact renderer."
+  );
+  const draft = testing.activeSession()?.metadata.draftStep;
+  assert.ok(draft?.kind === "sortRows", "The native R Sort rows preview must retain its draft.");
+  return draft.id;
+}
+
+async function previewReleasedRFilterRows(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Filter rows/u }).click();
+  await dialog.getByText("1 filters", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByText("2 sorts", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "filterRows" &&
+        draft.params.filterModel.filters.length === 1 &&
+        draft.params.filterModel.filters[0]?.column.name === "group" &&
+        draft.params.filterModel.sort.map((rule) => rule.column.name).join(",") === "score,group" &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.shape.rows === 603
+      );
+    },
+    30_000,
+    "the native R Filter rows preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Filter rows preview must reach its exact renderer."
+  );
+  const draft = testing.activeSession()?.metadata.draftStep;
+  assert.ok(draft?.kind === "filterRows", "The native R Filter rows preview must retain its draft.");
+  return draft.id;
+}
+
+function assertReleasedRRowGeneratedCode(code: string, kind: "sortRows" | "filterRows"): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes('get("orders_frame", envir = parent.env(environment()), inherits = FALSE)'));
+  assert.ok(code.includes(kind === "sortRows" ? "# Sort rows" : "# Filter rows"));
+  assert.ok(code.includes(".ow_rows"));
+  assert.ok(code.includes(".ow_sort_values"));
+  if (kind === "filterRows") assert.ok(code.includes(".ow_filter_mask_1"));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 
 async function previewReleasedRTextLength(
