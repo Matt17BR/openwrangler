@@ -896,10 +896,7 @@ async function verifyRProfileAccessibility(browser) {
   const modeBadge = page.locator('[data-session-badge="mode"]');
   await backendBadge.waitFor();
   await modeBadge.waitFor();
-  if (
-    (await backendBadge.textContent())?.trim() !== "R" ||
-    (await modeBadge.textContent())?.trim() !== "viewing"
-  ) {
+  if ((await backendBadge.textContent())?.trim() !== "R" || (await modeBadge.textContent())?.trim() !== "viewing") {
     throw new Error(`${harness} did not expose the R backend and viewing-mode badges.`);
   }
   await page.getByRole("rowheader", { name: "Row 1, label baseline" }).waitFor();
