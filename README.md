@@ -170,6 +170,11 @@ grid stays visible unless that reconnect works.
 Closing the view leaves Spark work that has already started alone, so Open Wrangler cannot cancel unrelated notebook
 jobs.
 
+Open Wrangler 2 development builds can also open base R `data.frame`, tibble, and `data.table` variables from
+IRkernel. The R workbench currently supports paging, filters, multi-column sorts, value search, and profiles. It is
+view-only for now: cleaning steps, generated R code, exports, Quarto, R Markdown, and plain `.R` files are still being
+built. See the [current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2).
+
 ## Export
 
 <table>
@@ -191,6 +196,7 @@ jobs.
 | Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series                     | Native, including duplicate column labels                 |
 | DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation                      | Native; notebook relations are viewing-only               |
 | PySpark 4.2.x        | No                                     | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles |
+| R (v2 development)   | No                                     | `data.frame`, tibble, `data.table`    | Native IRkernel viewing; editing is not ready             |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
@@ -239,11 +245,15 @@ dominates those rows. The
 [installed-editor benchmarks](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md#performance-fixtures)
 cover first-grid and scrolling performance in VS Code and Cursor.
 
+These are the current stable results. We will rerun the comparison from the exact Open Wrangler 2 release candidate
+before v2 ships.
+
 ## Roadmap
 
 - **v1:** keep improving performance, DuckDB coverage, and support for other desktop VS Code forks. Fork support is
   currently experimental.
-- **v2:** add native R data frames, tibbles, and `data.table`, then add Quarto and R Markdown workflows. The
+- **v2:** finish native R notebook support for data frames, tibbles, and `data.table`, then add Quarto and R Markdown
+  workflows. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).

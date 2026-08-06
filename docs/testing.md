@@ -496,6 +496,26 @@ containerized R kernel in VS Code. The journey checked typed value selection, a 
 Clear all, sort priority, restart and reopen, source preservation, and final cleanup. It does not cover cleaning,
 generated R code, exports, Quarto, R Markdown, or plain `.R` files.
 
+Local screenshot mode also captures the real IRkernel variable picker and a separate generated 2,400-row orders
+dataframe in the R workbench. The workbench image shows two filters, two ordered sorts, and exact revenue statistics.
+The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 881
+logical pixels so the grid ends on a complete row. Both are captured at 2× physical density. Capture fails if setup
+cells or private markers are visible, if a grid row or column is clipped, or if the source R object changes. The
+accepted files are
+`docs/images/editor-acceptance/vscode-notebook-r-picker-dark.png` and
+`docs/images/editor-acceptance/vscode-notebook-r-dark.png`; the gallery uses a lossless crop of the picker at
+`docs/images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png`.
+
+```bash
+OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
+OPEN_WRANGLER_PACKAGED_EDITORS=vscode \
+OPEN_WRANGLER_REAL_JUPYTER_EXTENSION=1 \
+OPEN_WRANGLER_REAL_REMOTE_JUPYTER=0 \
+OPEN_WRANGLER_TEST_RSCRIPT=/absolute/path/to/Rscript \
+OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS="$PWD/docs/images/editor-acceptance" \
+dbus-run-session -- node scripts/run-packaged-editor-tests.mjs /absolute/path/to/openwrangler.vsix
+```
+
 ```bash
 OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
 OPEN_WRANGLER_REAL_JUPYTER_EXTENSION=1 \
