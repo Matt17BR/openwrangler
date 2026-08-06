@@ -553,7 +553,7 @@ export function registerNativeViews(
     }),
     vscode.commands.registerCommand("openWrangler.insertRDocumentCode", async () => {
       lastNotebookInsertionStatus = undefined;
-      if (!(await requireTrustedWorkspace("insert generated code into an R file"))) {
+      if (!(await requireTrustedWorkspace("insert generated code into an R document"))) {
         lastNotebookInsertionStatus = "untrusted";
         return false;
       }
@@ -566,7 +566,7 @@ export function registerNativeViews(
       }
       if (!snapshot.metadata.capabilities.documentInsert || snapshot.metadata.source.kind !== "documentVariable") {
         lastNotebookInsertionStatus = "unsupported-source";
-        void vscode.window.showWarningMessage("The active Open Wrangler session did not come from an R file.");
+        void vscode.window.showWarningMessage("The active Open Wrangler session did not come from an R document.");
         return false;
       }
       if (snapshot.metadata.backend !== "r") {
@@ -577,7 +577,9 @@ export function registerNativeViews(
       const origin = coordinator.activeTextDocumentOrigin();
       if (!origin) {
         lastNotebookInsertionStatus = "missing-source-document";
-        void vscode.window.showWarningMessage("Reopen and run the originating R file before inserting generated code.");
+        void vscode.window.showWarningMessage(
+          "Reopen and run the originating R document before inserting generated code."
+        );
         return false;
       }
       lastNotebookInsertionStatus = "dispatching";
@@ -585,7 +587,7 @@ export function registerNativeViews(
       lastNotebookInsertionStatus = insertion.status;
       if (insertion.status === "stale") {
         void vscode.window.showWarningMessage(
-          "The originating R file changed before Open Wrangler could insert the generated code. Run the file again."
+          "The originating R document changed before Open Wrangler could insert the generated code. Run the document again."
         );
         return false;
       }

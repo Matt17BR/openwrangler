@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
+import { prepareRDocumentSource } from "../extension/r/rDocumentSource";
 import { RProcessSessionTransport } from "../extension/r/rProcessTransport";
 import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
 
@@ -14,6 +15,86 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "/usr/bin/Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it("executes only runnable R cells from a real Quarto source capture", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-quarto-test-"));
+    await writeFile(
+      resolve(temporaryParent, "orders.csv"),
+      "id,label,order_date\n1,one,2026-01-01\n2,two,2026-01-02\n",
+      "utf8"
+    );
+    const source = [
+      "---",
+      "title: Orders",
+      "payload: |",
+      "  ```{r}",
+      "  hidden_yaml_frame <- data.frame(id = 0L)",
+      "  ```",
+      "---",
+      "",
+      "<!-- ```{r}",
+      "hidden_comment_frame <- data.frame(id = 0L)",
+      "``` -->",
+      "",
+      "```{r disabled, eval=FALSE}",
+      "disabled_frame <- stop('must not run')",
+      "```",
+      "",
+      "```{r}",
+      "orders <- read.csv('orders.csv', stringsAsFactors = FALSE)",
+      "orders$order_date <- as.Date(orders$order_date)",
+      "```",
+      ""
+    ].join("\n");
+    const prepared = prepareRDocumentSource(resolve(temporaryParent, "orders.qmd"), source);
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: prepared.executableUnits
+    });
+    try {
+      try {
+        expect(prepared).toMatchObject({ kind: "quarto", rChunkCount: 2, runnableRChunkCount: 1 });
+        expect(await transport.discoverVariables({ timeoutMs: 10_000 })).toEqual({
+          truncated: false,
+          variables: [{ backend: "r", dataframeFlavor: "r.data.frame", name: "orders" }]
+        });
+        const sessionId = randomUUID();
+        const opened = await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+        expect(opened.page).toMatchObject({ shape: { rows: 2, columns: 3 } });
+        const summaries = await transport.getSummary(
+          sessionId,
+          opened.page.schema.map(({ id, name }) => ({ id, name })),
+          { filters: [], sorts: [] }
+        );
+        expect(summaries).toHaveLength(3);
+        const datasetStats = await transport.getDatasetStats(sessionId, { filters: [], sorts: [] });
+        expect(datasetStats).toMatchObject({ totalRows: 2 });
+        const preview = await transport.previewStep(
+          sessionId,
+          0,
+          {
+            id: "rename-id",
+            kind: "renameColumn",
+            params: { column: { id: "r:c:0", name: "id" }, newName: "order_id" }
+          },
+          pageWindow(),
+          opened.page.schema
+        );
+        expect(preview.page.schema[0]?.name).toBe("order_id");
+        const applied = await transport.applyDraft(sessionId, preview.revision, pageWindow());
+        expect(applied).toMatchObject({ action: "apply", revision: 2 });
+        await transport.close(sessionId);
+      } finally {
+        await transport.dispose();
+        expect(await readdir(temporaryParent)).toEqual(["orders.csv"]);
+      }
+    } finally {
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("executes one noisy document once, discovers native frames, edits, closes, and removes its private root", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-test-"));
     const markerPath = resolve(temporaryParent, "execution-count.txt");
@@ -28,7 +109,7 @@ describe.skipIf(!enabled)("plain R process transport", () => {
 document_environment <- environment()
 private_agent_names <- c(
   "runtime_root",
-  "document_path",
+  "document_root",
   "response_root",
   "maximum_request_bytes",
   "atomic_write_raw",
@@ -165,6 +246,34 @@ not_a_frame <- matrix(1:4, nrow = 2L)
     } finally {
       await transport.dispose();
       expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("parses every literate-document cell separately before any cell runs", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-process-cells-test-"));
+    const markerPath = resolve(temporaryParent, "must-not-exist.txt");
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: [
+        `cat("ran", file = ${rString(markerPath)})\nif (TRUE) {\n`,
+        "combined_only_frame <- data.frame(id = 1L)\n}\n"
+      ]
+    });
+    try {
+      try {
+        await expect(transport.discoverVariables({ timeoutMs: 10_000 })).rejects.toThrow(
+          /R cell 1 could not be parsed/u
+        );
+        await expect(readFile(markerPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await transport.dispose();
+        expect(await readdir(temporaryParent)).toEqual([]);
+      }
+    } finally {
       await rm(temporaryParent, { recursive: true, force: true });
     }
   });

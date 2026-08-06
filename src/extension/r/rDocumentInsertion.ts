@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { TextDocumentSessionOrigin } from "../sessionCoordinator";
+import { formatGeneratedRDocumentCode } from "./rDocumentSource";
 
 export type RDocumentInsertionResult =
   { status: "applied" } | { status: "stale" } | { status: "indeterminate" } | { status: "rejected" };
@@ -42,7 +43,8 @@ function captureInsertionSnapshot(origin: TextDocumentSessionOrigin, code: strin
   const document = origin.document;
   const text = document.getText();
   const eol = document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";
-  const normalizedCode = code.replace(/\r\n|\r|\n/gu, eol).trimEnd();
+  const documentCode = formatGeneratedRDocumentCode(document.uri.fsPath, code);
+  const normalizedCode = documentCode.replace(/\r\n|\r|\n/gu, eol).trimEnd();
   const separator = text.length === 0 ? "" : endsWithLineBreak(text) ? eol : `${eol}${eol}`;
   const insertionText = `${separator}${normalizedCode}${eol}`;
   return Object.freeze({

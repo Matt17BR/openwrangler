@@ -450,7 +450,7 @@ export async function run(): Promise<void> {
   assert.match(extension.packageJSON.description, /Explore files and live dataframes in VS Code and Cursor/u);
   assert.match(extension.packageJSON.description, /Use Pandas, Polars, or DuckDB/u);
   assert.match(extension.packageJSON.description, /view PySpark and R notebooks/u);
-  assert.match(extension.packageJSON.description, /run \.R files on macOS or Linux/u);
+  assert.match(extension.packageJSON.description, /run R, R Markdown, or Quarto sources on macOS or Linux/u);
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
@@ -474,7 +474,7 @@ export async function run(): Promise<void> {
     "openWrangler.changeImportOptions",
     "openWrangler.launchDataViewer",
     "openWrangler.openNotebookVariable",
-    "openWrangler.runRFile",
+    "openWrangler.runRDocument",
     "openWrangler.chooseNotebookPreviewProvider",
     "openWrangler.checkJupyterIntegration",
     "openWrangler.changeRuntime",
@@ -553,7 +553,7 @@ export async function run(): Promise<void> {
     "openWrangler.openFile",
     "openWrangler.changeImportOptions",
     "openWrangler.openNotebookVariable",
-    "openWrangler.runRFile"
+    "openWrangler.runRDocument"
   ]);
   assert.deepEqual(
     contributions.commands?.find((command) => command.command === "openWrangler.openFile"),
@@ -567,10 +567,10 @@ export async function run(): Promise<void> {
     }
   );
   assert.deepEqual(
-    contributions.commands?.find((command) => command.command === "openWrangler.runRFile"),
+    contributions.commands?.find((command) => command.command === "openWrangler.runRDocument"),
     {
-      command: "openWrangler.runRFile",
-      title: "Run R File in Open Wrangler…",
+      command: "openWrangler.runRDocument",
+      title: "Run R Document in Open Wrangler…",
       shortTitle: "Run in Open Wrangler…",
       category: "Open Wrangler",
       icon: {
@@ -604,16 +604,16 @@ export async function run(): Promise<void> {
   const fileResourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const rDocumentPredicate =
-    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.r$/i";
+    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
       (item) =>
-        item.command === "openWrangler.runRFile" &&
+        item.command === "openWrangler.runRDocument" &&
         item.when === `!explorerResourceIsFolder && ${rDocumentPredicate}` &&
         item.group === "navigation@49"
     ),
-    `Explorer R files must expose Run in Open Wrangler. Loaded: ${JSON.stringify(explorerContextItems)}`
+    `Explorer R documents must expose Run in Open Wrangler. Loaded: ${JSON.stringify(explorerContextItems)}`
   );
   assert.ok(
     explorerContextItems.some(
@@ -645,9 +645,9 @@ export async function run(): Promise<void> {
   assert.ok(
     contributions.menus?.["editor/title"]?.some(
       (item) =>
-        item.command === "openWrangler.runRFile" && item.when === rDocumentPredicate && item.group === "navigation@1"
+        item.command === "openWrangler.runRDocument" && item.when === rDocumentPredicate && item.group === "navigation@1"
     ),
-    "R source editors must expose the Open Wrangler title action."
+    "R document editors must expose the Open Wrangler title action."
   );
   assert.ok(
     contributions.menus?.["editor/title"]?.some(
@@ -672,9 +672,9 @@ export async function run(): Promise<void> {
   assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
       (item) =>
-        item.command === "openWrangler.runRFile" && item.when === rDocumentPredicate && item.group === "navigation@49"
+        item.command === "openWrangler.runRDocument" && item.when === rDocumentPredicate && item.group === "navigation@49"
     ),
-    "R source tabs must expose Run in Open Wrangler in their context menu."
+    "R document tabs must expose Run in Open Wrangler in their context menu."
   );
   assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
@@ -1142,6 +1142,14 @@ interface ReleasedRDocumentFixture {
   readonly sourceUri: vscode.Uri;
   readonly decoyUri: vscode.Uri;
   readonly processIdPath: string;
+  readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
+}
+
+interface ReleasedRLiterateDocumentFixture {
+  readonly kind: "rmarkdown" | "quarto";
+  readonly sourceUri: vscode.Uri;
+  readonly processIdPath: string;
+  readonly variableName: string;
   readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
 }
 
@@ -1675,6 +1683,85 @@ function writeReleasedRDocumentFixture(directory: string): ReleasedRDocumentFixt
       { path: sourcePath, bytes: sourceBytes },
       { path: decoyPath, bytes: decoyBytes },
       { path: helperPath, bytes: helperBytes },
+      { path: csvPath, bytes: csvBytes }
+    ]
+  };
+}
+
+function writeReleasedRLiterateDocumentFixture(
+  directory: string,
+  kind: "rmarkdown" | "quarto"
+): ReleasedRLiterateDocumentFixture {
+  const extension = kind === "quarto" ? "qmd" : "Rmd";
+  const fixtureDirectory = path.join(directory, kind);
+  mkdirSync(fixtureDirectory, { recursive: true });
+  const sourcePath = path.join(fixtureDirectory, `orders-analysis.${extension}`);
+  const csvPath = path.join(fixtureDirectory, "orders.csv");
+  const processIdPath = path.join(fixtureDirectory, "open-wrangler-r.pid");
+  const variableName = "literate_orders";
+  const frontMatter =
+    kind === "quarto"
+      ? ["---", "title: Regional orders", "format: html", "payload: |"]
+      : ["---", "title: Regional orders", "output: html_document", "payload: |"];
+  const sourceBytes = Buffer.from(
+    [
+      ...frontMatter,
+      "  ```{r}",
+      "  stop('A YAML block scalar is not an executable cell')",
+      "  ```",
+      "---",
+      "",
+      "# Regional orders",
+      "",
+      "This prose contains `data.frame(id = 0L)` but is not R code.",
+      "",
+      "<!--",
+      "```{r}",
+      "stop('An HTML comment is not an executable cell')",
+      "```",
+      "-->",
+      "",
+      "```{python}",
+      "raise RuntimeError('A Python cell must not run in the R document process')",
+      "```",
+      "",
+      "```{r disabled, eval=FALSE}",
+      "stop('A disabled R cell must not run')",
+      "```",
+      "",
+      "```{r load-orders, echo=FALSE}",
+      ...(kind === "quarto" ? ["#| label: load-regional-orders"] : []),
+      `${variableName} <- utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE)`,
+      `${variableName}$order_date <- as.Date(${variableName}$order_date)`,
+      `${variableName}$score[2L] <- NA_real_`,
+      'writeLines(as.character(Sys.getpid()), "open-wrangler-r.pid", useBytes = TRUE)',
+      "```",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const csvBytes = Buffer.from(
+    [
+      "order_id,market,score,order_date",
+      ...Array.from({ length: 60 }, (_, index) => {
+        const row = index + 1;
+        const market = ["DACH", "Nordics", "France", "Iberia"][index % 4];
+        const date = `2026-01-${String((index % 28) + 1).padStart(2, "0")}`;
+        return `${2400000 + row},${market},${(row * 1.25).toFixed(2)},${date}`;
+      }),
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  writeFileSync(sourcePath, sourceBytes);
+  writeFileSync(csvPath, csvBytes);
+  return {
+    kind,
+    sourceUri: vscode.Uri.file(sourcePath),
+    processIdPath,
+    variableName,
+    immutableFiles: [
+      { path: sourcePath, bytes: sourceBytes },
       { path: csvPath, bytes: csvBytes }
     ]
   };
@@ -2513,6 +2600,280 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
       }
     }
   }
+  await exerciseReleasedRLiterateDocumentJourneys(testing, workbench, directory);
+}
+
+async function exerciseReleasedRLiterateDocumentJourneys(
+  testing: TestApi,
+  workbench: Page,
+  directory: string
+): Promise<void> {
+  const fixtures = [
+    writeReleasedRLiterateDocumentFixture(directory, "rmarkdown"),
+    writeReleasedRLiterateDocumentFixture(directory, "quarto")
+  ];
+  const exactRscript = process.env.OPEN_WRANGLER_TEST_RSCRIPT;
+  assert.ok(
+    exactRscript && path.isAbsolute(exactRscript) && !/[\0\r\n]/u.test(exactRscript),
+    "The packaged R document journey requires the runner-owned exact Rscript path."
+  );
+  const configuration = vscode.workspace.getConfiguration("openWrangler", fixtures[0].sourceUri);
+  const filesConfiguration = vscode.workspace.getConfiguration("files", fixtures[0].sourceUri);
+  const originalRscriptPath = configuration.inspect<string>("rscriptPath")?.workspaceValue;
+  const originalAutoSave = filesConfiguration.inspect<string>("autoSave")?.workspaceValue;
+  const resolvedAutoSave = filesConfiguration.get<string>("autoSave", "off");
+  const openSessionIds = new Set<string>();
+  const liveProcessIds = new Set<number>();
+  const openedDocuments = new Map<string, vscode.TextDocument>();
+  let acceptanceError: { value: unknown } | undefined;
+
+  try {
+    await configuration.update("rscriptPath", exactRscript, vscode.ConfigurationTarget.Workspace);
+    if (resolvedAutoSave !== "off") {
+      await filesConfiguration.update("autoSave", "off", vscode.ConfigurationTarget.Workspace);
+    }
+    for (const fixture of fixtures) {
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:open`);
+      const document = await vscode.workspace.openTextDocument(fixture.sourceUri);
+      openedDocuments.set(fixture.sourceUri.toString(), document);
+      const sourceText = document.getText();
+      const sourceVersion = document.version;
+      await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
+      assert.equal(vscode.window.activeTextEditor?.document, document);
+
+      if (fixture.kind === "quarto") {
+        await invokeReleasedRDocumentTitleAction(workbench, fixture.sourceUri, fixture.variableName);
+      } else {
+        await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, fixture.variableName, false);
+      }
+      const opened = await waitForReleasedRDocumentSession(
+        workbench,
+        testing,
+        document,
+        fixture.variableName,
+        `the dataframe opened from a real ${fixture.kind} source document`
+      );
+      openSessionIds.add(opened.sessionId);
+      assert.deepEqual(opened.metadata.shape, { rows: 60, columns: 4 });
+      assert.deepEqual(
+        opened.metadata.schema.map((column) => column.name),
+        ["order_id", "market", "score", "order_date"]
+      );
+      assert.equal(opened.metadata.capabilities.documentInsert, true);
+      assert.equal(opened.metadata.capabilities.notebookInsert, false);
+      const page = await assertReleasedSessionPage(
+        testing,
+        opened,
+        "2400001",
+        `jupyter-r-document-${fixture.kind}-page`
+      );
+      assert.equal(page.metadata.backend, "r");
+      const processId = readReleasedRDocumentProcessId(fixture.processIdPath);
+      liveProcessIds.add(processId);
+      assert.equal(acceptanceProcessIsAlive(processId), true);
+
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:hydrate-panel`);
+      await requireFreshExactSessionPanelHydration(
+        testing,
+        opened.sessionId,
+        `The ${fixture.kind} renderer must acknowledge its first complete host snapshot.`
+      );
+      assert.equal(
+        await withAcceptanceOperationDeadline(
+          testing.synchronizePanel(opened.sessionId),
+          OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+          `the exact ${fixture.kind} panel synchronization`
+        ),
+        true,
+        `The ${fixture.kind} session must own a synchronized live dataframe panel before preview.`
+      );
+
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:preview`);
+      let app = await releasedRSessionApp(workbench, testing, opened.sessionId, `the ${fixture.kind} document session`);
+      const previewed = await previewReleasedRRename(
+        testing,
+        workbench,
+        app,
+        opened.sessionId,
+        "order_id",
+        "record_id",
+        undefined,
+        fixture.variableName
+      );
+      app = previewed.app;
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:apply`);
+      const applyButton = app
+        .getByRole("region", { name: "Draft review" })
+        .getByRole("button", { name: "Apply step", exact: true });
+      await applyButton.waitFor({ state: "visible", timeout: 10_000 });
+      assert.equal(await applyButton.isEnabled(), true, `The ${fixture.kind} Apply step button must be enabled.`);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:apply-ready`);
+      await applyButton.click({ timeout: 10_000 });
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:apply-dispatched`);
+      await waitFor(
+        () => {
+          const active = testing.activeSession();
+          return (
+            active?.sessionId === opened.sessionId &&
+            active.metadata.draftStep === undefined &&
+            active.metadata.steps.length === 1 &&
+            active.metadata.steps[0]?.id === previewed.stepId &&
+            active.metadata.steps[0]?.kind === "renameColumn" &&
+            active.metadata.schema[0]?.name === "record_id"
+          );
+        },
+        30_000,
+        `applying the ${fixture.kind} rename`
+      );
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:apply-confirmed`);
+      const applied = testing.activeSession();
+      assert.ok(applied, `The ${fixture.kind} rename must retain its active session.`);
+      assert.match(applied.code ?? "", /record_id/u);
+
+      testing.setActiveSession(opened.sessionId);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert`);
+      const inserted = await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand<boolean>("openWrangler.insertRDocumentCode"),
+        30_000,
+        `${fixture.kind} generated-code insertion`
+      );
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-completed`);
+      assert.equal(inserted, true);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-result-confirmed`);
+      assert.equal(testing.notebookInsertionStatus(), "applied");
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-status-confirmed`);
+      assert.ok(document.version > sourceVersion);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-version-confirmed`);
+      await waitFor(
+        () => {
+          assertReleasedRDocumentFixtureUnchanged(fixture);
+          return document.isDirty;
+        },
+        5_000,
+        `the generated ${fixture.kind} source edit to become dirty`
+      );
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-dirty-confirmed`);
+      assert.equal(document.getText().startsWith(sourceText), true);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-prefix-confirmed`);
+      assert.match(document.getText(), /\n\n```\{r\}\n[\s\S]*record_id[\s\S]*\n```\n$/u);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-shape-confirmed`);
+      assertReleasedRDocumentFixtureUnchanged(fixture);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-disk-confirmed`);
+
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:close`);
+      await disposePackagedSessionPanel(testing, opened.sessionId, `the ${fixture.kind} document session`);
+      openSessionIds.delete(opened.sessionId);
+      await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, `the ${fixture.kind} R process to stop`);
+      liveProcessIds.delete(processId);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:revert`);
+      await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand("workbench.action.files.revert"),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `reverting the ${fixture.kind} source without saving it`
+      );
+      await waitFor(() => !document.isDirty, WORKBENCH_OPERATION_TIMEOUT_MS, `the ${fixture.kind} source to revert`);
+      assert.equal(document.getText(), sourceText);
+      assertReleasedRDocumentFixtureUnchanged(fixture);
+      const tab = textDocumentTab(fixture.sourceUri);
+      if (tab) assert.equal(await vscode.window.tabGroups.close(tab, true), true);
+      openedDocuments.delete(fixture.sourceUri.toString());
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:complete`);
+    }
+  } catch (error) {
+    acceptanceError = { value: error };
+  } finally {
+    for (const sessionId of openSessionIds) {
+      try {
+        await disposePackagedSessionPanel(testing, sessionId, "the failed literate R document session");
+      } catch (error) {
+        acceptanceError ??= { value: error };
+      }
+    }
+    for (const processId of liveProcessIds) {
+      try {
+        await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, "the failed literate R process to stop");
+      } catch (error) {
+        acceptanceError ??= { value: error };
+      }
+    }
+    for (const fixture of fixtures) {
+      const document = openedDocuments.get(fixture.sourceUri.toString());
+      if (document && !document.isClosed && document.isDirty) {
+        try {
+          await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
+          await withBoundedAcceptancePromise(
+            vscode.commands.executeCommand("workbench.action.files.revert"),
+            WORKBENCH_OPERATION_TIMEOUT_MS,
+            `reverting the failed ${fixture.kind} source without saving it`
+          );
+          await waitFor(
+            () => !document.isDirty,
+            WORKBENCH_OPERATION_TIMEOUT_MS,
+            `the failed ${fixture.kind} source to revert`
+          );
+        } catch (error) {
+          acceptanceError ??= { value: error };
+        }
+      }
+      const tab = textDocumentTab(fixture.sourceUri);
+      if (tab && !document?.isDirty) {
+        try {
+          assert.equal(await vscode.window.tabGroups.close(tab, true), true);
+        } catch (error) {
+          acceptanceError ??= { value: error };
+        }
+      }
+      try {
+        assertReleasedRDocumentFixtureUnchanged(fixture);
+      } catch (error) {
+        acceptanceError ??= { value: error };
+      }
+    }
+    try {
+      await configuration.update("rscriptPath", originalRscriptPath, vscode.ConfigurationTarget.Workspace);
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+    if (resolvedAutoSave !== "off") {
+      try {
+        await filesConfiguration.update("autoSave", originalAutoSave, vscode.ConfigurationTarget.Workspace);
+      } catch (error) {
+        acceptanceError ??= { value: error };
+      }
+    }
+  }
+  if (acceptanceError) throw acceptanceError.value;
+}
+
+async function invokeReleasedRDocumentTitleAction(
+  workbench: Page,
+  source: vscode.Uri,
+  variableName: string
+): Promise<void> {
+  await workbench.bringToFront();
+  const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
+  const action = activeGroup.getByRole("button", { name: /Run(?: R Document)? in Open Wrangler/u }).first();
+  if ((await action.count()) > 0 && (await action.isVisible())) {
+    await action.click();
+  } else {
+    const more = activeGroup.locator('[aria-label="More Actions..."]:visible').first();
+    await more.click();
+    const menuItem = workbench
+      .locator('.context-view.monaco-menu-container [role="menuitem"]:visible')
+      .filter({ hasText: /Run(?: R Document)? in Open Wrangler/u })
+      .first();
+    await menuItem.waitFor({ state: "visible", timeout: 10_000 });
+    await menuItem.click();
+  }
+  const title = `Open Wrangler: Choose a dataframe from ${path.basename(source.fsPath)}`;
+  const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
+  await picker.waitFor({ state: "visible", timeout: 30_000 });
+  const input = picker.locator(".quick-input-box input:visible").first();
+  await input.fill(variableName);
+  const row = await releasedJupyterQuickPickRow(picker, variableName);
+  assert.ok(row, `The R document title action did not expose ${JSON.stringify(variableName)}.`);
+  await row.click();
 }
 
 async function invokeReleasedRDocumentVariable(
@@ -2521,7 +2882,7 @@ async function invokeReleasedRDocumentVariable(
   variableName: string,
   assertDiscovery: boolean
 ): Promise<void> {
-  const outcome = vscode.commands.executeCommand<boolean>("openWrangler.runRFile", source);
+  const outcome = vscode.commands.executeCommand<boolean>("openWrangler.runRDocument", source);
   const title = `Open Wrangler: Choose a dataframe from ${path.basename(source.fsPath)}`;
   const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
   const first = await Promise.race([
@@ -2695,7 +3056,9 @@ function readReleasedRDocumentProcessId(processIdPath: string): number {
   return processId;
 }
 
-function assertReleasedRDocumentFixtureUnchanged(fixture: ReleasedRDocumentFixture): void {
+function assertReleasedRDocumentFixtureUnchanged(
+  fixture: Pick<ReleasedRDocumentFixture | ReleasedRLiterateDocumentFixture, "immutableFiles">
+): void {
   for (const file of fixture.immutableFiles) {
     assertExactBytes(
       readFileSync(file.path),

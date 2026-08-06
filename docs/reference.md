@@ -12,7 +12,7 @@
 | `openWrangler.changeImportOptions`           | Open Wrangler: Change Import Options                           |
 | `openWrangler.launchDataViewer`              | Open Wrangler: Launch Selected Notebook Variable               |
 | `openWrangler.openNotebookVariable`          | Open in Open Wrangler                                          |
-| `openWrangler.runRFile`                      | Run R File in Open Wrangler…                                   |
+| `openWrangler.runRDocument`                  | Run R Document in Open Wrangler…                               |
 | `openWrangler.checkJupyterIntegration`       | Open Wrangler: Check Jupyter Integration                       |
 | `openWrangler.chooseNotebookPreviewProvider` | Open Wrangler: Choose Notebook Preview Provider                |
 | `openWrangler.changeRuntime`                 | Open Wrangler: Change Runtime                                  |
@@ -64,7 +64,7 @@
 | `openWrangler.fetchColumnBlockSize`    | `number`  | `16`                                           | None                                                      | Number of dataframe columns fetched for each horizontal grid block.                                                                                                                                    |
 | `openWrangler.panelRevealBehavior`     | `string`  | `"onDraft"`                                    | `"onDraft"`, `"always"`, `"never"`                        | When to reveal the bottom-panel Code Preview: on the first draft in each session, once when each session opens, or never automatically.                                                                |
 | `openWrangler.pythonPath`              | `string`  | `""`                                           | None                                                      | Optional Python 3.10-3.14 executable override. When empty, Open Wrangler uses the selected Python extension environment, then a system interpreter.                                                    |
-| `openWrangler.rscriptPath`             | `string`  | `""`                                           | None                                                      | Optional Rscript executable used for .R files on macOS or Linux. When empty, Open Wrangler resolves Rscript from PATH.                                                                                 |
+| `openWrangler.rscriptPath`             | `string`  | `""`                                           | None                                                      | Optional Rscript executable used for .R, .Rmd, and .qmd documents on macOS or Linux. When empty, Open Wrangler resolves Rscript from PATH.                                                             |
 | `openWrangler.sessionOpenTimeoutMs`    | `number`  | `60000`                                        | None                                                      | Maximum duration for opening a dataframe session, including cold engine and notebook-kernel initialization.                                                                                            |
 | `openWrangler.requestTimeoutMs`        | `number`  | `30000`                                        | None                                                      | Maximum duration for runtime requests other than session opening before recovery restarts and replays the session.                                                                                     |
 

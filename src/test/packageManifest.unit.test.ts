@@ -68,11 +68,13 @@ describe("Marketplace and walkthrough copy", () => {
   it("states the engine, notebook, and R source boundaries directly", () => {
     expect(manifest.description).toBe(
       "Explore files and live dataframes in VS Code and Cursor. " +
-        "Use Pandas, Polars, or DuckDB, view PySpark and R notebooks, and run .R files on macOS or Linux."
+        "Use Pandas, Polars, or DuckDB, view PySpark and R notebooks, and run R, R Markdown, or Quarto sources on macOS or Linux."
     );
 
     const walkthrough = manifest.contributes?.walkthroughs?.find((candidate) => candidate.id === "gettingStarted");
-    expect(walkthrough?.description).toContain("R notebooks and trusted .R files support the current R cleaning set.");
+    expect(walkthrough?.description).toContain(
+      "R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set."
+    );
     expect(walkthrough?.description).toContain(
       "DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only."
     );
@@ -80,7 +82,7 @@ describe("Marketplace and walkthrough copy", () => {
       "Use the notebook toolbar for live Python or R dataframes."
     );
     expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
-      "On macOS or Linux, run a trusted .R source"
+      "On macOS or Linux, run a trusted .R file or the R cells in an .Rmd/.qmd document"
     );
     expect(walkthrough?.steps?.find((step) => step.id === "export")?.description).toContain("new CSV or Parquet file");
   });
@@ -119,7 +121,7 @@ describe("file launch contributions", () => {
       "openWrangler.openFile",
       "openWrangler.changeImportOptions",
       "openWrangler.openNotebookVariable",
-      "openWrangler.runRFile"
+      "openWrangler.runRDocument"
     ]);
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openFile",
@@ -167,14 +169,14 @@ describe("file launch contributions", () => {
     });
   });
 
-  it("offers the trusted R source command on local and remote R files", () => {
+  it("offers the trusted R document command on local and remote R, R Markdown, and Quarto sources", () => {
     const rSourcePredicate =
-      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.r$/i";
+      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
 
-    expect(manifest.activationEvents).toContain("onCommand:openWrangler.runRFile");
+    expect(manifest.activationEvents).toContain("onCommand:openWrangler.runRDocument");
     expect(manifest.contributes?.commands).toContainEqual({
-      command: "openWrangler.runRFile",
-      title: "Run R File in Open Wrangler…",
+      command: "openWrangler.runRDocument",
+      title: "Run R Document in Open Wrangler…",
       shortTitle: "Run in Open Wrangler…",
       category: "Open Wrangler",
       icon: {
@@ -183,17 +185,17 @@ describe("file launch contributions", () => {
       }
     });
     expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual({
-      command: "openWrangler.runRFile",
+      command: "openWrangler.runRDocument",
       when: `!explorerResourceIsFolder && ${rSourcePredicate}`,
       group: "navigation@49"
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
-      command: "openWrangler.runRFile",
+      command: "openWrangler.runRDocument",
       when: rSourcePredicate,
       group: "navigation@1"
     });
     expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
-      command: "openWrangler.runRFile",
+      command: "openWrangler.runRDocument",
       when: rSourcePredicate,
       group: "navigation@49"
     });

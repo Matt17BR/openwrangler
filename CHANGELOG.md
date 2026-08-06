@@ -57,10 +57,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Trusted `.R` files can now run in an Open Wrangler-owned R process. The variable picker lists base data frames,
   tibbles, and data tables created by that run, and the workbench can insert generated R back into the exact unsaved
   source document. Relative file reads use the source directory, and closing the final view stops the process.
+- Trusted R Markdown and Quarto documents can run their top-level backtick-fenced `{r}` cells through the same owned
+  process on macOS and Linux. Cells share one R environment but are parsed separately before any cell runs. Generated
+  R is inserted as a new fenced cell. This command is for dataframe discovery and does not render the document or
+  attach to an existing R session; unsupported YAML, chunk-engine, and raw-container syntax is rejected.
 - Default frames created with `collapse::qDF()`, `qTBL()`, or `qDT()` use the existing base-data-frame, tibble, or data-table
   path. Open Wrangler does not add `collapse` as a runtime dependency. Grouped `GRP_df` objects are not supported.
-- Direct `.R` execution is available on macOS and Linux. R notebooks still work on Windows; direct source execution
-  stays disabled there until Open Wrangler can own and stop the complete R process tree.
+- Direct R-document execution is available on macOS and Linux. R notebooks still work on Windows; direct document
+  execution stays disabled there until Open Wrangler can own and stop the complete R process tree.
 
 ### Changed
 

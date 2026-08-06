@@ -6,7 +6,7 @@ if (length(args) != 0L) {
 
 startup_names <- c(
   "OPEN_WRANGLER_R_RUNTIME_ROOT",
-  "OPEN_WRANGLER_R_DOCUMENT_PATH",
+  "OPEN_WRANGLER_R_DOCUMENT_ROOT",
   "OPEN_WRANGLER_R_RESPONSE_ROOT"
 )
 startup_values <- Sys.getenv(startup_names, unset = NA_character_)
@@ -16,7 +16,7 @@ if (anyNA(startup_values) || any(!nzchar(startup_values))) {
 }
 
 runtime_root <- normalizePath(startup_values[[1L]], winslash = "/", mustWork = TRUE)
-document_path <- normalizePath(startup_values[[2L]], winslash = "/", mustWork = TRUE)
+document_root <- normalizePath(startup_values[[2L]], winslash = "/", mustWork = TRUE)
 response_root <- normalizePath(startup_values[[3L]], winslash = "/", mustWork = TRUE)
 
 protocol_version <- 1L
@@ -24,6 +24,7 @@ maximum_request_bytes <- 16L * 1024L * 1024L
 maximum_response_bytes <- 17L * 1024L * 1024L
 maximum_ready_bytes <- 64L * 1024L
 maximum_source_bytes <- 64L * 1024L * 1024L
+maximum_source_units <- 1024L
 maximum_error_bytes <- 4096L
 maximum_scanned_bindings <- 4096L
 maximum_variables <- 256L
@@ -107,32 +108,54 @@ if (!requireNamespace("rlang", quietly = TRUE)) {
 }
 
 initialize <- function() {
-  source_size <- file.info(document_path)$size
+  source_names <- sort(list.files(document_root, all.files = TRUE, no.. = TRUE), method = "radix")
   if (
-    length(source_size) != 1L ||
-      is.na(source_size) ||
-      !is.finite(source_size) ||
-      source_size < 0 ||
-      source_size > maximum_source_bytes
+    length(source_names) < 1L ||
+      length(source_names) > maximum_source_units ||
+      any(!grepl("^[0-9]{8}\\.R$", source_names, perl = TRUE))
+  ) {
+    stop("The R document contains an invalid set of source units.", call. = FALSE)
+  }
+  source_paths <- file.path(document_root, source_names)
+  source_info <- file.info(source_paths)
+  source_sizes <- source_info$size
+  if (
+    anyNA(source_sizes) ||
+      any(!is.finite(source_sizes)) ||
+      any(source_sizes < 0) ||
+      any(source_info$isdir) ||
+      sum(source_sizes) > maximum_source_bytes
   ) {
     stop("The R document is outside the supported 64 MiB source limit.", call. = FALSE)
   }
 
-  source_connection <- file(document_path, open = "rb")
-  on.exit(close(source_connection), add = TRUE)
-  source_bytes <- readBin(source_connection, what = "raw", n = as.integer(source_size))
-  if (length(source_bytes) != source_size) {
-    stop("Open Wrangler could not read the complete R document.", call. = FALSE)
-  }
-  source_text <- rawToChar(source_bytes)
-  Encoding(source_text) <- "UTF-8"
+  source_expressions <- lapply(seq_along(source_paths), function(index) {
+    source_connection <- file(source_paths[[index]], open = "rb")
+    source_bytes <- tryCatch(
+      readBin(source_connection, what = "raw", n = as.integer(source_sizes[[index]])),
+      finally = close(source_connection)
+    )
+    if (length(source_bytes) != source_sizes[[index]]) {
+      stop("Open Wrangler could not read a complete R source unit.", call. = FALSE)
+    }
+    source_text <- rawToChar(source_bytes)
+    Encoding(source_text) <- "UTF-8"
+    tryCatch(
+      parse(text = source_text, srcfile = NULL, encoding = "UTF-8", keep.source = FALSE),
+      error = function(error) {
+        stop(
+          sprintf("R cell %d could not be parsed: %s", index, bounded_message(error, "R parse failed.")),
+          call. = FALSE
+        )
+      }
+    )
+  })
 
   # The file runs once in its own environment. Its parent is the process global
   # environment so ordinary package lookup behaves like source(local = TRUE),
   # while file bindings cannot overwrite the private transport runtime.
   document_environment <- new.env(hash = TRUE, parent = globalenv())
-  expressions <- parse(text = source_text, srcfile = NULL, encoding = "UTF-8", keep.source = FALSE)
-  eval(expressions, envir = document_environment)
+  for (expressions in source_expressions) eval(expressions, envir = document_environment)
 
   runtime_environment <- new.env(hash = TRUE, parent = baseenv())
   sys.source(file.path(runtime_root, "frame_contract.R"), envir = runtime_environment, keep.source = FALSE)

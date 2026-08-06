@@ -31,9 +31,10 @@ const README_EDITOR_SUPPORT = `| Editor                      | Support        |
 | Browser-hosted \`vscode.dev\` | Unsupported    |`;
 const README_RUNTIME_REQUIREMENTS = `Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
 3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package
-is missing, Open Wrangler lists it and asks before installing anything. R notebooks use the selected IRkernel. A
-trusted \`.R\` file on macOS or Linux uses \`Rscript\` from \`openWrangler.rscriptPath\` or \`PATH\` and requires \`jsonlite\`
-and \`rlang\`. R notebooks remain available on Windows; direct \`.R\` execution is not yet available there.`;
+is missing, Open Wrangler lists it and asks before installing anything. R notebooks use the selected IRkernel. On
+macOS and Linux, trusted \`.R\`, \`.Rmd\`, and \`.qmd\` documents use \`Rscript\` from \`openWrangler.rscriptPath\` or \`PATH\`
+and require \`jsonlite\` and \`rlang\`. R notebooks remain available on Windows; direct document execution is not yet
+available there.`;
 const README_TRUST_REQUIREMENT =
   "Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.";
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);

@@ -35,6 +35,7 @@ import type { RColumnSchema, RDataframeFlavor, RFramePageContract } from "./rFra
 const PROCESS_PROTOCOL_VERSION = 1;
 const MAX_READY_BYTES = 64 * 1_024;
 const MAX_DOCUMENT_BYTES = 64 * 1_024 * 1_024;
+const MAX_DOCUMENT_UNITS = 1_024;
 const MAX_DISCOVERY_VARIABLES = 256;
 const MAX_VARIABLE_NAME_BYTES = 1_024;
 const RESPONSE_POLL_MS = 10;
@@ -58,8 +59,8 @@ export interface RProcessVariableDiscovery {
 export interface RProcessSessionTransportOptions {
   /** Directory containing frame_contract.R, kernel_agent.R, and process_agent.R. */
   readonly runtimeRoot: string;
-  /** Exact text captured from the originating plain R document. */
-  readonly documentText: string;
+  /** Exact plain-R source, or separately parsed literate-document R cells. */
+  readonly documentText: string | readonly string[];
   /** Absolute resolver-confirmed executable; never searched relative to the workspace. */
   readonly rscriptPath: string;
   /** Origin directory used for the document's relative file references. */
@@ -105,6 +106,7 @@ interface ScheduledRequest {
  */
 export class RProcessSessionTransport implements RKernelBridgeTransport {
   private readonly createId: () => string;
+  private readonly documentTexts: readonly string[];
   private readonly invalidatedEmitter = new vscode.EventEmitter<void>();
   readonly onDidInvalidateKernel = this.invalidatedEmitter.event;
 
@@ -122,6 +124,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
 
   constructor(private readonly options: RProcessSessionTransportOptions) {
     this.createId = options.createId ?? randomUUID;
+    const documentTexts = typeof options.documentText === "string" ? [options.documentText] : options.documentText;
     if (!path.isAbsolute(options.runtimeRoot)) {
       throw new TypeError("The R process runtime root must be absolute.");
     }
@@ -131,12 +134,20 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     if (!path.isAbsolute(options.workingDirectory)) {
       throw new TypeError("The R document working directory must be absolute.");
     }
-    if (typeof options.documentText !== "string" || hasUnpairedSurrogate(options.documentText)) {
-      throw new TypeError("The R document must be valid Unicode text.");
+    if (!Array.isArray(documentTexts) || documentTexts.length === 0 || documentTexts.length > MAX_DOCUMENT_UNITS) {
+      throw new RangeError(`The R document must contain between 1 and ${MAX_DOCUMENT_UNITS} source units.`);
     }
-    if (Buffer.byteLength(options.documentText, "utf8") > MAX_DOCUMENT_BYTES) {
+    let documentBytes = 0;
+    for (const text of documentTexts) {
+      if (typeof text !== "string" || hasUnpairedSurrogate(text)) {
+        throw new TypeError("The R document must be valid Unicode text.");
+      }
+      documentBytes += Buffer.byteLength(text, "utf8");
+    }
+    if (documentBytes > MAX_DOCUMENT_BYTES) {
       throw new RangeError("The R document exceeds the supported 64 MiB source limit.");
     }
+    this.documentTexts = Object.freeze([...documentTexts]);
     if (!path.isAbsolute(options.rscriptPath)) {
       throw new TypeError("The Rscript path must be absolute.");
     }
@@ -551,11 +562,15 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     const parent = this.options.temporaryParent ?? tmpdir();
     const root = await mkdtemp(path.join(parent, "openwrangler-r-"));
     const responseRoot = path.join(root, "responses");
-    const documentPath = path.join(root, "document.R");
+    const documentRoot = path.join(root, "documents");
     let owned: OwnedProcess | undefined;
     try {
       await chmod(root, 0o700);
-      await writeFile(documentPath, this.options.documentText, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      await mkdir(documentRoot, { mode: 0o700 });
+      for (let index = 0; index < this.documentTexts.length; index += 1) {
+        const documentPath = path.join(documentRoot, `${index.toString().padStart(8, "0")}.R`);
+        await writeFile(documentPath, this.documentTexts[index]!, { encoding: "utf8", flag: "wx", mode: 0o400 });
+      }
       await mkdir(responseRoot, { mode: 0o700 });
       this.assertActive();
 
@@ -567,7 +582,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
         env: {
           ...process.env,
           OPEN_WRANGLER_R_RUNTIME_ROOT: runtimeRoot,
-          OPEN_WRANGLER_R_DOCUMENT_PATH: documentPath,
+          OPEN_WRANGLER_R_DOCUMENT_ROOT: documentRoot,
           OPEN_WRANGLER_R_RESPONSE_ROOT: responseRoot
         }
       });

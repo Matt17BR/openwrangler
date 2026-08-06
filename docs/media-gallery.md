@@ -162,8 +162,10 @@ final sort key.
 <a href="images/editor-acceptance/vscode-notebook-r-picker-dark.png"><img alt="An R notebook variable picker listing a base data frame, data.table, and tibble" src="images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png" width="960"></a>
 
 Open Wrangler 2 development builds discover base `data.frame`, tibble, and `data.table` variables in the active
-IRkernel. For a trusted `.R` file, choose **Run R File in Open Wrangler…** from Explorer or the editor. Open Wrangler
-runs the file once from its own directory and lists the dataframes it creates. Unsaved editor changes are included.
+IRkernel. For a trusted `.R`, `.Rmd`, or `.qmd` document, choose **Run R Document in Open Wrangler…** from Explorer or
+the editor. Open Wrangler runs plain R or the top-level backtick-fenced `{r}` cells from its own directory and lists
+the dataframes it creates. Unsaved editor changes are included. R Markdown and Quarto use an isolated R process; this
+command does not render the document or attach to another R session.
 Each variable stays in R.
 
 <a href="images/editor-acceptance/vscode-notebook-r-dark.png"><img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="960"></a>
@@ -178,7 +180,7 @@ character or factor column or create a new character column. Convert type suppor
 date, and datetime targets. Values that cannot be converted become `NA`. Fill Missing Values accepts typed values or
 an exact median and preserves factors, dates, datetimes, and `integer64`. All twelve use draft preview, generated R,
 apply, discard, inspection, latest-step editing, and undo. Generated R can be copied, saved as a `.R` script, or
-inserted into the notebook or `.R` file that opened the dataframe.
+inserted into the notebook or R document that opened the dataframe.
 
 <a href="images/editor-acceptance/vscode-notebook-r-editing-dark.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="960"></a>
 
@@ -194,10 +196,10 @@ The inserted cell comes from the current Code Preview. Existing notebook cells a
 Convert type does not replace an active `data.table` key column. Clone that column first, then convert the copy.
 
 Default frames made with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing base-data-frame, tibble, and
-data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` objects are not supported. Other R
-cleaning operations, cleaned-data export, Quarto, and R Markdown are not supported yet.
+data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
+not supported. Other R cleaning operations and cleaned-data export are not supported yet.
 
-Direct `.R` execution currently requires macOS or Linux. R notebooks remain available on Windows.
+Direct R-document execution currently requires macOS or Linux. R notebooks remain available on Windows.
 
 ## DuckDB nested and temporal values
 

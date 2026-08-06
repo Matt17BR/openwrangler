@@ -551,14 +551,21 @@ as one `r` cell in the originating notebook, leaves every existing cell unchange
 after editing. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns; the direct R
 suites cover all twelve operations for all three flavors.
 
-On macOS and Linux, the same local R editor launch also tests one plain `.R` workflow; it does not start another VS Code or Cursor process.
+On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start another VS Code or Cursor process.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public
-**Run R File in Open Wrangler…** command and real variable picker. The test checks an editing session, paging, an exact
+**Run R Document in Open Wrangler…** command and real variable picker. The plain-R test checks an editing session, paging, an exact
 numeric profile, a filter, two sort keys, Rename preview/apply/undo, and generated R. It keeps a different `.R` editor
 active while inserting the generated code, proving that only the captured unsaved source document changes. Both files
 on disk remain byte-for-byte unchanged. The modified in-memory source is then run again and its generated result is
 opened before the final panel and R process are closed. The phase uses the exact Rscript and temporary R library that
 already belong to the IRkernel test, including `jsonlite` and `rlang`.
+
+The R Markdown and Quarto fixtures each contain first-line YAML, prose, a non-R cell, a disabled R cell, and one
+top-level backtick-fenced `{r}` cell that reads a relative CSV. The journey opens the dataframe, checks its full schema
+and page, applies Rename, inserts generated R as a new fenced cell, and proves the source file on disk is unchanged.
+Parser tests reject later metadata blocks, raw HTML/TeX containers, indented or tilde R fences, alternate engines,
+ambiguous options, cross-cell syntax joining, and R Markdown fence-length mismatches. These are lexical R-cell runs;
+the test does not claim knitr or Quarto rendering behavior.
 
 `collapse` is not a runtime or test dependency. A local check with collapse 2.1.7 confirmed that `qDF()`, `qTBL()`,
 and `qDT()` use the base-data-frame, tibble, and data-table paths covered above. Grouped `GRP_df` objects remain

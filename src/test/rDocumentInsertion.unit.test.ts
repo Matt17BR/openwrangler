@@ -3,7 +3,7 @@ import type { TextDocument } from "vscode";
 import type { TextDocumentSessionOrigin } from "../extension/sessionCoordinator";
 
 interface FakeDocument {
-  readonly uri: { toString(): string };
+  readonly uri: { readonly fsPath: string; toString(): string };
   readonly eol: number;
   version: number;
   isClosed: boolean;
@@ -107,6 +107,24 @@ describe("generated R source-document insertion", () => {
     expect(document.text).toBe("orders <- data.frame(id = 1:2)\r\n\r\nfirst <- orders\r\nsecond <- first\r\n");
   });
 
+  it("inserts generated R as an executable cell in R Markdown and Quarto", async () => {
+    for (const extension of ["Rmd", "qmd"]) {
+      const document = fakeDocument(`file:///workspace/orders.${extension}`, "# Orders\n");
+      mocks.textDocuments.push(document);
+      mocks.applyEdit.mockImplementationOnce(async () => {
+        applyCapturedInsertion(document);
+        fireChange(document);
+        return true;
+      });
+
+      await expect(insert(origin(document), "open_wrangler_result <- orders\n")).resolves.toEqual({
+        status: "applied"
+      });
+      expect(document.text).toBe("# Orders\n\n```{r}\nopen_wrangler_result <- orders\n```\n");
+      mocks.textDocuments.splice(mocks.textDocuments.indexOf(document), 1);
+    }
+  });
+
   it("fails closed before dispatch when the captured source version changed", async () => {
     const document = fakeDocument("file:///workspace/orders.R", "orders <- data.frame(id = 1:2)\n");
     mocks.textDocuments.push(document);
@@ -187,8 +205,9 @@ function origin(document: FakeDocument): TextDocumentSessionOrigin {
 }
 
 function fakeDocument(uri: string, text: string, eol = 1): FakeDocument {
+  const fsPath = new URL(uri).pathname;
   return {
-    uri: { toString: () => uri },
+    uri: { fsPath, toString: () => uri },
     eol,
     version: 1,
     isClosed: false,

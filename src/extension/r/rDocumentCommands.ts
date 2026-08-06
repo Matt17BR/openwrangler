@@ -7,30 +7,31 @@ import { DetachedBridgeRequestError } from "../dataBridge";
 import { resolveExecutableCommand } from "../pythonPath";
 import { type TextDocumentSessionOrigin, SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel } from "../webviewPanel";
+import { prepareRDocumentSource, rDocumentKind, rDocumentLabel } from "./rDocumentSource";
 import { RKernelBridge } from "./rKernelBridge";
 import { RProcessSessionTransport, type RProcessVariableDescriptor } from "./rProcessTransport";
 
-export const OPEN_R_DOCUMENT_COMMAND = "openWrangler.runRFile";
+export const OPEN_R_DOCUMENT_COMMAND = "openWrangler.runRDocument";
 
 interface RDocumentQuickPickItem extends vscode.QuickPickItem {
   readonly variable: RProcessVariableDescriptor;
 }
 
 /**
- * Registers the explicit plain-R source flow. Running this command executes the
- * exact in-memory document once in an Open Wrangler-owned R process; it never
- * attaches to a terminal or guesses at editor state after an await.
+ * Registers the explicit R document flow. Running this command executes the
+ * exact in-memory R source, or the runnable R cells from an R Markdown/Quarto
+ * source, once in an Open Wrangler-owned process.
  */
 export function registerRDocumentCommands(context: vscode.ExtensionContext, coordinator: SessionCoordinator): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(OPEN_R_DOCUMENT_COMMAND, async (resource?: unknown) => {
       if (!vscode.workspace.isTrusted) {
-        void vscode.window.showWarningMessage("Trust this workspace before running an R file in Open Wrangler.");
+        void vscode.window.showWarningMessage("Trust this workspace before running an R document in Open Wrangler.");
         return false;
       }
       if (!supportsRDocumentExecution()) {
         void vscode.window.showWarningMessage(
-          "Running .R files in Open Wrangler currently requires macOS or Linux. Open the dataframe from an IRkernel notebook instead."
+          "Running R documents in Open Wrangler currently requires macOS or Linux. Open the dataframe from an IRkernel notebook instead."
         );
         return false;
       }
@@ -39,11 +40,29 @@ export function registerRDocumentCommands(context: vscode.ExtensionContext, coor
       if (!document) return false;
       const origin = captureRDocumentOrigin(document);
       if (!origin) {
-        void vscode.window.showWarningMessage("The R file changed or closed before Open Wrangler could run it.");
+        void vscode.window.showWarningMessage("The R document changed or closed before Open Wrangler could run it.");
         return false;
       }
 
       const documentText = document.getText();
+      let prepared;
+      try {
+        prepared = prepareRDocumentSource(document.uri.fsPath, documentText);
+      } catch (error) {
+        void vscode.window.showErrorMessage(
+          `Could not prepare ${path.basename(document.uri.fsPath)}: ${errorMessage(error)}`
+        );
+        return false;
+      }
+      if (prepared.kind !== "r" && prepared.runnableRChunkCount === 0) {
+        const reason =
+          prepared.rChunkCount === 0
+            ? "does not contain a fenced R code chunk"
+            : "does not contain an R code chunk enabled for evaluation";
+        void vscode.window.showInformationMessage(`${path.basename(document.uri.fsPath)} ${reason}.`);
+        return false;
+      }
+      const documentLabel = rDocumentLabel(prepared.kind);
       const rscriptPath = configuredRscriptPath(document.uri);
       if (!rscriptPath) {
         void vscode.window.showErrorMessage(
@@ -55,7 +74,7 @@ export function registerRDocumentCommands(context: vscode.ExtensionContext, coor
       try {
         transport = new RProcessSessionTransport({
           runtimeRoot: path.join(context.extensionPath, "r", "openwrangler_runtime"),
-          documentText,
+          documentText: prepared.executableUnits,
           rscriptPath,
           workingDirectory: path.dirname(document.uri.fsPath)
         });
@@ -85,7 +104,7 @@ export function registerRDocumentCommands(context: vscode.ExtensionContext, coor
         if (error instanceof DetachedBridgeRequestError && error.reason === "cancellation" && !cleanupError)
           return false;
         void vscode.window.showErrorMessage(
-          `Could not run ${path.basename(document.uri.fsPath)}: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
+          `Could not run ${documentLabel.toLowerCase()} ${path.basename(document.uri.fsPath)}: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
         );
         return false;
       }
@@ -97,7 +116,7 @@ export function registerRDocumentCommands(context: vscode.ExtensionContext, coor
           return false;
         }
         void vscode.window.showWarningMessage(
-          "The R file changed while it was running. Run it again before opening a dataframe."
+          "The R document changed while it was running. Run it again before opening a dataframe."
         );
         return false;
       }
@@ -115,15 +134,24 @@ export function registerRDocumentCommands(context: vscode.ExtensionContext, coor
 
       const fileName = path.basename(document.uri.fsPath);
       const items = discovery.variables.map((variable) => rDocumentQuickPickItem(variable, fileName));
-      const selected = await vscode.window.showQuickPick(items, {
-        title: `Open Wrangler: Choose a dataframe from ${fileName}`,
-        placeHolder: discovery.truncated
-          ? "Select a data.frame, tibble, or data.table (the variable list was truncated)"
-          : "Select a data.frame, tibble, or data.table",
-        matchOnDescription: true,
-        matchOnDetail: true,
-        ignoreFocusOut: true
-      });
+      let selected: RDocumentQuickPickItem | undefined;
+      try {
+        selected = await vscode.window.showQuickPick(items, {
+          title: `Open Wrangler: Choose a dataframe from ${fileName}`,
+          placeHolder: discovery.truncated
+            ? "Select a data.frame, tibble, or data.table (the variable list was truncated)"
+            : "Select a data.frame, tibble, or data.table",
+          matchOnDescription: true,
+          matchOnDetail: true,
+          ignoreFocusOut: true
+        });
+      } catch (error) {
+        const cleanupError = await disposeTransport(transport);
+        void vscode.window.showErrorMessage(
+          `Could not choose an R dataframe from ${fileName}: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
+        );
+        return false;
+      }
       if (!selected || !items.includes(selected)) {
         const cleanupError = await disposeTransport(transport);
         if (cleanupError) showCleanupError(cleanupError);
@@ -136,7 +164,7 @@ export function registerRDocumentCommands(context: vscode.ExtensionContext, coor
           return false;
         }
         void vscode.window.showWarningMessage(
-          "The R file changed while the dataframe picker was open. Run it again before opening a dataframe."
+          "The R document changed while the dataframe picker was open. Run it again before opening a dataframe."
         );
         return false;
       }
@@ -191,13 +219,15 @@ async function resolveRDocument(resource: unknown): Promise<vscode.TextDocument 
   let document: vscode.TextDocument | undefined;
   if (resource instanceof vscode.Uri) {
     if (!isSupportedRUri(resource)) {
-      void vscode.window.showWarningMessage("Open Wrangler can run .R files from local or VS Code remote workspaces.");
+      void vscode.window.showWarningMessage(
+        "Open Wrangler can run .R, .Rmd, and .qmd documents from local or VS Code remote workspaces."
+      );
       return undefined;
     }
     try {
       document = await vscode.workspace.openTextDocument(resource);
     } catch (error) {
-      void vscode.window.showErrorMessage(`Could not open the R file: ${errorMessage(error)}`);
+      void vscode.window.showErrorMessage(`Could not open the R document: ${errorMessage(error)}`);
       return undefined;
     }
   } else {
@@ -205,12 +235,14 @@ async function resolveRDocument(resource: unknown): Promise<vscode.TextDocument 
   }
 
   if (!document || !isSupportedRDocument(document)) {
-    void vscode.window.showWarningMessage("Open a local or VS Code remote .R file before running it in Open Wrangler.");
+    void vscode.window.showWarningMessage(
+      "Open a local or VS Code remote .R, .Rmd, or .qmd document before running it in Open Wrangler."
+    );
     return undefined;
   }
   if (!isSoleOpenTextDocument(document)) {
     void vscode.window.showWarningMessage(
-      "Open Wrangler cannot safely run this R file while another document object has the same URI. Close the duplicate and try again."
+      "Open Wrangler cannot safely run this R document while another document object has the same URI. Close the duplicate and try again."
     );
     return undefined;
   }
@@ -222,7 +254,7 @@ function isSupportedRDocument(document: vscode.TextDocument): boolean {
 }
 
 function isSupportedRUri(uri: vscode.Uri): boolean {
-  return (uri.scheme === "file" || uri.scheme === "vscode-remote") && path.extname(uri.fsPath).toLowerCase() === ".r";
+  return (uri.scheme === "file" || uri.scheme === "vscode-remote") && rDocumentKind(uri.fsPath) !== undefined;
 }
 
 function isSoleOpenTextDocument(document: vscode.TextDocument): boolean {

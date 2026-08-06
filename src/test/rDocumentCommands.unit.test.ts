@@ -110,7 +110,7 @@ import {
   supportsRDocumentExecution
 } from "../extension/r/rDocumentCommands";
 
-describe("plain R document command", () => {
+describe("R document command", () => {
   beforeEach(() => {
     mocks.commands.clear();
     mocks.textDocuments.length = 0;
@@ -148,7 +148,7 @@ describe("plain R document command", () => {
     expect(mocks.transportOptions).toEqual([
       {
         runtimeRoot: "/extension/r/openwrangler_runtime",
-        documentText: "orders <- data.frame(id = 1:3)\n",
+        documentText: ["orders <- data.frame(id = 1:3)\n"],
         rscriptPath: "/usr/bin/Rscript",
         workingDirectory: "/workspace/analysis"
       }
@@ -219,6 +219,67 @@ describe("plain R document command", () => {
     );
   });
 
+  it("runs only enabled R cells from an exact Quarto document capture", async () => {
+    const source = [
+      "---",
+      "title: Orders",
+      "---",
+      "",
+      "```{r}",
+      "orders <- data.frame(id = 1:3)",
+      "```",
+      "",
+      "```{python}",
+      "do_not_run = True",
+      "```",
+      ""
+    ].join("\n");
+    const document = rDocument("/workspace/analysis/orders.qmd", source);
+    mocks.textDocuments.push(document);
+    mocks.openTextDocument.mockResolvedValue(document);
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const coordinator = coordinatorMock();
+    register(coordinator);
+
+    await expect(command()(vscode.Uri.file("/workspace/analysis/orders.qmd"))).resolves.toBe(true);
+
+    expect(mocks.transportOptions).toContainEqual({
+      runtimeRoot: "/extension/r/openwrangler_runtime",
+      documentText: ["orders <- data.frame(id = 1:3)\n"],
+      rscriptPath: "/usr/bin/Rscript",
+      workingDirectory: "/workspace/analysis"
+    });
+    expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), {
+      kind: "textDocument",
+      document,
+      version: 1
+    });
+    expect(mocks.panelCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ uri: "file:///workspace/analysis/orders.qmd" }),
+      "r"
+    );
+  });
+
+  it("does not start R for a literate document without a runnable R cell", async () => {
+    const document = rDocument(
+      "/workspace/analysis/orders.Rmd",
+      "# Orders\n\n```{r setup, eval=FALSE}\nstop('disabled')\n```\n"
+    );
+    mocks.textDocuments.push(document);
+    mocks.openTextDocument.mockResolvedValue(document);
+    register(coordinatorMock());
+
+    await expect(command()(vscode.Uri.file("/workspace/analysis/orders.Rmd"))).resolves.toBe(false);
+
+    expect(mocks.transportOptions).toHaveLength(0);
+    expect(mocks.discovery).not.toHaveBeenCalled();
+    expect(mocks.showInformationMessage).toHaveBeenCalledWith(
+      "orders.Rmd does not contain an R code chunk enabled for evaluation."
+    );
+  });
+
   it("does not execute an R file in an untrusted workspace", async () => {
     mocks.trusted = false;
     const coordinator = coordinatorMock();
@@ -268,6 +329,22 @@ describe("plain R document command", () => {
       "Open Wrangler could not close its R process: process still running"
     );
     expect(mocks.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  it("disposes the exact R process if the dataframe picker rejects", async () => {
+    const document = rDocument("/workspace/orders.qmd", "```{r}\norders <- data.frame(id = 1:3)\n```\n");
+    mocks.textDocuments.push(document);
+    mocks.openTextDocument.mockResolvedValue(document);
+    mocks.showQuickPick.mockRejectedValueOnce(new Error("window closed"));
+    register(coordinatorMock());
+
+    await expect(command()(vscode.Uri.file("/workspace/orders.qmd"))).resolves.toBe(false);
+
+    expect(mocks.transportDispose).toHaveBeenCalledOnce();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+    expect(mocks.showErrorMessage).toHaveBeenCalledWith(
+      "Could not choose an R dataframe from orders.qmd: window closed"
+    );
   });
 });
 
