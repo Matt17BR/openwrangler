@@ -131,8 +131,10 @@ code. Native variable discovery requires `jsonlite` and `rlang` in the selected 
 `data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The notebook
 command enables native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
 mode currently exposes Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. Other cleaning
-operations, cleaned-data export, R notebook insertion, Quarto, R Markdown, and plain `.R` documents remain unsupported. R sessions
-open with header profiles off so opening a frame does not immediately scan every visible column. Users can enable them,
+operations, cleaned-data export, Quarto, R Markdown, and live dataframes from plain `.R` documents remain unsupported.
+Generated R can be inserted into the exact IRkernel notebook captured when the session opened. The shared insertion helper
+creates an `r` cell and proves that exact cell before reporting success. R sessions open with header profiles off so opening
+a frame does not immediately scan every visible column. Users can enable header profiles,
 and the profile drawer still loads the selected column or dataset on request. The packaged VS Code/Cursor viewing
 journey checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and
 duplicate rows. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code

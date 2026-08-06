@@ -95,6 +95,10 @@ Factors convert through their labels, failed parses become `NA`, and conversions
 precision are rejected. A keyed `data.table` column must be cloned before it can be converted. Generated R applies the
 same checks and conversion rules.
 
+IRkernel sessions can insert generated R into the exact `NotebookDocument` captured when the dataframe session
+opened. The shared notebook helper creates one `r` cell and confirms that exact cell before reporting success. It does
+not rediscover the notebook from the active editor after an await.
+
 Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration helper that owns all of the following:
 
 - the exact source document and version;
@@ -121,7 +125,8 @@ same release gates.
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase with generated R code.
-  Other cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` documents
+  Generated R can be inserted into its originating IRkernel notebook. Other cleaning operations, cleaned-data export,
+  Quarto, R Markdown, and live dataframes from plain `.R` documents
   remain unsupported.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.

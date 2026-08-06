@@ -115,7 +115,7 @@ Select any applied step to inspect that point in history, then return to confirm
     <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="images/readme/v1.2/gallery/export-data-detail.png" width="995" height="344"></a></td>
   </tr>
   <tr>
-    <td>Copy generated code or save it as a Python or R script. Python sessions can also insert it into the notebook.</td>
+    <td>Copy generated code or save it as a Python or R script. Python and R notebook sessions can also insert it into the notebook that opened the dataframe.</td>
     <td>Editing sessions backed by Pandas, Polars, or DuckDB can export a cleaned CSV or Parquet file without overwriting the source.</td>
   </tr>
 </table>
@@ -172,7 +172,8 @@ and Lowercase.
 Select keeps the order in which the columns were chosen. Text Length counts Unicode characters. Lowercase can update a
 character or factor column or create a new character column. Convert type supports string, integer, float, boolean,
 date, and datetime targets. Values that cannot be converted become `NA`. All seven use draft preview, generated R,
-apply, discard, inspection, latest-step editing, and undo. Generated R can be copied or saved as a `.R` script.
+apply, discard, inspection, latest-step editing, and undo. Generated R can be copied, saved as a `.R` script, or
+inserted into the notebook that opened the dataframe.
 
 <img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="1440" height="900">
 
@@ -180,10 +181,14 @@ The image shows Rename Column in VS Code. Drop Columns, ordered Select Columns, 
 and Lowercase use the same editing controls in VS Code and Cursor. These seven operations work with base data frames, tibbles, and keyed data
 tables; the other R cleaning operations are not available yet.
 
+<a href="images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png"><img alt="Generated R cleaning code inserted as an R cell in the notebook that opened the dataframe" src="images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png" width="1440" height="430"></a>
+
+The inserted cell comes from the current Code Preview. Existing notebook cells and the source dataframe stay unchanged.
+
 Convert type does not replace an active `data.table` key column. Clone that column first, then convert the copy.
 
-Other R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` files are
-not supported yet. They are planned after the native notebook path is complete.
+Other R cleaning operations, cleaned-data export, Quarto, R Markdown, and live dataframes from plain `.R` documents
+are not supported yet. They are planned after the native notebook path is complete.
 
 ## DuckDB nested and temporal values
 

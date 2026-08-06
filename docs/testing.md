@@ -190,7 +190,7 @@ File-source tests must cover quoted/delimited and headerless CSV, a non-UTF-8 Pa
 
 Persistence tests must assert that only serializable replay state is stored, unknown fields and malformed operation kinds or parameters are rejected through the shared discriminated-step guard, import options participate in source identity, and runtime/public session identifiers never enter workspace state. The bounded `openWrangler.confirmedFileConfigurations.v2` registry must strictly reject malformed/mixed-format entries, unknown resolved backends or logical backend preferences, wrong versions, lone-surrogate delimiters/quotes, import options on Parquet/JSONL, and missing options on CSV/TSV/Excel; key configurations only by canonical file URI; prune oldest entries; and write only after a correlated successful file open/reconfiguration. Custom-editor tests allow one editor per document and prove recreation pins the last confirmed concrete backend, including option-free Parquet/JSONL, and reaches the identical source-plus-backend cleaning/view key despite later engine-availability or default-setting changes. Separate automatic and explicit cases must prove that the logical `backendPreference` survives recreation: crash recovery stays on the confirmed concrete backend, automatic import reconfiguration may choose another compatible backend, and explicit reconfiguration remains pinned. A deferred-Memento race must prove an authoritative replacement source/revision/snapshot is adopted before persistence, the next queued change targets that revision/source, and only stale UI publication is suppressed. Saved MIME-v2 outputs pass their own bounded payload validation before the inline renderer displays them and never enter workspace persistence. Packaged release acceptance applies a plan and view sort in one process, reopens the same source in a fresh process, and verifies the restored transformed grid in both VS Code and Cursor.
 
-Notebook tests must exercise complete and truncated MIME v2 captures, malformed versions, proactive Pandas/Polars formatter preparation after kernel permission, exact source-document retention, and insertion of the edited generated function. Provider-coordinator tests prove that trusted exact Jupyter notebooks prepare before any Open Wrangler command, transient retries remain bound to that document, kernel invalidation prepares the replacement generation, and close/disposal stops later work. With Microsoft Data Wrangler installed, the default `ask` state registers nothing until the modal choice resolves; Open Wrangler, Data Wrangler, disabled, dismissal, persisted preference, setting changes, and the new/restarted-kernel boundary remain deterministic.
+Notebook tests must exercise complete and truncated MIME v2 captures, malformed versions, proactive Pandas/Polars formatter preparation after kernel permission, exact source-document retention, and insertion of the edited generated code. Provider-coordinator tests prove that trusted exact Jupyter notebooks prepare before any Open Wrangler command, transient retries remain bound to that document, kernel invalidation prepares the replacement generation, and close/disposal stops later work. With Microsoft Data Wrangler installed, the default `ask` state registers nothing until the modal choice resolves; Open Wrangler, Data Wrangler, disabled, dismissal, persisted preference, setting changes, and the new/restarted-kernel boundary remain deterministic.
 
 The renderer's **Open in Open Wrangler** action is live-only. A canonical linked output must open the complete current variable through the exact visible sender `NotebookEditor`, exact originating `NotebookDocument`, exact selected kernel, and normal backend detection. It may never open captured rows as a workbench session. An unlinked output remains readable inline, exposes no open button, and tells the user to run the cell again. A linked-but-missing variable or unavailable kernel must produce the same actionable run-cell/kernel recovery instead of opening captured rows. Toolbar and Jupyter Variables tests independently execute bounded discovery through the exact selected kernel and present canonical Pandas, Polars, PySpark, and recognized DuckDB relation variables. Pinned and auto-detected PySpark launches must run an isolated type-and-version probe inside the authoritative bridge generation immediately before runtime open dispatch; strict 4.2.x proceeds, while missing, malformed, 4.1, 4.3, and 4.20 versions fail with actionable guidance and zero created session. A silent A→B kernel switch and an observed restart must invalidate and reprobe B before dispatch. Probe tests preserve colliding user globals and prove module `__getattr__` is never invoked. The picker and opening stage must say **Viewing only**. Opening must publish an exact schema and one bounded page without counting, globally indexing, or caching the complete DataFrame. Free-form names, malformed or spoofed discovery, non-Python kernels, focus changes, closed documents, and duplicate same-URI documents fail without opening or retargeting a session.
 
@@ -494,7 +494,7 @@ Variables discovery may rescan after a Jupyter row replacement or after a scanne
 
 Python real-kernel tests require Pandas and Polars to emit MIME v2 with a `text/plain` fallback, suppress their default HTML representation, and preserve an explicit user per-type HTML formatter. The packaged released-Jupyter phase additionally requires a bare Pandas expression to publish a valid host-visible MIME-v2 item, then drives its real packaged renderer action. Its released Variables table receives a 120-second readiness bound for cold hosted kernels; this remains below the independent 180-second inactivity and 300-second phase deadlines, and an indefinitely loading table still fails with bounded structural diagnostics. A local packaged run on 2026-07-26 passed both released-Jupyter phases and the complete ordinary packaged phases in VS Code 1.130.0 and Cursor 3.13.10. The allow flow used Jupyter's actual Variables action, exact-origin code insertion, freshly emitted MIME-v2 output, Open Wrangler's notebook action, Pandas and Polars DataFrame/Series sessions, a viewing-to-editing mode change, kernel restart with plan replay, and terminal cleanup with zero retained sessions or kernel descendants. Renderer evidence came from the same-origin nested guest's 716×107 preview and enabled 157×23 action; the outer 732×0 custom-output host placeholder was not treated as renderer evidence.
 
-Generated-code insertion tests cover the 10-second observation bound, event-driven exact-document success, sole-open-document ownership, unique-marker proof, rejected and indeterminate edits, and suppression of queued dispatch behind an unresolved indeterminate edit. VSIX tests parse the exact packaged `media/notebookRenderer.js` bytes and reject an empty or invalid bundle, static or dynamic imports, dependency re-exports, and a missing named `activate` export.
+Generated-code insertion tests cover Python and R cells, the 10-second observation bound, event-driven exact-document success, sole-open-document ownership, exact language and unique-marker proof, rejected and indeterminate edits, and suppression of queued dispatch behind an unresolved indeterminate edit. VSIX tests parse the exact packaged `media/notebookRenderer.js` bytes and reject an empty or invalid bundle, static or dynamic imports, dependency re-exports, and a missing named `activate` export.
 
 R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. The manually
 dispatched Released Jupyter workflow uses exact R 4.5.2. It runs the local journey in VS Code and Cursor and the
@@ -509,7 +509,7 @@ library is deleted with the run.
 `67422557e2377f5fe806e3b4892b261dd48d9d6a` on 2026-08-06. It covered local R 4.5.2 in VS Code and Cursor, plus the
 containerized R kernel in VS Code. The journey checked typed value selection, a compound filter, filtered profiles,
 Clear all, sort priority, restart and reopen, source preservation, and final cleanup. It does not cover cleaning,
-generated R code, exports, Quarto, R Markdown, or plain `.R` files.
+generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R` files.
 
 Focused R and TypeScript tests on the current v2 branch cover Rename Column, Drop Columns, Select Columns, Clone Column,
 Convert type, Text Length, and Lowercase in Editing mode. They
@@ -523,12 +523,14 @@ generated R, and exact typed diffs. A large-cell inspection regression checks tw
 exceed the kernel response limit when combined. The direct suites cover all seven operations. The current
 packaged VS Code and Cursor journey runs all seven operations. Across the base-data-frame sequence it covers preview,
 apply, inspection, discard, latest-step editing, and undo; Convert type is applied and undone. It copies and saves
-generated Rename code through the `.R` Save dialog and checks the source objects again after editing. Separate tibble
+generated Rename code through the `.R` Save dialog, inserts the exact code as one `r` cell in the originating
+notebook, leaves every existing cell unchanged, and checks the source objects again after editing. Separate tibble
 and keyed-data-table sessions preview and discard Rename and Drop Columns; the direct R suites cover all seven
 operations for all three flavors.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
-viewing workbench, and a separate 1,205-row Rename draft in Editing mode. The viewing image shows two filters, two
+viewing workbench, a separate 1,205-row Rename draft in Editing mode, and the generated R inserted into its notebook.
+The viewing image shows two filters, two
 ordered sorts, and exact revenue statistics. The editing image shows the native R code preview beside the draft,
 cleaning history, and Apply/Discard controls.
 The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 881
@@ -536,9 +538,11 @@ logical pixels so the grid ends on a complete row. Both are captured at 2× phys
 cells or private markers are visible, if a grid row or column is clipped, or if the source R object changes. The
 accepted files are
 `docs/images/editor-acceptance/vscode-notebook-r-picker-dark.png` and
-`docs/images/editor-acceptance/vscode-notebook-r-dark.png`, and
-`docs/images/editor-acceptance/vscode-notebook-r-editing-dark.png`; the gallery uses a lossless crop of the picker at
-`docs/images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png`.
+`docs/images/editor-acceptance/vscode-notebook-r-dark.png`,
+`docs/images/editor-acceptance/vscode-notebook-r-editing-dark.png`, and
+`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png`; the gallery uses lossless crops at
+`docs/images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png` and
+`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png`.
 
 ```bash
 npm run build:test-extension &&
