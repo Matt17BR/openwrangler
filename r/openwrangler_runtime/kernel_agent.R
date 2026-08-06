@@ -473,7 +473,7 @@ openwrangler_r_kernel_agent <- local({
     bound <- bind_rename_step(capture, step)
     source <- get("snapshot", envir = capture, inherits = FALSE)
     result <- frame_contract$rename_column(source, step$params$column, step$params$newName)
-    list(capture = frame_contract$capture_frame(result), bound = bound)
+    list(capture = frame_contract$capture_frame(result, nullability_source = capture), bound = bound)
   }
 
   replay_plan <- function(frame_contract, original, plan) {

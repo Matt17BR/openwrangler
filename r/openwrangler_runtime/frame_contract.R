@@ -1542,20 +1542,37 @@ openwrangler_r_frame_contract <- local({
     capture
   }
 
-  capture_frame <- function(value) {
+  capture_frame <- function(value, nullability_source = NULL) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
+    if (!is.null(nullability_source)) validate_capture(nullability_source)
     flavor <- frame_flavor(value)
     assert_frame_attributes(value, flavor)
     snapshot <- isolated_snapshot(value, flavor)
     metrics <- new_capture_metrics()
     inspected <- inspect_frame(
       snapshot,
-      conservative_nullable = FALSE,
+      conservative_nullable = !is.null(nullability_source),
       validate_values = TRUE,
       metrics = metrics
     )
+    if (!is.null(nullability_source)) {
+      source_schema <- nullability_source$descriptor$schema
+      if (length(source_schema) != length(inspected$descriptor$schema)) {
+        abort("internal-error", "a derived R frame changed width while preserving nullability")
+      }
+      source_nullable <- vapply(seq_along(source_schema), function(index) {
+        value <- source_schema[[index]]$nullable
+        if (length(value) != 1L || !is.logical(value) || is.na(value)) {
+          abort("internal-error", "an R capture retained invalid nullability metadata")
+        }
+        value
+      }, logical(1L), USE.NAMES = FALSE)
+      for (index in seq_along(source_schema)) {
+        inspected$descriptor$schema[[index]]$nullable <- source_nullable[[index]]
+      }
+    }
     capture <- new.env(parent = emptyenv())
     capture$mode <- "isolated"
     capture$snapshot <- snapshot
@@ -1595,7 +1612,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   isolate_capture <- function(capture) {
-    capture_frame(read_capture_frame(capture))
+    capture_frame(read_capture_frame(capture), nullability_source = capture)
   }
 
   rename_column <- function(value, column_reference, new_name) {

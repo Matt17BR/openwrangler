@@ -521,6 +521,7 @@ accepted files are
 not the new Rename Column workflow.
 
 ```bash
+npm run build:test-extension &&
 OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
 OPEN_WRANGLER_PACKAGED_EDITORS=vscode \
 OPEN_WRANGLER_REAL_JUPYTER_EXTENSION=1 \

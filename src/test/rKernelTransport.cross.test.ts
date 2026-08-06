@@ -450,6 +450,7 @@ ${close.code}
     });
     if (previewed.kind !== "stepPreview") throw new Error("Expected a native R rename preview.");
     expect(previewed.page.schema.map((column) => column.name)).toEqual(["duplicate", "second duplicate", "label"]);
+    expect(previewed.page.schema.map((column) => column.nullable)).toEqual([true, true, true]);
     expect(previewed.page.page.columnIds).toEqual(["r:c:1"]);
     expect(decodeRKernelResponseJson(marked(result.stdout, stale.marker), ids.stale)).toMatchObject({
       kind: "error",

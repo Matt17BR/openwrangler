@@ -739,6 +739,29 @@ describe("canonical R kernel bridge", () => {
     expect(discarded.metadata).not.toHaveProperty("draftStep");
   });
 
+  it("rejects an R rename response that narrows the live session nullability contract", async () => {
+    const source = frameContract();
+    const renamed = renameContract(source, "r:c:0", "amount");
+    const narrowed = {
+      ...renamed,
+      schema: renamed.schema.map((column, index) => (index === 0 ? { ...column, nullable: false } : { ...column }))
+    } satisfies RFramePageContract;
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: narrowed,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+
+    await expect(bridge.request(renamePreviewRequest(0))).rejects.toThrow(
+      "did not match the requested session state: schema"
+    );
+  });
+
   it("edits only the latest R step while retaining its ID and original input schema", async () => {
     const source = frameContract();
     const amount = renameContract(source, "r:c:0", "amount");

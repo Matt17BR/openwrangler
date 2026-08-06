@@ -30,9 +30,9 @@ full_capture_count <- 0L
 instrumented_frame_contract <- openwrangler_r_frame_contract
 real_capture_frame <- instrumented_frame_contract$capture_frame
 real_isolate_capture <- instrumented_frame_contract$isolate_capture
-instrumented_frame_contract$capture_frame <- function(value) {
+instrumented_frame_contract$capture_frame <- function(value, ...) {
   full_capture_count <<- full_capture_count + 1L
-  real_capture_frame(value)
+  real_capture_frame(value, ...)
 }
 instrumented_frame_contract$isolate_capture <- function(capture) {
   isolated_capture_count <<- isolated_capture_count + 1L
@@ -348,6 +348,7 @@ rename_open <- dispatch(
   )
 )
 assert_identical(rename_open$kind, "page", "the R rename session did not open")
+rename_nullability <- vapply(rename_open$page$schema, `[[`, logical(1L), "nullable")
 rename_step <- function(old_name, new_name, kind = "renameColumn") {
   list(
     id = "rename-step",
@@ -378,6 +379,11 @@ assert_identical(
   "second duplicate",
   "the R preview did not publish the renamed schema"
 )
+assert_identical(
+  vapply(rename_preview$page$schema, `[[`, logical(1L), "nullable"),
+  rename_nullability,
+  "the R preview narrowed the conservative live-session nullability contract"
+)
 assert_identical(rename_preview$diff$changedCells, 0L, "renaming reported changed cell values")
 assert_identical(rename_preview$diff$cells, list(), "the bounded rename diff returned cell payloads")
 
@@ -394,6 +400,11 @@ rename_discard <- dispatch(
 assert_identical(rename_discard$action, "discard", "the R draft did not discard")
 assert_identical(rename_discard$revision, 2L, "discard did not advance the R session revision")
 assert_identical(rename_discard$page$schema[[2L]]$name, "duplicate", "discard kept the draft schema")
+assert_identical(
+  vapply(rename_discard$page$schema, `[[`, logical(1L), "nullable"),
+  rename_nullability,
+  "discard changed the live-session nullability contract"
+)
 assert_identical(rename_discard$code, "", "discarding the first R draft emitted a cleaning program")
 
 rename_preview <- dispatch(
@@ -412,6 +423,11 @@ rename_apply <- dispatch(
 assert_identical(rename_apply$action, "apply", "the R rename draft did not apply")
 assert_identical(rename_apply$revision, 4L, "apply did not advance the R session revision")
 assert_identical(rename_apply$page$schema[[2L]]$name, "second duplicate", "apply lost the renamed schema")
+assert_identical(
+  vapply(rename_apply$page$schema, `[[`, logical(1L), "nullable"),
+  rename_nullability,
+  "apply changed the live-session nullability contract"
+)
 if (!grepl("data.table::copy", rename_apply$code, fixed = TRUE)) {
   stop("generated R cleaning code did not isolate data.table input", call. = FALSE)
 }
@@ -428,6 +444,16 @@ rename_inspection <- dispatch(
 assert_identical(rename_inspection$kind, "stepInspection", "the applied R rename could not be inspected")
 assert_identical(rename_inspection$revision, 4L, "inspection changed the R session revision")
 assert_identical(rename_inspection$stepIndex, 0L, "inspection reported the wrong applied-step index")
+assert_identical(
+  vapply(rename_inspection$inputSchema, `[[`, logical(1L), "nullable"),
+  rename_nullability,
+  "inspection changed the input nullability contract"
+)
+assert_identical(
+  vapply(rename_inspection$outputSchema, `[[`, logical(1L), "nullable"),
+  rename_nullability,
+  "inspection changed the output nullability contract"
+)
 assert_identical(rename_inspection$inputSchema[[2L]]$name, "duplicate", "inspection lost the input schema")
 assert_identical(
   rename_inspection$outputSchema[[2L]]$name,
@@ -466,6 +492,11 @@ edited_preview <- dispatch(
   )
 )
 assert_identical(edited_preview$revision, 5L, "editing the latest R step did not advance the revision")
+assert_identical(
+  vapply(edited_preview$page$schema, `[[`, logical(1L), "nullable"),
+  rename_nullability,
+  "editing the latest R step changed the nullability contract"
+)
 edited_apply <- dispatch(
   "applyDraft",
   list(sessionId = rename_session_id, revision = 5L, page = page_window())
@@ -478,6 +509,11 @@ rename_undo <- dispatch(
 assert_identical(rename_undo$action, "undo", "the latest R step did not undo")
 assert_identical(rename_undo$revision, 7L, "undo did not advance the R session revision")
 assert_identical(rename_undo$page$schema[[2L]]$name, "duplicate", "undo did not replay the immutable original")
+assert_identical(
+  vapply(rename_undo$page$schema, `[[`, logical(1L), "nullable"),
+  rename_nullability,
+  "undo changed the live-session nullability contract"
+)
 assert_identical(rename_undo$code, "", "undoing the final R step emitted a cleaning program")
 
 unsupported_step <- dispatch(

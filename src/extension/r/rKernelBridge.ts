@@ -1338,20 +1338,21 @@ function assertSessionContract(
   const expectedColumnIds = expectedSchema
     .slice(request.columnOffset, request.columnOffset + request.columnLimit)
     .map((column) => column.id);
-  if (
-    contract.dataframeFlavor !== session.dataframeFlavor ||
-    contract.shape.rows !== session.shape.rows ||
-    contract.shape.columns !== expectedSchema.length ||
-    contract.frameSemantics.rowNames !== session.rowNames ||
-    contract.page.offset !== request.offset ||
-    contract.page.limit !== request.limit ||
-    contract.page.totalRows > session.shape.rows ||
-    contract.page.columnOffset !== request.columnOffset ||
-    contract.page.columnLimit !== request.columnLimit ||
-    !sameSchema(expectedSchema, contract.schema) ||
-    !isDeepStrictEqual(contract.page.columnIds, expectedColumnIds)
-  ) {
-    throw new Error("The R dataframe contract did not match the requested session state.");
+  const mismatches = [
+    contract.dataframeFlavor === session.dataframeFlavor ? undefined : "dataframe flavor",
+    contract.shape.rows === session.shape.rows ? undefined : "row count",
+    contract.shape.columns === expectedSchema.length ? undefined : "column count",
+    contract.frameSemantics.rowNames === session.rowNames ? undefined : "row-name semantics",
+    contract.page.offset === request.offset ? undefined : "row offset",
+    contract.page.limit === request.limit ? undefined : "row limit",
+    contract.page.totalRows <= session.shape.rows ? undefined : "filtered row count",
+    contract.page.columnOffset === request.columnOffset ? undefined : "column offset",
+    contract.page.columnLimit === request.columnLimit ? undefined : "column limit",
+    sameSchema(expectedSchema, contract.schema) ? undefined : "schema",
+    isDeepStrictEqual(contract.page.columnIds, expectedColumnIds) ? undefined : "column projection"
+  ].filter((value): value is string => value !== undefined);
+  if (mismatches.length > 0) {
+    throw new Error(`The R dataframe contract did not match the requested session state: ${mismatches.join(", ")}.`);
   }
 }
 

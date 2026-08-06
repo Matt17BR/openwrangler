@@ -95,8 +95,10 @@ Viewing does not copy the complete R object. The first editing request takes one
 the original, committed result, and optional draft separate. Rename Column resolves its `{id, name}` reference to one
 exact position, so duplicate and non-syntactic names remain unambiguous. Base data frames and tibbles are copied with
 R serialization; `data.table` uses `data.table::copy()` before `setnames()`, preserving keys without mutating the
-notebook variable. Preview, apply, discard, latest-step replacement, undo, and applied-step inspection use increasing
-session revisions. Each mutation builds and encodes its complete response before publishing the candidate state.
+notebook variable. A live session reports nullability conservatively; isolating it for editing and renaming a column
+keep that same nullability metadata instead of narrowing the schema from the current values. Preview, apply, discard,
+latest-step replacement, undo, and applied-step inspection use increasing session revisions. Each mutation builds and
+encodes its complete response before publishing the candidate state.
 Generated code repeats the positional and stale-name checks, returns a new R object, and can be copied or saved as a
 `.R` script.
 
