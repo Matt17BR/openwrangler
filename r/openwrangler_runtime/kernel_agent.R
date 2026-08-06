@@ -437,6 +437,60 @@ openwrangler_r_kernel_agent <- local({
     as.integer(session$revision + 1L)
   }
 
+  decode_fill_missing_replacement <- function(value) {
+    replacement <- exact_record(
+      value,
+      "kind",
+      "request.payload.step.params.replacement",
+      optional_fields = "value"
+    )
+    kind <- bounded_text(
+      replacement$kind,
+      "request.payload.step.params.replacement.kind",
+      16L
+    )
+    supported <- c("median", "string", "integer", "float", "decimal", "boolean", "date", "datetime")
+    if (!kind %in% supported) {
+      abort("invalid_request", "request.payload.step.params.replacement.kind is unsupported")
+    }
+    if (identical(kind, "median")) {
+      if ("value" %in% names(replacement)) {
+        abort("invalid_request", "a median replacement may not contain a value")
+      }
+      return(list(kind = kind))
+    }
+    if (!"value" %in% names(replacement)) {
+      abort("invalid_request", "a typed replacement requires a value")
+    }
+    if (identical(kind, "boolean")) {
+      if (!is.logical(replacement$value) || length(replacement$value) != 1L || is.na(replacement$value)) {
+        abort("invalid_request", "a boolean replacement value must be true or false")
+      }
+      return(list(kind = kind, value = replacement$value))
+    }
+    maximum <- switch(kind, string = 8192L, integer = 40L, float = 64L, decimal = 128L, date = 10L, datetime = 64L)
+    text <- bounded_text(
+      replacement$value,
+      "request.payload.step.params.replacement.value",
+      maximum
+    )
+    pattern <- switch(
+      kind,
+      integer = "^-?(?:0|[1-9][0-9]*)$",
+      float = "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$",
+      decimal = "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$",
+      date = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      NULL
+    )
+    if (!is.null(pattern) && !grepl(pattern, text, perl = TRUE)) {
+      abort("invalid_request", "the replacement value is not canonical")
+    }
+    if (identical(kind, "datetime") && nchar(text, type = "chars") < 16L) {
+      abort("invalid_request", "the datetime replacement value is too short")
+    }
+    list(kind = kind, value = text)
+  }
+
   decode_transform_step <- function(value, limits) {
     step <- exact_record(value, c("id", "kind", "params"), "request.payload.step")
     step_id <- bounded_text(step$id, "request.payload.step.id", maximum_step_id_bytes)
@@ -522,6 +576,25 @@ openwrangler_r_kernel_agent <- local({
         abort("invalid_request", "request.payload.step.params.keep must be first, last, or none")
       }
       return(list(id = step_id, kind = kind, params = list(columns = columns, keep = keep)))
+    }
+    if (identical(kind, "fillMissingValues")) {
+      params <- exact_record(
+        step$params,
+        c("column", "replacement"),
+        "request.payload.step.params"
+      )
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(
+          column = decode_column_reference(
+            params$column,
+            "request.payload.step.params.column",
+            limits$columnIdBytes
+          ),
+          replacement = decode_fill_missing_replacement(params$replacement)
+        )
+      ))
     }
     if (kind %in% c("renameColumn", "cloneColumn")) {
       params <- exact_record(step$params, c("column", "newName"), "request.payload.step.params")
@@ -666,6 +739,7 @@ openwrangler_r_kernel_agent <- local({
       "selectColumns",
       "textLength",
       "lowerText",
+      "fillMissingValues",
       "castColumn"
     )) {
       abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
@@ -747,6 +821,55 @@ openwrangler_r_kernel_agent <- local({
       newName = if (in_place) step$params$column$name else step$params$newColumn,
       inPlace = in_place,
       outputId = step$outputId
+    )
+  }
+
+  bind_fill_missing_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (
+      length(matches) != 1L ||
+        !identical(schema[[matches[[1L]]]]$name, step$params$column$name)
+    ) {
+      abort("stale_column", "The fill-missing column reference no longer matches the active R dataframe", TRUE)
+    }
+    position <- as.integer(matches[[1L]])
+    column <- schema[[position]]
+    semantic_kind <- column$semantics$kind
+    replacement_kind <- step$params$replacement$kind
+    compatible <- switch(
+      semantic_kind,
+      character = identical(replacement_kind, "string"),
+      factor = identical(replacement_kind, "string"),
+      integer = replacement_kind %in% c("median", "integer"),
+      integer64 = replacement_kind %in% c("median", "integer"),
+      double = replacement_kind %in% c("median", "integer", "float"),
+      logical = identical(replacement_kind, "boolean"),
+      date = identical(replacement_kind, "date"),
+      datetime = identical(replacement_kind, "datetime"),
+      FALSE
+    )
+    if (!compatible) {
+      abort("invalid_request", "The replacement is incompatible with the selected R column", TRUE)
+    }
+    key_column_ids <- capture$descriptor$frameSemantics$keyColumnIds
+    if (is.null(key_column_ids)) key_column_ids <- character()
+    if (column$id %in% key_column_ids) {
+      abort("invalid_request", "Fill Missing Values cannot replace a data.table key column", TRUE)
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      position = position,
+      oldName = step$params$column$name,
+      newName = step$params$column$name,
+      inPlace = TRUE,
+      outputId = step$params$column$id,
+      columnType = column$type,
+      semanticKind = semantic_kind,
+      ordered = isTRUE(column$semantics$ordered),
+      levels = if (is.null(column$semantics$levels)) character() else column$semantics$levels,
+      replacement = step$params$replacement
     )
   }
 
@@ -1026,6 +1149,24 @@ openwrangler_r_kernel_agent <- local({
           source_positions = source_positions,
           output_ids = output_ids,
           lower_text_positions = lower_position
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "fillMissingValues")) {
+      bound <- bind_fill_missing_step(capture, step)
+      result <- frame_contract$fill_missing_column_at(
+        source,
+        bound$position,
+        bound$oldName,
+        bound$replacement
+      )
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = seq_along(capture$descriptor$schema),
+          fill_missing_positions = bound$position
         ),
         bound = bound
       ))
@@ -1566,6 +1707,121 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  r_fill_replacement <- function(replacement) {
+    if (identical(replacement$kind, "median")) return("list(kind = \"median\")")
+    value <- if (identical(replacement$kind, "boolean")) {
+      if (isTRUE(replacement$value)) "TRUE" else "FALSE"
+    } else {
+      r_string(replacement$value)
+    }
+    sprintf("list(kind = %s, value = %s)", r_string(replacement$kind), value)
+  }
+
+  fill_missing_code_helper_lines <- function() {
+    c(
+      "  .ow_fill_datetime <- function(.ow_text, .ow_timezone) {",
+      "    .ow_match <- regexec(\"^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(\\\\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?$\", .ow_text, perl = TRUE)",
+      "    .ow_parts <- regmatches(.ow_text, .ow_match)[[1L]]",
+      "    if (length(.ow_parts) == 0L || substring(.ow_parts[[2L]], 1L, 4L) == \"0000\") stop(\"Open Wrangler expected a valid ISO datetime\", call. = FALSE)",
+      "    .ow_hours <- as.integer(.ow_parts[[3L]]); .ow_minutes <- as.integer(.ow_parts[[4L]])",
+      "    .ow_seconds <- if (.ow_parts[[5L]] == \"\") 0L else as.integer(.ow_parts[[5L]])",
+      "    .ow_zone <- .ow_parts[[7L]]",
+      "    if (.ow_hours > 23L || .ow_minutes > 59L || .ow_seconds > 59L) stop(\"Open Wrangler expected a valid ISO datetime\", call. = FALSE)",
+      "    .ow_has_zone <- .ow_zone != \"\"",
+      "    if (.ow_has_zone && .ow_zone != \"Z\") {",
+      "      .ow_zone_digits <- gsub(\":\", \"\", substring(.ow_zone, 2L), fixed = TRUE)",
+      "      if (as.integer(substring(.ow_zone_digits, 1L, 2L)) > 23L || as.integer(substring(.ow_zone_digits, 3L, 4L)) > 59L) stop(\"Open Wrangler expected a valid ISO datetime\", call. = FALSE)",
+      "    }",
+      "    .ow_parse_timezone <- if (.ow_has_zone) \"UTC\" else .ow_timezone",
+      "    if (is.null(.ow_parse_timezone) || .ow_parse_timezone == \"\") .ow_parse_timezone <- \"UTC\"",
+      "    .ow_fraction <- .ow_parts[[6L]]",
+      "    .ow_normalized_zone <- if (!.ow_has_zone) \"\" else if (.ow_zone == \"Z\") \"+0000\" else gsub(\":\", \"\", .ow_zone, fixed = TRUE)",
+      "    .ow_normalized <- sprintf(\"%sT%02d:%02d:%02d%s%s\", .ow_parts[[2L]], .ow_hours, .ow_minutes, .ow_seconds, .ow_fraction, .ow_normalized_zone)",
+      "    .ow_format <- if (.ow_has_zone) \"%Y-%m-%dT%H:%M:%OS%z\" else \"%Y-%m-%dT%H:%M:%OS\"",
+      "    .ow_parsed <- suppressWarnings(as.POSIXct(strptime(.ow_normalized, format = .ow_format, tz = .ow_parse_timezone)))",
+      "    if (length(.ow_parsed) != 1L || is.na(.ow_parsed)) stop(\"Open Wrangler expected a valid ISO datetime\", call. = FALSE)",
+      "    if (!.ow_has_zone) {",
+      "      .ow_local <- as.POSIXlt(.ow_parsed, tz = .ow_parse_timezone)",
+      "      .ow_expected_date <- as.integer(strsplit(.ow_parts[[2L]], \"-\", fixed = TRUE)[[1L]])",
+      "      .ow_expected_seconds <- .ow_seconds + if (.ow_fraction == \"\") 0 else as.double(.ow_fraction)",
+      "      if (.ow_local$year + 1900L != .ow_expected_date[[1L]] || .ow_local$mon + 1L != .ow_expected_date[[2L]] || .ow_local$mday != .ow_expected_date[[3L]] || .ow_local$hour != .ow_hours || .ow_local$min != .ow_minutes || abs(.ow_local$sec - .ow_expected_seconds) > 1e-6) stop(sprintf(\"Open Wrangler received an invalid local datetime in %s\", .ow_parse_timezone), call. = FALSE)",
+      "    }",
+      "    as.double(.ow_parsed)",
+      "  }",
+      "  .ow_fill_values <- function(.ow_values, .ow_semantic_kind, .ow_replacement, .ow_timezone) {",
+      "    .ow_missing <- is.na(.ow_values)",
+      "    .ow_replacement_kind <- .ow_replacement$kind",
+      "    if (.ow_replacement_kind == \"median\") {",
+      "      if (!any(.ow_missing)) return(.ow_values)",
+      "      .ow_present <- .ow_values[!.ow_missing]",
+      "      if (length(.ow_present) == 0L) stop(\"Open Wrangler cannot calculate a median without present values\", call. = FALSE)",
+      "      if (.ow_semantic_kind == \"integer64\") {",
+      "        if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required to fill an integer64 column\", call. = FALSE)",
+      "        .ow_ordered <- sort(.ow_present); .ow_count <- length(.ow_ordered)",
+      "        .ow_lower <- .ow_ordered[[(.ow_count + 1L) %/% 2L]]; .ow_upper <- .ow_ordered[[(.ow_count + 2L) %/% 2L]]",
+      "        if (.ow_count %% 2L == 1L) { .ow_fill <- .ow_lower } else {",
+      "          .ow_zero <- bit64::as.integer64(0L); .ow_two <- bit64::as.integer64(2L)",
+      "          if ((.ow_lower < .ow_zero && .ow_upper < .ow_zero) || (.ow_lower >= .ow_zero && .ow_upper >= .ow_zero)) {",
+      "            .ow_difference <- .ow_upper - .ow_lower",
+      "            if (as.character(.ow_difference %% .ow_two) != \"0\") stop(\"Open Wrangler integer64 median is not an integer\", call. = FALSE)",
+      "            .ow_fill <- .ow_lower + .ow_difference %/% .ow_two",
+      "          } else {",
+      "            .ow_total <- .ow_lower + .ow_upper",
+      "            if (as.character(.ow_total %% .ow_two) != \"0\") stop(\"Open Wrangler integer64 median is not an integer\", call. = FALSE)",
+      "            .ow_fill <- .ow_total %/% .ow_two",
+      "          }",
+      "          if (is.na(.ow_fill)) stop(\"Open Wrangler integer64 median is outside the supported range\", call. = FALSE)",
+      "        }",
+      "      } else {",
+      "        .ow_ordered <- sort(.ow_present); .ow_count <- length(.ow_ordered)",
+      "        .ow_lower <- .ow_ordered[[(.ow_count + 1L) %/% 2L]]; .ow_upper <- .ow_ordered[[(.ow_count + 2L) %/% 2L]]",
+      "        .ow_fill <- .ow_lower / 2 + .ow_upper / 2",
+      "        if (is.nan(.ow_fill)) stop(\"Open Wrangler could not calculate a usable numeric median\", call. = FALSE)",
+      "        if (.ow_semantic_kind == \"integer\") {",
+      "          if (!is.finite(.ow_fill) || .ow_fill != floor(.ow_fill)) stop(\"Open Wrangler integer median is not an integer\", call. = FALSE)",
+      "          .ow_fill <- as.integer(.ow_fill)",
+      "          if (is.na(.ow_fill)) stop(\"Open Wrangler integer median is outside the R integer range\", call. = FALSE)",
+      "        }",
+      "      }",
+      "    } else if (.ow_semantic_kind %in% c(\"character\", \"factor\")) {",
+      "      .ow_fill <- .ow_replacement$value",
+      "      if (!is.character(.ow_fill) || length(.ow_fill) != 1L || is.na(.ow_fill) || Encoding(.ow_fill) == \"bytes\") stop(\"Open Wrangler expected valid replacement text\", call. = FALSE)",
+      "      .ow_from <- if (Encoding(.ow_fill) == \"latin1\") \"latin1\" else \"UTF-8\"",
+      "      .ow_fill <- iconv(.ow_fill, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+      "      if (is.na(.ow_fill) || nchar(.ow_fill, type = \"bytes\") > 8192L) stop(\"Open Wrangler replacement text is invalid or too large\", call. = FALSE)",
+      "      if (.ow_semantic_kind == \"factor\") {",
+      "        if (!any(.ow_missing)) return(.ow_values)",
+      "        .ow_levels <- levels(.ow_values); if (!.ow_fill %in% .ow_levels) .ow_levels <- c(.ow_levels, .ow_fill)",
+      "        .ow_values <- factor(as.character(.ow_values), levels = .ow_levels, ordered = is.ordered(.ow_values))",
+      "      }",
+      "    } else if (.ow_semantic_kind == \"integer\") {",
+      "      .ow_number <- suppressWarnings(as.double(.ow_replacement$value))",
+      "      if (!is.finite(.ow_number) || .ow_number != floor(.ow_number) || .ow_number < -2147483647 || .ow_number > 2147483647) stop(\"Open Wrangler replacement is outside the R integer range\", call. = FALSE)",
+      "      .ow_fill <- as.integer(.ow_number)",
+      "    } else if (.ow_semantic_kind == \"integer64\") {",
+      "      if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required to fill an integer64 column\", call. = FALSE)",
+      "      .ow_fill <- suppressWarnings(bit64::as.integer64(.ow_replacement$value))",
+      "      if (is.na(.ow_fill)) stop(\"Open Wrangler replacement is outside the integer64 range\", call. = FALSE)",
+      "    } else if (.ow_semantic_kind == \"double\") {",
+      "      .ow_fill <- suppressWarnings(as.double(.ow_replacement$value))",
+      "      if (!is.finite(.ow_fill)) stop(\"Open Wrangler expected a finite numeric replacement\", call. = FALSE)",
+      "    } else if (.ow_semantic_kind == \"logical\") {",
+      "      .ow_fill <- .ow_replacement$value",
+      "      if (!is.logical(.ow_fill) || length(.ow_fill) != 1L || is.na(.ow_fill)) stop(\"Open Wrangler expected a boolean replacement\", call. = FALSE)",
+      "    } else if (.ow_semantic_kind == \"date\") {",
+      "      .ow_text <- .ow_replacement$value",
+      "      if (!grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\", .ow_text, perl = TRUE) || startsWith(.ow_text, \"0000-\")) stop(\"Open Wrangler expected a valid date\", call. = FALSE)",
+      "      .ow_fill <- suppressWarnings(as.Date(.ow_text, format = \"%Y-%m-%d\"))",
+      "      if (is.na(.ow_fill)) stop(\"Open Wrangler expected a valid date\", call. = FALSE)",
+      "    } else if (.ow_semantic_kind == \"datetime\") {",
+      "      .ow_fill <- .ow_fill_datetime(.ow_replacement$value, .ow_timezone)",
+      "    } else stop(\"Open Wrangler cannot fill this R column type\", call. = FALSE)",
+      "    .ow_values[.ow_missing] <- .ow_fill",
+      "    .ow_values",
+      "  }"
+    )
+  }
+
   compile_plan <- function(variable_name, bound_plan, maximum_columns) {
     if (length(bound_plan) == 0L) return("")
     lines <- c(
@@ -1584,6 +1840,9 @@ openwrangler_r_kernel_agent <- local({
     )
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn"), logical(1L)))) {
       lines <- c(lines, cast_code_helper_lines())
+    }
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "fillMissingValues"), logical(1L)))) {
+      lines <- c(lines, fill_missing_code_helper_lines())
     }
     for (step in bound_plan) {
       if (identical(step$kind, "sortRows")) {
@@ -1710,6 +1969,26 @@ openwrangler_r_kernel_agent <- local({
             "  }"
           )
         }
+      } else if (identical(step$kind, "fillMissingValues")) {
+        lines <- c(
+          lines,
+          sprintf("  .ow_fill_position <- %dL", step$position),
+          sprintf("  .ow_fill_source_name <- %s", r_string(step$oldName)),
+          "  if (ncol(.ow_result) < .ow_fill_position || !identical(names(.ow_result)[[.ow_fill_position]], .ow_fill_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  .ow_fill_source <- .ow_result[[.ow_fill_position]]",
+          row_type_guard(".ow_fill_source", list(semanticsKind = step$semanticKind)),
+          "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_fill_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Fill Missing Values cannot replace a data.table key column\", call. = FALSE)",
+          "  .ow_fill_timezone <- attr(.ow_fill_source, \"tzone\", exact = TRUE)",
+          "  if (is.null(.ow_fill_timezone) || identical(.ow_fill_timezone, \"\")) .ow_fill_timezone <- \"UTC\"",
+          "  if (!is.character(.ow_fill_timezone) || length(.ow_fill_timezone) != 1L || is.na(.ow_fill_timezone)) stop(\"Open Wrangler received an unsupported POSIXct timezone\", call. = FALSE)",
+          sprintf(
+            "  .ow_fill_result <- .ow_fill_values(.ow_fill_source, %s, %s, %s)",
+            r_string(step$semanticKind),
+            r_fill_replacement(step$replacement),
+            ".ow_fill_timezone"
+          ),
+          "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_fill_position, value = .ow_fill_result) else .ow_result[[.ow_fill_position]] <- .ow_fill_result"
+        )
       } else if (identical(step$kind, "castColumn")) {
         lines <- c(
           lines,
@@ -1815,7 +2094,7 @@ openwrangler_r_kernel_agent <- local({
           after_page$page$totalRows == after_rows &&
           length(after_page$page$rows) == after_rows
       truncated <- !(before_complete && after_complete)
-    } else if (bound$kind %in% c("lowerText", "castColumn") && isTRUE(bound$inPlace)) {
+    } else if (bound$kind %in% c("lowerText", "fillMissingValues", "castColumn") && isTRUE(bound$inPlace)) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R in-place transform diff is missing its bounded page context")
       }
@@ -1913,6 +2192,7 @@ openwrangler_r_kernel_agent <- local({
       "clone_column_at",
       "text_length_column_at",
       "lower_text_column_at",
+      "fill_missing_column_at",
       "cast_column_at",
       "drop_columns_at",
       "select_columns_at",

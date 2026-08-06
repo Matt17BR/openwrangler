@@ -761,6 +761,177 @@ assert_error(
 assert_identical(invalid_lower_frame, invalid_lower_before, "failed lowerText mutated invalid source text")
 assert_identical(lower_frame, lower_before, "lowerText mutated its source data.frame")
 
+fill_frame <- data.frame(
+  duplicate = c(1L, NA_integer_, 3L),
+  duplicate = c(1, NaN, NA_real_),
+  label = ordered(c("high", NA, "low"), levels = c("low", "high")),
+  enabled = c(TRUE, NA, FALSE),
+  date = as.Date(c("2026-01-01", NA, "2026-01-03")),
+  instant = as.POSIXct(c("2026-01-01 12:00:00", NA, "2026-01-03 12:00:00"), tz = "Europe/Berlin"),
+  wide = bit64::as.integer64(c("9007199254740993", NA, "9007199254740995")),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b", "row-c")
+)
+fill_before <- unserialize(serialize(fill_frame, NULL, version = 3L))
+fill_capture <- openwrangler_r_frame_contract$capture_frame(fill_frame)
+fill_cases <- list(
+  list(position = 1L, name = "duplicate", replacement = list(kind = "median"), expected = c(1L, 2L, 3L)),
+  list(position = 2L, name = "duplicate", replacement = list(kind = "float", value = "2.5"), expected = c(1, 2.5, 2.5)),
+  list(
+    position = 3L,
+    name = "label",
+    replacement = list(kind = "string", value = "unknown"),
+    expected = ordered(c("high", "unknown", "low"), levels = c("low", "high", "unknown"))
+  ),
+  list(position = 4L, name = "enabled", replacement = list(kind = "boolean", value = TRUE), expected = c(TRUE, TRUE, FALSE)),
+  list(
+    position = 5L,
+    name = "date",
+    replacement = list(kind = "date", value = "2026-02-04"),
+    expected = as.Date(c("2026-01-01", "2026-02-04", "2026-01-03"))
+  ),
+  list(
+    position = 6L,
+    name = "instant",
+    replacement = list(kind = "datetime", value = "2026-02-04T05:06:07Z"),
+    expected = as.POSIXct(c("2026-01-01 12:00:00", "2026-02-04 06:06:07", "2026-01-03 12:00:00"), tz = "Europe/Berlin")
+  ),
+  list(
+    position = 7L,
+    name = "wide",
+    replacement = list(kind = "median"),
+    expected = bit64::as.integer64(c("9007199254740993", "9007199254740994", "9007199254740995"))
+  )
+)
+for (case in fill_cases) {
+  result <- openwrangler_r_frame_contract$fill_missing_column_at(
+    fill_frame,
+    case$position,
+    case$name,
+    case$replacement
+  )
+  result_capture <- openwrangler_r_frame_contract$capture_frame(
+    result,
+    nullability_source = fill_capture,
+    source_positions = seq_along(fill_capture$descriptor$schema),
+    fill_missing_positions = case$position
+  )
+  assert_identical(result[[case$position]], case$expected, sprintf("Fill Missing Values returned the wrong %s values", case$name))
+  assert_identical(result_capture$descriptor$schema[[case$position]]$nullable, FALSE, "a filled R column stayed nullable")
+  assert_identical(result_capture$descriptor$schema[[case$position]]$id, sprintf("r:c:%d", case$position - 1L), "Fill Missing Values changed column identity")
+  assert_identical(row.names(result), row.names(fill_frame), "Fill Missing Values changed explicit row names")
+}
+assert_identical(fill_frame, fill_before, "Fill Missing Values mutated its source data.frame")
+
+complete_factor <- data.frame(
+  label = ordered(c("high", "low"), levels = c("low", "high"))
+)
+complete_factor_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  complete_factor,
+  1L,
+  "label",
+  list(kind = "string", value = "unused")
+)
+assert_identical(
+  complete_factor_result,
+  complete_factor,
+  "Fill Missing Values added an unused level to a complete factor"
+)
+
+dst_frame <- data.frame(
+  instant = as.POSIXct(c("2026-03-28 12:00:00", NA), tz = "Europe/Berlin")
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    dst_frame,
+    1L,
+    "instant",
+    list(kind = "datetime", value = "2026-03-29T02:30:00")
+  ),
+  "not a valid local datetime"
+)
+
+fill_tibble <- tibble::tibble(value = c(NA_character_, "ready"))
+fill_tibble_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  fill_tibble,
+  1L,
+  "value",
+  list(kind = "string", value = "missing")
+)
+assert_identical(class(fill_tibble_result), c("tbl_df", "tbl", "data.frame"), "Fill Missing Values changed tibble class")
+assert_identical(fill_tibble_result$value, c("missing", "ready"), "Fill Missing Values returned the wrong tibble values")
+
+fill_table <- data.table::data.table(primary_key = c(1L, 2L), payload = c(NA_character_, "ready"))
+data.table::setkey(fill_table, primary_key)
+fill_table_before <- data.table::copy(fill_table)
+fill_table_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  fill_table,
+  2L,
+  "payload",
+  list(kind = "string", value = "missing")
+)
+assert_identical(class(fill_table_result), c("data.table", "data.frame"), "Fill Missing Values changed data.table class")
+assert_identical(data.table::key(fill_table_result), "primary_key", "Fill Missing Values dropped an unaffected data.table key")
+assert_identical(fill_table_result$payload, c("missing", "ready"), "Fill Missing Values returned the wrong data.table values")
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    fill_table,
+    1L,
+    "primary_key",
+    list(kind = "integer", value = "0")
+  ),
+  "key column"
+)
+assert_identical(fill_table, fill_table_before, "Fill Missing Values mutated its source data.table")
+
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(1L, NA_integer_, 2L)),
+    1L,
+    "value",
+    list(kind = "median")
+  ),
+  "not an integer"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(NA_real_, NaN)),
+    1L,
+    "value",
+    list(kind = "median")
+  ),
+  "no present values"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(NA_character_, "ready")),
+    1L,
+    "value",
+    list(kind = "decimal", value = "1.0")
+  ),
+  "incompatible"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = as.Date(c(NA, "2026-01-01"))),
+    1L,
+    "value",
+    list(kind = "date", value = "2026-02-30")
+  ),
+  "valid date"
+)
+empty_fill <- data.frame(value = character())
+assert_identical(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    empty_fill,
+    1L,
+    "value",
+    list(kind = "string", value = "unused")
+  ),
+  empty_fill,
+  "Fill Missing Values changed an empty compatible frame"
+)
+
 cast_cases <- list(
   list(
     dtype = "string",

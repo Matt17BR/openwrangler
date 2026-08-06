@@ -15,6 +15,7 @@ import {
   type DropDuplicatesTransformStep,
   type DropMissingRowsTransformStep,
   type ErrorResponse,
+  type FillMissingValuesTransformStep,
   type FilterModel,
   type FilterRowsTransformStep,
   type GridPage,
@@ -79,6 +80,7 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "sortRows",
   "filterRows",
   "dropMissingRows",
+  "fillMissingValues",
   "dropDuplicates",
   "selectColumns",
   "dropColumns",
@@ -93,6 +95,7 @@ type RTransformStep =
   | SortRowsTransformStep
   | FilterRowsTransformStep
   | DropMissingRowsTransformStep
+  | FillMissingValuesTransformStep
   | DropDuplicatesTransformStep
   | RenameColumnTransformStep
   | CloneColumnTransformStep
@@ -625,6 +628,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "sortRows" &&
       request.step.kind !== "filterRows" &&
       request.step.kind !== "dropMissingRows" &&
+      request.step.kind !== "fillMissingValues" &&
       request.step.kind !== "dropDuplicates" &&
       request.step.kind !== "renameColumn" &&
       request.step.kind !== "cloneColumn" &&
@@ -1789,6 +1793,7 @@ function schemaAfterRStep(
   if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
+  if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (step.kind === "lowerText") return schemaAfterLowerText(inputSchema, step, activeKeyColumnIds);
@@ -1846,6 +1851,47 @@ function rowOperationLabel(
   if (step.kind === "filterRows") return "Filter rows";
   if (step.kind === "dropMissingRows") return "Drop missing rows";
   return "Drop duplicates";
+}
+
+function schemaAfterFillMissing(
+  inputSchema: readonly ColumnSchema[],
+  step: FillMissingValuesTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The fill-missing column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (activeKeyColumnIds.includes(source.id)) {
+    throw new TypeError("Fill Missing Values cannot replace a data.table key column. Clone the column first.");
+  }
+  const replacement = step.params.replacement;
+  const compatible =
+    (source.type === "string" && replacement.kind === "string") ||
+    (source.type === "integer" && (replacement.kind === "median" || replacement.kind === "integer")) ||
+    (source.type === "float" &&
+      (replacement.kind === "median" || replacement.kind === "integer" || replacement.kind === "float")) ||
+    (source.type === "boolean" && replacement.kind === "boolean") ||
+    (source.type === "date" && replacement.kind === "date") ||
+    (source.type === "datetime" && replacement.kind === "datetime");
+  if (!compatible) {
+    throw new TypeError(`The ${replacement.kind} replacement is incompatible with R ${source.rawType}.`);
+  }
+  if (
+    replacement.kind === "string" &&
+    Buffer.byteLength(replacement.value, "utf8") > R_FRAME_CONTRACT_LIMITS.textBytes
+  ) {
+    throw new TypeError("The R replacement text exceeds the frame contract limit.");
+  }
+  return Object.freeze(
+    inputSchema.map((column) => Object.freeze(column.id === source.id ? { ...column, nullable: false } : { ...column }))
+  );
 }
 
 function schemaAfterCast(
@@ -2279,6 +2325,16 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newName: step.params.newName })
     });
   }
+  if (step.kind === "fillMissingValues") {
+    return Object.freeze({
+      id: step.id,
+      kind: "fillMissingValues" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        replacement: Object.freeze({ ...step.params.replacement })
+      })
+    });
+  }
   if (step.kind === "castColumn") {
     return Object.freeze({
       id: step.id,
@@ -2410,6 +2466,13 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { column: { ...step.params.column }, newName: step.params.newName }
     };
   }
+  if (step.kind === "fillMissingValues") {
+    return {
+      id: step.id,
+      kind: "fillMissingValues",
+      params: { column: { ...step.params.column }, replacement: { ...step.params.replacement } }
+    };
+  }
   if (step.kind === "castColumn") {
     return {
       id: step.id,
@@ -2468,6 +2531,7 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "sortRows" &&
     step.kind !== "filterRows" &&
     step.kind !== "dropMissingRows" &&
+    step.kind !== "fillMissingValues" &&
     step.kind !== "dropDuplicates" &&
     step.kind !== "renameColumn" &&
     step.kind !== "cloneColumn" &&
@@ -2536,7 +2600,7 @@ function inspectionDiff(
   const lowerInPlace =
     step.kind === "lowerText" &&
     (step.params.newColumn === undefined || step.params.newColumn === step.params.column.name);
-  const changedInPlace = step.kind === "castColumn" || lowerInPlace;
+  const changedInPlace = step.kind === "castColumn" || step.kind === "fillMissingValues" || lowerInPlace;
   if (!changedInPlace) {
     return {
       addedRows: 0,
@@ -2637,7 +2701,7 @@ function assertMutationDiff(
   const lowerInPlace =
     step.kind === "lowerText" &&
     (step.params.newColumn === undefined || step.params.newColumn === step.params.column.name);
-  const changedInPlace = lowerInPlace || step.kind === "castColumn";
+  const changedInPlace = lowerInPlace || step.kind === "fillMissingValues" || step.kind === "castColumn";
   const expectedAdded =
     step.kind === "cloneColumn"
       ? [step.params.newName]

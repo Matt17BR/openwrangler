@@ -14,6 +14,7 @@ import type {
   ColumnSummary,
   DataDiff,
   DatasetStats,
+  FillMissingReplacement,
   PredicateFilter,
   ValueCount
 } from "../../shared/protocol";
@@ -144,6 +145,15 @@ export interface RKernelLowerTextStep {
   }>;
 }
 
+export interface RKernelFillMissingValuesStep {
+  readonly id: string;
+  readonly kind: "fillMissingValues";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    replacement: FillMissingReplacement;
+  }>;
+}
+
 export interface RKernelDropColumnsStep {
   readonly id: string;
   readonly kind: "dropColumns";
@@ -204,6 +214,7 @@ export type RKernelTransformStep =
   | RKernelCastColumnStep
   | RKernelTextLengthStep
   | RKernelLowerTextStep
+  | RKernelFillMissingValuesStep
   | RKernelDropColumnsStep
   | RKernelSelectColumnsStep;
 
@@ -836,6 +847,12 @@ function validateTransformStep(value: unknown): void {
     }
     return;
   }
+  if (step.kind === "fillMissingValues") {
+    const params = exactRecord(step.params, ["column", "replacement"], "R kernel fill-missing parameters");
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    validateFillMissingReplacement(params.replacement);
+    return;
+  }
   if (step.kind === "dropDuplicates") {
     const params = exactRecord(step.params, [], ["columns", "keep"], "R kernel drop-duplicates parameters");
     if (params.columns !== undefined) {
@@ -893,6 +910,60 @@ function validateTransformStep(value: unknown): void {
     return;
   }
   fail("R kernel transform step has an unsupported operation.");
+}
+
+function validateFillMissingReplacement(value: unknown): void {
+  const replacement = exactRecord(value, ["kind"], ["value"], "R kernel fill-missing replacement");
+  if (replacement.kind === "median") {
+    if (replacement.value !== undefined) fail("A median replacement may not contain a value.");
+    return;
+  }
+  if (replacement.value === undefined) fail("A typed fill-missing replacement requires a value.");
+  if (replacement.kind === "boolean") {
+    if (typeof replacement.value !== "boolean") fail("A boolean replacement must be true or false.");
+    return;
+  }
+  if (
+    replacement.kind !== "string" &&
+    replacement.kind !== "integer" &&
+    replacement.kind !== "float" &&
+    replacement.kind !== "decimal" &&
+    replacement.kind !== "date" &&
+    replacement.kind !== "datetime"
+  ) {
+    fail("R kernel fill-missing replacement has an unsupported kind.");
+  }
+  const maximumBytes =
+    replacement.kind === "string"
+      ? R_FRAME_CONTRACT_LIMITS.textBytes
+      : replacement.kind === "integer"
+        ? 40
+        : replacement.kind === "float" || replacement.kind === "datetime"
+          ? 64
+          : replacement.kind === "decimal"
+            ? 128
+            : 10;
+  const text = boundedText(
+    replacement.value,
+    "request.payload.step.params.replacement.value",
+    maximumBytes,
+    replacement.kind === "string"
+  );
+  if (replacement.kind === "integer" && !/^-?(?:0|[1-9][0-9]*)$/u.test(text)) {
+    fail("An integer replacement must be canonical decimal text.");
+  }
+  if (
+    (replacement.kind === "float" || replacement.kind === "decimal") &&
+    !/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/u.test(text)
+  ) {
+    fail("A numeric replacement must be canonical decimal text.");
+  }
+  if (replacement.kind === "date" && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u.test(text)) {
+    fail("A date replacement must use YYYY-MM-DD.");
+  }
+  if (replacement.kind === "datetime" && text.length < 16) {
+    fail("A datetime replacement is too short.");
+  }
 }
 
 function validateRowReductionColumnReferences(value: unknown, operation: string, allowEmpty: boolean): void {

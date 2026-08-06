@@ -516,6 +516,47 @@ describe("OperationBuilder", () => {
     expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
   });
 
+  it("shows and enforces the native R text replacement limit before preview", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "fill-city",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "c:0", name: "city" },
+        replacement: { kind: "string", value: "missing" }
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          backend: "r",
+          rDataframeFlavor: "r.data.frame",
+          latestStepInputSchema: metadata.schema,
+          steps: [initialStep]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const input = screen.getByLabelText("Replacement value");
+    expect(screen.getByText("R text replacements can use up to 8,192 UTF-8 bytes.")).toBeInTheDocument();
+
+    fireEvent.input(input, { target: { value: "🙂".repeat(3_000) } });
+    expect(input).toBeInvalid();
+    expect(input).toHaveAccessibleDescription("R text replacements can use up to 8,192 UTF-8 bytes.");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+
+    fireEvent.input(input, { target: { value: "missing" } });
+    expect(input).toBeValid();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
+  });
+
   it("normalizes common numeric fill values before preview", () => {
     const onPreview = vi.fn();
     render(

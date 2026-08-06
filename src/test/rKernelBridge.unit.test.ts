@@ -6,6 +6,7 @@ import type {
   ColumnSummary,
   DataDiff,
   DatasetStats,
+  FillMissingValuesTransformStep,
   OpenSessionRequest,
   OpenWranglerRequest,
   SelectColumnsTransformStep,
@@ -1433,6 +1434,7 @@ describe("canonical R kernel bridge", () => {
             "sortRows",
             "filterRows",
             "dropMissingRows",
+            "fillMissingValues",
             "dropDuplicates",
             "selectColumns",
             "dropColumns",
@@ -2597,6 +2599,225 @@ describe("canonical R kernel bridge", () => {
         columnLimit: 8
       })
     ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+    expect(transport.previewStep).not.toHaveBeenCalled();
+  });
+
+  it("fills missing native R values and keeps applied and edited steps independent", async () => {
+    const source = frameContract();
+    const firstValue: RFrameCell = {
+      kind: "string",
+      raw: "unknown",
+      display: "unknown",
+      isNull: false,
+      isNaN: false
+    };
+    const firstOutput = fillMissingContract(source, "r:c:6", firstValue);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-missing",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:6", name: "missing" },
+        replacement: { kind: "string", value: "unknown" }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: firstOutput,
+      diff: fillMissingDiff("r:c:6", "missing", firstValue),
+      code: "open_wrangler_result <- orders"
+    });
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      step,
+      expect.any(Object),
+      expect.any(Array),
+      undefined,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "r:c:6", name: "missing", type: "string", nullable: false })
+        ]),
+        draftStep: {
+          id: "r-fill-missing",
+          kind: "fillMissingValues",
+          params: { replacement: { kind: "string", value: "unknown" } }
+        }
+      },
+      diff: {
+        changedCells: 1,
+        cells: [
+          expect.objectContaining({
+            rowNumber: 0,
+            columnId: "r:c:6",
+            column: "missing",
+            before: expect.objectContaining({ kind: "null", raw: null }),
+            after: expect.objectContaining({ kind: "string", raw: "unknown" })
+          })
+        ]
+      }
+    });
+
+    if (step.params.replacement.kind !== "string") throw new Error("expected a string replacement");
+    step.params.replacement.value = "caller mutation";
+    expect(preview).toMatchObject({
+      metadata: { draftStep: { params: { replacement: { value: "unknown" } } } }
+    });
+
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: firstOutput,
+      code: "open_wrangler_result <- orders"
+    });
+    const applied = await bridge.request(planRequest("applyDraft", 1));
+    expect(applied).toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2,
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: false })]),
+        latestStepInputSchema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: true })]),
+        steps: [
+          {
+            id: "r-fill-missing",
+            kind: "fillMissingValues",
+            params: { replacement: { kind: "string", value: "unknown" } }
+          }
+        ]
+      }
+    });
+
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 2,
+      stepId: "r-fill-missing",
+      stepIndex: 0,
+      inputPage: source,
+      outputPage: firstOutput,
+      inputSchema: source.schema,
+      outputSchema: firstOutput.schema,
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      bridge.request({
+        kind: "inspectStep",
+        sessionId,
+        revision: 2,
+        stepId: "r-fill-missing",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepInspection",
+      inputSchema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: true })]),
+      outputSchema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: false })]),
+      diff: {
+        changedCells: 1,
+        cells: [
+          expect.objectContaining({
+            columnId: "r:c:6",
+            before: expect.objectContaining({ kind: "null" }),
+            after: expect.objectContaining({ kind: "string", raw: "unknown" })
+          })
+        ]
+      }
+    });
+
+    const editedValue: RFrameCell = {
+      kind: "string",
+      raw: "N/A",
+      display: "N/A",
+      isNull: false,
+      isNaN: false
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 3,
+      page: fillMissingContract(source, "r:c:6", editedValue),
+      diff: fillMissingDiff("r:c:6", "missing", editedValue),
+      code: "open_wrangler_result <- orders"
+    });
+    const edited = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 2,
+      replaceStepId: "r-fill-missing",
+      step: {
+        id: "r-fill-missing",
+        kind: "fillMissingValues",
+        params: {
+          column: { id: "r:c:6", name: "missing" },
+          replacement: { kind: "string", value: "N/A" }
+        }
+      },
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(edited).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        steps: [{ params: { replacement: { value: "unknown" } } }],
+        draftStep: { params: { replacement: { value: "N/A" } } },
+        draftReplacesStepId: "r-fill-missing",
+        latestStepInputSchema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: true })])
+      }
+    });
+  });
+
+  it("rejects Fill Missing Values on a native R data.table key before dispatch", async () => {
+    const source = dataTableContract(frameContract(), ["r:c:6"]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-fill-key",
+          kind: "fillMissingValues",
+          params: {
+            column: { id: "r:c:6", name: "missing" },
+            replacement: { kind: "string", value: "unknown" }
+          }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "invalid_request",
+      message: expect.stringContaining("key column")
+    });
     expect(transport.previewStep).not.toHaveBeenCalled();
   });
 
@@ -3923,6 +4144,10 @@ function withColumnNullable(source: RFramePageContract, columnId: string, nullab
   };
 }
 
+function fillMissingContract(source: RFramePageContract, columnId: string, value: RFrameCell): RFramePageContract {
+  return withColumnNullable(replaceContractCell(source, columnId, value), columnId, false);
+}
+
 function castContract(
   source: RFramePageContract,
   columnId: string,
@@ -4104,6 +4329,22 @@ function lowerDiff(columnId: string, column: string, before: string, after: stri
   };
 }
 
+function fillMissingDiff(columnId: string, column: string, after: RFrameCell): DataDiff {
+  return {
+    ...renameDiff(),
+    changedCells: 1,
+    cells: [
+      {
+        rowNumber: 0,
+        columnId,
+        column,
+        before: { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false },
+        after: { ...after, ...(after.kind === "number" ? { raw: Number(after.raw) } : {}) }
+      }
+    ]
+  };
+}
+
 function castDiff(columnId: string, column: string, before: RFrameCell, after: RFrameCell): DataDiff {
   return {
     ...renameDiff(),
@@ -4174,6 +4415,7 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "sortRows",
       "filterRows",
       "dropMissingRows",
+      "fillMissingValues",
       "dropDuplicates",
       "selectColumns",
       "dropColumns",

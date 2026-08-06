@@ -879,6 +879,89 @@ describe("native R kernel protocol", () => {
     ).toThrow("outside the returned page projection");
   });
 
+  it("strictly validates every native R Fill Missing Values replacement", () => {
+    const replacements = [
+      { kind: "median" },
+      { kind: "string", value: "unknown" },
+      { kind: "integer", value: "-42" },
+      { kind: "float", value: "1.25e+3" },
+      { kind: "decimal", value: "0.125" },
+      { kind: "boolean", value: false },
+      { kind: "date", value: "2026-08-06" },
+      { kind: "datetime", value: "2026-08-06T12:30:00Z" }
+    ] as const;
+
+    for (const replacement of replacements) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: {
+          sessionId,
+          revision: 0,
+          step: {
+            id: `fill-${replacement.kind}`,
+            kind: "fillMissingValues",
+            params: { column: { id: "r:c:0", name: "value" }, replacement }
+          },
+          page: pageWindow()
+        }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const invalidReplacements: ReadonlyArray<readonly [unknown, string]> = [
+      [{ kind: "median", value: "1" }, "may not contain a value"],
+      [{ kind: "string" }, "requires a value"],
+      [{ kind: "integer", value: "01" }, "canonical decimal text"],
+      [{ kind: "float", value: "NaN" }, "canonical decimal text"],
+      [{ kind: "boolean", value: "true" }, "true or false"],
+      [{ kind: "string", value: "🙂".repeat(3_000) }, "UTF-8 byte limit"],
+      [{ kind: "date", value: "06-08-2026" }, "YYYY-MM-DD"],
+      [{ kind: "datetime", value: "2026-08-06" }, "too short"],
+      [{ kind: "duration", value: "1" }, "unsupported kind"]
+    ];
+    for (const [replacement, message] of invalidReplacements) {
+      const request = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: {
+          sessionId,
+          revision: 0,
+          step: {
+            id: "fill-invalid",
+            kind: "fillMissingValues",
+            params: { column: { id: "r:c:0", name: "value" }, replacement }
+          },
+          page: pageWindow()
+        }
+      };
+      expect(() => encodeRKernelRequest(request as RKernelRequest)).toThrow(message);
+    }
+
+    const extraParameter = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "fill-extra",
+          kind: "fillMissingValues",
+          params: {
+            column: { id: "r:c:0", name: "value" },
+            replacement: { kind: "string", value: "unknown" },
+            extra: true
+          }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(() => encodeRKernelRequest(extraParameter as RKernelRequest)).toThrow("invalid fields");
+  });
+
   it("strictly validates native R Cast requests and type-changing cell diffs", () => {
     const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

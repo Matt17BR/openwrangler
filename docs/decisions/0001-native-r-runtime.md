@@ -72,7 +72,7 @@ the current viewing filters, and the private dataset-statistics response binds i
 from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
 user to reopen the frame.
 
-Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Drop Duplicates, Rename Column, Drop Columns,
+Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns,
 Select Columns, Clone Column, Convert type, Text Length, and Lowercase. The first draft takes an isolated original;
 base data frames and tibbles use R
 serialization, while data tables use `data.table::copy()`. The runtime keeps committed and draft results separate,
@@ -93,6 +93,10 @@ Drop Missing Rows treats both `NA` and `NaN` as missing. It can remove rows when
 only when all selected columns are missing. Drop Duplicates compares selected columns, or all columns when none are
 specified, and can keep the first, last, or no row from each repeated group. Both operations keep source order,
 stable row identities, explicit row names, and compatible data-table keys.
+
+Fill Missing Values replaces `NA` and `NaN` in one column with a typed value or an exact median. It keeps factors,
+ordered factors, `integer64`, dates, and datetimes in their native R types. It rejects active data-table key columns
+because changing a key value could invalidate the stored order.
 
 Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the
 chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
@@ -148,7 +152,7 @@ Quarto and R Markdown may be advertised only after their document-aware helpers 
 - The grid and transformation model can be shared, but execution, object ownership, type handling, and generated code
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
-  currently adds Filter Rows, Sort Rows, Drop Missing Rows, Drop Duplicates, Rename Column, Drop Columns, Select
+  currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns, Select
   Columns, Clone Column, Convert type, Text Length, and Lowercase with generated R code. Generated R can be inserted
   into its originating IRkernel notebook or `.R` source. Other cleaning operations, cleaned-data export, Quarto, and R
   Markdown remain unsupported.

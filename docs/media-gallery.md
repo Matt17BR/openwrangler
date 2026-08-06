@@ -169,21 +169,22 @@ Each variable stays in R.
 <a href="images/editor-acceptance/vscode-notebook-r-dark.png"><img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="960"></a>
 
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
-Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Drop Duplicates, Rename Column, Drop
+Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
 Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. A viewing filter or sort can be copied
 into a cleaning draft. Drop Missing Rows can check any or all selected columns and treats `NA` and `NaN` as missing.
 Drop Duplicates can compare selected columns or the whole row and keep the first, last, or none of the repeated rows.
 Select keeps the order in which the columns were chosen. Text Length counts Unicode characters. Lowercase can update a
 character or factor column or create a new character column. Convert type supports string, integer, float, boolean,
-date, and datetime targets. Values that cannot be converted become `NA`. All eleven use draft preview, generated R,
+date, and datetime targets. Values that cannot be converted become `NA`. Fill Missing Values accepts typed values or
+an exact median and preserves factors, dates, datetimes, and `integer64`. All twelve use draft preview, generated R,
 apply, discard, inspection, latest-step editing, and undo. Generated R can be copied, saved as a `.R` script, or
 inserted into the notebook or `.R` file that opened the dataframe.
 
 <a href="images/editor-acceptance/vscode-notebook-r-editing-dark.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="960"></a>
 
-The image shows Rename Column in VS Code. Filter Rows, Sort Rows, Drop Missing Rows, Drop Duplicates, Drop Columns,
+The image shows Rename Column in VS Code. Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Drop Columns,
 ordered Select Columns, Clone Column, Convert type, Text Length, and Lowercase use the same editing controls in VS
-Code and Cursor. These eleven operations work with base data frames, tibbles, and keyed data tables; the other R
+Code and Cursor. These twelve operations work with base data frames, tibbles, and keyed data tables; the other R
 cleaning operations are not available yet.
 
 <a href="images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png"><img alt="Generated R cleaning code inserted as an R cell in the notebook that opened the dataframe" src="images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png" width="960"></a>

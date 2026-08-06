@@ -687,7 +687,7 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
     );
   }
   if (kind === "fillMissingValues") {
-    return <FillMissingFields columns={columns} initialStep={initialStep} />;
+    return <FillMissingFields backend={metadata.backend} columns={columns} initialStep={initialStep} />;
   }
   if (kind === "dropDuplicates") {
     return (
@@ -1089,7 +1089,15 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
   return null;
 }
 
-function FillMissingFields({ columns, initialStep }: { columns: ColumnSchema[]; initialStep?: TransformStep }) {
+function FillMissingFields({
+  backend,
+  columns,
+  initialStep
+}: {
+  backend: SessionMetadata["backend"];
+  columns: ColumnSchema[];
+  initialStep?: TransformStep;
+}) {
   const initialParams = initialStep?.kind === "fillMissingValues" ? initialStep.params : undefined;
   const initialReplacement = initialParams?.replacement;
   const medianColumns = compatibleColumns(columns, numericColumnTypes);
@@ -1176,7 +1184,7 @@ function FillMissingFields({ columns, initialStep }: { columns: ColumnSchema[]; 
           ) : (
             <input type="hidden" name="fillValueKind" value={valueKind} />
           )}
-          <FillReplacementInput kind={valueKind} defaultValue={savedValue} />
+          <FillReplacementInput backend={backend} kind={valueKind} defaultValue={savedValue} />
         </>
       )}
     </>
@@ -1214,7 +1222,15 @@ function normalizeFillNumericValue(kind: FillValueKind, value: string): string {
   return `${sign === "-" ? "-" : ""}${coefficient}${exponent}`;
 }
 
-function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; defaultValue: string }) {
+function FillReplacementInput({
+  backend,
+  kind,
+  defaultValue
+}: {
+  backend: SessionMetadata["backend"];
+  kind: FillValueKind;
+  defaultValue: string;
+}) {
   if (kind === "boolean") {
     return (
       <SelectField
@@ -1237,6 +1253,7 @@ function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; def
       : kind === "datetime"
         ? "Replacement value (ISO date and time)"
         : "Replacement number";
+  const rTextLimit = backend === "r" && kind === "string" ? 8_192 : undefined;
   return (
     <TextField
       key={kind}
@@ -1245,7 +1262,8 @@ function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; def
       defaultValue={defaultValue}
       required={kind !== "string"}
       inputMode={kind === "integer" ? "numeric" : kind === "float" || kind === "decimal" ? "decimal" : undefined}
-      maxLength={kind === "string" ? 65_536 : kind === "integer" ? 40 : kind === "decimal" ? 128 : 64}
+      maxLength={kind === "string" ? (rTextLimit ?? 65_536) : kind === "integer" ? 40 : kind === "decimal" ? 128 : 64}
+      maxUtf8Bytes={rTextLimit}
       normalizeOnBlur={
         kind === "integer" || kind === "float" || kind === "decimal"
           ? (value) => normalizeFillNumericValue(kind, value)
@@ -1828,6 +1846,7 @@ function TextField({
   step,
   inputMode,
   maxLength,
+  maxUtf8Bytes,
   normalizeOnBlur
 }: {
   name: string;
@@ -1839,12 +1858,22 @@ function TextField({
   step?: number | "any";
   inputMode?: "numeric" | "decimal";
   maxLength?: number;
+  maxUtf8Bytes?: number;
   normalizeOnBlur?: (value: string) => string;
 }) {
+  const helpId = useId();
+  const validateByteLength = (input: HTMLInputElement) => {
+    if (maxUtf8Bytes === undefined) return;
+    const byteLength = new TextEncoder().encode(input.value).byteLength;
+    input.setCustomValidity(
+      byteLength > maxUtf8Bytes ? `Use at most ${maxUtf8Bytes.toLocaleString()} UTF-8 bytes.` : ""
+    );
+  };
   return (
     <label className="formField">
       <span>{label}</span>
       <input
+        aria-label={label}
         name={name}
         type={type}
         min={min}
@@ -1853,14 +1882,18 @@ function TextField({
         maxLength={maxLength}
         defaultValue={defaultValue}
         required={required}
+        aria-describedby={maxUtf8Bytes === undefined ? undefined : helpId}
+        onInput={(event) => validateByteLength(event.currentTarget)}
         onBlur={
-          normalizeOnBlur
+          normalizeOnBlur || maxUtf8Bytes !== undefined
             ? (event) => {
-                event.currentTarget.value = normalizeOnBlur(event.currentTarget.value);
+                if (normalizeOnBlur) event.currentTarget.value = normalizeOnBlur(event.currentTarget.value);
+                validateByteLength(event.currentTarget);
               }
             : undefined
         }
       />
+      {maxUtf8Bytes !== undefined && <small id={helpId}>R text replacements can use up to 8,192 UTF-8 bytes.</small>}
     </label>
   );
 }

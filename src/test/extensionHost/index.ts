@@ -1876,6 +1876,7 @@ async function exerciseReleasedRJupyterExtension(
         "sortRows",
         "filterRows",
         "dropMissingRows",
+        "fillMissingValues",
         "dropDuplicates",
         "selectColumns",
         "dropColumns",
@@ -2012,6 +2013,7 @@ async function exerciseReleasedRJupyterExtension(
         "sortRows",
         "filterRows",
         "dropMissingRows",
+        "fillMissingValues",
         "dropDuplicates",
         "selectColumns",
         "dropColumns",
@@ -2267,6 +2269,7 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
         "sortRows",
         "filterRows",
         "dropMissingRows",
+        "fillMissingValues",
         "dropDuplicates",
         "selectColumns",
         "dropColumns",
@@ -3627,6 +3630,115 @@ async function exerciseReleasedRRowReductionJourney(
   );
 }
 
+async function exerciseReleasedRFillMissingJourney(
+  testing: TestApi,
+  sessionId: string,
+  phase: "jupyter-r"
+): Promise<void> {
+  recordAcceptanceProgress(`${phase}:editing:fill-missing-preview-apply-undo`);
+  const original = testing.activeSession();
+  assert.equal(original?.sessionId, sessionId, "The packaged R fill journey must retain its exact session.");
+  assert.ok(original, "The packaged R fill journey requires one active session.");
+  assert.equal(original.metadata.steps.length, 0, "The packaged R fill journey must start from the original frame.");
+  const target = original.metadata.schema.find((column) => column.name === "extra_20");
+  assert.ok(target, "The packaged R fill journey requires the nullable extra_20 column.");
+  assert.equal(target.type, "string");
+  assert.equal(target.rawType, "character");
+  assert.equal(target.nullable, true);
+
+  const stepId = "released-r-fill-extra-20";
+  const replacement = "filled by Open Wrangler";
+  const preview = await testing.request({
+    kind: "previewStep",
+    sessionId,
+    revision: original.metadata.revision,
+    step: {
+      id: stepId,
+      kind: "fillMissingValues",
+      params: {
+        column: { id: target.id, name: target.name },
+        replacement: { kind: "string", value: replacement }
+      }
+    },
+    offset: 0,
+    limit: 1,
+    columnOffset: target.position,
+    columnLimit: 1
+  });
+  assert.equal(preview.kind, "stepPreview", "Packaged native R Fill missing values must preview.");
+  if (preview.kind !== "stepPreview") throw new Error("The packaged native R fill preview failed.");
+  assert.deepEqual(preview.metadata.draftStep, {
+    id: stepId,
+    kind: "fillMissingValues",
+    params: {
+      column: { id: target.id, name: target.name },
+      replacement: { kind: "string", value: replacement }
+    }
+  });
+  assert.equal(preview.metadata.schema.find((column) => column.id === target.id)?.nullable, false);
+  assert.deepEqual(preview.page.columnIds, [target.id]);
+  assert.deepEqual(preview.page.rows[0]?.values[0], {
+    kind: "string",
+    raw: replacement,
+    display: replacement,
+    isNull: false,
+    isNaN: false
+  });
+  assert.equal(preview.diff.changedCells, 1);
+  assert.match(preview.code, /\.ow_fill_values/u);
+  assert.match(preview.code, /filled by Open Wrangler/u);
+
+  const applied = await testing.request({
+    kind: "applyDraft",
+    sessionId,
+    revision: preview.revision,
+    offset: 0,
+    limit: 1,
+    columnOffset: target.position,
+    columnLimit: 1
+  });
+  assert.equal(applied.kind, "planUpdated", "Packaged native R Fill missing values must apply.");
+  if (applied.kind !== "planUpdated") throw new Error("The packaged native R fill apply failed.");
+  assert.equal(applied.action, "apply");
+  assert.equal(applied.metadata.draftStep, undefined);
+  assert.deepEqual(applied.metadata.steps, [preview.metadata.draftStep]);
+  assert.equal(applied.metadata.schema.find((column) => column.id === target.id)?.nullable, false);
+  assert.deepEqual(applied.page.columnIds, [target.id]);
+  assert.deepEqual(applied.page.rows[0]?.values[0], {
+    kind: "string",
+    raw: replacement,
+    display: replacement,
+    isNull: false,
+    isNaN: false
+  });
+  assert.match(applied.code, /\.ow_fill_values/u);
+
+  const undone = await testing.request({
+    kind: "undoStep",
+    sessionId,
+    revision: applied.revision,
+    offset: 0,
+    limit: 1,
+    columnOffset: target.position,
+    columnLimit: 1
+  });
+  assert.equal(undone.kind, "planUpdated", "Packaged native R Fill missing values must undo.");
+  if (undone.kind !== "planUpdated") throw new Error("The packaged native R fill undo failed.");
+  assert.equal(undone.action, "undo");
+  assert.equal(undone.metadata.steps.length, 0);
+  assert.equal(undone.metadata.draftStep, undefined);
+  assert.equal(undone.metadata.schema.find((column) => column.id === target.id)?.nullable, true);
+  assert.equal(undone.code, "");
+  assert.deepEqual(undone.page.columnIds, [target.id]);
+  assert.deepEqual(undone.page.rows[0]?.values[0], {
+    kind: "null",
+    raw: null,
+    display: "",
+    isNull: true,
+    isNaN: false
+  });
+}
+
 async function releasedRVisibleRows(
   testing: TestApi,
   sessionId: string,
@@ -3714,6 +3826,7 @@ async function exerciseReleasedREditingJourney(
       "sortRows",
       "filterRows",
       "dropMissingRows",
+      "fillMissingValues",
       "dropDuplicates",
       "selectColumns",
       "dropColumns",
@@ -3738,6 +3851,8 @@ async function exerciseReleasedREditingJourney(
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after persistent row operations");
     await exerciseReleasedRRowReductionJourney(testing, workbench, sessionId, phase);
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after row reduction operations");
+    await exerciseReleasedRFillMissingJourney(testing, sessionId, phase);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after Fill missing values");
   }
 
   recordAcceptanceProgress(`${phase}:editing:preview-discard`);

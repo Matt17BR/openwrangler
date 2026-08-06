@@ -22,7 +22,10 @@ matrix for release candidates or changes that cross all of its boundaries.
   frames, and stable source-row identities. Drop Duplicates tests cover first/last/none retention, selected-column and
   whole-row comparison, source order, stable row identities, and R's treatment of `NA` and `NaN`. Both cover duplicate and
   non-syntactic names, base data frames, tibbles, keyed data tables, stale references, source isolation, and executable
-  generated R. Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase tests resolve duplicate and
+  generated R. Fill Missing Values tests cover `NA` and `NaN`, typed replacements, exact integer and `integer64`
+  medians, factor levels and no-op levels, dates, DST gaps, current-source timezones, the 8 KiB R text limit, nullable
+  metadata, key safety, and executable generated R. Rename, Drop,
+  Select, Clone, Convert type, Text Length, and Lowercase tests resolve duplicate and
   non-syntactic names by stable identity, preserve base, tibble, and keyed `data.table` semantics, and prove that
   drafts and generated R leave the source unchanged.
   Drop tests cover retained IDs after a position shift, data-table key changes, and drop-all rejection. Select tests
@@ -49,7 +52,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   cases run only when
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix. It
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
-  values, the Filter, Sort, Drop Missing Rows, Drop Duplicates, Rename, Drop, Select, Clone, Convert type, Text Length,
+  values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type, Text Length,
   and Lowercase lifecycles, variable replacement, malformed requests, and close cases.
   The R tests check the fixed diagnostics for unsupported frames,
   missing packages, oversized pages or profiles, and stale columns. Focused TypeScript tests cover the embedded
@@ -59,7 +62,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   request waits for the original execution to finish. Variable-discovery tests cover exact base `data.frame`, tibble,
   and `data.table` class vectors, active and delayed bindings, missing `jsonlite` or `rlang`, malformed output, and
   notebook/kernel replacement. Host and webview tests cover the native picker, coordinator route, R runtime identity,
-  Filter, Sort, Drop Missing Rows, Drop Duplicates, Rename, Drop, Select, Clone, Convert type, Text Length, and
+  Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type, Text Length, and
   Lowercase capabilities, generated-code commands, bounded two-dimensional pages, and enabled viewing filters, sorts,
   profiles, and value selection. The
   production-browser accessibility journey covers explicit row labels,
@@ -525,7 +528,7 @@ containerized R kernel in VS Code. The journey checked typed value selection, a 
 Clear all, sort priority, restart and reopen, source preservation, and final cleanup. It does not cover cleaning,
 generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R` files.
 
-Focused R and TypeScript tests on the current v2 branch cover Filter Rows, Sort Rows, Drop Missing Rows, Drop
+Focused R and TypeScript tests on the current v2 branch cover Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase in
 Editing mode. They
 exercise draft preview, executable generated R, mixed plans, apply, discard, inspection, latest-step editing, undo,
@@ -540,13 +543,13 @@ generated R, and exact typed diffs. Drop Missing Rows covers the Any and All mod
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites cover all eleven operations. The current packaged VS Code and Cursor journey runs all eleven operations.
+suites cover all twelve operations. The current packaged VS Code and Cursor journey runs all twelve operations.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact code
 as one `r` cell in the originating notebook, leaves every existing cell unchanged, and checks the source objects again
 after editing. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns; the direct R
-suites cover all eleven operations for all three flavors.
+suites cover all twelve operations for all three flavors.
 
 On macOS and Linux, the same local R editor launch also tests one plain `.R` workflow; it does not start another VS Code or Cursor process.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public

@@ -754,6 +754,21 @@ openwrangler_r_frame_contract <- local({
     if (length(parsed) != 1L || is.na(parsed)) {
       abort("invalid-view-value", sprintf("%s is not a valid datetime", label))
     }
+    if (!has_zone) {
+      local <- as.POSIXlt(parsed, tz = timezone)
+      expected_seconds <- seconds + if (identical(fraction, "")) 0 else as.double(fraction)
+      expected_date <- as.integer(strsplit(parts[[2L]], "-", fixed = TRUE)[[1L]])
+      if (
+        local$year + 1900L != expected_date[[1L]] ||
+          local$mon + 1L != expected_date[[2L]] ||
+          local$mday != expected_date[[3L]] ||
+          local$hour != hours ||
+          local$min != minutes ||
+          abs(local$sec - expected_seconds) > 1e-6
+      ) {
+        abort("invalid-view-value", sprintf("%s is not a valid local datetime in %s", label, timezone))
+      }
+    }
     exact_double(as.double(parsed))
   }
 
@@ -1573,6 +1588,7 @@ openwrangler_r_frame_contract <- local({
     output_ids = NULL,
     text_length_positions = NULL,
     lower_text_positions = NULL,
+    fill_missing_positions = NULL,
     cast_positions = NULL,
     cast_dtypes = NULL
   ) {
@@ -1588,6 +1604,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(output_ids) ||
             !is.null(text_length_positions) ||
             !is.null(lower_text_positions) ||
+            !is.null(fill_missing_positions) ||
             !is.null(cast_positions) ||
             !is.null(cast_dtypes)
         )
@@ -1602,6 +1619,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(lower_text_positions) && is.null(source_positions)) {
       abort("internal-error", "R lowercase outputs require explicit source mappings")
+    }
+    if (!is.null(fill_missing_positions) && is.null(source_positions)) {
+      abort("internal-error", "R fill-missing outputs require explicit source mappings")
     }
     if (xor(is.null(cast_positions), is.null(cast_dtypes))) {
       abort("internal-error", "R cast outputs require positions and target dtypes together")
@@ -1743,7 +1763,28 @@ openwrangler_r_frame_contract <- local({
         }
         cast_positions <- as.integer(cast_positions)
       }
-      transformed_positions <- c(text_length_positions, lower_text_positions, cast_positions)
+      if (is.null(fill_missing_positions)) {
+        fill_missing_positions <- integer()
+      } else {
+        if (
+          !is.numeric(fill_missing_positions) ||
+            anyNA(fill_missing_positions) ||
+            any(!is.finite(fill_missing_positions)) ||
+            any(fill_missing_positions != floor(fill_missing_positions)) ||
+            any(fill_missing_positions < 1L) ||
+            any(fill_missing_positions > length(output_schema)) ||
+            anyDuplicated(fill_missing_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid fill-missing output positions")
+        }
+        fill_missing_positions <- as.integer(fill_missing_positions)
+      }
+      transformed_positions <- c(
+        text_length_positions,
+        lower_text_positions,
+        fill_missing_positions,
+        cast_positions
+      )
       if (anyDuplicated(transformed_positions)) {
         abort("internal-error", "an R output cannot have more than one transformed-column mapping")
       }
@@ -1837,6 +1878,34 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid cast output")
           }
+        } else if (index %in% fill_missing_positions) {
+          source_semantics <- source_column$semantics
+          output_semantics <- output_column$semantics
+          factor_semantics_match <- FALSE
+          if (
+            identical(source_semantics$kind, "factor") &&
+              identical(output_semantics$kind, "factor")
+          ) {
+            source_levels <- source_semantics$levels
+            output_levels <- output_semantics$levels
+            source_without_levels <- source_semantics
+            output_without_levels <- output_semantics
+            source_without_levels$levels <- NULL
+            output_without_levels$levels <- NULL
+            factor_semantics_match <-
+              identical(source_without_levels, output_without_levels) &&
+                length(output_levels) >= length(source_levels) &&
+                length(output_levels) <= length(source_levels) + 1L &&
+                identical(output_levels[seq_along(source_levels)], source_levels)
+          }
+          if (
+            !identical(output_ids[[index]], mapped_source_ids[[index]]) ||
+              !identical(output_column$rawType, source_column$rawType) ||
+              !identical(output_column$type, source_column$type) ||
+              (!identical(output_semantics, source_semantics) && !factor_semantics_match)
+          ) {
+            abort("internal-error", "a derived R frame has an invalid fill-missing output")
+          }
         } else {
           if (
             !identical(output_column$rawType, source_column$rawType) ||
@@ -1847,7 +1916,9 @@ openwrangler_r_frame_contract <- local({
           }
         }
         inspected$descriptor$schema[[index]]$id <- output_ids[[index]]
-        inspected$descriptor$schema[[index]]$nullable <- if (index %in% cast_positions) {
+        inspected$descriptor$schema[[index]]$nullable <- if (index %in% fill_missing_positions) {
+          FALSE
+        } else if (index %in% cast_positions) {
           isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
         } else {
           source_nullable[[index]]
@@ -2195,6 +2266,205 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     lower_text_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  integer64_fill_value <- function(text, label) {
+    if (!requireNamespace("bit64", quietly = TRUE)) {
+      abort("missing-package", "bit64 is required to fill an integer64 column")
+    }
+    parsed <- suppressWarnings(bit64::as.integer64(validate_integer64_text(text, label)))
+    if (is.na(parsed)) {
+      abort("invalid-view-value", sprintf("%s is not representable by bit64", label))
+    }
+    parsed
+  }
+
+  exact_integer64_median <- function(values) {
+    if (!requireNamespace("bit64", quietly = TRUE)) {
+      abort("missing-package", "bit64 is required to calculate an integer64 median")
+    }
+    ordered <- sort(values)
+    count <- length(ordered)
+    lower <- ordered[[(count + 1L) %/% 2L]]
+    upper <- ordered[[(count + 2L) %/% 2L]]
+    if (count %% 2L == 1L) return(lower)
+    zero <- bit64::as.integer64(0L)
+    two <- bit64::as.integer64(2L)
+    midpoint <- if ((lower < zero && upper < zero) || (lower >= zero && upper >= zero)) {
+      difference <- upper - lower
+      if (!identical(as.character(difference %% two), "0")) {
+        abort("invalid-view-value", "the integer64 median is not an integer")
+      }
+      lower + difference %/% two
+    } else {
+      total <- lower + upper
+      if (!identical(as.character(total %% two), "0")) {
+        abort("invalid-view-value", "the integer64 median is not an integer")
+      }
+      total %/% two
+    }
+    if (is.na(midpoint)) abort("invalid-view-value", "the integer64 median is outside the supported range")
+    midpoint
+  }
+
+  fill_missing_value <- function(column, descriptor, replacement) {
+    replacement <- exact_named_list_optional(
+      replacement,
+      "kind",
+      "value",
+      "replacement"
+    )
+    kind <- scalar_choice(
+      replacement$kind,
+      c("median", "string", "integer", "float", "decimal", "boolean", "date", "datetime"),
+      "replacement$kind"
+    )
+    if (identical(kind, "median")) {
+      if (!identical(names(replacement), "kind")) {
+        abort("invalid-view-query", "a median replacement may not contain a value")
+      }
+    } else if (!setequal(names(replacement), c("kind", "value"))) {
+      abort("invalid-view-query", "a typed replacement requires exactly one value")
+    }
+
+    semantic_kind <- descriptor$semantics$kind
+    compatible <- switch(
+      semantic_kind,
+      character = identical(kind, "string"),
+      factor = identical(kind, "string"),
+      integer = kind %in% c("median", "integer"),
+      integer64 = kind %in% c("median", "integer"),
+      double = kind %in% c("median", "integer", "float"),
+      logical = identical(kind, "boolean"),
+      date = identical(kind, "date"),
+      datetime = identical(kind, "datetime"),
+      FALSE
+    )
+    if (!compatible) {
+      abort("invalid-view-query", "the replacement is incompatible with the selected R column")
+    }
+
+    missing <- is.na(column)
+    if (identical(kind, "median")) {
+      if (!any(missing)) return(list(column = column, addedFactorLevel = FALSE))
+      present <- column[!missing]
+      if (length(present) == 0L) {
+        abort("invalid-view-value", "the median is unavailable because the selected column has no present values")
+      }
+      fill <- if (identical(semantic_kind, "integer64")) {
+        exact_integer64_median(present)
+      } else {
+        ordered <- sort(present)
+        count <- length(ordered)
+        lower <- ordered[[(count + 1L) %/% 2L]]
+        upper <- ordered[[(count + 2L) %/% 2L]]
+        midpoint <- lower / 2 + upper / 2
+        if (is.nan(midpoint)) {
+          abort("invalid-view-value", "the selected column has no usable numeric median")
+        }
+        if (identical(semantic_kind, "integer")) {
+          if (!is.finite(midpoint) || midpoint != floor(midpoint)) {
+            abort("invalid-view-value", "the integer median is not an integer")
+          }
+          midpoint <- as.integer(midpoint)
+          if (is.na(midpoint)) abort("invalid-view-value", "the integer median is outside the R integer range")
+        }
+        midpoint
+      }
+      result <- column
+      result[missing] <- fill
+      return(list(column = result, addedFactorLevel = FALSE))
+    }
+
+    value <- replacement$value
+    if (identical(semantic_kind, "character")) {
+      fill <- bounded_utf8(value, "replacement$value")
+      result <- column
+      result[missing] <- fill
+      return(list(column = result, addedFactorLevel = FALSE))
+    }
+    if (identical(semantic_kind, "factor")) {
+      fill <- bounded_utf8(value, "replacement$value")
+      if (!any(missing)) return(list(column = column, addedFactorLevel = FALSE))
+      source_levels <- levels(column)
+      added <- !fill %in% source_levels
+      target_levels <- if (added) c(source_levels, fill) else source_levels
+      result <- factor(as.character(column), levels = target_levels, ordered = is.ordered(column))
+      result[missing] <- fill
+      return(list(column = result, addedFactorLevel = added))
+    }
+    if (identical(semantic_kind, "integer")) {
+      text <- normalize_integer_text(value, "replacement$value")
+      numeric_value <- suppressWarnings(as.double(text))
+      if (!is.finite(numeric_value) || numeric_value < -2147483647 || numeric_value > 2147483647) {
+        abort("invalid-view-value", "replacement$value is outside the R integer range")
+      }
+      fill <- as.integer(numeric_value)
+    } else if (identical(semantic_kind, "integer64")) {
+      text <- normalize_integer_text(value, "replacement$value")
+      fill <- integer64_fill_value(text, "replacement$value")
+    } else if (identical(semantic_kind, "double")) {
+      fill <- parse_finite_number(value, "replacement$value")
+    } else if (identical(semantic_kind, "logical")) {
+      fill <- parse_boolean(value, "replacement$value")
+    } else if (identical(semantic_kind, "date")) {
+      fill <- as.Date(as.double(parse_date_key(value, "replacement$value")), origin = "1970-01-01")
+    } else if (identical(semantic_kind, "datetime")) {
+      fill <- as.double(parse_datetime_key(value, descriptor$semantics, "replacement$value"))
+    } else {
+      abort("invalid-view-query", "the selected R column cannot be filled")
+    }
+    result <- column
+    result[missing] <- fill
+    list(column = result, addedFactorLevel = FALSE)
+  }
+
+  fill_missing_column_at <- function(value, position, old_name, replacement) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the fill-missing column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    descriptor <- inspected$descriptor$schema[[position]]
+    if (!identical(descriptor$name, old_name)) {
+      abort("stale-column", "the fill-missing column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
+    }
+    filled <- fill_missing_value(value[[position]], descriptor, replacement)
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = filled$column)
+    } else {
+      result[[position]] <- filled$column
+    }
+    result
+  }
+
+  fill_missing_column <- function(value, column_reference, replacement) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    fill_missing_column_at(value, resolved$position, resolved$name, replacement)
   }
 
   cast_text_source <- function(column, kind, label) {
@@ -3267,6 +3537,8 @@ openwrangler_r_frame_contract <- local({
     text_length_column_at = text_length_column_at,
     lower_text_column = lower_text_column,
     lower_text_column_at = lower_text_column_at,
+    fill_missing_column = fill_missing_column,
+    fill_missing_column_at = fill_missing_column_at,
     cast_column = cast_column,
     cast_column_at = cast_column_at,
     drop_columns = drop_columns,

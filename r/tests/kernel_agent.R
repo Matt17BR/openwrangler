@@ -44,6 +44,8 @@ row_reduction_session_id <- "26262626-2626-4626-8626-262626262626"
 row_reduction_tibble_session_id <- "27272727-2727-4727-8727-272727272727"
 row_reduction_table_session_id <- "28282828-2828-4828-8828-282828282828"
 row_reduction_view_session_id <- "29292929-2929-4929-8929-292929292929"
+fill_session_id <- "30303030-3030-4030-8030-303030303030"
+fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -2075,6 +2077,220 @@ assert_identical(source_environment$lower_table, lower_table_before, "the R data
 lower_table_closed <- dispatch("closeSession", list(sessionId = lower_table_session_id))
 assert_identical(lower_table_closed$kind, "closed", "the R data.table Lowercase session did not close")
 
+source_environment$fill_frame <- data.frame(
+  amount = c(1L, NA_integer_, 3L),
+  label = ordered(c("high", NA, "low"), levels = c("low", "high")),
+  instant = as.POSIXct(c("2026-03-28 12:00:00", NA, "2026-03-30 12:00:00"), tz = "UTC"),
+  row.names = c("fill-a", "fill-b", "fill-c")
+)
+fill_source_before <- unserialize(serialize(source_environment$fill_frame, NULL, version = 3L))
+fill_step <- function(id, column_id, column_name, replacement) {
+  list(
+    id = id,
+    kind = "fillMissingValues",
+    params = list(column = list(id = column_id, name = column_name), replacement = replacement)
+  )
+}
+fill_open <- dispatch(
+  "openSession",
+  list(sessionId = fill_session_id, variableName = "fill_frame", page = page_window())
+)
+assert_identical(fill_open$kind, "page", "the R Fill Missing Values session did not open")
+
+fill_malformed <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fill_session_id,
+    revision = 0L,
+    step = fill_step("fill-malformed", "r:c:0", "amount", list(kind = "median", value = "1")),
+    page = page_window()
+  )
+)
+assert_identical(fill_malformed$kind, "error", "R Fill Missing Values accepted a malformed replacement")
+assert_identical(fill_malformed$code, "invalid_request", "the malformed fill replacement diagnostic changed")
+
+fill_oversized <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fill_session_id,
+    revision = 0L,
+    step = fill_step("fill-oversized", "r:c:1", "label", list(kind = "string", value = strrep("x", 8193L))),
+    page = page_window()
+  )
+)
+assert_identical(fill_oversized$kind, "error", "R Fill Missing Values accepted oversized replacement text")
+assert_identical(fill_oversized$code, "invalid_request", "the oversized fill replacement diagnostic changed")
+
+fill_amount_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fill_session_id,
+    revision = 0L,
+    step = fill_step("fill-amount", "r:c:0", "amount", list(kind = "median")),
+    page = page_window()
+  )
+)
+assert_identical(fill_amount_preview$kind, "stepPreview", "R Fill Missing Values did not preview")
+assert_identical(fill_amount_preview$page$schema[[1L]]$nullable, FALSE, "R Fill Missing Values kept a filled column nullable")
+assert_identical(fill_amount_preview$diff$changedCells, 1L, "R Fill Missing Values returned an inexact numeric diff")
+assert_identical(fill_amount_preview$diff$cells[[1L]]$before$kind, "null", "the fill diff lost the missing input")
+assert_identical(fill_amount_preview$diff$cells[[1L]]$after$raw, "2", "the fill diff lost the median output")
+fill_amount_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(fill_amount_apply$action, "apply", "R Fill Missing Values did not apply")
+
+fill_label_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fill_session_id,
+    revision = 2L,
+    step = fill_step("fill-label", "r:c:1", "label", list(kind = "string", value = "unknown")),
+    page = page_window()
+  )
+)
+assert_identical(fill_label_preview$kind, "stepPreview", "R factor Fill Missing Values did not preview")
+assert_identical(fill_label_preview$page$schema[[2L]]$nullable, FALSE, "R factor Fill Missing Values stayed nullable")
+assert_identical(fill_label_preview$diff$changedCells, 1L, "R factor Fill Missing Values returned an inexact diff")
+fill_label_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = fill_session_id, revision = 3L, page = page_window())
+)
+assert_identical(fill_label_apply$action, "apply", "R factor Fill Missing Values did not apply")
+if (!grepl(".ow_fill_values", fill_label_apply$code, fixed = TRUE)) {
+  stop("generated R Fill Missing Values lost its native helper", call. = FALSE)
+}
+assign("fill_frame", source_environment$fill_frame, envir = .GlobalEnv)
+eval(parse(text = fill_label_apply$code), envir = .GlobalEnv)
+fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(fill_generated$amount, c(1L, 2L, 3L), "generated R Fill Missing Values changed the numeric result")
+assert_identical(
+  fill_generated$label,
+  ordered(c("high", "unknown", "low"), levels = c("low", "high", "unknown")),
+  "generated R Fill Missing Values changed the factor result"
+)
+assert_identical(row.names(fill_generated), row.names(fill_source_before), "generated R Fill Missing Values changed row names")
+assert_identical(
+  get("fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  fill_source_before,
+  "generated R Fill Missing Values mutated its source"
+)
+rm("fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+fill_noop_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fill_session_id,
+    revision = 4L,
+    step = fill_step("fill-label-noop", "r:c:1", "label", list(kind = "string", value = "unused")),
+    page = page_window()
+  )
+)
+assert_identical(fill_noop_preview$kind, "stepPreview", "R factor Fill Missing Values could not preview a no-op")
+assert_identical(fill_noop_preview$diff$changedCells, 0L, "R factor no-op reported changed cells")
+assert_identical(
+  unlist(fill_noop_preview$page$schema[[2L]]$semantics$levels, use.names = FALSE),
+  c("low", "high", "unknown"),
+  "R factor no-op appended an unused level"
+)
+assign("fill_frame", source_environment$fill_frame, envir = .GlobalEnv)
+eval(parse(text = fill_noop_preview$code), envir = .GlobalEnv)
+fill_noop_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  levels(fill_noop_generated$label),
+  c("low", "high", "unknown"),
+  "generated R factor no-op appended an unused level"
+)
+rm("fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+fill_noop_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = fill_session_id, revision = 5L, page = page_window())
+)
+assert_identical(fill_noop_discard$action, "discard", "R factor no-op draft did not discard")
+
+fill_datetime_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fill_session_id,
+    revision = 6L,
+    step = fill_step(
+      "fill-datetime",
+      "r:c:2",
+      "instant",
+      list(kind = "datetime", value = "2026-03-29T02:30:00")
+    ),
+    page = page_window()
+  )
+)
+assert_identical(fill_datetime_preview$kind, "stepPreview", "R datetime Fill Missing Values did not preview in UTC")
+generated_dst_source <- fill_source_before
+attr(generated_dst_source$instant, "tzone") <- "Europe/Berlin"
+assign("fill_frame", generated_dst_source, envir = .GlobalEnv)
+generated_dst_error <- tryCatch(
+  {
+    eval(parse(text = fill_datetime_preview$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(generated_dst_error) ||
+    !grepl("invalid local datetime in Europe/Berlin", conditionMessage(generated_dst_error), fixed = TRUE)
+) {
+  stop("generated R Fill Missing Values reused a stale timezone or normalized a DST gap", call. = FALSE)
+}
+assert_identical(
+  get("fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  generated_dst_source,
+  "the generated R datetime guard mutated its source"
+)
+rm("fill_frame", envir = .GlobalEnv)
+if (exists("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)) {
+  rm("open_wrangler_result", envir = .GlobalEnv)
+}
+fill_datetime_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = fill_session_id, revision = 7L, page = page_window())
+)
+assert_identical(fill_datetime_discard$action, "discard", "R datetime fill draft did not discard")
+
+fill_inspection <- inspect_step(fill_session_id, 8L, "fill-label", page_window())
+assert_identical(fill_inspection$kind, "stepInspection", "applied R Fill Missing Values was not inspectable")
+assert_identical(fill_inspection$diff$changedCells, 1L, "R Fill Missing Values inspection lost its diff")
+fill_undo <- dispatch(
+  "undoStep",
+  list(sessionId = fill_session_id, revision = 8L, page = page_window())
+)
+assert_identical(fill_undo$action, "undo", "R Fill Missing Values did not undo")
+assert_identical(fill_undo$page$schema[[2L]]$nullable, TRUE, "undo did not restore R factor nullability")
+assert_identical(source_environment$fill_frame, fill_source_before, "the R Fill Missing Values lifecycle mutated its source")
+fill_closed <- dispatch("closeSession", list(sessionId = fill_session_id))
+assert_identical(fill_closed$kind, "closed", "the R Fill Missing Values session did not close")
+
+source_environment$fill_table <- data.table::data.table(primary_key = c(1L, 2L), payload = c(NA_character_, "ready"))
+data.table::setkey(source_environment$fill_table, primary_key)
+fill_table_before <- data.table::copy(source_environment$fill_table)
+fill_table_open <- dispatch(
+  "openSession",
+  list(sessionId = fill_table_session_id, variableName = "fill_table", page = page_window())
+)
+assert_identical(fill_table_open$kind, "page", "the R data.table fill session did not open")
+fill_table_key <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fill_table_session_id,
+    revision = 0L,
+    step = fill_step("fill-table-key", "r:c:0", "primary_key", list(kind = "integer", value = "0")),
+    page = page_window()
+  )
+)
+assert_identical(fill_table_key$kind, "error", "R Fill Missing Values silently replaced a data.table key")
+assert_identical(fill_table_key$code, "invalid_request", "the R fill key diagnostic changed")
+assert_identical(source_environment$fill_table, fill_table_before, "the failed R data.table fill mutated its source")
+fill_table_closed <- dispatch("closeSession", list(sessionId = fill_table_session_id))
+assert_identical(fill_table_closed$kind, "closed", "the R data.table fill session did not close")
+
 source_environment$cast_frame <- data.frame(
   integer_text = c(" 1.9", "bad", NA_character_),
   float_factor = factor(c(" 2.5", "NaN", "bad"), levels = c(" 2.5", "NaN", "bad")),
@@ -3618,6 +3834,7 @@ missing_package_contract <- list(
   clone_column_at = function(...) stop("unexpected clone", call. = FALSE),
   text_length_column_at = function(...) stop("unexpected text length", call. = FALSE),
   lower_text_column_at = function(...) stop("unexpected lowercase", call. = FALSE),
+  fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
@@ -3659,6 +3876,21 @@ if (
     !identical(conditionMessage(missing_lower_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without Lowercase support", call. = FALSE)
+}
+missing_fill_contract <- missing_package_contract
+missing_fill_contract$fill_missing_column_at <- NULL
+missing_fill_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_fill_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_fill_error) ||
+    !identical(conditionMessage(missing_fill_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without Fill Missing Values support", call. = FALSE)
 }
 missing_cast_contract <- missing_package_contract
 missing_cast_contract$cast_column_at <- NULL
