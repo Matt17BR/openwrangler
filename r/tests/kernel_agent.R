@@ -7,6 +7,11 @@ assert_identical <- function(actual, expected, message) {
   }
 }
 
+assert_schema_less_inspection <- function(inspection, label) {
+  assert_identical(inspection$inputPage$schema, NULL, sprintf("%s duplicated its input schema", label))
+  assert_identical(inspection$outputPage$schema, NULL, sprintf("%s duplicated its output schema", label))
+}
+
 request_id <- "11111111-1111-4111-8111-111111111111"
 session_id <- "22222222-2222-4222-8222-222222222222"
 second_session_id <- "33333333-3333-4333-8333-333333333333"
@@ -25,6 +30,11 @@ text_length_table_session_id <- "ffffffff-ffff-4fff-8fff-ffffffffffff"
 invalid_text_length_session_id <- "12121212-1212-4212-8212-121212121212"
 lower_session_id <- "13131313-1313-4313-8313-131313131313"
 lower_table_session_id <- "14141414-1414-4414-8414-141414141414"
+cast_session_id <- "15151515-1515-4515-8515-151515151515"
+cast_table_session_id <- "16161616-1616-4616-8616-161616161616"
+cast_off_page_session_id <- "17171717-1717-4717-8717-171717171717"
+large_factor_session_id <- "18181818-1818-4818-8818-181818181818"
+large_cells_session_id <- "19191919-1919-4919-8919-191919191919"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -84,6 +94,61 @@ dispatch_with <- function(target_agent, kind, payload, id = request_id) {
 
 dispatch <- function(kind, payload, id = request_id) {
   dispatch_with(agent, kind, payload, id)
+}
+
+inspect_step <- function(session_id, revision, step_id, page) {
+  info <- dispatch(
+    "inspectStepInfo",
+    list(sessionId = session_id, revision = revision, stepId = step_id)
+  )
+  input <- dispatch(
+    "inspectStepPage",
+    list(sessionId = session_id, revision = revision, stepId = step_id, side = "input", page = page)
+  )
+  output <- dispatch(
+    "inspectStepPage",
+    list(sessionId = session_id, revision = revision, stepId = step_id, side = "output", page = page)
+  )
+  assert_identical(info$kind, "stepInspectionInfo", "R inspection metadata did not return")
+  assert_identical(input$kind, "stepInspectionPage", "R inspection input page did not return")
+  assert_identical(output$kind, "stepInspectionPage", "R inspection output page did not return")
+  assert_identical(input$side, "input", "R inspection returned the wrong input side")
+  assert_identical(output$side, "output", "R inspection returned the wrong output side")
+  assert_identical(input$stepIndex, info$stepIndex, "R inspection input step index changed")
+  assert_identical(output$stepIndex, info$stepIndex, "R inspection output step index changed")
+
+  input_ids <- unlist(input$page$page$columnIds, use.names = FALSE)
+  output_ids <- unlist(output$page$page$columnIds, use.names = FALSE)
+  shared_ids <- intersect(input_ids, output_ids)
+  changed_cells <- 0L
+  if (length(shared_ids) > 0L) {
+    input_rows <- input$page$page$rows
+    input_row_ids <- vapply(input_rows, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    for (output_row in output$page$page$rows) {
+      input_index <- match(output_row$id, input_row_ids)
+      if (is.na(input_index)) next
+      for (column_id in shared_ids) {
+        input_position <- match(column_id, input_ids)
+        output_position <- match(column_id, output_ids)
+        if (!identical(
+          input_rows[[input_index]]$values[[input_position]],
+          output_row$values[[output_position]]
+        )) {
+          changed_cells <- changed_cells + 1L
+        }
+      }
+    }
+  }
+  list(
+    kind = "stepInspection",
+    revision = info$revision,
+    stepId = info$stepId,
+    stepIndex = info$stepIndex,
+    inputPage = input$page,
+    outputPage = output$page,
+    diff = list(changedCells = changed_cells),
+    code = info$code
+  )
 }
 
 opened <- dispatch(
@@ -442,34 +507,16 @@ if (!grepl("data.table::copy", rename_apply$code, fixed = TRUE)) {
   stop("generated R cleaning code did not isolate data.table input", call. = FALSE)
 }
 
-rename_inspection <- dispatch(
-  "inspectStep",
-  list(
-    sessionId = rename_session_id,
-    revision = 4L,
-    stepId = "rename-step",
-    page = page_window(row_limit = 1L, column_offset = 1L, column_limit = 1L)
-  )
+rename_inspection <- inspect_step(
+  rename_session_id,
+  4L,
+  "rename-step",
+  page_window(row_limit = 1L, column_offset = 1L, column_limit = 1L)
 )
 assert_identical(rename_inspection$kind, "stepInspection", "the applied R rename could not be inspected")
 assert_identical(rename_inspection$revision, 4L, "inspection changed the R session revision")
 assert_identical(rename_inspection$stepIndex, 0L, "inspection reported the wrong applied-step index")
-assert_identical(
-  vapply(rename_inspection$inputSchema, `[[`, logical(1L), "nullable"),
-  rename_nullability,
-  "inspection changed the input nullability contract"
-)
-assert_identical(
-  vapply(rename_inspection$outputSchema, `[[`, logical(1L), "nullable"),
-  rename_nullability,
-  "inspection changed the output nullability contract"
-)
-assert_identical(rename_inspection$inputSchema[[2L]]$name, "duplicate", "inspection lost the input schema")
-assert_identical(
-  rename_inspection$outputSchema[[2L]]$name,
-  "second duplicate",
-  "inspection lost the output schema"
-)
+assert_schema_less_inspection(rename_inspection, "R rename inspection")
 assert_identical(
   rename_inspection$inputPage$page$columnIds,
   list("r:c:1"),
@@ -627,18 +674,15 @@ assert_identical(
   c("r:c:0", "r:c:2"),
   "applying the R drop changed retained identities"
 )
-drop_inspection <- dispatch(
-  "inspectStep",
-  list(sessionId = drop_session_id, revision = 4L, stepId = "drop-step", page = page_window())
+drop_inspection <- inspect_step(
+  drop_session_id,
+  4L,
+  "drop-step",
+  page_window()
 )
 assert_identical(drop_inspection$kind, "stepInspection", "the applied R drop could not be inspected")
-assert_identical(drop_inspection$inputSchema[[2L]]$id, "r:c:1", "R drop inspection lost its input schema")
-assert_identical(
-  vapply(drop_inspection$outputSchema, `[[`, character(1L), "id"),
-  c("r:c:0", "r:c:2"),
-  "R drop inspection lost its output schema"
-)
-assert_identical(drop_inspection$diff$removedColumns, list("duplicate"), "R drop inspection lost its diff")
+assert_schema_less_inspection(drop_inspection, "R drop inspection")
+assert_identical(drop_inspection$outputPage$shape$columns, 2L, "R drop inspection returned the wrong output width")
 
 assign("drop_frame", source_environment$drop_frame, envir = .GlobalEnv)
 eval(parse(text = drop_apply$code), envir = .GlobalEnv)
@@ -786,21 +830,15 @@ assert_identical(
   c("r:c:2", "r:c:0"),
   "applying the R selection changed stable identities"
 )
-select_inspection <- dispatch(
-  "inspectStep",
-  list(sessionId = select_session_id, revision = 4L, stepId = "select-step", page = page_window())
+select_inspection <- inspect_step(
+  select_session_id,
+  4L,
+  "select-step",
+  page_window()
 )
 assert_identical(select_inspection$kind, "stepInspection", "the applied R selection could not be inspected")
-assert_identical(
-  vapply(select_inspection$outputSchema, `[[`, character(1L), "id"),
-  c("r:c:2", "r:c:0"),
-  "R selection inspection lost its output schema"
-)
-assert_identical(
-  select_inspection$diff$removedColumns,
-  list("duplicate", "remove"),
-  "R selection inspection lost its diff"
-)
+assert_schema_less_inspection(select_inspection, "R selection inspection")
+assert_identical(select_inspection$outputPage$shape$columns, 2L, "R selection inspection returned the wrong width")
 
 select_rename_step <- list(
   id = "select-rename-step",
@@ -826,14 +864,16 @@ assert_identical(
   c("non syntactic", "retained duplicate"),
   "the mixed R selection/rename plan replayed the wrong schema"
 )
-select_after_mixed_inspection <- dispatch(
-  "inspectStep",
-  list(sessionId = select_session_id, revision = 6L, stepId = "select-step", page = page_window())
+select_after_mixed_inspection <- inspect_step(
+  select_session_id,
+  6L,
+  "select-step",
+  page_window()
 )
 assert_identical(
-  select_after_mixed_inspection$diff$removedColumns,
-  list("duplicate", "remove"),
-  "mixed replay changed the R selection diff"
+  select_after_mixed_inspection$outputPage$page$columnIds,
+  list("r:c:2", "r:c:0"),
+  "mixed replay changed the R selection inspection"
 )
 assign("select_frame", source_environment$select_frame, envir = .GlobalEnv)
 eval(parse(text = select_rename_apply$code), envir = .GlobalEnv)
@@ -1089,19 +1129,15 @@ assert_identical(
   c("duplicate", "duplicate", "non syntactic", "duplicate copy"),
   "applying the R clone repaired duplicate names"
 )
-clone_inspection <- dispatch(
-  "inspectStep",
-  list(sessionId = clone_session_id, revision = 4L, stepId = "clone-step", page = page_window())
+clone_inspection <- inspect_step(
+  clone_session_id,
+  4L,
+  "clone-step",
+  page_window()
 )
 assert_identical(clone_inspection$kind, "stepInspection", "the applied R clone could not be inspected")
-assert_identical(length(clone_inspection$inputSchema), 3L, "R clone inspection lost its input schema")
-assert_identical(length(clone_inspection$outputSchema), 4L, "R clone inspection lost its output schema")
-assert_identical(
-  clone_inspection$outputSchema[[4L]]$id,
-  "c:step:clone-step:0",
-  "R clone inspection lost its derived identity"
-)
-assert_identical(clone_inspection$diff$addedColumns, list("duplicate copy"), "R clone inspection lost its diff")
+assert_schema_less_inspection(clone_inspection, "R clone inspection")
+assert_identical(clone_inspection$outputPage$shape$columns, 4L, "R clone inspection returned the wrong width")
 
 clone_rename_step <- list(
   id = "rename-clone-step",
@@ -1131,14 +1167,16 @@ assert_identical(
   "mixed R clone replay changed the derived identity"
 )
 assert_identical(clone_rename_apply$page$schema[[4L]]$name, "renamed copy", "mixed R clone replay lost the rename")
-clone_after_mixed_inspection <- dispatch(
-  "inspectStep",
-  list(sessionId = clone_session_id, revision = 6L, stepId = "clone-step", page = page_window())
+clone_after_mixed_inspection <- inspect_step(
+  clone_session_id,
+  6L,
+  "clone-step",
+  page_window()
 )
 assert_identical(
-  clone_after_mixed_inspection$diff$addedColumns,
-  list("duplicate copy"),
-  "mixed replay changed the R clone diff"
+  clone_after_mixed_inspection$outputPage$page$columnIds,
+  list("r:c:0", "r:c:1", "r:c:2", "c:step:clone-step:0"),
+  "mixed replay changed the R clone inspection"
 )
 if (!grepl(".ow_clone_position", clone_rename_apply$code, fixed = TRUE)) {
   stop("generated R Clone Column code lost its positional binding", call. = FALSE)
@@ -1476,19 +1514,19 @@ assert_identical(
   c("r:c:0", "r:c:1", "r:c:2", "c:step:text-length-step:0"),
   "applying R Text Length changed stable identities"
 )
-text_length_inspection <- dispatch(
-  "inspectStep",
-  list(sessionId = text_length_session_id, revision = 4L, stepId = "text-length-step", page = page_window())
+text_length_inspection <- inspect_step(
+  text_length_session_id,
+  4L,
+  "text-length-step",
+  page_window()
 )
 assert_identical(text_length_inspection$kind, "stepInspection", "the applied R Text Length step was not inspectable")
-assert_identical(length(text_length_inspection$inputSchema), 3L, "R Text Length inspection lost its input schema")
-assert_identical(length(text_length_inspection$outputSchema), 4L, "R Text Length inspection lost its output schema")
+assert_schema_less_inspection(text_length_inspection, "R Text Length inspection")
 assert_identical(
-  text_length_inspection$outputSchema[[4L]]$id,
-  "c:step:text-length-step:0",
-  "R Text Length inspection changed its output identity"
+  text_length_inspection$outputPage$shape$columns,
+  4L,
+  "R Text Length inspection returned the wrong width"
 )
-assert_identical(text_length_inspection$diff$addedColumns, list("character count"), "R Text Length inspection lost its diff")
 
 text_length_rename <- list(
   id = "rename-text-length",
@@ -1891,9 +1929,11 @@ assert_identical(
 )
 rm("lower_frame", "open_wrangler_result", envir = .GlobalEnv)
 
-lower_inspection <- dispatch(
-  "inspectStep",
-  list(sessionId = lower_session_id, revision = 4L, stepId = "lower-step", page = page_window())
+lower_inspection <- inspect_step(
+  lower_session_id,
+  4L,
+  "lower-step",
+  page_window()
 )
 assert_identical(lower_inspection$kind, "stepInspection", "applied R Lowercase was not inspectable")
 assert_identical(lower_inspection$diff$changedCells, 2L, "R Lowercase inspection lost its exact diff")
@@ -2006,6 +2046,345 @@ rm("lower_table", envir = .GlobalEnv)
 assert_identical(source_environment$lower_table, lower_table_before, "the R data.table Lowercase lifecycle mutated its source")
 lower_table_closed <- dispatch("closeSession", list(sessionId = lower_table_session_id))
 assert_identical(lower_table_closed$kind, "closed", "the R data.table Lowercase session did not close")
+
+source_environment$cast_frame <- data.frame(
+  integer_text = c(" 1.9", "bad", NA_character_),
+  float_factor = factor(c(" 2.5", "NaN", "bad"), levels = c(" 2.5", "NaN", "bad")),
+  boolean_text = c("true", "F", "no"),
+  date_text = c("2024-02-29", "2024-2-29", NA_character_),
+  datetime_text = c("2024-02-29T12:34:56.123456Z", "2024-02-29", "bad"),
+  number = c(pi, NaN, Inf),
+  row.names = c("cast-a", "cast-b", "cast-c")
+)
+cast_source_before <- unserialize(serialize(source_environment$cast_frame, NULL, version = 3L))
+cast_step <- function(id, position, name, dtype) {
+  list(
+    id = id,
+    kind = "castColumn",
+    params = list(column = list(id = sprintf("r:c:%d", position - 1L), name = name), dtype = dtype)
+  )
+}
+cast_open <- dispatch(
+  "openSession",
+  list(sessionId = cast_session_id, variableName = "cast_frame", page = page_window())
+)
+assert_identical(cast_open$kind, "page", "the R Cast session did not open")
+cast_bad_dtype <- dispatch(
+  "previewStep",
+  list(
+    sessionId = cast_session_id,
+    revision = 0L,
+    step = cast_step("bad-cast", 1L, "integer_text", "category"),
+    page = page_window()
+  )
+)
+assert_identical(cast_bad_dtype$kind, "error", "R Cast accepted an unknown target type")
+assert_identical(cast_bad_dtype$code, "invalid_request", "the R Cast target diagnostic changed")
+
+cast_cases <- list(
+  list(id = "cast-integer", position = 1L, name = "integer_text", dtype = "integer"),
+  list(id = "cast-float", position = 2L, name = "float_factor", dtype = "float"),
+  list(id = "cast-boolean", position = 3L, name = "boolean_text", dtype = "boolean"),
+  list(id = "cast-date", position = 4L, name = "date_text", dtype = "date"),
+  list(id = "cast-datetime", position = 5L, name = "datetime_text", dtype = "datetime"),
+  list(id = "cast-string", position = 6L, name = "number", dtype = "string")
+)
+cast_revision <- 0L
+cast_apply <- NULL
+for (case in cast_cases) {
+  cast_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = cast_session_id,
+      revision = cast_revision,
+      step = cast_step(case$id, case$position, case$name, case$dtype),
+      page = page_window(column_offset = case$position - 1L, column_limit = 1L)
+    )
+  )
+  assert_identical(cast_preview$kind, "stepPreview", sprintf("R Cast did not preview %s", case$dtype))
+  assert_identical(
+    cast_preview$page$page$columnIds,
+    list(sprintf("r:c:%d", case$position - 1L)),
+    sprintf("R Cast changed %s lineage", case$dtype)
+  )
+  assert_identical(cast_preview$diff$addedColumns, list(), "in-place R Cast added a column")
+  assert_identical(cast_preview$diff$truncated, FALSE, "a complete R Cast diff was marked truncated")
+  if (identical(case$id, "cast-integer")) {
+    assert_identical(cast_preview$diff$changedCells, 2L, "R Cast returned an inexact integer diff")
+    assert_identical(length(cast_preview$diff$cells), 2L, "R Cast lost its bounded integer cell diffs")
+    assert_identical(
+      cast_preview$diff$cells[[1L]]$before$raw,
+      " 1.9",
+      "R Cast lost the integer diff's source value"
+    )
+    assert_identical(
+      cast_preview$diff$cells[[1L]]$after$raw,
+      "1",
+      "R Cast lost the integer diff's result value"
+    )
+  }
+  cast_revision <- cast_revision + 1L
+  cast_apply <- dispatch(
+    "applyDraft",
+    list(sessionId = cast_session_id, revision = cast_revision, page = page_window())
+  )
+  assert_identical(cast_apply$action, "apply", sprintf("R Cast did not apply %s", case$dtype))
+  cast_revision <- cast_revision + 1L
+}
+
+if (!grepl(".ow_cast_values", cast_apply$code, fixed = TRUE)) {
+  stop("generated R Cast code lost its deterministic cast helper", call. = FALSE)
+}
+assign("cast_frame", source_environment$cast_frame, envir = .GlobalEnv)
+eval(parse(text = cast_apply$code), envir = .GlobalEnv)
+cast_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(cast_generated$integer_text, c(1L, NA_integer_, NA_integer_), "generated R integer Cast changed values")
+assert_identical(cast_generated$float_factor, c(2.5, NaN, NA_real_), "generated R float Cast changed factor labels")
+assert_identical(cast_generated$boolean_text, c(TRUE, FALSE, NA), "generated R boolean Cast changed values")
+assert_identical(
+  cast_generated$date_text,
+  as.Date(c("2024-02-29", NA, NA)),
+  "generated R date Cast accepted non-canonical input"
+)
+assert_identical(
+  cast_generated$datetime_text,
+  as.POSIXct(c("2024-02-29 12:34:56.123456", "2024-02-29 00:00:00", NA), tz = "UTC"),
+  "generated R datetime Cast changed UTC parsing"
+)
+assert_identical(
+  cast_generated$number,
+  c("3.1415926535897931", "NaN", "Inf"),
+  "generated R string Cast changed exact numeric formatting"
+)
+assert_identical(row.names(cast_generated), row.names(cast_source_before), "generated R Cast changed row names")
+assert_identical(
+  get("cast_frame", envir = .GlobalEnv, inherits = FALSE),
+  cast_source_before,
+  "generated R Cast mutated its source dataframe"
+)
+rm("cast_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+cast_inspection <- inspect_step(
+  cast_session_id,
+  cast_revision,
+  "cast-string",
+  page_window(column_offset = 5L, column_limit = 1L)
+)
+assert_identical(cast_inspection$kind, "stepInspection", "applied R Cast was not inspectable")
+assert_identical(cast_inspection$diff$changedCells, 3L, "R Cast inspection lost its exact diff")
+cast_undo <- dispatch(
+  "undoStep",
+  list(sessionId = cast_session_id, revision = cast_revision, page = page_window())
+)
+assert_identical(cast_undo$action, "undo", "R Cast did not undo")
+assert_identical(cast_undo$page$schema[[6L]]$rawType, "double", "R Cast undo did not restore the input type")
+assert_identical(source_environment$cast_frame, cast_source_before, "the R Cast lifecycle mutated its source")
+cast_closed <- dispatch("closeSession", list(sessionId = cast_session_id))
+assert_identical(cast_closed$kind, "closed", "the R Cast session did not close")
+
+source_environment$cast_table <- data.table::data.table(primary_key = c("2", "1"), value = c("4", "3"))
+data.table::setkey(source_environment$cast_table, primary_key)
+cast_table_before <- data.table::copy(source_environment$cast_table)
+cast_table_open <- dispatch(
+  "openSession",
+  list(sessionId = cast_table_session_id, variableName = "cast_table", page = page_window())
+)
+assert_identical(cast_table_open$kind, "page", "the R data.table Cast session did not open")
+cast_key_error <- dispatch(
+  "previewStep",
+  list(
+    sessionId = cast_table_session_id,
+    revision = 0L,
+    step = cast_step("cast-key", 1L, "primary_key", "integer"),
+    page = page_window()
+  )
+)
+assert_identical(cast_key_error$kind, "error", "R Cast silently replaced a data.table key")
+assert_identical(cast_key_error$code, "invalid_request", "the data.table Cast key diagnostic changed")
+if (!grepl("clone the column before casting it", cast_key_error$message, fixed = TRUE)) {
+  stop("R Cast did not explain how to preserve a data.table key", call. = FALSE)
+}
+assert_identical(source_environment$cast_table, cast_table_before, "R Cast mutated a keyed data.table")
+cast_table_closed <- dispatch("closeSession", list(sessionId = cast_table_session_id))
+assert_identical(cast_table_closed$kind, "closed", "the R data.table Cast session did not close")
+
+source_environment$cast_off_page <- data.frame(
+  elapsed = as.difftime(c(rep(1, 100L), NaN), units = "hours"),
+  date_text = c(rep("2024-02-29", 100L), "0001-01-01"),
+  check.names = FALSE
+)
+cast_off_page_before <- unserialize(serialize(source_environment$cast_off_page, NULL, version = 3L))
+cast_off_page_open <- dispatch(
+  "openSession",
+  list(sessionId = cast_off_page_session_id, variableName = "cast_off_page", page = page_window())
+)
+assert_identical(cast_off_page_open$kind, "page", "the off-page R Cast session did not open")
+cast_off_page_duration_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = cast_off_page_session_id,
+    revision = 0L,
+    step = cast_step("cast-off-page-duration", 1L, "elapsed", "string"),
+    page = page_window(column_offset = 0L, column_limit = 1L)
+  )
+)
+assert_identical(cast_off_page_duration_preview$kind, "stepPreview", "the off-page duration Cast did not preview")
+cast_off_page_duration_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = cast_off_page_session_id, revision = 1L, page = page_window())
+)
+assert_identical(cast_off_page_duration_apply$action, "apply", "the off-page duration Cast did not apply")
+cast_off_page_date_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = cast_off_page_session_id,
+    revision = 2L,
+    step = cast_step("cast-off-page-date", 2L, "date_text", "date"),
+    page = page_window(column_offset = 1L, column_limit = 1L)
+  )
+)
+assert_identical(cast_off_page_date_preview$kind, "stepPreview", "the off-page date Cast did not preview")
+cast_off_page_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = cast_off_page_session_id, revision = 3L, page = page_window())
+)
+assert_identical(cast_off_page_apply$action, "apply", "the off-page date Cast did not apply")
+cast_off_page_last <- dispatch(
+  "getPage",
+  list(sessionId = cast_off_page_session_id, page = page_window(row_offset = 100L, row_limit = 1L))
+)
+assert_identical(
+  vapply(cast_off_page_last$page$page$rows[[1L]]$values, `[[`, logical(1L), "isNull"),
+  c(TRUE, TRUE),
+  "off-page R Cast values did not become displayable typed NA values"
+)
+assign("cast_off_page", source_environment$cast_off_page, envir = .GlobalEnv)
+eval(parse(text = cast_off_page_apply$code), envir = .GlobalEnv)
+cast_off_page_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  is.na(cast_off_page_generated$elapsed[[101L]]),
+  TRUE,
+  "generated R duration Cast disagreed with the live off-page NaN result"
+)
+assert_identical(
+  is.na(cast_off_page_generated$date_text[[101L]]),
+  TRUE,
+  "generated R date Cast disagreed with the live off-page ancient-date result"
+)
+assert_identical(
+  get("cast_off_page", envir = .GlobalEnv, inherits = FALSE),
+  cast_off_page_before,
+  "generated off-page R Cast mutated its source dataframe"
+)
+rm("cast_off_page", "open_wrangler_result", envir = .GlobalEnv)
+assert_identical(
+  source_environment$cast_off_page,
+  cast_off_page_before,
+  "the off-page R Cast lifecycle mutated its source dataframe"
+)
+cast_off_page_closed <- dispatch("closeSession", list(sessionId = cast_off_page_session_id))
+assert_identical(cast_off_page_closed$kind, "closed", "the off-page R Cast session did not close")
+
+large_factor_levels <- sprintf("level-%06d-%s", seq_len(100000L), strrep("x", 90L))
+source_environment$large_factor <- data.frame(
+  value = factor(large_factor_levels[[1L]], levels = large_factor_levels),
+  check.names = FALSE
+)
+large_factor_open <- dispatch(
+  "openSession",
+  list(sessionId = large_factor_session_id, variableName = "large_factor", page = page_window(row_limit = 1L, column_limit = 1L))
+)
+assert_identical(large_factor_open$kind, "page", "the near-budget R factor frame did not open")
+large_factor_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = large_factor_session_id,
+    revision = 0L,
+    step = list(
+      id = "large-factor-rename",
+      kind = "renameColumn",
+      params = list(column = list(id = "r:c:0", name = "value"), newName = "renamed")
+    ),
+    page = page_window(row_limit = 1L, column_limit = 1L)
+  )
+)
+assert_identical(
+  large_factor_preview$kind,
+  "stepPreview",
+  "a valid near-budget R factor schema became too large during preview"
+)
+assert_identical(large_factor_preview$inputSchema, NULL, "R preview duplicated the complete input schema")
+large_factor_applied <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = large_factor_session_id,
+    revision = 1L,
+    page = page_window(row_limit = 1L, column_limit = 1L)
+  )
+)
+assert_identical(large_factor_applied$kind, "planUpdated", "the near-budget R factor rename did not apply")
+large_factor_inspected <- inspect_step(
+  large_factor_session_id,
+  2L,
+  "large-factor-rename",
+  page_window(row_limit = 1L, column_limit = 1L)
+)
+assert_identical(
+  large_factor_inspected$kind,
+  "stepInspection",
+  "a valid near-budget R factor schema became too large during inspection"
+)
+assert_schema_less_inspection(large_factor_inspected, "near-budget R factor inspection")
+large_factor_closed <- dispatch("closeSession", list(sessionId = large_factor_session_id))
+assert_identical(large_factor_closed$kind, "closed", "the near-budget R factor session did not close")
+
+source_environment$large_cells <- data.frame(
+  value = rep(strrep("x", 8192L), 600L),
+  check.names = FALSE
+)
+large_cells_page <- page_window(row_limit = 600L, column_limit = 1L)
+large_cells_open <- dispatch(
+  "openSession",
+  list(sessionId = large_cells_session_id, variableName = "large_cells", page = large_cells_page)
+)
+assert_identical(large_cells_open$kind, "page", "the large-cell R frame did not open")
+large_cells_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = large_cells_session_id,
+    revision = 0L,
+    step = list(
+      id = "large-cells-rename",
+      kind = "renameColumn",
+      params = list(column = list(id = "r:c:0", name = "value"), newName = "renamed")
+    ),
+    page = large_cells_page
+  )
+)
+assert_identical(large_cells_preview$kind, "stepPreview", "the large-cell R rename did not preview")
+large_cells_applied <- dispatch(
+  "applyDraft",
+  list(sessionId = large_cells_session_id, revision = 1L, page = large_cells_page)
+)
+assert_identical(large_cells_applied$kind, "planUpdated", "the large-cell R rename did not apply")
+large_cells_inspected <- inspect_step(
+  large_cells_session_id,
+  2L,
+  "large-cells-rename",
+  large_cells_page
+)
+assert_identical(
+  length(large_cells_inspected$inputPage$page$rows),
+  600L,
+  "the split R inspection truncated its large input page"
+)
+assert_identical(
+  length(large_cells_inspected$outputPage$page$rows),
+  600L,
+  "the split R inspection truncated its large output page"
+)
+large_cells_closed <- dispatch("closeSession", list(sessionId = large_cells_session_id))
+assert_identical(large_cells_closed$kind, "closed", "the large-cell R session did not close")
 
 oversized_mutation_response <- FALSE
 atomic_contract <- openwrangler_r_frame_contract
@@ -2163,6 +2542,7 @@ missing_package_contract <- list(
   clone_column_at = function(...) stop("unexpected clone", call. = FALSE),
   text_length_column_at = function(...) stop("unexpected text length", call. = FALSE),
   lower_text_column_at = function(...) stop("unexpected lowercase", call. = FALSE),
+  cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
@@ -2200,6 +2580,21 @@ if (
     !identical(conditionMessage(missing_lower_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without Lowercase support", call. = FALSE)
+}
+missing_cast_contract <- missing_package_contract
+missing_cast_contract$cast_column_at <- NULL
+missing_cast_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_cast_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_cast_error) ||
+    !identical(conditionMessage(missing_cast_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without Cast support", call. = FALSE)
 }
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(

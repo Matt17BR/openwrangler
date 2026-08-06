@@ -1748,7 +1748,15 @@ async function exerciseReleasedRJupyterExtension(
       sort: true,
       profile: true,
       columnValues: true,
-      supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn", "textLength", "lowerText"]
+      supportedOperations: [
+        "selectColumns",
+        "dropColumns",
+        "renameColumn",
+        "cloneColumn",
+        "castColumn",
+        "textLength",
+        "lowerText"
+      ]
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
@@ -1872,6 +1880,7 @@ async function exerciseReleasedRJupyterExtension(
         "dropColumns",
         "renameColumn",
         "cloneColumn",
+        "castColumn",
         "textLength",
         "lowerText"
       ]);
@@ -2423,7 +2432,15 @@ async function exerciseReleasedREditingJourney(
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn", "textLength", "lowerText"]
+    supportedOperations: [
+      "selectColumns",
+      "dropColumns",
+      "renameColumn",
+      "cloneColumn",
+      "castColumn",
+      "textLength",
+      "lowerText"
+    ]
   });
   assert.deepEqual(
     opened.metadata.schema.slice(0, 4).map((column) => column.name),
@@ -3129,6 +3146,135 @@ async function exerciseReleasedREditingJourney(
     "undoing the native R Text Length step"
   );
 
+  recordAcceptanceProgress(`${phase}:editing:convert-type-preview-apply-undo`);
+  const castBase = testing.activeSession();
+  assert.ok(castBase, "The restored R session must remain available for Convert type.");
+  const scoreColumn = castBase.metadata.schema.find((column) => column.name === "score");
+  assert.ok(scoreColumn, "The packaged R Convert type journey requires the score column.");
+  assert.equal(scoreColumn.type, "float");
+  assert.equal(scoreColumn.rawType, "double");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Convert type");
+  const castColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await castColumnSearch.fill("score");
+  await app
+    .getByRole("option", { name: /^score,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await castColumnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === scoreColumn.id,
+    10_000,
+    "selecting score through the R column search"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R score-column session before Convert type");
+  await app.locator('th[data-column="score"]').first().waitFor({ state: "visible", timeout: 10_000 });
+  const converted = await previewReleasedRCast(testing, workbench, app, sessionId, "score", "integer");
+  app = converted.app;
+  const castReview = app.getByRole("region", { name: "Draft review" });
+  await castReview.getByText("Convert type", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await castReview
+    .locator('[aria-label="Data diff summary"]')
+    .getByText(/^[1-9][\d,]* existing cells? changed(?: in this block)?$/u)
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await castReview.getByRole("button", { name: "Apply step", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      const output = active?.metadata.schema.find((column) => column.id === scoreColumn.id);
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.kind === "castColumn" &&
+        step.id === converted.stepId &&
+        step.params.column.id === scoreColumn.id &&
+        step.params.column.name === "score" &&
+        step.params.dtype === "integer" &&
+        output?.name === "score" &&
+        output.position === scoreColumn.position &&
+        output.type === "integer" &&
+        output.rawType === "integer"
+      );
+    },
+    30_000,
+    "applying the native R Convert type step"
+  );
+  const castApplied = testing.activeSession();
+  assert.ok(castApplied, "The applied native R Convert type step must retain its session.");
+  assertReleasedRCastGeneratedCode(castApplied.code ?? "", "score", "integer");
+  const castPage = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: castApplied.metadata.revision,
+    viewRequestId: `${phase}-editing-cast-page`,
+    offset: 0,
+    limit: 1,
+    filterModel: castApplied.viewState.filterModel,
+    columnOffset: scoreColumn.position,
+    columnLimit: 1
+  });
+  assert.equal(castPage.kind, "page");
+  if (castPage.kind !== "page") throw new Error("The applied R Convert type step did not return its output page.");
+  assert.deepEqual(castPage.page.columnIds, [scoreColumn.id]);
+  assert.deepEqual(castPage.page.rows[0]?.values[0], {
+    kind: "integer",
+    raw: "1",
+    display: "1",
+    isNull: false,
+    isNaN: false
+  });
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Convert type step must be acknowledged before undo."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Convert type session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const restoredScore = active?.metadata.schema.find((column) => column.id === scoreColumn.id);
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        restoredScore?.name === "score" &&
+        restoredScore.position === scoreColumn.position &&
+        restoredScore.type === "float" &&
+        restoredScore.rawType === "double" &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the native R Convert type step"
+  );
+  const castRestored = testing.activeSession();
+  assert.ok(castRestored, "Undoing the R Convert type step must retain the session.");
+  const restoredCastPage = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: castRestored.metadata.revision,
+    viewRequestId: `${phase}-editing-cast-restored-page`,
+    offset: 0,
+    limit: 1,
+    filterModel: castRestored.viewState.filterModel,
+    columnOffset: scoreColumn.position,
+    columnLimit: 1
+  });
+  assert.equal(restoredCastPage.kind, "page");
+  if (restoredCastPage.kind !== "page") {
+    throw new Error("The undone R Convert type step did not return its original page.");
+  }
+  assert.deepEqual(restoredCastPage.page.columnIds, [scoreColumn.id]);
+  assert.deepEqual(restoredCastPage.page.rows[0]?.values[0], {
+    kind: "number",
+    raw: 1,
+    display: "1",
+    isNull: false,
+    isNaN: false
+  });
+
   recordAcceptanceProgress(`${phase}:editing:lowercase-preview-apply-undo`);
   const lowercaseBase = testing.activeSession();
   assert.ok(lowercaseBase, "The restored R session must remain available for Lowercase.");
@@ -3238,6 +3384,72 @@ async function previewReleasedRTextLength(
   );
   return {
     app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Text Length preview"),
+    stepId
+  };
+}
+
+async function previewReleasedRCast(
+  testing: TestApi,
+  workbench: Page,
+  app: Locator,
+  sessionId: string,
+  sourceName: string,
+  dtype: "string" | "integer" | "float" | "boolean" | "date" | "datetime",
+  variableName = "orders_frame"
+): Promise<Readonly<{ app: Locator; stepId: string }>> {
+  const before = testing.activeSession();
+  const input = before?.metadata.schema.find((column) => column.name === sourceName);
+  assert.ok(input, `The native R Convert type preview requires ${JSON.stringify(sourceName)}.`);
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Convert type/u }).click();
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByLabel("Column", { exact: true }).selectOption({ label: sourceName });
+  await dialog.getByLabel("Target type", { exact: true }).selectOption(dtype);
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      const output = active?.metadata.schema.find((column) => column.id === input.id);
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "castColumn" &&
+        draft.params.column.id === input.id &&
+        draft.params.column.name === sourceName &&
+        draft.params.dtype === dtype &&
+        output?.name === sourceName &&
+        output.position === input.position &&
+        output.type === dtype &&
+        active.metadata.draftReplacesStepId === undefined &&
+        active.metadata.steps.length === 0
+      );
+    },
+    30_000,
+    "the native R Convert type preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  const active = testing.activeSession();
+  assert.ok(
+    active?.metadata.draftStep?.kind === "castColumn",
+    "The native R Convert type preview must retain its draft."
+  );
+  const stepId = active.metadata.draftStep.id;
+  assertReleasedRCastGeneratedCode(active.code ?? "", sourceName, dtype, variableName);
+  // CodeMirror virtualizes long documents. The cast helper is visible near the
+  // start of the editor, while the column-specific lines can be below the DOM
+  // viewport. The complete generated program is checked against host state
+  // above; this assertion proves that the R editor received the cast program.
+  const codePreview = await waitForCodePreview(workbench, ".ow_cast_kind", "R");
+  assert.match(await codePreview.innerText(), /\.ow_cast_kind/u);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Convert type preview must be acknowledged by its exact renderer."
+  );
+  return {
+    app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Convert type preview"),
     stepId
   };
 }
@@ -3522,6 +3734,21 @@ function assertReleasedRTextLengthGeneratedCode(
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 
+function assertReleasedRCastGeneratedCode(
+  code: string,
+  sourceName: string,
+  dtype: string,
+  variableName = "orders_frame"
+): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(".ow_cast_position"));
+  assert.ok(code.includes(".ow_cast_values"));
+  assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.ok(code.includes(JSON.stringify(dtype)));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
 function assertReleasedRCloneGeneratedCode(
   code: string,
   sourceName: string,
@@ -3687,6 +3914,16 @@ async function releasedRSessionApp(
   sessionId: string,
   description: string
 ): Promise<Locator> {
+  // Applied-step inspection is deliberately cleared when a renderer is
+  // regenerated. Confirmed and draft states can be forced to a fresh
+  // generation; an active inspection must render on the existing one.
+  if (testing.activeSession()?.stepInspection === undefined) {
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      `${description} must render the current confirmed session state.`
+    );
+  }
   const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, `${description} requires its exact Open Wrangler renderer.`);

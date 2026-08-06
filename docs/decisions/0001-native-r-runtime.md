@@ -72,12 +72,14 @@ the current viewing filters, and the private dataset-statistics response binds i
 from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
 user to reopen the frame.
 
-Editing currently supports Rename Column, Drop Columns, Select Columns, Clone Column, Text Length, and Lowercase. The first draft
+Editing currently supports Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. The first draft
 takes an isolated original;
 base data frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps
 committed and draft results separate, resolves every target by stable ID and captured name, and advances the session
 revision for preview, apply, discard, latest-step replacement, and undo. Applied-step inspection replays only the selected plan
-prefix. Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves
+prefix. The kernel returns its code, input page, and output page separately, so two large pages are never forced into
+one response. Page responses omit schemas; the host restores the exact schemas it retained for that plan step before
+publishing the inspection. Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves
 the chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
 Text Length operation accepts character and factor columns, keeps `NA` values, and appends a derived integer column
 whose stable ID can be used by later steps. It counts Unicode characters rather than encoded bytes. The operations
@@ -86,6 +88,12 @@ column or appends a character column with a stable derived ID. An in-place chang
 rejected; choosing a new output column keeps the key and row order. Generated R repeats the position and name checks and returns a copied
 result. Native, cross-language, and packaged-editor tests cover source isolation, executable code, keyed data tables,
 duplicate names, non-syntactic names, and mixed plans.
+
+Convert type replaces one column while keeping its stable ID, name, and position. It supports character, integer,
+double, logical, Date, and UTC POSIXct output. An `integer64` source stays `integer64` when the target is integer.
+Factors convert through their labels, failed parses become `NA`, and conversions that would lose units or `integer64`
+precision are rejected. A keyed `data.table` column must be cloned before it can be converted. Generated R applies the
+same checks and conversion rules.
 
 Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration helper that owns all of the following:
 
@@ -112,7 +120,7 @@ same release gates.
 - The grid and transformation model can be shared, but execution, object ownership, type handling, and generated code
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
-  currently adds Rename Column, Drop Columns, Select Columns, Clone Column, Text Length, and Lowercase with generated R code.
+  currently adds Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase with generated R code.
   Other cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` documents
   remain unsupported.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not

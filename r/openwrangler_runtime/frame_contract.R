@@ -1571,7 +1571,9 @@ openwrangler_r_frame_contract <- local({
     source_positions = NULL,
     output_ids = NULL,
     text_length_positions = NULL,
-    lower_text_positions = NULL
+    lower_text_positions = NULL,
+    cast_positions = NULL,
+    cast_dtypes = NULL
   ) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
@@ -1583,7 +1585,9 @@ openwrangler_r_frame_contract <- local({
           !is.null(source_positions) ||
             !is.null(output_ids) ||
             !is.null(text_length_positions) ||
-            !is.null(lower_text_positions)
+            !is.null(lower_text_positions) ||
+            !is.null(cast_positions) ||
+            !is.null(cast_dtypes)
         )
     ) {
       abort("internal-error", "derived R column mappings require a source R capture")
@@ -1596,6 +1600,12 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(lower_text_positions) && is.null(source_positions)) {
       abort("internal-error", "R lowercase outputs require explicit source mappings")
+    }
+    if (xor(is.null(cast_positions), is.null(cast_dtypes))) {
+      abort("internal-error", "R cast outputs require positions and target dtypes together")
+    }
+    if (!is.null(cast_positions) && is.null(source_positions)) {
+      abort("internal-error", "R cast outputs require explicit source mappings")
     }
     flavor <- frame_flavor(value)
     assert_frame_attributes(value, flavor)
@@ -1661,8 +1671,30 @@ openwrangler_r_frame_contract <- local({
         }
         lower_text_positions <- as.integer(lower_text_positions)
       }
-      if (length(intersect(text_length_positions, lower_text_positions)) != 0L) {
-        abort("internal-error", "an R output cannot be both text length and lowercase")
+      if (is.null(cast_positions)) {
+        cast_positions <- integer()
+        cast_dtypes <- character()
+      } else {
+        if (
+          !is.numeric(cast_positions) ||
+            anyNA(cast_positions) ||
+            any(!is.finite(cast_positions)) ||
+            any(cast_positions != floor(cast_positions)) ||
+            any(cast_positions < 1L) ||
+            any(cast_positions > length(output_schema)) ||
+            anyDuplicated(cast_positions) ||
+            !is.character(cast_dtypes) ||
+            anyNA(cast_dtypes) ||
+            length(cast_dtypes) != length(cast_positions) ||
+            any(!cast_dtypes %in% c("string", "integer", "float", "boolean", "date", "datetime"))
+        ) {
+          abort("internal-error", "a derived R frame has invalid cast output metadata")
+        }
+        cast_positions <- as.integer(cast_positions)
+      }
+      transformed_positions <- c(text_length_positions, lower_text_positions, cast_positions)
+      if (anyDuplicated(transformed_positions)) {
+        abort("internal-error", "an R output cannot have more than one transformed-column mapping")
       }
       source_nullable <- vapply(source_positions, function(position) {
         value <- source_schema[[position]]$nullable
@@ -1734,6 +1766,26 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid lowercase output")
           }
+        } else if (index %in% cast_positions) {
+          cast_index <- match(index, cast_positions)
+          dtype <- cast_dtypes[[cast_index]]
+          expected_kind <- switch(
+            dtype,
+            string = "character",
+            integer = if (identical(source_column$semantics$kind, "integer64")) "integer64" else "integer",
+            float = "double",
+            boolean = "logical",
+            date = "date",
+            datetime = "datetime"
+          )
+          if (
+            !identical(output_ids[[index]], mapped_source_ids[[index]]) ||
+              !identical(output_column$semantics$kind, expected_kind) ||
+              (identical(dtype, "datetime") &&
+                !identical(output_column$semantics$timezone, "UTC"))
+          ) {
+            abort("internal-error", "a derived R frame has an invalid cast output")
+          }
         } else {
           if (
             !identical(output_column$rawType, source_column$rawType) ||
@@ -1744,7 +1796,11 @@ openwrangler_r_frame_contract <- local({
           }
         }
         inspected$descriptor$schema[[index]]$id <- output_ids[[index]]
-        inspected$descriptor$schema[[index]]$nullable <- source_nullable[[index]]
+        inspected$descriptor$schema[[index]]$nullable <- if (index %in% cast_positions) {
+          isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
+        } else {
+          source_nullable[[index]]
+        }
       }
 
       old_id_bytes <- sum(vapply(generated_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
@@ -2084,6 +2140,250 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     lower_text_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  cast_text_source <- function(column, kind, label) {
+    values <- if (identical(kind, "factor")) as.character(column) else column
+    if (!is.character(values)) {
+      abort("internal-error", sprintf("%s did not resolve to text", label))
+    }
+    vapply(seq_along(values), function(index) {
+      value <- values[[index]]
+      if (is.na(value)) return(NA_character_)
+      bounded_utf8(value, sprintf("%s value %d", label, index))
+    }, character(1L), USE.NAMES = FALSE)
+  }
+
+  cast_string_values <- function(column, semantics, label) {
+    kind <- semantics$kind
+    values <- if (kind %in% c("character", "factor")) {
+      cast_text_source(column, kind, label)
+    } else if (identical(kind, "logical")) {
+      ifelse(is.na(column), NA_character_, ifelse(column, "TRUE", "FALSE"))
+    } else if (identical(kind, "integer")) {
+      as.character(column)
+    } else if (identical(kind, "integer64")) {
+      as.character(column)
+    } else if (identical(kind, "double")) {
+      vapply(seq_along(column), function(index) {
+        value <- column[[index]]
+        if (is.nan(value)) return("NaN")
+        if (is.na(value)) return(NA_character_)
+        if (is.infinite(value)) return(if (value < 0) "-Inf" else "Inf")
+        exact_double(value)
+      }, character(1L), USE.NAMES = FALSE)
+    } else if (identical(kind, "date")) {
+      format(column, format = "%Y-%m-%d")
+    } else if (identical(kind, "datetime")) {
+      format(column, tz = "UTC", format = "%Y-%m-%dT%H:%M:%OS6Z", usetz = FALSE)
+    } else if (identical(kind, "difftime")) {
+      units <- semantics$units
+      numeric_values <- as.double(column, units = units)
+      vapply(seq_along(numeric_values), function(index) {
+        value <- numeric_values[[index]]
+        if (is.na(value)) return(NA_character_)
+        paste(exact_double(value), units)
+      }, character(1L), USE.NAMES = FALSE)
+    } else {
+      abort("internal-error", "castColumn encountered an unknown R source kind")
+    }
+    vapply(seq_along(values), function(index) {
+      value <- values[[index]]
+      if (is.na(value)) return(NA_character_)
+      bounded_utf8(value, sprintf("%s result %d", label, index))
+    }, character(1L), USE.NAMES = FALSE)
+  }
+
+  cast_date_text <- function(values) {
+    result <- structure(rep(NA_real_, length(values)), class = "Date")
+    valid <- !is.na(values) & grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", values, perl = TRUE)
+    if (any(valid)) {
+      result[valid] <- suppressWarnings(as.Date(values[valid], format = "%Y-%m-%d"))
+    }
+    cast_canonical_dates(result)
+  }
+
+  cast_canonical_dates <- function(values) {
+    result <- values
+    present <- !is.na(result)
+    if (!any(present)) return(result)
+    rendered <- format(result[present], format = "%Y-%m-%d")
+    canonical <- grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", rendered, perl = TRUE) &
+      !startsWith(rendered, "0000-")
+    if (any(canonical)) {
+      reparsed <- suppressWarnings(as.Date(rendered[canonical], format = "%Y-%m-%d"))
+      canonical[canonical] <- !is.na(reparsed) & reparsed == result[present][canonical]
+    }
+    result[which(present)[!canonical]] <- as.Date(NA_character_)
+    result
+  }
+
+  cast_canonical_datetimes <- function(values) {
+    result <- values
+    present <- !is.na(result)
+    if (!any(present)) return(result)
+    rendered <- format(result[present], tz = "UTC", format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE)
+    canonical <- grepl(
+      "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}$",
+      rendered,
+      perl = TRUE
+    ) & !startsWith(rendered, "0000-")
+    result[which(present)[!canonical]] <- as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
+    result
+  }
+
+  cast_datetime_text <- function(values) {
+    result <- structure(
+      rep(NA_real_, length(values)),
+      class = c("POSIXct", "POSIXt"),
+      tzone = "UTC"
+    )
+    date_values <- !is.na(values) & grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", values, perl = TRUE)
+    if (any(date_values)) {
+      parsed_dates <- suppressWarnings(as.Date(values[date_values], format = "%Y-%m-%d"))
+      result[date_values] <- as.POSIXct(parsed_dates, tz = "UTC")
+    }
+    datetime_values <- !is.na(values) & grepl(
+      "^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z?$",
+      values,
+      perl = TRUE
+    )
+    if (any(datetime_values)) {
+      normalized <- sub(" ", "T", values[datetime_values], fixed = TRUE)
+      normalized <- sub("Z$", "", normalized, perl = TRUE)
+      parsed <- suppressWarnings(strptime(normalized, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC"))
+      result[datetime_values] <- as.POSIXct(parsed, tz = "UTC")
+    }
+    cast_canonical_datetimes(result)
+  }
+
+  cast_column_values <- function(column, semantics, raw_type, dtype, label) {
+    source_kind <- semantics$kind
+    supported_sources <- switch(
+      dtype,
+      string = c("logical", "integer", "double", "character", "factor", "date", "datetime", "difftime", "integer64"),
+      integer = c("logical", "integer", "double", "character", "factor", "integer64"),
+      float = c("logical", "integer", "double", "character", "factor"),
+      boolean = c("logical", "integer", "double", "character", "factor"),
+      date = c("character", "factor", "date", "datetime"),
+      datetime = c("character", "factor", "date", "datetime")
+    )
+    if (!source_kind %in% supported_sources) {
+      abort(
+        "invalid-view-query",
+        sprintf("castColumn cannot convert an R %s column to %s", raw_type, dtype)
+      )
+    }
+
+    if (identical(dtype, "string")) return(cast_string_values(column, semantics, label))
+    if (identical(dtype, "integer")) {
+      if (identical(source_kind, "integer64") || identical(source_kind, "integer")) return(column)
+      if (identical(source_kind, "logical") || identical(source_kind, "double")) {
+        return(suppressWarnings(as.integer(column)))
+      }
+      text <- cast_text_source(column, source_kind, label)
+      return(suppressWarnings(as.integer(trimws(text))))
+    }
+    if (identical(dtype, "float")) {
+      if (identical(source_kind, "double")) return(column)
+      if (source_kind %in% c("logical", "integer")) return(as.double(column))
+      text <- cast_text_source(column, source_kind, label)
+      return(suppressWarnings(as.double(trimws(text))))
+    }
+    if (identical(dtype, "boolean")) {
+      if (identical(source_kind, "logical")) return(column)
+      if (source_kind %in% c("integer", "double")) return(suppressWarnings(as.logical(column)))
+      text <- cast_text_source(column, source_kind, label)
+      return(suppressWarnings(as.logical(trimws(text))))
+    }
+    if (identical(dtype, "date")) {
+      if (identical(source_kind, "date")) return(cast_canonical_dates(column))
+      if (identical(source_kind, "datetime")) return(cast_canonical_dates(as.Date(column, tz = "UTC")))
+      return(cast_date_text(cast_text_source(column, source_kind, label)))
+    }
+    if (identical(dtype, "datetime")) {
+      if (identical(source_kind, "datetime")) {
+        return(cast_canonical_datetimes(
+          structure(as.double(column), class = c("POSIXct", "POSIXt"), tzone = "UTC")
+        ))
+      }
+      if (identical(source_kind, "date")) {
+        return(cast_canonical_datetimes(as.POSIXct(cast_canonical_dates(column), tz = "UTC")))
+      }
+      return(cast_datetime_text(cast_text_source(column, source_kind, label)))
+    }
+    abort("internal-error", "castColumn encountered an unknown target dtype")
+  }
+
+  cast_column_at <- function(value, position, old_name, dtype) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the cast column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    source_column <- inspected$descriptor$schema[[position]]
+    if (!identical(source_column$name, old_name)) {
+      abort("stale-column", "the cast column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      !is.character(dtype) ||
+        length(dtype) != 1L ||
+        is.na(dtype) ||
+        !dtype %in% c("string", "integer", "float", "boolean", "date", "datetime")
+    ) {
+      abort("invalid-view-query", "dtype must be one of: boolean, date, datetime, float, integer, string")
+    }
+    source_key <- if (identical(inspected$flavor, "r.data.table")) {
+      data.table::key(value) %||% character()
+    } else {
+      character()
+    }
+    if (old_name %in% source_key) {
+      abort(
+        "invalid-view-query",
+        "castColumn cannot replace a data.table key column; clone the column before casting it"
+      )
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    converted <- cast_column_values(
+      result[[position]],
+      source_column$semantics,
+      source_column$rawType,
+      dtype,
+      "castColumn"
+    )
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = converted)
+      if (!identical(data.table::key(result) %||% character(), source_key)) {
+        abort("internal-error", "castColumn changed a retained data.table key")
+      }
+    } else {
+      result[[position]] <- converted
+    }
+    result
+  }
+
+  cast_column <- function(value, column_reference, dtype) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    cast_column_at(value, resolved$position, resolved$name, dtype)
   }
 
   drop_columns_at <- function(value, positions, expected_names) {
@@ -2783,6 +3083,8 @@ openwrangler_r_frame_contract <- local({
     text_length_column_at = text_length_column_at,
     lower_text_column = lower_text_column,
     lower_text_column_at = lower_text_column_at,
+    cast_column = cast_column,
+    cast_column_at = cast_column_at,
     drop_columns = drop_columns,
     drop_columns_at = drop_columns_at,
     select_columns = select_columns,

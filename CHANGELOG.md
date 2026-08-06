@@ -36,9 +36,15 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added **Lowercase** as the sixth native R cleaning operation. It accepts character and factor columns, keeps `NA`
   values, and can replace the source column or append a character column with its own stable identity. Generated R
   uses the same transformation without changing the notebook object.
+- Added **Convert type** for native R sessions. It converts a column in place to string, integer, floating-point,
+  boolean, date, or datetime values and keeps the column's stable identity. Values that cannot be converted become
+  `NA`. Source and target pairs that would lose units or `integer64` precision are rejected. Clone the column first
+  when the original also needs to be kept.
 
 ### Changed
 
+- Applied R step inspection now fetches its code, input page, and output page separately. Large pages no longer fail
+  because two valid blocks were combined into one oversized kernel response.
 - Renamed **Export Python Script** to **Export Generated Script**. Python sessions keep the `.clean.py` default;
   generated R code uses `.clean.R` and an R script filter.
 - The Open Wrangler 2 notebook gate now tests local R in VS Code and Cursor and a containerized R kernel in VS Code.
@@ -48,10 +54,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
   to the notebook's source object.
 - Added a real VS Code screenshot of R editing. The installed extension now exercises Rename, Drop, Select, Clone,
-  Text Length, and Lowercase against IRkernel in both VS Code and Cursor. The base-data-frame test previews, applies, inspects,
-  discards, and undoes the operations, checks generated R, copies and saves Rename code, and verifies that the notebook
-  objects are unchanged. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns;
-  direct R tests cover all six operations for all three flavors.
+  Convert type, Text Length, and Lowercase against IRkernel in both VS Code and Cursor. The base-data-frame journey runs
+  all seven operations. Across the sequence it covers preview, apply, inspection, discard, latest-step editing, and
+  undo; Convert type is applied and undone. It also checks generated R, copies and saves Rename code, and verifies that
+  the notebook objects are unchanged. Separate tibble and keyed-data-table sessions preview and discard Rename and
+  Drop Columns; direct R tests cover all seven operations for all three flavors.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and

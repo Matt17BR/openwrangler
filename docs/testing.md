@@ -16,13 +16,15 @@ matrix for release candidates or changes that cross all of its boundaries.
   covers stable-reference compound filters and multi-column sorts, AND/OR logic, typed predicates and selections,
   value search, per-key direction and missing-value placement, exact integer64 ordering, duplicate-name references,
   filtered and sorted pagination, source immutability, malformed or stale rules, and source row IDs in logical view
-  order. Rename, Drop, Select, Clone, Text Length, and Lowercase tests resolve duplicate and non-syntactic names by stable identity,
+  order. Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase tests resolve duplicate and non-syntactic names by stable identity,
   preserve base, tibble, and keyed `data.table` semantics, and prove that drafts and generated R leave the source unchanged.
   Drop tests cover retained IDs after a position shift, data-table key changes, and drop-all rejection. Select tests
   cover user ordering, retained IDs, key-prefix changes, and mixed plans. Clone tests cover a stable derived ID,
   duplicate-name preservation, later targeting of the copy, and data-table key retention. Text Length tests cover
   character and factor inputs, Unicode character counts, `NA` preservation, integer output, stable derived identity,
-  output collisions, unsupported inputs, and mixed plans. Lowercase tests cover in-place and derived output, factors,
+  output collisions, unsupported inputs, and mixed plans. Convert type tests cover all six public targets, factors by
+  label, failed parses as typed `NA`, integer truncation and range limits, UTC datetimes, stable in-place identity,
+  unsupported or ambiguous source/target pairs, and keyed-data-table rejection. Lowercase tests cover in-place and derived output, factors,
   `NA`, invalid encodings, changed-cell diffs, source isolation, and keyed data-table guards. The kernel-agent cases cover preview, apply,
   discard, applied-step inspection, latest-step
   replacement, undo, stale revisions, unsupported operations, and an encoding failure before state publication. The date, datetime, and duration cases
@@ -40,7 +42,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   cases run only when
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix. It
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
-  values, the Rename, Drop, Select, Clone, Text Length, and Lowercase lifecycles, variable replacement, malformed requests, and
+  values, the Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase lifecycles, variable replacement, malformed requests, and
   close cases.
   The R tests check the fixed diagnostics for unsupported frames,
   missing packages, oversized pages or profiles, and stale columns. Focused TypeScript tests cover the embedded
@@ -50,7 +52,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   request waits for the original execution to finish. Variable-discovery tests cover exact base `data.frame`, tibble,
   and `data.table` class vectors, active and delayed bindings, missing `jsonlite` or `rlang`, malformed output, and
   notebook/kernel replacement. Host and webview tests cover the native picker, coordinator route, R runtime identity,
-  Rename, Drop, Select, Clone, Text Length, and Lowercase capabilities, generated-code commands, bounded two-dimensional pages,
+  Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase capabilities, generated-code commands, bounded two-dimensional pages,
   and enabled viewing filters, sorts, profiles, and value selection. The production-browser accessibility journey covers explicit row labels,
   keyboard tab/menu use, and
   focus restoration. The R 4.4 and 4.5 contract lanes pass, and the local packaged IRkernel journey passes in isolated
@@ -510,16 +512,20 @@ Clear all, sort priority, restart and reopen, source preservation, and final cle
 generated R code, exports, Quarto, R Markdown, or plain `.R` files.
 
 Focused R and TypeScript tests on the current v2 branch cover Rename Column, Drop Columns, Select Columns, Clone Column,
-Text Length, and Lowercase in Editing mode. They
+Convert type, Text Length, and Lowercase in Editing mode. They
 exercise draft preview, executable generated R, mixed plans, apply, discard, inspection, latest-step editing, undo,
 revision errors, exact-kernel correlation, stable retained-column identities, and source isolation for base data
 frames, tibbles, and keyed data tables. Clone Column proves stable derived identity and later editing of the copy; Text
 Length proves Unicode character counts, `NA` preservation, integer output, and stable lineage.
 Lowercase covers factor-to-character conversion, native R casing, `NA`, in-place and derived output, and key safety.
-The current packaged VS Code and Cursor journey covers all six operations. Its base-data-frame path previews, applies,
-inspects, discards, and undoes them, copies and saves generated Rename code through the `.R` Save dialog, and checks
-the source objects again after editing. Separate tibble and keyed-data-table sessions preview and discard Rename and
-Drop Columns; the direct R suites cover all six operations for all three flavors.
+Convert type covers all six target types, failed parses, factors, temporal values, `integer64`, key safety, executable
+generated R, and exact typed diffs. A large-cell inspection regression checks two pages that are valid separately but
+exceed the kernel response limit when combined. The direct suites cover all seven operations. The current
+packaged VS Code and Cursor journey runs all seven operations. Across the base-data-frame sequence it covers preview,
+apply, inspection, discard, latest-step editing, and undo; Convert type is applied and undone. It copies and saves
+generated Rename code through the `.R` Save dialog and checks the source objects again after editing. Separate tibble
+and keyed-data-table sessions preview and discard Rename and Drop Columns; the direct R suites cover all seven
+operations for all three flavors.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
 viewing workbench, and a separate 1,205-row Rename draft in Editing mode. The viewing image shows two filters, two

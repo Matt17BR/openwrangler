@@ -29,6 +29,8 @@ const applyRequestId = "99999999-9999-4999-8999-999999999999";
 const discardRequestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const undoRequestId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const inspectRequestId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const inspectOutputRequestId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const inspectSecondPageRequestId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -350,7 +352,9 @@ describe("native R kernel protocol", () => {
       diff: minimalRenameDiff(),
       code: "open_wrangler_result <- frame\n"
     });
-    expect(decodeRKernelResponseJson(preview, previewRequestId)).toMatchObject({
+    expect(
+      decodeRKernelResponseJson(preview, previewRequestId, { inputSchema: minimalFramePage().schema })
+    ).toMatchObject({
       kind: "stepPreview",
       sessionId,
       revision: 1,
@@ -358,37 +362,58 @@ describe("native R kernel protocol", () => {
       code: "open_wrangler_result <- frame\n"
     });
 
-    const inspectionRequest: Extract<RKernelRequest, { kind: "inspectStep" }> = {
+    const inspectionRequest: Extract<RKernelRequest, { kind: "inspectStepPage" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: inspectRequestId,
-      kind: "inspectStep",
-      payload: { sessionId, revision: 2, stepId: "rename-step", page: pageWindow() }
+      kind: "inspectStepPage",
+      payload: { sessionId, revision: 2, stepId: "rename-step", side: "input", page: pageWindow() }
     };
     expect(JSON.parse(encodeRKernelRequest(inspectionRequest))).toEqual(inspectionRequest);
     const inspection = JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: inspectRequestId,
-      kind: "stepInspection",
+      kind: "stepInspectionPage",
       sessionId,
       revision: 2,
       stepId: "rename-step",
       stepIndex: 0,
-      inputPage: minimalFramePage(),
-      outputPage: minimalFramePage(),
-      inputSchema: minimalFramePage().schema,
-      outputSchema: minimalFramePage().schema,
-      diff: minimalRenameDiff(),
-      code: "open_wrangler_result <- frame\n"
+      side: "input",
+      page: inspectionWirePage(minimalFramePage())
     });
-    expect(decodeRKernelResponseJson(inspection, inspectRequestId)).toMatchObject({
-      kind: "stepInspection",
+    expect(
+      decodeRKernelResponseJson(inspection, inspectRequestId, {
+        inputSchema: minimalFramePage().schema,
+        inspectionSide: "input"
+      })
+    ).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "input",
       stepId: "rename-step",
       stepIndex: 0,
       revision: 2
     });
+    expect(() => decodeRKernelResponseJson(inspection, inspectRequestId)).toThrow("does not match the requested side");
     expect(() =>
-      decodeRKernelResponseJson(JSON.stringify({ ...JSON.parse(inspection), outputSchema: [] }), inspectRequestId)
-    ).toThrow("must match its frame schema");
+      decodeRKernelResponseJson(inspection, inspectRequestId, {
+        inputSchema: minimalFramePage().schema,
+        inspectionSide: "output"
+      })
+    ).toThrow("does not match the requested side");
+    const inspectionInfo = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: inspectOutputRequestId,
+      kind: "stepInspectionInfo",
+      sessionId,
+      revision: 2,
+      stepId: "rename-step",
+      stepIndex: 0,
+      code: "open_wrangler_result <- frame\n"
+    });
+    expect(decodeRKernelResponseJson(inspectionInfo, inspectOutputRequestId)).toMatchObject({
+      kind: "stepInspectionInfo",
+      stepId: "rename-step",
+      code: "open_wrangler_result <- frame\n"
+    });
 
     const invalidStep = structuredClone(request) as unknown as {
       payload: { step: { kind: string; params: Record<string, unknown> } };
@@ -405,7 +430,8 @@ describe("native R kernel protocol", () => {
           ...JSON.parse(preview),
           diff: { ...minimalRenameDiff(), changedCells: 1 }
         }),
-        previewRequestId
+        previewRequestId,
+        { inputSchema: minimalFramePage().schema }
       )
     ).toThrow("changed-cell totals are inconsistent");
     expect(() =>
@@ -453,7 +479,7 @@ describe("native R kernel protocol", () => {
       diff: { ...minimalRenameDiff(), addedColumns: ["value copy"] },
       code: "open_wrangler_result <- frame\n"
     });
-    const decoded = decodeRKernelResponseJson(response, previewRequestId);
+    const decoded = decodeRKernelResponseJson(response, previewRequestId, { inputSchema: minimalFramePage().schema });
     expect(decoded).toMatchObject({
       kind: "stepPreview",
       diff: { addedColumns: ["value copy"], removedColumns: [] }
@@ -477,9 +503,11 @@ describe("native R kernel protocol", () => {
 
     const malformedDiff = JSON.parse(response) as { diff: { addedColumns: unknown[] } };
     malformedDiff.diff.addedColumns = [17];
-    expect(() => decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId)).toThrow(
-      "response.diff.addedColumns[0]"
-    );
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId, {
+        inputSchema: minimalFramePage().schema
+      })
+    ).toThrow("response.diff.addedColumns[0]");
   });
 
   it("strictly validates native R Text Length requests and derived integer responses", () => {
@@ -510,7 +538,7 @@ describe("native R kernel protocol", () => {
       diff: { ...minimalRenameDiff(), addedColumns: ["value length"] },
       code: "open_wrangler_result <- frame\n"
     });
-    const decoded = decodeRKernelResponseJson(response, previewRequestId);
+    const decoded = decodeRKernelResponseJson(response, previewRequestId, { inputSchema: minimalFramePage().schema });
     expect(decoded).toMatchObject({
       kind: "stepPreview",
       page: {
@@ -544,9 +572,11 @@ describe("native R kernel protocol", () => {
 
     const malformedDiff = JSON.parse(response) as { diff: { addedColumns: unknown[] } };
     malformedDiff.diff.addedColumns = [null];
-    expect(() => decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId)).toThrow(
-      "response.diff.addedColumns[0]"
-    );
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId, {
+        inputSchema: minimalFramePage().schema
+      })
+    ).toThrow("response.diff.addedColumns[0]");
   });
 
   it("strictly validates native R lowercase requests and bounded in-place cell diffs", () => {
@@ -589,7 +619,9 @@ describe("native R kernel protocol", () => {
       },
       code: "open_wrangler_result <- frame\n"
     });
-    expect(decodeRKernelResponseJson(response, previewRequestId)).toMatchObject({
+    expect(
+      decodeRKernelResponseJson(response, previewRequestId, { inputSchema: minimalLowerFramePage().schema })
+    ).toMatchObject({
       kind: "stepPreview",
       page: { schema: [expect.objectContaining({ id: "r:c:0", rawType: "character", type: "string" })] },
       diff: {
@@ -610,16 +642,20 @@ describe("native R kernel protocol", () => {
 
     const malformedDiff = JSON.parse(response) as { diff: { changedCells: number; cells: unknown[] } };
     malformedDiff.diff.changedCells = 0;
-    expect(() => decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId)).toThrow(
-      "changed-cell totals"
-    );
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId, {
+        inputSchema: minimalLowerFramePage().schema
+      })
+    ).toThrow("changed-cell totals");
 
     const wrongAfter = JSON.parse(response) as { diff: { cells: Array<{ after: { raw: string; display: string } }> } };
     wrongAfter.diff.cells[0]!.after.raw = "different";
     wrongAfter.diff.cells[0]!.after.display = "different";
-    expect(() => decodeRKernelResponseJson(JSON.stringify(wrongAfter), previewRequestId)).toThrow(
-      "after-value does not match"
-    );
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(wrongAfter), previewRequestId, {
+        inputSchema: minimalLowerFramePage().schema
+      })
+    ).toThrow("after-value does not match");
 
     const wrongProjection = JSON.parse(response) as {
       page: ReturnType<typeof minimalLowerFramePage> & {
@@ -632,9 +668,179 @@ describe("native R kernel protocol", () => {
     wrongProjection.page = minimalProjectedLowerFramePage() as typeof wrongProjection.page;
     wrongProjection.diff.cells[0]!.columnId = "r:c:1";
     wrongProjection.diff.cells[0]!.column = "other";
-    expect(() => decodeRKernelResponseJson(JSON.stringify(wrongProjection), previewRequestId)).toThrow(
-      "outside the returned page projection"
-    );
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(wrongProjection), previewRequestId, {
+        inputSchema: minimalLowerFramePage().schema
+      })
+    ).toThrow("outside the returned page projection");
+  });
+
+  it("strictly validates native R Cast requests and type-changing cell diffs", () => {
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "cast-step",
+          kind: "castColumn",
+          params: { column: { id: "r:c:0", name: "value" }, dtype: "float" }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    const response = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalCastFloatFramePage(),
+      diff: {
+        ...minimalRenameDiff(),
+        changedCells: 1,
+        cells: [
+          {
+            rowNumber: 0,
+            columnId: "r:c:0",
+            column: "value",
+            before: { kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false },
+            after: { kind: "number", raw: "1", display: "1", isNull: false, isNaN: false }
+          }
+        ]
+      },
+      code: "open_wrangler_result <- frame\n"
+    });
+    expect(
+      decodeRKernelResponseJson(response, previewRequestId, { inputSchema: minimalFramePage().schema })
+    ).toMatchObject({
+      kind: "stepPreview",
+      page: { schema: [expect.objectContaining({ id: "r:c:0", rawType: "double", type: "float" })] },
+      diff: {
+        changedCells: 1,
+        cells: [
+          expect.objectContaining({
+            before: expect.objectContaining({ kind: "integer", raw: "1" }),
+            after: expect.objectContaining({ kind: "number", raw: 1 })
+          })
+        ]
+      }
+    });
+
+    const inspection = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: inspectRequestId,
+      kind: "stepInspectionPage",
+      sessionId,
+      revision: 2,
+      stepId: "cast-step",
+      stepIndex: 0,
+      side: "output",
+      page: inspectionWirePage(minimalCastFloatFramePage())
+    });
+    expect(
+      decodeRKernelResponseJson(inspection, inspectRequestId, {
+        outputSchema: minimalCastFloatFramePage().schema,
+        inspectionSide: "output"
+      })
+    ).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "output",
+      stepId: "cast-step",
+      page: { schema: [expect.objectContaining({ type: "float" })] }
+    });
+
+    const unsupported = structuredClone(request) as unknown as {
+      payload: { step: { params: { dtype: string } } };
+    };
+    unsupported.payload.step.params.dtype = "decimal";
+    expect(() => encodeRKernelRequest(unsupported as unknown as RKernelRequest)).toThrow("unsupported target type");
+
+    const derived = structuredClone(request) as unknown as {
+      payload: { step: { params: Record<string, unknown> } };
+    };
+    derived.payload.step.params.newColumn = "value cast";
+    expect(() => encodeRKernelRequest(derived as unknown as RKernelRequest)).toThrow("invalid fields");
+
+    const malformedBefore = JSON.parse(response) as {
+      diff: { cells: Array<{ before: Record<string, unknown> }> };
+    };
+    malformedBefore.diff.cells[0]!.before = {
+      kind: "number",
+      raw: "not-a-number",
+      display: "not-a-number",
+      isNull: false,
+      isNaN: false
+    };
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(malformedBefore), previewRequestId, {
+        inputSchema: minimalFramePage().schema
+      })
+    ).toThrow("response.diff.cells[0].before is invalid");
+
+    const outOfRangeBaseInteger = JSON.parse(response) as {
+      diff: { cells: Array<{ before: Record<string, unknown> }> };
+    };
+    outOfRangeBaseInteger.diff.cells[0]!.before = {
+      kind: "integer",
+      raw: "9223372036854775807",
+      display: "9223372036854775807",
+      isNull: false,
+      isNaN: false
+    };
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(outOfRangeBaseInteger), previewRequestId, {
+        inputSchema: minimalFramePage().schema
+      })
+    ).toThrow("response.diff.cells[0].before is invalid");
+
+    const factorOutsideLevels = JSON.parse(response) as {
+      diff: { cells: Array<{ before: Record<string, unknown> }> };
+    };
+    factorOutsideLevels.diff.cells[0]!.before = {
+      kind: "string",
+      raw: "BETA",
+      display: "BETA",
+      isNull: false,
+      isNaN: false
+    };
+    const factorInputSchema = minimalFramePage().schema.map((column) => ({
+      ...column,
+      rawType: "factor",
+      type: "string" as const,
+      semantics: {
+        kind: "factor" as const,
+        storageMode: "integer" as const,
+        classes: ["factor"],
+        levels: ["ALPHA"],
+        ordered: false
+      }
+    }));
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(factorOutsideLevels), previewRequestId, {
+        inputSchema: factorInputSchema
+      })
+    ).toThrow("response.diff.cells[0].before is invalid");
+
+    const oversizedBefore = JSON.parse(response) as {
+      diff: { cells: Array<{ before: Record<string, unknown> }> };
+    };
+    oversizedBefore.diff.cells[0]!.before = {
+      kind: "string",
+      raw: "x".repeat(R_FRAME_CONTRACT_LIMITS.textBytes + 1),
+      display: "x",
+      isNull: false,
+      isNaN: false
+    };
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(oversizedBefore), previewRequestId, {
+        inputSchema: minimalFramePage().schema
+      })
+    ).toThrow("response.diff.cells[0].before is invalid");
   });
 
   it("strictly validates native R Drop Columns requests and structural diffs", () => {
@@ -680,7 +886,9 @@ describe("native R kernel protocol", () => {
       diff: { ...minimalRenameDiff(), removedColumns: ["value"] },
       code: "open_wrangler_result <- frame\n"
     });
-    expect(decodeRKernelResponseJson(response, previewRequestId)).toMatchObject({
+    expect(
+      decodeRKernelResponseJson(response, previewRequestId, { inputSchema: minimalFramePage().schema })
+    ).toMatchObject({
       kind: "stepPreview",
       diff: { removedColumns: ["value"] }
     });
@@ -740,7 +948,9 @@ describe("native R kernel protocol", () => {
       diff: { ...minimalRenameDiff(), removedColumns: ["count"] },
       code: "open_wrangler_result <- frame\n"
     });
-    expect(decodeRKernelResponseJson(response, previewRequestId)).toMatchObject({
+    expect(
+      decodeRKernelResponseJson(response, previewRequestId, { inputSchema: minimalFramePage().schema })
+    ).toMatchObject({
       kind: "stepPreview",
       diff: { removedColumns: ["count"] }
     });
@@ -1093,20 +1303,26 @@ describe("exact IRkernel session transport", () => {
           code: "open_wrangler_result <- frame\n"
         });
       }
-      if (request.kind === "inspectStep") {
-        const frame = minimalFramePage();
+      if (request.kind === "inspectStepInfo") {
         return response(request, {
-          kind: "stepInspection",
+          kind: "stepInspectionInfo",
           sessionId,
           revision: request.payload.revision,
           stepId: request.payload.stepId,
           stepIndex: 0,
-          inputPage: frame,
-          outputPage: frame,
-          inputSchema: frame.schema,
-          outputSchema: frame.schema,
-          diff: minimalRenameDiff(),
           code: "open_wrangler_result <- frame\n"
+        });
+      }
+      if (request.kind === "inspectStepPage") {
+        const frame = minimalFramePage();
+        return response(request, {
+          kind: "stepInspectionPage",
+          sessionId,
+          revision: request.payload.revision,
+          stepId: request.payload.stepId,
+          stepIndex: 0,
+          side: request.payload.side,
+          page: inspectionWirePage(frame)
         });
       }
       if (request.kind === "closeSession") {
@@ -1125,11 +1341,15 @@ describe("exact IRkernel session transport", () => {
       discardRequestId,
       undoRequestId,
       inspectRequestId,
+      inspectOutputRequestId,
+      inspectSecondPageRequestId,
       closeRequestId
     ]);
 
     await transport.open("frame", pageWindow());
-    await expect(transport.previewStep(sessionId, 0, renameStep(), pageWindow())).resolves.toMatchObject({
+    await expect(
+      transport.previewStep(sessionId, 0, renameStep(), pageWindow(), minimalFramePage().schema)
+    ).resolves.toMatchObject({
       sessionId,
       revision: 1,
       diff: { changedCells: 0 }
@@ -1146,7 +1366,16 @@ describe("exact IRkernel session transport", () => {
       action: "undo",
       revision: 4
     });
-    await expect(transport.inspectStep(sessionId, 4, "rename-step", pageWindow())).resolves.toMatchObject({
+    await expect(
+      transport.inspectStep(
+        sessionId,
+        4,
+        "rename-step",
+        pageWindow(),
+        minimalFramePage().schema,
+        minimalFramePage().schema
+      )
+    ).resolves.toMatchObject({
       stepId: "rename-step",
       stepIndex: 0,
       revision: 4
@@ -1160,7 +1389,9 @@ describe("exact IRkernel session transport", () => {
       "applyDraft",
       "discardDraft",
       "undoStep",
-      "inspectStep",
+      "inspectStepInfo",
+      "inspectStepPage",
+      "inspectStepPage",
       "closeSession"
     ]);
   });
@@ -1193,7 +1424,9 @@ describe("exact IRkernel session transport", () => {
     const transport = createTransport(document, [sessionId, openRequestId, previewRequestId, closeRequestId]);
 
     await transport.open("frame", pageWindow());
-    await expect(transport.previewStep(sessionId, 0, renameStep(), pageWindow())).resolves.toMatchObject({
+    await expect(
+      transport.previewStep(sessionId, 0, renameStep(), pageWindow(), minimalFramePage().schema)
+    ).resolves.toMatchObject({
       sessionId,
       revision: 1
     });
@@ -1827,6 +2060,11 @@ function minimalFramePage() {
   } as const;
 }
 
+function inspectionWirePage<T extends Readonly<{ schema: unknown }>>(frame: T): Omit<T, "schema"> {
+  const { schema: _schema, ...wirePage } = frame;
+  return wirePage;
+}
+
 function minimalCloneFramePage() {
   const frame = structuredClone(minimalFramePage()) as unknown as {
     shape: { rows: number; columns: number };
@@ -1895,6 +2133,41 @@ function minimalLowerFramePage() {
           id: "r:r:0",
           rowNumber: 0,
           values: [{ kind: "string", raw: "mixed", display: "mixed", isNull: false, isNaN: false }]
+        }
+      ]
+    }
+  } as const;
+}
+
+function minimalCastFloatFramePage() {
+  return {
+    contractVersion: 5,
+    dataframeFlavor: "r.data.frame",
+    shape: { rows: 1, columns: 1 },
+    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
+    schema: [
+      {
+        id: "r:c:0",
+        name: "value",
+        position: 0,
+        rawType: "double",
+        type: "float",
+        nullable: false,
+        semantics: { kind: "double", storageMode: "double", classes: ["numeric"] }
+      }
+    ],
+    page: {
+      offset: 0,
+      limit: 100,
+      totalRows: 1,
+      columnOffset: 0,
+      columnLimit: 100,
+      columnIds: ["r:c:0"],
+      rows: [
+        {
+          id: "r:r:0",
+          rowNumber: 0,
+          values: [{ kind: "number", raw: "1", display: "1", isNull: false, isNaN: false }]
         }
       ]
     }
