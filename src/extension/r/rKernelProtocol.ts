@@ -1,9 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import {
   decodeRFramePage,
+  R_FRAME_CONTRACT_VERSION,
   R_FRAME_CONTRACT_LIMITS,
   type RColumnSchema,
   type RColumnType,
+  type RFrameCell,
   type RFramePageContract
 } from "./rFrameContract";
 import { supportsViewPredicate } from "../../shared/filterModel";
@@ -107,6 +109,17 @@ export interface RKernelCloneColumnStep {
   }>;
 }
 
+export type RKernelCastDtype = "string" | "integer" | "float" | "boolean" | "date" | "datetime";
+
+export interface RKernelCastColumnStep {
+  readonly id: string;
+  readonly kind: "castColumn";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    dtype: RKernelCastDtype;
+  }>;
+}
+
 export interface RKernelTextLengthStep {
   readonly id: string;
   readonly kind: "textLength";
@@ -144,6 +157,7 @@ export interface RKernelSelectColumnsStep {
 export type RKernelTransformStep =
   | RKernelRenameColumnStep
   | RKernelCloneColumnStep
+  | RKernelCastColumnStep
   | RKernelTextLengthStep
   | RKernelLowerTextStep
   | RKernelDropColumnsStep
@@ -174,7 +188,6 @@ export interface RKernelStepInspectionResult {
   readonly outputPage: RFramePageContract;
   readonly inputSchema: readonly RColumnSchema[];
   readonly outputSchema: readonly RColumnSchema[];
-  readonly diff: DataDiff;
   readonly code: string;
 }
 
@@ -244,11 +257,22 @@ export type RKernelRequest =
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
-      kind: "inspectStep";
+      kind: "inspectStepInfo";
       payload: Readonly<{
         sessionId: string;
         revision: number;
         stepId: string;
+      }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "inspectStepPage";
+      payload: Readonly<{
+        sessionId: string;
+        revision: number;
+        stepId: string;
+        side: "input" | "output";
         page: RKernelPageWindow;
       }>;
     }>
@@ -320,16 +344,22 @@ export type RKernelResponse =
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
-      kind: "stepInspection";
+      kind: "stepInspectionPage";
       sessionId: string;
       revision: number;
       stepId: string;
       stepIndex: number;
-      inputPage: RFramePageContract;
-      outputPage: RFramePageContract;
-      inputSchema: readonly RColumnSchema[];
-      outputSchema: readonly RColumnSchema[];
-      diff: DataDiff;
+      side: "input" | "output";
+      page: RFramePageContract;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "stepInspectionInfo";
+      sessionId: string;
+      revision: number;
+      stepId: string;
+      stepIndex: number;
       code: string;
     }>
   | RKernelErrorResponse;
@@ -343,6 +373,15 @@ export interface RKernelErrorResponse {
   readonly recoverable: boolean;
 }
 
+export interface RKernelResponseDecodeContext {
+  /** Exact host-retained schema for mutation input-cell validation. */
+  readonly inputSchema?: readonly RColumnSchema[];
+  /** Exact host-retained schema for applied-step output validation. */
+  readonly outputSchema?: readonly RColumnSchema[];
+  /** Exact side requested for one bounded applied-step page. */
+  readonly inspectionSide?: "input" | "output";
+}
+
 export function encodeRKernelRequest(request: RKernelRequest): string {
   validateRequest(request);
   const encoded = JSON.stringify(request);
@@ -352,7 +391,11 @@ export function encodeRKernelRequest(request: RKernelRequest): string {
   return encoded;
 }
 
-export function decodeRKernelResponseJson(payload: string, expectedRequestId: string): RKernelResponse {
+export function decodeRKernelResponseJson(
+  payload: string,
+  expectedRequestId: string,
+  context: RKernelResponseDecodeContext = {}
+): RKernelResponse {
   if (typeof payload !== "string") fail("R kernel response must be a string.");
   if (Buffer.byteLength(payload, "utf8") > R_KERNEL_MAX_RESPONSE_BYTES) {
     fail("R kernel response exceeds the byte limit.");
@@ -490,6 +533,7 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
     ]);
     validateEnvelope(record, expected);
     const page = decodeRFramePage(record.page);
+    const inputSchema = expectedMutationInputSchema(context, "step preview");
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
@@ -497,7 +541,7 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       sessionId: identifier(record.sessionId, "response.sessionId"),
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
       page,
-      diff: validateMutationDiff(record.diff, page),
+      diff: validateMutationDiff(record.diff, page, inputSchema),
       code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
     });
   }
@@ -527,7 +571,7 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, true)
     });
   }
-  if (kind === "stepInspection") {
+  if (kind === "stepInspectionPage") {
     const record = exactRecord(value, [
       "transportVersion",
       "requestId",
@@ -536,31 +580,53 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       "revision",
       "stepId",
       "stepIndex",
-      "inputPage",
-      "outputPage",
-      "inputSchema",
-      "outputSchema",
-      "diff",
-      "code"
+      "side",
+      "page"
     ]);
     validateEnvelope(record, expected);
-    const inputPage = decodeRFramePage(record.inputPage);
-    const outputPage = decodeRFramePage(record.outputPage);
-    const inputSchema = inspectionSchema(record.inputSchema, inputPage.schema, "response.inputSchema");
-    const outputSchema = inspectionSchema(record.outputSchema, outputPage.schema, "response.outputSchema");
+    if (record.side !== "input" && record.side !== "output") {
+      fail("R kernel inspection response has an invalid side.");
+    }
+    if (context.inspectionSide !== record.side) {
+      fail("R kernel inspection response does not match the requested side.");
+    }
+    const schema =
+      record.side === "input"
+        ? expectedMutationInputSchema(context, "step inspection")
+        : expectedMutationOutputSchema(context, "step inspection");
+    const page = decodeInspectionPage(record.page, schema, "response.page");
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
-      kind: "stepInspection" as const,
+      kind: "stepInspectionPage" as const,
       sessionId: identifier(record.sessionId, "response.sessionId"),
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
       stepId: boundedText(record.stepId, "response.stepId", maximumStepIdBytes, false),
       stepIndex: boundedInteger(record.stepIndex, "response.stepIndex", R_FRAME_CONTRACT_LIMITS.columns - 1),
-      inputPage,
-      outputPage,
-      inputSchema,
-      outputSchema,
-      diff: validateMutationDiff(record.diff, outputPage),
+      side: record.side,
+      page
+    });
+  }
+  if (kind === "stepInspectionInfo") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "revision",
+      "stepId",
+      "stepIndex",
+      "code"
+    ]);
+    validateEnvelope(record, expected);
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "stepInspectionInfo" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
+      stepId: boundedText(record.stepId, "response.stepId", maximumStepIdBytes, false),
+      stepIndex: boundedInteger(record.stepIndex, "response.stepIndex", R_FRAME_CONTRACT_LIMITS.columns - 1),
       code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
     });
   }
@@ -669,15 +735,29 @@ function validateRequest(request: RKernelRequest): void {
     validatePage(payload.page);
     return;
   }
-  if (record.kind === "inspectStep") {
+  if (record.kind === "inspectStepInfo") {
     const payload = exactRecord(
       record.payload,
-      ["sessionId", "revision", "stepId", "page"],
-      "R kernel inspection payload"
+      ["sessionId", "revision", "stepId"],
+      "R kernel inspection-info payload"
     );
     identifier(payload.sessionId, "request.payload.sessionId");
     boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
     boundedText(payload.stepId, "request.payload.stepId", maximumStepIdBytes, false);
+    return;
+  }
+  if (record.kind === "inspectStepPage") {
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "revision", "stepId", "side", "page"],
+      "R kernel inspection-page payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
+    boundedText(payload.stepId, "request.payload.stepId", maximumStepIdBytes, false);
+    if (payload.side !== "input" && payload.side !== "output") {
+      fail("request.payload.side must be input or output.");
+    }
     validatePage(payload.page);
     return;
   }
@@ -713,6 +793,21 @@ function validateTransformStep(value: unknown): void {
     }
     return;
   }
+  if (step.kind === "castColumn") {
+    const params = exactRecord(step.params, ["column", "dtype"], "R kernel cast parameters");
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    if (
+      params.dtype !== "string" &&
+      params.dtype !== "integer" &&
+      params.dtype !== "float" &&
+      params.dtype !== "boolean" &&
+      params.dtype !== "date" &&
+      params.dtype !== "datetime"
+    ) {
+      fail("R kernel cast parameters contain an unsupported target type.");
+    }
+    return;
+  }
   if (step.kind === "dropColumns") {
     const params = exactRecord(step.params, ["columns"], "R kernel drop parameters");
     validateTransformColumnReferences(params.columns, "drop");
@@ -738,7 +833,11 @@ function validateTransformColumnReferences(value: unknown, operation: "drop" | "
   }
 }
 
-function validateMutationDiff(value: unknown, outputPage: RFramePageContract): DataDiff {
+function validateMutationDiff(
+  value: unknown,
+  outputPage: RFramePageContract,
+  inputSchema: readonly RColumnSchema[]
+): DataDiff {
   const diff = exactRecord(value, [
     "addedRows",
     "removedRows",
@@ -777,6 +876,7 @@ function validateMutationDiff(value: unknown, outputPage: RFramePageContract): D
     fail("R kernel diff column names must be unique.");
   }
   const outputById = new Map(outputPage.schema.map((column) => [column.id, column]));
+  const inputById = new Map(inputSchema.map((column) => [column.id, column]));
   const projectedPositionById = new Map(outputPage.page.columnIds.map((id, position) => [id, position]));
   const outputRowByNumber = new Map(outputPage.page.rows.map((row) => [row.rowNumber, row]));
   const seenCells = new Set<string>();
@@ -796,12 +896,20 @@ function validateMutationDiff(value: unknown, outputPage: RFramePageContract): D
     const key = `${rowNumber}\u0000${columnId}`;
     if (seenCells.has(key)) fail("R kernel diff contains a repeated changed cell.");
     seenCells.add(key);
-    const before = cell.before === null ? null : validateDiffCell(cell.before, schema, outputPage, `${label}.before`);
-    const after = cell.after === null ? null : validateDiffCell(cell.after, schema, outputPage, `${label}.after`);
-    if (before === null && after === null) fail("R kernel diff cell cannot omit both values.");
-    if (after === null || !isDeepStrictEqual(after, outputRow.values[projectedPosition])) {
+    const inputColumn = inputById.get(columnId);
+    const beforeCell =
+      cell.before === null
+        ? null
+        : inputColumn
+          ? validateDiffCell(cell.before, inputColumn, `${label}.before`)
+          : fail(`${label}.before targets a column absent from the input schema.`);
+    const afterCell = cell.after === null ? null : validateDiffCell(cell.after, schema, `${label}.after`);
+    if (beforeCell === null && afterCell === null) fail("R kernel diff cell cannot omit both values.");
+    if (afterCell === null || !isDeepStrictEqual(afterCell, outputRow.values[projectedPosition])) {
       fail("R kernel diff after-value does not match the returned page.");
     }
+    const before = beforeCell === null ? null : canonicalDiffCell(beforeCell);
+    const after = canonicalDiffCell(afterCell);
     return Object.freeze({ rowNumber, columnId, column, before, after });
   });
   const result: DataDiff = {
@@ -819,40 +927,69 @@ function validateMutationDiff(value: unknown, outputPage: RFramePageContract): D
   return Object.freeze(result);
 }
 
-function validateDiffCell(
-  value: unknown,
-  column: RColumnSchema,
-  outputPage: RFramePageContract,
-  label: string
-): CellValue {
-  if (outputPage.shape.rows < 1) fail(`${label} cannot target an empty frame.`);
-  const decoded = decodeRFramePage({
-    ...outputPage,
-    page: {
-      offset: 0,
-      limit: 1,
-      totalRows: 1,
-      columnOffset: column.position,
-      columnLimit: 1,
-      columnIds: [column.id],
-      rows: [
-        {
-          id: "r:r:0",
-          rowNumber: 0,
-          ...(outputPage.frameSemantics.rowNames === "explicit" ? { rowLabel: "" } : {}),
-          values: [value]
-        }
-      ]
-    }
-  });
-  return Object.freeze({ ...(decoded.page.rows[0]?.values[0] as CellValue) });
+function validateDiffCell(value: unknown, column: RColumnSchema, label: string): RFrameCell {
+  const normalizedColumn = Object.freeze({ ...column, position: 0 });
+  try {
+    const decoded = decodeRFramePage({
+      contractVersion: R_FRAME_CONTRACT_VERSION,
+      dataframeFlavor: "r.data.frame",
+      shape: { rows: 1, columns: 1 },
+      frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
+      schema: [normalizedColumn],
+      page: {
+        offset: 0,
+        limit: 1,
+        totalRows: 1,
+        columnOffset: 0,
+        columnLimit: 1,
+        columnIds: [column.id],
+        rows: [{ id: "r:r:0", rowNumber: 0, values: [value] }]
+      }
+    });
+    return decoded.page.rows[0]?.values[0] as RFrameCell;
+  } catch (error) {
+    fail(`${label} is invalid: ${error instanceof Error ? error.message : "unknown R cell error"}`);
+  }
 }
 
-function inspectionSchema(value: unknown, expected: readonly RColumnSchema[], label: string): readonly RColumnSchema[] {
-  if (!Array.isArray(value) || JSON.stringify(value) !== JSON.stringify(expected)) {
-    fail(`${label} must match its frame schema.`);
+function expectedMutationInputSchema(
+  context: RKernelResponseDecodeContext,
+  operation: "step preview" | "step inspection"
+): readonly RColumnSchema[] {
+  const schema = context.inputSchema;
+  if (!schema || schema.length === 0 || schema.length > R_FRAME_CONTRACT_LIMITS.columns) {
+    fail(`R kernel ${operation} requires the exact host input schema.`);
   }
-  return expected;
+  return schema;
+}
+
+function expectedMutationOutputSchema(
+  context: RKernelResponseDecodeContext,
+  operation: "step inspection"
+): readonly RColumnSchema[] {
+  const schema = context.outputSchema;
+  if (!schema || schema.length === 0 || schema.length > R_FRAME_CONTRACT_LIMITS.columns) {
+    fail(`R kernel ${operation} requires the exact host output schema.`);
+  }
+  return schema;
+}
+
+function decodeInspectionPage(
+  value: unknown,
+  schema: readonly RColumnSchema[],
+  label: "response.page"
+): RFramePageContract {
+  const record = exactRecord(value, ["contractVersion", "dataframeFlavor", "shape", "frameSemantics", "page"], label);
+  return decodeRFramePage({ ...record, schema });
+}
+
+function canonicalDiffCell(cell: RFrameCell): CellValue {
+  if (cell.kind === "number") {
+    const raw = Number(cell.raw);
+    if (!Number.isFinite(raw)) fail("R kernel diff contains a non-finite value as a finite double.");
+    return Object.freeze({ ...cell, raw });
+  }
+  return Object.freeze({ ...cell });
 }
 
 function validateColumnReferences(value: unknown): void {

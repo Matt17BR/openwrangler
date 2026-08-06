@@ -74,24 +74,28 @@ Inline MIME v2 output shows every captured column and pages the captured rows at
 R support is not in a released package yet. On the Open Wrangler 2 branch, R notebooks can open base `data.frame`,
 tibble, and `data.table` variables through IRkernel. Pages, compound filters, ordered sorts, value search, and column
 and dataset profiles run in R; the dataframe is not passed through Python. Editing mode currently supports exactly
-six cleaning operations: Rename Column, Drop Columns, Select Columns, Clone Column, Text Length, and Lowercase. They follow the
+seven cleaning operations: Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. They follow the
 same draft, generated-code, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. Select Columns
 keeps the user's chosen order, and Clone Column gives the copy its own stable identity. Text Length accepts character
 and factor input, keeps `NA`, and adds an integer column containing Unicode character counts under a stable derived
 identity. Lowercase accepts character and factor input, keeps `NA`, and can update the source column or append a
-character column with a stable derived identity. Generated R can be copied or saved as a `.R` script.
+character column with a stable derived identity. Convert type replaces one column under the same identity and supports
+string, integer, float, boolean, date, and datetime targets. Failed parses become `NA`. It rejects active data-table
+keys and conversions that would lose units or `integer64` precision. Generated R can be copied or saved as a `.R`
+script.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) is the earlier viewing and
 recovery baseline from `6742255`. It used R 4.5.2 in VS Code and Cursor and a containerized IRkernel in VS Code,
 covering filters, profiles, sort priority, kernel restart, source preservation, and cleanup. It predates R cleaning
-support and is not evidence for the six operations below.
+support and is not evidence for the seven operations below.
 
 The [product gallery](media-gallery.md#r-notebooks-open-wrangler-2) shows the packaged IRkernel picker, viewing
-workbench, and Rename Column draft with generated R. The current packaged VS Code and Cursor journey runs all six operations
-through preview, apply, discard, inspection, and undo on a base data frame. It also opens editable tibbles and keyed
-`data.table` objects and previews and discards Rename and Drop Columns on each. Native R and cross-language tests cover
-all six operations across the three dataframe flavors, including mixed plans, ordered selection, Unicode character
-counts, native R lowercase behavior, `NA` preservation, stable retained and derived identities, duplicate names, non-syntactic names, and executable
+workbench, and Rename Column draft with generated R. The current packaged VS Code and Cursor journey runs all seven
+operations on a base data frame. Across the sequence it covers preview, apply, inspection, discard, latest-step editing,
+and undo; Convert type is applied and undone. It also opens editable tibbles and keyed `data.table` objects and previews
+and discards Rename and Drop Columns on each. Native R and cross-language tests cover all seven operations across the
+three dataframe flavors, including mixed plans, ordered selection, type conversion,
+Unicode character counts, native R lowercase behavior, `NA` preservation, stable retained and derived identities, duplicate names, non-syntactic names, and executable
 generated R.
 The remaining R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R`
 files are not available yet.
@@ -106,8 +110,8 @@ files are not available yet.
 | Base `data.frame`, tibble, and `data.table`  | v2 branch    | Partial | Native discovery, paging, queries, and profile tests     | Preview release                             |
 | Exact IRkernel session transport             | v2 branch    | Done    | Local VS Code/Cursor and remote VS Code restart test     | —                                           |
 | Notebook workbench                           | v2 branch    | Partial | Packaged viewing/editing, screenshots, production axe    | Preview release                             |
-| R cleaning operations and generated code     | 6 operations | Partial | Native tests and packaged VS Code/Cursor journey         | Remaining operations                        |
-| Copy or save generated R                     | 6 operations | Partial | Native generated-code tests and packaged R script path   | Preview release                             |
+| R cleaning operations and generated code     | 7 operations | Partial | Native tests and packaged VS Code/Cursor journey         | Remaining operations                        |
+| Copy or save generated R                     | 7 operations | Partial | Native generated-code tests and packaged R script path   | Preview release                             |
 | Cleaned-data export and notebook insertion   | No           | Planned | No public R path                                         | Native export and exact-notebook insertion  |
 | Quarto, R Markdown, and plain `.R` documents | No           | Planned | Ownership rules accepted in the R ADR                    | Stable broker or Open Wrangler-owned helper |
 

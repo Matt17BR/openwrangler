@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import {
   PROTOCOL_VERSION,
   type CellValue,
+  type CastColumnTransformStep,
   type CloneColumnTransformStep,
   type ColumnSchema,
   type ColumnSummary,
@@ -54,6 +55,7 @@ import type {
 } from "./rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
+  type RColumnSchema,
   type RColumnType,
   type RDataframeFlavor,
   type RFrameCell,
@@ -72,6 +74,7 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "dropColumns",
   "renameColumn",
   "cloneColumn",
+  "castColumn",
   "textLength",
   "lowerText"
 ] as OperationKind[]) as OperationKind[];
@@ -79,6 +82,7 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
 type RTransformStep =
   | RenameColumnTransformStep
   | CloneColumnTransformStep
+  | CastColumnTransformStep
   | TextLengthTransformStep
   | LowerTextTransformStep
   | DropColumnsTransformStep
@@ -127,6 +131,7 @@ export interface RKernelBridgeTransport {
     revision: number,
     step: RKernelTransformStep,
     page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
     replaceStepId?: string,
     options?: RKernelRequestOptions
   ): Promise<RKernelStepPreviewResult>;
@@ -153,6 +158,8 @@ export interface RKernelBridgeTransport {
     revision: number,
     stepId: string,
     page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
+    outputSchema: readonly RColumnSchema[],
     options?: RKernelRequestOptions
   ): Promise<RKernelStepInspectionResult>;
   close(sessionId: string, options?: RKernelRequestOptions): Promise<void>;
@@ -166,18 +173,23 @@ interface RBridgeSession {
   readonly dataframeFlavor: RDataframeFlavor;
   readonly shape: Readonly<{ rows: number; columns: number }>;
   readonly sourceSchema: readonly ColumnSchema[];
+  readonly sourceRSchema: readonly RColumnSchema[];
   readonly sourceKeyColumnIds: readonly string[];
   readonly rowNames: RFramePageContract["frameSemantics"]["rowNames"];
   mode: SessionMode;
   revision: number;
   schema: readonly ColumnSchema[];
+  rSchema: readonly RColumnSchema[];
   committedSchema: readonly ColumnSchema[];
+  committedRSchema: readonly RColumnSchema[];
   filterModel: FilterModel;
   steps: readonly RetainedTransformStep[];
   planInputSchemas: readonly (readonly ColumnSchema[])[];
+  planInputRSchemas: readonly (readonly RColumnSchema[])[];
   draftStep?: RTransformStep;
   draftReplacesStepId?: string;
   draftInputSchema?: readonly ColumnSchema[];
+  draftInputRSchema?: readonly RColumnSchema[];
   draftBaseFilterModel?: FilterModel;
   draftBaseViewChangeEpoch?: number;
   viewChangeEpoch: number;
@@ -585,6 +597,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     if (
       request.step.kind !== "renameColumn" &&
       request.step.kind !== "cloneColumn" &&
+      request.step.kind !== "castColumn" &&
       request.step.kind !== "textLength" &&
       request.step.kind !== "lowerText" &&
       request.step.kind !== "dropColumns" &&
@@ -599,6 +612,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     }
 
     let inputSchema: readonly ColumnSchema[];
+    let inputRSchema: readonly RColumnSchema[];
     if (request.replaceStepId !== undefined) {
       const latest = confirmed.steps.at(-1);
       if (!latest || latest.id !== request.replaceStepId || request.step.id !== request.replaceStepId) {
@@ -610,11 +624,13 @@ export class RKernelBridge implements OpenWranglerBridge {
         );
       }
       inputSchema = confirmed.planInputSchemas.at(-1) ?? confirmed.committedSchema;
+      inputRSchema = confirmed.planInputRSchemas.at(-1) ?? confirmed.committedRSchema;
     } else {
       if (confirmed.steps.some((step) => step.id === request.step.id)) {
         return errorResponse("invalid_request", "Applied R step IDs must be unique.", true, request.sessionId);
       }
       inputSchema = confirmed.committedSchema;
+      inputRSchema = confirmed.committedRSchema;
     }
 
     let targetSchema: readonly ColumnSchema[];
@@ -649,6 +665,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         expectedRevision,
         rStep,
         pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, view),
+        inputRSchema,
         request.replaceStepId,
         transportOptions(options)
       );
@@ -660,15 +677,23 @@ export class RKernelBridge implements OpenWranglerBridge {
         confirmed.invalidated = true;
         return staleResponseError(request.sessionId);
       }
-      assertMutationContract(confirmed, result.page, request, targetSchema);
+      assertMutationContract(
+        confirmed,
+        result.page,
+        request,
+        targetSchema,
+        request.step.kind === "castColumn" ? request.step.params.column.id : undefined
+      );
       assertMutationDiff(request.step, inputSchema, targetSchema, result.page, result.diff);
 
       confirmed.revision = result.revision;
       confirmed.schema = schemaFromContract(result.page);
+      confirmed.rSchema = result.page.schema;
       confirmed.filterModel = nextFilterModel;
       confirmed.draftStep = copyRTransformStep(request.step);
       confirmed.draftReplacesStepId = request.replaceStepId;
       confirmed.draftInputSchema = copySchema(inputSchema);
+      confirmed.draftInputRSchema = inputRSchema;
       confirmed.draftBaseFilterModel = draftBaseFilterModel;
       confirmed.draftBaseViewChangeEpoch = draftBaseViewChangeEpoch;
       return {
@@ -698,18 +723,21 @@ export class RKernelBridge implements OpenWranglerBridge {
     const confirmed = session as RBridgeSession;
 
     let targetSchema: readonly ColumnSchema[];
+    let targetRSchema: readonly RColumnSchema[];
     let nextFilterModel: FilterModel;
     if (request.kind === "applyDraft") {
-      if (!confirmed.draftStep || !confirmed.draftInputSchema) {
+      if (!confirmed.draftStep || !confirmed.draftInputSchema || !confirmed.draftInputRSchema) {
         return errorResponse("invalid_request", "There is no R draft step to apply.", true, request.sessionId);
       }
       targetSchema = confirmed.schema;
+      targetRSchema = confirmed.rSchema;
       nextFilterModel = copyFilterModel(confirmed.filterModel);
     } else if (request.kind === "discardDraft") {
-      if (!confirmed.draftStep || !confirmed.draftInputSchema) {
+      if (!confirmed.draftStep || !confirmed.draftInputSchema || !confirmed.draftInputRSchema) {
         return errorResponse("invalid_request", "There is no R draft step to discard.", true, request.sessionId);
       }
       targetSchema = confirmed.committedSchema;
+      targetRSchema = confirmed.committedRSchema;
       nextFilterModel =
         confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel
           ? copyFilterModel(confirmed.draftBaseFilterModel)
@@ -727,6 +755,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         return errorResponse("invalid_request", "There is no applied R step to undo.", true, request.sessionId);
       }
       targetSchema = confirmed.planInputSchemas.at(-1) ?? confirmed.sourceSchema;
+      targetRSchema = confirmed.planInputRSchemas.at(-1) ?? confirmed.sourceRSchema;
       const latest = confirmed.steps.at(-1) as RetainedTransformStep;
       const restore = confirmed.lastAppliedViewRestore;
       nextFilterModel =
@@ -773,19 +802,26 @@ export class RKernelBridge implements OpenWranglerBridge {
         return staleResponseError(request.sessionId);
       }
       assertMutationContract(confirmed, result.page, request, targetSchema);
+      if (!isDeepStrictEqual(targetRSchema, result.page.schema)) {
+        throw new Error("The R kernel returned a cleaning-plan update for the wrong R schema.");
+      }
 
       const priorRestore = confirmed.lastAppliedViewRestore;
       if (request.kind === "applyDraft") {
         const draftStep = confirmed.draftStep as RTransformStep;
         const draftInputSchema = confirmed.draftInputSchema as readonly ColumnSchema[];
+        const draftInputRSchema = confirmed.draftInputRSchema as readonly RColumnSchema[];
         if (confirmed.draftReplacesStepId === undefined) {
           confirmed.steps = [...confirmed.steps, copyRTransformStep(draftStep)];
           confirmed.planInputSchemas = [...confirmed.planInputSchemas, copySchema(draftInputSchema)];
+          confirmed.planInputRSchemas = [...confirmed.planInputRSchemas, draftInputRSchema];
         } else {
           confirmed.steps = [...confirmed.steps.slice(0, -1), copyRTransformStep(draftStep)];
           confirmed.planInputSchemas = [...confirmed.planInputSchemas.slice(0, -1), copySchema(draftInputSchema)];
+          confirmed.planInputRSchemas = [...confirmed.planInputRSchemas.slice(0, -1), draftInputRSchema];
         }
         confirmed.committedSchema = schemaFromContract(result.page);
+        confirmed.committedRSchema = result.page.schema;
         if (confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel) {
           let before = copyFilterModel(confirmed.draftBaseFilterModel);
           if (
@@ -808,12 +844,15 @@ export class RKernelBridge implements OpenWranglerBridge {
       } else if (request.kind === "undoStep") {
         confirmed.steps = confirmed.steps.slice(0, -1);
         confirmed.planInputSchemas = confirmed.planInputSchemas.slice(0, -1);
+        confirmed.planInputRSchemas = confirmed.planInputRSchemas.slice(0, -1);
         confirmed.committedSchema = schemaFromContract(result.page);
+        confirmed.committedRSchema = result.page.schema;
         confirmed.lastAppliedViewRestore = undefined;
       }
 
       confirmed.revision = result.revision;
       confirmed.schema = schemaFromContract(result.page);
+      confirmed.rSchema = result.page.schema;
       confirmed.filterModel = nextFilterModel;
       clearDraft(confirmed);
       return {
@@ -853,10 +892,15 @@ export class RKernelBridge implements OpenWranglerBridge {
       );
     }
     const inputSchema = session.planInputSchemas[stepIndex] as readonly ColumnSchema[];
+    const inputRSchema = session.planInputRSchemas[stepIndex] as readonly RColumnSchema[];
     const outputSchema =
       session.planInputSchemas[stepIndex + 1] ??
       (stepIndex === session.steps.length - 1 ? session.committedSchema : undefined);
     if (!outputSchema) throw new Error("The R bridge is missing an applied-step output schema.");
+    const outputRSchema =
+      session.planInputRSchemas[stepIndex + 1] ??
+      (stepIndex === session.steps.length - 1 ? session.committedRSchema : undefined);
+    if (!outputRSchema) throw new Error("The R bridge is missing an applied-step output R schema.");
     const expectedRevision = session.revision;
     const page = pageWindow(
       request.offset,
@@ -871,6 +915,8 @@ export class RKernelBridge implements OpenWranglerBridge {
         expectedRevision,
         request.stepId,
         page,
+        inputRSchema,
+        outputRSchema,
         transportOptions(options)
       );
       if (session.invalidated) return kernelChangedError(request.sessionId);
@@ -887,15 +933,27 @@ export class RKernelBridge implements OpenWranglerBridge {
       }
       assertMutationContract(session, result.inputPage, request, inputSchema);
       assertMutationContract(session, result.outputPage, request, outputSchema);
-      if (!sameSchema(inputSchema, result.inputSchema) || !sameSchema(outputSchema, result.outputSchema)) {
+      if (
+        !sameSchema(inputSchema, result.inputSchema) ||
+        !sameSchema(outputSchema, result.outputSchema) ||
+        !isDeepStrictEqual(inputRSchema, result.inputSchema) ||
+        !isDeepStrictEqual(outputRSchema, result.outputSchema)
+      ) {
         throw new Error("The R kernel returned mismatched applied-step schemas.");
       }
+      const diff = inspectionDiff(
+        session.steps[stepIndex] as RTransformStep,
+        inputSchema,
+        outputSchema,
+        result.inputPage,
+        result.outputPage
+      );
       assertMutationDiff(
         session.steps[stepIndex] as RTransformStep,
         inputSchema,
         outputSchema,
         result.outputPage,
-        result.diff
+        diff
       );
       return {
         kind: "stepInspection",
@@ -906,7 +964,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         outputPage: gridPageFromContract(result.outputPage),
         inputSchema: copySchema(inputSchema),
         outputSchema: copySchema(outputSchema),
-        diff: copyDiff(result.diff),
+        diff: copyDiff(diff),
         code: result.code
       };
     } catch (error) {
@@ -1303,15 +1361,19 @@ function sessionFromContract(
     dataframeFlavor: contract.dataframeFlavor,
     shape: Object.freeze({ ...contract.shape }),
     sourceSchema: schema,
+    sourceRSchema: contract.schema,
     sourceKeyColumnIds: Object.freeze([...contract.frameSemantics.keyColumnIds]),
     committedSchema: schema,
+    committedRSchema: contract.schema,
     schema,
+    rSchema: contract.schema,
     rowNames: contract.frameSemantics.rowNames,
     mode,
     revision: 0,
     filterModel: emptyFilterModel(),
     steps: Object.freeze([]),
     planInputSchemas: Object.freeze([]),
+    planInputRSchemas: Object.freeze([]),
     viewChangeEpoch: 0,
     invalidated: false
   };
@@ -1405,9 +1467,24 @@ function assertMutationContract(
   session: RBridgeSession,
   contract: RFramePageContract,
   request: PageWindowCoordinates,
-  expectedSchema: readonly ColumnSchema[]
+  expectedSchema: readonly ColumnSchema[],
+  dynamicNullableColumnId?: string
 ): void {
-  assertSessionContract(session, contract, request, expectedSchema);
+  if (dynamicNullableColumnId === undefined) {
+    assertSessionContract(session, contract, request, expectedSchema);
+    return;
+  }
+  const actualTarget = contract.schema.find((column) => column.id === dynamicNullableColumnId);
+  const expectedTarget = expectedSchema.find((column) => column.id === dynamicNullableColumnId);
+  if (!actualTarget || !expectedTarget || (expectedTarget.nullable && !actualTarget.nullable)) {
+    throw new Error("The R dataframe contract returned invalid nullability for the converted column.");
+  }
+  const normalized = Object.freeze(
+    expectedSchema.map((column) =>
+      column.id === dynamicNullableColumnId ? Object.freeze({ ...column, nullable: actualTarget.nullable }) : column
+    )
+  );
+  assertSessionContract(session, contract, request, normalized);
 }
 
 function sameSchema(expected: readonly ColumnSchema[], actual: RFramePageContract["schema"]): boolean {
@@ -1455,6 +1532,7 @@ function schemaAfterRStep(
   if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
+  if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (step.kind === "lowerText") return schemaAfterLowerText(inputSchema, step, activeKeyColumnIds);
   const matches = inputSchema.filter(
@@ -1473,6 +1551,91 @@ function schemaAfterRStep(
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
   );
+}
+
+function schemaAfterCast(
+  inputSchema: readonly ColumnSchema[],
+  step: CastColumnTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The converted column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (activeKeyColumnIds.includes(source.id)) {
+    throw new TypeError(
+      "Convert type cannot replace a data.table key column. Clone the column first, then convert it."
+    );
+  }
+
+  const target = rCastTarget(source.rawType, step.params.dtype);
+  return Object.freeze(
+    inputSchema.map((column) =>
+      Object.freeze(
+        column.id === source.id
+          ? { ...column, rawType: target.rawType, type: target.type, nullable: source.nullable }
+          : { ...column }
+      )
+    )
+  );
+}
+
+function rCastTarget(
+  sourceRawType: string,
+  dtype: CastColumnTransformStep["params"]["dtype"]
+): Readonly<{ rawType: string; type: ColumnSchema["type"] }> {
+  const factor = sourceRawType === "factor" || sourceRawType === "ordered factor";
+  const text = sourceRawType === "character" || factor;
+  const ordinaryScalar =
+    sourceRawType === "logical" || sourceRawType === "integer" || sourceRawType === "double" || text;
+  if (dtype === "string") {
+    if (
+      !ordinaryScalar &&
+      sourceRawType !== "Date" &&
+      sourceRawType !== "POSIXct" &&
+      sourceRawType !== "difftime" &&
+      sourceRawType !== "integer64"
+    ) {
+      throw new TypeError(`Convert type does not support R ${sourceRawType} columns.`);
+    }
+    return { rawType: "character", type: "string" };
+  }
+  if (dtype === "integer") {
+    if (sourceRawType === "integer64") return { rawType: "integer64", type: "integer" };
+    if (!ordinaryScalar) throw unsupportedRCast(sourceRawType, dtype);
+    return { rawType: "integer", type: "integer" };
+  }
+  if (dtype === "float") {
+    if (!ordinaryScalar) throw unsupportedRCast(sourceRawType, dtype);
+    return { rawType: "double", type: "float" };
+  }
+  if (dtype === "boolean") {
+    if (!ordinaryScalar) throw unsupportedRCast(sourceRawType, dtype);
+    return { rawType: "logical", type: "boolean" };
+  }
+  if (dtype === "date") {
+    if (!text && sourceRawType !== "Date" && sourceRawType !== "POSIXct") {
+      throw unsupportedRCast(sourceRawType, dtype);
+    }
+    return { rawType: "Date", type: "date" };
+  }
+  if (dtype === "datetime") {
+    if (!text && sourceRawType !== "Date" && sourceRawType !== "POSIXct") {
+      throw unsupportedRCast(sourceRawType, dtype);
+    }
+    return { rawType: "POSIXct", type: "datetime" };
+  }
+  throw new TypeError("Convert type received an unsupported R target type.");
+}
+
+function unsupportedRCast(sourceRawType: string, dtype: string): TypeError {
+  return new TypeError(`Convert type cannot safely convert R ${sourceRawType} values to ${dtype}.`);
 }
 
 function schemaAfterLowerText(
@@ -1778,6 +1941,13 @@ function rTransformStep(step: RTransformStep): RKernelTransformStep {
       params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newName: step.params.newName })
     });
   }
+  if (step.kind === "castColumn") {
+    return Object.freeze({
+      id: step.id,
+      kind: "castColumn" as const,
+      params: Object.freeze({ column: Object.freeze({ ...step.params.column }), dtype: step.params.dtype })
+    });
+  }
   if (step.kind === "textLength") {
     return Object.freeze({
       id: step.id,
@@ -1828,6 +1998,13 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { column: { ...step.params.column }, newName: step.params.newName }
     };
   }
+  if (step.kind === "castColumn") {
+    return {
+      id: step.id,
+      kind: "castColumn",
+      params: { column: { ...step.params.column }, dtype: step.params.dtype }
+    };
+  }
   if (step.kind === "textLength") {
     return {
       id: step.id,
@@ -1856,6 +2033,7 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
   if (
     step.kind !== "renameColumn" &&
     step.kind !== "cloneColumn" &&
+    step.kind !== "castColumn" &&
     step.kind !== "textLength" &&
     step.kind !== "lowerText" &&
     step.kind !== "dropColumns" &&
@@ -1876,6 +2054,97 @@ function retainedKeyPrefix(sourceKeyColumnIds: readonly string[], schema: readon
   return retained;
 }
 
+function inspectionDiff(
+  step: RTransformStep,
+  inputSchema: readonly ColumnSchema[],
+  outputSchema: readonly ColumnSchema[],
+  inputPage: RFramePageContract,
+  outputPage: RFramePageContract
+): DataDiff {
+  if (
+    inputPage.page.totalRows !== outputPage.page.totalRows ||
+    inputPage.page.rows.length !== outputPage.page.rows.length ||
+    inputPage.page.rows.some((row, index) => {
+      const outputRow = outputPage.page.rows[index];
+      return !outputRow || outputRow.id !== row.id || outputRow.rowNumber !== row.rowNumber;
+    })
+  ) {
+    throw new Error("The R kernel returned inspection pages for different rows.");
+  }
+  const inputIds = new Set(inputSchema.map((column) => column.id));
+  const outputIds = new Set(outputSchema.map((column) => column.id));
+  const addedColumns = outputSchema.filter((column) => !inputIds.has(column.id)).map((column) => column.name);
+  const removedColumns = inputSchema.filter((column) => !outputIds.has(column.id)).map((column) => column.name);
+  const lowerInPlace =
+    step.kind === "lowerText" &&
+    (step.params.newColumn === undefined || step.params.newColumn === step.params.column.name);
+  const changedInPlace = step.kind === "castColumn" || lowerInPlace;
+  if (!changedInPlace) {
+    return {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns,
+      removedColumns,
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    };
+  }
+
+  const columnId = step.params.column.id;
+  const inputPosition = inputPage.page.columnIds.indexOf(columnId);
+  const outputPosition = outputPage.page.columnIds.indexOf(columnId);
+  if (inputPosition < 0 || outputPosition < 0) {
+    return {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns,
+      removedColumns,
+      changedCells: 0,
+      cells: [],
+      truncated: true
+    };
+  }
+
+  const inputRowsById = new Map(inputPage.page.rows.map((row) => [row.id, row]));
+  const matchedInputIds = new Set<string>();
+  const cells: DataDiff["cells"] = [];
+  let changedCells = 0;
+  for (const outputRow of outputPage.page.rows) {
+    const inputRow = inputRowsById.get(outputRow.id);
+    if (!inputRow) continue;
+    matchedInputIds.add(inputRow.id);
+    const before = cellValueFromR(inputRow.values[inputPosition] as RFrameCell);
+    const after = cellValueFromR(outputRow.values[outputPosition] as RFrameCell);
+    if (isDeepStrictEqual(before, after)) continue;
+    changedCells += 1;
+    if (cells.length < 500) {
+      cells.push({
+        rowNumber: outputRow.rowNumber,
+        columnId,
+        column: step.params.column.name,
+        before,
+        after
+      });
+    }
+  }
+  const unmatchedRows =
+    matchedInputIds.size !== inputPage.page.rows.length || matchedInputIds.size !== outputPage.page.rows.length;
+  return {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns,
+    removedColumns,
+    changedCells,
+    cells,
+    truncated:
+      unmatchedRows ||
+      inputPage.page.totalRows > inputPage.page.rows.length ||
+      outputPage.page.totalRows > outputPage.page.rows.length ||
+      changedCells > cells.length
+  };
+}
+
 function assertMutationDiff(
   step: RTransformStep,
   inputSchema: readonly ColumnSchema[],
@@ -1890,6 +2159,7 @@ function assertMutationDiff(
   const lowerInPlace =
     step.kind === "lowerText" &&
     (step.params.newColumn === undefined || step.params.newColumn === step.params.column.name);
+  const changedInPlace = lowerInPlace || step.kind === "castColumn";
   const expectedAdded =
     step.kind === "cloneColumn"
       ? [step.params.newName]
@@ -1916,27 +2186,32 @@ function assertMutationDiff(
             : step.kind === "lowerText" && !lowerInPlace
               ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
               : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
-  const projectedPosition = lowerInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
+  const projectedPosition = changedInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
+  const changedInput = changedInPlace
+    ? inputSchema.find((column) => column.id === step.params.column.id && column.name === step.params.column.name)
+    : undefined;
   const outputRowsByNumber = new Map(outputPage.page.rows.map((row) => [row.rowNumber, row]));
-  const cellsMatch = lowerInPlace
-    ? diff.changedCells <= outputPage.page.rows.length &&
-      (projectedPosition >= 0 || (diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated)) &&
-      diff.cells.every((cell) => {
-        const outputRow = outputRowsByNumber.get(cell.rowNumber);
-        return (
-          projectedPosition >= 0 &&
-          outputRow !== undefined &&
-          cell.columnId === step.params.column.id &&
-          cell.column === step.params.column.name &&
-          cell.before !== null &&
-          cell.after !== null &&
-          !isDeepStrictEqual(cell.before, cell.after) &&
-          isDeepStrictEqual(cell.after, cellValueFromR(outputRow.values[projectedPosition] as RFrameCell))
-        );
-      }) &&
-      diff.changedCells >= diff.cells.length &&
-      (diff.truncated || diff.changedCells === diff.cells.length)
-    : diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated === false;
+  const cellsMatch =
+    changedInPlace && changedInput
+      ? diff.changedCells <= outputPage.page.rows.length &&
+        (projectedPosition >= 0 || (diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated)) &&
+        diff.cells.every((cell) => {
+          const outputRow = outputRowsByNumber.get(cell.rowNumber);
+          return (
+            projectedPosition >= 0 &&
+            outputRow !== undefined &&
+            cell.columnId === step.params.column.id &&
+            cell.column === step.params.column.name &&
+            cell.before !== null &&
+            cell.after !== null &&
+            isCellCompatibleWithColumn(cell.before, changedInput) &&
+            !isDeepStrictEqual(cell.before, cell.after) &&
+            isDeepStrictEqual(cell.after, cellValueFromR(outputRow.values[projectedPosition] as RFrameCell))
+          );
+        }) &&
+        diff.changedCells >= diff.cells.length &&
+        (diff.truncated || diff.changedCells === diff.cells.length)
+      : diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated === false;
   const valid =
     diff.addedRows === 0 &&
     diff.removedRows === 0 &&
@@ -1945,6 +2220,27 @@ function assertMutationDiff(
     cellsMatch &&
     stepMatches;
   if (!valid) throw new Error("The R kernel returned a mutation diff for the wrong columns or cells.");
+}
+
+function isCellCompatibleWithColumn(cell: CellValue, column: ColumnSchema): boolean {
+  if (cell.isNull) return column.nullable && cell.kind === "null";
+  if (cell.isNaN) return column.type === "float" && cell.kind === "nan";
+  if (cell.kind === "infinity") return column.type === "float";
+  const expectedKinds: Readonly<Record<ColumnSchema["type"], readonly CellValue["kind"][]>> = {
+    string: ["string"],
+    integer: ["integer"],
+    float: ["number"],
+    decimal: ["decimal"],
+    boolean: ["boolean"],
+    datetime: ["datetime"],
+    date: ["date"],
+    duration: ["duration"],
+    binary: [],
+    list: [],
+    struct: [],
+    unknown: []
+  };
+  return cell.isNull === false && cell.isNaN === false && expectedKinds[column.type].includes(cell.kind);
 }
 
 function copyDiff(diff: DataDiff): DataDiff {
@@ -1967,6 +2263,7 @@ function clearDraft(session: RBridgeSession): void {
   session.draftStep = undefined;
   session.draftReplacesStepId = undefined;
   session.draftInputSchema = undefined;
+  session.draftInputRSchema = undefined;
   session.draftBaseFilterModel = undefined;
   session.draftBaseViewChangeEpoch = undefined;
 }

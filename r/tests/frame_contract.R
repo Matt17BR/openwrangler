@@ -761,6 +761,275 @@ assert_error(
 assert_identical(invalid_lower_frame, invalid_lower_before, "failed lowerText mutated invalid source text")
 assert_identical(lower_frame, lower_before, "lowerText mutated its source data.frame")
 
+cast_cases <- list(
+  list(
+    dtype = "string",
+    input = factor(c("BETA", NA, "ALPHA"), levels = c("ALPHA", "BETA")),
+    expected = c("BETA", NA_character_, "ALPHA")
+  ),
+  list(
+    dtype = "integer",
+    input = c("1.9", "-2.9", "2147483648", "bad"),
+    expected = c(1L, -2L, NA_integer_, NA_integer_)
+  ),
+  list(
+    dtype = "float",
+    input = c("1.5", "Inf", "NaN", "bad"),
+    expected = c(1.5, Inf, NaN, NA_real_)
+  ),
+  list(
+    dtype = "boolean",
+    input = factor(c("TRUE", "false", "T", "not-a-bool")),
+    expected = c(TRUE, FALSE, TRUE, NA)
+  ),
+  list(
+    dtype = "date",
+    input = c("2026-01-02", "2026/01/03", "2026-02-30", NA_character_),
+    expected = as.Date(c("2026-01-02", NA, NA, NA))
+  ),
+  list(
+    dtype = "datetime",
+    input = c("2026-01-02", "2026-01-02 03:04:05.125", "bad", NA_character_),
+    expected = as.POSIXct(
+      c("2026-01-02 00:00:00", "2026-01-02 03:04:05.125", NA, NA),
+      tz = "UTC"
+    )
+  )
+)
+
+for (case in cast_cases) {
+  source <- data.frame(value = case$input, check.names = FALSE)
+  source_before <- unserialize(serialize(source, NULL, version = 3L))
+  source_capture <- openwrangler_r_frame_contract$capture_frame(source)
+  result <- openwrangler_r_frame_contract$cast_column(
+    source,
+    list(id = "r:c:0", name = "value"),
+    case$dtype
+  )
+  result_capture <- openwrangler_r_frame_contract$capture_frame(
+    result,
+    nullability_source = source_capture,
+    source_positions = 1L,
+    cast_positions = 1L,
+    cast_dtypes = case$dtype
+  )
+  assert_identical(result[[1L]], case$expected, sprintf("castColumn returned the wrong %s values", case$dtype))
+  assert_identical(
+    result_capture$descriptor$schema[[1L]]$id,
+    "r:c:0",
+    sprintf("castColumn changed the stable %s identity", case$dtype)
+  )
+  assert_identical(
+    result_capture$descriptor$schema[[1L]]$nullable,
+    source_capture$descriptor$schema[[1L]]$nullable || anyNA(case$expected),
+    sprintf("castColumn returned the wrong %s nullability", case$dtype)
+  )
+  assert_identical(source, source_before, sprintf("castColumn mutated its %s source", case$dtype))
+}
+
+cast_nonnullable_source <- data.frame(value = c("1", "2"), check.names = FALSE)
+cast_nonnullable_capture <- openwrangler_r_frame_contract$capture_frame(cast_nonnullable_source)
+cast_nonnullable_result <- openwrangler_r_frame_contract$cast_column(
+  cast_nonnullable_source,
+  list(id = "r:c:0", name = "value"),
+  "integer"
+)
+cast_nonnullable_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  cast_nonnullable_result,
+  nullability_source = cast_nonnullable_capture,
+  source_positions = 1L,
+  cast_positions = 1L,
+  cast_dtypes = "integer"
+)
+assert_identical(
+  cast_nonnullable_result_capture$descriptor$schema[[1L]]$nullable,
+  FALSE,
+  "a valid non-nullable cast became nullable"
+)
+cast_nonnullable_result$value[[1L]] <- 99L
+assert_identical(cast_nonnullable_source$value[[1L]], "1", "a cast result shared storage with its source")
+
+cast_datetime_source <- data.frame(
+  instant = as.POSIXct(c("2026-01-02 03:04:05", NA), tz = "Europe/Berlin"),
+  check.names = FALSE
+)
+cast_datetime_string <- openwrangler_r_frame_contract$cast_column(
+  cast_datetime_source,
+  list(id = "r:c:0", name = "instant"),
+  "string"
+)
+assert_identical(
+  cast_datetime_string$instant,
+  c("2026-01-02T02:04:05.000000Z", NA_character_),
+  "castColumn did not format POSIXct values as explicit UTC ISO text"
+)
+
+cast_ancient_text <- data.frame(
+  date = c("2024-02-29", "0001-01-01", "0000-01-01"),
+  datetime = c("2024-02-29T12:00:00Z", "0001-01-01T00:00:00Z", "0000-01-01T00:00:00Z"),
+  check.names = FALSE
+)
+cast_ancient_date <- openwrangler_r_frame_contract$cast_column(
+  cast_ancient_text,
+  list(id = "r:c:0", name = "date"),
+  "date"
+)
+cast_ancient_datetime <- openwrangler_r_frame_contract$cast_column(
+  cast_ancient_text,
+  list(id = "r:c:1", name = "datetime"),
+  "datetime"
+)
+assert_identical(
+  cast_ancient_date$date,
+  as.Date(c("2024-02-29", NA, NA)),
+  "castColumn created a Date that the page contract cannot encode"
+)
+assert_identical(
+  cast_ancient_datetime$datetime,
+  as.POSIXct(c("2024-02-29 12:00:00", NA, NA), tz = "UTC"),
+  "castColumn created a POSIXct value that the page contract cannot encode"
+)
+invisible(openwrangler_r_frame_contract$capture_frame(cast_ancient_date))
+invisible(openwrangler_r_frame_contract$capture_frame(cast_ancient_datetime))
+
+cast_ancient_posix <- data.frame(
+  instant = as.POSIXct(c("2024-02-29 12:00:00", "0001-01-01 00:00:00"), tz = "UTC"),
+  check.names = FALSE
+)
+cast_ancient_posix_date <- openwrangler_r_frame_contract$cast_column(
+  cast_ancient_posix,
+  list(id = "r:c:0", name = "instant"),
+  "date"
+)
+assert_identical(
+  cast_ancient_posix_date$instant,
+  as.Date(c("2024-02-29", NA)),
+  "POSIXct-to-Date cast created a value that the page contract cannot encode"
+)
+invisible(openwrangler_r_frame_contract$capture_frame(cast_ancient_posix_date))
+
+cast_wide <- data.frame(
+  wide = bit64::as.integer64(c("9223372036854775806", "-9223372036854775807", NA)),
+  check.names = FALSE
+)
+cast_wide_before <- unserialize(serialize(cast_wide, NULL, version = 3L))
+cast_wide_integer <- openwrangler_r_frame_contract$cast_column(
+  cast_wide,
+  list(id = "r:c:0", name = "wide"),
+  "integer"
+)
+cast_wide_string <- openwrangler_r_frame_contract$cast_column(
+  cast_wide,
+  list(id = "r:c:0", name = "wide"),
+  "string"
+)
+assert_identical(cast_wide_integer$wide, cast_wide$wide, "integer64 cast to integer lost precision")
+assert_identical(
+  cast_wide_string$wide,
+  c("9223372036854775806", "-9223372036854775807", NA_character_),
+  "integer64 cast to string lost precision"
+)
+for (dtype in c("float", "boolean", "date", "datetime")) {
+  assert_error(
+    openwrangler_r_frame_contract$cast_column(
+      cast_wide,
+      list(id = "r:c:0", name = "wide"),
+      dtype
+    ),
+    "castColumn cannot convert"
+  )
+}
+assert_identical(cast_wide, cast_wide_before, "failed integer64 casts mutated their source")
+
+cast_matrix_sources <- list(
+  logical = c(TRUE, FALSE, NA),
+  integer = c(1L, 0L, NA_integer_),
+  double = c(1.5, 0, NA_real_),
+  character = c("1", "TRUE", "2026-01-02"),
+  factor = factor(c("1", "TRUE", "2026-01-02")),
+  date = as.Date(c("2026-01-01", "2026-01-02", NA)),
+  datetime = as.POSIXct(c("2026-01-01", "2026-01-02", NA), tz = "Europe/Berlin"),
+  difftime = as.difftime(c(1, 0, NA), units = "hours"),
+  integer64 = bit64::as.integer64(c("1", "0", NA))
+)
+cast_source_matrix <- list(
+  string = names(cast_matrix_sources),
+  integer = c("logical", "integer", "double", "character", "factor", "integer64"),
+  float = c("logical", "integer", "double", "character", "factor"),
+  boolean = c("logical", "integer", "double", "character", "factor"),
+  date = c("character", "factor", "date", "datetime"),
+  datetime = c("character", "factor", "date", "datetime")
+)
+for (dtype in names(cast_source_matrix)) {
+  for (source_kind in names(cast_matrix_sources)) {
+    source <- data.frame(value = cast_matrix_sources[[source_kind]], check.names = FALSE)
+    expression <- quote(openwrangler_r_frame_contract$cast_column(
+      source,
+      list(id = "r:c:0", name = "value"),
+      dtype
+    ))
+    if (source_kind %in% cast_source_matrix[[dtype]]) {
+      result <- eval(expression)
+      assert_true(is.data.frame(result), sprintf("%s to %s cast did not return a dataframe", source_kind, dtype))
+    } else {
+      assert_error(eval(expression), "castColumn cannot convert")
+    }
+  }
+}
+
+cast_tibble <- tibble::tibble(id = 1:3, value = factor(c("1.9", "bad", NA)))
+cast_tibble_before <- unserialize(serialize(cast_tibble, NULL, version = 3L))
+cast_tibble_result <- openwrangler_r_frame_contract$cast_column(
+  cast_tibble,
+  list(id = "r:c:1", name = "value"),
+  "integer"
+)
+assert_identical(class(cast_tibble_result), c("tbl_df", "tbl", "data.frame"), "castColumn changed tibble class")
+assert_identical(cast_tibble_result$value, c(1L, NA_integer_, NA_integer_), "tibble cast used factor codes")
+assert_identical(cast_tibble, cast_tibble_before, "castColumn mutated its source tibble")
+
+cast_table <- data.table::data.table(
+  primary_key = c(2L, 1L),
+  value = c("2.9", "bad"),
+  row_marker = c("row-b", "row-a")
+)
+data.table::setkey(cast_table, primary_key)
+cast_table_before <- data.table::copy(cast_table)
+cast_table_result <- openwrangler_r_frame_contract$cast_column(
+  cast_table,
+  list(id = "r:c:1", name = "value"),
+  "integer"
+)
+assert_identical(data.table::key(cast_table_result), "primary_key", "castColumn changed a retained data.table key")
+assert_identical(cast_table_result$row_marker, cast_table_before$row_marker, "castColumn changed data.table row order")
+assert_identical(cast_table_result$value, c(NA_integer_, 2L), "castColumn changed non-key data.table values")
+assert_error(
+  openwrangler_r_frame_contract$cast_column(
+    cast_table,
+    list(id = "r:c:0", name = "primary_key"),
+    "string"
+  ),
+  "clone the column before casting it"
+)
+assert_identical(cast_table, cast_table_before, "castColumn mutated its source data.table")
+
+assert_error(
+  openwrangler_r_frame_contract$cast_column(
+    data.frame(value = 1L),
+    list(id = "r:c:0", name = "value"),
+    "decimal"
+  ),
+  "dtype must be one of"
+)
+assert_error(
+  openwrangler_r_frame_contract$cast_column(
+    data.frame(value = 1L),
+    list(id = "r:c:0", name = "wrong"),
+    "float"
+  ),
+  "stale-column"
+)
+
 drop_frame <- data.frame(
   duplicate = c(1L, 2L),
   duplicate = c(3L, 4L),

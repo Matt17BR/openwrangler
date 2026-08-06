@@ -536,6 +536,23 @@ openwrangler_r_kernel_agent <- local({
         }
       ))
     }
+    if (identical(kind, "castColumn")) {
+      params <- exact_record(step$params, c("column", "dtype"), "request.payload.step.params")
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      dtype <- bounded_text(params$dtype, "request.payload.step.params.dtype", 32L)
+      if (!dtype %in% c("string", "integer", "float", "boolean", "date", "datetime")) {
+        abort("invalid_request", "request.payload.step.params.dtype is unsupported")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(column = column, dtype = dtype)
+      ))
+    }
     if (kind %in% c("dropColumns", "selectColumns")) {
       params <- exact_record(step$params, "columns", "request.payload.step.params")
       columns <- params$columns
@@ -561,7 +578,15 @@ openwrangler_r_kernel_agent <- local({
       }
       return(list(id = step_id, kind = kind, params = list(columns = columns)))
     }
-    if (!kind %in% c("renameColumn", "cloneColumn", "dropColumns", "selectColumns", "textLength", "lowerText")) {
+    if (!kind %in% c(
+      "renameColumn",
+      "cloneColumn",
+      "dropColumns",
+      "selectColumns",
+      "textLength",
+      "lowerText",
+      "castColumn"
+    )) {
       abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
     }
     abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
@@ -641,6 +666,27 @@ openwrangler_r_kernel_agent <- local({
       newName = if (in_place) step$params$column$name else step$params$newColumn,
       inPlace = in_place,
       outputId = step$outputId
+    )
+  }
+
+  bind_cast_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (
+      length(matches) != 1L ||
+        !identical(schema[[matches[[1L]]]]$name, step$params$column$name)
+    ) {
+      abort("stale_column", "The cast column reference no longer matches the active R dataframe", TRUE)
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      position = as.integer(matches[[1L]]),
+      oldName = step$params$column$name,
+      newName = step$params$column$name,
+      inPlace = TRUE,
+      outputId = step$params$column$id,
+      dtype = step$params$dtype
     )
   }
 
@@ -773,6 +819,20 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
+    if (identical(step$kind, "castColumn")) {
+      bound <- bind_cast_step(capture, step)
+      result <- frame_contract$cast_column_at(source, bound$position, bound$oldName, bound$dtype)
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = seq_along(capture$descriptor$schema),
+          cast_positions = bound$position,
+          cast_dtypes = bound$dtype
+        ),
+        bound = bound
+      ))
+    }
     if (identical(step$kind, "dropColumns")) {
       bound <- bind_drop_step(capture, step)
       positions <- vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
@@ -831,6 +891,132 @@ openwrangler_r_kernel_agent <- local({
     encodeString(value, quote = "\"", justify = "none", na.encode = FALSE)
   }
 
+  cast_code_helper_lines <- function() {
+    c(
+      "  .ow_cast_kind <- function(.ow_value) {",
+      "    if (is.factor(.ow_value)) return(\"factor\")",
+      "    if (inherits(.ow_value, \"integer64\")) return(\"integer64\")",
+      "    if (inherits(.ow_value, \"POSIXct\")) return(\"POSIXct\")",
+      "    if (inherits(.ow_value, \"Date\")) return(\"Date\")",
+      "    if (inherits(.ow_value, \"difftime\")) return(\"difftime\")",
+      "    if (is.logical(.ow_value)) return(\"logical\")",
+      "    if (is.integer(.ow_value)) return(\"integer\")",
+      "    if (is.double(.ow_value)) return(\"double\")",
+      "    if (is.character(.ow_value)) return(\"character\")",
+      "    stop(\"Open Wrangler Cast received an unsupported R column type\", call. = FALSE)",
+      "  }",
+      "  .ow_cast_raw_type <- function(.ow_value, .ow_kind) {",
+      "    if (identical(.ow_kind, \"factor\") && is.ordered(.ow_value)) return(\"ordered factor\")",
+      "    .ow_kind",
+      "  }",
+      "  .ow_cast_utf8 <- function(.ow_value) {",
+      "    vapply(seq_along(.ow_value), function(.ow_index) {",
+      "      .ow_text <- .ow_value[[.ow_index]]",
+      "      if (is.na(.ow_text)) return(NA_character_)",
+      "      if (identical(Encoding(.ow_text), \"bytes\")) stop(\"Open Wrangler Cast requires valid UTF-8 text\", call. = FALSE)",
+      "      .ow_encoding <- Encoding(.ow_text)",
+      "      .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+      "      .ow_utf8 <- iconv(.ow_text, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+      "      if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Cast requires bounded valid UTF-8 text\", call. = FALSE)",
+      "      .ow_utf8",
+      "    }, character(1L), USE.NAMES = FALSE)",
+      "  }",
+      "  .ow_cast_double_text <- function(.ow_value) {",
+      "    vapply(seq_along(.ow_value), function(.ow_index) {",
+      "      .ow_number <- .ow_value[[.ow_index]]",
+      "      if (is.na(.ow_number) && !is.nan(.ow_number)) return(NA_character_)",
+      "      sprintf(\"%.17g\", .ow_number)",
+      "    }, character(1L), USE.NAMES = FALSE)",
+      "  }",
+      "  .ow_cast_canonical_dates <- function(.ow_value) {",
+      "    .ow_result <- .ow_value",
+      "    .ow_present <- !is.na(.ow_result)",
+      "    if (!any(.ow_present)) return(.ow_result)",
+      "    .ow_rendered <- format(.ow_result[.ow_present], format = \"%Y-%m-%d\")",
+      "    .ow_canonical <- grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\", .ow_rendered) & !startsWith(.ow_rendered, \"0000-\")",
+      "    if (any(.ow_canonical)) {",
+      "      .ow_reparsed <- suppressWarnings(as.Date(.ow_rendered[.ow_canonical], format = \"%Y-%m-%d\"))",
+      "      .ow_canonical[.ow_canonical] <- !is.na(.ow_reparsed) & .ow_reparsed == .ow_result[.ow_present][.ow_canonical]",
+      "    }",
+      "    .ow_result[which(.ow_present)[!.ow_canonical]] <- as.Date(NA_character_)",
+      "    .ow_result",
+      "  }",
+      "  .ow_cast_canonical_datetimes <- function(.ow_value) {",
+      "    .ow_result <- .ow_value",
+      "    .ow_present <- !is.na(.ow_result)",
+      "    if (!any(.ow_present)) return(.ow_result)",
+      "    .ow_rendered <- format(.ow_result[.ow_present], tz = \"UTC\", format = \"%Y-%m-%dT%H:%M:%OS6\", usetz = FALSE)",
+      "    .ow_canonical <- grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\\\.[0-9]{6}$\", .ow_rendered) & !startsWith(.ow_rendered, \"0000-\")",
+      "    .ow_result[which(.ow_present)[!.ow_canonical]] <- as.POSIXct(NA_real_, origin = \"1970-01-01\", tz = \"UTC\")",
+      "    .ow_result",
+      "  }",
+      "  .ow_cast_date_text <- function(.ow_value) {",
+      "    .ow_output <- as.Date(rep(NA_character_, length(.ow_value)))",
+      "    .ow_valid <- !is.na(.ow_value) & grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\", .ow_value)",
+      "    .ow_output[.ow_valid] <- suppressWarnings(as.Date(.ow_value[.ow_valid], format = \"%Y-%m-%d\"))",
+      "    .ow_cast_canonical_dates(.ow_output)",
+      "  }",
+      "  .ow_cast_datetime_text <- function(.ow_value) {",
+      "    .ow_output <- as.POSIXct(rep(NA_real_, length(.ow_value)), origin = \"1970-01-01\", tz = \"UTC\")",
+      "    .ow_date <- !is.na(.ow_value) & grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\", .ow_value)",
+      "    .ow_datetime <- !is.na(.ow_value) & grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?Z?$\", .ow_value)",
+      "    .ow_output[.ow_date] <- suppressWarnings(as.POSIXct(.ow_value[.ow_date], format = \"%Y-%m-%d\", tz = \"UTC\"))",
+      "    .ow_normalized <- sub(\"Z$\", \"\", gsub(\" \", \"T\", .ow_value[.ow_datetime], fixed = TRUE))",
+      "    .ow_parsed <- suppressWarnings(strptime(.ow_normalized, format = \"%Y-%m-%dT%H:%M:%OS\", tz = \"UTC\"))",
+      "    .ow_output[.ow_datetime] <- as.POSIXct(.ow_parsed, tz = \"UTC\")",
+      "    .ow_cast_canonical_datetimes(.ow_output)",
+      "  }",
+      "  .ow_cast_values <- function(.ow_value, .ow_target) {",
+      "    .ow_kind <- .ow_cast_kind(.ow_value)",
+      "    .ow_allowed <- switch(.ow_target,",
+      "      string = c(\"logical\", \"integer\", \"integer64\", \"double\", \"character\", \"factor\", \"Date\", \"POSIXct\", \"difftime\"),",
+      "      integer = c(\"logical\", \"integer\", \"integer64\", \"double\", \"character\", \"factor\"),",
+      "      float = c(\"logical\", \"integer\", \"double\", \"character\", \"factor\"),",
+      "      boolean = c(\"logical\", \"integer\", \"double\", \"character\", \"factor\"),",
+      "      date = c(\"character\", \"factor\", \"Date\", \"POSIXct\"),",
+      "      datetime = c(\"character\", \"factor\", \"Date\", \"POSIXct\"),",
+      "      stop(\"Open Wrangler Cast received an unsupported target type\", call. = FALSE)",
+      "    )",
+      "    if (!.ow_kind %in% .ow_allowed) stop(sprintf(\"castColumn cannot convert an R %s column to %s\", .ow_cast_raw_type(.ow_value, .ow_kind), .ow_target), call. = FALSE)",
+      "    .ow_text <- if (.ow_kind %in% c(\"character\", \"factor\")) .ow_cast_utf8(as.character(.ow_value)) else NULL",
+      "    if (identical(.ow_target, \"string\")) {",
+      "      if (.ow_kind %in% c(\"character\", \"factor\")) return(.ow_text)",
+      "      if (.ow_kind %in% c(\"logical\", \"integer\", \"integer64\")) return(as.character(.ow_value))",
+      "      if (identical(.ow_kind, \"double\")) return(.ow_cast_double_text(.ow_value))",
+      "      if (identical(.ow_kind, \"Date\")) return(format(.ow_value, \"%Y-%m-%d\"))",
+      "      if (identical(.ow_kind, \"POSIXct\")) return(format(.ow_value, \"%Y-%m-%dT%H:%M:%OS6Z\", tz = \"UTC\"))",
+      "      .ow_duration <- as.double(.ow_value, units = attr(.ow_value, \"units\"))",
+      "      .ow_number <- .ow_cast_double_text(.ow_duration)",
+      "      .ow_number[is.nan(.ow_duration)] <- NA_character_",
+      "      return(ifelse(is.na(.ow_number), NA_character_, paste(.ow_number, attr(.ow_value, \"units\"))))",
+      "    }",
+      "    if (identical(.ow_target, \"integer\")) {",
+      "      if (identical(.ow_kind, \"integer64\")) return(.ow_value)",
+      "      if (identical(.ow_kind, \"integer\")) return(.ow_value)",
+      "      if (identical(.ow_kind, \"logical\")) return(as.integer(.ow_value))",
+      "      if (.ow_kind %in% c(\"character\", \"factor\")) return(suppressWarnings(as.integer(trimws(.ow_text))))",
+      "      return(suppressWarnings(as.integer(.ow_value)))",
+      "    }",
+      "    if (identical(.ow_target, \"float\")) {",
+      "      if (.ow_kind %in% c(\"character\", \"factor\")) return(suppressWarnings(as.double(trimws(.ow_text))))",
+      "      return(as.double(.ow_value))",
+      "    }",
+      "    if (identical(.ow_target, \"boolean\")) {",
+      "      if (.ow_kind %in% c(\"character\", \"factor\")) return(suppressWarnings(as.logical(trimws(.ow_text))))",
+      "      return(suppressWarnings(as.logical(.ow_value)))",
+      "    }",
+      "    if (identical(.ow_target, \"date\")) {",
+      "      if (identical(.ow_kind, \"Date\")) return(.ow_cast_canonical_dates(.ow_value))",
+      "      if (identical(.ow_kind, \"POSIXct\")) return(.ow_cast_canonical_dates(as.Date(.ow_value, tz = \"UTC\")))",
+      "      return(.ow_cast_date_text(.ow_text))",
+      "    }",
+      "    if (identical(.ow_kind, \"POSIXct\")) return(.ow_cast_canonical_datetimes(structure(as.double(.ow_value), class = c(\"POSIXct\", \"POSIXt\"), tzone = \"UTC\")))",
+      "    if (identical(.ow_kind, \"Date\")) return(.ow_cast_canonical_datetimes(as.POSIXct(.ow_cast_canonical_dates(.ow_value), tz = \"UTC\")))",
+      "    .ow_cast_datetime_text(.ow_text)",
+      "  }"
+    )
+  }
+
   compile_plan <- function(variable_name, bound_plan, maximum_columns) {
     if (length(bound_plan) == 0L) return("")
     lines <- c(
@@ -844,6 +1030,9 @@ openwrangler_r_kernel_agent <- local({
       "    unserialize(serialize(.ow_source, NULL, version = 3L))",
       "  }"
     )
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn"), logical(1L)))) {
+      lines <- c(lines, cast_code_helper_lines())
+    }
     for (step in bound_plan) {
       if (identical(step$kind, "renameColumn")) {
         lines <- c(
@@ -963,6 +1152,17 @@ openwrangler_r_kernel_agent <- local({
             "  }"
           )
         }
+      } else if (identical(step$kind, "castColumn")) {
+        lines <- c(
+          lines,
+          sprintf("  .ow_cast_position <- %dL", step$position),
+          sprintf("  .ow_cast_source_name <- %s", r_string(step$oldName)),
+          sprintf("  .ow_cast_dtype <- %s", r_string(step$dtype)),
+          "  if (ncol(.ow_result) < .ow_cast_position || !identical(names(.ow_result)[[.ow_cast_position]], .ow_cast_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_cast_source_name %in% data.table::key(.ow_result)) stop(\"castColumn cannot replace a data.table key column; clone the column before casting it\", call. = FALSE)",
+          "  .ow_cast_result <- .ow_cast_values(.ow_result[[.ow_cast_position]], .ow_cast_dtype)",
+          "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_cast_position, value = .ow_cast_result) else .ow_result[[.ow_cast_position]] <- .ow_cast_result"
+        )
       } else if (identical(step$kind, "dropColumns")) {
         positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
         names <- vapply(step$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
@@ -1036,9 +1236,9 @@ openwrangler_r_kernel_agent <- local({
     changed_cells <- 0L
     cells <- list()
     truncated <- FALSE
-    if (identical(bound$kind, "lowerText") && isTRUE(bound$inPlace)) {
+    if (bound$kind %in% c("lowerText", "castColumn") && isTRUE(bound$inPlace)) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
-        abort("runtime_error", "The R lowercase diff is missing its bounded page context")
+        abort("runtime_error", "The R in-place transform diff is missing its bounded page context")
       }
       if (is.null(before_page)) before_page <- materialize(frame_contract, before, page)
       if (is.null(after_page)) after_page <- materialize(frame_contract, after, page)
@@ -1134,6 +1334,7 @@ openwrangler_r_kernel_agent <- local({
       "clone_column_at",
       "text_length_column_at",
       "lower_text_column_at",
+      "cast_column_at",
       "drop_columns_at",
       "select_columns_at",
       "materialize_view_page",
@@ -1403,8 +1604,16 @@ openwrangler_r_kernel_agent <- local({
         return(response)
       }
 
-      if (identical(kind, "inspectStep")) {
-        payload <- exact_record(request$payload, c("sessionId", "revision", "stepId", "page"), "request.payload")
+      if (kind %in% c("inspectStepInfo", "inspectStepPage")) {
+        payload <- if (identical(kind, "inspectStepInfo")) {
+          exact_record(request$payload, c("sessionId", "revision", "stepId"), "request.payload")
+        } else {
+          exact_record(
+            request$payload,
+            c("sessionId", "revision", "stepId", "side", "page"),
+            "request.payload"
+          )
+        }
         session_id <- identifier(payload$sessionId, "request.payload.sessionId")
         if (!exists(session_id, envir = sessions, inherits = FALSE)) {
           abort("unknown_session", "The requested R session is no longer available", TRUE)
@@ -1417,34 +1626,49 @@ openwrangler_r_kernel_agent <- local({
         if (length(matches) != 1L) {
           abort("invalid_request", sprintf("Unknown or repeated applied R step: %s", step_id), TRUE)
         }
-        page <- decode_page(payload$page, frame_contract$limits)
         step_index <- matches[[1L]]
-        before <- replay_plan(frame_contract, session$original, utils::head(session$plan, step_index - 1L))
-        after <- replay_plan(frame_contract, session$original, utils::head(session$plan, step_index))
-        input_page <- materialize(frame_contract, before$capture, page)
-        output_page <- materialize(frame_contract, after$capture, page)
+        if (identical(kind, "inspectStepInfo")) {
+          return(list(
+            transportVersion = transport_version,
+            requestId = request_id,
+            kind = "stepInspectionInfo",
+            sessionId = session_id,
+            revision = session$revision,
+            stepId = step_id,
+            stepIndex = as.integer(step_index - 1L),
+            code = compile_plan(
+              session$variableName,
+              utils::head(session$boundPlan, step_index),
+              frame_contract$limits$columns
+            )
+          ))
+        }
+        side <- bounded_text(payload$side, "request.payload.side", 6L)
+        if (!side %in% c("input", "output")) {
+          abort("invalid_request", "request.payload.side must be input or output")
+        }
+        page <- decode_page(payload$page, frame_contract$limits)
+        inspected <- replay_plan(
+          frame_contract,
+          session$original,
+          utils::head(session$plan, step_index - if (identical(side, "input")) 1L else 0L)
+        )
+        inspection_page <- materialize(
+          frame_contract,
+          inspected$capture,
+          page
+        )
+        inspection_page$schema <- NULL
         return(list(
           transportVersion = transport_version,
           requestId = request_id,
-          kind = "stepInspection",
+          kind = "stepInspectionPage",
           sessionId = session_id,
           revision = session$revision,
           stepId = step_id,
           stepIndex = as.integer(step_index - 1L),
-          inputPage = input_page,
-          outputPage = output_page,
-          inputSchema = input_page$schema,
-          outputSchema = output_page$schema,
-          diff = step_diff(
-            after$boundPlan[[step_index]],
-            frame_contract,
-            before$capture,
-            after$capture,
-            page,
-            before_page = input_page,
-            after_page = output_page
-          ),
-          code = compile_plan(session$variableName, after$boundPlan, frame_contract$limits$columns)
+          side = side,
+          page = inspection_page
         ))
       }
 

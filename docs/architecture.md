@@ -11,8 +11,8 @@ Open Wrangler has three cooperating parts:
 
 Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects native R notebook
 sessions to the shared protocol, coordinator, notebook command, grid, filters, sorts, value picker, and profiles. Its
-editing surface currently supports Rename Column, Drop Columns, ordered Select Columns, Clone Column, Text Length,
-and Lowercase through the shared draft and cleaning-history UI.
+editing surface currently supports Rename Column, Drop Columns, ordered Select Columns, Clone Column, Convert type,
+Text Length, and Lowercase through the shared draft and cleaning-history UI.
 The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
@@ -94,7 +94,7 @@ request IDs, and oversized responses. The runtime sources are base64-embedded in
 IRkernel does not need access to the extension filesystem.
 
 Viewing does not copy the complete R object. The first editing request takes one isolated source snapshot, then keeps
-the original, committed result, and optional draft separate. Rename, Drop, Select, Clone, Text Length, and Lowercase resolve every
+the original, committed result, and optional draft separate. Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase resolve every
 `{id, name}` reference to one exact position, so duplicate and non-syntactic names remain unambiguous. Drop Columns
 refuses to remove the final visible column. Select Columns keeps the chosen order. Both operations keep stable IDs for
 retained columns. Clone Column appends a copy with the stable ID `c:step:<step-id>:0`, allowing later steps to target
@@ -104,11 +104,15 @@ bytes while `NA` remains missing. Lowercase accepts the same input types and use
 in place or in a new character column. An in-place change to a `data.table` key column is rejected; choosing a new
 output column leaves the existing key and row order alone. Base data frames and tibbles are copied with R serialization; `data.table` uses
 `data.table::copy()` and native column selection, preserving compatible keys without mutating the notebook variable.
+Convert type replaces one column while retaining its name, position, and stable ID. It targets character, integer,
+double, logical, Date, or UTC POSIXct output, and factors convert through their labels. An `integer64` source stays
+`integer64` when the target is integer. A supported value that cannot be parsed becomes `NA`; conversions that would
+lose units or `integer64` precision fail. Active data-table key columns must be cloned before conversion.
 A live session reports nullability conservatively; isolating it for editing or changing the schema keeps retained
 nullability metadata instead of narrowing it from the current values. Preview, apply, discard, latest-step replacement,
 undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
 response before publishing the candidate state. Generated code repeats the positional and stale-name checks for all
-six operations, returns a new R object, and can be copied or saved as a `.R` script.
+seven operations, returns a new R object, and can be copied or saved as a `.R` script.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
 session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
@@ -126,7 +130,7 @@ a fixed response-code list that includes `unsupported_frame`, `missing_package`,
 code. Native variable discovery requires `jsonlite` and `rlang` in the selected kernel. It recognizes exact base
 `data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The notebook
 command enables native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
-mode currently exposes Rename Column, Drop Columns, Select Columns, Clone Column, Text Length, and Lowercase. Other cleaning
+mode currently exposes Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. Other cleaning
 operations, cleaned-data export, R notebook insertion, Quarto, R Markdown, and plain `.R` documents remain unsupported. R sessions
 open with header profiles off so opening a frame does not immediately scan every visible column. Users can enable them,
 and the profile drawer still loads the selected column or dataset on request. The packaged VS Code/Cursor viewing
@@ -134,9 +138,12 @@ journey checks a column's count, distinct values, minimum, and maximum, then che
 duplicate rows. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code
 and Cursor with R 4.5.2. The hosted gate also passes against a containerized IRkernel in VS Code, including kernel
 restart, reopening the frame, and final session cleanup. The packaged editing journey covers Rename, Drop, Select,
-Clone, Text Length, and Lowercase. Its base-data-frame path previews, applies, inspects, discards, and undoes all six, checks
-generated R, and verifies that every notebook object stays unchanged. Tibbles and keyed data tables additionally cover editable
-open plus Rename and Drop preview/discard; the direct R suites run all six operations across all three flavors.
+Clone, Convert type, Text Length, and Lowercase. Across its base-data-frame path it covers preview, apply, inspection,
+discard, latest-step editing, and undo; Convert type is applied and undone. The journey checks generated R and verifies
+that every notebook object stays unchanged. Tibbles and keyed data tables additionally cover editable open plus Rename
+and Drop preview/discard; the direct R suites run all seven operations across all three flavors. An applied-step
+inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
+retained input and output schemas and calculates the public diff only after all three responses agree.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 

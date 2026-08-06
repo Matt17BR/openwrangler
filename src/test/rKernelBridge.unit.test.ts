@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import type {
+  CastColumnTransformStep,
   CloneColumnTransformStep,
   ColumnSummary,
   DataDiff,
@@ -13,6 +14,7 @@ import type {
 } from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { RKernelBridge, type RKernelBridgeTransport } from "../extension/r/rKernelBridge";
+import type { RKernelStepPreviewResult } from "../extension/r/rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
   type RColumnSchema,
@@ -520,6 +522,7 @@ describe("canonical R kernel bridge", () => {
             "dropColumns",
             "renameColumn",
             "cloneColumn",
+            "castColumn",
             "textLength",
             "lowerText"
           ]
@@ -551,7 +554,7 @@ describe("canonical R kernel bridge", () => {
       })
     ).resolves.toMatchObject({ kind: "page", revision: 0 });
 
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: renamed,
@@ -573,6 +576,7 @@ describe("canonical R kernel bridge", () => {
           sorts: [expect.objectContaining({ column: { id: "r:c:0", name: "amount" } })]
         }
       }),
+      expect.any(Array),
       undefined,
       expect.any(Object)
     );
@@ -624,7 +628,6 @@ describe("canonical R kernel bridge", () => {
       outputPage: renamed,
       inputSchema: source.schema,
       outputSchema: renamed.schema,
-      diff: renameDiff(),
       code: "open_wrangler_result <- orders"
     });
     const inspection = await bridge.request({
@@ -642,6 +645,8 @@ describe("canonical R kernel bridge", () => {
       2,
       "r-step-1",
       expect.objectContaining({ view: { filters: [], sorts: [] } }),
+      expect.any(Array),
+      expect.any(Array),
       expect.any(Object)
     );
     expect(inspection).toMatchObject({
@@ -716,7 +721,7 @@ describe("canonical R kernel bridge", () => {
       }
     });
 
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: dropped,
@@ -751,6 +756,7 @@ describe("canonical R kernel bridge", () => {
           sorts: [expect.objectContaining({ column: { id: "r:c:1", name: "count" } })]
         }
       }),
+      expect.any(Array),
       undefined,
       expect.any(Object)
     );
@@ -788,7 +794,6 @@ describe("canonical R kernel bridge", () => {
       outputPage: dropped,
       inputSchema: source.schema,
       outputSchema: dropped.schema,
-      diff: dropDiff("value"),
       code: "open_wrangler_result <- orders"
     });
     await expect(
@@ -869,7 +874,7 @@ describe("canonical R kernel bridge", () => {
       }
     });
 
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: selected,
@@ -897,6 +902,7 @@ describe("canonical R kernel bridge", () => {
           sorts: [expect.objectContaining({ column: { id: "r:c:1", name: "count" } })]
         }
       }),
+      expect.any(Array),
       undefined,
       expect.any(Object)
     );
@@ -936,7 +942,7 @@ describe("canonical R kernel bridge", () => {
       }
     });
 
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 3,
       page: selected,
@@ -965,7 +971,6 @@ describe("canonical R kernel bridge", () => {
       outputPage: selected,
       inputSchema: source.schema,
       outputSchema: selected.schema,
-      diff: dropDiff(...firstRemoved),
       code: "open_wrangler_result <- orders[c(4L, 2L, 1L)]"
     });
     await expect(
@@ -999,7 +1004,7 @@ describe("canonical R kernel bridge", () => {
         ]
       }
     };
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 5,
       page: editedSelection,
@@ -1093,7 +1098,7 @@ describe("canonical R kernel bridge", () => {
       }
     });
 
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: cloned,
@@ -1121,6 +1126,7 @@ describe("canonical R kernel bridge", () => {
           sorts: [expect.objectContaining({ column: { id: "r:c:1", name: "count" } })]
         }
       }),
+      expect.any(Array),
       undefined,
       expect.any(Object)
     );
@@ -1179,7 +1185,6 @@ describe("canonical R kernel bridge", () => {
       outputPage: cloned,
       inputSchema: source.schema,
       outputSchema: cloned.schema,
-      diff: cloneDiff("value_copy"),
       code: "open_wrangler_result <- orders"
     });
     await expect(
@@ -1206,7 +1211,7 @@ describe("canonical R kernel bridge", () => {
       kind: "cloneColumn",
       params: { column: { id: "r:c:0", name: "value" }, newName: "value_duplicate" }
     };
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 3,
       page: edited,
@@ -1308,7 +1313,7 @@ describe("canonical R kernel bridge", () => {
     expect(transport.previewStep).not.toHaveBeenCalled();
 
     const cloned = cloneContract(source, "r:c:0", "value_copy", "bad-diff-clone");
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: cloned,
@@ -1425,7 +1430,7 @@ describe("canonical R kernel bridge", () => {
       }
     });
 
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: transformed,
@@ -1457,6 +1462,7 @@ describe("canonical R kernel bridge", () => {
           sorts: [expect.objectContaining({ column: { id: "r:c:6", name: "missing" } })]
         }
       }),
+      expect.any(Array),
       undefined,
       expect.any(Object)
     );
@@ -1513,7 +1519,6 @@ describe("canonical R kernel bridge", () => {
       outputPage: transformed,
       inputSchema: source.schema,
       outputSchema: transformed.schema,
-      diff: cloneDiff("missing_length"),
       code: "open_wrangler_result <- orders"
     });
     await expect(
@@ -1599,7 +1604,7 @@ describe("canonical R kernel bridge", () => {
         index === 8 ? { ...column, rawType: "double", type: "float" as const } : column
       )
     } satisfies RFramePageContract;
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: malformed,
@@ -1617,7 +1622,7 @@ describe("canonical R kernel bridge", () => {
     const diffTransport = fakeTransport(source);
     const diffBridge = createBridge(diffTransport);
     await diffBridge.request(openRequest("editing"));
-    diffTransport.previewStep.mockResolvedValueOnce({
+    diffTransport.queuePreview({
       sessionId,
       revision: 1,
       page: textLengthContract(source, "r:c:6", "missing_length", "bad-diff-text-length"),
@@ -1679,6 +1684,317 @@ describe("canonical R kernel bridge", () => {
     expect(transport.previewStep).not.toHaveBeenCalled();
   });
 
+  it("converts native R columns to each supported type with stable identity", async () => {
+    const cases = [
+      {
+        dtype: "string" as const,
+        source: { kind: "boolean", raw: true, display: "TRUE", isNull: false, isNaN: false } as RFrameCell,
+        after: { kind: "string", raw: "TRUE", display: "TRUE", isNull: false, isNaN: false } as RFrameCell,
+        rawType: "character",
+        type: "string" as const
+      },
+      {
+        dtype: "integer" as const,
+        source: { kind: "string", raw: "42.9", display: "42.9", isNull: false, isNaN: false } as RFrameCell,
+        after: { kind: "integer", raw: "42", display: "42", isNull: false, isNaN: false } as RFrameCell,
+        rawType: "integer",
+        type: "integer" as const
+      },
+      {
+        dtype: "float" as const,
+        source: { kind: "string", raw: "42.5", display: "42.5", isNull: false, isNaN: false } as RFrameCell,
+        after: { kind: "number", raw: "42.5", display: "42.5", isNull: false, isNaN: false } as RFrameCell,
+        rawType: "double",
+        type: "float" as const
+      },
+      {
+        dtype: "boolean" as const,
+        source: { kind: "string", raw: "true", display: "true", isNull: false, isNaN: false } as RFrameCell,
+        after: { kind: "boolean", raw: true, display: "TRUE", isNull: false, isNaN: false } as RFrameCell,
+        rawType: "logical",
+        type: "boolean" as const
+      },
+      {
+        dtype: "date" as const,
+        source: {
+          kind: "string",
+          raw: "2026-08-05",
+          display: "2026-08-05",
+          isNull: false,
+          isNaN: false
+        } as RFrameCell,
+        after: {
+          kind: "date",
+          raw: "2026-08-05",
+          display: "2026-08-05",
+          isNull: false,
+          isNaN: false
+        } as RFrameCell,
+        rawType: "Date",
+        type: "date" as const
+      },
+      {
+        dtype: "datetime" as const,
+        source: {
+          kind: "string",
+          raw: "2026-08-05T12:00:00Z",
+          display: "2026-08-05T12:00:00Z",
+          isNull: false,
+          isNaN: false
+        } as RFrameCell,
+        after: {
+          kind: "datetime",
+          raw: "1785931200",
+          display: "2026-08-05T12:00:00Z",
+          isNull: false,
+          isNaN: false
+        } as RFrameCell,
+        rawType: "POSIXct",
+        type: "datetime" as const
+      }
+    ];
+
+    for (const candidate of cases) {
+      const columnId = candidate.dtype === "string" ? "r:c:5" : "r:c:6";
+      const columnName = candidate.dtype === "string" ? "flag" : "missing";
+      const base = withColumnNullable(frameContract(), columnId, false);
+      const source = replaceContractCell(base, columnId, candidate.source);
+      const transformed = castContract(source, columnId, candidate.rawType, candidate.type, candidate.after, false);
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: transformed,
+        diff: castDiff(columnId, columnName, candidate.source, candidate.after),
+        code: "open_wrangler_result <- orders"
+      });
+      const step: CastColumnTransformStep = {
+        id: `r-cast-${candidate.dtype}`,
+        kind: "castColumn",
+        params: { column: { id: columnId, name: columnName }, dtype: candidate.dtype }
+      };
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({
+        kind: "stepPreview",
+        metadata: {
+          schema: expect.arrayContaining([
+            expect.objectContaining({
+              id: columnId,
+              name: columnName,
+              rawType: candidate.rawType,
+              type: candidate.type,
+              nullable: false
+            })
+          ]),
+          draftStep: step
+        },
+        diff: { changedCells: 1, cells: [expect.objectContaining({ columnId, column: columnName })] }
+      });
+      expect(transport.previewStep).toHaveBeenCalledWith(
+        sessionId,
+        0,
+        step,
+        expect.any(Object),
+        expect.any(Array),
+        undefined,
+        expect.any(Object)
+      );
+    }
+  });
+
+  it("drops stale typed views, accepts conversion-created NA, and rejects unsafe R casts", async () => {
+    const base = withColumnNullable(frameContract(), "r:c:6", false);
+    const source = replaceContractCell(base, "r:c:6", {
+      kind: "string",
+      raw: "not a number",
+      display: "not a number",
+      isNull: false,
+      isNaN: false
+    });
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.getPage.mockResolvedValueOnce(source);
+    await bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: 0,
+      viewRequestId: "cast-view",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8,
+      filterModel: {
+        filters: [
+          {
+            column: "missing",
+            type: "string",
+            predicates: [{ kind: "predicate", operator: "contains", value: "number" }]
+          }
+        ],
+        sort: [{ column: "missing", direction: "asc", nulls: "last" }]
+      }
+    });
+
+    const missing: RFrameCell = { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false };
+    const transformed = castContract(source, "r:c:6", "integer", "integer", missing, true);
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: transformed,
+      diff: castDiff("r:c:6", "missing", source.page.rows[0]!.values[6] as RFrameCell, missing),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-cast-invalid-text",
+          kind: "castColumn",
+          params: { column: { id: "r:c:6", name: "missing" }, dtype: "integer" }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", type: "integer", nullable: true })]),
+        filterModel: { filters: [], sort: [] }
+      }
+    });
+
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: transformed,
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(bridge.request(planRequest("applyDraft", 1))).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2
+    });
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 2,
+      stepId: "r-cast-invalid-text",
+      stepIndex: 0,
+      inputPage: source,
+      outputPage: transformed,
+      inputSchema: source.schema,
+      outputSchema: transformed.schema,
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      bridge.request({
+        kind: "inspectStep",
+        sessionId,
+        revision: 2,
+        stepId: "r-cast-invalid-text",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepInspection",
+      diff: {
+        changedCells: 1,
+        truncated: false,
+        cells: [
+          expect.objectContaining({
+            columnId: "r:c:6",
+            column: "missing",
+            before: expect.objectContaining({ kind: "string", raw: "not a number" }),
+            after: expect.objectContaining({ kind: "null", raw: null })
+          })
+        ]
+      }
+    });
+    const projectedSource = projectContract(source, 0, 6);
+    const projectedOutput = projectContract(transformed, 0, 6);
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 2,
+      stepId: "r-cast-invalid-text",
+      stepIndex: 0,
+      inputPage: projectedSource,
+      outputPage: projectedOutput,
+      inputSchema: source.schema,
+      outputSchema: transformed.schema,
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      bridge.request({
+        kind: "inspectStep",
+        sessionId,
+        revision: 2,
+        stepId: "r-cast-invalid-text",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 6
+      })
+    ).resolves.toMatchObject({
+      kind: "stepInspection",
+      diff: { changedCells: 0, cells: [], truncated: true }
+    });
+
+    for (const [contract, step] of [
+      [
+        dataTableContract(frameContract(), ["r:c:6"]),
+        {
+          id: "r-cast-key",
+          kind: "castColumn",
+          params: { column: { id: "r:c:6", name: "missing" }, dtype: "integer" }
+        }
+      ],
+      [
+        frameContract(),
+        {
+          id: "r-cast-duration",
+          kind: "castColumn",
+          params: { column: { id: "r:c:4", name: "elapsed" }, dtype: "float" }
+        }
+      ]
+    ] as const) {
+      const rejectedTransport = fakeTransport(contract);
+      const rejectedBridge = createBridge(rejectedTransport);
+      await rejectedBridge.request(openRequest("editing"));
+      await expect(
+        rejectedBridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(rejectedTransport.previewStep).not.toHaveBeenCalled();
+    }
+  });
+
   it("lowercases native R text in place or into a stable derived column", async () => {
     const base = frameContract();
     const source = replaceContractCell(base, "r:c:6", {
@@ -1693,7 +2009,7 @@ describe("canonical R kernel bridge", () => {
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
 
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: inPlace,
@@ -1723,6 +2039,7 @@ describe("canonical R kernel bridge", () => {
         params: { column: { id: "r:c:6", name: "missing" } }
       },
       expect.any(Object),
+      expect.any(Array),
       undefined,
       expect.any(Object)
     );
@@ -1750,7 +2067,7 @@ describe("canonical R kernel bridge", () => {
     const derivedBridge = createBridge(derivedTransport);
     await derivedBridge.request(openRequest("editing"));
     const derived = lowerTextContract(source, "r:c:6", "r-lower-derived", "missing_lower");
-    derivedTransport.previewStep.mockResolvedValueOnce({
+    derivedTransport.queuePreview({
       sessionId,
       revision: 1,
       page: derived,
@@ -1817,7 +2134,7 @@ describe("canonical R kernel bridge", () => {
       const transport = fakeTransport(source);
       const bridge = createBridge(transport);
       await bridge.request(openRequest("editing"));
-      transport.previewStep.mockResolvedValueOnce({
+      transport.queuePreview({
         sessionId,
         revision: 1,
         page: lowerTextContract(source, "r:c:6", "r-lower-wrong-diff"),
@@ -1855,7 +2172,7 @@ describe("canonical R kernel bridge", () => {
     const projectedTransport = fakeTransport(source);
     const projectedBridge = createBridge(projectedTransport);
     await projectedBridge.request(openRequest("editing"));
-    projectedTransport.previewStep.mockResolvedValueOnce({
+    projectedTransport.queuePreview({
       sessionId,
       revision: 1,
       page: projectContract(lowerTextContract(source, "r:c:6", "r-lower-projected-away"), 0, 6),
@@ -1890,7 +2207,7 @@ describe("canonical R kernel bridge", () => {
     const transport = fakeTransport(source);
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: invalidKeys,
@@ -1953,7 +2270,7 @@ describe("canonical R kernel bridge", () => {
     const transport = fakeTransport(source);
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: renamed,
@@ -2030,7 +2347,7 @@ describe("canonical R kernel bridge", () => {
     const transport = fakeTransport(source);
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: narrowed,
@@ -2050,7 +2367,7 @@ describe("canonical R kernel bridge", () => {
     const transport = fakeTransport(source);
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 1,
       page: amount,
@@ -2067,7 +2384,7 @@ describe("canonical R kernel bridge", () => {
     });
     await bridge.request(planRequest("applyDraft", 1));
 
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 3,
       page: netAmount,
@@ -2088,6 +2405,7 @@ describe("canonical R kernel bridge", () => {
       2,
       expect.objectContaining({ id: "r-step-1", params: expect.objectContaining({ newName: "net_amount" }) }),
       expect.any(Object),
+      expect.any(Array),
       "r-step-1",
       expect.any(Object)
     );
@@ -2118,7 +2436,7 @@ describe("canonical R kernel bridge", () => {
     });
     expect(transport.previewStep).not.toHaveBeenCalled();
 
-    transport.previewStep.mockResolvedValueOnce({
+    transport.queuePreview({
       sessionId,
       revision: 7,
       page: renamed,
@@ -2326,6 +2644,7 @@ interface FakeRTransport extends RKernelBridgeTransport {
   getDatasetStats: ReturnType<typeof vi.fn<RKernelBridgeTransport["getDatasetStats"]>>;
   getColumnValues: ReturnType<typeof vi.fn<RKernelBridgeTransport["getColumnValues"]>>;
   previewStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["previewStep"]>>;
+  queuePreview(result: RKernelStepPreviewResult): void;
   applyDraft: ReturnType<typeof vi.fn<RKernelBridgeTransport["applyDraft"]>>;
   discardDraft: ReturnType<typeof vi.fn<RKernelBridgeTransport["discardDraft"]>>;
   undoStep: ReturnType<typeof vi.fn<RKernelBridgeTransport["undoStep"]>>;
@@ -2338,6 +2657,7 @@ interface FakeRTransport extends RKernelBridgeTransport {
 
 function fakeTransport(contract: RFramePageContract, openedSessionId = sessionId): FakeRTransport {
   const emitter = new vscode.EventEmitter<void>();
+  const previewQueue: RKernelStepPreviewResult[] = [];
   return {
     onDidInvalidateKernel: emitter.event,
     open: vi.fn(async () => ({ sessionId: openedSessionId, page: contract })),
@@ -2346,7 +2666,9 @@ function fakeTransport(contract: RFramePageContract, openedSessionId = sessionId
     getDatasetStats: vi.fn(async () => ({ totalRows: contract.shape.rows, stats: datasetStatsFor(contract) })),
     getColumnValues: vi.fn(async (_sessionId, column) => ({ column: column.name, values: [], hasMore: false })),
     previewStep: vi.fn(async () => {
-      throw new Error("Unexpected R step preview.");
+      const next = previewQueue.shift();
+      if (!next) throw new Error("Unexpected R step preview.");
+      return next;
     }),
     applyDraft: vi.fn(async () => {
       throw new Error("Unexpected R draft apply.");
@@ -2363,7 +2685,8 @@ function fakeTransport(contract: RFramePageContract, openedSessionId = sessionId
     close: vi.fn(async () => undefined),
     isSessionMapped: vi.fn(() => true),
     dispose: vi.fn(async () => undefined),
-    invalidate: () => emitter.fire()
+    invalidate: () => emitter.fire(),
+    queuePreview: (result) => previewQueue.push(result)
   };
 }
 
@@ -2632,6 +2955,61 @@ function replaceContractCell(source: RFramePageContract, columnId: string, value
   };
 }
 
+function withColumnNullable(source: RFramePageContract, columnId: string, nullable: boolean): RFramePageContract {
+  return {
+    ...source,
+    schema: source.schema.map((column) => (column.id === columnId ? { ...column, nullable } : { ...column })),
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((value) => ({ ...value }))
+      }))
+    }
+  };
+}
+
+function castContract(
+  source: RFramePageContract,
+  columnId: string,
+  rawType: string,
+  type: RColumnSchema["type"],
+  value: RFrameCell,
+  nullable: boolean
+): RFramePageContract {
+  const sourceColumn = source.schema.find((column) => column.id === columnId);
+  if (!sourceColumn) throw new Error(`Unknown fake R cast column ${columnId}.`);
+  const semantics: RColumnSchema["semantics"] =
+    rawType === "integer"
+      ? { kind: "integer", storageMode: "integer", classes: ["integer"] }
+      : rawType === "double"
+        ? { kind: "double", storageMode: "double", classes: ["numeric"] }
+        : rawType === "logical"
+          ? { kind: "logical", storageMode: "logical", classes: ["logical"] }
+          : rawType === "Date"
+            ? { kind: "date", storageMode: "double", classes: ["Date"] }
+            : rawType === "POSIXct"
+              ? { kind: "datetime", storageMode: "double", classes: ["POSIXct", "POSIXt"], timezone: "UTC" }
+              : { kind: "character", storageMode: "character", classes: ["character"] };
+  const pagePosition = source.page.columnIds.indexOf(columnId);
+  if (pagePosition < 0) throw new Error(`Fake R cast page does not contain ${columnId}.`);
+  return {
+    ...source,
+    schema: source.schema.map((column) =>
+      column.id === columnId ? { ...column, rawType, type, nullable, semantics } : { ...column }
+    ),
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((candidate, index) => ({ ...(index === pagePosition ? value : candidate) }))
+      }))
+    }
+  };
+}
+
 function projectContract(source: RFramePageContract, columnOffset: number, columnLimit: number): RFramePageContract {
   const projectedSchema = source.schema.slice(columnOffset, columnOffset + columnLimit);
   const sourcePagePosition = new Map(source.page.columnIds.map((id, position) => [id, position]));
@@ -2747,6 +3125,22 @@ function lowerDiff(columnId: string, column: string, before: string, after: stri
   };
 }
 
+function castDiff(columnId: string, column: string, before: RFrameCell, after: RFrameCell): DataDiff {
+  return {
+    ...renameDiff(),
+    changedCells: 1,
+    cells: [
+      {
+        rowNumber: 0,
+        columnId,
+        column,
+        before: { ...before, ...(before.kind === "number" ? { raw: Number(before.raw) } : {}) },
+        after: { ...after, ...(after.kind === "number" ? { raw: Number(after.raw) } : {}) }
+      }
+    ]
+  };
+}
+
 function column(
   position: number,
   name: string,
@@ -2796,6 +3190,14 @@ function rCapabilities(): SourceCapabilities {
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn", "textLength", "lowerText"]
+    supportedOperations: [
+      "selectColumns",
+      "dropColumns",
+      "renameColumn",
+      "cloneColumn",
+      "castColumn",
+      "textLength",
+      "lowerText"
+    ]
   };
 }
