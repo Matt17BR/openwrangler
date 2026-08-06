@@ -71,7 +71,7 @@ for very wide dataframes.
     <td width="50%"><a href="images/readme/v1.2/gallery/operation-configuration.png"><img alt="Configuring a Formula column operation before preview" src="images/readme/v1.2/gallery/operation-configuration-detail.png" width="510" height="605"></a></td>
   </tr>
   <tr>
-    <td>Search or browse 27 built-in operations, custom code, and transformations inferred from examples.</td>
+    <td>Search or browse 28 operations, including custom code and transformations inferred from examples.</td>
     <td>Edit the operation parameters, then choose <strong>Preview changes</strong> to create a draft.</td>
   </tr>
 </table>
@@ -115,8 +115,8 @@ Select any applied step to inspect that point in history, then return to confirm
     <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="images/readme/v1.2/gallery/export-data-detail.png" width="995" height="344"></a></td>
   </tr>
   <tr>
-    <td>Copy generated code, insert it into a notebook, or save it as a Python script.</td>
-    <td>Export a cleaned CSV or Parquet file without overwriting the source.</td>
+    <td>Copy generated code or save it as a Python or R script. Python sessions can also insert it into the notebook.</td>
+    <td>Editing sessions backed by Pandas, Polars, or DuckDB can export a cleaned CSV or Parquet file without overwriting the source.</td>
   </tr>
 </table>
 

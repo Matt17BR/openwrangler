@@ -37,11 +37,12 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 | Other VS Code desktop forks | Experimental   |
 | Browser-hosted `vscode.dev` | Unsupported    |
 
-Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It uses your configured Python path,
-selected environment, or a supported system interpreter. If a required Python package is missing, Open Wrangler
-lists it and asks before installing anything.
+Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
+3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package
+is missing, Open Wrangler lists it and asks before installing anything. Native R notebook sessions use the selected
+IRkernel instead of Python.
 
-Opening data or running Python requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.
+Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.
 
 <!-- open-wrangler-release-status:end -->
 
@@ -95,9 +96,8 @@ changing the source._
 
 ## Transformations
 
-Choose from 28 built-in operations, including filling missing values with a median or a value of the same type. You
-can also write custom Pandas or Polars code or infer a transformation from examples. A draft stays separate until you
-apply it, and applied steps can be inspected, edited, or undone.
+Choose from 28 operations, including filling missing values, custom Pandas or Polars code, and transformations inferred
+from examples. A draft stays separate until you apply it, and applied steps can be inspected, edited, or undone.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png" width="1440" height="870"></a>
 
@@ -189,7 +189,7 @@ show the live variable picker and viewing workbench. Editing screenshots will be
   </tr>
   <tr>
     <td>Copy generated code or save it as a Python or R script. Python sessions can also insert it into the notebook.</td>
-    <td>Export a cleaned CSV or Parquet file without overwriting the source.</td>
+    <td>Editing sessions backed by Pandas, Polars, or DuckDB can export a cleaned CSV or Parquet file without overwriting the source.</td>
   </tr>
 </table>
 
