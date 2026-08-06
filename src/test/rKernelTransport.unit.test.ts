@@ -482,6 +482,73 @@ describe("native R kernel protocol", () => {
     );
   });
 
+  it("strictly validates native R Text Length requests and derived integer responses", () => {
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "text-length-step",
+          kind: "textLength",
+          params: { column: { id: "r:c:0", name: "value" }, newColumn: "value length" }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    const response = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalTextLengthFramePage(),
+      diff: { ...minimalRenameDiff(), addedColumns: ["value length"] },
+      code: "open_wrangler_result <- frame\n"
+    });
+    const decoded = decodeRKernelResponseJson(response, previewRequestId);
+    expect(decoded).toMatchObject({
+      kind: "stepPreview",
+      page: {
+        schema: [
+          expect.objectContaining({ id: "r:c:0" }),
+          expect.objectContaining({
+            id: "c:step:text-length-step:0",
+            name: "value length",
+            rawType: "integer",
+            type: "integer"
+          })
+        ]
+      },
+      diff: { addedColumns: ["value length"], removedColumns: [] }
+    });
+
+    const malformed = structuredClone(request) as unknown as {
+      payload: { step: { params: Record<string, unknown> } };
+    };
+    malformed.payload.step.params.newName = malformed.payload.step.params.newColumn;
+    delete malformed.payload.step.params.newColumn;
+    expect(() => encodeRKernelRequest(malformed as unknown as RKernelRequest)).toThrow("invalid fields");
+
+    const oversizedOutput = structuredClone(request) as unknown as {
+      payload: { step: { params: { newColumn: string } } };
+    };
+    oversizedOutput.payload.step.params.newColumn = "é".repeat(513);
+    expect(() => encodeRKernelRequest(oversizedOutput as unknown as RKernelRequest)).toThrow(
+      "request.payload.step.params.newColumn"
+    );
+
+    const malformedDiff = JSON.parse(response) as { diff: { addedColumns: unknown[] } };
+    malformedDiff.diff.addedColumns = [null];
+    expect(() => decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId)).toThrow(
+      "response.diff.addedColumns[0]"
+    );
+  });
+
   it("strictly validates native R Drop Columns requests and structural diffs", () => {
     const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -1686,6 +1753,27 @@ function minimalCloneFramePage() {
     position: 1
   });
   frame.page.columnIds.push("c:step:clone-step:0");
+  frame.page.rows[0]?.values.push({ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false });
+  return frame;
+}
+
+function minimalTextLengthFramePage() {
+  const frame = structuredClone(minimalFramePage()) as unknown as {
+    shape: { rows: number; columns: number };
+    schema: Array<Record<string, unknown>>;
+    page: { columnIds: string[]; rows: Array<{ values: unknown[] }> };
+  };
+  frame.shape.columns = 2;
+  frame.schema.push({
+    id: "c:step:text-length-step:0",
+    name: "value length",
+    position: 1,
+    rawType: "integer",
+    type: "integer",
+    nullable: false,
+    semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] }
+  });
+  frame.page.columnIds.push("c:step:text-length-step:0");
   frame.page.rows[0]?.values.push({ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false });
   return frame;
 }

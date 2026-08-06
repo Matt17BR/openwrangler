@@ -1027,6 +1027,162 @@ cat("generated-ok\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
+  it("runs native R Text Length through preview, apply, inspection, undo, and generated code", () => {
+    const editingSessionId = "50000000-0000-4000-8000-000000000001";
+    const stepId = "text-length-unicode";
+    const outputId = `c:step:${stepId}:0`;
+    const ids = {
+      open: "50000000-0000-4000-8000-000000000002",
+      preview: "50000000-0000-4000-8000-000000000003",
+      apply: "50000000-0000-4000-8000-000000000004",
+      inspect: "50000000-0000-4000-8000-000000000005",
+      undo: "50000000-0000-4000-8000-000000000006",
+      close: "50000000-0000-4000-8000-000000000007"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const preview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: stepId,
+          kind: "textLength",
+          params: { column: { id: "r:c:0", name: "label" }, newColumn: "label length" }
+        },
+        page: pageWindow()
+      }
+    });
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const inspect = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.inspect,
+      kind: "inspectStep",
+      payload: { sessionId: editingSessionId, revision: 2, stepId, page: pageWindow() }
+    });
+    const undo = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undo,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 2, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(
+  label = c("na\\u00efve", "\\u6771\\u4eac", "\\U0001F9EA", NA_character_),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+${inspect.code}
+${undo.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview);
+    expect(previewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: ["label length"],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      }
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R Text Length preview.");
+    expect(previewed.page.schema.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "r:c:0", name: "label" },
+      { id: outputId, name: "label length" }
+    ]);
+    expect(previewed.page.schema[1]).toMatchObject({
+      id: outputId,
+      rawType: "integer",
+      type: "integer",
+      nullable: true,
+      semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] }
+    });
+    expect(previewed.page.page.rows[3]?.values[0]).toMatchObject({ kind: "null", raw: null, isNull: true });
+    expect(previewed.page.page.rows.map((row) => row.values[1])).toMatchObject([
+      { kind: "integer", raw: "5", isNull: false, isNaN: false },
+      { kind: "integer", raw: "2", isNull: false, isNaN: false },
+      { kind: "integer", raw: "1", isNull: false, isNaN: false },
+      { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false }
+    ]);
+
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R Text Length step.");
+    expect(applied.page.schema[1]).toMatchObject({ id: outputId, name: "label length", type: "integer" });
+
+    const inspected = decodeRKernelResponseJson(marked(result.stdout, inspect.marker), ids.inspect);
+    expect(inspected).toMatchObject({
+      kind: "stepInspection",
+      revision: 2,
+      stepId,
+      stepIndex: 0,
+      diff: { addedColumns: ["label length"], removedColumns: [], changedCells: 0 }
+    });
+    if (inspected.kind !== "stepInspection") throw new Error("Expected the applied R Text Length inspection.");
+    expect(inspected.inputSchema.map((column) => column.id)).toEqual(["r:c:0"]);
+    expect(inspected.outputSchema.map((column) => column.id)).toEqual(["r:c:0", outputId]);
+    expect(inspected.outputPage.page.rows.map((row) => row.values[1])).toEqual(
+      previewed.page.page.rows.map((row) => row.values[1])
+    );
+
+    const undone = decodeRKernelResponseJson(marked(result.stdout, undo.marker), ids.undo);
+    expect(undone).toMatchObject({ kind: "planUpdated", action: "undo", revision: 3, code: "" });
+    if (undone.kind !== "planUpdated") throw new Error("Expected the R Text Length undo.");
+    expect(undone.page.schema.map((column) => column.id)).toEqual(["r:c:0"]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+
+    expect(applied.code).toContain("nchar");
+    expect(applied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+    const generated = runR(`
+frame <- data.frame(
+  label = c("na\\u00efve", "\\u6771\\u4eac", "\\U0001F9EA", NA_character_),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${applied.code}
+stopifnot(identical(names(open_wrangler_result), c("label", "label length")))
+stopifnot(identical(open_wrangler_result[[2L]], c(5L, 2L, 1L, NA_integer_)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("removes only the runtime binding owned by the matching transport and bundle", () => {
     const files = readRRuntimeFiles(resolve(root, "r"));
     const owner = "transport-owner-a";

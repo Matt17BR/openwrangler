@@ -167,16 +167,16 @@ IRkernel. Each variable stays in R.
 <img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="1440" height="881">
 
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
-Editing mode currently supports Rename Column, Drop Columns, Select Columns, and Clone Column. Select keeps the order
-in which the columns were chosen. All four use draft preview, generated R, apply, discard, inspection, latest-step
-editing, and undo. Generated R can be copied or saved as a `.R` script.
+Editing mode currently supports Rename Column, Drop Columns, Select Columns, Clone Column, and Text Length. Select
+keeps the order in which the columns were chosen. Text Length accepts character and factor columns, keeps `NA`, and
+adds an integer column containing Unicode character counts. All five use draft preview, generated R, apply, discard,
+inspection, latest-step editing, and undo. Generated R can be copied or saved as a `.R` script.
 
 <img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="1440" height="900">
 
-The editing image shows the packaged VS Code Rename Column journey; the same VSIX passed the matching journey in
-Cursor. Packaged acceptance also covers Drop Columns, ordered Select Columns, and Clone Column, including apply,
-inspection, discard, and undo on the base data frame. Tibbles and keyed data tables separately cover editable open plus
-Rename and Drop preview/discard. The image is not a claim that the other R cleaning operations are ready.
+The image shows Rename Column in VS Code. Drop Columns, ordered Select Columns, Clone Column, and Text Length use the
+same editing controls in VS Code and Cursor. These five operations work with base data frames, tibbles, and keyed data
+tables; the other R cleaning operations are not available yet.
 
 Other R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` files are
 still in development.

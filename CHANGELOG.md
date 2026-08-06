@@ -29,8 +29,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   other operations.
 - Added **Clone Column** for native R sessions. The copied column gets its own stable identity, so later R steps can
   target it without confusing it with the source. Base data frames, tibbles, and keyed data tables keep their class,
-  names, and key metadata. Rename, Drop, Select, and Clone Columns are the R cleaning operations available today;
-  cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto are still in development.
+  names, and key metadata.
+- Added **Text Length** as the fifth native R cleaning operation. It accepts character and factor columns, counts
+  Unicode characters, keeps `NA` values, and appends an integer column with its own stable identity. The generated R
+  follows the same rules. Cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto are still
+  in development.
 
 ### Changed
 
@@ -42,11 +45,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
   ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
   to the notebook's source object.
-- Added a packaged-editor R editing screenshot and expanded the acceptance journey. VS Code and Cursor exercise
-  Rename, Drop, Select, and Clone Columns against real IRkernel sessions. The base-data-frame journey previews, applies,
-  inspects, discards, and undoes the operations, checks generated R, copies and saves Rename code, and verifies that
-  the notebook objects are unchanged. Separate tibble and keyed-data-table sessions preview and discard Rename and
-  Drop Columns; direct R tests cover all four operations for all three flavors.
+- Added a real VS Code screenshot of R editing. The installed extension now exercises Rename, Drop, Select, Clone, and
+  Text Length against IRkernel in both VS Code and Cursor. The base-data-frame test previews, applies, inspects,
+  discards, and undoes the operations, checks generated R, copies and saves Rename code, and verifies that the notebook
+  objects are unchanged. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns;
+  direct R tests cover all five operations for all three flavors.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and

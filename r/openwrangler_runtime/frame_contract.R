@@ -1565,16 +1565,28 @@ openwrangler_r_frame_contract <- local({
     capture
   }
 
-  capture_frame <- function(value, nullability_source = NULL, source_positions = NULL, output_ids = NULL) {
+  capture_frame <- function(
+    value,
+    nullability_source = NULL,
+    source_positions = NULL,
+    output_ids = NULL,
+    text_length_positions = NULL
+  ) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
     if (!is.null(nullability_source)) validate_capture(nullability_source)
-    if (is.null(nullability_source) && (!is.null(source_positions) || !is.null(output_ids))) {
+    if (
+      is.null(nullability_source) &&
+        (!is.null(source_positions) || !is.null(output_ids) || !is.null(text_length_positions))
+    ) {
       abort("internal-error", "derived R column mappings require a source R capture")
     }
     if (!is.null(output_ids) && is.null(source_positions)) {
       abort("internal-error", "explicit R output IDs require a source-column mapping")
+    }
+    if (!is.null(text_length_positions) && (is.null(source_positions) || is.null(output_ids))) {
+      abort("internal-error", "R text-length outputs require explicit source mappings and identities")
     }
     flavor <- frame_flavor(value)
     assert_frame_attributes(value, flavor)
@@ -1608,6 +1620,22 @@ openwrangler_r_frame_contract <- local({
         abort("internal-error", "a derived R frame has an invalid source-column mapping")
       }
       source_positions <- as.integer(source_positions)
+      if (is.null(text_length_positions)) {
+        text_length_positions <- integer()
+      } else {
+        if (
+          !is.numeric(text_length_positions) ||
+            anyNA(text_length_positions) ||
+            any(!is.finite(text_length_positions)) ||
+            any(text_length_positions != floor(text_length_positions)) ||
+            any(text_length_positions < 1L) ||
+            any(text_length_positions > length(output_schema)) ||
+            anyDuplicated(text_length_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid text-length output positions")
+        }
+        text_length_positions <- as.integer(text_length_positions)
+      }
       source_nullable <- vapply(source_positions, function(position) {
         value <- source_schema[[position]]$nullable
         if (length(value) != 1L || !is.logical(value) || is.na(value)) {
@@ -1663,12 +1691,22 @@ openwrangler_r_frame_contract <- local({
       for (index in seq_along(output_schema)) {
         source_column <- source_schema[[source_positions[[index]]]]
         output_column <- output_schema[[index]]
-        if (
-          !identical(output_column$rawType, source_column$rawType) ||
-            !identical(output_column$type, source_column$type) ||
-            !identical(output_column$semantics, source_column$semantics)
-        ) {
-          abort("internal-error", "a derived R frame changed retained column type metadata")
+        if (index %in% text_length_positions) {
+          if (
+            !source_column$semantics$kind %in% c("character", "factor") ||
+              !identical(output_column$semantics$kind, "integer") ||
+              identical(output_ids[[index]], mapped_source_ids[[index]])
+          ) {
+            abort("internal-error", "a derived R frame has an invalid text-length output")
+          }
+        } else {
+          if (
+            !identical(output_column$rawType, source_column$rawType) ||
+              !identical(output_column$type, source_column$type) ||
+              !identical(output_column$semantics, source_column$semantics)
+          ) {
+            abort("internal-error", "a derived R frame changed retained column type metadata")
+          }
         }
         inspected$descriptor$schema[[index]]$id <- output_ids[[index]]
         inspected$descriptor$schema[[index]]$nullable <- source_nullable[[index]]
@@ -1857,6 +1895,69 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     clone_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  text_length_column_at <- function(value, position, old_name, new_name) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the text length column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    source_column <- inspected$descriptor$schema[[position]]
+    if (!identical(source_column$name, old_name)) {
+      abort("stale-column", "the text length column name no longer matches the R dataframe")
+    }
+    new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+    if (identical(new_name, "")) {
+      abort("invalid-column-name", "new_name must not be empty")
+    }
+    if (is_private_column_name(old_name) || is_private_column_name(new_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (!source_column$semantics$kind %in% c("character", "factor")) {
+      abort("invalid-view-query", "textLength requires a character or factor column")
+    }
+    if (any(names(value) == new_name)) {
+      abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
+    }
+    if (column_count >= maximum_columns) {
+      abort("invalid-view-query", "textLength exceeds the supported R column limit")
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    lengths <- nchar(
+      as.character(result[[position]]),
+      type = "chars",
+      allowNA = FALSE,
+      keepNA = TRUE
+    )
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = new_name, value = lengths)
+    } else {
+      original_names <- names(result)
+      result[[length(result) + 1L]] <- lengths
+      names(result) <- c(original_names, new_name)
+    }
+    result
+  }
+
+  text_length_column <- function(value, column_reference, new_name) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    text_length_column_at(value, resolved$position, resolved$name, new_name)
   }
 
   drop_columns_at <- function(value, positions, expected_names) {
@@ -2552,6 +2653,8 @@ openwrangler_r_frame_contract <- local({
     rename_column_at = rename_column_at,
     clone_column = clone_column,
     clone_column_at = clone_column_at,
+    text_length_column = text_length_column,
+    text_length_column_at = text_length_column_at,
     drop_columns = drop_columns,
     drop_columns_at = drop_columns_at,
     select_columns = select_columns,

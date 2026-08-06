@@ -508,9 +508,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /Editing mode\s+currently supports \*\*Rename Column\*\*, \*\*Drop Columns\*\*, \*\*Select Columns\*\*, and \*\*Clone Column\*\*/u
+    /Editing mode\s+currently supports \*\*Rename Column\*\*, \*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, and \*\*Text Length\*\*/u
   );
-  assert.match(readme, /Native IRkernel viewing; Rename, Drop, Select, and Clone Columns/u);
+  assert.match(readme, /Native IRkernel viewing and five current cleaning operations/u);
+  assert.match(readme, /Text Length accepts character and factor columns[\s\S]{0,140}Unicode character counts/u);
   assert.match(readme, /\| R \(v2 development\)\s+\|/u);
   assert.match(
     readme,
@@ -601,7 +602,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     v2Roadmap,
     /finish native R notebook support for data frames, tibbles, and `data\.table`, then add Quarto and R Markdown/u
   );
-  assert.match(v2Roadmap, /Rename, Drop, Select, and Clone Columns are available now/u);
+  assert.match(v2Roadmap, /Rename, Drop, Select, Clone, and Text Length are available now/u);
   assert.match(
     v2Roadmap,
     /\[R architecture decision\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/decisions\/0001-native-r-runtime\.md\)/u
@@ -671,11 +672,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /Editing mode currently supports Rename Column, Drop Columns, Select Columns, and Clone Column\. Select keeps the order\s+in which the columns were chosen\. All four use draft preview, generated R, apply, discard, inspection, latest-step\s+editing, and undo/u
+    /Editing mode currently supports Rename Column, Drop Columns, Select Columns, Clone Column, and Text Length\. Select\s+keeps the order in which the columns were chosen\.[\s\S]{0,220}All five use draft preview, generated R, apply, discard,\s+inspection, latest-step editing, and undo/u
   );
   assert.match(
     gallery,
-    /The editing image shows the packaged VS Code Rename Column journey; the same VSIX passed the matching journey in\s+Cursor\. Packaged acceptance also covers Drop Columns, ordered Select Columns, and Clone Column/u
+    /The image shows Rename Column in VS Code\. Drop Columns, ordered Select Columns, Clone Column, and Text Length use the\s+same editing controls in VS Code and Cursor/u
   );
   assert.match(
     gallery,

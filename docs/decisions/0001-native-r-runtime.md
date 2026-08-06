@@ -5,8 +5,8 @@
 
 ## Context
 
-Open Wrangler currently runs dataframe work in Python. R support needs to preserve R objects and R package semantics,
-including `data.frame`, tibble, and `data.table`. Sending those objects through Python would change types, null handling,
+Before work on v2 began, Open Wrangler handled dataframe work through Python. R support needs to keep R objects and
+package semantics, including `data.frame`, tibble, and `data.table`. Sending those objects through Python would change types, null handling,
 categorical behavior, and generated code. It would also make a Python environment an unnecessary requirement for an R
 workflow.
 
@@ -72,13 +72,16 @@ the current viewing filters, and the private dataset-statistics response binds i
 from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
 user to reopen the frame.
 
-Editing currently supports Rename Column, Drop Columns, Select Columns, and Clone Column. The first draft takes an isolated original;
+Editing currently supports Rename Column, Drop Columns, Select Columns, Clone Column, and Text Length. The first draft
+takes an isolated original;
 base data frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps
 committed and draft results separate, resolves every target by stable ID and captured name, and advances the session
 revision for preview, apply, discard, latest-step replacement, and undo. Applied-step inspection replays only the selected plan
 prefix. Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves
 the chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
-operations keep compatible data-table keys. Generated R repeats the position and name checks and returns a copied
+Text Length operation accepts character and factor columns, keeps `NA` values, and appends a derived integer column
+whose stable ID can be used by later steps. It counts Unicode characters rather than encoded bytes. The operations
+keep compatible data-table keys. Generated R repeats the position and name checks and returns a copied
 result. Native, cross-language, and packaged-editor tests cover source isolation, executable code, keyed data tables,
 duplicate names, non-syntactic names, and mixed plans.
 
@@ -107,8 +110,9 @@ same release gates.
 - The grid and transformation model can be shared, but execution, object ownership, type handling, and generated code
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
-  currently adds Rename Column, Drop Columns, Select Columns, and Clone Column with generated R code. Other cleaning operations,
-  cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` documents remain unsupported.
+  currently adds Rename Column, Drop Columns, Select Columns, Clone Column, and Text Length with generated R code.
+  Other cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `.R` documents
+  remain unsupported.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
 - R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and
