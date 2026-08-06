@@ -1879,7 +1879,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   let filterPanel = drawer.locator(".filterSortPanel").first();
   await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
   await filterPanel.getByRole("button", { name: "Use advanced filters", exact: true }).click();
-  const acrossColumns = filterPanel.getByLabel("Across columns", { exact: true });
+  const acrossColumns = filterPanel.getByRole("combobox", { name: "Across columns", exact: true });
   await acrossColumns.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await acrossColumns.inputValue(), "and");
 
