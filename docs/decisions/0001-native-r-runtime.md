@@ -30,14 +30,15 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
 - Standalone contract captures own an isolated R snapshot. `data.table` snapshots use `data.table::copy()`.
 - A live IRkernel session keeps the verified variable binding instead. Each page, sort, or profile reads the current
   object through that binding and rejects a changed shape, schema, class, or row-name mode.
-- Column identity is positional, so duplicate and non-syntactic names remain usable without rewriting the source.
+- Column identity starts from the source position but remains stable when editing moves a retained column. Duplicate
+  and non-syntactic names remain usable without rewriting the source or assigning identity by name.
 - R-specific factor, ordered-factor, Date, POSIXct, difftime, and integer64 metadata crosses the boundary explicitly.
 - Plain-double `NA`, `NaN`, positive infinity, and negative infinity remain distinct typed values. Non-finite
   classed temporal values and fractional Dates are rejected instead of being relabeled or rounded.
 - Display text does not inherit `options(OutDec)` or the process time zone. POSIXct values with a null or empty
   timezone display in UTC while retaining that original metadata, and reserved integer missing-value sentinels are
   never accepted as ordinary values.
-- Read-only filters and sorts use the captured positional column ID and name. They remain stable with duplicate names,
+- Read-only filters and sorts use the captured stable column ID and name. They remain stable with duplicate names,
   keep source row IDs, and never become cleaning steps. Filters support compound AND/OR logic, typed predicates, and
   selected values; sorts choose direction and missing-value placement independently for each key.
 - Row, column, cell, factor-level, text, and encoded-payload limits are checked by the R producer and again by the
@@ -71,13 +72,14 @@ the current viewing filters, and the private dataset-statistics response binds i
 from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
 user to reopen the frame.
 
-The first editing slice supports Rename Column. The first draft takes an isolated original; base data frames and
-tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps committed and draft results
-separate, resolves the target by stable position and captured name, and advances the session revision for preview,
-apply, discard, latest-step replacement, and undo. Applied-step inspection replays only the selected plan prefix.
-Generated R repeats the positional stale-reference checks and returns a copied result. Native and cross-language tests
-cover success, failure, source isolation, executable code, keyed data tables, duplicate names, and non-syntactic names.
-Packaged editor acceptance for this editing slice is still required.
+Editing currently supports Rename Column and Drop Columns. The first draft takes an isolated original; base data
+frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps committed and
+draft results separate, resolves every target by stable ID and captured name, and advances the session revision for
+preview, apply, discard, latest-step replacement, and undo. Applied-step inspection replays only the selected plan
+prefix. Dropping columns keeps retained IDs stable, refuses to remove the final column, and preserves the surviving
+data-table key prefix. Generated R repeats the position and name checks and returns a copied result. Native,
+cross-language, and packaged-editor tests cover source isolation, executable code, keyed data tables, duplicate names,
+non-syntactic names, and mixed Rename/Drop plans.
 
 Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration helper that owns all of the following:
 
@@ -104,7 +106,7 @@ same release gates.
 - The grid and transformation model can be shared, but execution, object ownership, type handling, and generated code
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
-  currently adds Rename Column with generated R code. Other cleaning operations, cleaned-data export, notebook
+  currently adds Rename Column and Drop Columns with generated R code. Other cleaning operations, cleaned-data export, notebook
   insertion, Quarto, R Markdown, and plain `.R` documents remain unsupported.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.

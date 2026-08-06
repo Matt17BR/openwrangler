@@ -16,10 +16,11 @@ matrix for release candidates or changes that cross all of its boundaries.
   covers stable-reference compound filters and multi-column sorts, AND/OR logic, typed predicates and selections,
   value search, per-key direction and missing-value placement, exact integer64 ordering, duplicate-name references,
   filtered and sorted pagination, source immutability, malformed or stale rules, and source row IDs in logical view
-  order. Rename tests resolve duplicate and non-syntactic names by stable position, preserve base, tibble, and keyed
-  `data.table` semantics, and prove that both the draft and generated R leave the source unchanged. The kernel-agent
-  cases cover preview, apply, discard, applied-step inspection, latest-step replacement, undo, stale revisions,
-  unsupported operations, and an encoding failure before state publication. The date, datetime, and duration cases
+  order. Rename Column and Drop Columns tests resolve duplicate and non-syntactic names by stable identity, preserve
+  base, tibble, and keyed `data.table` semantics, and prove that drafts and generated R leave the source unchanged.
+  Drop tests also cover retained IDs after a position shift, data-table key changes, drop-all rejection, and mixed
+  Rename/Drop plans. The kernel-agent cases cover preview, apply, discard, applied-step inspection, latest-step
+  replacement, undo, stale revisions, unsupported operations, and an encoding failure before state publication. The date, datetime, and duration cases
   are read from `fixtures/view-literal-contract.json`; signed-zero tests
   require one emitted selection to match both `-0` and `+0`. Ambient `OutDec` and `TZ` settings must not change a cell,
   including POSIXct columns with null or empty-string timezone metadata. The TypeScript decoder rejects the reserved R
@@ -34,8 +35,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   cases run only when
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix. It
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
-  values, the Rename Column lifecycle, variable replacement, malformed requests, and close cases. The R tests check
-  the fixed diagnostics for unsupported frames,
+  values, the Rename Column and Drop Columns lifecycles, variable replacement, malformed requests, and close cases.
+  The R tests check the fixed diagnostics for unsupported frames,
   missing packages, oversized pages or profiles, and stale columns. Focused TypeScript tests cover the embedded
   remote-kernel bootstrap, response decoder, sole-open notebook checks, exact-kernel paging and profiling, restart
   handling, late close completion, repeated disposal, and delayed
@@ -43,8 +44,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   request waits for the original execution to finish. Variable-discovery tests cover exact base `data.frame`, tibble,
   and `data.table` class vectors, active and delayed bindings, missing `jsonlite` or `rlang`, malformed output, and
   notebook/kernel replacement. Host and webview tests cover the native picker, coordinator route, R runtime identity,
-  Rename Column capability, generated-code commands, bounded two-dimensional pages, and enabled viewing filters,
-  sorts, profiles, and value selection. The production-browser accessibility journey covers explicit row labels,
+  Rename Column and Drop Columns capabilities, generated-code commands, bounded two-dimensional pages, and enabled
+  viewing filters, sorts, profiles, and value selection. The production-browser accessibility journey covers explicit row labels,
   keyboard tab/menu use, and
   focus restoration. The R 4.4 and 4.5 contract lanes pass, and the local packaged IRkernel journey passes in isolated
   VS Code and Cursor profiles with R 4.5.2. The remote IRkernel journey passes in VS Code. The same packaged path now
@@ -502,11 +503,12 @@ containerized R kernel in VS Code. The journey checked typed value selection, a 
 Clear all, sort priority, restart and reopen, source preservation, and final cleanup. It does not cover cleaning,
 generated R code, exports, Quarto, R Markdown, or plain `.R` files.
 
-Focused R and TypeScript tests on the current v2 branch cover Rename Column in Editing mode. They exercise draft
-preview, executable generated R, apply, discard, inspection, latest-step editing, undo, revision errors, exact-kernel
-correlation, and source isolation for base data frames, tibbles, and keyed data tables. The packaged VS Code and
-Cursor journey drives those controls in the real workbench, copies the generated R, saves it through the `.R` Save
-dialog, and checks the source objects again after editing.
+Focused R and TypeScript tests on the current v2 branch cover Rename Column and Drop Columns in Editing mode. They
+exercise draft preview, executable generated R, mixed plans, apply, discard, inspection, latest-step editing, undo,
+revision errors, exact-kernel correlation, stable retained-column identities, and source isolation for base data
+frames, tibbles, and keyed data tables. The packaged VS Code and Cursor journey previews and discards both operations
+for all three dataframe flavors. Its base-data-frame path also applies, inspects, and undoes each operation, copies
+and saves generated Rename code through the `.R` Save dialog, and checks the source objects again after editing.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
 viewing workbench, and a separate 1,205-row Rename draft in Editing mode. The viewing image shows two filters, two

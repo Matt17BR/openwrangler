@@ -11,8 +11,8 @@ Open Wrangler has three cooperating parts:
 
 Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects native R notebook
 sessions to the shared protocol, coordinator, notebook command, grid, filters, sorts, value picker, and profiles. Its
-first editing slice supports Rename Column through the shared draft and cleaning-history UI. The
-[native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
+editing surface currently supports Rename Column and Drop Columns through the shared draft and cleaning-history UI.
+The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
@@ -35,7 +35,8 @@ The bundled `r/openwrangler_runtime/frame_contract.R` module validates a base `d
 without calling Python and returns one bounded projected page. Live kernel sessions read only the requested rows and
 columns instead of serializing the complete dataframe. They check the source shape and schema again before each read;
 the isolated contract helper still copies its input for unit-level value tests. The page keeps
-duplicate and non-syntactic names while using positional IDs for identity. Its column metadata records factors,
+duplicate and non-syntactic names while using stable source-column IDs for identity. A retained column keeps its ID
+when an editing step changes its position. Its column metadata records factors,
 ordered factors, dates, POSIXct time zones, difftime units, and `bit64::integer64`; cells distinguish `NA`, `NaN`, and
 signed infinity for plain doubles. Non-finite classed temporal values and fractional Dates fail rather than being
 silently relabeled or rounded. Numeric display always uses a dot, regardless of `options(OutDec)`. A POSIXct column
@@ -46,7 +47,7 @@ unrecognized attributes fail instead of losing R semantics. Source positions pro
 row names travel separately as row labels and appear in the grid gutter instead of becoming a data column.
 
 The same module applies compound viewing filters and an ordered list of viewing sorts before it builds a page. Every
-filter and sort names a column by both its positional ID and captured name, which keeps duplicate names unambiguous
+filter and sort names a column by both its stable ID and captured name, which keeps duplicate names unambiguous
 and rejects stale references. Filters support per-column and cross-column AND/OR logic, typed predicates, null and
 NaN controls, and selected values. Public date, datetime, and duration literals follow the same fixture-backed rules
 as Python and saved notebook views. Rules are applied in priority order, with independent direction and missing-value
@@ -74,9 +75,9 @@ from the same correlated request; the R encoder, TypeScript decoder, and bridge 
 Profiling reads the live R object again and rejects a changed shape, schema, or column semantics. Viewing queries do
 not modify the source object.
 
-`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 3, exact fields, canonical
-class/type combinations, contiguous positional column IDs, unique in-range source row IDs, logical row positions,
-matching row and column windows, and values valid for their R column. Positional frames may not send row labels;
+`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 4, exact fields, canonical
+class/type combinations, unique stable source-column IDs, contiguous column positions, unique in-range source row IDs,
+logical row positions, matching row and column windows, and values valid for their R column. Positional frames may not send row labels;
 explicit row-name frames must send one bounded label for every returned row. The current limits are 2,048 source
 columns, 64 sort rules, 100,000 factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per
 text value, and 16 MiB per encoded page. A running metadata-and-cell budget stops an oversized page before the
@@ -92,15 +93,17 @@ request IDs, and oversized responses. The runtime sources are base64-embedded in
 IRkernel does not need access to the extension filesystem.
 
 Viewing does not copy the complete R object. The first editing request takes one isolated source snapshot, then keeps
-the original, committed result, and optional draft separate. Rename Column resolves its `{id, name}` reference to one
-exact position, so duplicate and non-syntactic names remain unambiguous. Base data frames and tibbles are copied with
-R serialization; `data.table` uses `data.table::copy()` before `setnames()`, preserving keys without mutating the
-notebook variable. A live session reports nullability conservatively; isolating it for editing and renaming a column
-keep that same nullability metadata instead of narrowing the schema from the current values. Preview, apply, discard,
-latest-step replacement, undo, and applied-step inspection use increasing session revisions. Each mutation builds and
+the original, committed result, and optional draft separate. Rename Column and Drop Columns resolve every `{id, name}`
+reference to one exact position, so duplicate and non-syntactic names remain unambiguous. Drop Columns refuses to
+remove the final visible column and keeps the stable IDs of every retained column. Base data frames and tibbles are
+copied with R serialization; `data.table` uses `data.table::copy()` and native column selection, preserving the
+surviving key prefix without mutating the notebook variable. A live session reports nullability conservatively;
+isolating it for editing, renaming a column, or dropping other columns keeps the retained nullability metadata instead
+of narrowing the schema from the current values. Preview, apply, discard, latest-step replacement, undo, and
+applied-step inspection use increasing session revisions. Each mutation builds and
 encodes its complete response before publishing the candidate state.
-Generated code repeats the positional and stale-name checks, returns a new R object, and can be copied or saved as a
-`.R` script.
+Generated code repeats the positional and stale-name checks for both operations, returns a new R object, and can be
+copied or saved as a `.R` script.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
 session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
@@ -118,16 +121,16 @@ a fixed response-code list that includes `unsupported_frame`, `missing_package`,
 code. Native variable discovery requires `jsonlite` and `rlang` in the selected kernel. It recognizes exact base
 `data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The notebook
 command enables native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
-mode currently exposes only Rename Column. Other cleaning operations, cleaned-data export, R notebook insertion,
-Quarto, R Markdown, and plain `.R` documents remain unsupported. R sessions open with header profiles off so opening
+mode currently exposes only Rename Column and Drop Columns. Other cleaning operations, cleaned-data export, R notebook
+insertion, Quarto, R Markdown, and plain `.R` documents remain unsupported. R sessions open with header profiles off so opening
 a frame does not immediately scan every visible column. Users can enable them, and the profile drawer still loads the
 selected column or dataset on request. The packaged VS Code/Cursor viewing journey selects a real R column and checks its
 rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
 duplicate-row statistics. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code
 and Cursor with R 4.5.2. The hosted gate also passes against a containerized IRkernel in VS Code, including kernel
-restart, reopening the frame, and final session cleanup. The packaged Rename journey drives preview, discard, apply,
-inspection, edit-latest, copy, script export, and undo through the real workbench in VS Code and Cursor. It covers a
-base data frame, tibble, and keyed data table and checks that each notebook object stays unchanged.
+restart, reopening the frame, and final session cleanup. The packaged editing journey previews and discards Rename
+Column and Drop Columns for a base data frame, tibble, and keyed data table. Its base-data-frame path also applies,
+inspects, and undoes both operations, checks generated R, and verifies that every notebook object stays unchanged.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 
