@@ -1870,7 +1870,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "1");
   await assertReleasedProfileStat(datasetProfile, "Duplicate rows", "0");
 
-  await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
   await drawer.getByRole("heading", { name: "Filters / Sorts", exact: true }).waitFor({
     state: "visible",
     timeout: 10_000
@@ -2038,7 +2038,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     [{ id: "r:r:1199", rowLabel: "case-1200", values: ["1200", "B", "1200"] }]
   );
 
-  await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
   filterPanel = drawer.locator(".filterSortPanel").first();
   await filterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
   await waitFor(
