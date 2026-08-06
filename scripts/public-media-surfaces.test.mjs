@@ -36,10 +36,12 @@ import {
   PUBLIC_MEDIA_CONTEXT_CLEANUP_TIMEOUT_MS,
   PUBLIC_MEDIA_FETCH_TIMEOUT_MS,
   PUBLIC_MEDIA_FIRST_REQUIRED_VERSION,
+  PUBLIC_MEDIA_MAX_DISPLAY_WIDTH,
   PUBLIC_MEDIA_PROPAGATION_ATTEMPTS,
   PUBLIC_MEDIA_PROPAGATION_DELAY_MS,
   PUBLIC_MEDIA_PROPAGATION_TIMEOUT_MS,
   PUBLIC_MEDIA_RENDER_ATTEMPT_TIMEOUT_MS,
+  PUBLIC_MEDIA_RESPONSIVE_WIDTHS,
   PUBLIC_SURFACE_CONTENT,
   publicMediaVerificationRequired,
   publicSurfaceDefinitions,
@@ -68,6 +70,8 @@ test("public media inventory declares one exact bounded series", () => {
   assert.equal(PUBLIC_MEDIA_MAX_INVENTORY_ENTRIES, 64);
   assert.equal(PUBLIC_MEDIA_MAX_DIRECTORY_DEPTH, 4);
   assert.equal(PUBLIC_MEDIA_MAX_RELATIVE_PATH_BYTES, 240);
+  assert.equal(PUBLIC_MEDIA_MAX_DISPLAY_WIDTH, 960);
+  assert.deepEqual(PUBLIC_MEDIA_RESPONSIVE_WIDTHS, [760, 1_400]);
   assert.equal(new Set(PUBLIC_MEDIA_ASSETS.map((asset) => asset.relativePath)).size, PUBLIC_MEDIA_ASSETS.length);
   for (const asset of PUBLIC_MEDIA_ASSETS) {
     assert.match(asset.relativePath, /^(?:[a-z0-9.-]+\/)*[a-z0-9.-]+\.png$/u);
@@ -346,21 +350,19 @@ test("surface content and versions fail closed on stale publication", () => {
 
 test("representative media remains bound to each immutable README URL", () => {
   const readme = REPRESENTATIVE_PUBLIC_IMAGES.map(
-    (alt, index) =>
-      `<img width="100" alt="${alt}" src="${productPrefix}gallery/representative-${index}.png" height="50">`
+    (alt, index) => `<img width="100" alt="${alt}" src="${productPrefix}gallery/representative-${index}.png">`
   ).join("\n");
   const references = extractImmutableProductReferences(readme);
   assert.equal(references.length, REPRESENTATIVE_PUBLIC_IMAGES.length);
   assert.deepEqual(
-    references.map(({ logicalWidth, logicalHeight, sourceSha: referenceSha }) => ({
-      logicalWidth,
-      logicalHeight,
+    references.map(({ displayWidth, sourceSha: referenceSha }) => ({
+      displayWidth,
       sourceSha: referenceSha
     })),
     [
-      { logicalWidth: 100, logicalHeight: 50, sourceSha },
-      { logicalWidth: 100, logicalHeight: 50, sourceSha },
-      { logicalWidth: 100, logicalHeight: 50, sourceSha }
+      { displayWidth: 100, sourceSha },
+      { displayWidth: 100, sourceSha },
+      { displayWidth: 100, sourceSha }
     ]
   );
   assert.deepEqual(expectedRepresentativeReferences(readme), references);
@@ -388,12 +390,13 @@ test("representative media remains bound to each immutable README URL", () => {
   );
 });
 
-test("every rendered README image keeps its exact immutable source, 2x natural dimensions, and DPR", () => {
+test("rendered README images keep their source, cap, density, aspect ratio, and container", () => {
   const expected = {
     alt: "Synthetic public image",
     url: `${productPrefix}gallery/example.png`,
-    logicalWidth: 100,
-    logicalHeight: 50
+    displayWidth: 100,
+    naturalWidth: 300,
+    naturalHeight: 150
   };
   const rendered = {
     alt: expected.alt,
@@ -401,18 +404,66 @@ test("every rendered README image keeps its exact immutable source, 2x natural d
     currentUrl: expected.url,
     clientWidth: 96,
     clientHeight: 48,
-    naturalWidth: 200,
-    naturalHeight: 100,
+    clientLeft: 12,
+    clientRight: 108,
+    viewportWidth: 120,
+    containerWidth: 100,
+    containerLeft: 10,
+    containerRight: 110,
+    naturalWidth: 300,
+    naturalHeight: 150,
     devicePixelRatio: 2
   };
   assert.doesNotThrow(() => assertRenderedProductImage("Synthetic", rendered, expected));
   assert.throws(
     () => assertRenderedProductImage("Synthetic", { ...rendered, naturalWidth: 100 }, expected),
-    /declared 200x100/u
+    /reviewed 300x150/u
   );
   assert.throws(
-    () => assertRenderedProductImage("Synthetic", { ...rendered, clientWidth: 101 }, expected),
-    /would upscale/u
+    () =>
+      assertRenderedProductImage(
+        "Synthetic",
+        { ...rendered, clientWidth: 102, clientHeight: 51, clientRight: 114 },
+        expected
+      ),
+    /upscale or overflow/u
+  );
+  assert.throws(
+    () => assertRenderedProductImage("Synthetic", { ...rendered, clientHeight: 50 }, expected),
+    /distorts/u
+  );
+  assert.throws(
+    () => assertRenderedProductImage("Synthetic", { ...rendered, containerWidth: 90, containerRight: 100 }, expected),
+    /upscale or overflow/u
+  );
+  assert.throws(
+    () =>
+      assertRenderedProductImage(
+        "Synthetic",
+        { ...rendered, clientLeft: 26, clientRight: 122, containerLeft: 20, containerRight: 126 },
+        expected
+      ),
+    /upscale or overflow/u
+  );
+  const twoTimesExpected = { ...expected, displayWidth: 150, naturalWidth: 200, naturalHeight: 100 };
+  assert.throws(
+    () =>
+      assertRenderedProductImage(
+        "Synthetic",
+        {
+          ...rendered,
+          clientWidth: 101,
+          clientHeight: 50.5,
+          clientRight: 113,
+          viewportWidth: 150,
+          containerWidth: 150,
+          containerRight: 160,
+          naturalWidth: 200,
+          naturalHeight: 100
+        },
+        twoTimesExpected
+      ),
+    /upscale or overflow/u
   );
   assert.throws(
     () => assertRenderedProductImage("Synthetic", { ...rendered, devicePixelRatio: 1 }, expected),
@@ -420,10 +471,47 @@ test("every rendered README image keeps its exact immutable source, 2x natural d
   );
 });
 
+test("representative README images remain responsive near 760px and 1400px", () => {
+  const expected = {
+    alt: "Responsive public image",
+    url: `${productPrefix}gallery/responsive.png`,
+    displayWidth: 960,
+    naturalWidth: 2_880,
+    naturalHeight: 1_740
+  };
+  for (const { containerWidth, clientWidth } of [
+    { containerWidth: 760, clientWidth: 760 },
+    { containerWidth: 1_400, clientWidth: 960 }
+  ]) {
+    assert.doesNotThrow(() =>
+      assertRenderedProductImage(
+        `Synthetic at ${containerWidth}px`,
+        {
+          alt: expected.alt,
+          sourceUrl: expected.url,
+          currentUrl: expected.url,
+          clientWidth,
+          clientHeight: (clientWidth * expected.naturalHeight) / expected.naturalWidth,
+          clientLeft: 0,
+          clientRight: clientWidth,
+          viewportWidth: containerWidth,
+          containerWidth,
+          containerLeft: 0,
+          containerRight: containerWidth,
+          naturalWidth: expected.naturalWidth,
+          naturalHeight: expected.naturalHeight,
+          devicePixelRatio: 2
+        },
+        expected
+      )
+    );
+  }
+});
+
 test("public media declarations reject undeclared series and enumerate link-only assets", () => {
   const current = [
     `<a href="https://github.com/Matt17BR/openwrangler/blob/${sourceSha}/docs/images/readme/v1.2/gallery/full.png">`,
-    `<img src="${productPrefix}gallery/detail.png" width="100" height="50" alt="Detail">`,
+    `<img src="${productPrefix}gallery/detail.png" width="100" alt="Detail">`,
     "</a>"
   ].join("");
   const gallery =
@@ -466,9 +554,28 @@ test("immutable product references reject mutable or decorated media URLs", () =
   assert.throws(() => immutableProductReference(exact.replace("/v1.2/", "/v1.3/")), /must use the declared/u);
   assert.throws(
     () =>
-      extractImmutableProductReferences(
-        `<img alt="Mutable" src="${exact.replace(sourceSha, "main")}" width="100" height="50">`
-      ),
+      extractImmutableProductReferences(`<img alt="Mutable" src="${exact.replace(sourceSha, "main")}" width="100">`),
     /immutable raw source commit/u
   );
+});
+
+test("public README image declarations are width-only and bounded", () => {
+  const exact = `${productPrefix}gallery/example.png`;
+  assert.deepEqual(extractImmutableProductReferences(`<img alt="Example" src="${exact}" width="960">`), [
+    {
+      alt: "Example",
+      displayWidth: 960,
+      relativePath: "gallery/example.png",
+      sourceSha,
+      url: exact
+    }
+  ]);
+  for (const declaration of [
+    `<img alt="Example" src="${exact}">`,
+    `<img alt="Example" src="${exact}" width="0">`,
+    `<img alt="Example" src="${exact}" width="961">`,
+    `<img alt="Example" src="${exact}" width="100" height="50">`
+  ]) {
+    assert.throws(() => extractImmutableProductReferences(declaration));
+  }
 });

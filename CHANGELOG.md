@@ -31,6 +31,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- README and gallery screenshots now use width-only display caps. Narrow Marketplace pages keep the PNG aspect ratio,
+  while wider Open VSX pages stop at 960 CSS pixels; the original high-resolution files are unchanged.
 - Renamed **Export Python Script** to **Export Generated Script**. Python sessions keep the `.clean.py` default;
   generated R code uses `.clean.R` and an R script filter.
 - The Open Wrangler 2 notebook gate now tests local R in VS Code and Cursor and a containerized R kernel in VS Code.
