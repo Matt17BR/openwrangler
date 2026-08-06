@@ -230,7 +230,8 @@ describe("packaged editor screenshot evidence", () => {
       "notebook-polars",
       "notebook-duckdb",
       "notebook-pyspark",
-      "notebook-r"
+      "notebook-r",
+      "notebook-r-editing"
     ]);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
@@ -264,6 +265,9 @@ describe("packaged editor screenshot evidence", () => {
     );
     expect(packagedScreenshotFileName("vscode", "notebook-r-picker", "dark")).toBe("vscode-notebook-r-picker-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-r", "dark")).toBe("vscode-notebook-r-dark.png");
+    expect(packagedScreenshotFileName("vscode", "notebook-r-editing", "dark")).toBe(
+      "vscode-notebook-r-editing-dark.png"
+    );
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
   });
 
@@ -297,6 +301,10 @@ describe("packaged editor screenshot evidence", () => {
     expect(rJourney).toContain(
       'packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r", "dark")'
     );
+    expect(extensionHost).toContain(
+      'packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-editing", "dark")'
+    );
+    expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:editing")');
     expect(extensionHost).toContain("PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT");
     expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:variable-picker")');
     expect(rJourney).toContain('recordAcceptanceProgress("jupyter-r:screenshot:workbench")');

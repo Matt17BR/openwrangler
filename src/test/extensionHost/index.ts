@@ -1454,6 +1454,8 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = 'minimal')",
     "orders_table <- data.table::as.data.table(orders_frame)",
     "orders_frame_before <- serialize(orders_frame, NULL, version = 3L)",
+    "orders_tibble_before <- serialize(orders_tibble, NULL, version = 3L)",
+    "orders_table_before <- serialize(orders_table, NULL, version = 3L)",
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
     "  pid = Sys.getpid(), rows = nrow(orders_frame), columns = ncol(orders_frame),",
     "  rVersion = as.character(getRversion()),",
@@ -1465,6 +1467,8 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_BINDING_RESULT)}, as.character(jsonlite::toJSON(list(`,
     `  runtimeBindingPresent = exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE),`,
     "  sourceUnchanged = isTRUE(identical(serialize(orders_frame, NULL, version = 3L), orders_frame_before)),",
+    "  tibbleSourceUnchanged = isTRUE(identical(serialize(orders_tibble, NULL, version = 3L), orders_tibble_before)),",
+    "  tableSourceUnchanged = isTRUE(identical(serialize(orders_table, NULL, version = 3L), orders_table_before)),",
     "  mediaSourceUnchanged = !exists('regional_orders', envir = .GlobalEnv, inherits = FALSE) ||",
     "    isTRUE(identical(serialize(regional_orders, NULL, version = 3L), regional_orders_before))",
     "), auto_unbox = TRUE)), '\\n', sep = '')"
@@ -1624,6 +1628,8 @@ async function assertReleasedRRuntimeBinding(
     `The R runtime binding must be ${expectedBinding ? "present" : "absent"} during ${checkpoint}.`
   );
   assert.equal(result.sourceUnchanged, true, `The source data.frame changed during ${checkpoint}.`);
+  assert.equal(result.tibbleSourceUnchanged, true, `The source tibble changed during ${checkpoint}.`);
+  assert.equal(result.tableSourceUnchanged, true, `The source data.table changed during ${checkpoint}.`);
   assert.equal(result.mediaSourceUnchanged, true, `The R media data.frame changed during ${checkpoint}.`);
 }
 
@@ -1766,7 +1772,15 @@ async function exerciseReleasedRJupyterExtension(
       "the orders R data.frame opened in editing mode"
     );
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-editing-journey`);
-    await exerciseReleasedREditingJourney(testing, workbench, editing.sessionId, notebookPath, directory, phase);
+    await exerciseReleasedREditingJourney(
+      testing,
+      workbench,
+      editing.sessionId,
+      notebookPath,
+      directory,
+      phase,
+      screenshotOutput
+    );
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-editing-journey`);
     await disposePackagedSessionPanel(testing, editing.sessionId, "the editable orders R data.frame session");
     await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
@@ -1807,7 +1821,7 @@ async function exerciseReleasedRJupyterExtension(
       await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
     }
 
-    for (const expected of [
+    const additionalRFrames = [
       {
         name: "orders_tibble",
         type: "tbl_df",
@@ -1824,7 +1838,8 @@ async function exerciseReleasedRJupyterExtension(
         firstValue: "1",
         notebookInsert: false
       }
-    ]) {
+    ] as const;
+    for (const expected of additionalRFrames) {
       await showExactReleasedNotebook(notebook);
       await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
       const session = await waitForReleasedVariableSession(
@@ -1837,6 +1852,59 @@ async function exerciseReleasedRJupyterExtension(
       await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
       await disposePackagedSessionPanel(testing, session.sessionId, `the native ${expected.rDataframeFlavor} session`);
     }
+
+    await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
+    for (const expected of additionalRFrames) {
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+      const session = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        expected,
+        `the editable native ${expected.rDataframeFlavor} session`
+      );
+      assert.equal(session.metadata.mode, "editing");
+      assert.deepEqual(session.metadata.capabilities.supportedOperations, ["renameColumn"]);
+      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
+      let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
+      const previewed = await previewReleasedRRename(
+        testing,
+        workbench,
+        app,
+        session.sessionId,
+        "row_id",
+        "record_id",
+        undefined,
+        expected.name
+      );
+      app = previewed.app;
+      assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
+      await app
+        .getByRole("region", { name: "Draft review" })
+        .getByRole("button", { name: "Discard", exact: true })
+        .click();
+      await waitFor(
+        () => {
+          const active = testing.activeSession();
+          return (
+            active?.sessionId === session.sessionId &&
+            active.metadata.draftStep === undefined &&
+            active.metadata.steps.length === 0 &&
+            active.metadata.schema[0]?.name === "row_id"
+          );
+        },
+        30_000,
+        `discarding the native ${expected.rDataframeFlavor} rename preview`
+      );
+      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:after-rename-discard`);
+      await disposePackagedSessionPanel(
+        testing,
+        session.sessionId,
+        `the editable native ${expected.rDataframeFlavor} session`
+      );
+    }
+    await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
 
     await showExactReleasedNotebook(notebook);
     await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
@@ -2289,7 +2357,8 @@ async function exerciseReleasedREditingJourney(
   sessionId: string,
   notebookPath: string,
   outputDirectory: string,
-  phase: "jupyter-r" | "jupyter-r-remote"
+  phase: "jupyter-r" | "jupyter-r-remote",
+  screenshotOutput?: string
 ): Promise<void> {
   recordAcceptanceProgress(`${phase}:editing:open`);
   await requireFreshExactSessionPanelHydration(
@@ -2357,6 +2426,10 @@ async function exerciseReleasedREditingJourney(
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after discarding its draft");
   const previewed = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
   app = previewed.app;
+  if (screenshotOutput) {
+    await captureReleasedRNotebookRenameDraft(workbench, testing, sessionId, screenshotOutput);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the captured R rename draft");
+  }
   await app
     .getByRole("region", { name: "Draft review" })
     .getByRole("button", { name: "Apply step", exact: true })
@@ -2533,7 +2606,8 @@ async function previewReleasedRRename(
   sessionId: string,
   sourceName: string,
   newName: string,
-  replacement?: Readonly<{ replaceStepId: string; previousName: string }>
+  replacement?: Readonly<{ replaceStepId: string; previousName: string }>,
+  variableName = "orders_frame"
 ): Promise<Readonly<{ app: Locator; stepId: string }>> {
   let dialog: Locator;
   if (replacement) {
@@ -2582,9 +2656,9 @@ async function previewReleasedRRename(
   assert.ok(active?.metadata.draftStep, "The native R rename preview must retain its draft step.");
   const stepId = active.metadata.draftStep.id;
   if (replacement) assert.equal(stepId, replacement.replaceStepId);
-  assertReleasedRGeneratedCode(active.code ?? "", newName);
+  assertReleasedRGeneratedCode(active.code ?? "", newName, variableName);
   const codePreview = await waitForCodePreview(workbench, newName, "R");
-  assertReleasedRGeneratedCode(await codePreview.innerText(), newName);
+  assertReleasedRGeneratedCode(await codePreview.innerText(), newName, variableName);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -2596,11 +2670,147 @@ async function previewReleasedRRename(
   };
 }
 
-function assertReleasedRGeneratedCode(code: string, newName: string): void {
+function assertReleasedRGeneratedCode(code: string, newName: string, variableName = "orders_frame"): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.match(code, /get\("orders_frame", envir = \.GlobalEnv, inherits = FALSE\)/u);
+  assert.ok(
+    code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`),
+    `Generated R code must read ${JSON.stringify(variableName)} from the notebook kernel.`
+  );
   assert.ok(code.includes(JSON.stringify(newName)), `Generated R code must contain ${JSON.stringify(newName)}.`);
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+async function captureReleasedRNotebookRenameDraft(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  outputDirectory: string
+): Promise<void> {
+  if (process.platform !== "linux") return;
+  assert.equal(path.isAbsolute(outputDirectory), true, "R editing screenshot output must be one absolute directory.");
+  const previousViewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  const previousThemeKind = vscode.window.activeColorTheme.kind;
+  const workbenchConfiguration = vscode.workspace.getConfiguration("workbench");
+  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
+  const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const settings = [
+    { configuration: windowConfiguration, key: "autoDetectColorScheme" },
+    { configuration: windowConfiguration, key: "autoDetectHighContrast" },
+    { configuration: windowConfiguration, key: "commandCenter" },
+    { configuration: windowConfiguration, key: "title" },
+    { configuration: workbenchConfiguration, key: "colorTheme" },
+    { configuration: workbenchConfiguration, key: "statusBar.visible" },
+    { configuration: breadcrumbs, key: "enabled" }
+  ] as const;
+  const previousSettings = settings.map(({ configuration, key }) => ({
+    configuration,
+    key,
+    value: configuration.inspect(key)?.globalValue
+  }));
+
+  try {
+    await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update(
+      "title",
+      "${activeEditorShort}${separator}Open Wrangler",
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update(
+      "colorTheme",
+      releasedJupyterScreenshotTheme(),
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+      10_000,
+      "the dark R editing screenshot theme"
+    );
+    await closeVisibleWorkbenchPart(workbench, ".part.auxiliarybar", [
+      "workbench.action.closeAuxiliaryBar",
+      "workbench.action.toggleAuxiliaryBar"
+    ]);
+
+    const active = testing.activeSession();
+    assert.equal(active?.sessionId, sessionId, "The R editing screenshot must retain its exact live session.");
+    assert.ok(active, "The R editing screenshot requires one active session.");
+    assert.equal(active.metadata.backend, "r");
+    assert.equal(active.metadata.rDataframeFlavor, "r.data.frame");
+    assert.equal(active.metadata.mode, "editing");
+    assert.equal(active.metadata.source.kind, "notebookVariable");
+    assert.equal(active.metadata.source.variableName, "orders_frame");
+    const draft = active.metadata.draftStep;
+    assert.ok(draft && draft.kind === "renameColumn", "The R editing screenshot requires a Rename Column draft.");
+    assert.equal(draft.params.newName, "record_id");
+    assert.equal(active.metadata.schema[0]?.name, "record_id");
+    assert.equal(await testing.synchronizePanel(sessionId), true);
+
+    const firstColumns = active.metadata.schema.slice(0, 4);
+    const firstColumn = firstColumns[0];
+    assert.ok(firstColumn, "The R editing screenshot requires at least one visible column.");
+    await testing.updateViewState(sessionId, {
+      ...active.viewState,
+      columnWidths: {
+        ...active.viewState.columnWidths,
+        ...Object.fromEntries(firstColumns.map((column) => [column.id, 190]))
+      },
+      selectedColumnId: firstColumn.id,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(await testing.synchronizePanel(sessionId), true);
+
+    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+    const codePreview = await waitForCodePreview(workbench, "record_id", "R");
+    assertReleasedRGeneratedCode(await codePreview.innerText(), "record_id");
+    const sidebar = await arrangePackagedProductSidebar(workbench, "workflow");
+    await sidebar
+      .getByRole("tree", { name: /Cleaning Steps/u })
+      .getByRole("treeitem", { name: /^Draft · Rename column/u })
+      .waitFor({ state: "visible", timeout: 10_000 });
+
+    const app = await releasedRSessionApp(workbench, testing, sessionId, "the R editing screenshot");
+    assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+    assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
+    await app.getByRole("region", { name: "Draft review" }).waitFor({ state: "visible", timeout: 10_000 });
+    await app.locator('th[data-column="record_id"]').waitFor({ state: "visible", timeout: 10_000 });
+    await app.getByRole("button", { name: "Apply step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await app.getByRole("button", { name: "Discard", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await assertMediaColumnTitlesUnclipped(
+      app,
+      firstColumns.map((column) => column.name),
+      "The R editing notebook scene"
+    );
+    await clearReleasedJupyterScreenshotTransientUi(workbench);
+    assert.equal(testing.activeSession()?.metadata.draftStep?.kind, "renameColumn");
+
+    mkdirSync(outputDirectory, { recursive: true });
+    recordAcceptanceProgress("jupyter-r:screenshot:editing");
+    await captureNotebookWorkbenchScreenshot(
+      workbench,
+      path.resolve(
+        outputDirectory,
+        packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-editing", "dark")
+      )
+    );
+  } finally {
+    for (const { configuration, key, value } of previousSettings.reverse()) {
+      await configuration.update(key, value, vscode.ConfigurationTarget.Global);
+    }
+    await workbench.setViewportSize(previousViewport);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === previousThemeKind,
+      10_000,
+      "the R editing workbench to restore its prior color theme"
+    );
+    await workbench.waitForTimeout(500);
+  }
 }
 
 async function releasedRSessionApp(
