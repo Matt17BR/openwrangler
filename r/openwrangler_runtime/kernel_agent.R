@@ -469,6 +469,34 @@ openwrangler_r_kernel_agent <- local({
       }
       return(decoded)
     }
+    if (identical(kind, "textLength")) {
+      params <- exact_record(step$params, c("column", "newColumn"), "request.payload.step.params")
+      new_column <- bounded_text(
+        params$newColumn,
+        "request.payload.step.params.newColumn",
+        maximum_variable_name_bytes
+      )
+      if (identical(new_column, "")) {
+        abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(
+          column = decode_column_reference(
+            params$column,
+            "request.payload.step.params.column",
+            limits$columnIdBytes
+          ),
+          newColumn = new_column
+        ),
+        outputId = bounded_text(
+          paste0("c:step:", step_id, ":0"),
+          "the derived R text-length column identity",
+          limits$columnIdBytes
+        )
+      ))
+    }
     if (kind %in% c("dropColumns", "selectColumns")) {
       params <- exact_record(step$params, "columns", "request.payload.step.params")
       columns <- params$columns
@@ -494,7 +522,7 @@ openwrangler_r_kernel_agent <- local({
       }
       return(list(id = step_id, kind = kind, params = list(columns = columns)))
     }
-    if (!kind %in% c("renameColumn", "cloneColumn", "dropColumns", "selectColumns")) {
+    if (!kind %in% c("renameColumn", "cloneColumn", "dropColumns", "selectColumns", "textLength")) {
       abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
     }
     abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
@@ -533,6 +561,25 @@ openwrangler_r_kernel_agent <- local({
       position = as.integer(matches[[1L]]),
       oldName = step$params$column$name,
       newName = step$params$newName,
+      outputId = step$outputId
+    )
+  }
+
+  bind_text_length_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (
+      length(matches) != 1L ||
+        !identical(schema[[matches[[1L]]]]$name, step$params$column$name)
+    ) {
+      abort("stale_column", "The text length column reference no longer matches the active R dataframe", TRUE)
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      position = as.integer(matches[[1L]]),
+      oldName = step$params$column$name,
+      newName = step$params$newColumn,
       outputId = step$outputId
     )
   }
@@ -612,6 +659,25 @@ openwrangler_r_kernel_agent <- local({
           nullability_source = capture,
           source_positions = source_positions,
           output_ids = output_ids
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "textLength")) {
+      bound <- bind_text_length_step(capture, step)
+      result <- frame_contract$text_length_column_at(source, bound$position, bound$oldName, bound$newName)
+      source_positions <- c(seq_along(capture$descriptor$schema), bound$position)
+      output_ids <- c(
+        vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+        bound$outputId
+      )
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = source_positions,
+          output_ids = output_ids,
+          text_length_positions = length(output_ids)
         ),
         bound = bound
       ))
@@ -730,6 +796,28 @@ openwrangler_r_kernel_agent <- local({
           "    names(.ow_result) <- c(.ow_clone_existing_names, .ow_clone_name)",
           "  }"
         )
+      } else if (identical(step$kind, "textLength")) {
+        lines <- c(
+          lines,
+          sprintf("  .ow_text_length_position <- %dL", step$position),
+          sprintf("  .ow_text_length_source_name <- %s", r_string(step$oldName)),
+          sprintf("  .ow_text_length_name <- %s", r_string(step$newName)),
+          "  if (ncol(.ow_result) < .ow_text_length_position || !identical(names(.ow_result)[[.ow_text_length_position]], .ow_text_length_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (!is.character(.ow_result[[.ow_text_length_position]]) && !is.factor(.ow_result[[.ow_text_length_position]])) stop(\"Open Wrangler Text Length requires a character or factor column\", call. = FALSE)",
+          "  if (.ow_text_length_name == \"\" || any(names(.ow_result) == .ow_text_length_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+          sprintf(
+            "  if (ncol(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
+            maximum_columns
+          ),
+          "  .ow_text_lengths <- nchar(as.character(.ow_result[[.ow_text_length_position]]), type = \"chars\", allowNA = FALSE, keepNA = TRUE)",
+          "  if (inherits(.ow_result, \"data.table\")) {",
+          "    data.table::set(.ow_result, j = .ow_text_length_name, value = .ow_text_lengths)",
+          "  } else {",
+          "    .ow_text_length_existing_names <- names(.ow_result)",
+          "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_text_lengths",
+          "    names(.ow_result) <- c(.ow_text_length_existing_names, .ow_text_length_name)",
+          "  }"
+        )
       } else if (identical(step$kind, "dropColumns")) {
         positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
         names <- vapply(step$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
@@ -777,7 +865,7 @@ openwrangler_r_kernel_agent <- local({
   }
 
   step_diff <- function(bound) {
-    added_columns <- if (identical(bound$kind, "cloneColumn")) bound$newName else character()
+    added_columns <- if (bound$kind %in% c("cloneColumn", "textLength")) bound$newName else character()
     removed_columns <- if (identical(bound$kind, "dropColumns")) {
       vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
     } else if (identical(bound$kind, "selectColumns")) {
@@ -837,6 +925,7 @@ openwrangler_r_kernel_agent <- local({
       "rename_column",
       "rename_column_at",
       "clone_column_at",
+      "text_length_column_at",
       "drop_columns_at",
       "select_columns_at",
       "materialize_view_page",

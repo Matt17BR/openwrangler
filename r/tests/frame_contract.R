@@ -475,6 +475,169 @@ assert_error(
 )
 assert_identical(clone_frame, clone_before, "a failed clone mutated its source")
 
+text_length_frame <- data.frame(
+  duplicate = c("caf\u00e9", "\U0001F642", NA_character_),
+  duplicate = factor(c("alpha", NA, "\u03b2eta"), levels = c("alpha", "\u03b2eta")),
+  number = c(1L, 2L, 3L),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b", "row-c")
+)
+text_length_before <- unserialize(serialize(text_length_frame, NULL, version = 3L))
+text_length_capture <- openwrangler_r_frame_contract$capture_frame(text_length_frame)
+text_length_result <- openwrangler_r_frame_contract$text_length_column(
+  text_length_frame,
+  list(id = "r:c:0", name = "duplicate"),
+  "character count"
+)
+text_length_source_positions <- c(1L, 2L, 3L, 1L)
+text_length_output_ids <- c("r:c:0", "r:c:1", "r:c:2", "c:step:text-length-step:0")
+text_length_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  text_length_result,
+  nullability_source = text_length_capture,
+  source_positions = text_length_source_positions,
+  output_ids = text_length_output_ids,
+  text_length_positions = 4L
+)
+assert_identical(class(text_length_result), "data.frame", "text length changed the base data.frame class")
+assert_identical(
+  names(text_length_result),
+  c("duplicate", "duplicate", "number", "character count"),
+  "text length repaired duplicate or non-syntactic names"
+)
+assert_identical(row.names(text_length_result), row.names(text_length_frame), "text length changed explicit row names")
+assert_identical(text_length_result[[4L]], c(4L, 1L, NA_integer_), "text length lost Unicode or NA semantics")
+assert_identical(
+  vapply(text_length_result_capture$descriptor$schema, `[[`, character(1L), "id"),
+  text_length_output_ids,
+  "text length changed stable column identities"
+)
+assert_identical(
+  text_length_result_capture$descriptor$schema[[4L]]$type,
+  "integer",
+  "text length did not publish an integer output"
+)
+assert_identical(
+  text_length_result_capture$descriptor$schema[[4L]]$nullable,
+  text_length_capture$descriptor$schema[[1L]]$nullable,
+  "text length changed source nullability"
+)
+assert_identical(text_length_frame, text_length_before, "text length mutated the source data.frame")
+text_length_result[[4L]][1L] <- 99L
+assert_identical(text_length_frame, text_length_before, "the text length result shared storage with its source")
+
+text_length_tibble <- tibble::as_tibble(text_length_frame, .name_repair = "minimal")
+text_length_tibble_before <- unserialize(serialize(text_length_tibble, NULL, version = 3L))
+text_length_tibble_result <- openwrangler_r_frame_contract$text_length_column(
+  text_length_tibble,
+  list(id = "r:c:1", name = "duplicate"),
+  "factor count"
+)
+assert_identical(
+  class(text_length_tibble_result),
+  c("tbl_df", "tbl", "data.frame"),
+  "text length changed the tibble class"
+)
+assert_identical(
+  text_length_tibble_result[[4L]],
+  c(5L, NA_integer_, 4L),
+  "tibble text length did not use factor labels"
+)
+assert_identical(text_length_tibble, text_length_tibble_before, "text length mutated the source tibble")
+
+text_length_table <- data.table::data.table(primary_key = c(2L, 1L), value = c("\U0001F642", NA_character_))
+data.table::setkey(text_length_table, primary_key)
+text_length_table_before <- data.table::copy(text_length_table)
+text_length_table_result <- openwrangler_r_frame_contract$text_length_column(
+  text_length_table,
+  list(id = "r:c:1", name = "value"),
+  "value count"
+)
+assert_identical(
+  class(text_length_table_result),
+  c("data.table", "data.frame"),
+  "text length changed the data.table class"
+)
+assert_identical(data.table::key(text_length_table_result), "primary_key", "text length changed the data.table key")
+assert_identical(text_length_table_result[[3L]], c(NA_integer_, 1L), "data.table text length changed row order")
+assert_identical(text_length_table, text_length_table_before, "text length mutated the source data.table")
+
+for (invalid_text_length in list(
+  list(reference = list(id = "r:c:2", name = "number"), new_name = "number count", code = "invalid-view-query"),
+  list(reference = list(id = "r:c:99", name = "duplicate"), new_name = "count", code = "stale-column"),
+  list(reference = list(id = "r:c:0", name = "wrong"), new_name = "count", code = "stale-column"),
+  list(reference = list(id = "r:c:0", name = "duplicate"), new_name = "duplicate", code = "column-name-collision"),
+  list(reference = list(id = "r:c:0", name = "duplicate"), new_name = "", code = "invalid-column-name"),
+  list(
+    reference = list(id = "r:c:0", name = "duplicate"),
+    new_name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_length",
+    code = "reserved-column-name"
+  )
+)) {
+  assert_error(
+    openwrangler_r_frame_contract$text_length_column(
+      text_length_frame,
+      invalid_text_length$reference,
+      invalid_text_length$new_name
+    ),
+    invalid_text_length$code
+  )
+}
+private_text_length_frame <- data.frame(
+  `__open_wrangler_internal_row_id_source` = "private",
+  public = "public",
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$text_length_column(
+    private_text_length_frame,
+    list(id = "r:c:0", name = "__open_wrangler_internal_row_id_source"),
+    "count"
+  ),
+  "reserved-column-name"
+)
+invalid_bytes_text <- rawToChar(as.raw(0xff))
+Encoding(invalid_bytes_text) <- "bytes"
+invalid_bytes_frame <- data.frame(value = invalid_bytes_text, check.names = FALSE)
+invalid_bytes_before <- unserialize(serialize(invalid_bytes_frame, NULL, version = 3L))
+invalid_bytes_error <- tryCatch(
+  {
+    openwrangler_r_frame_contract$text_length_column(
+      invalid_bytes_frame,
+      list(id = "r:c:0", name = "value"),
+      "count"
+    )
+    NULL
+  },
+  error = function(error) error
+)
+if (is.null(invalid_bytes_error)) {
+  stop("R Text Length accepted a non-missing bytes-encoded string", call. = FALSE)
+}
+assert_identical(invalid_bytes_frame, invalid_bytes_before, "invalid text length input mutated its source")
+wide_text_length_source <- as.data.frame(
+  setNames(replicate(2048L, "x", simplify = FALSE), sprintf("wide_%04d", seq_len(2048L))),
+  optional = TRUE
+)
+assert_error(
+  openwrangler_r_frame_contract$text_length_column(
+    wide_text_length_source,
+    list(id = "r:c:0", name = "wide_0001"),
+    "count"
+  ),
+  "invalid-view-query"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    text_length_result,
+    nullability_source = text_length_capture,
+    source_positions = text_length_source_positions,
+    output_ids = text_length_output_ids,
+    text_length_positions = 1L
+  ),
+  "invalid text-length output"
+)
+assert_identical(text_length_frame, text_length_before, "a failed text length operation mutated its source")
+
 drop_frame <- data.frame(
   duplicate = c(1L, 2L),
   duplicate = c(3L, 4L),

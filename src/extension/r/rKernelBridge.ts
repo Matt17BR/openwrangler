@@ -27,6 +27,7 @@ import {
   type SessionMode,
   type SessionSource,
   type SummaryRequest,
+  type TextLengthTransformStep,
   type SourceCapabilities,
   type ValueCount,
   type ValuesRequest
@@ -69,11 +70,16 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "selectColumns",
   "dropColumns",
   "renameColumn",
-  "cloneColumn"
+  "cloneColumn",
+  "textLength"
 ] as OperationKind[]) as OperationKind[];
 
 type RTransformStep =
-  RenameColumnTransformStep | CloneColumnTransformStep | DropColumnsTransformStep | SelectColumnsTransformStep;
+  | RenameColumnTransformStep
+  | CloneColumnTransformStep
+  | TextLengthTransformStep
+  | DropColumnsTransformStep
+  | SelectColumnsTransformStep;
 
 const R_CAPABILITIES: SourceCapabilities = Object.freeze({
   editable: true,
@@ -576,6 +582,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     if (
       request.step.kind !== "renameColumn" &&
       request.step.kind !== "cloneColumn" &&
+      request.step.kind !== "textLength" &&
       request.step.kind !== "dropColumns" &&
       request.step.kind !== "selectColumns"
     ) {
@@ -1430,6 +1437,7 @@ function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransform
   if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
+  if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
   );
@@ -1446,6 +1454,56 @@ function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransform
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
   );
+}
+
+function schemaAfterTextLength(
+  inputSchema: readonly ColumnSchema[],
+  step: TextLengthTransformStep
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The text-length column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (source.type !== "string") {
+    throw new TypeError("Text Length requires an R string column.");
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Text Length exceeds the R frame contract column limit.");
+  }
+  if (step.params.newColumn.length === 0) throw new TypeError("The text-length R column name may not be empty.");
+  if (Buffer.byteLength(step.params.newColumn, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The text-length R column name exceeds the frame contract limit.");
+  }
+  if (step.params.newColumn.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The text-length R column name uses Open Wrangler's reserved private row-identity prefix.");
+  }
+  if (inputSchema.some((column) => column.name === step.params.newColumn)) {
+    throw new TypeError(`The R column name ${JSON.stringify(step.params.newColumn)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
+    throw new TypeError("The text-length R column identity exceeds the frame contract limit.");
+  }
+  if (inputSchema.some((column) => column.id === id)) {
+    throw new TypeError("The text-length R column identity already exists in the active dataframe.");
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: step.params.newColumn,
+      position: inputSchema.length,
+      rawType: "integer",
+      type: "integer" as const,
+      nullable: source.nullable
+    })
+  ]);
 }
 
 function schemaAfterClone(
@@ -1634,6 +1692,13 @@ function rTransformStep(step: RTransformStep): RKernelTransformStep {
       params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newName: step.params.newName })
     });
   }
+  if (step.kind === "textLength") {
+    return Object.freeze({
+      id: step.id,
+      kind: "textLength" as const,
+      params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newColumn: step.params.newColumn })
+    });
+  }
   return Object.freeze({
     id: step.id,
     kind: "renameColumn" as const,
@@ -1667,6 +1732,13 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { column: { ...step.params.column }, newName: step.params.newName }
     };
   }
+  if (step.kind === "textLength") {
+    return {
+      id: step.id,
+      kind: "textLength",
+      params: { column: { ...step.params.column }, newColumn: step.params.newColumn }
+    };
+  }
   return {
     id: step.id,
     kind: "renameColumn",
@@ -1678,6 +1750,7 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
   if (
     step.kind !== "renameColumn" &&
     step.kind !== "cloneColumn" &&
+    step.kind !== "textLength" &&
     step.kind !== "dropColumns" &&
     step.kind !== "selectColumns"
   ) {
@@ -1706,7 +1779,8 @@ function assertStructuralDiff(
   const outputIdSet = new Set(outputIds);
   const inputIds = inputSchema.map((column) => column.id);
   const expectedRemoved = inputSchema.filter((column) => !outputIdSet.has(column.id)).map((column) => column.name);
-  const expectedAdded = step.kind === "cloneColumn" ? [step.params.newName] : [];
+  const expectedAdded =
+    step.kind === "cloneColumn" ? [step.params.newName] : step.kind === "textLength" ? [step.params.newColumn] : [];
   const stepMatches =
     step.kind === "selectColumns"
       ? isDeepStrictEqual(
@@ -1720,7 +1794,9 @@ function assertStructuralDiff(
           ) && expectedRemoved.length === step.params.columns.length
         : step.kind === "cloneColumn"
           ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-          : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+          : step.kind === "textLength"
+            ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+            : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
   const valid =
     diff.addedRows === 0 &&
     diff.removedRows === 0 &&

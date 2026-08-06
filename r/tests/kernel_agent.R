@@ -20,6 +20,9 @@ select_session_id <- "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 select_table_session_id <- "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 clone_session_id <- "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 clone_table_session_id <- "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+text_length_session_id <- "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+text_length_table_session_id <- "ffffffff-ffff-4fff-8fff-ffffffffffff"
+invalid_text_length_session_id <- "12121212-1212-4212-8212-121212121212"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -1388,6 +1391,406 @@ assert_identical(source_environment$clone_table, clone_table_before, "the R data
 clone_table_closed <- dispatch("closeSession", list(sessionId = clone_table_session_id))
 assert_identical(clone_table_closed$kind, "closed", "the R data.table clone session did not close")
 
+source_environment$text_length_frame <- data.frame(
+  duplicate = c("caf\u00e9", "\U0001F642", NA_character_),
+  duplicate = factor(c("alpha", NA, "\u03b2eta"), levels = c("alpha", "\u03b2eta")),
+  number = c(1L, 2L, 3L),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b", "row-c")
+)
+text_length_source_before <- unserialize(serialize(source_environment$text_length_frame, NULL, version = 3L))
+text_length_step <- function(
+  id = "text-length-step",
+  column_id = "r:c:0",
+  column_name = "duplicate",
+  new_column = "character count"
+) {
+  list(
+    id = id,
+    kind = "textLength",
+    params = list(column = list(id = column_id, name = column_name), newColumn = new_column)
+  )
+}
+text_length_open <- dispatch(
+  "openSession",
+  list(sessionId = text_length_session_id, variableName = "text_length_frame", page = page_window())
+)
+assert_identical(text_length_open$kind, "page", "the R Text Length session did not open")
+text_length_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_length_session_id,
+    revision = 0L,
+    step = text_length_step(),
+    page = page_window(column_offset = 3L, column_limit = 1L)
+  )
+)
+assert_identical(text_length_preview$kind, "stepPreview", "the R Text Length step did not preview")
+assert_identical(text_length_preview$revision, 1L, "the R Text Length preview revision changed")
+assert_identical(
+  text_length_preview$page$page$columnIds,
+  list("c:step:text-length-step:0"),
+  "the R Text Length preview lost its derived identity"
+)
+assert_identical(text_length_preview$page$schema[[4L]]$rawType, "integer", "R Text Length did not return integers")
+assert_identical(text_length_preview$page$schema[[4L]]$type, "integer", "R Text Length published the wrong type")
+assert_identical(
+  text_length_preview$page$schema[[4L]]$nullable,
+  text_length_preview$page$schema[[1L]]$nullable,
+  "R Text Length changed source nullability"
+)
+assert_identical(
+  vapply(text_length_preview$page$page$rows, function(row) row$values[[1L]]$kind, character(1L)),
+  c("integer", "integer", "null"),
+  "R Text Length lost Unicode or NA cell types"
+)
+assert_identical(
+  vapply(text_length_preview$page$page$rows[1:2], function(row) row$values[[1L]]$raw, character(1L)),
+  c("4", "1"),
+  "R Text Length counted bytes instead of characters"
+)
+assert_identical(text_length_preview$diff$addedColumns, list("character count"), "R Text Length lost its diff")
+assert_identical(text_length_preview$diff$removedColumns, list(), "R Text Length removed a column")
+assert_identical(text_length_preview$diff$changedCells, 0L, "R Text Length reported changed source cells")
+assert_identical(text_length_preview$diff$cells, list(), "R Text Length returned cell diffs")
+text_length_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = text_length_session_id, revision = 1L, page = page_window())
+)
+assert_identical(text_length_discard$action, "discard", "the R Text Length draft did not discard")
+assert_identical(text_length_discard$page$shape$columns, 3L, "discarding R Text Length kept its output")
+
+text_length_preview <- dispatch(
+  "previewStep",
+  list(sessionId = text_length_session_id, revision = 2L, step = text_length_step(), page = page_window())
+)
+text_length_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_length_session_id, revision = 3L, page = page_window())
+)
+assert_identical(text_length_apply$action, "apply", "the R Text Length draft did not apply")
+assert_identical(
+  vapply(text_length_apply$page$schema, `[[`, character(1L), "id"),
+  c("r:c:0", "r:c:1", "r:c:2", "c:step:text-length-step:0"),
+  "applying R Text Length changed stable identities"
+)
+text_length_inspection <- dispatch(
+  "inspectStep",
+  list(sessionId = text_length_session_id, revision = 4L, stepId = "text-length-step", page = page_window())
+)
+assert_identical(text_length_inspection$kind, "stepInspection", "the applied R Text Length step was not inspectable")
+assert_identical(length(text_length_inspection$inputSchema), 3L, "R Text Length inspection lost its input schema")
+assert_identical(length(text_length_inspection$outputSchema), 4L, "R Text Length inspection lost its output schema")
+assert_identical(
+  text_length_inspection$outputSchema[[4L]]$id,
+  "c:step:text-length-step:0",
+  "R Text Length inspection changed its output identity"
+)
+assert_identical(text_length_inspection$diff$addedColumns, list("character count"), "R Text Length inspection lost its diff")
+
+text_length_rename <- list(
+  id = "rename-text-length",
+  kind = "renameColumn",
+  params = list(
+    column = list(id = "c:step:text-length-step:0", name = "character count"),
+    newName = "renamed count"
+  )
+)
+text_length_rename_preview <- dispatch(
+  "previewStep",
+  list(sessionId = text_length_session_id, revision = 4L, step = text_length_rename, page = page_window())
+)
+assert_identical(text_length_rename_preview$kind, "stepPreview", "Rename could not target R Text Length output")
+text_length_rename_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_length_session_id, revision = 5L, page = page_window())
+)
+assert_identical(
+  text_length_rename_apply$page$schema[[4L]]$id,
+  "c:step:text-length-step:0",
+  "renaming R Text Length output changed its lineage"
+)
+assert_identical(text_length_rename_apply$page$schema[[4L]]$name, "renamed count", "R Text Length rename was lost")
+if (!grepl("nchar(as.character", text_length_rename_apply$code, fixed = TRUE)) {
+  stop("generated R Text Length code lost its native character-count expression", call. = FALSE)
+}
+assign("text_length_frame", source_environment$text_length_frame, envir = .GlobalEnv)
+eval(parse(text = text_length_rename_apply$code), envir = .GlobalEnv)
+text_length_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  names(text_length_generated),
+  c("duplicate", "duplicate", "number", "renamed count"),
+  "generated R Text Length returned the wrong columns"
+)
+assert_identical(text_length_generated[[4L]], c(4L, 1L, NA_integer_), "generated R Text Length changed its result")
+assert_identical(row.names(text_length_generated), row.names(text_length_source_before), "generated R Text Length changed row names")
+assert_identical(
+  get("text_length_frame", envir = .GlobalEnv, inherits = FALSE),
+  text_length_source_before,
+  "generated R Text Length mutated its source dataframe"
+)
+rm("text_length_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+assign(
+  "text_length_frame",
+  data.frame(duplicate = 1:3, duplicate = factor(c("a", "b", "c")), number = 1:3, check.names = FALSE),
+  envir = .GlobalEnv
+)
+text_length_generated_type_error <- tryCatch(
+  {
+    eval(parse(text = text_length_rename_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(text_length_generated_type_error) ||
+    !grepl("requires a character or factor column", conditionMessage(text_length_generated_type_error), fixed = TRUE)
+) {
+  stop("generated R Text Length did not reject an incompatible source type", call. = FALSE)
+}
+rm("text_length_frame", envir = .GlobalEnv)
+
+invalid_generated_text <- rawToChar(as.raw(0xff))
+Encoding(invalid_generated_text) <- "bytes"
+invalid_generated_text_length_source <- data.frame(
+  duplicate = c(invalid_generated_text, "safe", NA_character_),
+  duplicate = factor(c("alpha", NA, "beta")),
+  number = 1:3,
+  check.names = FALSE
+)
+invalid_generated_text_length_before <- unserialize(
+  serialize(invalid_generated_text_length_source, NULL, version = 3L)
+)
+assign("text_length_frame", invalid_generated_text_length_source, envir = .GlobalEnv)
+invalid_generated_text_length_error <- tryCatch(
+  {
+    eval(parse(text = text_length_rename_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = function(error) error
+)
+if (is.null(invalid_generated_text_length_error)) {
+  stop("generated R Text Length accepted a non-missing bytes-encoded string", call. = FALSE)
+}
+assert_identical(
+  get("text_length_frame", envir = .GlobalEnv, inherits = FALSE),
+  invalid_generated_text_length_before,
+  "generated R Text Length mutated invalid source text"
+)
+rm("text_length_frame", envir = .GlobalEnv)
+
+wide_text_length_names <- c("duplicate", "duplicate", "number", sprintf("wide_%04d", 4:2048))
+wide_text_length_source <- as.data.frame(
+  setNames(replicate(2048L, "x", simplify = FALSE), wide_text_length_names),
+  optional = TRUE
+)
+wide_text_length_before <- unserialize(serialize(wide_text_length_source, NULL, version = 3L))
+assign("text_length_frame", wide_text_length_source, envir = .GlobalEnv)
+wide_text_length_error <- tryCatch(
+  {
+    eval(parse(text = text_length_rename_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = function(error) error
+)
+if (is.null(wide_text_length_error) || !grepl("column limit reached", conditionMessage(wide_text_length_error), fixed = TRUE)) {
+  stop("generated R Text Length did not enforce the frame width limit", call. = FALSE)
+}
+assert_identical(
+  get("text_length_frame", envir = .GlobalEnv, inherits = FALSE),
+  wide_text_length_before,
+  "the generated R Text Length width guard mutated its source"
+)
+rm("text_length_frame", envir = .GlobalEnv)
+
+text_length_rename_undo <- dispatch(
+  "undoStep",
+  list(sessionId = text_length_session_id, revision = 6L, page = page_window())
+)
+assert_identical(text_length_rename_undo$action, "undo", "undo did not restore the R Text Length step")
+assert_identical(text_length_rename_undo$page$schema[[4L]]$name, "character count", "undo lost R Text Length output")
+text_length_edit_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_length_session_id,
+    revision = 7L,
+    step = text_length_step(
+      column_id = "r:c:1",
+      column_name = "duplicate",
+      new_column = "factor count"
+    ),
+    replaceStepId = "text-length-step",
+    page = page_window()
+  )
+)
+assert_identical(text_length_edit_preview$kind, "stepPreview", "the latest R Text Length step could not be edited")
+assert_identical(
+  text_length_edit_preview$page$schema[[4L]]$id,
+  "c:step:text-length-step:0",
+  "editing R Text Length regenerated its output identity"
+)
+assert_identical(text_length_edit_preview$page$schema[[4L]]$name, "factor count", "editing R Text Length kept its old name")
+assert_identical(
+  c(
+    text_length_edit_preview$page$page$rows[[1L]]$values[[4L]]$raw,
+    text_length_edit_preview$page$page$rows[[3L]]$values[[4L]]$raw
+  ),
+  c("5", "4"),
+  "edited R Text Length did not count factor labels"
+)
+assert_identical(
+  text_length_edit_preview$page$page$rows[[2L]]$values[[4L]]$kind,
+  "null",
+  "edited R Text Length did not preserve factor NA"
+)
+text_length_edit_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_length_session_id, revision = 8L, page = page_window())
+)
+assert_identical(text_length_edit_apply$action, "apply", "the edited R Text Length step did not apply")
+text_length_undo <- dispatch(
+  "undoStep",
+  list(sessionId = text_length_session_id, revision = 9L, page = page_window())
+)
+assert_identical(text_length_undo$action, "undo", "the edited R Text Length step did not undo")
+assert_identical(text_length_undo$page$shape$columns, 3L, "undoing R Text Length did not restore the source schema")
+
+for (invalid_step in list(
+  text_length_step("text-length-numeric", "r:c:2", "number", "number count"),
+  text_length_step("text-length-collision", new_column = "duplicate"),
+  text_length_step("text-length-private", new_column = "__OPEN_WRANGLER_INTERNAL_ROW_ID_length")
+)) {
+  invalid_text_length <- dispatch(
+    "previewStep",
+    list(sessionId = text_length_session_id, revision = 10L, step = invalid_step, page = page_window())
+  )
+  assert_identical(invalid_text_length$kind, "error", "an invalid R Text Length step was accepted")
+  assert_identical(invalid_text_length$code, "invalid_request", "the invalid R Text Length diagnostic changed")
+}
+for (stale_step in list(
+  text_length_step("text-length-stale", "r:c:99"),
+  text_length_step("text-length-misnamed", column_name = "wrong")
+)) {
+  stale_text_length <- dispatch(
+    "previewStep",
+    list(sessionId = text_length_session_id, revision = 10L, step = stale_step, page = page_window())
+  )
+  assert_identical(stale_text_length$kind, "error", "a stale R Text Length step was accepted")
+  assert_identical(stale_text_length$code, "stale_column", "the stale R Text Length diagnostic changed")
+}
+long_text_length_step_id <- paste0("long-", strrep("x", 1019L))
+long_text_length_column_id <- paste0("c:step:", long_text_length_step_id, ":0")
+long_text_length_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_length_session_id,
+    revision = 10L,
+    step = text_length_step(long_text_length_step_id, new_column = "long count"),
+    page = page_window()
+  )
+)
+assert_identical(long_text_length_preview$kind, "stepPreview", "a bounded long R Text Length identity did not preview")
+assert_identical(
+  long_text_length_preview$page$schema[[4L]]$id,
+  long_text_length_column_id,
+  "the bounded long R Text Length identity changed"
+)
+long_text_length_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = text_length_session_id, revision = 11L, page = page_window())
+)
+assert_identical(long_text_length_discard$action, "discard", "the long R Text Length draft did not discard")
+assert_identical(source_environment$text_length_frame, text_length_source_before, "the R Text Length lifecycle mutated its source")
+text_length_closed <- dispatch("closeSession", list(sessionId = text_length_session_id))
+assert_identical(text_length_closed$kind, "closed", "the R Text Length session did not close")
+
+invalid_live_text <- rawToChar(as.raw(0xff))
+Encoding(invalid_live_text) <- "bytes"
+source_environment$invalid_text_length_frame <- data.frame(
+  safe = 1L,
+  text = invalid_live_text,
+  check.names = FALSE
+)
+invalid_live_text_before <- unserialize(
+  serialize(source_environment$invalid_text_length_frame, NULL, version = 3L)
+)
+invalid_text_length_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = invalid_text_length_session_id,
+    variableName = "invalid_text_length_frame",
+    page = page_window(column_offset = 0L, column_limit = 1L)
+  )
+)
+assert_identical(invalid_text_length_open$kind, "page", "the invalid-text R session did not open safely")
+invalid_text_length_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = invalid_text_length_session_id,
+    revision = 0L,
+    step = text_length_step("invalid-bytes-text-length", "r:c:1", "text", "count"),
+    page = page_window(column_offset = 0L, column_limit = 1L)
+  )
+)
+assert_identical(invalid_text_length_preview$kind, "error", "R Text Length accepted non-missing invalid text")
+assert_identical(invalid_text_length_preview$code, "runtime_error", "invalid R text was not failed closed")
+assert_identical(
+  source_environment$invalid_text_length_frame,
+  invalid_live_text_before,
+  "failed R Text Length mutated invalid source text"
+)
+invalid_text_length_closed <- dispatch("closeSession", list(sessionId = invalid_text_length_session_id))
+assert_identical(invalid_text_length_closed$kind, "closed", "the invalid-text R session did not close")
+
+source_environment$text_length_table <- data.table::data.table(
+  primary_key = c(2L, 1L),
+  value = c("\U0001F642", NA_character_)
+)
+data.table::setkey(source_environment$text_length_table, primary_key)
+text_length_table_before <- data.table::copy(source_environment$text_length_table)
+text_length_table_open <- dispatch(
+  "openSession",
+  list(sessionId = text_length_table_session_id, variableName = "text_length_table", page = page_window())
+)
+assert_identical(text_length_table_open$kind, "page", "the R data.table Text Length session did not open")
+text_length_table_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_length_table_session_id,
+    revision = 0L,
+    step = text_length_step("text-length-table", "r:c:1", "value", "value count"),
+    page = page_window()
+  )
+)
+assert_identical(
+  text_length_table_preview$page$frameSemantics$keyColumnIds,
+  list("r:c:0"),
+  "R data.table Text Length changed its key identity"
+)
+text_length_table_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_length_table_session_id, revision = 1L, page = page_window())
+)
+assign("text_length_table", source_environment$text_length_table, envir = .GlobalEnv)
+eval(parse(text = text_length_table_apply$code), envir = .GlobalEnv)
+text_length_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  class(text_length_table_generated),
+  c("data.table", "data.frame"),
+  "generated R Text Length lost the data.table class"
+)
+assert_identical(data.table::key(text_length_table_generated), "primary_key", "generated R Text Length lost the key")
+assert_identical(text_length_table_generated[[3L]], c(NA_integer_, 1L), "generated R data.table Text Length changed values")
+assert_identical(
+  get("text_length_table", envir = .GlobalEnv, inherits = FALSE),
+  text_length_table_before,
+  "generated R data.table Text Length mutated its source"
+)
+rm("text_length_table", "open_wrangler_result", envir = .GlobalEnv)
+text_length_table_closed <- dispatch("closeSession", list(sessionId = text_length_table_session_id))
+assert_identical(text_length_table_closed$kind, "closed", "the R data.table Text Length session did not close")
+
 oversized_mutation_response <- FALSE
 atomic_contract <- openwrangler_r_frame_contract
 real_atomic_materialize <- atomic_contract$materialize_view_page
@@ -1542,6 +1945,7 @@ missing_package_contract <- list(
   rename_column = function(...) stop("unexpected rename", call. = FALSE),
   rename_column_at = function(...) stop("unexpected rename", call. = FALSE),
   clone_column_at = function(...) stop("unexpected clone", call. = FALSE),
+  text_length_column_at = function(...) stop("unexpected text length", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
@@ -1550,6 +1954,21 @@ missing_package_contract <- list(
   materialize_column_values = function(...) stop("unexpected column values", call. = FALSE),
   limits = openwrangler_r_frame_contract$limits
 )
+missing_text_length_contract <- missing_package_contract
+missing_text_length_contract$text_length_column_at <- NULL
+missing_text_length_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_text_length_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_text_length_error) ||
+    !identical(conditionMessage(missing_text_length_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without Text Length support", call. = FALSE)
+}
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(
   missing_package_agent,

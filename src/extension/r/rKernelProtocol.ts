@@ -99,6 +99,15 @@ export interface RKernelCloneColumnStep {
   }>;
 }
 
+export interface RKernelTextLengthStep {
+  readonly id: string;
+  readonly kind: "textLength";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    newColumn: string;
+  }>;
+}
+
 export interface RKernelDropColumnsStep {
   readonly id: string;
   readonly kind: "dropColumns";
@@ -116,7 +125,11 @@ export interface RKernelSelectColumnsStep {
 }
 
 export type RKernelTransformStep =
-  RKernelRenameColumnStep | RKernelCloneColumnStep | RKernelDropColumnsStep | RKernelSelectColumnsStep;
+  | RKernelRenameColumnStep
+  | RKernelCloneColumnStep
+  | RKernelTextLengthStep
+  | RKernelDropColumnsStep
+  | RKernelSelectColumnsStep;
 
 export interface RKernelStepPreviewResult {
   readonly sessionId: string;
@@ -665,6 +678,12 @@ function validateTransformStep(value: unknown): void {
     const params = exactRecord(step.params, ["column", "newName"], `R kernel ${operation} parameters`);
     validateColumnReference(params.column, "request.payload.step.params.column");
     boundedText(params.newName, "request.payload.step.params.newName", maximumVariableNameBytes, false);
+    return;
+  }
+  if (step.kind === "textLength") {
+    const params = exactRecord(step.params, ["column", "newColumn"], "R kernel text-length parameters");
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     return;
   }
   if (step.kind === "dropColumns") {

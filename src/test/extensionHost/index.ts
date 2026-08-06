@@ -1748,7 +1748,7 @@ async function exerciseReleasedRJupyterExtension(
       sort: true,
       profile: true,
       columnValues: true,
-      supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn"]
+      supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn", "textLength"]
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
@@ -1871,7 +1871,8 @@ async function exerciseReleasedRJupyterExtension(
         "selectColumns",
         "dropColumns",
         "renameColumn",
-        "cloneColumn"
+        "cloneColumn",
+        "textLength"
       ]);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
@@ -2421,7 +2422,7 @@ async function exerciseReleasedREditingJourney(
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn"]
+    supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn", "textLength"]
   });
   assert.deepEqual(
     opened.metadata.schema.slice(0, 4).map((column) => column.name),
@@ -2989,6 +2990,205 @@ async function exerciseReleasedREditingJourney(
     "undoing the edited native R Clone Column step"
   );
   await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:clone-source-after-undo`);
+
+  recordAcceptanceProgress(`${phase}:editing:text-length-preview-discard`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Text Length");
+  const discardedLength = await previewReleasedRTextLength(
+    testing,
+    workbench,
+    app,
+    sessionId,
+    "label",
+    "discarded_label_length"
+  );
+  app = discardedLength.app;
+  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        !active.metadata.schema.some((column) => column.name === "discarded_label_length")
+      );
+    },
+    30_000,
+    "discarding the native R Text Length preview"
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:text-length-preview-apply-inspect-undo`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Text Length");
+  const measured = await previewReleasedRTextLength(testing, workbench, app, sessionId, "label", "label_length");
+  app = measured.app;
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      const output = active?.metadata.schema.at(-1);
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.kind === "textLength" &&
+        step.id === measured.stepId &&
+        step.params.column.name === "label" &&
+        step.params.newColumn === "label_length" &&
+        output?.id === `c:step:${measured.stepId}:0` &&
+        output.name === "label_length" &&
+        output.type === "integer"
+      );
+    },
+    30_000,
+    "applying the native R Text Length step"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Text Length step must be acknowledged before inspection."
+  );
+  const appliedLength = testing.activeSession();
+  assert.ok(appliedLength, "The applied native R Text Length step must retain its session.");
+  assertReleasedRTextLengthGeneratedCode(appliedLength.code ?? "", "label", "label_length");
+  const lengthPage = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: appliedLength.metadata.revision,
+    viewRequestId: `${phase}-editing-text-length-page`,
+    offset: 0,
+    limit: 1,
+    filterModel: appliedLength.viewState.filterModel,
+    columnOffset: appliedLength.metadata.schema.length - 1,
+    columnLimit: 1
+  });
+  assert.equal(lengthPage.kind, "page");
+  if (lengthPage.kind !== "page") throw new Error("The applied R Text Length step did not return its output page.");
+  assert.equal(lengthPage.page.columnIds[0], `c:step:${measured.stepId}:0`);
+  assert.equal(lengthPage.page.rows[0]?.values[0]?.display, "8");
+  await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
+  await vscode.commands.executeCommand("openWrangler.selectStep", measured.stepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === measured.stepId,
+    30_000,
+    "the applied native R Text Length inspection"
+  );
+  const lengthInspection = testing.activeSession()?.stepInspection;
+  assert.ok(lengthInspection, "Selecting the applied R Text Length step must publish its inspection.");
+  assert.deepEqual(lengthInspection.diff, {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns: ["label_length"],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: false
+  });
+  assert.equal(
+    lengthInspection.inputSchema.some((column) => column.name === "label_length"),
+    false
+  );
+  assert.deepEqual(
+    lengthInspection.outputSchema.at(-1),
+    appliedLength.metadata.schema.at(-1),
+    "The R Text Length inspection must retain the derived column identity and type."
+  );
+  assertReleasedRTextLengthGeneratedCode(lengthInspection.code, "label", "label_length");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Text Length session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Text Length inspection"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Text Length session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        !active.metadata.schema.some((column) => column.id === `c:step:${measured.stepId}:0`) &&
+        active.metadata.schema
+          .slice(0, 4)
+          .map((column) => column.name)
+          .join("\u0000") === "row_id\u0000group\u0000score\u0000label" &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the native R Text Length step"
+  );
+  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:text-length-source-after-undo`);
+}
+
+async function previewReleasedRTextLength(
+  testing: TestApi,
+  workbench: Page,
+  app: Locator,
+  sessionId: string,
+  sourceName: string,
+  newColumn: string,
+  variableName = "orders_frame"
+): Promise<Readonly<{ app: Locator; stepId: string }>> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Text length/u }).click();
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const column = dialog.getByLabel("Text column", { exact: true });
+  await column.waitFor({ state: "visible", timeout: 10_000 });
+  await column.selectOption({ label: sourceName });
+  const target = dialog.getByLabel("New column", { exact: true });
+  await target.fill(newColumn);
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      const output = active?.metadata.schema.at(-1);
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "textLength" &&
+        draft.params.column.name === sourceName &&
+        draft.params.newColumn === newColumn &&
+        output?.id === `c:step:${draft.id}:0` &&
+        output.name === newColumn &&
+        output.type === "integer" &&
+        active.metadata.draftReplacesStepId === undefined &&
+        active.metadata.steps.length === 0
+      );
+    },
+    30_000,
+    "the native R Text Length preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  const active = testing.activeSession();
+  assert.ok(
+    active?.metadata.draftStep?.kind === "textLength",
+    "The native R Text Length preview must retain its draft."
+  );
+  const stepId = active.metadata.draftStep.id;
+  assertReleasedRTextLengthGeneratedCode(active.code ?? "", sourceName, newColumn, variableName);
+  const codePreview = await waitForCodePreview(workbench, newColumn, "R");
+  assertReleasedRTextLengthGeneratedCode(await codePreview.innerText(), sourceName, newColumn, variableName);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Text Length preview must be acknowledged by its exact renderer."
+  );
+  return {
+    app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Text Length preview"),
+    stepId
+  };
 }
 
 async function previewReleasedRClone(
@@ -3253,6 +3453,21 @@ function assertReleasedRDropGeneratedCode(code: string, sourceName: string, vari
   assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
   assert.ok(code.includes(".ow_drop_positions"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+function assertReleasedRTextLengthGeneratedCode(
+  code: string,
+  sourceName: string,
+  newColumn: string,
+  variableName = "orders_frame"
+): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(".ow_text_length_position"));
+  assert.ok(code.includes("nchar("));
+  assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.ok(code.includes(JSON.stringify(newColumn)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 
