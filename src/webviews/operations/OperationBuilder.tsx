@@ -1288,7 +1288,10 @@ function buildParams(
     const useSaved = savedFilterModel !== undefined && value("filterSource") !== "current";
     return { filterModel: useSaved ? savedFilterModel : transformFilterModel(filterModel, availableColumns) };
   }
-  if (kind === "dropMissingRows") return { columns: columnReferences("columns"), how: value("how") };
+  if (kind === "dropMissingRows") {
+    const columns = columnReferences("columns");
+    return { ...(columns.length > 0 ? { columns } : {}), how: value("how") };
+  }
   if (kind === "fillMissingValues") {
     if (value("fillMode") === "median") {
       return { column: columnReference("column"), replacement: { kind: "median" } };

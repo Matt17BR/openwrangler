@@ -12,8 +12,8 @@ Open Wrangler has three cooperating parts:
 
 Most sections below describe the released Python runtime. The Open Wrangler 2 branch connects R notebook variables and
 dataframes created by trusted `.R` files to the same coordinator, grid, filters, sorts, profiles, draft review, and
-cleaning history. Its current R operations are Filter Rows, Sort Rows, Rename Column, Drop Columns, ordered Select
-Columns, Clone Column, Convert type, Text Length, and Lowercase.
+cleaning history. Its current R operations are Filter Rows, Sort Rows, Drop Missing Rows, Drop Duplicates, Rename
+Column, Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length, and Lowercase.
 The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
@@ -107,10 +107,13 @@ IRkernel does not need access to the extension filesystem.
 
 Viewing does not copy the complete R object. The first editing request takes one isolated source snapshot, then keeps
 the original, committed result, and optional draft separate. Filter Rows and Sort Rows reuse the typed viewing rules
-after binding every referenced column by stable ID and name. Their captures retain the original private row identity
-while tracking the active row count separately. Filtering preserves source order and a compatible `data.table` key;
-an explicit sort keeps stable ties and clears key metadata because its new order no longer promises that key. Rename,
-Drop, Select, Clone, Convert type, Text Length, and Lowercase resolve every
+after binding every referenced column by stable ID and name. Drop Missing Rows treats `NA` and `NaN` as missing. In
+Any mode it drops a row if at least one selected value is missing; in All mode it drops a row only if every selected
+value is missing. Drop Duplicates compares the selected columns, or all columns by default, and can keep the first,
+last, or no row from each repeated group. All four row operations retain the original private row identity while
+tracking the active row count separately. The two drop operations preserve source order and compatible `data.table`
+keys. Filtering does the same; an explicit sort keeps stable ties and clears key metadata because its new order no
+longer promises that key. Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase resolve every
 `{id, name}` reference to one exact position, so duplicate and non-syntactic names remain unambiguous. Drop Columns
 refuses to remove the final visible column. Select Columns keeps the chosen order. Both operations keep stable IDs for
 retained columns. Clone Column appends a copy with the stable ID `c:step:<step-id>:0`, allowing later steps to target
@@ -128,7 +131,7 @@ A live session reports nullability conservatively; isolating it for editing or c
 nullability metadata instead of narrowing it from the current values. Preview, apply, discard, latest-step replacement,
 undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
 response before publishing the candidate state. Generated code repeats the positional and stale-name checks for all
-nine operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
+eleven operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
 for the chosen rules instead of embedding a generic interpreter in every preview.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
@@ -160,8 +163,9 @@ a fixed response-code list that includes `unsupported_frame`, `missing_package`,
 code. Native variable discovery requires `jsonlite` and `rlang` in the selected R runtime. It recognizes exact base
 `data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. Notebook and `.R`
 commands enable native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
-mode currently exposes Filter Rows, Sort Rows, Rename Column, Drop Columns, Select Columns, Clone Column, Convert
-type, Text Length, and Lowercase. Other cleaning operations, cleaned-data export, Quarto, and R Markdown remain unsupported. Generated R can
+mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Drop Duplicates, Rename Column, Drop Columns, Select
+Columns, Clone Column, Convert type, Text Length, and Lowercase. Other cleaning operations, cleaned-data export,
+Quarto, and R Markdown remain unsupported. Generated R can
 be inserted into the exact IRkernel notebook or exact in-memory `.R` document that opened the session. Notebook
 insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the complete
 resulting document text; a stale or ambiguous document is never retried. R sessions open with header profiles off so opening
@@ -171,10 +175,12 @@ journey checks a column's count, distinct values, minimum, and maximum, then che
 duplicate rows. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code
 and Cursor with R 4.5.2. The hosted gate also passes against a containerized IRkernel in VS Code, including kernel
 restart, reopening the frame, and final session cleanup. The packaged editing journey covers Filter Rows, Sort Rows,
-Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase. Across its base-data-frame path it covers preview, apply, inspection,
-discard, latest-step editing, and undo; Convert type is applied and undone. The journey checks generated R and verifies
-that every notebook object stays unchanged. Tibbles and keyed data tables additionally cover editable open plus Rename
-and Drop preview/discard; the direct R suites run all nine operations across all three flavors. An applied-step
+Drop Missing Rows, Drop Duplicates, Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase. Across its
+base-data-frame path it covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
+applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,
+and undo. The journey checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed
+data tables additionally cover editable open plus Rename and Drop preview/discard; the direct R suites run all eleven
+operations across all three flavors. An applied-step
 inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
 retained input and output schemas and calculates the public diff only after all three responses agree.
 

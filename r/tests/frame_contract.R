@@ -2215,6 +2215,186 @@ assert_identical(
 )
 assert_true(identical(committed_table, committed_table_before), "committed row operations mutated the source data.table")
 
+row_reduction_frame <- data.frame(
+  duplicate = c("a", "a", "b", "b", "c", NA, NA, "z"),
+  duplicate = c(1, 1, NA, NA, 3, NA, NaN, Inf),
+  `non syntactic` = seq_len(8L),
+  row.names = paste0("source-", seq_len(8L)),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+row_reduction_before <- unserialize(serialize(row_reduction_frame, NULL, version = 3L))
+row_reduction_positions <- c(1L, 2L)
+row_reduction_names <- c("duplicate", "duplicate")
+drop_missing_any <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "any"
+)
+assert_identical(
+  drop_missing_any$sourcePositions,
+  c(1L, 2L, 5L, 8L),
+  "Drop Missing Rows any mode did not treat both NA and NaN as missing"
+)
+assert_identical(
+  row.names(drop_missing_any$frame),
+  paste0("source-", c(1L, 2L, 5L, 8L)),
+  "Drop Missing Rows changed explicit row names"
+)
+assert_identical(
+  names(drop_missing_any$frame),
+  c("duplicate", "duplicate", "non syntactic"),
+  "Drop Missing Rows repaired duplicate or non-syntactic names"
+)
+drop_missing_all <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "all"
+)
+assert_identical(
+  drop_missing_all$sourcePositions,
+  c(1L, 2L, 3L, 4L, 5L, 8L),
+  "Drop Missing Rows all mode did not require every selected value to be missing"
+)
+
+drop_duplicate_first <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "first"
+)
+drop_duplicate_last <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "last"
+)
+drop_duplicate_none <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "none"
+)
+assert_identical(
+  drop_duplicate_first$sourcePositions,
+  c(1L, 3L, 5L, 6L, 7L, 8L),
+  "Drop Duplicates first mode changed native NA/NaN equality or source order"
+)
+assert_identical(
+  drop_duplicate_last$sourcePositions,
+  c(2L, 4L, 5L, 6L, 7L, 8L),
+  "Drop Duplicates last mode changed native NA/NaN equality or source order"
+)
+assert_identical(
+  drop_duplicate_none$sourcePositions,
+  c(5L, 6L, 7L, 8L),
+  "Drop Duplicates none mode retained a repeated row"
+)
+assert_identical(row_reduction_frame, row_reduction_before, "R row reduction mutated its source dataframe")
+
+drop_duplicate_capture <- openwrangler_r_frame_contract$capture_frame(
+  drop_duplicate_first$frame,
+  nullability_source = openwrangler_r_frame_contract$capture_frame(row_reduction_frame),
+  source_row_positions = drop_duplicate_first$sourcePositions
+)
+drop_duplicate_page <- openwrangler_r_frame_contract$materialize_page(
+  drop_duplicate_capture,
+  row_limit = 8L,
+  column_limit = 3L
+)
+assert_identical(
+  vapply(drop_duplicate_page$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", drop_duplicate_first$sourcePositions - 1L),
+  "Drop Duplicates regenerated stable source-row identities"
+)
+
+row_reduction_tibble <- tibble::as_tibble(row_reduction_frame, .name_repair = "minimal")
+row_reduction_tibble_before <- unserialize(serialize(row_reduction_tibble, NULL, version = 3L))
+tibble_missing <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  row_reduction_tibble,
+  row_reduction_positions,
+  row_reduction_names,
+  "any"
+)
+tibble_duplicates <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_tibble,
+  row_reduction_positions,
+  row_reduction_names,
+  "none"
+)
+assert_identical(class(tibble_missing$frame), c("tbl_df", "tbl", "data.frame"), "Drop Missing Rows changed tibble class")
+assert_identical(class(tibble_duplicates$frame), c("tbl_df", "tbl", "data.frame"), "Drop Duplicates changed tibble class")
+assert_identical(row_reduction_tibble, row_reduction_tibble_before, "R row reduction mutated its source tibble")
+
+row_reduction_table <- data.table::data.table(
+  primary_key = c(1L, 1L, 2L, 2L, 3L),
+  payload = c("a", "a", NA, NA, "z")
+)
+data.table::setkey(row_reduction_table, primary_key)
+row_reduction_table_before <- data.table::copy(row_reduction_table)
+table_missing <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  row_reduction_table,
+  2L,
+  "payload",
+  "any"
+)
+table_duplicates <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_table,
+  c(1L, 2L),
+  c("primary_key", "payload"),
+  "first"
+)
+assert_identical(data.table::key(table_missing$frame), "primary_key", "Drop Missing Rows discarded a compatible data.table key")
+assert_identical(data.table::key(table_duplicates$frame), "primary_key", "Drop Duplicates discarded a compatible data.table key")
+assert_identical(table_duplicates$sourcePositions, c(1L, 3L, 5L), "Drop Duplicates changed keyed data.table order")
+assert_true(identical(row_reduction_table, row_reduction_table_before), "R row reduction mutated its source data.table")
+
+zero_column_rows <- structure(list(), row.names = c(NA_integer_, -3L), class = "data.frame")
+names(zero_column_rows) <- character()
+zero_column_missing <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  zero_column_rows,
+  integer(),
+  character(),
+  "any"
+)
+zero_column_duplicates <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  zero_column_rows,
+  integer(),
+  character(),
+  "first"
+)
+assert_identical(zero_column_missing$sourcePositions, 1:3, "Drop Missing Rows changed a zero-column frame")
+assert_identical(zero_column_duplicates$sourcePositions, 1:3, "Drop Duplicates changed a zero-column frame")
+
+empty_named_reduction <- data.frame(value = c(NA_real_, NaN), row.names = c("missing", "nan"))
+empty_named_reduction_capture <- openwrangler_r_frame_contract$capture_frame(empty_named_reduction)
+empty_named_reduction_result <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  empty_named_reduction,
+  1L,
+  "value",
+  "any"
+)
+empty_named_reduction_derived <- openwrangler_r_frame_contract$capture_frame(
+  empty_named_reduction_result$frame,
+  nullability_source = empty_named_reduction_capture,
+  source_row_positions = empty_named_reduction_result$sourcePositions
+)
+assert_identical(
+  empty_named_reduction_derived$descriptor$frameSemantics$rowNames,
+  "explicit",
+  "an empty row-reduction result lost explicit row-name semantics"
+)
+assert_error(
+  openwrangler_r_frame_contract$drop_missing_rows_at(row_reduction_frame, 2L, "wrong", "any"),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$drop_duplicate_rows_at(row_reduction_frame, 2L, "duplicate", "invalid"),
+  "invalid-view-query"
+)
+
 sort_window <- openwrangler_r_frame_contract$materialize_view_page(
   sort_capture,
   view_query = view_query(sorts = list(sort_rule("r:c:0", "group"))),

@@ -2594,6 +2594,100 @@ openwrangler_r_frame_contract <- local({
     select_columns_at(value, positions, expected_names)
   }
 
+  resolve_row_operation_columns <- function(value, positions, expected_names, operation) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    if (
+      !is.numeric(positions) ||
+        anyNA(positions) ||
+        any(!is.finite(positions)) ||
+        any(positions != floor(positions)) ||
+        any(positions < 1L) ||
+        any(positions > column_count) ||
+        anyDuplicated(positions)
+    ) {
+      abort("stale-column", sprintf("the %s column positions no longer match the R dataframe", operation))
+    }
+    positions <- as.integer(positions)
+    if (!is.character(expected_names) || length(expected_names) != length(positions) || anyNA(expected_names)) {
+      abort("stale-column", sprintf("the %s column names no longer match the R dataframe", operation))
+    }
+    expected_names <- vapply(seq_along(expected_names), function(index) {
+      bounded_utf8(expected_names[[index]], sprintf("expected_names[[%d]]", index), maximum_name_bytes)
+    }, character(1L), USE.NAMES = FALSE)
+    if (!identical(names(value)[positions], expected_names)) {
+      abort("stale-column", sprintf("the %s column names no longer match the R dataframe", operation))
+    }
+    if (any(vapply(expected_names, is_private_column_name, logical(1L), USE.NAMES = FALSE))) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    list(inspected = inspected, positions = positions)
+  }
+
+  subset_rows_at <- function(value, inspected, row_positions) {
+    row_count <- inspected$descriptor$shape$rows
+    if (
+      !is.numeric(row_positions) ||
+        anyNA(row_positions) ||
+        any(!is.finite(row_positions)) ||
+        any(row_positions != floor(row_positions)) ||
+        any(row_positions < 1L) ||
+        any(row_positions > row_count) ||
+        anyDuplicated(row_positions)
+    ) {
+      abort("internal-error", "an R row operation produced invalid source positions")
+    }
+    row_positions <- as.integer(row_positions)
+    snapshot <- isolated_snapshot(value, inspected$flavor)
+    result <- if (identical(inspected$flavor, "r.data.table")) {
+      snapshot[row_positions]
+    } else {
+      snapshot[row_positions, , drop = FALSE]
+    }
+    list(frame = result, sourcePositions = row_positions)
+  }
+
+  drop_missing_rows_at <- function(value, positions, expected_names, how = "any") {
+    resolved <- resolve_row_operation_columns(value, positions, expected_names, "drop-missing")
+    if (!is.character(how) || length(how) != 1L || is.na(how) || !how %in% c("any", "all")) {
+      abort("invalid-view-query", "dropMissingRows how must be any or all")
+    }
+    if (length(resolved$positions) == 0L) {
+      return(subset_rows_at(value, resolved$inspected, seq_len(resolved$inspected$descriptor$shape$rows)))
+    }
+    present <- lapply(resolved$positions, function(position) !is.na(value[[position]]))
+    keep <- if (identical(how, "all")) Reduce(`|`, present) else Reduce(`&`, present)
+    subset_rows_at(value, resolved$inspected, which(keep))
+  }
+
+  drop_duplicate_rows_at <- function(value, positions, expected_names, keep = "first") {
+    resolved <- resolve_row_operation_columns(value, positions, expected_names, "drop-duplicates")
+    if (!is.character(keep) || length(keep) != 1L || is.na(keep) || !keep %in% c("first", "last", "none")) {
+      abort("invalid-view-query", "dropDuplicates keep must be first, last, or none")
+    }
+    if (length(resolved$positions) == 0L) {
+      return(subset_rows_at(value, resolved$inspected, seq_len(resolved$inspected$descriptor$shape$rows)))
+    }
+    compared <- if (identical(resolved$inspected$flavor, "r.data.table")) {
+      value[, resolved$positions, with = FALSE]
+    } else {
+      value[resolved$positions]
+    }
+    duplicates <- if (identical(keep, "first")) {
+      duplicated(compared)
+    } else if (identical(keep, "last")) {
+      duplicated(compared, fromLast = TRUE)
+    } else {
+      duplicated(compared) | duplicated(compared, fromLast = TRUE)
+    }
+    subset_rows_at(value, resolved$inspected, which(!duplicates))
+  }
+
   validate_capture <- function(capture) {
     if (
       !inherits(capture, "openwrangler_r_frame_capture") ||
@@ -3179,6 +3273,8 @@ openwrangler_r_frame_contract <- local({
     drop_columns_at = drop_columns_at,
     select_columns = select_columns,
     select_columns_at = select_columns_at,
+    drop_missing_rows_at = drop_missing_rows_at,
+    drop_duplicate_rows_at = drop_duplicate_rows_at,
     transform_rows = transform_rows,
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,

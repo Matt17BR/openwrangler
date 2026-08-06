@@ -475,6 +475,54 @@ openwrangler_r_kernel_agent <- local({
         ))
       ))
     }
+    if (kind %in% c("dropMissingRows", "dropDuplicates")) {
+      optional_fields <- if (identical(kind, "dropMissingRows")) c("columns", "how") else c("columns", "keep")
+      params <- exact_record(
+        step$params,
+        character(),
+        "request.payload.step.params",
+        optional_fields = optional_fields
+      )
+      columns <- if ("columns" %in% names(params)) params$columns else NULL
+      allow_empty <- identical(kind, "dropMissingRows")
+      if (
+        !is.null(columns) && (
+          !is.list(columns) ||
+            is.object(columns) ||
+            !is.null(names(columns)) ||
+            (!allow_empty && length(columns) == 0L) ||
+            length(columns) > limits$columns
+        )
+      ) {
+        qualifier <- if (allow_empty) "a bounded array" else "a bounded non-empty array when supplied"
+        abort("invalid_request", sprintf("request.payload.step.params.columns must be %s", qualifier))
+      }
+      if (!is.null(columns)) {
+        columns <- lapply(seq_along(columns), function(index) {
+          decode_column_reference(
+            columns[[index]],
+            sprintf("request.payload.step.params.columns[%d]", index),
+            limits$columnIdBytes
+          )
+        })
+      }
+      column_ids <- vapply(columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (length(column_ids) > 0L && anyDuplicated(column_ids)) {
+        abort("invalid_request", "request.payload.step.params.columns contains a repeated column identity")
+      }
+      if (identical(kind, "dropMissingRows")) {
+        how <- if ("how" %in% names(params)) bounded_text(params$how, "request.payload.step.params.how", 8L) else "any"
+        if (!how %in% c("any", "all")) {
+          abort("invalid_request", "request.payload.step.params.how must be any or all")
+        }
+        return(list(id = step_id, kind = kind, params = list(columns = columns, how = how)))
+      }
+      keep <- if ("keep" %in% names(params)) bounded_text(params$keep, "request.payload.step.params.keep", 8L) else "first"
+      if (!keep %in% c("first", "last", "none")) {
+        abort("invalid_request", "request.payload.step.params.keep must be first, last, or none")
+      }
+      return(list(id = step_id, kind = kind, params = list(columns = columns, keep = keep)))
+    }
     if (kind %in% c("renameColumn", "cloneColumn")) {
       params <- exact_record(step$params, c("column", "newName"), "request.payload.step.params")
       new_name <- bounded_text(params$newName, "request.payload.step.params.newName", maximum_variable_name_bytes)
@@ -770,6 +818,42 @@ openwrangler_r_kernel_agent <- local({
     list(id = step$id, kind = step$kind, columns = columns, removedNames = removed_names)
   }
 
+  bind_row_reduction_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    references <- step$params$columns
+    columns <- if (
+      is.null(references) ||
+        (identical(step$kind, "dropMissingRows") && length(references) == 0L)
+    ) {
+      lapply(seq_along(schema), function(position) {
+        list(
+          id = schema[[position]]$id,
+          position = as.integer(position),
+          name = schema[[position]]$name
+        )
+      })
+    } else {
+      lapply(references, function(reference) {
+        matches <- which(schema_ids == reference$id)
+        if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, reference$name)) {
+          abort("stale_column", "A row-reduction column reference no longer matches the active R dataframe", TRUE)
+        }
+        list(
+          id = reference$id,
+          position = as.integer(matches[[1L]]),
+          name = reference$name
+        )
+      })
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      columns = columns,
+      mode = if (identical(step$kind, "dropMissingRows")) step$params$how else step$params$keep
+    )
+  }
+
   bind_row_sort_rule <- function(capture, rule) {
     column <- capture$descriptor$schema[[rule$position]]
     list(
@@ -837,6 +921,25 @@ openwrangler_r_kernel_agent <- local({
       }
       transformed <- frame_contract$transform_rows(capture, view)
       bound <- bind_row_step(capture, step, transformed$resolved)
+      return(list(
+        capture = frame_contract$capture_frame(
+          transformed$frame,
+          nullability_source = capture,
+          source_positions = seq_along(capture$descriptor$schema),
+          source_row_positions = transformed$sourcePositions
+        ),
+        bound = bound
+      ))
+    }
+    if (step$kind %in% c("dropMissingRows", "dropDuplicates")) {
+      bound <- bind_row_reduction_step(capture, step)
+      positions <- vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+      names <- vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+      transformed <- if (identical(step$kind, "dropMissingRows")) {
+        frame_contract$drop_missing_rows_at(source, positions, names, bound$mode)
+      } else {
+        frame_contract$drop_duplicate_rows_at(source, positions, names, bound$mode)
+      }
       return(list(
         capture = frame_contract$capture_frame(
           transformed$frame,
@@ -1288,6 +1391,55 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  row_reduction_code_lines <- function(step) {
+    positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+    names <- vapply(step$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    position_code <- if (length(positions) == 0L) {
+      "integer()"
+    } else {
+      sprintf("c(%s)", paste(sprintf("%dL", positions), collapse = ", "))
+    }
+    name_code <- r_character_vector(names)
+    lines <- c(
+      sprintf("  # %s", if (identical(step$kind, "dropMissingRows")) "Drop missing rows" else "Drop duplicates"),
+      sprintf("  .ow_row_columns <- %s", position_code),
+      sprintf("  .ow_row_column_names <- %s", name_code),
+      "  if (any(.ow_row_columns > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_row_columns], .ow_row_column_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)"
+    )
+    if (length(positions) == 0L) {
+      return(c(lines, "  .ow_rows <- seq_len(nrow(.ow_result))"))
+    }
+    if (identical(step$kind, "dropMissingRows")) {
+      reducer <- if (identical(step$mode, "all")) "`|`" else "`&`"
+      lines <- c(
+        lines,
+        "  .ow_present <- lapply(.ow_row_columns, function(.ow_position) !is.na(.ow_result[[.ow_position]]))",
+        sprintf("  .ow_keep <- Reduce(%s, .ow_present)", reducer),
+        "  .ow_rows <- which(.ow_keep)"
+      )
+    } else {
+      lines <- c(
+        lines,
+        "  .ow_compared <- if (inherits(.ow_result, \"data.table\")) .ow_result[, .ow_row_columns, with = FALSE] else .ow_result[.ow_row_columns]",
+        sprintf(
+          "  .ow_duplicate <- %s",
+          if (identical(step$mode, "first")) {
+            "duplicated(.ow_compared)"
+          } else if (identical(step$mode, "last")) {
+            "duplicated(.ow_compared, fromLast = TRUE)"
+          } else {
+            "duplicated(.ow_compared) | duplicated(.ow_compared, fromLast = TRUE)"
+          }
+        ),
+        "  .ow_rows <- which(!.ow_duplicate)"
+      )
+    }
+    c(
+      lines,
+      "  .ow_result <- if (inherits(.ow_result, \"data.table\")) .ow_result[.ow_rows] else .ow_result[.ow_rows, , drop = FALSE]"
+    )
+  }
+
   cast_code_helper_lines <- function() {
     c(
       "  .ow_cast_kind <- function(.ow_value) {",
@@ -1438,6 +1590,8 @@ openwrangler_r_kernel_agent <- local({
         lines <- c(lines, row_step_code_lines(step))
       } else if (identical(step$kind, "filterRows")) {
         lines <- c(lines, row_step_code_lines(step))
+      } else if (step$kind %in% c("dropMissingRows", "dropDuplicates")) {
+        lines <- c(lines, row_reduction_code_lines(step))
       } else if (identical(step$kind, "renameColumn")) {
         lines <- c(
           lines,
@@ -1642,7 +1796,7 @@ openwrangler_r_kernel_agent <- local({
     truncated <- FALSE
     added_rows <- 0L
     removed_rows <- 0L
-    if (bound$kind %in% c("sortRows", "filterRows")) {
+    if (bound$kind %in% c("sortRows", "filterRows", "dropMissingRows", "dropDuplicates")) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R row transform diff is missing its bounded page context")
       }
@@ -1654,10 +1808,12 @@ openwrangler_r_kernel_agent <- local({
       removed_rows <- as.integer(max(0, before_rows - after_rows))
       before_complete <-
         before_page$page$offset == 0 &&
-          length(before_page$page$rows) == before_page$page$totalRows
+          before_page$page$totalRows == before_rows &&
+          length(before_page$page$rows) == before_rows
       after_complete <-
         after_page$page$offset == 0 &&
-          length(after_page$page$rows) == after_page$page$totalRows
+          after_page$page$totalRows == after_rows &&
+          length(after_page$page$rows) == after_rows
       truncated <- !(before_complete && after_complete)
     } else if (bound$kind %in% c("lowerText", "castColumn") && isTRUE(bound$inPlace)) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
@@ -1760,6 +1916,8 @@ openwrangler_r_kernel_agent <- local({
       "cast_column_at",
       "drop_columns_at",
       "select_columns_at",
+      "drop_missing_rows_at",
+      "drop_duplicate_rows_at",
       "transform_rows",
       "materialize_view_page",
       "materialize_summaries",

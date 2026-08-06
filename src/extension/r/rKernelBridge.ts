@@ -12,6 +12,8 @@ import {
   type DataDiff,
   type DatasetStatsRequest,
   type DropColumnsTransformStep,
+  type DropDuplicatesTransformStep,
+  type DropMissingRowsTransformStep,
   type ErrorResponse,
   type FilterModel,
   type FilterRowsTransformStep,
@@ -76,6 +78,8 @@ const R_PRIVATE_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_";
 const R_SUPPORTED_OPERATIONS = Object.freeze([
   "sortRows",
   "filterRows",
+  "dropMissingRows",
+  "dropDuplicates",
   "selectColumns",
   "dropColumns",
   "renameColumn",
@@ -88,6 +92,8 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
 type RTransformStep =
   | SortRowsTransformStep
   | FilterRowsTransformStep
+  | DropMissingRowsTransformStep
+  | DropDuplicatesTransformStep
   | RenameColumnTransformStep
   | CloneColumnTransformStep
   | CastColumnTransformStep
@@ -618,6 +624,8 @@ export class RKernelBridge implements OpenWranglerBridge {
     if (
       request.step.kind !== "sortRows" &&
       request.step.kind !== "filterRows" &&
+      request.step.kind !== "dropMissingRows" &&
+      request.step.kind !== "dropDuplicates" &&
       request.step.kind !== "renameColumn" &&
       request.step.kind !== "cloneColumn" &&
       request.step.kind !== "castColumn" &&
@@ -1770,7 +1778,12 @@ function schemaAfterRStep(
   step: RTransformStep,
   activeKeyColumnIds: readonly string[]
 ): readonly ColumnSchema[] {
-  if (step.kind === "sortRows" || step.kind === "filterRows") {
+  if (
+    step.kind === "sortRows" ||
+    step.kind === "filterRows" ||
+    step.kind === "dropMissingRows" ||
+    step.kind === "dropDuplicates"
+  ) {
     return Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })));
   }
   if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
@@ -1809,9 +1822,9 @@ function keyColumnsAfterRStep(
 }
 
 function rowCountAfterRStep(step: RTransformStep, inputRows: number, diff: DataDiff): number {
-  if (step.kind === "filterRows") {
+  if (isRRowReductionStep(step)) {
     if (diff.addedRows !== 0 || diff.removedRows > inputRows) {
-      throw new Error("The R kernel returned invalid row counts for Filter rows.");
+      throw new Error(`The R kernel returned invalid row counts for ${rowOperationLabel(step)}.`);
     }
     return inputRows - diff.removedRows;
   }
@@ -1819,6 +1832,20 @@ function rowCountAfterRStep(step: RTransformStep, inputRows: number, diff: DataD
     throw new Error(`The R kernel returned an unexpected row-count change for ${step.kind}.`);
   }
   return inputRows;
+}
+
+function isRRowReductionStep(
+  step: RTransformStep
+): step is FilterRowsTransformStep | DropMissingRowsTransformStep | DropDuplicatesTransformStep {
+  return step.kind === "filterRows" || step.kind === "dropMissingRows" || step.kind === "dropDuplicates";
+}
+
+function rowOperationLabel(
+  step: FilterRowsTransformStep | DropMissingRowsTransformStep | DropDuplicatesTransformStep
+): string {
+  if (step.kind === "filterRows") return "Filter rows";
+  if (step.kind === "dropMissingRows") return "Drop missing rows";
+  return "Drop duplicates";
 }
 
 function schemaAfterCast(
@@ -2199,6 +2226,30 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       params: Object.freeze({ filterModel: resolveTransformFilterModel(step.params.filterModel, inputSchema) })
     });
   }
+  if (step.kind === "dropMissingRows") {
+    const columns = resolveRowReductionColumns(step.params.columns, inputSchema, "Drop missing rows", true);
+    return Object.freeze({
+      id: step.id,
+      kind: "dropMissingRows" as const,
+      params: Object.freeze({
+        ...(columns === undefined ? {} : { columns }),
+        ...(step.params.how === undefined ? {} : { how: step.params.how })
+      })
+    });
+  }
+  if (step.kind === "dropDuplicates") {
+    const columns = resolveRowReductionColumns(step.params.columns, inputSchema, "Drop duplicates", false);
+    return Object.freeze({
+      id: step.id,
+      kind: "dropDuplicates" as const,
+      params: Object.freeze({
+        ...(columns === undefined
+          ? {}
+          : { columns: columns as readonly [RKernelColumnReference, ...RKernelColumnReference[]] }),
+        ...(step.params.keep === undefined ? {} : { keep: step.params.keep })
+      })
+    });
+  }
   if (step.kind === "selectColumns") {
     const columns = step.params.columns.map((column) => Object.freeze({ ...column }));
     if (!columns[0]) throw new TypeError("Select Columns requires at least one R column.");
@@ -2259,6 +2310,35 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
   });
 }
 
+function resolveRowReductionColumns(
+  columns: readonly RKernelColumnReference[] | undefined,
+  inputSchema: readonly ColumnSchema[],
+  operation: "Drop missing rows" | "Drop duplicates",
+  allowEmpty: boolean
+): readonly RKernelColumnReference[] | undefined {
+  if (columns === undefined) return undefined;
+  if (allowEmpty && columns.length === 0) return undefined;
+  if ((!allowEmpty && columns.length === 0) || columns.length > inputSchema.length) {
+    throw new TypeError(`${operation} requires a bounded${allowEmpty ? "" : " non-empty"} R column selection.`);
+  }
+  const seen = new Set<string>();
+  return Object.freeze(
+    columns.map((reference) => {
+      if (seen.has(reference.id)) throw new TypeError(`${operation} cannot target the same R column more than once.`);
+      seen.add(reference.id);
+      const matches = inputSchema.filter((column) => column.id === reference.id && column.name === reference.name);
+      if (matches.length !== 1) {
+        throw new TypeError(`${operation} contains a column reference that no longer matches the active R dataframe.`);
+      }
+      const column = matches[0] as ColumnSchema;
+      if (column.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+        throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+      }
+      return Object.freeze({ id: column.id, name: column.name });
+    })
+  );
+}
+
 function copyRTransformStep(step: RTransformStep): RTransformStep {
   if (step.kind === "sortRows") {
     const rules = step.params.rules.map((rule) => ({ ...rule, column: { ...rule.column } }));
@@ -2275,6 +2355,34 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       id: step.id,
       kind: "filterRows",
       params: { filterModel: copyTransformFilterModel(step.params.filterModel) }
+    };
+  }
+  if (step.kind === "dropMissingRows") {
+    return {
+      id: step.id,
+      kind: "dropMissingRows",
+      params: {
+        ...(step.params.columns === undefined ? {} : { columns: step.params.columns.map((column) => ({ ...column })) }),
+        ...(step.params.how === undefined ? {} : { how: step.params.how })
+      }
+    };
+  }
+  if (step.kind === "dropDuplicates") {
+    const columns = step.params.columns?.map((column) => ({ ...column }));
+    if (columns !== undefined && !columns[0]) {
+      throw new TypeError("Drop duplicates requires at least one R column when a selection is supplied.");
+    }
+    return {
+      id: step.id,
+      kind: "dropDuplicates",
+      params: {
+        ...(columns === undefined
+          ? {}
+          : {
+              columns: columns as [RKernelColumnReference, ...RKernelColumnReference[]]
+            }),
+        ...(step.params.keep === undefined ? {} : { keep: step.params.keep })
+      }
     };
   }
   if (step.kind === "selectColumns") {
@@ -2359,6 +2467,8 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
   if (
     step.kind !== "sortRows" &&
     step.kind !== "filterRows" &&
+    step.kind !== "dropMissingRows" &&
+    step.kind !== "dropDuplicates" &&
     step.kind !== "renameColumn" &&
     step.kind !== "cloneColumn" &&
     step.kind !== "castColumn" &&
@@ -2391,7 +2501,7 @@ function inspectionDiff(
   inputRows: number,
   outputRows: number
 ): DataDiff {
-  if (step.kind === "sortRows" || step.kind === "filterRows") {
+  if (step.kind === "sortRows" || isRRowReductionStep(step)) {
     const fullyRepresented =
       inputPage.page.offset === 0 &&
       outputPage.page.offset === 0 &&
@@ -2401,7 +2511,7 @@ function inspectionDiff(
       outputPage.page.rows.length === outputRows;
     return {
       addedRows: 0,
-      removedRows: step.kind === "filterRows" ? inputRows - outputRows : 0,
+      removedRows: step.kind === "sortRows" ? 0 : inputRows - outputRows,
       addedColumns: [],
       removedColumns: [],
       changedCells: 0,
@@ -2502,8 +2612,8 @@ function assertMutationDiff(
   outputPage: RFramePageContract,
   diff: DataDiff
 ): void {
-  if (step.kind === "sortRows" || step.kind === "filterRows") {
-    const expectedRemovedRows = step.kind === "filterRows" ? inputRows - outputRows : 0;
+  if (step.kind === "sortRows" || isRRowReductionStep(step)) {
+    const expectedRemovedRows = step.kind === "sortRows" ? 0 : inputRows - outputRows;
     const fullyRepresented =
       outputPage.page.offset === 0 &&
       outputPage.page.totalRows === outputRows &&

@@ -448,7 +448,7 @@ describe("OperationBuilder", () => {
     ]);
   });
 
-  it("emits an explicit empty reference list when drop-missing applies to all columns", () => {
+  it("omits the reference list when drop-missing applies to all columns", () => {
     const onPreview = vi.fn();
     render(
       <OperationBuilder
@@ -461,7 +461,7 @@ describe("OperationBuilder", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
-    expect(onPreview.mock.calls[0][0].params).toEqual({ columns: [], how: "any" });
+    expect(onPreview.mock.calls[0][0].params).toEqual({ how: "any" });
   });
 
   it("fills a numeric column with its median by default", () => {
@@ -568,6 +568,22 @@ describe("OperationBuilder", () => {
       columns: [{ id: "c:1", name: "value" }],
       keep: "first"
     });
+  });
+
+  it("omits the reference list when drop-duplicates compares all columns", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="dropDuplicates"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({ keep: "first" });
   });
 
   it("edits structural steps against their original input schema", () => {

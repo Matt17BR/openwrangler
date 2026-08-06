@@ -433,6 +433,89 @@ describe("native R kernel protocol", () => {
     }
   });
 
+  it("strictly validates native R missing-row and duplicate-row requests", () => {
+    const base: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: { id: "drop-missing", kind: "dropMissingRows", params: { columns: [], how: "all" } },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(base))).toEqual(base);
+
+    const selectedMissing: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      ...base,
+      payload: {
+        ...base.payload,
+        step: {
+          id: "drop-missing-selected",
+          kind: "dropMissingRows",
+          params: {
+            columns: [
+              { id: "r:c:0", name: "non syntactic" },
+              { id: "r:c:1", name: "duplicate" }
+            ],
+            how: "any"
+          }
+        }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(selectedMissing))).toEqual(selectedMissing);
+
+    const allColumnsDuplicates: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      ...base,
+      payload: {
+        ...base.payload,
+        step: { id: "drop-duplicates-all", kind: "dropDuplicates", params: {} }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(allColumnsDuplicates))).toEqual(allColumnsDuplicates);
+
+    const selectedDuplicates: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      ...base,
+      payload: {
+        ...base.payload,
+        step: {
+          id: "drop-duplicates-selected",
+          kind: "dropDuplicates",
+          params: {
+            columns: [{ id: "r:c:0", name: "non syntactic" }],
+            keep: "none"
+          }
+        }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(selectedDuplicates))).toEqual(selectedDuplicates);
+
+    const emptyDuplicates = structuredClone(selectedDuplicates) as unknown as {
+      payload: { step: { params: { columns: unknown[] } } };
+    };
+    emptyDuplicates.payload.step.params.columns = [];
+    expect(() => encodeRKernelRequest(emptyDuplicates as unknown as RKernelRequest)).toThrow("non-empty");
+
+    const repeatedMissing = structuredClone(selectedMissing) as unknown as {
+      payload: { step: { params: { columns: Array<{ id: string; name: string }> } } };
+    };
+    repeatedMissing.payload.step.params.columns[1] = { id: "r:c:0", name: "non syntactic" };
+    expect(() => encodeRKernelRequest(repeatedMissing as unknown as RKernelRequest)).toThrow("repeated identity");
+
+    for (const [request, value] of [
+      [selectedMissing, "some"],
+      [selectedDuplicates, "middle"]
+    ] as const) {
+      const malformed = structuredClone(request) as unknown as {
+        payload: { step: { params: { how?: string; keep?: string } } };
+      };
+      if (request.payload.step.kind === "dropMissingRows") malformed.payload.step.params.how = value;
+      else malformed.payload.step.params.keep = value;
+      expect(() => encodeRKernelRequest(malformed as unknown as RKernelRequest)).toThrow("invalid");
+    }
+  });
+
   it("validates projected profile identities before dispatch", () => {
     const request: RKernelRequest = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

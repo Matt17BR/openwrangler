@@ -176,9 +176,29 @@ export interface RKernelFilterRowsStep {
   }>;
 }
 
+export interface RKernelDropMissingRowsStep {
+  readonly id: string;
+  readonly kind: "dropMissingRows";
+  readonly params: Readonly<{
+    readonly columns?: readonly RKernelColumnReference[];
+    readonly how?: "any" | "all";
+  }>;
+}
+
+export interface RKernelDropDuplicatesStep {
+  readonly id: string;
+  readonly kind: "dropDuplicates";
+  readonly params: Readonly<{
+    readonly columns?: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    readonly keep?: "first" | "last" | "none";
+  }>;
+}
+
 export type RKernelTransformStep =
   | RKernelSortRowsStep
   | RKernelFilterRowsStep
+  | RKernelDropMissingRowsStep
+  | RKernelDropDuplicatesStep
   | RKernelRenameColumnStep
   | RKernelCloneColumnStep
   | RKernelCastColumnStep
@@ -806,6 +826,26 @@ function validateTransformStep(value: unknown): void {
     validateTransformFilterModel(params.filterModel);
     return;
   }
+  if (step.kind === "dropMissingRows") {
+    const params = exactRecord(step.params, [], ["columns", "how"], "R kernel drop-missing-rows parameters");
+    if (params.columns !== undefined) {
+      validateRowReductionColumnReferences(params.columns, "drop missing rows", true);
+    }
+    if (params.how !== undefined && params.how !== "any" && params.how !== "all") {
+      fail("R kernel drop-missing-rows parameters contain an invalid mode.");
+    }
+    return;
+  }
+  if (step.kind === "dropDuplicates") {
+    const params = exactRecord(step.params, [], ["columns", "keep"], "R kernel drop-duplicates parameters");
+    if (params.columns !== undefined) {
+      validateRowReductionColumnReferences(params.columns, "drop duplicates", false);
+    }
+    if (params.keep !== undefined && params.keep !== "first" && params.keep !== "last" && params.keep !== "none") {
+      fail("R kernel drop-duplicates parameters contain an invalid keep mode.");
+    }
+    return;
+  }
   if (step.kind === "renameColumn" || step.kind === "cloneColumn") {
     const operation = step.kind === "renameColumn" ? "rename" : "clone";
     const params = exactRecord(step.params, ["column", "newName"], `R kernel ${operation} parameters`);
@@ -853,6 +893,18 @@ function validateTransformStep(value: unknown): void {
     return;
   }
   fail("R kernel transform step has an unsupported operation.");
+}
+
+function validateRowReductionColumnReferences(value: unknown, operation: string, allowEmpty: boolean): void {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.length > R_FRAME_CONTRACT_LIMITS.columns) {
+    fail(`R kernel ${operation} columns must be a bounded${allowEmpty ? "" : " non-empty"} array.`);
+  }
+  const seen = new Set<string>();
+  for (const [index, candidate] of value.entries()) {
+    const reference = validateColumnReference(candidate, `request.payload.step.params.columns[${index}]`);
+    if (seen.has(reference.id)) fail(`R kernel ${operation} columns contain a repeated identity.`);
+    seen.add(reference.id);
+  }
 }
 
 function validateTransformColumnReferences(value: unknown, operation: "drop" | "select"): void {

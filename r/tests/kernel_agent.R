@@ -40,6 +40,10 @@ row_tibble_session_id <- "21212121-2121-4121-8121-212121212121"
 row_table_session_id <- "23232323-2323-4323-8323-232323232323"
 row_active_view_session_id <- "24242424-2424-4424-8424-242424242424"
 row_empty_named_session_id <- "25252525-2525-4525-8525-252525252525"
+row_reduction_session_id <- "26262626-2626-4626-8626-262626262626"
+row_reduction_tibble_session_id <- "27272727-2727-4727-8727-272727272727"
+row_reduction_table_session_id <- "28282828-2828-4828-8828-282828282828"
+row_reduction_view_session_id <- "29292929-2929-4929-8929-292929292929"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -101,7 +105,14 @@ dispatch <- function(kind, payload, id = request_id) {
   dispatch_with(agent, kind, payload, id)
 }
 
-inspect_step <- function(session_id, revision, step_id, page) {
+inspect_step <- function(
+  session_id,
+  revision,
+  step_id,
+  page,
+  input_row_count = NULL,
+  output_row_count = NULL
+) {
   info <- dispatch(
     "inspectStepInfo",
     list(sessionId = session_id, revision = revision, stepId = step_id)
@@ -121,6 +132,8 @@ inspect_step <- function(session_id, revision, step_id, page) {
   assert_identical(output$side, "output", "R inspection returned the wrong output side")
   assert_identical(input$stepIndex, info$stepIndex, "R inspection input step index changed")
   assert_identical(output$stepIndex, info$stepIndex, "R inspection output step index changed")
+  if (is.null(input_row_count)) input_row_count <- input$page$page$totalRows
+  if (is.null(output_row_count)) output_row_count <- output$page$page$totalRows
 
   input_ids <- unlist(input$page$page$columnIds, use.names = FALSE)
   output_ids <- unlist(output$page$page$columnIds, use.names = FALSE)
@@ -152,11 +165,15 @@ inspect_step <- function(session_id, revision, step_id, page) {
     inputPage = input$page,
     outputPage = output$page,
     diff = list(
-      addedRows = max(0L, output$page$page$totalRows - input$page$page$totalRows),
-      removedRows = max(0L, input$page$page$totalRows - output$page$page$totalRows),
+      addedRows = max(0L, output_row_count - input_row_count),
+      removedRows = max(0L, input_row_count - output_row_count),
       changedCells = changed_cells,
-      truncated = input$page$page$totalRows > length(input$page$page$rows) ||
-        output$page$page$totalRows > length(output$page$page$rows)
+      truncated = input$page$page$offset != 0L ||
+        output$page$page$offset != 0L ||
+        input$page$page$totalRows != input_row_count ||
+        output$page$page$totalRows != output_row_count ||
+        length(input$page$page$rows) != input_row_count ||
+        length(output$page$page$rows) != output_row_count
     ),
     code = info$code
   )
@@ -2557,6 +2574,14 @@ row_filter_step <- function(operator = "isNaN", id = "row-filter-step") {
     ))
   )
 }
+row_reduction_step <- function(kind, id, columns, mode = NULL) {
+  params <- structure(list(), names = character())
+  if (!missing(columns)) params$columns <- I(columns)
+  if (!is.null(mode)) {
+    params[[if (identical(kind, "dropMissingRows")) "how" else "keep"]] <- mode
+  }
+  list(id = id, kind = kind, params = params)
+}
 
 source_environment$row_frame <- data.frame(
   duplicate = c("b", "a", "a", "b", NA, "a", "a"),
@@ -2768,8 +2793,8 @@ assert_identical(
 assert_identical(row_active_preview$diff$removedRows, 2L, "the narrowed R draft lost its cleaning row count")
 assert_identical(
   row_active_preview$diff$truncated,
-  FALSE,
-  "a full current view matching the committed filter was incorrectly marked truncated"
+  TRUE,
+  "a narrowed active view was incorrectly treated as the complete row-transform diff"
 )
 assert_identical(
   source_environment$row_active_view,
@@ -2964,6 +2989,605 @@ assert_identical(
   "R sorting changed the source data.table key"
 )
 
+source_environment$row_reduction_frame <- data.frame(
+  duplicate = c("a", "a", "b", "b", "c", NA, NA, "z"),
+  duplicate = c(1, 1, NA, NA, 3, NA, NaN, Inf),
+  `non syntactic` = seq_len(8L),
+  row.names = paste0("source-", seq_len(8L)),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+row_reduction_before <- unserialize(serialize(source_environment$row_reduction_frame, NULL, version = 3L))
+row_reduction_columns <- list(
+  list(id = "r:c:0", name = "duplicate"),
+  list(id = "r:c:1", name = "duplicate")
+)
+row_reduction_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = row_reduction_session_id,
+    variableName = "row_reduction_frame",
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(row_reduction_open$kind, "page", "the R row-reduction session did not open")
+
+empty_missing_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 0L,
+    step = row_reduction_step(
+      "dropMissingRows",
+      "row-empty-missing-step",
+      columns = list(),
+      mode = "any"
+    ),
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(empty_missing_preview$kind, "stepPreview", "an explicit empty missing-column set did not preview")
+assert_identical(
+  vapply(empty_missing_preview$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", c(0L, 1L, 4L, 7L)),
+  "an explicit empty missing-column set did not target the active full schema"
+)
+assert_identical(empty_missing_preview$diff$removedRows, 4L, "an empty missing-column set reported the wrong diff")
+empty_missing_discard <- dispatch(
+  "discardDraft",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 1L,
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(empty_missing_discard$action, "discard", "the empty missing-row draft did not discard")
+
+invalid_missing_mode <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 2L,
+    step = row_reduction_step(
+      "dropMissingRows",
+      "row-invalid-missing-step",
+      columns = row_reduction_columns,
+      mode = "some"
+    ),
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(invalid_missing_mode$kind, "error", "an invalid Drop Missing Rows mode was accepted")
+assert_identical(invalid_missing_mode$code, "invalid_request", "the invalid missing-mode diagnostic changed")
+
+invalid_duplicate_columns <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 2L,
+    step = row_reduction_step(
+      "dropDuplicates",
+      "row-empty-duplicate-step",
+      columns = list(),
+      mode = "first"
+    ),
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(invalid_duplicate_columns$kind, "error", "an empty Drop Duplicates selection was accepted")
+assert_identical(
+  invalid_duplicate_columns$code,
+  "invalid_request",
+  "the empty Drop Duplicates diagnostic changed"
+)
+
+repeated_duplicate_columns <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 2L,
+    step = row_reduction_step(
+      "dropDuplicates",
+      "row-repeated-duplicate-step",
+      columns = list(row_reduction_columns[[1L]], row_reduction_columns[[1L]]),
+      mode = "first"
+    ),
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(repeated_duplicate_columns$kind, "error", "a repeated Drop Duplicates identity was accepted")
+assert_identical(
+  repeated_duplicate_columns$code,
+  "invalid_request",
+  "the repeated Drop Duplicates identity diagnostic changed"
+)
+
+stale_missing_columns <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 2L,
+    step = row_reduction_step(
+      "dropMissingRows",
+      "row-stale-missing-step",
+      columns = list(list(id = "r:c:1", name = "stale duplicate")),
+      mode = "any"
+    ),
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(stale_missing_columns$kind, "error", "a stale Drop Missing Rows reference was accepted")
+assert_identical(stale_missing_columns$code, "stale_column", "the stale row-reduction diagnostic changed")
+
+missing_all_step <- row_reduction_step(
+  "dropMissingRows",
+  "row-missing-all-step",
+  columns = row_reduction_columns,
+  mode = "all"
+)
+missing_all_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 2L,
+    step = missing_all_step,
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(missing_all_preview$kind, "stepPreview", "Drop Missing Rows all mode did not preview")
+assert_identical(
+  vapply(missing_all_preview$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", c(0L, 1L, 2L, 3L, 4L, 7L)),
+  "Drop Missing Rows all mode changed NA/NaN semantics or stable row identities"
+)
+assert_identical(missing_all_preview$diff$removedRows, 2L, "Drop Missing Rows reported the wrong diff")
+missing_all_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 3L,
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(missing_all_apply$action, "apply", "Drop Missing Rows did not apply")
+
+duplicates_none_step <- row_reduction_step(
+  "dropDuplicates",
+  "row-duplicates-none-step",
+  columns = row_reduction_columns,
+  mode = "none"
+)
+duplicates_none_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 4L,
+    step = duplicates_none_step,
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(duplicates_none_preview$kind, "stepPreview", "Drop Duplicates none mode did not preview")
+assert_identical(
+  vapply(duplicates_none_preview$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  c("r:r:4", "r:r:7"),
+  "Drop Duplicates none mode changed source order or stable row identities"
+)
+assert_identical(duplicates_none_preview$diff$removedRows, 4L, "Drop Duplicates reported the wrong diff")
+duplicates_none_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 5L,
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(duplicates_none_apply$action, "apply", "Drop Duplicates did not apply")
+
+missing_all_inspection <- inspect_step(
+  row_reduction_session_id,
+  6L,
+  "row-missing-all-step",
+  page_window(row_limit = 8L, column_limit = 3L)
+)
+assert_schema_less_inspection(missing_all_inspection, "Drop Missing Rows inspection")
+assert_identical(missing_all_inspection$diff$removedRows, 2L, "Drop Missing Rows inspection changed its diff")
+duplicates_none_inspection <- inspect_step(
+  row_reduction_session_id,
+  6L,
+  "row-duplicates-none-step",
+  page_window(row_limit = 8L, column_limit = 3L)
+)
+assert_schema_less_inspection(duplicates_none_inspection, "Drop Duplicates inspection")
+assert_identical(duplicates_none_inspection$diff$removedRows, 4L, "Drop Duplicates inspection changed its diff")
+assert_identical(
+  vapply(duplicates_none_inspection$outputPage$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  c("r:r:4", "r:r:7"),
+  "Drop Duplicates inspection regenerated row identities"
+)
+
+assign("row_reduction_frame", source_environment$row_reduction_frame, envir = .GlobalEnv)
+eval(parse(text = duplicates_none_apply$code), envir = .GlobalEnv)
+row_reduction_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  row_reduction_generated[[3L]],
+  c(5L, 8L),
+  "generated Drop Missing Rows / Drop Duplicates code returned the wrong rows"
+)
+assert_identical(
+  names(row_reduction_generated),
+  c("duplicate", "duplicate", "non syntactic"),
+  "generated row-reduction code repaired duplicate or non-syntactic names"
+)
+assert_identical(
+  row.names(row_reduction_generated),
+  c("source-5", "source-8"),
+  "generated row-reduction code changed explicit row names"
+)
+assert_identical(
+  get("row_reduction_frame", envir = .GlobalEnv, inherits = FALSE),
+  row_reduction_before,
+  "generated row-reduction code mutated its source dataframe"
+)
+rm("row_reduction_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+duplicates_none_undo <- dispatch(
+  "undoStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 6L,
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(duplicates_none_undo$action, "undo", "Drop Duplicates did not undo")
+assert_identical(
+  vapply(duplicates_none_undo$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", c(0L, 1L, 2L, 3L, 4L, 7L)),
+  "undoing Drop Duplicates did not replay Drop Missing Rows"
+)
+missing_all_undo <- dispatch(
+  "undoStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 7L,
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(missing_all_undo$action, "undo", "Drop Missing Rows did not undo")
+assert_identical(missing_all_undo$page$page$totalRows, 8L, "undoing row reduction did not restore the source")
+assert_identical(
+  source_environment$row_reduction_frame,
+  row_reduction_before,
+  "the row-reduction lifecycle mutated its source dataframe"
+)
+omitted_missing_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 8L,
+    step = row_reduction_step("dropMissingRows", "row-omitted-missing-step", mode = "any"),
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+)
+assert_identical(omitted_missing_preview$kind, "stepPreview", "omitted Drop Missing Rows columns did not preview")
+assert_identical(
+  vapply(omitted_missing_preview$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", c(0L, 1L, 4L, 7L)),
+  "omitted Drop Missing Rows columns did not target the active full schema"
+)
+invisible(dispatch(
+  "discardDraft",
+  list(
+    sessionId = row_reduction_session_id,
+    revision = 9L,
+    page = page_window(row_limit = 8L, column_limit = 3L)
+  )
+))
+invisible(dispatch("closeSession", list(sessionId = row_reduction_session_id)))
+
+row_reduction_view_filter <- list(
+  column = list(id = "r:c:2", name = "non syntactic"),
+  type = "integer",
+  predicates = I(list(list(kind = "predicate", operator = "gt", value = 3L)))
+)
+row_reduction_view_page <- page_window(
+  filters = list(row_reduction_view_filter),
+  row_limit = 8L,
+  column_limit = 3L
+)
+row_reduction_view_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = row_reduction_view_session_id,
+    variableName = "row_reduction_frame",
+    page = row_reduction_view_page
+  )
+)
+assert_identical(row_reduction_view_open$kind, "page", "the narrowed row-reduction session did not open")
+assert_identical(
+  row_reduction_view_open$page$page$totalRows,
+  5L,
+  "the unrelated active view returned the wrong source rows"
+)
+row_reduction_view_missing <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_view_session_id,
+    revision = 0L,
+    step = missing_all_step,
+    page = row_reduction_view_page
+  )
+)
+assert_identical(row_reduction_view_missing$kind, "stepPreview", "narrowed Drop Missing Rows did not preview")
+assert_identical(row_reduction_view_missing$diff$removedRows, 2L, "narrowed Drop Missing Rows lost its full diff")
+assert_identical(
+  row_reduction_view_missing$diff$truncated,
+  TRUE,
+  "an unrelated active view hid Drop Missing Rows diff truncation"
+)
+assert_identical(
+  vapply(row_reduction_view_missing$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  c("r:r:3", "r:r:4", "r:r:7"),
+  "the unrelated active view changed Drop Missing Rows source identities"
+)
+invisible(dispatch(
+  "applyDraft",
+  list(
+    sessionId = row_reduction_view_session_id,
+    revision = 1L,
+    page = row_reduction_view_page
+  )
+))
+row_reduction_view_missing_inspection <- inspect_step(
+  row_reduction_view_session_id,
+  2L,
+  "row-missing-all-step",
+  row_reduction_view_page,
+  input_row_count = 8L,
+  output_row_count = 6L
+)
+assert_identical(
+  row_reduction_view_missing_inspection$diff$removedRows,
+  2L,
+  "narrowed Drop Missing Rows inspection lost its full diff"
+)
+assert_identical(
+  row_reduction_view_missing_inspection$diff$truncated,
+  TRUE,
+  "an unrelated active view hid Drop Missing Rows inspection truncation"
+)
+
+row_reduction_view_duplicates <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_view_session_id,
+    revision = 2L,
+    step = duplicates_none_step,
+    page = row_reduction_view_page
+  )
+)
+assert_identical(row_reduction_view_duplicates$kind, "stepPreview", "narrowed Drop Duplicates did not preview")
+assert_identical(row_reduction_view_duplicates$diff$removedRows, 4L, "narrowed Drop Duplicates lost its full diff")
+assert_identical(
+  row_reduction_view_duplicates$diff$truncated,
+  TRUE,
+  "an unrelated active view hid Drop Duplicates diff truncation"
+)
+assert_identical(
+  vapply(row_reduction_view_duplicates$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  c("r:r:4", "r:r:7"),
+  "the unrelated active view changed Drop Duplicates source identities"
+)
+invisible(dispatch(
+  "applyDraft",
+  list(
+    sessionId = row_reduction_view_session_id,
+    revision = 3L,
+    page = row_reduction_view_page
+  )
+))
+row_reduction_view_duplicates_inspection <- inspect_step(
+  row_reduction_view_session_id,
+  4L,
+  "row-duplicates-none-step",
+  row_reduction_view_page,
+  input_row_count = 6L,
+  output_row_count = 2L
+)
+assert_identical(
+  row_reduction_view_duplicates_inspection$diff$removedRows,
+  4L,
+  "narrowed Drop Duplicates inspection lost its full diff"
+)
+assert_identical(
+  row_reduction_view_duplicates_inspection$diff$truncated,
+  TRUE,
+  "an unrelated active view hid Drop Duplicates inspection truncation"
+)
+assert_identical(
+  source_environment$row_reduction_frame,
+  row_reduction_before,
+  "narrowed row-reduction inspection mutated its source dataframe"
+)
+invisible(dispatch("closeSession", list(sessionId = row_reduction_view_session_id)))
+
+source_environment$row_reduction_tibble <- tibble::as_tibble(
+  data.frame(
+    duplicate = c("a", "a", "b", "b", "c"),
+    duplicate = c(1L, 1L, 2L, 2L, 3L),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  ),
+  .name_repair = "minimal"
+)
+row_reduction_tibble_before <- unserialize(serialize(source_environment$row_reduction_tibble, NULL, version = 3L))
+row_reduction_tibble_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = row_reduction_tibble_session_id,
+    variableName = "row_reduction_tibble",
+    page = page_window(row_limit = 5L, column_limit = 2L)
+  )
+)
+assert_identical(row_reduction_tibble_open$kind, "page", "the row-reduction tibble did not open")
+row_reduction_tibble_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_tibble_session_id,
+    revision = 0L,
+    step = row_reduction_step(
+      "dropDuplicates",
+      "row-tibble-duplicates-last",
+      columns = row_reduction_columns,
+      mode = "last"
+    ),
+    page = page_window(row_limit = 5L, column_limit = 2L)
+  )
+)
+assert_identical(row_reduction_tibble_preview$kind, "stepPreview", "tibble Drop Duplicates did not preview")
+assert_identical(
+  vapply(row_reduction_tibble_preview$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("r:r:%d", c(1L, 3L, 4L)),
+  "tibble Drop Duplicates last mode returned the wrong source rows"
+)
+row_reduction_tibble_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = row_reduction_tibble_session_id,
+    revision = 1L,
+    page = page_window(row_limit = 5L, column_limit = 2L)
+  )
+)
+assert_identical(
+  row_reduction_tibble_apply$page$frameSemantics$classes,
+  list("tbl_df", "tbl", "data.frame"),
+  "committed Drop Duplicates changed tibble class"
+)
+assign("row_reduction_tibble", source_environment$row_reduction_tibble, envir = .GlobalEnv)
+eval(parse(text = row_reduction_tibble_apply$code), envir = .GlobalEnv)
+row_reduction_tibble_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  class(row_reduction_tibble_generated),
+  c("tbl_df", "tbl", "data.frame"),
+  "generated Drop Duplicates changed tibble class"
+)
+assert_identical(
+  row_reduction_tibble_generated[[2L]],
+  c(1L, 2L, 3L),
+  "generated tibble Drop Duplicates last mode returned the wrong rows"
+)
+assert_identical(
+  source_environment$row_reduction_tibble,
+  row_reduction_tibble_before,
+  "tibble row reduction mutated its source"
+)
+rm("row_reduction_tibble", "open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = row_reduction_tibble_session_id)))
+
+source_environment$row_reduction_table <- data.table::data.table(
+  primary_key = c(1L, 1L, 2L, 2L, 3L),
+  payload = c("a", "a", NA, NA, "z")
+)
+data.table::setkey(source_environment$row_reduction_table, primary_key)
+row_reduction_table_before <- data.table::copy(source_environment$row_reduction_table)
+row_reduction_table_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = row_reduction_table_session_id,
+    variableName = "row_reduction_table",
+    page = page_window(row_limit = 5L, column_limit = 2L)
+  )
+)
+assert_identical(row_reduction_table_open$kind, "page", "the row-reduction data.table did not open")
+row_reduction_table_missing <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_table_session_id,
+    revision = 0L,
+    step = row_reduction_step(
+      "dropMissingRows",
+      "row-table-missing-any",
+      columns = list(list(id = "r:c:1", name = "payload")),
+      mode = "any"
+    ),
+    page = page_window(row_limit = 5L, column_limit = 2L)
+  )
+)
+assert_identical(row_reduction_table_missing$kind, "stepPreview", "data.table Drop Missing Rows did not preview")
+assert_identical(
+  vapply(row_reduction_table_missing$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  c("r:r:0", "r:r:1", "r:r:4"),
+  "data.table Drop Missing Rows returned the wrong rows"
+)
+row_reduction_table_missing_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = row_reduction_table_session_id,
+    revision = 1L,
+    page = page_window(row_limit = 5L, column_limit = 2L)
+  )
+)
+assert_identical(
+  row_reduction_table_missing_apply$page$frameSemantics$keyColumnIds,
+  list("r:c:0"),
+  "Drop Missing Rows discarded a compatible data.table key"
+)
+row_reduction_table_duplicates <- dispatch(
+  "previewStep",
+  list(
+    sessionId = row_reduction_table_session_id,
+    revision = 2L,
+    step = row_reduction_step(
+      "dropDuplicates",
+      "row-table-duplicates-first"
+    ),
+    page = page_window(row_limit = 5L, column_limit = 2L)
+  )
+)
+assert_identical(row_reduction_table_duplicates$kind, "stepPreview", "data.table Drop Duplicates did not preview")
+assert_identical(
+  vapply(row_reduction_table_duplicates$page$page$rows, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  c("r:r:0", "r:r:4"),
+  "omitted Drop Duplicates columns did not target the active full schema"
+)
+row_reduction_table_duplicates_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = row_reduction_table_session_id,
+    revision = 3L,
+    page = page_window(row_limit = 5L, column_limit = 2L)
+  )
+)
+assert_identical(
+  row_reduction_table_duplicates_apply$page$frameSemantics$keyColumnIds,
+  list("r:c:0"),
+  "Drop Duplicates discarded a compatible data.table key"
+)
+assign("row_reduction_table", source_environment$row_reduction_table, envir = .GlobalEnv)
+eval(parse(text = row_reduction_table_duplicates_apply$code), envir = .GlobalEnv)
+row_reduction_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  data.table::key(row_reduction_table_generated),
+  "primary_key",
+  "generated row reduction discarded a compatible data.table key"
+)
+assert_identical(
+  row_reduction_table_generated$primary_key,
+  c(1L, 3L),
+  "generated data.table Drop Missing Rows / Drop Duplicates returned the wrong rows"
+)
+assert_identical(
+  data.table::key(source_environment$row_reduction_table),
+  "primary_key",
+  "data.table row reduction changed the source key"
+)
+assert_identical(
+  source_environment$row_reduction_table,
+  row_reduction_table_before,
+  "data.table row reduction mutated its source"
+)
+rm("row_reduction_table", "open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = row_reduction_table_session_id)))
+
 source_environment$wide <- as.data.frame(
   setNames(replicate(256L, seq_len(401L), simplify = FALSE), sprintf("column_%03d", seq_len(256L))),
   optional = TRUE
@@ -2997,6 +3621,8 @@ missing_package_contract <- list(
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
+  drop_missing_rows_at = function(...) stop("unexpected drop missing", call. = FALSE),
+  drop_duplicate_rows_at = function(...) stop("unexpected drop duplicates", call. = FALSE),
   transform_rows = function(...) stop("unexpected row transform", call. = FALSE),
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
   materialize_summaries = function(...) stop("unexpected summary materialization", call. = FALSE),
@@ -3063,6 +3689,39 @@ if (
     !identical(conditionMessage(missing_transform_rows_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without row-transform support", call. = FALSE)
+}
+missing_drop_missing_contract <- missing_package_contract
+missing_drop_missing_contract$drop_missing_rows_at <- NULL
+missing_drop_missing_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_drop_missing_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_drop_missing_error) ||
+    !identical(conditionMessage(missing_drop_missing_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without Drop Missing Rows support", call. = FALSE)
+}
+missing_drop_duplicates_contract <- missing_package_contract
+missing_drop_duplicates_contract$drop_duplicate_rows_at <- NULL
+missing_drop_duplicates_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_drop_duplicates_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_drop_duplicates_error) ||
+    !identical(
+      conditionMessage(missing_drop_duplicates_error),
+      "Open Wrangler received an invalid R frame contract."
+    )
+) {
+  stop("the R agent accepted a frame contract without Drop Duplicates support", call. = FALSE)
 }
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(

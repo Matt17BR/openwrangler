@@ -44,6 +44,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   cleaning step, keep stable row identities through history and inspection, and generate concise executable R.
   Compound sort priority, missing-value placement, `NA` versus `NaN`, duplicate names, and keyed data tables follow
   the same rules as the live view without changing the notebook or source-file dataframe.
+- Added **Drop Missing Rows** and **Drop Duplicates** for native R sessions. Missing-row steps treat `NA` and `NaN` as
+  missing and can check any or all selected columns. Duplicate-row steps compare selected columns or the whole row
+  and can keep the first, last, or none of the repeated rows. Both preserve source order, row identity, dataframe
+  flavor, and compatible data-table keys.
 - R notebook sessions can now insert generated cleaning code into the notebook that opened the dataframe. Open
   Wrangler adds one `r` cell and confirms the exact edit before reporting success.
 - Trusted `.R` files can now run in an Open Wrangler-owned R process. The variable picker lists base data frames,
@@ -66,12 +70,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
   ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
   to the notebook's source object.
-- Added a real VS Code screenshot of R editing. The installed extension now exercises Filter Rows, Sort Rows, Rename,
-  Drop, Select, Clone, Convert type, Text Length, and Lowercase against IRkernel in both VS Code and Cursor. The
-  base-data-frame journey runs all nine operations. Across the sequence it covers preview, apply, inspection, discard, latest-step editing, and
-  undo; Convert type is applied and undone. It also checks generated R, copies and saves Rename code, and verifies that
-  the notebook objects are unchanged. Separate tibble and keyed-data-table sessions preview and discard Rename and
-  Drop Columns; direct R tests cover all nine operations for all three flavors.
+- Added a real VS Code screenshot of R editing. The installed extension now exercises Filter Rows, Sort Rows, Drop
+  Missing Rows, Drop Duplicates, Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase against IRkernel
+  in both VS Code and Cursor. The base-data-frame journey runs all eleven operations. Across the sequence it covers
+  preview, apply, inspection, discard, latest-step editing, and undo; Convert type is applied and undone. Drop Missing
+  Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The journey also checks
+  generated R, copies and saves Rename code, and verifies that the notebook objects are unchanged. Separate tibble and
+  keyed-data-table sessions preview and discard Rename and Drop Columns; direct R tests cover all eleven operations for
+  all three flavors.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and
