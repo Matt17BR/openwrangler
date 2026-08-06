@@ -1654,11 +1654,13 @@ async function exerciseReleasedRJupyterExtension(
   const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
     "notebookPreviewProvider"
   )?.workspaceValue;
+  const originalNotebookStartMode = configuration.inspect<"viewing" | "editing">("notebookStartMode")?.workspaceValue;
   let notebook: vscode.NotebookDocument | undefined;
   let remoteServerCollection: JupyterServerCollection | undefined;
   let acceptanceError: { readonly value: unknown } | undefined;
   try {
     await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
+    await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
     notebook = await vscode.workspace.openNotebookDocument(notebookUri);
     const notebookEditor = await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
     const workbench = await connectToEditorWorkbench();
@@ -1729,7 +1731,7 @@ async function exerciseReleasedRJupyterExtension(
     );
     await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page`);
     assert.deepEqual(base.metadata.capabilities, {
-      editable: false,
+      editable: true,
       lazy: false,
       cancel: false,
       exportCsv: false,
@@ -1738,12 +1740,36 @@ async function exerciseReleasedRJupyterExtension(
       filter: true,
       sort: true,
       profile: true,
-      columnValues: true
+      columnValues: true,
+      supportedOperations: ["renameColumn"]
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
+
+    await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
+    await showExactReleasedNotebook(notebook);
+    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
+    const editing = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      {
+        name: "orders_frame",
+        type: "data.frame",
+        backend: "r",
+        rDataframeFlavor: "r.data.frame",
+        firstValue: "1",
+        notebookInsert: false
+      },
+      "the orders R data.frame opened in editing mode"
+    );
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-editing-journey`);
+    await exerciseReleasedREditingJourney(testing, workbench, editing.sessionId, notebookPath, directory, phase);
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-editing-journey`);
+    await disposePackagedSessionPanel(testing, editing.sessionId, "the editable orders R data.frame session");
+    await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
 
     if (screenshotOutput) {
       const mediaEditor = await showExactReleasedNotebook(notebook);
@@ -1888,6 +1914,11 @@ async function exerciseReleasedRJupyterExtension(
   } catch (error) {
     acceptanceError = { value: error };
   } finally {
+    try {
+      await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
     try {
       await configuration.update("notebookPreviewProvider", originalProvider, vscode.ConfigurationTarget.Workspace);
     } catch (error) {
@@ -2250,6 +2281,338 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   });
   assert.equal(groupFirst.kind, "page");
   if (groupFirst.kind === "page") assert.equal(groupFirst.page.rows[0]?.values[0]?.display, "602");
+}
+
+async function exerciseReleasedREditingJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  notebookPath: string,
+  outputDirectory: string,
+  phase: "jupyter-r" | "jupyter-r-remote"
+): Promise<void> {
+  recordAcceptanceProgress(`${phase}:editing:open`);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The editable R renderer must acknowledge its first complete host snapshot."
+  );
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the editable R session");
+  const opened = testing.activeSession();
+  assert.ok(opened, "The native R editing journey requires one active session.");
+  assert.equal(opened.sessionId, sessionId);
+  assert.equal(opened.metadata.backend, "r");
+  assert.equal(opened.metadata.rDataframeFlavor, "r.data.frame");
+  assert.equal(opened.metadata.mode, "editing");
+  assert.deepEqual(opened.metadata.capabilities, {
+    editable: true,
+    lazy: false,
+    cancel: false,
+    exportCsv: false,
+    exportParquet: false,
+    notebookInsert: false,
+    filter: true,
+    sort: true,
+    profile: true,
+    columnValues: true,
+    supportedOperations: ["renameColumn"]
+  });
+  assert.deepEqual(
+    opened.metadata.schema.slice(0, 4).map((column) => column.name),
+    ["row_id", "group", "score", "label"]
+  );
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+  assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
+  await app.getByRole("button", { name: "Add step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+
+  recordAcceptanceProgress(`${phase}:editing:preview-discard`);
+  const discarded = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
+  app = discarded.app;
+  const discardedReview = app.getByRole("region", { name: "Draft review" });
+  await discardedReview.getByText("Rename column", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await discardedReview
+    .locator('[aria-label="Data diff summary"]')
+    .getByText("No value changes in this block", { exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await app.locator('th[data-column="record_id"]').waitFor({ state: "visible", timeout: 10_000 });
+  await discardedReview.getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.schema[0]?.name === "row_id" &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "discarding the native R rename preview"
+  );
+  await discardedReview.waitFor({ state: "hidden", timeout: 10_000 });
+
+  recordAcceptanceProgress(`${phase}:editing:preview-apply`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after discarding its draft");
+  const previewed = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
+  app = previewed.app;
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.kind === "renameColumn" &&
+        step.id === previewed.stepId &&
+        step.params.column.name === "row_id" &&
+        step.params.newName === "record_id" &&
+        active.metadata.schema[0]?.name === "record_id"
+      );
+    },
+    30_000,
+    "applying the native R rename step"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R rename must be acknowledged before inspection."
+  );
+  const firstApplied = testing.activeSession();
+  assert.ok(firstApplied, "The applied native R rename must retain its session.");
+  assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
+  assert.equal(firstApplied.metadata.capabilities.notebookInsert, false);
+  assert.equal(firstApplied.metadata.capabilities.exportCsv, false);
+  assert.equal(firstApplied.metadata.capabilities.exportParquet, false);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
+  assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+
+  recordAcceptanceProgress(`${phase}:editing:inspect`);
+  await vscode.commands.executeCommand("openWrangler.selectStep", previewed.stepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === previewed.stepId,
+    30_000,
+    "the applied native R rename inspection"
+  );
+  const inspected = testing.activeSession()?.stepInspection;
+  assert.ok(inspected, "Selecting the applied R rename must publish its inspection.");
+  assert.deepEqual(
+    inspected.inputSchema.slice(0, 3).map((column) => column.name),
+    ["row_id", "group", "score"]
+  );
+  assert.deepEqual(
+    inspected.outputSchema.slice(0, 3).map((column) => column.name),
+    ["record_id", "group", "score"]
+  );
+  assert.deepEqual(inspected.diff, {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: false
+  });
+  assertReleasedRGeneratedCode(inspected.code, "record_id");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R rename session");
+  const inspection = app.getByRole("region", { name: "Selected applied-step inspection" });
+  await inspection.getByText(/Inspecting Rename column/u).waitFor({ state: "visible", timeout: 10_000 });
+  await inspection
+    .locator('[aria-label="Selected step data diff summary"]')
+    .getByText("0 changed cells", { exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await inspection.getByRole("button", { name: "Show confirmed data", exact: true }).click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R applied-step inspection"
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:edit-latest`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the confirmed R rename session");
+  const replacement = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "case_id", {
+    replaceStepId: previewed.stepId,
+    previousName: "record_id"
+  });
+  app = replacement.app;
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.id === previewed.stepId &&
+        step.kind === "renameColumn" &&
+        step.params.column.name === "row_id" &&
+        step.params.newName === "case_id" &&
+        active.metadata.schema[0]?.name === "case_id"
+      );
+    },
+    30_000,
+    "reapplying the edited native R rename step"
+  );
+  const reapplied = testing.activeSession();
+  assert.ok(reapplied, "The edited native R rename must retain its session.");
+  assertReleasedRGeneratedCode(reapplied.code ?? "", "case_id");
+
+  recordAcceptanceProgress(`${phase}:editing:copy-export`);
+  const generatedCode = reapplied.code ?? "";
+  const priorClipboard = await vscode.env.clipboard.readText();
+  const copied = await vscode.commands.executeCommand<string>("openWrangler.copyCode");
+  assert.equal(copied, generatedCode, "The public Copy Generated Code command must copy native R code.");
+  assert.equal(await vscode.env.clipboard.readText(), generatedCode);
+  await vscode.env.clipboard.writeText(priorClipboard);
+  await assert.rejects(
+    testing.exportCodeTo(vscode.Uri.file(notebookPath)),
+    /never overwrites the active source/u,
+    "The deterministic R script writer must reject the originating notebook."
+  );
+  const scriptPath = path.join(outputDirectory, `${phase}.orders.clean.R`);
+  await exerciseRealScriptSaveDialog(workbench, vscode.Uri.file(notebookPath), scriptPath, {
+    language: "R",
+    defaultSuffix: ".clean.R"
+  });
+  assert.equal(readFileSync(scriptPath, "utf8"), generatedCode, "The public Save dialog must export native R code.");
+  assert.deepEqual(
+    readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
+    [],
+    "The R script export must not retain sibling temporary files."
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:undo`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema[0]?.name === "row_id" &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the edited native R rename step"
+  );
+  const restored = testing.activeSession();
+  assert.ok(restored, "Undoing the R rename must retain the session.");
+  const restoredPage = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    sessionId,
+    revision: restored.metadata.revision,
+    viewRequestId: `${phase}-editing-restored-page`,
+    offset: 0,
+    limit: 1,
+    filterModel: restored.viewState.filterModel
+  });
+  assert.equal(restoredPage.kind, "page");
+  if (restoredPage.kind !== "page") throw new Error("The undone R session did not return its original page.");
+  assert.equal(restoredPage.metadata.schema[0]?.name, "row_id");
+  assert.equal(restoredPage.page.rows[0]?.values[0]?.display, "1");
+}
+
+async function previewReleasedRRename(
+  testing: TestApi,
+  workbench: Page,
+  app: Locator,
+  sessionId: string,
+  sourceName: string,
+  newName: string,
+  replacement?: Readonly<{ replaceStepId: string; previousName: string }>
+): Promise<Readonly<{ app: Locator; stepId: string }>> {
+  let dialog: Locator;
+  if (replacement) {
+    await app.getByRole("button", { name: "Edit latest", exact: true }).click();
+    dialog = app.getByRole("dialog", { name: "Edit cleaning step" });
+  } else {
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await dialog.waitFor({ state: "visible", timeout: 10_000 });
+    await dialog.getByRole("button", { name: /^Rename column/u }).click();
+  }
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const column = dialog.getByLabel("Column", { exact: true });
+  await column.waitFor({ state: "visible", timeout: 10_000 });
+  if (replacement) {
+    assert.equal((await column.locator("option:checked").innerText()).trim(), sourceName);
+  } else {
+    await column.selectOption({ label: sourceName });
+  }
+  const target = dialog.getByLabel("New name", { exact: true });
+  if (replacement) assert.equal(await target.inputValue(), replacement.previousName);
+  await target.fill(newName);
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "renameColumn" &&
+        draft.params.column.name === sourceName &&
+        draft.params.newName === newName &&
+        active.metadata.schema[0]?.name === newName &&
+        (replacement
+          ? active.metadata.draftReplacesStepId === replacement.replaceStepId &&
+            draft.id === replacement.replaceStepId &&
+            active.metadata.steps.length === 1
+          : active.metadata.draftReplacesStepId === undefined && active.metadata.steps.length === 0)
+      );
+    },
+    30_000,
+    `the native R ${replacement ? "replacement" : "new"} rename preview`
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  const active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep, "The native R rename preview must retain its draft step.");
+  const stepId = active.metadata.draftStep.id;
+  if (replacement) assert.equal(stepId, replacement.replaceStepId);
+  assertReleasedRGeneratedCode(active.code ?? "", newName);
+  const codePreview = await waitForCodePreview(workbench, newName, "R");
+  assertReleasedRGeneratedCode(await codePreview.innerText(), newName);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R rename preview must be acknowledged by its exact renderer."
+  );
+  return {
+    app: await releasedRSessionApp(workbench, testing, sessionId, "the native R rename preview"),
+    stepId
+  };
+}
+
+function assertReleasedRGeneratedCode(code: string, newName: string): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.match(code, /get\("orders_frame", envir = \.GlobalEnv, inherits = FALSE\)/u);
+  assert.ok(code.includes(JSON.stringify(newName)), `Generated R code must contain ${JSON.stringify(newName)}.`);
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+async function releasedRSessionApp(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  description: string
+): Promise<Locator> {
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, `${description} requires its exact Open Wrangler renderer.`);
+  return app;
 }
 
 async function captureReleasedRJupyterWorkbench(
@@ -12083,12 +12446,16 @@ async function assertMediaColumnTitlesUnclipped(
   }
 }
 
-async function waitForCodePreview(workbench: Page, expectedCode: string): Promise<Locator> {
+async function waitForCodePreview(
+  workbench: Page,
+  expectedCode: string,
+  language: "Python" | "R" = "Python"
+): Promise<Locator> {
   const deadline = Date.now() + 10_000;
   do {
     for (const frame of workbench.frames()) {
       try {
-        const content = frame.locator('[aria-label="Editable generated Python code preview"]');
+        const content = frame.locator(`[aria-label="Editable generated ${language} code preview"]`);
         if ((await content.count()) === 0 || !(await content.isVisible())) continue;
         if ((await content.innerText()).includes(expectedCode)) return content;
       } catch (error) {
@@ -24218,7 +24585,11 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
 async function exerciseRealScriptSaveDialog(
   page: Page,
   hostileDestination: vscode.Uri,
-  destination: string
+  destination: string,
+  options: Readonly<{ language: "Python" | "R"; defaultSuffix: ".clean.py" | ".clean.R" }> = {
+    language: "Python",
+    defaultSuffix: ".clean.py"
+  }
 ): Promise<void> {
   const commandOutcome = vscode.commands.executeCommand<boolean>("openWrangler.exportCode", hostileDestination);
   const earlyOutcome = await Promise.race([
@@ -24232,14 +24603,14 @@ async function exerciseRealScriptSaveDialog(
   );
   const dialog = page
     .locator(".quick-input-widget:visible")
-    .filter({ hasText: "Export Open Wrangler Python Code" })
+    .filter({ hasText: `Export Open Wrangler ${options.language} Code` })
     .last();
   await dialog.waitFor({ state: "visible", timeout: 10_000 });
   const input = dialog.locator(".quick-input-box input").first();
   await input.waitFor({ state: "visible", timeout: 10_000 });
   assert.match(
     await input.inputValue(),
-    /\.clean\.py$/u,
+    new RegExp(`${options.defaultSuffix.replaceAll(".", "\\.")}$`, "u"),
     "The hostile command argument must not become the default URI."
   );
 
@@ -24248,7 +24619,7 @@ async function exerciseRealScriptSaveDialog(
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
   assert.equal(await commandOutcome, true, "The real Save dialog must commit the selected script destination.");
 
-  const cancelledDestination = `${destination}.cancelled.py`;
+  const cancelledDestination = `${destination}.cancelled${path.extname(options.defaultSuffix)}`;
   const cancelledOutcome = vscode.commands.executeCommand<boolean>("openWrangler.exportCode");
   await dialog.waitFor({ state: "visible", timeout: 10_000 });
   await input.fill(path.resolve(cancelledDestination));
