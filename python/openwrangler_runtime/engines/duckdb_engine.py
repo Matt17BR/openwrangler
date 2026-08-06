@@ -819,8 +819,8 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "fillMissingValues":
             column = bound_column_name(params["column"], kind)
             replacement = params["replacement"]
-            if replacement.get("kind") == "median":
-                return [f"{prefix}df = _ow_fill_missing(df, {column!r}, 'median', None)"]
+            if replacement.get("kind") in {"median", "mostFrequent"}:
+                return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, None)"]
             value = generated_fill_replacement_expression(replacement)
             return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, {value})"]
         if kind == "dropDuplicates":
@@ -1038,6 +1038,38 @@ class DuckDBEngine(DataFrameEngine):
         valid = _valid_predicate(identifier, raw_type)
         missing = f"NOT ({valid})"
 
+        if replacement.get("kind") == "mostFrequent":
+            missing_count = int(self._terminal_scalar(frame, f"SELECT count(*) FILTER (WHERE {missing}) FROM ow"))
+            if missing_count == 0:
+                return frame
+            value_name = _unique_internal(self._columns(frame), "__ow_fill_value")
+            count_name = _unique_internal([*self._columns(frame), value_name], "__ow_fill_count")
+            winner_name = _unique_internal([*self._columns(frame), value_name, count_name], "__ow_fill_winner")
+            ties_name = _unique_internal([*self._columns(frame), value_name, count_name, winner_name], "__ow_fill_ties")
+            result = self._terminal_rows(
+                frame,
+                (
+                    f"WITH counts AS (SELECT {identifier} AS {_quote_ident(value_name)}, "
+                    f"count(*) AS {_quote_ident(count_name)} FROM ow WHERE {valid} GROUP BY {identifier}), "
+                    f"winners AS (SELECT {_quote_ident(value_name)} FROM counts WHERE {_quote_ident(count_name)} = "
+                    f"(SELECT max({_quote_ident(count_name)}) FROM counts)) "
+                    f"SELECT any_value({_quote_ident(value_name)}) AS {_quote_ident(winner_name)}, "
+                    f"count(*) AS {_quote_ident(ties_name)} FROM winners"
+                ),
+            )
+            fill_value, tie_count = result[0]
+            tie_count = int(tie_count)
+            if tie_count == 0:
+                raise EngineError("This column has no non-missing values. Choose a specific value.")
+            if tie_count != 1:
+                raise EngineError(
+                    f"This column has no single most common value: {tie_count} values are tied. "
+                    "Choose a specific value."
+                )
+            literal = _sql_literal(fill_value)
+            expression = f"CASE WHEN {missing} THEN CAST({literal} AS {raw_type}) ELSE {identifier} END"
+            return self._assign(frame, column, expression)
+
         if replacement.get("kind") == "median":
             if semantic_type == "float":
                 median = self._terminal_scalar(
@@ -1081,6 +1113,10 @@ class DuckDBEngine(DataFrameEngine):
             fill_value = decimal_at_scale(Decimal(fill_value), precision, scale)
         elif semantic_type == "datetime":
             fill_value = require_datetime_fill_awareness(fill_value, _duckdb_datetime_is_aware(raw_type))
+        if semantic_type == "string" and replacement.get("kind") == "string":
+            missing_count = int(self._terminal_scalar(frame, f"SELECT count(*) FILTER (WHERE {missing}) FROM ow"))
+            if missing_count == 0:
+                return frame
         literal = _duckdb_decimal_literal(fill_value) if isinstance(fill_value, Decimal) else _sql_literal(fill_value)
         if semantic_type == "unknown":
             expression = f"CASE WHEN {identifier} IS NULL THEN {literal} ELSE {identifier} END"
@@ -2159,6 +2195,40 @@ def _ow_fill_missing(df, column, replacement_kind, value):
     identifier = _ow_ident(column)
     valid = _ow_valid(identifier, raw_type)
     missing = "NOT (" + valid + ")"
+    if replacement_kind == "mostFrequent":
+        missing_count = int(
+            _ow_query(df, "SELECT count(*) FILTER (WHERE " + missing + ") FROM ow").fetchone()[0]
+        )
+        if missing_count == 0:
+            return df
+        value_name = _ow_unique(_ow_columns(df), "__ow_fill_value")
+        count_name = _ow_unique(_ow_columns(df) + [value_name], "__ow_fill_count")
+        winner_name = _ow_unique(_ow_columns(df) + [value_name, count_name], "__ow_fill_winner")
+        ties_name = _ow_unique(
+            _ow_columns(df) + [value_name, count_name, winner_name], "__ow_fill_ties"
+        )
+        result = _ow_query(
+            df,
+            "WITH counts AS (SELECT " + identifier + " AS " + _ow_ident(value_name)
+            + ", count(*) AS " + _ow_ident(count_name) + " FROM ow WHERE " + valid
+            + " GROUP BY " + identifier + "), winners AS (SELECT " + _ow_ident(value_name)
+            + " FROM counts WHERE " + _ow_ident(count_name) + " = (SELECT max("
+            + _ow_ident(count_name) + ") FROM counts)) SELECT any_value(" + _ow_ident(value_name)
+            + ") AS " + _ow_ident(winner_name) + ", count(*) AS " + _ow_ident(ties_name)
+            + " FROM winners",
+        ).fetchone()
+        fill_value, tie_count = result
+        tie_count = int(tie_count)
+        if tie_count == 0:
+            raise ValueError("This column has no non-missing values. Choose a specific value.")
+        if tie_count != 1:
+            raise ValueError(
+                "This column has no single most common value: " + str(tie_count)
+                + " values are tied. Choose a specific value."
+            )
+        replacement = "CAST(" + _ow_literal(fill_value) + " AS " + raw_type + ")"
+        expression = "CASE WHEN " + missing + " THEN " + replacement + " ELSE " + identifier + " END"
+        return _ow_assign(df, column, expression)
     if replacement_kind == "median":
         if _ow_is_float(raw_type):
             median = _ow_query(
@@ -2219,6 +2289,12 @@ def _ow_fill_missing(df, column, replacement_kind, value):
         if value_aware != column_aware:
             expected = "timezone-aware" if column_aware else "timezone-naive"
             raise ValueError("The replacement datetime must be " + expected + " to match the selected column.")
+    if replacement_kind == "string":
+        missing_count = int(
+            _ow_query(df, "SELECT count(*) FILTER (WHERE " + missing + ") FROM ow").fetchone()[0]
+        )
+        if missing_count == 0:
+            return df
     literal = _ow_decimal_literal(value) if isinstance(value, Decimal) else _ow_literal(value)
     if lowered_type == "null":
         expression = "CASE WHEN " + identifier + " IS NULL THEN " + literal + " ELSE " + identifier + " END"

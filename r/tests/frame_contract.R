@@ -823,6 +823,37 @@ for (case in fill_cases) {
 }
 assert_identical(fill_frame, fill_before, "Fill Missing Values mutated its source data.frame")
 
+most_frequent_frame <- data.frame(
+  text = c("ready", NA, "ready", "later"),
+  label = ordered(c("high", NA, "high", "low"), levels = c("low", "high")),
+  enabled = c(TRUE, NA, TRUE, FALSE),
+  check.names = FALSE
+)
+most_frequent_before <- unserialize(serialize(most_frequent_frame, NULL, version = 3L))
+most_frequent_cases <- list(
+  list(position = 1L, expected = c("ready", "ready", "ready", "later")),
+  list(position = 2L, expected = ordered(c("high", "high", "high", "low"), levels = c("low", "high"))),
+  list(position = 3L, expected = c(TRUE, TRUE, TRUE, FALSE))
+)
+for (case in most_frequent_cases) {
+  result <- openwrangler_r_frame_contract$fill_missing_column_at(
+    most_frequent_frame,
+    case$position,
+    names(most_frequent_frame)[[case$position]],
+    list(kind = "mostFrequent")
+  )
+  assert_identical(
+    result[[case$position]],
+    case$expected,
+    sprintf("Most common value returned the wrong %s values", names(most_frequent_frame)[[case$position]])
+  )
+}
+assert_identical(
+  most_frequent_frame,
+  most_frequent_before,
+  "Most common value mutated its source data.frame"
+)
+
 complete_factor <- data.frame(
   label = ordered(c("high", "low"), levels = c("low", "high"))
 )
@@ -836,6 +867,54 @@ assert_identical(
   complete_factor_result,
   complete_factor,
   "Fill Missing Values added an unused level to a complete factor"
+)
+complete_factor_most_frequent <- openwrangler_r_frame_contract$fill_missing_column_at(
+  complete_factor,
+  1L,
+  "label",
+  list(kind = "mostFrequent")
+)
+assert_identical(
+  complete_factor_most_frequent,
+  complete_factor,
+  "Most common value changed a complete factor or rejected its unused tie"
+)
+
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c("alpha", "beta", NA_character_)),
+    1L,
+    "value",
+    list(kind = "mostFrequent")
+  ),
+  "2 values are tied"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(NA_character_, NA_character_)),
+    1L,
+    "value",
+    list(kind = "mostFrequent")
+  ),
+  "no non-missing values"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c("ready", NA_character_)),
+    1L,
+    "value",
+    list(kind = "mostFrequent", value = "ready")
+  ),
+  "may not contain a value"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(1, NA_real_)),
+    1L,
+    "value",
+    list(kind = "mostFrequent")
+  ),
+  "incompatible"
 )
 
 dst_frame <- data.frame(

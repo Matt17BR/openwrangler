@@ -12253,6 +12253,28 @@ async function exercisePackagedFirstUseInteractionJourney(
     "Closing Insights must restore focus to its toolbar toggle."
   );
 
+  recordAcceptanceProgress("platform-smoke:fill-most-common");
+  await previewMostCommonAccountNote(app, testing);
+  app = await rediscoverApp("Most-common fill validation");
+  const fillDraft = testing.activeSession();
+  assert.equal(fillDraft?.metadata.draftStep?.kind, "fillMissingValues");
+  assert.deepEqual(fillDraft?.metadata.draftStep?.params.replacement, { kind: "mostFrequent" });
+  assert.equal(fillDraft?.metadata.schema.find((column) => column.id === accountNote.id)?.nullable, false);
+  assert.match(fillDraft?.code ?? "", /_ow_polars_most_frequent/u);
+  const fillReview = app.getByRole("region", { name: "Draft review" });
+  await fillReview.waitFor({ state: "visible", timeout: 10_000 });
+  await fillReview.getByText("Fill missing values", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await fillReview.getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () =>
+      testing.activeSession()?.metadata.draftStep === undefined &&
+      testing.activeSession()?.metadata.steps.length === 0 &&
+      testing.activeSession()?.metadata.schema.find((column) => column.id === accountNote.id)?.nullable === true,
+    30_000,
+    "discarding the most-common fill preview"
+  );
+  await fillReview.waitFor({ state: "hidden", timeout: 10_000 });
+
   recordAcceptanceProgress("platform-smoke:draft-discard");
   await previewUppercaseMarket(app, testing, "market_upper");
   const draftCodePreview = await waitForCodePreview(workbench, "market_upper");
@@ -12436,6 +12458,42 @@ async function exercisePackagedFirstUseInteractionJourney(
     "The first-use export journey must preserve its source bytes."
   );
   await clearReleasedJupyterScreenshotTransientUi(workbench);
+}
+
+async function previewMostCommonAccountNote(app: Locator, testing: TestApi): Promise<void> {
+  const active = testing.activeSession();
+  assert.ok(active, "The most-common fill preview requires one active dataframe session.");
+  const accountNote = columnReference(active.metadata, "account_note");
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("fill missing");
+  await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  await dialog.getByLabel("Column", { exact: true }).selectOption(accountNote.id);
+  const fillMode = dialog.getByLabel("Fill with", { exact: true });
+  await fillMode.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await fillMode.inputValue(),
+    "mostFrequent",
+    "Selecting a nullable text column should choose its most useful automatic fill."
+  );
+  await dialog
+    .getByText("Filters in the current view do not affect this calculation.", { exact: false })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const draft = testing.activeSession()?.metadata.draftStep;
+      return (
+        draft?.kind === "fillMissingValues" &&
+        draft.params.column.id === accountNote.id &&
+        draft.params.replacement.kind === "mostFrequent"
+      );
+    },
+    30_000,
+    "the most-common text fill preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 }
 
 async function previewUppercaseMarket(app: Locator, testing: TestApi, newColumn: string): Promise<void> {

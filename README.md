@@ -100,6 +100,9 @@ changing the source._
 
 Choose from 28 operations, including filling missing values, custom Pandas or Polars code, and transformations inferred
 from examples. A draft stays separate until you apply it, and applied steps can be inspected, edited, or undone.
+Fill Missing Values offers a median for numeric columns, the most common value for text, categorical, and boolean
+columns, or a specific value of the right type. A specific value may convert a categorical column to text; the most
+common value keeps its category type.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png" width="960"></a>
 
@@ -187,8 +190,9 @@ The R workbench supports paging, filters, multi-column sorts, value search, prof
 **Drop Columns**, **Select Columns**, **Clone Column**, **Convert type**, **Text Length**, and **Lowercase**. A viewing
 filter or sort can be copied into a cleaning step without changing the original dataframe. Drop Missing Rows treats
 `NA` and `NaN` as missing and can check any or all selected columns. Drop Duplicates can compare selected columns or
-the whole row and keep the first, last, or none of the repeated rows. Fill Missing Values accepts typed replacements
-and exact medians, including `integer64`, factors, dates, and datetimes. Each operation uses the same preview, apply,
+the whole row and keep the first, last, or none of the repeated rows. Fill Missing Values offers exact medians for
+numeric columns, the most common value for character, factor, and logical columns, and specific typed values. It keeps
+`integer64`, factors, dates, and datetimes in their R types. Each operation uses the same preview, apply,
 discard, inspection, edit, and undo flow.
 Generated R can be copied, saved as a script, or inserted into the notebook or R document that opened the dataframe.
 

@@ -46,6 +46,7 @@ row_reduction_table_session_id <- "28282828-2828-4828-8828-282828282828"
 row_reduction_view_session_id <- "29292929-2929-4929-8929-292929292929"
 fill_session_id <- "30303030-3030-4030-8030-303030303030"
 fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
+most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -2267,6 +2268,126 @@ assert_identical(fill_undo$page$schema[[2L]]$nullable, TRUE, "undo did not resto
 assert_identical(source_environment$fill_frame, fill_source_before, "the R Fill Missing Values lifecycle mutated its source")
 fill_closed <- dispatch("closeSession", list(sessionId = fill_session_id))
 assert_identical(fill_closed$kind, "closed", "the R Fill Missing Values session did not close")
+
+source_environment$most_fill_frame <- data.frame(
+  label = ordered(c("high", NA, "high", "low"), levels = c("low", "high")),
+  row.names = c("most-a", "most-b", "most-c", "most-d")
+)
+most_fill_before <- unserialize(serialize(source_environment$most_fill_frame, NULL, version = 3L))
+most_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = most_fill_session_id, variableName = "most_fill_frame", page = page_window())
+)
+assert_identical(most_fill_open$kind, "page", "the R most-common-value session did not open")
+most_fill_malformed <- dispatch(
+  "previewStep",
+  list(
+    sessionId = most_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "fill-most-malformed",
+      "r:c:0",
+      "label",
+      list(kind = "mostFrequent", value = "high")
+    ),
+    page = page_window()
+  )
+)
+assert_identical(most_fill_malformed$kind, "error", "R accepted a most-common-value replacement with a value")
+assert_identical(most_fill_malformed$code, "invalid_request", "the malformed most-common-value diagnostic changed")
+most_fill_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = most_fill_session_id,
+    revision = 0L,
+    step = fill_step("fill-most", "r:c:0", "label", list(kind = "mostFrequent")),
+    page = page_window()
+  )
+)
+assert_identical(
+  most_fill_preview$kind,
+  "stepPreview",
+  sprintf(
+    "R most common value did not preview: %s",
+    as.character(jsonlite::toJSON(most_fill_preview, auto_unbox = TRUE, null = "null"))
+  )
+)
+assert_identical(most_fill_preview$diff$changedCells, 1L, "R most common value returned an inexact diff")
+assert_identical(most_fill_preview$diff$cells[[1L]]$after$raw, "high", "R most common value chose the wrong factor level")
+most_fill_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = most_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(most_fill_apply$action, "apply", "R most common value did not apply")
+assign("most_fill_frame", source_environment$most_fill_frame, envir = .GlobalEnv)
+eval(parse(text = most_fill_apply$code), envir = .GlobalEnv)
+most_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  most_fill_generated$label,
+  ordered(c("high", "high", "high", "low"), levels = c("low", "high")),
+  "generated R most common value changed the factor result or levels"
+)
+assert_identical(
+  get("most_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  most_fill_before,
+  "generated R most common value mutated its source"
+)
+assert_identical(
+  source_environment$most_fill_frame,
+  most_fill_before,
+  "the R most-common-value lifecycle mutated its source"
+)
+most_fill_tie <- data.frame(
+  label = ordered(c("high", NA, "low"), levels = c("low", "high")),
+  row.names = c("tie-a", "tie-b", "tie-c")
+)
+most_fill_tie_before <- unserialize(serialize(most_fill_tie, NULL, version = 3L))
+assign("most_fill_frame", most_fill_tie, envir = .GlobalEnv)
+most_fill_tie_error <- tryCatch(
+  {
+    eval(parse(text = most_fill_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(most_fill_tie_error) ||
+    !grepl("2 values are tied", conditionMessage(most_fill_tie_error), fixed = TRUE)
+) {
+  stop("generated R most common value did not reject an ambiguous winner", call. = FALSE)
+}
+assert_identical(
+  get("most_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  most_fill_tie_before,
+  "a failed generated R most-common-value step mutated its source"
+)
+most_fill_empty <- data.frame(
+  label = ordered(c(NA, NA), levels = c("low", "high")),
+  row.names = c("empty-a", "empty-b")
+)
+most_fill_empty_before <- unserialize(serialize(most_fill_empty, NULL, version = 3L))
+assign("most_fill_frame", most_fill_empty, envir = .GlobalEnv)
+most_fill_empty_error <- tryCatch(
+  {
+    eval(parse(text = most_fill_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(most_fill_empty_error) ||
+    !grepl("no non-missing values", conditionMessage(most_fill_empty_error), fixed = TRUE)
+) {
+  stop("generated R most common value did not reject an all-missing column", call. = FALSE)
+}
+assert_identical(
+  get("most_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  most_fill_empty_before,
+  "an all-missing generated R step mutated its source"
+)
+rm("most_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+most_fill_closed <- dispatch("closeSession", list(sessionId = most_fill_session_id))
+assert_identical(most_fill_closed$kind, "closed", "the R most-common-value session did not close")
 
 source_environment$fill_table <- data.table::data.table(primary_key = c(1L, 2L), payload = c(NA_character_, "ready"))
 data.table::setkey(source_environment$fill_table, primary_key)

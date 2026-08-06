@@ -708,7 +708,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /Direct R-document execution currently requires macOS or Linux/u);
   assert.match(
     gallery,
-    /Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop\s+Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase\.[\s\S]{0,920}All twelve use draft preview, generated R,\s+apply, discard, inspection, latest-step editing, and undo/u
+    /Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop\s+Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase\.[\s\S]{0,1100}All twelve use draft preview, generated R,\s+apply, discard,\s+inspection, latest-step editing, and undo/u
   );
   assert.match(
     gallery,

@@ -882,6 +882,7 @@ describe("native R kernel protocol", () => {
   it("strictly validates every native R Fill Missing Values replacement", () => {
     const replacements = [
       { kind: "median" },
+      { kind: "mostFrequent" },
       { kind: "string", value: "unknown" },
       { kind: "integer", value: "-42" },
       { kind: "float", value: "1.25e+3" },
@@ -912,6 +913,7 @@ describe("native R kernel protocol", () => {
 
     const invalidReplacements: ReadonlyArray<readonly [unknown, string]> = [
       [{ kind: "median", value: "1" }, "may not contain a value"],
+      [{ kind: "mostFrequent", value: "ready" }, "may not contain a value"],
       [{ kind: "string" }, "requires a value"],
       [{ kind: "integer", value: "01" }, "canonical decimal text"],
       [{ kind: "float", value: "NaN" }, "canonical decimal text"],

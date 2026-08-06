@@ -1873,11 +1873,11 @@ function schemaAfterFillMissing(
   }
   const replacement = step.params.replacement;
   const compatible =
-    (source.type === "string" && replacement.kind === "string") ||
+    (source.type === "string" && (replacement.kind === "mostFrequent" || replacement.kind === "string")) ||
     (source.type === "integer" && (replacement.kind === "median" || replacement.kind === "integer")) ||
     (source.type === "float" &&
       (replacement.kind === "median" || replacement.kind === "integer" || replacement.kind === "float")) ||
-    (source.type === "boolean" && replacement.kind === "boolean") ||
+    (source.type === "boolean" && (replacement.kind === "mostFrequent" || replacement.kind === "boolean")) ||
     (source.type === "date" && replacement.kind === "date") ||
     (source.type === "datetime" && replacement.kind === "datetime");
   if (!compatible) {

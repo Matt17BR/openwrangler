@@ -6,11 +6,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
-- Added **Fill missing values** for Pandas, Polars, and DuckDB. A draft can replace null and NaN cells in one
-  column with its median or a value of the matching type, then preview, apply, edit, discard, replay, or undo it like
-  any other cleaning step. Median fills keep the existing column type. Integer and decimal medians must fit that type
-  exactly, decimal values must fit the column scale, and datetime values must match the column's timezone awareness.
-  Generated Python code follows the same rules without converting the dataframe to another engine.
+- Added **Fill missing values** for Pandas, Polars, and DuckDB. Numeric columns can use their median. Text,
+  categorical, and boolean columns can use the most common non-missing value. Supported scalar columns can also use a
+  specific value of the matching type. When a fill is needed, automatic methods ask for a specific value if the
+  column is empty or its most common values are tied. No-op fills keep categorical and enum types unchanged, and
+  generated code follows the same rules without converting the dataframe to another engine.
 - Added the first R notebook viewer for Open Wrangler 2. The notebook picker can open base `data.frame`, tibble, and
   `data.table` objects directly from IRkernel, page across the complete frame, apply compound viewing filters and
   ordered sorts, search and select column values, and calculate filter-aware column and dataset profiles. Profiles
@@ -48,10 +48,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   missing and can check any or all selected columns. Duplicate-row steps compare selected columns or the whole row
   and can keep the first, last, or none of the repeated rows. Both preserve source order, row identity, dataframe
   flavor, and compatible data-table keys.
-- Added **Fill Missing Values** for native R sessions. It replaces `NA` and `NaN` with a typed value or an exact
-  median, keeps factors and `integer64` values native, and reports the changed cells before apply. Key columns are
-  blocked because changing one could invalidate a data-table key. The form checks R's 8 KiB text limit before
-  preview.
+- Added **Fill Missing Values** for native R sessions. Numeric columns can use an exact median; character, factor,
+  and logical columns can use the most common non-missing value; supported columns can use a specific typed value.
+  Factors and `integer64` values stay native. Key columns are blocked because changing one could invalidate a
+  data-table key, and the form checks R's 8 KiB text limit before preview.
 - R notebook sessions can now insert generated cleaning code into the notebook that opened the dataframe. Open
   Wrangler adds one `r` cell and confirms the exact edit before reporting success.
 - Trusted `.R` files can now run in an Open Wrangler-owned R process. The variable picker lists base data frames,

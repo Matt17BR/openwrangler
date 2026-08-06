@@ -863,7 +863,9 @@ const MAX_FILL_INTEGER = 10n ** 38n - 1n;
 
 function isFillMissingReplacement(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  if (value.kind === "median") return exactRecord(value, ["kind"]) !== undefined;
+  if (value.kind === "median" || value.kind === "mostFrequent") {
+    return exactRecord(value, ["kind"]) !== undefined;
+  }
   const decoded = exactRecord(value, ["kind", "value"]);
   if (decoded === undefined) return false;
   switch (decoded.kind) {

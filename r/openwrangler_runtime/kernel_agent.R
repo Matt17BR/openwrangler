@@ -449,13 +449,13 @@ openwrangler_r_kernel_agent <- local({
       "request.payload.step.params.replacement.kind",
       16L
     )
-    supported <- c("median", "string", "integer", "float", "decimal", "boolean", "date", "datetime")
+    supported <- c("median", "mostFrequent", "string", "integer", "float", "decimal", "boolean", "date", "datetime")
     if (!kind %in% supported) {
       abort("invalid_request", "request.payload.step.params.replacement.kind is unsupported")
     }
-    if (identical(kind, "median")) {
+    if (kind %in% c("median", "mostFrequent")) {
       if ("value" %in% names(replacement)) {
-        abort("invalid_request", "a median replacement may not contain a value")
+        abort("invalid_request", "a calculated replacement may not contain a value")
       }
       return(list(kind = kind))
     }
@@ -839,12 +839,12 @@ openwrangler_r_kernel_agent <- local({
     replacement_kind <- step$params$replacement$kind
     compatible <- switch(
       semantic_kind,
-      character = identical(replacement_kind, "string"),
-      factor = identical(replacement_kind, "string"),
+      character = replacement_kind %in% c("mostFrequent", "string"),
+      factor = replacement_kind %in% c("mostFrequent", "string"),
       integer = replacement_kind %in% c("median", "integer"),
       integer64 = replacement_kind %in% c("median", "integer"),
       double = replacement_kind %in% c("median", "integer", "float"),
-      logical = identical(replacement_kind, "boolean"),
+      logical = replacement_kind %in% c("mostFrequent", "boolean"),
       date = identical(replacement_kind, "date"),
       datetime = identical(replacement_kind, "datetime"),
       FALSE
@@ -1708,7 +1708,9 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_fill_replacement <- function(replacement) {
-    if (identical(replacement$kind, "median")) return("list(kind = \"median\")")
+    if (replacement$kind %in% c("median", "mostFrequent")) {
+      return(sprintf("list(kind = %s)", r_string(replacement$kind)))
+    }
     value <- if (identical(replacement$kind, "boolean")) {
       if (isTRUE(replacement$value)) "TRUE" else "FALSE"
     } else {
@@ -1783,6 +1785,15 @@ openwrangler_r_kernel_agent <- local({
       "          if (is.na(.ow_fill)) stop(\"Open Wrangler integer median is outside the R integer range\", call. = FALSE)",
       "        }",
       "      }",
+      "    } else if (.ow_replacement_kind == \"mostFrequent\") {",
+      "      if (!any(.ow_missing)) return(.ow_values)",
+      "      .ow_present <- .ow_values[!.ow_missing]",
+      "      if (length(.ow_present) == 0L) stop(\"This column has no non-missing values. Choose a specific value.\", call. = FALSE)",
+      "      .ow_candidates <- unique(.ow_present)",
+      "      .ow_counts <- tabulate(match(.ow_present, .ow_candidates), nbins = length(.ow_candidates))",
+      "      .ow_winners <- which(.ow_counts == max(.ow_counts))",
+      "      if (length(.ow_winners) != 1L) stop(sprintf(\"This column has no single most common value: %d values are tied. Choose a specific value.\", length(.ow_winners)), call. = FALSE)",
+      "      .ow_fill <- .ow_candidates[[.ow_winners[[1L]]]]",
       "    } else if (.ow_semantic_kind %in% c(\"character\", \"factor\")) {",
       "      .ow_fill <- .ow_replacement$value",
       "      if (!is.character(.ow_fill) || length(.ow_fill) != 1L || is.na(.ow_fill) || Encoding(.ow_fill) == \"bytes\") stop(\"Open Wrangler expected valid replacement text\", call. = FALSE)",

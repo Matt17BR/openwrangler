@@ -36,7 +36,8 @@ const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "
 const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
 const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
 const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
-type FillValueKind = Exclude<FillMissingReplacement, { kind: "median" }>["kind"];
+type FillMode = "median" | "mostFrequent" | "value";
+type FillValueKind = Exclude<FillMissingReplacement, { kind: "median" } | { kind: "mostFrequent" }>["kind"];
 const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
   "integer",
@@ -47,6 +48,7 @@ const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "datetime",
   "unknown"
 ]);
+const mostFrequentColumnTypes: ReadonlySet<ColumnType> = new Set(["string", "boolean"]);
 const fillValueKindOptions: readonly [FillValueKind, string][] = [
   ["string", "Text"],
   ["integer", "Integer"],
@@ -1100,69 +1102,71 @@ function FillMissingFields({
 }) {
   const initialParams = initialStep?.kind === "fillMissingValues" ? initialStep.params : undefined;
   const initialReplacement = initialParams?.replacement;
-  const medianColumns = compatibleColumns(columns, numericColumnTypes);
-  const valueColumns = compatibleColumns(columns, fillValueColumnTypes);
-  const [mode, setMode] = useState<"median" | "value">(
-    initialReplacement
-      ? initialReplacement.kind === "median"
-        ? "median"
-        : "value"
-      : medianColumns.length
-        ? "median"
-        : "value"
-  );
-  const availableColumns = mode === "median" ? medianColumns : valueColumns;
+  const availableColumns = compatibleColumns(columns, fillValueColumnTypes);
   const savedColumnId = columnReferenceId(initialParams?.column);
   const [selectedColumnId, setSelectedColumnId] = useState(() =>
     savedColumnId && availableColumns.some((column) => column.id === savedColumnId)
       ? savedColumnId
-      : (availableColumns[0]?.id ?? "")
+      : (availableColumns.find((column) => column.nullable)?.id ?? availableColumns[0]?.id ?? "")
   );
   const selectedColumn = availableColumns.find((column) => column.id === selectedColumnId);
-  const initialKind = initialReplacement?.kind !== "median" ? initialReplacement?.kind : undefined;
+  const savedMode: FillMode | undefined = initialReplacement
+    ? initialReplacement.kind === "median" || initialReplacement.kind === "mostFrequent"
+      ? initialReplacement.kind
+      : "value"
+    : undefined;
+  const [mode, setMode] = useState<FillMode>(() =>
+    savedMode && fillModesForColumn(selectedColumn).includes(savedMode)
+      ? savedMode
+      : defaultFillModeForColumn(selectedColumn)
+  );
+  const initialKind =
+    initialReplacement?.kind !== "median" && initialReplacement?.kind !== "mostFrequent"
+      ? initialReplacement?.kind
+      : undefined;
   const [unknownValueKind, setUnknownValueKind] = useState<FillValueKind>(initialKind ?? "string");
 
-  const changeMode = (nextMode: "median" | "value") => {
-    const nextColumns = nextMode === "median" ? medianColumns : valueColumns;
-    setMode(nextMode);
-    setSelectedColumnId((current) =>
-      nextColumns.some((column) => column.id === current) ? current : (nextColumns[0]?.id ?? "")
-    );
-  };
   const changeColumn = (id: string) => {
     setSelectedColumnId(id);
     const column = availableColumns.find((candidate) => candidate.id === id);
-    if (column?.type !== "unknown") setUnknownValueKind(fillValueKindForColumn(column?.type));
+    setUnknownValueKind(column?.type === "unknown" ? "string" : fillValueKindForColumn(column?.type));
+    setMode((current) => (fillModesForColumn(column).includes(current) ? current : defaultFillModeForColumn(column)));
   };
   const valueKind =
     selectedColumn?.type === "unknown" ? unknownValueKind : fillValueKindForColumn(selectedColumn?.type);
-  const savedValue = initialReplacement?.kind !== "median" ? String(initialReplacement?.value) : "";
+  const savedValue =
+    initialReplacement?.kind !== "median" && initialReplacement?.kind !== "mostFrequent"
+      ? String(initialReplacement?.value)
+      : "";
+  const fillModes = fillModesForColumn(selectedColumn);
 
   return (
     <>
-      <label className="formField">
-        <span>Fill with</span>
-        <select name="fillMode" value={mode} onChange={(event) => changeMode(event.target.value as "median" | "value")}>
-          <option value="value">A value</option>
-          <option value="median">Column median</option>
-        </select>
-      </label>
       <ColumnReferenceSelect
         name="column"
-        label={mode === "median" ? "Numeric column" : "Column"}
+        label="Column"
         columns={availableColumns}
         value={selectedColumnId}
         onChange={changeColumn}
-        emptyMessage={
-          mode === "median"
-            ? "No numeric columns are available. Choose a typed value or convert a column first."
-            : "No scalar columns support a typed replacement."
-        }
+        emptyMessage="No supported columns are available."
       />
+      <label className="formField">
+        <span>Fill with</span>
+        <select name="fillMode" value={mode} onChange={(event) => setMode(event.target.value as FillMode)}>
+          {fillModes.includes("median") && <option value="median">Median</option>}
+          {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
+          <option value="value">Specific value</option>
+        </select>
+      </label>
       {mode === "median" ? (
         <p className="panelNote">
           The median ignores null and NaN cells and keeps the column type. Integer and decimal medians must fit that
           type exactly.
+        </p>
+      ) : mode === "mostFrequent" ? (
+        <p className="panelNote">
+          Uses the most common non-missing value in the cleaned dataframe. Filters in the current view do not affect
+          this calculation. If missing cells need filling and values are tied, choose a specific value.
         </p>
       ) : (
         <>
@@ -1185,10 +1189,26 @@ function FillMissingFields({
             <input type="hidden" name="fillValueKind" value={valueKind} />
           )}
           <FillReplacementInput backend={backend} kind={valueKind} defaultValue={savedValue} />
+          {selectedColumn?.type === "string" && (
+            <p className="panelNote">
+              For categorical columns, a specific value may convert the column to text. Most common value keeps the
+              category type.
+            </p>
+          )}
         </>
       )}
     </>
   );
+}
+
+function fillModesForColumn(column: ColumnSchema | undefined): FillMode[] {
+  if (column && numericColumnTypes.has(column.type)) return ["median", "value"];
+  if (column && mostFrequentColumnTypes.has(column.type)) return ["mostFrequent", "value"];
+  return ["value"];
+}
+
+function defaultFillModeForColumn(column: ColumnSchema | undefined): FillMode {
+  return fillModesForColumn(column)[0];
 }
 
 function fillValueKindForColumn(type: ColumnType | undefined): FillValueKind {
@@ -1311,8 +1331,9 @@ function buildParams(
     return { ...(columns.length > 0 ? { columns } : {}), how: value("how") };
   }
   if (kind === "fillMissingValues") {
-    if (value("fillMode") === "median") {
-      return { column: columnReference("column"), replacement: { kind: "median" } };
+    const fillMode = value("fillMode");
+    if (fillMode === "median" || fillMode === "mostFrequent") {
+      return { column: columnReference("column"), replacement: { kind: fillMode } };
     }
     const replacementKind = value("fillValueKind");
     const rawValue = value("fillValue");

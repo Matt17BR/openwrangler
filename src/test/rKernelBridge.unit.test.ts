@@ -2789,6 +2789,85 @@ describe("canonical R kernel bridge", () => {
     });
   });
 
+  it("accepts most common value for R text and boolean columns and rejects numeric columns", async () => {
+    const cases = [
+      {
+        column: { id: "r:c:6", name: "missing" },
+        value: { kind: "string", raw: "ready", display: "ready", isNull: false, isNaN: false } as RFrameCell
+      },
+      {
+        column: { id: "r:c:5", name: "flag" },
+        value: { kind: "boolean", raw: true, display: "TRUE", isNull: false, isNaN: false } as RFrameCell
+      }
+    ] as const;
+
+    for (const testCase of cases) {
+      const source = frameContract();
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: fillMissingContract(source, testCase.column.id, testCase.value),
+        diff: fillMissingDiff(testCase.column.id, testCase.column.name, testCase.value),
+        code: "open_wrangler_result <- orders"
+      });
+
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step: {
+            id: `r-fill-most-${testCase.column.id}`,
+            kind: "fillMissingValues",
+            params: { column: testCase.column, replacement: { kind: "mostFrequent" } }
+          },
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({
+        kind: "stepPreview",
+        metadata: {
+          schema: expect.arrayContaining([expect.objectContaining({ id: testCase.column.id, nullable: false })]),
+          draftStep: { params: { replacement: { kind: "mostFrequent" } } }
+        }
+      });
+    }
+
+    const numericSource = frameContract();
+    const numericTransport = fakeTransport(numericSource);
+    const numericBridge = createBridge(numericTransport);
+    await numericBridge.request(openRequest("editing"));
+    await expect(
+      numericBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-fill-most-number",
+          kind: "fillMissingValues",
+          params: {
+            column: { id: "r:c:0", name: "value" },
+            replacement: { kind: "mostFrequent" }
+          }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "invalid_request",
+      message: expect.stringContaining("incompatible")
+    });
+    expect(numericTransport.previewStep).not.toHaveBeenCalled();
+  });
+
   it("rejects Fill Missing Values on a native R data.table key before dispatch", async () => {
     const source = dataTableContract(frameContract(), ["r:c:6"]);
     const transport = fakeTransport(source);

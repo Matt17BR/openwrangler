@@ -477,7 +477,7 @@ describe("OperationBuilder", () => {
     );
 
     expect(screen.getByLabelText("Fill with")).toHaveValue("median");
-    expect(screen.getByLabelText("Numeric column")).toHaveValue("c:1");
+    expect(screen.getByLabelText("Column")).toHaveValue("c:1");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
     expect(onPreview.mock.calls[0][0]).toEqual(
@@ -486,6 +486,107 @@ describe("OperationBuilder", () => {
         params: { column: { id: "c:1", name: "sales" }, replacement: { kind: "median" } }
       })
     );
+  });
+
+  it("offers the most common value for text columns and uses their full-column method", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "c:0" } });
+    expect(screen.getByLabelText("Fill with")).toHaveValue("mostFrequent");
+    expect(screen.getByRole("option", { name: "Most common value" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Median" })).toBeNull();
+    expect(screen.getByText(/Filters in the current view do not affect/u)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      column: { id: "c:0", name: "city" },
+      replacement: { kind: "mostFrequent" }
+    });
+  });
+
+  it("restores a saved most-common fill without changing its column identity", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "fill-city",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "c:0", name: "city" },
+        replacement: { kind: "mostFrequent" }
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [initialStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Column")).toHaveValue("c:0");
+    expect(screen.getByLabelText("Fill with")).toHaveValue("mostFrequent");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+  });
+
+  it("shows only methods valid for the selected datatype", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          shape: { rows: 2, columns: 5 },
+          filteredShape: { rows: 2, columns: 5 },
+          schema: [
+            { id: "c:0", name: "active", position: 0, rawType: "Boolean", type: "boolean", nullable: true },
+            { id: "c:1", name: "joined", position: 1, rawType: "Date", type: "date", nullable: true },
+            { id: "c:2", name: "mystery", position: 2, rawType: "Null", type: "unknown", nullable: true },
+            { id: "c:3", name: "payload", position: 3, rawType: "Binary", type: "binary", nullable: true },
+            { id: "c:4", name: "tags", position: 4, rawType: "List(String)", type: "list", nullable: true }
+          ]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const column = screen.getByLabelText("Column");
+    const fillWith = screen.getByLabelText("Fill with");
+    expect(column.compareDocumentPosition(fillWith) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(column).toHaveValue("c:0");
+    expect(fillWith).toHaveValue("mostFrequent");
+    expect(
+      within(column)
+        .getAllByRole("option")
+        .map((option) => option.textContent)
+    ).toEqual(["active", "joined", "mystery"]);
+
+    fireEvent.change(fillWith, { target: { value: "value" } });
+    expect(column).toHaveValue("c:0");
+    fireEvent.change(column, { target: { value: "c:1" } });
+    expect(fillWith).toHaveValue("value");
+    expect(
+      within(fillWith)
+        .getAllByRole("option")
+        .map((option) => option.textContent)
+    ).toEqual(["Specific value"]);
+
+    fireEvent.change(column, { target: { value: "c:2" } });
+    expect(screen.getByLabelText("Value type")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params.column).toEqual({ id: "c:2", name: "mystery" });
   });
 
   it("keeps an empty text replacement when editing a fill step", () => {
@@ -511,6 +612,7 @@ describe("OperationBuilder", () => {
     expect(screen.getByLabelText("Fill with")).toHaveValue("value");
     expect(screen.getByLabelText("Column")).toHaveValue("c:0");
     expect(screen.getByLabelText("Replacement value")).toHaveValue("");
+    expect(screen.getByText(/specific value may convert the column to text/u)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
     expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);

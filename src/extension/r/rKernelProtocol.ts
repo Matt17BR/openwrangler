@@ -914,8 +914,8 @@ function validateTransformStep(value: unknown): void {
 
 function validateFillMissingReplacement(value: unknown): void {
   const replacement = exactRecord(value, ["kind"], ["value"], "R kernel fill-missing replacement");
-  if (replacement.kind === "median") {
-    if (replacement.value !== undefined) fail("A median replacement may not contain a value.");
+  if (replacement.kind === "median" || replacement.kind === "mostFrequent") {
+    if (replacement.value !== undefined) fail("A calculated replacement may not contain a value.");
     return;
   }
   if (replacement.value === undefined) fail("A typed fill-missing replacement requires a value.");

@@ -2316,12 +2316,12 @@ openwrangler_r_frame_contract <- local({
     )
     kind <- scalar_choice(
       replacement$kind,
-      c("median", "string", "integer", "float", "decimal", "boolean", "date", "datetime"),
+      c("median", "mostFrequent", "string", "integer", "float", "decimal", "boolean", "date", "datetime"),
       "replacement$kind"
     )
-    if (identical(kind, "median")) {
+    if (kind %in% c("median", "mostFrequent")) {
       if (!identical(names(replacement), "kind")) {
-        abort("invalid-view-query", "a median replacement may not contain a value")
+        abort("invalid-view-query", "a calculated replacement may not contain a value")
       }
     } else if (!setequal(names(replacement), c("kind", "value"))) {
       abort("invalid-view-query", "a typed replacement requires exactly one value")
@@ -2330,12 +2330,12 @@ openwrangler_r_frame_contract <- local({
     semantic_kind <- descriptor$semantics$kind
     compatible <- switch(
       semantic_kind,
-      character = identical(kind, "string"),
-      factor = identical(kind, "string"),
+      character = kind %in% c("mostFrequent", "string"),
+      factor = kind %in% c("mostFrequent", "string"),
       integer = kind %in% c("median", "integer"),
       integer64 = kind %in% c("median", "integer"),
       double = kind %in% c("median", "integer", "float"),
-      logical = identical(kind, "boolean"),
+      logical = kind %in% c("mostFrequent", "boolean"),
       date = identical(kind, "date"),
       datetime = identical(kind, "datetime"),
       FALSE
@@ -2345,8 +2345,10 @@ openwrangler_r_frame_contract <- local({
     }
 
     missing <- is.na(column)
+    if (kind %in% c("median", "mostFrequent") && !any(missing)) {
+      return(list(column = column, addedFactorLevel = FALSE))
+    }
     if (identical(kind, "median")) {
-      if (!any(missing)) return(list(column = column, addedFactorLevel = FALSE))
       present <- column[!missing]
       if (length(present) == 0L) {
         abort("invalid-view-value", "the median is unavailable because the selected column has no present values")
@@ -2373,6 +2375,30 @@ openwrangler_r_frame_contract <- local({
       }
       result <- column
       result[missing] <- fill
+      return(list(column = result, addedFactorLevel = FALSE))
+    }
+    if (identical(kind, "mostFrequent")) {
+      present <- column[!missing]
+      if (length(present) == 0L) {
+        abort(
+          "invalid-view-value",
+          "This column has no non-missing values. Choose a specific value."
+        )
+      }
+      candidates <- unique(present)
+      counts <- tabulate(match(present, candidates), nbins = length(candidates))
+      winners <- which(counts == max(counts))
+      if (length(winners) != 1L) {
+        abort(
+          "invalid-view-value",
+          sprintf(
+            "This column has no single most common value: %d values are tied. Choose a specific value.",
+            length(winners)
+          )
+        )
+      }
+      result <- column
+      result[missing] <- candidates[[winners[[1L]]]]
       return(list(column = result, addedFactorLevel = FALSE))
     }
 

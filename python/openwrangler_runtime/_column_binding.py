@@ -210,6 +210,13 @@ class _BindingContext:
                     f"{label} cannot use a median fill for {column.semantic_type!r}; choose a numeric column."
                 )
             return
+        if kind == "mostFrequent":
+            if column.semantic_type not in {"string", "boolean"}:
+                raise ColumnBindingError(
+                    f"{label} cannot use the most common value for {column.semantic_type!r}; "
+                    "choose a text, categorical, or boolean column."
+                )
+            return
         allowed = _FILL_VALUE_KINDS_BY_COLUMN.get(column.semantic_type, set())
         if kind not in allowed:
             raise ColumnBindingError(

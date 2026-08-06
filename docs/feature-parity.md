@@ -25,7 +25,7 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Sort/filter cleaning steps                           |    Yes |    Yes | Done   | Stable refs, native/code edges, packaged duplicates; record:docs/testing.md           |
 | Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done   | Reordered mixed-label preview/apply/replay green; record:docs/testing.md              |
 | Drop missing/duplicate rows                          |    Yes |    Yes | Done   | Stable refs, all row modes, code and packaged catalog; record:docs/testing.md         |
-| Fill missing values                                  |    Yes |    Yes | Done   | Typed/median fills, code and lifecycle tests; record:docs/testing.md                  |
+| Fill missing values                                  |    Yes |    Yes | Done   | Typed/median packaged; most-common VS Code package green; record:docs/testing.md      |
 | One-hot and multi-label binarization                 |    Yes |    Yes | Done   | Null/blank/collision and generated-code parity; record:docs/testing.md                |
 | Find/replace/strip/split/case transforms             |    Yes |    Yes | Done   | Unicode/null plus packaged text preview/apply; record:docs/testing.md                 |
 | Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done   | Numeric edges plus packaged preview/apply; record:docs/testing.md                     |
@@ -46,8 +46,11 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 Post-1.0 viewing-filter hardening keeps the completed filter surface usable as well as semantically correct. Focused React coverage proves that removing a final selected value removes the column filter itself, changing per-column logic cannot create an empty filter, and **Filter rows** stays disabled for an effective-empty query. A two-column interaction keeps every active filter visible, removes one value or predicate without disturbing siblings, and preserves sorts on the same or another column. The native Filters tree exercises the same whole-column removal through the host/webview action boundary.
 
 **Fill missing values** works on one stable column at a time. Numeric columns can use the median of their present
-values; supported scalar columns can use an explicit value of the matching type. Both null and NaN are treated as
-missing. The fill keeps the native column type. Integer and decimal medians must fit that type exactly;
+values. Text, categorical, and boolean columns can use the most common non-missing value. Supported scalar columns
+can use an explicit value of the matching type. Automatic methods ignore both null and NaN. When missing cells need
+filling, a tie or an all-missing column asks the user for a specific value instead. A no-op keeps the exact native
+column type. On Python engines, a specific value may widen a categorical or enum column to text; the most-common
+method uses an existing value and keeps its category type. Integer and decimal medians must fit that type exactly;
 decimal values must also fit its scale, and datetime values must match its timezone awareness. Applying the draft adds
 the step to Open Wrangler's cleaning plan. It never changes the original dataframe. Generated Pandas, Polars, and
 DuckDB code uses the same rules. Focused tests cover the dialog and the preview, apply, edit, discard, and undo
@@ -92,8 +95,10 @@ string, integer, float, boolean, date, and datetime targets. Failed parses becom
 keys and conversions that would lose units or `integer64` precision. Generated R can be copied, saved as a `.R`
 script, or inserted into the notebook or R document that opened the dataframe.
 
-Fill Missing Values replaces `NA` and `NaN` with a typed value or an exact median. It preserves factor order and
-levels, signed 64-bit integers, dates, and datetimes. Active data-table key columns are blocked.
+Fill Missing Values offers an exact median for numeric columns, the most common non-missing value for character,
+factor, and logical columns, or a specific typed value. It ignores `NA` and `NaN` while choosing an automatic value
+and preserves factor order and levels, signed 64-bit integers, dates, and datetimes. Active data-table key columns are
+blocked.
 
 The default `collapse::qDF()` output follows the base `data.frame` path. Default `collapse::qTBL()` and `qDT()` output
 follows the existing tibble and `data.table` paths. Open Wrangler does not require `collapse`, and grouped `GRP_df`

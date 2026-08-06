@@ -130,6 +130,9 @@ export type FillMissingReplacement =
       kind: "median";
     }
   | {
+      kind: "mostFrequent";
+    }
+  | {
       kind: "string";
       value: string;
     }

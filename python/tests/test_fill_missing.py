@@ -108,6 +108,17 @@ def normalized_rows(frame: Any) -> list[tuple[Any, ...]]:
     return [tuple(normalize(value) for value in row) for row in rows(frame)]
 
 
+def first_column_type(frame: Any) -> str:
+    if isinstance(frame, pd.DataFrame):
+        return str(frame.dtypes.iloc[0])
+    if isinstance(frame, pl.LazyFrame):
+        schema = frame.collect_schema()
+        return str(schema[schema.names()[0]])
+    if isinstance(frame, pl.DataFrame):
+        return str(frame.dtypes[0])
+    return str(frame.types[0])
+
+
 def execute_generated(engine: Any, frame: Any, plan: list[dict[str, Any]]) -> Any:
     namespace: dict[str, Any] = {}
     code = engine.compile_plan(plan)
@@ -205,6 +216,191 @@ def test_string_fill_accepts_a_new_categorical_value(backend: str, monkeypatch: 
 
         assert normalized_rows(live) == [("a",), ("unknown",), ("b",)]
         assert normalized_rows(generated) == normalized_rows(live)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_most_frequent_fill_preserves_categorical_types(backend: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame({"label": pd.Categorical(["a", "a", "b", None])})
+    elif backend == "polars":
+        monkeypatch.setattr(
+            pl.DataFrame,
+            "to_pandas",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars must stay native")),
+            raising=False,
+        )
+        engine = PolarsEngine()
+        source = pl.DataFrame({"label": pl.Series(["a", "a", "b", None], dtype=pl.Categorical)})
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql(
+            "SELECT * FROM (VALUES ('a'::ENUM('a', 'b')), ('a'::ENUM('a', 'b')), "
+            "('b'::ENUM('a', 'b')), (NULL::ENUM('a', 'b'))) AS source(label)"
+        )
+    operation = fill_step(
+        bound_ref("c:source:0", "label", 0),
+        {"kind": "mostFrequent"},
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert normalized_rows(live) == [("a",), ("a",), ("b",), ("a",)]
+        assert normalized_rows(generated) == normalized_rows(live)
+        assert first_column_type(live) == first_column_type(source)
+        assert first_column_type(generated) == first_column_type(source)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_categorical_fill_with_no_missing_values_is_an_exact_type_no_op(
+    backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame({"label": pd.Categorical(["a", "b"])})
+    elif backend == "polars":
+        monkeypatch.setattr(
+            pl.DataFrame,
+            "to_pandas",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars must stay native")),
+            raising=False,
+        )
+        engine = PolarsEngine()
+        source = pl.DataFrame({"label": pl.Series(["a", "b"], dtype=pl.Categorical)})
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql("SELECT * FROM (VALUES ('a'::ENUM('a', 'b')), ('b'::ENUM('a', 'b'))) AS source(label)")
+    operation = fill_step(
+        bound_ref("c:source:0", "label", 0),
+        {"kind": "string", "value": "not-a-category"},
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert normalized_rows(live) == [("a",), ("b",)]
+        assert normalized_rows(generated) == normalized_rows(live)
+        assert first_column_type(live) == first_column_type(source)
+        assert first_column_type(generated) == first_column_type(source)
+    finally:
+        engine.close()
+
+
+def test_duckdb_uuid_fill_with_no_missing_values_preserves_uuid_type() -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql("SELECT '123e4567-e89b-12d3-a456-426614174000'::UUID AS identifier")
+    operation = fill_step(
+        bound_ref("c:source:0", "identifier", 0),
+        {"kind": "string", "value": "not-a-uuid"},
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert normalized_rows(live) == normalized_rows(source)
+        assert normalized_rows(generated) == normalized_rows(source)
+        assert first_column_type(live) == "UUID"
+        assert first_column_type(generated) == "UUID"
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_most_frequent_fill_preserves_boolean_types(backend: str) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame({"enabled": pd.Series([True, None, True, False], dtype="boolean")})
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame({"enabled": pl.Series([True, None, True, False], dtype=pl.Boolean)})
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql(
+            "SELECT * FROM (VALUES (TRUE::BOOLEAN), (NULL::BOOLEAN), (TRUE::BOOLEAN), (FALSE::BOOLEAN)) "
+            "AS source(enabled)"
+        )
+    operation = fill_step(
+        bound_ref("c:source:0", "enabled", 0),
+        {"kind": "mostFrequent"},
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert normalized_rows(live) == [(True,), (True,), (True,), (False,)]
+        assert normalized_rows(generated) == normalized_rows(live)
+        assert first_column_type(live) == first_column_type(source)
+        assert first_column_type(generated) == first_column_type(source)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        (["a", "b", None], "2 values are tied"),
+        ([None, None], "no non-missing values"),
+    ],
+)
+def test_most_frequent_fill_rejects_ties_and_all_missing_values(
+    backend: str, values: list[str | None], message: str
+) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame({"label": pd.Series(values, dtype="string")})
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame({"label": pl.Series(values, dtype=pl.String)})
+    else:
+        engine = DuckDBEngine()
+        rows_sql = ", ".join("(NULL::VARCHAR)" if value is None else f"('{value}'::VARCHAR)" for value in values)
+        source = duckdb.sql(f"SELECT * FROM (VALUES {rows_sql}) AS source(label)")
+    operation = fill_step(
+        bound_ref("c:source:0", "label", 0),
+        {"kind": "mostFrequent"},
+    )
+
+    try:
+        with pytest.raises(EngineError, match=message):
+            engine.apply_transform(source, operation)
+        with pytest.raises(ValueError, match=message):
+            execute_generated(engine, source, [operation])
+    finally:
+        engine.close()
+
+
+def test_polars_most_frequent_fill_stays_lazy_and_native(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pl.DataFrame,
+        "to_pandas",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars must stay native")),
+        raising=False,
+    )
+    engine = PolarsEngine()
+    source = pl.DataFrame({"label": ["a", "a", "b", None]}).lazy()
+    operation = fill_step(
+        bound_ref("c:source:0", "label", 0),
+        {"kind": "mostFrequent"},
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert isinstance(live, pl.LazyFrame)
+        assert isinstance(generated, pl.LazyFrame)
+        assert rows(live) == [("a",), ("a",), ("b",), ("a",)]
+        assert rows(generated) == rows(live)
     finally:
         engine.close()
 

@@ -1557,6 +1557,7 @@ describe("protocol-v2 request validation", () => {
     });
     const validReplacements = [
       { kind: "median" },
+      { kind: "mostFrequent" },
       { kind: "string", value: "" },
       { kind: "integer", value: "99999999999999999999999999999999999999" },
       { kind: "float", value: "-1.25e+3" },
@@ -1573,6 +1574,7 @@ describe("protocol-v2 request validation", () => {
 
     for (const replacement of [
       { kind: "median", value: 1 },
+      { kind: "mostFrequent", value: "x" },
       { kind: "integer", value: "01" },
       { kind: "integer", value: "100000000000000000000000000000000000000" },
       { kind: "float", value: "NaN" },
