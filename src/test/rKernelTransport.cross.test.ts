@@ -1183,6 +1183,133 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
+  it("runs native R lowercase in place through the TypeScript transport lifecycle", () => {
+    const editingSessionId = "51000000-0000-4000-8000-000000000001";
+    const stepId = "lowercase-factor";
+    const ids = {
+      open: "51000000-0000-4000-8000-000000000002",
+      preview: "51000000-0000-4000-8000-000000000003",
+      apply: "51000000-0000-4000-8000-000000000004",
+      inspect: "51000000-0000-4000-8000-000000000005",
+      undo: "51000000-0000-4000-8000-000000000006",
+      close: "51000000-0000-4000-8000-000000000007"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const preview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: stepId,
+          kind: "lowerText",
+          params: { column: { id: "r:c:0", name: "label" } }
+        },
+        page: pageWindow()
+      }
+    });
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const inspect = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.inspect,
+      kind: "inspectStep",
+      payload: { sessionId: editingSessionId, revision: 2, stepId, page: pageWindow() }
+    });
+    const undo = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undo,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 2, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(
+  label = factor(c("ALPHA", "MiXeD", NA_character_)),
+  stringsAsFactors = TRUE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+${inspect.code}
+${undo.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview);
+    expect(previewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      page: {
+        schema: [expect.objectContaining({ id: "r:c:0", name: "label", rawType: "character", type: "string" })]
+      },
+      diff: {
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 2,
+        truncated: false
+      }
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R lowercase preview.");
+    expect(previewed.page.page.rows.map((row) => row.values[0])).toMatchObject([
+      { kind: "string", raw: "alpha", display: "alpha" },
+      { kind: "string", raw: "mixed", display: "mixed" },
+      { kind: "null", raw: null, display: "NA", isNull: true }
+    ]);
+    expect(previewed.diff.cells.map(({ rowNumber, columnId, column }) => ({ rowNumber, columnId, column }))).toEqual([
+      { rowNumber: 0, columnId: "r:c:0", column: "label" },
+      { rowNumber: 1, columnId: "r:c:0", column: "label" }
+    ]);
+
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R lowercase step.");
+    expect(applied.page.schema[0]).toMatchObject({ id: "r:c:0", rawType: "character", type: "string" });
+
+    const inspected = decodeRKernelResponseJson(marked(result.stdout, inspect.marker), ids.inspect);
+    expect(inspected).toMatchObject({
+      kind: "stepInspection",
+      stepId,
+      stepIndex: 0,
+      diff: { changedCells: 2, truncated: false }
+    });
+    if (inspected.kind !== "stepInspection") throw new Error("Expected the applied R lowercase inspection.");
+    expect(inspected.inputSchema[0]).toMatchObject({ id: "r:c:0", rawType: "factor", type: "string" });
+    expect(inspected.outputSchema[0]).toMatchObject({ id: "r:c:0", rawType: "character", type: "string" });
+
+    const undone = decodeRKernelResponseJson(marked(result.stdout, undo.marker), ids.undo);
+    expect(undone).toMatchObject({ kind: "planUpdated", action: "undo", revision: 3, code: "" });
+    if (undone.kind !== "planUpdated") throw new Error("Expected the R lowercase undo.");
+    expect(undone.page.schema[0]).toMatchObject({ id: "r:c:0", rawType: "factor", type: "string" });
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+    expect(applied.code).toContain("tolower");
+    expect(applied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+  });
+
   it("removes only the runtime binding owned by the matching transport and bundle", () => {
     const files = readRRuntimeFiles(resolve(root, "r"));
     const owner = "transport-owner-a";

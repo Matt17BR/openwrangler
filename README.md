@@ -172,14 +172,15 @@ jobs.
 
 Open Wrangler 2 development builds can also open base R `data.frame`, tibble, and `data.table` variables from
 IRkernel. The R workbench supports paging, filters, multi-column sorts, value search, and profiles. Editing mode
-currently supports **Rename Column**, **Drop Columns**, **Select Columns**, **Clone Column**, and **Text Length**.
-Select Columns keeps the order in which columns are chosen. Text Length accepts character and factor columns, keeps
-`NA` values, and adds an integer column containing Unicode character counts. All five operations can be previewed,
-applied, discarded, inspected, edited, or undone.
+currently supports **Rename Column**, **Drop Columns**, **Select Columns**, **Clone Column**, **Text Length**, and
+**Lowercase**. Select Columns keeps the order in which columns are chosen. Text Length accepts character and factor
+columns and counts Unicode characters. Lowercase accepts the same inputs and can update the source column or write to
+a new character column. Both keep `NA` values. All six operations can be previewed, applied, discarded, inspected,
+edited, or undone.
 Generated R can be copied or saved as a `.R` script.
 
 Other R cleaning operations, cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto are
-still in development. The
+not supported yet. They are planned after the native notebook path is complete. The
 [current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2)
 show the live variable picker, profiles, and a Rename Column draft with native generated R.
 
@@ -198,13 +199,13 @@ show the live variable picker, profiles, and a Rename Column draft with native g
 
 ## Engines and formats
 
-| Engine               | Files                                  | Notebook data                         | How it runs                                                  |
-| -------------------- | -------------------------------------- | ------------------------------------- | ------------------------------------------------------------ |
-| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series          | Native; lazy scans for CSV, TSV, Parquet, and JSONL          |
-| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series                     | Native, including duplicate column labels                    |
-| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation                      | Native; notebook relations are viewing-only                  |
-| PySpark 4.2.x        | No                                     | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles    |
-| R (v2 development)   | No                                     | `data.frame`, tibble, `data.table`    | Native IRkernel viewing and five current cleaning operations |
+| Engine               | Files                                  | Notebook data                         | How it runs                                                 |
+| -------------------- | -------------------------------------- | ------------------------------------- | ----------------------------------------------------------- |
+| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series          | Native; lazy scans for CSV, TSV, Parquet, and JSONL         |
+| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series                     | Native, including duplicate column labels                   |
+| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation                      | Native; notebook relations are viewing-only                 |
+| PySpark 4.2.x        | No                                     | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles   |
+| R (v2 development)   | No                                     | `data.frame`, tibble, `data.table`    | Native IRkernel viewing and six current cleaning operations |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
@@ -261,8 +262,8 @@ before v2 ships.
 - **v1:** keep improving performance, DuckDB coverage, and support for other desktop VS Code forks. Fork support is
   currently experimental.
 - **v2:** finish native R notebook support for data frames, tibbles, and `data.table`, then add Quarto and R Markdown.
-  Rename, Drop, Select, Clone, and Text Length are available now; the rest of the cleaning catalog, data export,
-  notebook insertion, and plain `.R` workflows are still being built. The
+  Rename, Drop, Select, Clone, Text Length, and Lowercase are available now. The rest of the cleaning catalog, data
+  export, notebook insertion, and plain `.R` workflows are planned after the native notebook path is complete. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).

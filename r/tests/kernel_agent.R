@@ -23,6 +23,8 @@ clone_table_session_id <- "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 text_length_session_id <- "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 text_length_table_session_id <- "ffffffff-ffff-4fff-8fff-ffffffffffff"
 invalid_text_length_session_id <- "12121212-1212-4212-8212-121212121212"
+lower_session_id <- "13131313-1313-4313-8313-131313131313"
+lower_table_session_id <- "14141414-1414-4414-8414-141414141414"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -1791,6 +1793,220 @@ rm("text_length_table", "open_wrangler_result", envir = .GlobalEnv)
 text_length_table_closed <- dispatch("closeSession", list(sessionId = text_length_table_session_id))
 assert_identical(text_length_table_closed$kind, "closed", "the R data.table Text Length session did not close")
 
+source_environment$lower_frame <- data.frame(
+  text = c("ALPHA", "MiXeD", NA_character_),
+  category = factor(c("FIRST", NA, "B\u00c9TA"), levels = c("FIRST", "B\u00c9TA")),
+  number = 1:3,
+  row.names = c("row-a", "row-b", "row-c")
+)
+lower_source_before <- unserialize(serialize(source_environment$lower_frame, NULL, version = 3L))
+lower_step <- function(
+  id = "lower-step",
+  column_id = "r:c:0",
+  column_name = "text",
+  new_column = NULL
+) {
+  params <- list(column = list(id = column_id, name = column_name))
+  if (!is.null(new_column)) params$newColumn <- new_column
+  list(id = id, kind = "lowerText", params = params)
+}
+lower_open <- dispatch(
+  "openSession",
+  list(sessionId = lower_session_id, variableName = "lower_frame", page = page_window())
+)
+assert_identical(lower_open$kind, "page", "the R Lowercase session did not open")
+
+lower_derived_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = lower_session_id,
+    revision = 0L,
+    step = lower_step(new_column = "lower copy"),
+    page = page_window(column_offset = 3L, column_limit = 1L)
+  )
+)
+assert_identical(lower_derived_preview$kind, "stepPreview", "derived R Lowercase did not preview")
+assert_identical(
+  lower_derived_preview$page$page$columnIds,
+  list("c:step:lower-step:0"),
+  "derived R Lowercase lost its output identity"
+)
+assert_identical(lower_derived_preview$diff$addedColumns, list("lower copy"), "derived R Lowercase lost its diff")
+assert_identical(lower_derived_preview$diff$changedCells, 0L, "derived R Lowercase reported source-cell changes")
+assert_identical(lower_derived_preview$page$schema[[4L]]$rawType, "character", "derived R Lowercase returned the wrong type")
+assert_identical(
+  lower_derived_preview$page$schema[[4L]]$nullable,
+  lower_derived_preview$page$schema[[1L]]$nullable,
+  "derived R Lowercase changed source nullability"
+)
+lower_derived_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = lower_session_id, revision = 1L, page = page_window())
+)
+assert_identical(lower_derived_discard$action, "discard", "derived R Lowercase did not discard")
+
+lower_in_place_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = lower_session_id,
+    revision = 2L,
+    step = lower_step(),
+    page = page_window(column_offset = 0L, column_limit = 1L)
+  )
+)
+assert_identical(lower_in_place_preview$kind, "stepPreview", "in-place R Lowercase did not preview")
+assert_identical(lower_in_place_preview$page$page$columnIds, list("r:c:0"), "in-place R Lowercase changed lineage")
+assert_identical(lower_in_place_preview$diff$addedColumns, list(), "in-place R Lowercase added a column")
+assert_identical(lower_in_place_preview$diff$changedCells, 2L, "in-place R Lowercase returned an inexact cell count")
+assert_identical(length(lower_in_place_preview$diff$cells), 2L, "in-place R Lowercase lost bounded cell diffs")
+assert_identical(lower_in_place_preview$diff$truncated, FALSE, "a complete R Lowercase diff was marked truncated")
+assert_identical(
+  vapply(lower_in_place_preview$diff$cells, function(cell) cell$before$raw, character(1L)),
+  c("ALPHA", "MiXeD"),
+  "R Lowercase diff lost before values"
+)
+assert_identical(
+  vapply(lower_in_place_preview$diff$cells, function(cell) cell$after$raw, character(1L)),
+  c("alpha", "mixed"),
+  "R Lowercase diff lost after values"
+)
+lower_in_place_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = lower_session_id, revision = 3L, page = page_window())
+)
+assert_identical(lower_in_place_apply$action, "apply", "in-place R Lowercase did not apply")
+assert_identical(lower_in_place_apply$page$schema[[1L]]$id, "r:c:0", "applied R Lowercase changed lineage")
+if (!grepl("tolower(.ow_lower_values)", lower_in_place_apply$code, fixed = TRUE)) {
+  stop("generated R Lowercase code lost its native tolower expression", call. = FALSE)
+}
+assign("lower_frame", source_environment$lower_frame, envir = .GlobalEnv)
+eval(parse(text = lower_in_place_apply$code), envir = .GlobalEnv)
+lower_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(lower_generated$text, c("alpha", "mixed", NA_character_), "generated R Lowercase changed values")
+assert_identical(row.names(lower_generated), row.names(lower_source_before), "generated R Lowercase changed row names")
+assert_identical(
+  get("lower_frame", envir = .GlobalEnv, inherits = FALSE),
+  lower_source_before,
+  "generated R Lowercase mutated its source dataframe"
+)
+rm("lower_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+lower_inspection <- dispatch(
+  "inspectStep",
+  list(sessionId = lower_session_id, revision = 4L, stepId = "lower-step", page = page_window())
+)
+assert_identical(lower_inspection$kind, "stepInspection", "applied R Lowercase was not inspectable")
+assert_identical(lower_inspection$diff$changedCells, 2L, "R Lowercase inspection lost its exact diff")
+lower_undo <- dispatch(
+  "undoStep",
+  list(sessionId = lower_session_id, revision = 4L, page = page_window())
+)
+assert_identical(lower_undo$action, "undo", "R Lowercase did not undo")
+assert_identical(source_environment$lower_frame, lower_source_before, "the R Lowercase lifecycle mutated its source")
+lower_closed <- dispatch("closeSession", list(sessionId = lower_session_id))
+assert_identical(lower_closed$kind, "closed", "the R Lowercase session did not close")
+
+source_environment$lower_table <- data.table::data.table(
+  primary_key = c("B", "a"),
+  payload = c("SECOND", "FIRST"),
+  row_marker = c("row-b", "row-a")
+)
+data.table::setkey(source_environment$lower_table, primary_key)
+lower_table_before <- data.table::copy(source_environment$lower_table)
+lower_table_open <- dispatch(
+  "openSession",
+  list(sessionId = lower_table_session_id, variableName = "lower_table", page = page_window())
+)
+assert_identical(lower_table_open$kind, "page", "the R data.table Lowercase session did not open")
+lower_table_non_key <- dispatch(
+  "previewStep",
+  list(
+    sessionId = lower_table_session_id,
+    revision = 0L,
+    step = lower_step("lower-table-payload", "r:c:1", "payload"),
+    page = page_window()
+  )
+)
+assert_identical(lower_table_non_key$kind, "stepPreview", "R Lowercase could not replace a non-key data.table column")
+assert_identical(
+  lower_table_non_key$page$frameSemantics$keyColumnIds,
+  list("r:c:0"),
+  "in-place R Lowercase changed a retained data.table key"
+)
+lower_table_non_key_code <- lower_table_non_key$code
+lower_table_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = lower_table_session_id, revision = 1L, page = page_window())
+)
+assert_identical(lower_table_discard$action, "discard", "R data.table Lowercase did not discard")
+
+lower_table_key_error <- dispatch(
+  "previewStep",
+  list(
+    sessionId = lower_table_session_id,
+    revision = 2L,
+    step = lower_step("lower-table-key", "r:c:0", "primary_key"),
+    page = page_window()
+  )
+)
+assert_identical(lower_table_key_error$kind, "error", "R Lowercase silently replaced a data.table key")
+assert_identical(lower_table_key_error$code, "invalid_request", "the data.table key diagnostic changed")
+if (!grepl("choose a new output column", lower_table_key_error$message, fixed = TRUE)) {
+  stop("R Lowercase did not explain how to preserve a data.table key", call. = FALSE)
+}
+
+lower_table_derived <- dispatch(
+  "previewStep",
+  list(
+    sessionId = lower_table_session_id,
+    revision = 2L,
+    step = lower_step("lower-table-derived", "r:c:0", "primary_key", "lower key"),
+    page = page_window()
+  )
+)
+assert_identical(lower_table_derived$kind, "stepPreview", "derived R data.table Lowercase did not preview")
+assert_identical(lower_table_derived$page$frameSemantics$keyColumnIds, list("r:c:0"), "derived R Lowercase lost the key")
+lower_table_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = lower_table_session_id, revision = 3L, page = page_window())
+)
+assign("lower_table", source_environment$lower_table, envir = .GlobalEnv)
+eval(parse(text = lower_table_apply$code), envir = .GlobalEnv)
+lower_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(data.table::key(lower_table_generated), "primary_key", "generated R Lowercase lost the data.table key")
+assert_identical(lower_table_generated$row_marker, lower_table_before$row_marker, "generated R Lowercase changed row order")
+assert_identical(lower_table_generated$`lower key`, c("b", "a"), "generated R Lowercase changed derived values")
+assert_identical(
+  get("lower_table", envir = .GlobalEnv, inherits = FALSE),
+  lower_table_before,
+  "generated R data.table Lowercase mutated its source"
+)
+rm("lower_table", "open_wrangler_result", envir = .GlobalEnv)
+
+generated_key_source <- data.table::copy(lower_table_before)
+data.table::setkey(generated_key_source, payload)
+generated_key_before <- data.table::copy(generated_key_source)
+assign("lower_table", generated_key_source, envir = .GlobalEnv)
+generated_key_error <- tryCatch(
+  {
+    eval(parse(text = lower_table_non_key_code), envir = .GlobalEnv)
+    NULL
+  },
+  error = function(error) error
+)
+if (is.null(generated_key_error) || !grepl("choose a new output column", conditionMessage(generated_key_error), fixed = TRUE)) {
+  stop("generated R Lowercase silently replaced a data.table key", call. = FALSE)
+}
+assert_identical(
+  get("lower_table", envir = .GlobalEnv, inherits = FALSE),
+  generated_key_before,
+  "the generated R Lowercase key guard mutated its source"
+)
+rm("lower_table", envir = .GlobalEnv)
+assert_identical(source_environment$lower_table, lower_table_before, "the R data.table Lowercase lifecycle mutated its source")
+lower_table_closed <- dispatch("closeSession", list(sessionId = lower_table_session_id))
+assert_identical(lower_table_closed$kind, "closed", "the R data.table Lowercase session did not close")
+
 oversized_mutation_response <- FALSE
 atomic_contract <- openwrangler_r_frame_contract
 real_atomic_materialize <- atomic_contract$materialize_view_page
@@ -1946,6 +2162,7 @@ missing_package_contract <- list(
   rename_column_at = function(...) stop("unexpected rename", call. = FALSE),
   clone_column_at = function(...) stop("unexpected clone", call. = FALSE),
   text_length_column_at = function(...) stop("unexpected text length", call. = FALSE),
+  lower_text_column_at = function(...) stop("unexpected lowercase", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
@@ -1968,6 +2185,21 @@ if (
     !identical(conditionMessage(missing_text_length_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without Text Length support", call. = FALSE)
+}
+missing_lower_contract <- missing_package_contract
+missing_lower_contract$lower_text_column_at <- NULL
+missing_lower_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_lower_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_lower_error) ||
+    !identical(conditionMessage(missing_lower_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without Lowercase support", call. = FALSE)
 }
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(

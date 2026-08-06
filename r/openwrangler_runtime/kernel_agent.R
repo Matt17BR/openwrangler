@@ -497,6 +497,45 @@ openwrangler_r_kernel_agent <- local({
         )
       ))
     }
+    if (identical(kind, "lowerText")) {
+      params <- exact_record(
+        step$params,
+        "column",
+        "request.payload.step.params",
+        optional_fields = "newColumn"
+      )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      new_column <- NULL
+      if ("newColumn" %in% names(params)) {
+        new_column <- bounded_text(
+          params$newColumn,
+          "request.payload.step.params.newColumn",
+          maximum_variable_name_bytes
+        )
+        if (identical(new_column, "")) {
+          abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+        }
+      }
+      in_place <- is.null(new_column) || identical(new_column, column$name)
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(column = column, newColumn = new_column),
+        outputId = if (in_place) {
+          column$id
+        } else {
+          bounded_text(
+            paste0("c:step:", step_id, ":0"),
+            "the derived R lowercase column identity",
+            limits$columnIdBytes
+          )
+        }
+      ))
+    }
     if (kind %in% c("dropColumns", "selectColumns")) {
       params <- exact_record(step$params, "columns", "request.payload.step.params")
       columns <- params$columns
@@ -522,7 +561,7 @@ openwrangler_r_kernel_agent <- local({
       }
       return(list(id = step_id, kind = kind, params = list(columns = columns)))
     }
-    if (!kind %in% c("renameColumn", "cloneColumn", "dropColumns", "selectColumns", "textLength")) {
+    if (!kind %in% c("renameColumn", "cloneColumn", "dropColumns", "selectColumns", "textLength", "lowerText")) {
       abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
     }
     abort("unsupported_operation", sprintf("The native R runtime does not support %s", kind))
@@ -580,6 +619,27 @@ openwrangler_r_kernel_agent <- local({
       position = as.integer(matches[[1L]]),
       oldName = step$params$column$name,
       newName = step$params$newColumn,
+      outputId = step$outputId
+    )
+  }
+
+  bind_lower_text_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (
+      length(matches) != 1L ||
+        !identical(schema[[matches[[1L]]]]$name, step$params$column$name)
+    ) {
+      abort("stale_column", "The lowercase column reference no longer matches the active R dataframe", TRUE)
+    }
+    in_place <- is.null(step$params$newColumn) || identical(step$params$newColumn, step$params$column$name)
+    list(
+      id = step$id,
+      kind = step$kind,
+      position = as.integer(matches[[1L]]),
+      oldName = step$params$column$name,
+      newName = if (in_place) step$params$column$name else step$params$newColumn,
+      inPlace = in_place,
       outputId = step$outputId
     )
   }
@@ -678,6 +738,37 @@ openwrangler_r_kernel_agent <- local({
           source_positions = source_positions,
           output_ids = output_ids,
           text_length_positions = length(output_ids)
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "lowerText")) {
+      bound <- bind_lower_text_step(capture, step)
+      result <- frame_contract$lower_text_column_at(
+        source,
+        bound$position,
+        bound$oldName,
+        if (isTRUE(bound$inPlace)) NULL else bound$newName
+      )
+      if (isTRUE(bound$inPlace)) {
+        source_positions <- seq_along(capture$descriptor$schema)
+        output_ids <- vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+        lower_position <- bound$position
+      } else {
+        source_positions <- c(seq_along(capture$descriptor$schema), bound$position)
+        output_ids <- c(
+          vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+          bound$outputId
+        )
+        lower_position <- length(output_ids)
+      }
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = source_positions,
+          output_ids = output_ids,
+          lower_text_positions = lower_position
         ),
         bound = bound
       ))
@@ -818,6 +909,60 @@ openwrangler_r_kernel_agent <- local({
           "    names(.ow_result) <- c(.ow_text_length_existing_names, .ow_text_length_name)",
           "  }"
         )
+      } else if (identical(step$kind, "lowerText")) {
+        lines <- c(
+          lines,
+          sprintf("  .ow_lower_position <- %dL", step$position),
+          sprintf("  .ow_lower_source_name <- %s", r_string(step$oldName)),
+          sprintf("  .ow_lower_name <- %s", r_string(step$newName)),
+          "  if (ncol(.ow_result) < .ow_lower_position || !identical(names(.ow_result)[[.ow_lower_position]], .ow_lower_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  if (!is.character(.ow_result[[.ow_lower_position]]) && !is.factor(.ow_result[[.ow_lower_position]])) stop(\"Open Wrangler Lowercase requires a character or factor column\", call. = FALSE)",
+          "  .ow_lower_source <- as.character(.ow_result[[.ow_lower_position]])",
+          "  .ow_lower_values <- vapply(seq_along(.ow_lower_source), function(.ow_index) {",
+          "    .ow_value <- .ow_lower_source[[.ow_index]]",
+          "    if (is.na(.ow_value)) return(NA_character_)",
+          "    if (identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Lowercase requires valid UTF-8 text\", call. = FALSE)",
+          "    .ow_encoding <- Encoding(.ow_value)",
+          "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+          "    .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+          "    if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Lowercase requires bounded valid UTF-8 text\", call. = FALSE)",
+          "    .ow_utf8",
+          "  }, character(1L), USE.NAMES = FALSE)",
+          "  .ow_lower_values <- tolower(.ow_lower_values)",
+          "  .ow_lower_values <- vapply(seq_along(.ow_lower_values), function(.ow_index) {",
+          "    .ow_value <- .ow_lower_values[[.ow_index]]",
+          "    if (is.na(.ow_value)) return(NA_character_)",
+          "    if (identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Lowercase produced invalid UTF-8 text\", call. = FALSE)",
+          "    .ow_encoding <- Encoding(.ow_value)",
+          "    .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+          "    .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+          "    if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Lowercase produced invalid or oversized UTF-8 text\", call. = FALSE)",
+          "    .ow_utf8",
+          "  }, character(1L), USE.NAMES = FALSE)"
+        )
+        if (isTRUE(step$inPlace)) {
+          lines <- c(
+            lines,
+            "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_lower_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Lowercase cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
+            "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_lower_position, value = .ow_lower_values) else .ow_result[[.ow_lower_position]] <- .ow_lower_values"
+          )
+        } else {
+          lines <- c(
+            lines,
+            "  if (.ow_lower_name == \"\" || any(names(.ow_result) == .ow_lower_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+            sprintf(
+              "  if (ncol(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
+              maximum_columns
+            ),
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    data.table::set(.ow_result, j = .ow_lower_name, value = .ow_lower_values)",
+            "  } else {",
+            "    .ow_lower_existing_names <- names(.ow_result)",
+            "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_lower_values",
+            "    names(.ow_result) <- c(.ow_lower_existing_names, .ow_lower_name)",
+            "  }"
+          )
+        }
       } else if (identical(step$kind, "dropColumns")) {
         positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
         names <- vapply(step$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
@@ -864,8 +1009,23 @@ openwrangler_r_kernel_agent <- local({
     code
   }
 
-  step_diff <- function(bound) {
-    added_columns <- if (bound$kind %in% c("cloneColumn", "textLength")) bound$newName else character()
+  step_diff <- function(
+    bound,
+    frame_contract = NULL,
+    before = NULL,
+    after = NULL,
+    page = NULL,
+    before_page = NULL,
+    after_page = NULL
+  ) {
+    added_columns <- if (
+      bound$kind %in% c("cloneColumn", "textLength") ||
+        (identical(bound$kind, "lowerText") && !isTRUE(bound$inPlace))
+    ) {
+      bound$newName
+    } else {
+      character()
+    }
     removed_columns <- if (identical(bound$kind, "dropColumns")) {
       vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
     } else if (identical(bound$kind, "selectColumns")) {
@@ -873,14 +1033,61 @@ openwrangler_r_kernel_agent <- local({
     } else {
       character()
     }
+    changed_cells <- 0L
+    cells <- list()
+    truncated <- FALSE
+    if (identical(bound$kind, "lowerText") && isTRUE(bound$inPlace)) {
+      if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
+        abort("runtime_error", "The R lowercase diff is missing its bounded page context")
+      }
+      if (is.null(before_page)) before_page <- materialize(frame_contract, before, page)
+      if (is.null(after_page)) after_page <- materialize(frame_contract, after, page)
+      before_position <- match(bound$outputId, before_page$page$columnIds)
+      after_position <- match(bound$outputId, after_page$page$columnIds)
+      if (is.na(before_position) || is.na(after_position)) {
+        truncated <- TRUE
+      } else {
+        before_rows <- before_page$page$rows
+        before_row_ids <- vapply(before_rows, `[[`, character(1L), "id", USE.NAMES = FALSE)
+        matched_before <- logical(length(before_rows))
+        matched_after <- 0L
+        for (after_row in after_page$page$rows) {
+          before_index <- match(after_row$id, before_row_ids)
+          if (is.na(before_index)) next
+          matched_before[[before_index]] <- TRUE
+          matched_after <- matched_after + 1L
+          old <- before_rows[[before_index]]$values[[before_position]]
+          new <- after_row$values[[after_position]]
+          if (!identical(old, new)) {
+            changed_cells <- changed_cells + 1L
+            if (length(cells) < 500L) {
+              cells[[length(cells) + 1L]] <- list(
+                rowNumber = after_row$rowNumber,
+                columnId = bound$outputId,
+                column = bound$newName,
+                before = old,
+                after = new
+              )
+            }
+          }
+        }
+        if (matched_after != length(after_page$page$rows) || sum(matched_before) != length(before_rows)) {
+          truncated <- TRUE
+        }
+      }
+      truncated <- truncated ||
+        before_page$page$totalRows > length(before_page$page$rows) ||
+        after_page$page$totalRows > length(after_page$page$rows) ||
+        changed_cells > length(cells)
+    }
     list(
       addedRows = 0L,
       removedRows = 0L,
       addedColumns = I(added_columns),
       removedColumns = I(removed_columns),
-      changedCells = 0L,
-      cells = I(list()),
-      truncated = FALSE
+      changedCells = changed_cells,
+      cells = I(cells),
+      truncated = truncated
     )
   }
 
@@ -926,6 +1133,7 @@ openwrangler_r_kernel_agent <- local({
       "rename_column_at",
       "clone_column_at",
       "text_length_column_at",
+      "lower_text_column_at",
       "drop_columns_at",
       "select_columns_at",
       "materialize_view_page",
@@ -1168,14 +1376,22 @@ openwrangler_r_kernel_agent <- local({
         candidate$editing <- TRUE
         candidate$revision <- next_revision(session)
         candidate_bound_plan <- c(retained_bound_plan, list(applied$bound))
+        draft_page <- materialize(frame_contract, candidate$draft, page)
         response <- list(
           transportVersion = transport_version,
           requestId = request_id,
           kind = "stepPreview",
           sessionId = session_id,
           revision = candidate$revision,
-          page = materialize(frame_contract, candidate$draft, page),
-          diff = step_diff(applied$bound),
+          page = draft_page,
+          diff = step_diff(
+            applied$bound,
+            frame_contract,
+            base,
+            applied$capture,
+            page,
+            after_page = draft_page
+          ),
           code = compile_plan(
             candidate$variableName,
             candidate_bound_plan,
@@ -1219,7 +1435,15 @@ openwrangler_r_kernel_agent <- local({
           outputPage = output_page,
           inputSchema = input_page$schema,
           outputSchema = output_page$schema,
-          diff = step_diff(after$boundPlan[[step_index]]),
+          diff = step_diff(
+            after$boundPlan[[step_index]],
+            frame_contract,
+            before$capture,
+            after$capture,
+            page,
+            before_page = input_page,
+            after_page = output_page
+          ),
           code = compile_plan(session$variableName, after$boundPlan, frame_contract$limits$columns)
         ))
       }

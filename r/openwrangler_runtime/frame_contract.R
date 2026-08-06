@@ -1570,7 +1570,8 @@ openwrangler_r_frame_contract <- local({
     nullability_source = NULL,
     source_positions = NULL,
     output_ids = NULL,
-    text_length_positions = NULL
+    text_length_positions = NULL,
+    lower_text_positions = NULL
   ) {
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
@@ -1578,7 +1579,12 @@ openwrangler_r_frame_contract <- local({
     if (!is.null(nullability_source)) validate_capture(nullability_source)
     if (
       is.null(nullability_source) &&
-        (!is.null(source_positions) || !is.null(output_ids) || !is.null(text_length_positions))
+        (
+          !is.null(source_positions) ||
+            !is.null(output_ids) ||
+            !is.null(text_length_positions) ||
+            !is.null(lower_text_positions)
+        )
     ) {
       abort("internal-error", "derived R column mappings require a source R capture")
     }
@@ -1587,6 +1593,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(text_length_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R text-length outputs require explicit source mappings and identities")
+    }
+    if (!is.null(lower_text_positions) && is.null(source_positions)) {
+      abort("internal-error", "R lowercase outputs require explicit source mappings")
     }
     flavor <- frame_flavor(value)
     assert_frame_attributes(value, flavor)
@@ -1635,6 +1644,25 @@ openwrangler_r_frame_contract <- local({
           abort("internal-error", "a derived R frame has invalid text-length output positions")
         }
         text_length_positions <- as.integer(text_length_positions)
+      }
+      if (is.null(lower_text_positions)) {
+        lower_text_positions <- integer()
+      } else {
+        if (
+          !is.numeric(lower_text_positions) ||
+            anyNA(lower_text_positions) ||
+            any(!is.finite(lower_text_positions)) ||
+            any(lower_text_positions != floor(lower_text_positions)) ||
+            any(lower_text_positions < 1L) ||
+            any(lower_text_positions > length(output_schema)) ||
+            anyDuplicated(lower_text_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid lowercase output positions")
+        }
+        lower_text_positions <- as.integer(lower_text_positions)
+      }
+      if (length(intersect(text_length_positions, lower_text_positions)) != 0L) {
+        abort("internal-error", "an R output cannot be both text length and lowercase")
       }
       source_nullable <- vapply(source_positions, function(position) {
         value <- source_schema[[position]]$nullable
@@ -1698,6 +1726,13 @@ openwrangler_r_frame_contract <- local({
               identical(output_ids[[index]], mapped_source_ids[[index]])
           ) {
             abort("internal-error", "a derived R frame has an invalid text-length output")
+          }
+        } else if (index %in% lower_text_positions) {
+          if (
+            !source_column$semantics$kind %in% c("character", "factor") ||
+              !identical(output_column$semantics$kind, "character")
+          ) {
+            abort("internal-error", "a derived R frame has an invalid lowercase output")
           }
         } else {
           if (
@@ -1958,6 +1993,97 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     text_length_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  lower_text_column_at <- function(value, position, old_name, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the lowercase column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    source_column <- inspected$descriptor$schema[[position]]
+    if (!identical(source_column$name, old_name)) {
+      abort("stale-column", "the lowercase column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (!source_column$semantics$kind %in% c("character", "factor")) {
+      abort("invalid-view-query", "lowerText requires a character or factor column")
+    }
+
+    in_place <- is.null(new_name)
+    if (!in_place) {
+      new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+      if (identical(new_name, "")) {
+        abort("invalid-column-name", "new_name must not be empty")
+      }
+      if (is_private_column_name(new_name)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+      in_place <- identical(new_name, old_name)
+    }
+    if (!in_place && any(names(value) == new_name)) {
+      abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
+    }
+    if (!in_place && column_count >= maximum_columns) {
+      abort("invalid-view-query", "lowerText exceeds the supported R column limit")
+    }
+    if (
+      in_place &&
+        identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort(
+        "invalid-view-query",
+        "lowerText cannot replace a data.table key column; choose a new output column"
+      )
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    source_values <- as.character(result[[position]])
+    validated <- vapply(seq_along(source_values), function(index) {
+      if (is.na(source_values[[index]])) return(NA_character_)
+      bounded_utf8(source_values[[index]], sprintf("lowerText value %d", index))
+    }, character(1L), USE.NAMES = FALSE)
+    lowered <- tolower(validated)
+    lowered <- vapply(seq_along(lowered), function(index) {
+      if (is.na(lowered[[index]])) return(NA_character_)
+      bounded_utf8(lowered[[index]], sprintf("lowerText result %d", index))
+    }, character(1L), USE.NAMES = FALSE)
+    if (in_place) {
+      if (identical(inspected$flavor, "r.data.table")) {
+        data.table::set(result, j = position, value = lowered)
+      } else {
+        result[[position]] <- lowered
+      }
+    } else if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = new_name, value = lowered)
+    } else {
+      original_names <- names(result)
+      result[[length(result) + 1L]] <- lowered
+      names(result) <- c(original_names, new_name)
+    }
+    result
+  }
+
+  lower_text_column <- function(value, column_reference, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    lower_text_column_at(value, resolved$position, resolved$name, new_name)
   }
 
   drop_columns_at <- function(value, positions, expected_names) {
@@ -2655,6 +2781,8 @@ openwrangler_r_frame_contract <- local({
     clone_column_at = clone_column_at,
     text_length_column = text_length_column,
     text_length_column_at = text_length_column_at,
+    lower_text_column = lower_text_column,
+    lower_text_column_at = lower_text_column_at,
     drop_columns = drop_columns,
     drop_columns_at = drop_columns_at,
     select_columns = select_columns,

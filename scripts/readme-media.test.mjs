@@ -508,10 +508,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /Editing mode\s+currently supports \*\*Rename Column\*\*, \*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, and \*\*Text Length\*\*/u
+    /Editing mode\s+currently supports \*\*Rename Column\*\*, \*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Text Length\*\*, and\s+\*\*Lowercase\*\*/u
   );
-  assert.match(readme, /Native IRkernel viewing and five current cleaning operations/u);
-  assert.match(readme, /Text Length accepts character and factor columns[\s\S]{0,140}Unicode character counts/u);
+  assert.match(readme, /Native IRkernel viewing and six current cleaning operations/u);
+  assert.match(readme, /Text Length accepts character and factor[\s\S]{0,140}counts Unicode characters/u);
   assert.match(readme, /\| R \(v2 development\)\s+\|/u);
   assert.match(
     readme,
@@ -602,7 +602,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     v2Roadmap,
     /finish native R notebook support for data frames, tibbles, and `data\.table`, then add Quarto and R Markdown/u
   );
-  assert.match(v2Roadmap, /Rename, Drop, Select, Clone, and Text Length are available now/u);
+  assert.match(v2Roadmap, /Rename, Drop, Select, Clone, Text Length, and Lowercase are available now/u);
   assert.match(
     v2Roadmap,
     /\[R architecture decision\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/decisions\/0001-native-r-runtime\.md\)/u
@@ -672,11 +672,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /Editing mode currently supports Rename Column, Drop Columns, Select Columns, Clone Column, and Text Length\. Select\s+keeps the order in which the columns were chosen\.[\s\S]{0,220}All five use draft preview, generated R, apply, discard,\s+inspection, latest-step editing, and undo/u
+    /Editing mode currently supports Rename Column, Drop Columns, Select Columns, Clone Column, Text Length, and Lowercase\.[\s\S]{0,320}All six use draft preview, generated R,\s+apply, discard, inspection, latest-step editing, and undo/u
   );
   assert.match(
     gallery,
-    /The image shows Rename Column in VS Code\. Drop Columns, ordered Select Columns, Clone Column, and Text Length use the\s+same editing controls in VS Code and Cursor/u
+    /The image shows Rename Column in VS Code\. Drop Columns, ordered Select Columns, Clone Column, Text Length, and Lowercase\s+use the same editing controls in VS Code and Cursor/u
   );
   assert.match(
     gallery,
@@ -684,7 +684,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /Other R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `\.R` files are\s+still in development/u
+    /Other R cleaning operations, cleaned-data export, notebook insertion, Quarto, R Markdown, and plain `\.R` files are\s+not supported yet\.[\s\S]{0,100}planned after the native notebook path is complete/u
   );
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
   assert.match(gallery, /^## Editor and theme support$/mu);
