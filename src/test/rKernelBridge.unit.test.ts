@@ -515,7 +515,14 @@ describe("canonical R kernel bridge", () => {
         mode: "editing",
         capabilities: {
           editable: true,
-          supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn", "textLength"]
+          supportedOperations: [
+            "selectColumns",
+            "dropColumns",
+            "renameColumn",
+            "cloneColumn",
+            "textLength",
+            "lowerText"
+          ]
         }
       }
     });
@@ -1314,7 +1321,7 @@ describe("canonical R kernel bridge", () => {
         kind: "cloneColumn",
         params: { column: { id: "r:c:0", name: "value" }, newName: "value_copy" }
       })
-    ).rejects.toThrow("structural diff");
+    ).rejects.toThrow("mutation diff");
   });
 
   it("rejects cloning a case-insensitive reserved R source column before transport", async () => {
@@ -1632,7 +1639,7 @@ describe("canonical R kernel bridge", () => {
         columnOffset: 0,
         columnLimit: 8
       })
-    ).rejects.toThrow("structural diff");
+    ).rejects.toThrow("mutation diff");
   });
 
   it("rejects R Text Length at the frame width limit", async () => {
@@ -1670,6 +1677,207 @@ describe("canonical R kernel bridge", () => {
       })
     ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
     expect(transport.previewStep).not.toHaveBeenCalled();
+  });
+
+  it("lowercases native R text in place or into a stable derived column", async () => {
+    const base = frameContract();
+    const source = replaceContractCell(base, "r:c:6", {
+      kind: "string",
+      raw: "MiXeD",
+      display: "MiXeD",
+      isNull: false,
+      isNaN: false
+    });
+    const inPlace = lowerTextContract(source, "r:c:6", "r-lower-in-place");
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    transport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: inPlace,
+      diff: lowerDiff("r:c:6", "missing", "MiXeD", "mixed"),
+      code: "open_wrangler_result <- orders"
+    });
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step: {
+        id: "r-lower-in-place",
+        kind: "lowerText",
+        params: { column: { id: "r:c:6", name: "missing" } }
+      },
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      {
+        id: "r-lower-in-place",
+        kind: "lowerText",
+        params: { column: { id: "r:c:6", name: "missing" } }
+      },
+      expect.any(Object),
+      undefined,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "r:c:6", name: "missing", rawType: "character", type: "string" })
+        ]),
+        draftStep: {
+          id: "r-lower-in-place",
+          kind: "lowerText",
+          params: { column: { id: "r:c:6", name: "missing" } }
+        }
+      },
+      diff: {
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [expect.objectContaining({ rowNumber: 0, columnId: "r:c:6", column: "missing" })]
+      }
+    });
+
+    const derivedTransport = fakeTransport(source);
+    const derivedBridge = createBridge(derivedTransport);
+    await derivedBridge.request(openRequest("editing"));
+    const derived = lowerTextContract(source, "r:c:6", "r-lower-derived", "missing_lower");
+    derivedTransport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: derived,
+      diff: cloneDiff("missing_lower"),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      derivedBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-lower-derived",
+          kind: "lowerText",
+          params: { column: { id: "r:c:6", name: "missing" }, newColumn: "missing_lower" }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "c:step:r-lower-derived:0", name: "missing_lower", type: "string" })
+        ])
+      },
+      diff: { addedColumns: ["missing_lower"], changedCells: 0, cells: [] }
+    });
+  });
+
+  it("rejects unsafe native R lowercase requests and mismatched cell diffs", async () => {
+    const keyed = dataTableContract(frameContract(), ["r:c:6"]);
+    const keyedTransport = fakeTransport(keyed);
+    const keyedBridge = createBridge(keyedTransport);
+    await keyedBridge.request(openRequest("editing"));
+    await expect(
+      keyedBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-lower-keyed",
+          kind: "lowerText",
+          params: { column: { id: "r:c:6", name: "missing" } }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "invalid_request", message: expect.stringContaining("keyed") });
+    expect(keyedTransport.previewStep).not.toHaveBeenCalled();
+
+    const source = replaceContractCell(frameContract(), "r:c:6", {
+      kind: "string",
+      raw: "MiXeD",
+      display: "MiXeD",
+      isNull: false,
+      isNaN: false
+    });
+    const rejectDiff = async (diff: DataDiff) => {
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.previewStep.mockResolvedValueOnce({
+        sessionId,
+        revision: 1,
+        page: lowerTextContract(source, "r:c:6", "r-lower-wrong-diff"),
+        diff,
+        code: "open_wrangler_result <- orders"
+      });
+      return bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-lower-wrong-diff",
+          kind: "lowerText",
+          params: { column: { id: "r:c:6", name: "missing" } }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      });
+    };
+    await expect(rejectDiff(lowerDiff("r:c:5", "flag", "MiXeD", "mixed"))).rejects.toThrow("mutation diff");
+    const wrongRow = lowerDiff("r:c:6", "missing", "MiXeD", "mixed");
+    wrongRow.cells[0]!.rowNumber = 1;
+    await expect(rejectDiff(wrongRow)).rejects.toThrow("mutation diff");
+    await expect(rejectDiff(lowerDiff("r:c:6", "missing", "MiXeD", "wrong"))).rejects.toThrow("mutation diff");
+    await expect(
+      rejectDiff({
+        ...lowerDiff("r:c:6", "missing", "MiXeD", "mixed"),
+        changedCells: 2,
+        truncated: true
+      })
+    ).rejects.toThrow("mutation diff");
+
+    const projectedTransport = fakeTransport(source);
+    const projectedBridge = createBridge(projectedTransport);
+    await projectedBridge.request(openRequest("editing"));
+    projectedTransport.previewStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 1,
+      page: projectContract(lowerTextContract(source, "r:c:6", "r-lower-projected-away"), 0, 6),
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      projectedBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-lower-projected-away",
+          kind: "lowerText",
+          params: { column: { id: "r:c:6", name: "missing" } }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 6
+      })
+    ).rejects.toThrow("mutation diff");
   });
 
   it("rejects Select Columns responses with the wrong retained data-table key prefix", async () => {
@@ -2408,6 +2616,89 @@ function textLengthContract(
   };
 }
 
+function replaceContractCell(source: RFramePageContract, columnId: string, value: RFrameCell): RFramePageContract {
+  const pagePosition = source.page.columnIds.indexOf(columnId);
+  if (pagePosition < 0) throw new Error(`Fake R page does not contain ${columnId}.`);
+  return {
+    ...source,
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((candidate, index) => ({ ...(index === pagePosition ? value : candidate) }))
+      }))
+    }
+  };
+}
+
+function projectContract(source: RFramePageContract, columnOffset: number, columnLimit: number): RFramePageContract {
+  const projectedSchema = source.schema.slice(columnOffset, columnOffset + columnLimit);
+  const sourcePagePosition = new Map(source.page.columnIds.map((id, position) => [id, position]));
+  return {
+    ...source,
+    page: {
+      ...source.page,
+      columnOffset,
+      columnLimit,
+      columnIds: projectedSchema.map((column) => column.id),
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: projectedSchema.map((column) => {
+          const position = sourcePagePosition.get(column.id);
+          if (position === undefined) throw new Error(`Fake R projection does not contain ${column.id}.`);
+          return { ...(row.values[position] as RFrameCell) };
+        })
+      }))
+    }
+  };
+}
+
+function lowerTextContract(
+  source: RFramePageContract,
+  columnId: string,
+  stepId: string,
+  newColumn?: string
+): RFramePageContract {
+  const sourceColumn = source.schema.find((column) => column.id === columnId);
+  if (!sourceColumn) throw new Error(`Unknown fake R lowercase column ${columnId}.`);
+  const inPlace = newColumn === undefined || newColumn === sourceColumn.name;
+  const loweredColumn: RColumnSchema = {
+    id: inPlace ? sourceColumn.id : `c:step:${stepId}:0`,
+    name: inPlace ? sourceColumn.name : newColumn,
+    position: inPlace ? sourceColumn.position : source.schema.length,
+    rawType: "character",
+    type: "string",
+    nullable: sourceColumn.nullable,
+    semantics: { kind: "character", storageMode: "character", classes: ["character"] }
+  };
+  const pagePosition = source.page.columnIds.indexOf(columnId);
+  const rows = source.page.rows.map((row) => {
+    const sourceValue = pagePosition < 0 ? undefined : row.values[pagePosition];
+    const lowered =
+      sourceValue?.kind === "string"
+        ? ({ ...sourceValue, raw: sourceValue.raw.toLowerCase(), display: sourceValue.display.toLowerCase() } as const)
+        : sourceValue
+          ? { ...sourceValue }
+          : undefined;
+    if (inPlace && pagePosition >= 0 && lowered) {
+      return {
+        ...row,
+        values: row.values.map((value, index) => ({ ...(index === pagePosition ? lowered : value) }))
+      };
+    }
+    return { ...row, values: row.values.map((value) => ({ ...value })) };
+  });
+  return {
+    ...source,
+    shape: { ...source.shape, columns: source.schema.length + (inPlace ? 0 : 1) },
+    schema: inPlace
+      ? source.schema.map((column) => (column.id === columnId ? loweredColumn : { ...column }))
+      : [...source.schema.map((column) => ({ ...column })), loweredColumn],
+    page: { ...source.page, columnIds: [...source.page.columnIds], rows }
+  };
+}
+
 function dataTableContract(source: RFramePageContract, keyColumnIds: readonly string[]): RFramePageContract {
   return {
     ...source,
@@ -2438,6 +2729,22 @@ function dropDiff(...removedColumns: string[]): DataDiff {
 
 function cloneDiff(newName: string): DataDiff {
   return { ...renameDiff(), addedColumns: [newName] };
+}
+
+function lowerDiff(columnId: string, column: string, before: string, after: string): DataDiff {
+  return {
+    ...renameDiff(),
+    changedCells: 1,
+    cells: [
+      {
+        rowNumber: 0,
+        columnId,
+        column,
+        before: { kind: "string", raw: before, display: before, isNull: false, isNaN: false },
+        after: { kind: "string", raw: after, display: after, isNull: false, isNaN: false }
+      }
+    ]
+  };
 }
 
 function column(
@@ -2489,6 +2796,6 @@ function rCapabilities(): SourceCapabilities {
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn", "textLength"]
+    supportedOperations: ["selectColumns", "dropColumns", "renameColumn", "cloneColumn", "textLength", "lowerText"]
   };
 }

@@ -32,8 +32,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   names, and key metadata.
 - Added **Text Length** as the fifth native R cleaning operation. It accepts character and factor columns, counts
   Unicode characters, keeps `NA` values, and appends an integer column with its own stable identity. The generated R
-  follows the same rules. Cleaned-data export, notebook insertion, plain `.R` files, R Markdown, and Quarto are still
-  in development.
+  follows the same rules.
+- Added **Lowercase** as the sixth native R cleaning operation. It accepts character and factor columns, keeps `NA`
+  values, and can replace the source column or append a character column with its own stable identity. Generated R
+  uses the same transformation without changing the notebook object.
 
 ### Changed
 
@@ -45,11 +47,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
   ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
   to the notebook's source object.
-- Added a real VS Code screenshot of R editing. The installed extension now exercises Rename, Drop, Select, Clone, and
-  Text Length against IRkernel in both VS Code and Cursor. The base-data-frame test previews, applies, inspects,
+- Added a real VS Code screenshot of R editing. The installed extension now exercises Rename, Drop, Select, Clone,
+  Text Length, and Lowercase against IRkernel in both VS Code and Cursor. The base-data-frame test previews, applies, inspects,
   discards, and undoes the operations, checks generated R, copies and saves Rename code, and verifies that the notebook
   objects are unchanged. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns;
-  direct R tests cover all five operations for all three flavors.
+  direct R tests cover all six operations for all three flavors.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and

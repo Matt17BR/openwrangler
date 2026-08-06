@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   decodeRFramePage,
   R_FRAME_CONTRACT_LIMITS,
@@ -6,7 +7,14 @@ import {
   type RFramePageContract
 } from "./rFrameContract";
 import { supportsViewPredicate } from "../../shared/filterModel";
-import type { ColumnSummary, DataDiff, DatasetStats, PredicateFilter, ValueCount } from "../../shared/protocol";
+import type {
+  CellValue,
+  ColumnSummary,
+  DataDiff,
+  DatasetStats,
+  PredicateFilter,
+  ValueCount
+} from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
 export const R_KERNEL_TRANSPORT_VERSION = 2 as const;
@@ -108,6 +116,15 @@ export interface RKernelTextLengthStep {
   }>;
 }
 
+export interface RKernelLowerTextStep {
+  readonly id: string;
+  readonly kind: "lowerText";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    readonly newColumn?: string;
+  }>;
+}
+
 export interface RKernelDropColumnsStep {
   readonly id: string;
   readonly kind: "dropColumns";
@@ -128,6 +145,7 @@ export type RKernelTransformStep =
   | RKernelRenameColumnStep
   | RKernelCloneColumnStep
   | RKernelTextLengthStep
+  | RKernelLowerTextStep
   | RKernelDropColumnsStep
   | RKernelSelectColumnsStep;
 
@@ -471,14 +489,15 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       "code"
     ]);
     validateEnvelope(record, expected);
+    const page = decodeRFramePage(record.page);
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
       kind: "stepPreview" as const,
       sessionId: identifier(record.sessionId, "response.sessionId"),
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
-      page: decodeRFramePage(record.page),
-      diff: validateStructuralDiff(record.diff),
+      page,
+      diff: validateMutationDiff(record.diff, page),
       code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
     });
   }
@@ -541,7 +560,7 @@ export function decodeRKernelResponseJson(payload: string, expectedRequestId: st
       outputPage,
       inputSchema,
       outputSchema,
-      diff: validateStructuralDiff(record.diff),
+      diff: validateMutationDiff(record.diff, outputPage),
       code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
     });
   }
@@ -686,6 +705,14 @@ function validateTransformStep(value: unknown): void {
     boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     return;
   }
+  if (step.kind === "lowerText") {
+    const params = exactRecord(step.params, ["column"], ["newColumn"], "R kernel lowercase parameters");
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    if (params.newColumn !== undefined) {
+      boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    }
+    return;
+  }
   if (step.kind === "dropColumns") {
     const params = exactRecord(step.params, ["columns"], "R kernel drop parameters");
     validateTransformColumnReferences(params.columns, "drop");
@@ -711,7 +738,7 @@ function validateTransformColumnReferences(value: unknown, operation: "drop" | "
   }
 }
 
-function validateStructuralDiff(value: unknown): DataDiff {
+function validateMutationDiff(value: unknown, outputPage: RFramePageContract): DataDiff {
   const diff = exactRecord(value, [
     "addedRows",
     "removedRows",
@@ -721,19 +748,24 @@ function validateStructuralDiff(value: unknown): DataDiff {
     "cells",
     "truncated"
   ]);
-  if (
-    diff.addedRows !== 0 ||
-    diff.removedRows !== 0 ||
-    diff.changedCells !== 0 ||
-    diff.truncated !== false ||
-    !Array.isArray(diff.addedColumns) ||
-    diff.addedColumns.length > R_FRAME_CONTRACT_LIMITS.columns ||
-    !Array.isArray(diff.removedColumns) ||
-    diff.removedColumns.length > R_FRAME_CONTRACT_LIMITS.columns ||
-    !Array.isArray(diff.cells) ||
-    diff.cells.length !== 0
-  ) {
-    fail("R kernel structural diff is invalid.");
+  if (diff.addedRows !== 0 || diff.removedRows !== 0) fail("R kernel row-changing diff is unsupported.");
+  const changedCells = boundedInteger(
+    diff.changedCells,
+    "response.diff.changedCells",
+    R_FRAME_CONTRACT_LIMITS.pageCells
+  );
+  if (!Array.isArray(diff.addedColumns) || diff.addedColumns.length > R_FRAME_CONTRACT_LIMITS.columns) {
+    fail("R kernel added-column diff is invalid.");
+  }
+  if (!Array.isArray(diff.removedColumns) || diff.removedColumns.length > R_FRAME_CONTRACT_LIMITS.columns) {
+    fail("R kernel removed-column diff is invalid.");
+  }
+  if (!Array.isArray(diff.cells) || diff.cells.length > R_FRAME_CONTRACT_LIMITS.pageCells) {
+    fail("R kernel changed-cell diff is invalid.");
+  }
+  if (typeof diff.truncated !== "boolean") fail("R kernel diff truncation flag is invalid.");
+  if (changedCells < diff.cells.length || (!diff.truncated && changedCells !== diff.cells.length)) {
+    fail("R kernel changed-cell totals are inconsistent.");
   }
   const addedColumns = diff.addedColumns.map((column, index) =>
     boundedText(column, `response.diff.addedColumns[${index}]`, maximumVariableNameBytes, true)
@@ -741,19 +773,79 @@ function validateStructuralDiff(value: unknown): DataDiff {
   const removedColumns = diff.removedColumns.map((column, index) =>
     boundedText(column, `response.diff.removedColumns[${index}]`, maximumVariableNameBytes, true)
   );
+  if (new Set(addedColumns).size !== addedColumns.length || new Set(removedColumns).size !== removedColumns.length) {
+    fail("R kernel diff column names must be unique.");
+  }
+  const outputById = new Map(outputPage.schema.map((column) => [column.id, column]));
+  const projectedPositionById = new Map(outputPage.page.columnIds.map((id, position) => [id, position]));
+  const outputRowByNumber = new Map(outputPage.page.rows.map((row) => [row.rowNumber, row]));
+  const seenCells = new Set<string>();
+  const cells = diff.cells.map((value, index) => {
+    const label = `response.diff.cells[${index}]`;
+    const cell = exactRecord(value, ["rowNumber", "columnId", "column", "before", "after"], label);
+    const rowNumber = boundedInteger(cell.rowNumber, `${label}.rowNumber`, Math.max(0, outputPage.shape.rows - 1));
+    const columnId = boundedText(cell.columnId, `${label}.columnId`, R_FRAME_CONTRACT_LIMITS.columnIdBytes, false);
+    const column = boundedText(cell.column, `${label}.column`, maximumVariableNameBytes, true);
+    const schema = outputById.get(columnId);
+    if (!schema || schema.name !== column) fail("R kernel diff cell targets the wrong output column.");
+    const projectedPosition = projectedPositionById.get(columnId);
+    const outputRow = outputRowByNumber.get(rowNumber);
+    if (projectedPosition === undefined || !outputRow) {
+      fail("R kernel diff cell is outside the returned page projection.");
+    }
+    const key = `${rowNumber}\u0000${columnId}`;
+    if (seenCells.has(key)) fail("R kernel diff contains a repeated changed cell.");
+    seenCells.add(key);
+    const before = cell.before === null ? null : validateDiffCell(cell.before, schema, outputPage, `${label}.before`);
+    const after = cell.after === null ? null : validateDiffCell(cell.after, schema, outputPage, `${label}.after`);
+    if (before === null && after === null) fail("R kernel diff cell cannot omit both values.");
+    if (after === null || !isDeepStrictEqual(after, outputRow.values[projectedPosition])) {
+      fail("R kernel diff after-value does not match the returned page.");
+    }
+    return Object.freeze({ rowNumber, columnId, column, before, after });
+  });
   const result: DataDiff = {
     addedRows: 0,
     removedRows: 0,
     addedColumns,
     removedColumns,
-    changedCells: 0,
-    cells: [],
-    truncated: false
+    changedCells,
+    cells,
+    truncated: diff.truncated
   };
   Object.freeze(result.addedColumns);
   Object.freeze(result.removedColumns);
   Object.freeze(result.cells);
   return Object.freeze(result);
+}
+
+function validateDiffCell(
+  value: unknown,
+  column: RColumnSchema,
+  outputPage: RFramePageContract,
+  label: string
+): CellValue {
+  if (outputPage.shape.rows < 1) fail(`${label} cannot target an empty frame.`);
+  const decoded = decodeRFramePage({
+    ...outputPage,
+    page: {
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      columnOffset: column.position,
+      columnLimit: 1,
+      columnIds: [column.id],
+      rows: [
+        {
+          id: "r:r:0",
+          rowNumber: 0,
+          ...(outputPage.frameSemantics.rowNames === "explicit" ? { rowLabel: "" } : {}),
+          values: [value]
+        }
+      ]
+    }
+  });
+  return Object.freeze({ ...(decoded.page.rows[0]?.values[0] as CellValue) });
 }
 
 function inspectionSchema(value: unknown, expected: readonly RColumnSchema[], label: string): readonly RColumnSchema[] {

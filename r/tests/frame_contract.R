@@ -638,6 +638,129 @@ assert_error(
 )
 assert_identical(text_length_frame, text_length_before, "a failed text length operation mutated its source")
 
+lower_frame <- data.frame(
+  duplicate = c("CAF\u00c9", "MiXeD", NA_character_),
+  duplicate = factor(c("ALPHA", NA, "B\u00c9TA"), levels = c("ALPHA", "B\u00c9TA")),
+  number = 1:3,
+  check.names = FALSE,
+  row.names = c("row-a", "row-b", "row-c")
+)
+lower_before <- unserialize(serialize(lower_frame, NULL, version = 3L))
+lower_capture <- openwrangler_r_frame_contract$capture_frame(lower_frame)
+lower_derived <- openwrangler_r_frame_contract$lower_text_column(
+  lower_frame,
+  list(id = "r:c:0", name = "duplicate"),
+  "lower copy"
+)
+lower_derived_capture <- openwrangler_r_frame_contract$capture_frame(
+  lower_derived,
+  nullability_source = lower_capture,
+  source_positions = c(1L, 2L, 3L, 1L),
+  output_ids = c("r:c:0", "r:c:1", "r:c:2", "c:step:lower-step:0"),
+  lower_text_positions = 4L
+)
+assert_identical(
+  lower_derived[[4L]],
+  c("caf\u00e9", "mixed", NA_character_),
+  "lowerText changed accent, ASCII, or NA behavior"
+)
+assert_identical(row.names(lower_derived), row.names(lower_frame), "lowerText changed explicit row names")
+assert_identical(
+  vapply(lower_derived_capture$descriptor$schema, `[[`, character(1L), "id"),
+  c("r:c:0", "r:c:1", "r:c:2", "c:step:lower-step:0"),
+  "derived lowerText changed stable identities"
+)
+assert_identical(lower_derived_capture$descriptor$schema[[4L]]$rawType, "character", "lowerText returned the wrong type")
+assert_identical(
+  lower_derived_capture$descriptor$schema[[4L]]$nullable,
+  lower_capture$descriptor$schema[[1L]]$nullable,
+  "derived lowerText changed nullability"
+)
+
+lower_tibble <- tibble::as_tibble(lower_frame, .name_repair = "minimal")
+lower_tibble_before <- unserialize(serialize(lower_tibble, NULL, version = 3L))
+lower_tibble_result <- openwrangler_r_frame_contract$lower_text_column(
+  lower_tibble,
+  list(id = "r:c:1", name = "duplicate")
+)
+lower_tibble_capture <- openwrangler_r_frame_contract$capture_frame(
+  lower_tibble_result,
+  nullability_source = openwrangler_r_frame_contract$capture_frame(lower_tibble),
+  source_positions = 1:3,
+  lower_text_positions = 2L
+)
+assert_identical(class(lower_tibble_result), c("tbl_df", "tbl", "data.frame"), "lowerText changed tibble class")
+assert_identical(lower_tibble_result[[2L]], c("alpha", NA_character_, "b\u00e9ta"), "lowerText did not lower factor labels")
+assert_identical(lower_tibble_capture$descriptor$schema[[2L]]$id, "r:c:1", "in-place lowerText changed lineage")
+assert_identical(lower_tibble_capture$descriptor$schema[[2L]]$rawType, "character", "factor lowerText did not become character")
+assert_identical(lower_tibble, lower_tibble_before, "lowerText mutated its source tibble")
+
+lower_table <- data.table::data.table(
+  primary_key = c("B", "a"),
+  payload = c("SECOND", "FIRST"),
+  row_marker = c("row-b", "row-a")
+)
+data.table::setkey(lower_table, primary_key)
+lower_table_before <- data.table::copy(lower_table)
+lower_table_append <- openwrangler_r_frame_contract$lower_text_column(
+  lower_table,
+  list(id = "r:c:0", name = "primary_key"),
+  "lower key"
+)
+lower_table_replace <- openwrangler_r_frame_contract$lower_text_column(
+  lower_table,
+  list(id = "r:c:1", name = "payload")
+)
+for (result in list(lower_table_append, lower_table_replace)) {
+  assert_identical(data.table::key(result), "primary_key", "lowerText changed a retained data.table key")
+  assert_identical(result$row_marker, lower_table_before$row_marker, "lowerText changed physical data.table row order")
+}
+assert_identical(lower_table_append$`lower key`, c("b", "a"), "derived lowerText changed keyed source values")
+assert_identical(lower_table_replace$payload, c("second", "first"), "in-place lowerText changed non-key values")
+assert_error(
+  openwrangler_r_frame_contract$lower_text_column(
+    lower_table,
+    list(id = "r:c:0", name = "primary_key")
+  ),
+  "choose a new output column"
+)
+assert_identical(lower_table, lower_table_before, "lowerText mutated its source data.table")
+
+for (invalid_lower in list(
+  list(reference = list(id = "r:c:2", name = "number"), new_name = NULL, code = "invalid-view-query"),
+  list(reference = list(id = "r:c:99", name = "duplicate"), new_name = NULL, code = "stale-column"),
+  list(reference = list(id = "r:c:0", name = "wrong"), new_name = NULL, code = "stale-column"),
+  list(reference = list(id = "r:c:0", name = "duplicate"), new_name = "number", code = "column-name-collision"),
+  list(reference = list(id = "r:c:0", name = "duplicate"), new_name = "", code = "invalid-column-name"),
+  list(
+    reference = list(id = "r:c:0", name = "duplicate"),
+    new_name = "__OPEN_WRANGLER_INTERNAL_ROW_ID_lower",
+    code = "reserved-column-name"
+  )
+)) {
+  assert_error(
+    openwrangler_r_frame_contract$lower_text_column(
+      lower_frame,
+      invalid_lower$reference,
+      invalid_lower$new_name
+    ),
+    invalid_lower$code
+  )
+}
+invalid_lower_text <- rawToChar(as.raw(0xff))
+Encoding(invalid_lower_text) <- "bytes"
+invalid_lower_frame <- data.frame(value = invalid_lower_text, check.names = FALSE)
+invalid_lower_before <- unserialize(serialize(invalid_lower_frame, NULL, version = 3L))
+assert_error(
+  openwrangler_r_frame_contract$lower_text_column(
+    invalid_lower_frame,
+    list(id = "r:c:0", name = "value")
+  ),
+  "invalid-text"
+)
+assert_identical(invalid_lower_frame, invalid_lower_before, "failed lowerText mutated invalid source text")
+assert_identical(lower_frame, lower_before, "lowerText mutated its source data.frame")
+
 drop_frame <- data.frame(
   duplicate = c(1L, 2L),
   duplicate = c(3L, 4L),

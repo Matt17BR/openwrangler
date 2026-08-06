@@ -407,7 +407,7 @@ describe("native R kernel protocol", () => {
         }),
         previewRequestId
       )
-    ).toThrow("structural diff is invalid");
+    ).toThrow("changed-cell totals are inconsistent");
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({
@@ -546,6 +546,94 @@ describe("native R kernel protocol", () => {
     malformedDiff.diff.addedColumns = [null];
     expect(() => decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId)).toThrow(
       "response.diff.addedColumns[0]"
+    );
+  });
+
+  it("strictly validates native R lowercase requests and bounded in-place cell diffs", () => {
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "lower-step",
+          kind: "lowerText",
+          params: { column: { id: "r:c:0", name: "value" } }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    const response = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalLowerFramePage(),
+      diff: {
+        ...minimalRenameDiff(),
+        changedCells: 1,
+        cells: [
+          {
+            rowNumber: 0,
+            columnId: "r:c:0",
+            column: "value",
+            before: { kind: "string", raw: "MiXeD", display: "MiXeD", isNull: false, isNaN: false },
+            after: { kind: "string", raw: "mixed", display: "mixed", isNull: false, isNaN: false }
+          }
+        ]
+      },
+      code: "open_wrangler_result <- frame\n"
+    });
+    expect(decodeRKernelResponseJson(response, previewRequestId)).toMatchObject({
+      kind: "stepPreview",
+      page: { schema: [expect.objectContaining({ id: "r:c:0", rawType: "character", type: "string" })] },
+      diff: {
+        changedCells: 1,
+        cells: [expect.objectContaining({ rowNumber: 0, columnId: "r:c:0", column: "value" })]
+      }
+    });
+
+    const derived = structuredClone(request) as unknown as {
+      payload: { step: { params: { newColumn?: string } } };
+    };
+    derived.payload.step.params.newColumn = "value lower";
+    expect(JSON.parse(encodeRKernelRequest(derived as unknown as RKernelRequest))).toEqual(derived);
+
+    const extra = structuredClone(request) as unknown as { payload: { step: { params: Record<string, unknown> } } };
+    extra.payload.step.params.extra = true;
+    expect(() => encodeRKernelRequest(extra as unknown as RKernelRequest)).toThrow("invalid fields");
+
+    const malformedDiff = JSON.parse(response) as { diff: { changedCells: number; cells: unknown[] } };
+    malformedDiff.diff.changedCells = 0;
+    expect(() => decodeRKernelResponseJson(JSON.stringify(malformedDiff), previewRequestId)).toThrow(
+      "changed-cell totals"
+    );
+
+    const wrongAfter = JSON.parse(response) as { diff: { cells: Array<{ after: { raw: string; display: string } }> } };
+    wrongAfter.diff.cells[0]!.after.raw = "different";
+    wrongAfter.diff.cells[0]!.after.display = "different";
+    expect(() => decodeRKernelResponseJson(JSON.stringify(wrongAfter), previewRequestId)).toThrow(
+      "after-value does not match"
+    );
+
+    const wrongProjection = JSON.parse(response) as {
+      page: ReturnType<typeof minimalLowerFramePage> & {
+        shape: { rows: number; columns: number };
+        schema: Array<Record<string, unknown>>;
+        page: { columnLimit: number };
+      };
+      diff: { cells: Array<{ columnId: string; column: string }> };
+    };
+    wrongProjection.page = minimalProjectedLowerFramePage() as typeof wrongProjection.page;
+    wrongProjection.diff.cells[0]!.columnId = "r:c:1";
+    wrongProjection.diff.cells[0]!.column = "other";
+    expect(() => decodeRKernelResponseJson(JSON.stringify(wrongProjection), previewRequestId)).toThrow(
+      "outside the returned page projection"
     );
   });
 
@@ -1775,6 +1863,53 @@ function minimalTextLengthFramePage() {
   });
   frame.page.columnIds.push("c:step:text-length-step:0");
   frame.page.rows[0]?.values.push({ kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false });
+  return frame;
+}
+
+function minimalLowerFramePage() {
+  return {
+    contractVersion: 5,
+    dataframeFlavor: "r.data.frame",
+    shape: { rows: 1, columns: 1 },
+    frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
+    schema: [
+      {
+        id: "r:c:0",
+        name: "value",
+        position: 0,
+        rawType: "character",
+        type: "string",
+        nullable: false,
+        semantics: { kind: "character", storageMode: "character", classes: ["character"] }
+      }
+    ],
+    page: {
+      offset: 0,
+      limit: 100,
+      totalRows: 1,
+      columnOffset: 0,
+      columnLimit: 100,
+      columnIds: ["r:c:0"],
+      rows: [
+        {
+          id: "r:r:0",
+          rowNumber: 0,
+          values: [{ kind: "string", raw: "mixed", display: "mixed", isNull: false, isNaN: false }]
+        }
+      ]
+    }
+  } as const;
+}
+
+function minimalProjectedLowerFramePage() {
+  const frame = structuredClone(minimalLowerFramePage()) as unknown as {
+    shape: { rows: number; columns: number };
+    schema: Array<Record<string, unknown>>;
+    page: { columnLimit: number };
+  };
+  frame.shape.columns = 2;
+  frame.schema.push({ ...frame.schema[0], id: "r:c:1", name: "other", position: 1 });
+  frame.page.columnLimit = 1;
   return frame;
 }
 

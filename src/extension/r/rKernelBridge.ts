@@ -14,6 +14,7 @@ import {
   type FilterModel,
   type GridPage,
   type InspectStepRequest,
+  type LowerTextTransformStep,
   type OpenSessionRequest,
   type OperationKind,
   type OpenWranglerRequest,
@@ -71,13 +72,15 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "dropColumns",
   "renameColumn",
   "cloneColumn",
-  "textLength"
+  "textLength",
+  "lowerText"
 ] as OperationKind[]) as OperationKind[];
 
 type RTransformStep =
   | RenameColumnTransformStep
   | CloneColumnTransformStep
   | TextLengthTransformStep
+  | LowerTextTransformStep
   | DropColumnsTransformStep
   | SelectColumnsTransformStep;
 
@@ -583,6 +586,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "renameColumn" &&
       request.step.kind !== "cloneColumn" &&
       request.step.kind !== "textLength" &&
+      request.step.kind !== "lowerText" &&
       request.step.kind !== "dropColumns" &&
       request.step.kind !== "selectColumns"
     ) {
@@ -617,7 +621,11 @@ export class RKernelBridge implements OpenWranglerBridge {
     let nextFilterModel: FilterModel;
     let view: RKernelViewQuery;
     try {
-      targetSchema = schemaAfterRStep(inputSchema, request.step);
+      targetSchema = schemaAfterRStep(
+        inputSchema,
+        request.step,
+        retainedKeyPrefix(confirmed.sourceKeyColumnIds, inputSchema)
+      );
       nextFilterModel = reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
       view = resolveViewQuery(nextFilterModel, targetSchema);
       validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
@@ -653,7 +661,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         return staleResponseError(request.sessionId);
       }
       assertMutationContract(confirmed, result.page, request, targetSchema);
-      assertStructuralDiff(request.step, inputSchema, targetSchema, result.diff);
+      assertMutationDiff(request.step, inputSchema, targetSchema, result.page, result.diff);
 
       confirmed.revision = result.revision;
       confirmed.schema = schemaFromContract(result.page);
@@ -882,7 +890,13 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (!sameSchema(inputSchema, result.inputSchema) || !sameSchema(outputSchema, result.outputSchema)) {
         throw new Error("The R kernel returned mismatched applied-step schemas.");
       }
-      assertStructuralDiff(session.steps[stepIndex] as RTransformStep, inputSchema, outputSchema, result.diff);
+      assertMutationDiff(
+        session.steps[stepIndex] as RTransformStep,
+        inputSchema,
+        outputSchema,
+        result.outputPage,
+        result.diff
+      );
       return {
         kind: "stepInspection",
         revision: session.revision,
@@ -1433,11 +1447,16 @@ function copySchema(schema: readonly ColumnSchema[]): ColumnSchema[] {
   return schema.map((column) => ({ ...column }));
 }
 
-function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransformStep): readonly ColumnSchema[] {
+function schemaAfterRStep(
+  inputSchema: readonly ColumnSchema[],
+  step: RTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
   if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
+  if (step.kind === "lowerText") return schemaAfterLowerText(inputSchema, step, activeKeyColumnIds);
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
   );
@@ -1454,6 +1473,73 @@ function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransform
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
   );
+}
+
+function schemaAfterLowerText(
+  inputSchema: readonly ColumnSchema[],
+  step: LowerTextTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The lowercase column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (source.type !== "string") throw new TypeError("Lowercase requires an R string or factor column.");
+  const outputName = step.params.newColumn;
+  if (outputName !== undefined && outputName.length === 0) {
+    throw new TypeError("The lowercase R column name may not be empty.");
+  }
+  const inPlace = outputName === undefined || outputName === source.name;
+  if (inPlace) {
+    if (activeKeyColumnIds.includes(source.id)) {
+      throw new TypeError(
+        "Lowercase cannot replace a keyed data.table column in place. Choose a new output column instead."
+      );
+    }
+    return Object.freeze(
+      inputSchema.map((column) =>
+        Object.freeze(
+          column.id === source.id ? { ...column, rawType: "character", type: "string" as const } : { ...column }
+        )
+      )
+    );
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Lowercase exceeds the R frame contract column limit.");
+  }
+  if (Buffer.byteLength(outputName, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The lowercase R column name exceeds the frame contract limit.");
+  }
+  if (outputName.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The lowercase R column name uses Open Wrangler's reserved private row-identity prefix.");
+  }
+  if (inputSchema.some((column) => column.name === outputName)) {
+    throw new TypeError(`The R column name ${JSON.stringify(outputName)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
+    throw new TypeError("The lowercase R column identity exceeds the frame contract limit.");
+  }
+  if (inputSchema.some((column) => column.id === id)) {
+    throw new TypeError("The lowercase R column identity already exists in the active dataframe.");
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: outputName,
+      position: inputSchema.length,
+      rawType: "character",
+      type: "string" as const,
+      nullable: source.nullable
+    })
+  ]);
 }
 
 function schemaAfterTextLength(
@@ -1699,6 +1785,16 @@ function rTransformStep(step: RTransformStep): RKernelTransformStep {
       params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newColumn: step.params.newColumn })
     });
   }
+  if (step.kind === "lowerText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "lowerText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
   return Object.freeze({
     id: step.id,
     kind: "renameColumn" as const,
@@ -1739,6 +1835,16 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { column: { ...step.params.column }, newColumn: step.params.newColumn }
     };
   }
+  if (step.kind === "lowerText") {
+    return {
+      id: step.id,
+      kind: "lowerText",
+      params: {
+        column: { ...step.params.column },
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
   return {
     id: step.id,
     kind: "renameColumn",
@@ -1751,6 +1857,7 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "renameColumn" &&
     step.kind !== "cloneColumn" &&
     step.kind !== "textLength" &&
+    step.kind !== "lowerText" &&
     step.kind !== "dropColumns" &&
     step.kind !== "selectColumns"
   ) {
@@ -1769,18 +1876,28 @@ function retainedKeyPrefix(sourceKeyColumnIds: readonly string[], schema: readon
   return retained;
 }
 
-function assertStructuralDiff(
+function assertMutationDiff(
   step: RTransformStep,
   inputSchema: readonly ColumnSchema[],
   outputSchema: readonly ColumnSchema[],
+  outputPage: RFramePageContract,
   diff: DataDiff
 ): void {
   const outputIds = outputSchema.map((column) => column.id);
   const outputIdSet = new Set(outputIds);
   const inputIds = inputSchema.map((column) => column.id);
   const expectedRemoved = inputSchema.filter((column) => !outputIdSet.has(column.id)).map((column) => column.name);
+  const lowerInPlace =
+    step.kind === "lowerText" &&
+    (step.params.newColumn === undefined || step.params.newColumn === step.params.column.name);
   const expectedAdded =
-    step.kind === "cloneColumn" ? [step.params.newName] : step.kind === "textLength" ? [step.params.newColumn] : [];
+    step.kind === "cloneColumn"
+      ? [step.params.newName]
+      : step.kind === "textLength"
+        ? [step.params.newColumn]
+        : step.kind === "lowerText" && !lowerInPlace
+          ? [step.params.newColumn as string]
+          : [];
   const stepMatches =
     step.kind === "selectColumns"
       ? isDeepStrictEqual(
@@ -1796,17 +1913,38 @@ function assertStructuralDiff(
           ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
           : step.kind === "textLength"
             ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-            : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+            : step.kind === "lowerText" && !lowerInPlace
+              ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+              : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+  const projectedPosition = lowerInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
+  const outputRowsByNumber = new Map(outputPage.page.rows.map((row) => [row.rowNumber, row]));
+  const cellsMatch = lowerInPlace
+    ? diff.changedCells <= outputPage.page.rows.length &&
+      (projectedPosition >= 0 || (diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated)) &&
+      diff.cells.every((cell) => {
+        const outputRow = outputRowsByNumber.get(cell.rowNumber);
+        return (
+          projectedPosition >= 0 &&
+          outputRow !== undefined &&
+          cell.columnId === step.params.column.id &&
+          cell.column === step.params.column.name &&
+          cell.before !== null &&
+          cell.after !== null &&
+          !isDeepStrictEqual(cell.before, cell.after) &&
+          isDeepStrictEqual(cell.after, cellValueFromR(outputRow.values[projectedPosition] as RFrameCell))
+        );
+      }) &&
+      diff.changedCells >= diff.cells.length &&
+      (diff.truncated || diff.changedCells === diff.cells.length)
+    : diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated === false;
   const valid =
     diff.addedRows === 0 &&
     diff.removedRows === 0 &&
     isDeepStrictEqual(diff.addedColumns, expectedAdded) &&
     isDeepStrictEqual(diff.removedColumns, expectedRemoved) &&
-    diff.changedCells === 0 &&
-    diff.cells.length === 0 &&
-    diff.truncated === false &&
+    cellsMatch &&
     stepMatches;
-  if (!valid) throw new Error("The R kernel returned a structural diff for the wrong columns.");
+  if (!valid) throw new Error("The R kernel returned a mutation diff for the wrong columns or cells.");
 }
 
 function copyDiff(diff: DataDiff): DataDiff {
