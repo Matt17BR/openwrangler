@@ -173,7 +173,7 @@ jobs.
 Open Wrangler 2 development builds can also open base R `data.frame`, tibble, and `data.table` variables from
 IRkernel. The R workbench currently supports paging, filters, multi-column sorts, value search, and profiles. It is
 view-only for now: cleaning steps, generated R code, exports, Quarto, R Markdown, and plain `.R` files are still being
-built. See the [current R notebook screenshots](docs/media-gallery.md#r-notebooks-open-wrangler-2).
+built. See the [current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2).
 
 ## Export
 

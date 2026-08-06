@@ -656,6 +656,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /^## Notebook dataframes$/mu);
   assert.match(gallery, /^## R notebooks \(Open Wrangler 2\)$/mu);
   assert.match(
+    readme,
+    /\[current R notebook screenshots\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/v2\/docs\/media-gallery\.md#r-notebooks-open-wrangler-2\)/u
+  );
+  assert.match(
     gallery,
     /base `data\.frame`, tibble, and `data\.table` variables in the active\s+IRkernel\. Each variable stays in R\./u
   );
