@@ -792,11 +792,16 @@ export function App() {
     if (foregroundRequest.current) {
       if (latestPageRequest.current?.reason === "projection") {
         setForegroundError("Wait for the visible columns to finish loading before changing the cleaning plan.");
+      } else {
+        setForegroundError("Wait for the current data request to finish before changing the cleaning plan.");
       }
       return false;
     }
     const previous = captureConfirmedViewState();
-    if (!previous) return false;
+    if (!previous) {
+      setForegroundError("Wait for the dataframe view to finish initializing before changing the cleaning plan.");
+      return false;
+    }
     clearStepInspection(false, false);
     flushGridViewState();
     mutationSnapshot.current = previous;
@@ -1925,7 +1930,10 @@ export function App() {
   ]);
 
   const previewStep = (step: TransformStep, replaceStepId?: string) => {
-    if (!supportsOperation(metadataRef.current?.capabilities, step.kind)) return;
+    if (!supportsOperation(metadataRef.current?.capabilities, step.kind)) {
+      setForegroundError("That cleaning operation is not available for the current dataframe.");
+      return;
+    }
     if (!beginMutation()) return;
     const columnWindow = desiredColumnWindow.current;
     vscode.postMessage({
@@ -1933,7 +1941,7 @@ export function App() {
       request: {
         kind: "previewStep",
         step,
-        replaceStepId,
+        ...(replaceStepId === undefined ? {} : { replaceStepId }),
         offset: 0,
         limit: pageSize,
         columnOffset: columnWindow.offset,
@@ -2669,7 +2677,7 @@ export function App() {
           filterModel={filterModel}
           initialKind={operationKind}
           initialStep={editingStep}
-          busy={mutationPending || projectionLoading || importOptionsPending}
+          busy={loading || mutationPending || projectionLoading || importOptionsPending}
           onClose={() => {
             if (foregroundRequest.current !== "mutation") setOperationOpen(false);
           }}

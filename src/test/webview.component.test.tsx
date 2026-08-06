@@ -3442,6 +3442,60 @@ describe("App file import options", () => {
     expect(screen.queryByText("Custom code", { selector: "strong" })).toBeNull();
   });
 
+  it("holds an operation preview until the current grid request finishes", async () => {
+    const limitedMetadata: SessionMetadata = {
+      ...metadata,
+      capabilities: { ...metadata.capabilities, supportedOperations: ["renameColumn"] }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: limitedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    const city = within(cityHeader);
+    const menu = city.getByLabelText("Column actions for city").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the city details menu.");
+    menu.open = true;
+    webviewPostMessage.mockClear();
+    fireEvent.click(city.getByRole("button", { name: "Sort ascending" }));
+    const pageRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage")?.request;
+    expect(pageRequest?.viewRequestId).toEqual(expect.any(String));
+
+    dispatchAppMessage({ kind: "editorAction", action: "openOperation", operationKind: "renameColumn" });
+    const dialog = await screen.findByRole("dialog", { name: "Add cleaning step" });
+    const preview = within(dialog).getByRole("button", { name: "Preview changes" });
+    expect(preview).toBeDisabled();
+
+    dispatchAppMessage({
+      kind: "page",
+      revision: 0,
+      viewRequestId: pageRequest.viewRequestId,
+      metadata: { ...limitedMetadata, filterModel: pageRequest.filterModel },
+      page,
+      summaries: []
+    });
+    expect(preview).toBeEnabled();
+
+    fireEvent.change(within(dialog).getByLabelText("Column"), { target: { value: "c:0" } });
+    fireEvent.change(within(dialog).getByLabelText("New name"), { target: { value: "location" } });
+    webviewPostMessage.mockClear();
+    fireEvent.click(preview);
+    const previewRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "previewStep")?.request;
+    expect(previewRequest).toMatchObject({
+      kind: "previewStep",
+      step: {
+        kind: "renameColumn",
+        params: { column: { id: "c:0", name: "city" }, newName: "location" }
+      }
+    });
+    expect(previewRequest).not.toHaveProperty("replaceStepId");
+  });
+
   it("restores an accepted mutation without ending the host-owned import transaction", async () => {
     render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
