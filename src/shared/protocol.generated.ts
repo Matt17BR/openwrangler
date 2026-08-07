@@ -133,6 +133,10 @@ export type FillMissingReplacement =
       kind: "mostFrequent";
     }
   | {
+      kind: "fallbackColumns";
+      columns: FillMissingFallbackColumnReferenceArray;
+    }
+  | {
       kind: "string";
       value: string;
     }
@@ -160,6 +164,13 @@ export type FillMissingReplacement =
       kind: "datetime";
       value: string;
     };
+/**
+ * Ordered fallback columns for a same-row fill. Earlier columns have higher priority.
+ *
+ * @minItems 1
+ * @maxItems 64
+ */
+export type FillMissingFallbackColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
 export type DropDuplicatesTransformStep = TransformStepTemplate & {
   kind: "dropDuplicates";
   params: DropDuplicatesParams;

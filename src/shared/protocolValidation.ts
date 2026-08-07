@@ -860,11 +860,21 @@ const FILL_DATE_TEXT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 const FILL_DATETIME_TEXT =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?$/u;
 const MAX_FILL_INTEGER = 10n ** 38n - 1n;
+const MAX_FILL_FALLBACK_COLUMNS = 64;
 
 function isFillMissingReplacement(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (value.kind === "median" || value.kind === "mostFrequent") {
     return exactRecord(value, ["kind"]) !== undefined;
+  }
+  if (value.kind === "fallbackColumns") {
+    const decoded = exactRecord(value, ["kind", "columns"]);
+    return (
+      decoded !== undefined &&
+      Array.isArray(decoded.columns) &&
+      decoded.columns.length <= MAX_FILL_FALLBACK_COLUMNS &&
+      isUniqueColumnReferenceArray(decoded.columns, false)
+    );
   }
   const decoded = exactRecord(value, ["kind", "value"]);
   if (decoded === undefined) return false;
@@ -978,8 +988,19 @@ export function isTransformStep(value: unknown): value is TransformStep {
     }
     case "fillMissingValues": {
       const decoded = exactRecord(params, ["column", "replacement"]);
-      return (
-        decoded !== undefined && isColumnReference(decoded.column) && isFillMissingReplacement(decoded.replacement)
+      if (
+        decoded === undefined ||
+        !isColumnReference(decoded.column) ||
+        !isFillMissingReplacement(decoded.replacement)
+      ) {
+        return false;
+      }
+      const targetColumnId = decoded.column.id;
+      return !(
+        isRecord(decoded.replacement) &&
+        decoded.replacement.kind === "fallbackColumns" &&
+        Array.isArray(decoded.replacement.columns) &&
+        decoded.replacement.columns.some((reference) => isRecord(reference) && reference.id === targetColumnId)
       );
     }
     case "dropDuplicates": {

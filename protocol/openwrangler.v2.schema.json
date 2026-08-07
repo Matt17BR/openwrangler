@@ -724,6 +724,14 @@
       "uniqueItems": true,
       "items": { "$ref": "#/definitions/ColumnReference" }
     },
+    "FillMissingFallbackColumnReferenceArray": {
+      "description": "Ordered fallback columns for a same-row fill. Earlier columns have higher priority.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/ColumnReference" }
+    },
     "SortRowsParams": {
       "type": "object",
       "additionalProperties": false,
@@ -768,6 +776,15 @@
           "additionalProperties": false,
           "required": ["kind"],
           "properties": { "kind": { "const": "mostFrequent" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "columns"],
+          "properties": {
+            "kind": { "const": "fallbackColumns" },
+            "columns": { "$ref": "#/definitions/FillMissingFallbackColumnReferenceArray" }
+          }
         },
         {
           "type": "object",

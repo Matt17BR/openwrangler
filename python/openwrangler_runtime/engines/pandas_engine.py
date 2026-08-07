@@ -417,7 +417,18 @@ class PandasEngine(DataFrameEngine):
             return df.iloc[keep.fillna(False).to_numpy(dtype=bool)]
         if kind == "fillMissingValues":
             position = self._bound_frame_position(df, params["column"], kind)
-            df.isetitem(position, _pandas_fill_missing(df.iloc[:, position], params["replacement"]))
+            replacement = params["replacement"]
+            if replacement.get("kind") == "fallbackColumns":
+                fallback_positions = [self._bound_frame_position(df, column, kind) for column in replacement["columns"]]
+                df.isetitem(
+                    position,
+                    _pandas_fill_missing_from_columns(
+                        df.iloc[:, position],
+                        [df.iloc[:, fallback_position] for fallback_position in fallback_positions],
+                    ),
+                )
+            else:
+                df.isetitem(position, _pandas_fill_missing(df.iloc[:, position], replacement))
             return df
         if kind == "dropDuplicates":
             keep = params.get("keep", "first")
@@ -1082,6 +1093,15 @@ class PandasEngine(DataFrameEngine):
             series = f"_fill_series_{index}"
             missing = f"_fill_missing_{index}"
             replacement = params["replacement"]
+            if replacement.get("kind") == "fallbackColumns":
+                fallback_positions = [bound_column_position(column, kind) for column in replacement["columns"]]
+                return [
+                    f"{prefix}{series} = df.iloc[:, {position}]",
+                    (
+                        f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_from_columns("
+                        f"{series}, [df.iloc[:, position] for position in {fallback_positions!r}]))"
+                    ),
+                ]
             lines = [
                 f"{prefix}{series} = df.iloc[:, {position}]",
                 (
@@ -2326,6 +2346,85 @@ def _nan_mask(series: Any) -> Any:
     return _scalar_mask(series, _is_nan_value)
 
 
+def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> Any:
+    import pandas as pd
+
+    result = target.copy()
+    semantic_type = _pandas_semantic_type(target)
+    decimal_spec = _pandas_decimal_spec(target, _pandas_present_values(target)) if semantic_type == "decimal" else None
+    datetime_awareness = _pandas_datetime_awareness(target) if semantic_type == "datetime" else None
+    for fallback in fallbacks:
+        remaining = _null_mask(result) | _nan_mask(result)
+        if not bool(remaining.any()):
+            break
+        available = ~(_null_mask(fallback) | _nan_mask(fallback))
+        take = remaining & available
+        if not bool(take.any()):
+            continue
+
+        candidate = fallback.astype("string") if isinstance(result.dtype, pd.StringDtype) else fallback
+        selected = take.to_numpy(dtype=bool)
+        try:
+            assignment = candidate.where(take)
+            if decimal_spec is not None:
+                precision, scale = decimal_spec
+                selected_values = candidate.iloc[selected].array
+                if not all(isinstance(value, Decimal) for value in selected_values):
+                    raise TypeError("an ordered fallback contains a non-decimal selected value")
+                normalized = [decimal_at_scale(value, precision, scale) for value in selected_values]
+                assignment = assignment.copy()
+                assignment.iloc[selected] = normalized
+                assignment = assignment.astype(result.dtype)
+            if datetime_awareness is not None:
+                selected_values = candidate.iloc[selected].array
+                if not all(isinstance(value, datetime) for value in selected_values):
+                    raise TypeError("an ordered fallback contains a non-datetime selected value")
+                for value in selected_values:
+                    require_datetime_fill_awareness(value, datetime_awareness)
+                assignment = assignment.astype(result.dtype)
+            if isinstance(result.dtype, pd.CategoricalDtype):
+                if not bool(candidate.iloc[selected].isin(result.cat.categories).all()):
+                    raise TypeError("an ordered fallback introduces a new category")
+                assignment = assignment.astype(result.dtype)
+            updated = result.mask(take, assignment)
+        except (TypeError, ValueError, OverflowError) as error:
+            if not isinstance(result.dtype, pd.CategoricalDtype):
+                raise EngineError(
+                    f"A fallback column is incompatible with the selected Pandas target column: {error}"
+                ) from error
+            # Preserve the category dtype while every actually selected label
+            # belongs to its existing levels.  Widen to Pandas StringDtype only
+            # when an ordered fallback introduces a new selected label.
+            result = result.astype("string")
+            candidate = fallback.astype("string")
+            try:
+                assignment = candidate.where(take)
+                updated = result.mask(take, assignment)
+            except (TypeError, ValueError, OverflowError) as widened_error:
+                raise EngineError(
+                    f"A fallback column is incompatible with the selected Pandas text column: {widened_error}"
+                ) from widened_error
+
+        # Pandas can silently wrap narrow integers or round narrow floats when
+        # ``mask`` assigns a wider same-family series.  Compare only the cells
+        # selected by this ordered fallback before accepting the assignment.
+        expected = assignment.iloc[selected].reset_index(drop=True)
+        actual = updated.iloc[selected].reset_index(drop=True)
+        try:
+            exact = actual.eq(expected).fillna(False)
+        except (TypeError, ValueError) as error:
+            raise EngineError(
+                f"A fallback column cannot be compared exactly with the selected Pandas target column: {error}"
+            ) from error
+        if not bool(exact.all()):
+            raise EngineError(
+                "A fallback column cannot be represented exactly in the selected Pandas target column. "
+                "Convert the target column to a wider type first."
+            )
+        result = updated
+    return result
+
+
 def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     import pandas as pd
 
@@ -2523,6 +2622,105 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "            return left + ((right - left) / 2.0)",
         "        return (left / 2.0) + (right / 2.0)",
         "    return (left + right) / 2.0",
+        "",
+        "",
+        "def _open_wrangler_fill_missing_from_columns(target, fallbacks):",
+        "    result = target.copy()",
+        "    semantic_type = _open_wrangler_fill_semantic_type(target)",
+        "    decimal_spec = (",
+        "        _open_wrangler_decimal_spec(",
+        "            target,",
+        (
+            "            [item for item in target.array if not _open_wrangler_is_null(item) "
+            "and not _open_wrangler_is_nan(item)],"
+        ),
+        "        )",
+        "        if semantic_type == 'decimal'",
+        "        else None",
+        "    )",
+        "    datetime_awareness = (",
+        "        _open_wrangler_datetime_awareness(target) if semantic_type == 'datetime' else None",
+        "    )",
+        "    for fallback in fallbacks:",
+        (
+            "        remaining = _open_wrangler_mask(result, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(result, _open_wrangler_is_nan)"
+        ),
+        "        if not remaining.any():",
+        "            break",
+        (
+            "        available = ~(_open_wrangler_mask(fallback, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(fallback, _open_wrangler_is_nan))"
+        ),
+        "        take = remaining & available",
+        "        if not take.any():",
+        "            continue",
+        "        candidate = fallback.astype('string') if isinstance(result.dtype, pd.StringDtype) else fallback",
+        "        selected = take.to_numpy(dtype=bool)",
+        "        try:",
+        "            assignment = candidate.where(take)",
+        "            if decimal_spec is not None:",
+        "                precision, scale = decimal_spec",
+        "                selected_values = candidate.iloc[selected].array",
+        "                if not all(isinstance(value, Decimal) for value in selected_values):",
+        "                    raise TypeError('an ordered fallback contains a non-decimal selected value')",
+        (
+            "                normalized = [_open_wrangler_decimal_at_scale(value, precision, scale) "
+            "for value in selected_values]"
+        ),
+        "                assignment = assignment.copy()",
+        "                assignment.iloc[selected] = normalized",
+        "                assignment = assignment.astype(result.dtype)",
+        "            if datetime_awareness is not None:",
+        "                selected_values = candidate.iloc[selected].array",
+        "                if not all(isinstance(value, datetime) for value in selected_values):",
+        "                    raise TypeError('an ordered fallback contains a non-datetime selected value')",
+        "                for value in selected_values:",
+        "                    value_awareness = value.tzinfo is not None and value.utcoffset() is not None",
+        "                    if value_awareness != datetime_awareness:",
+        ("                        expected = 'timezone-aware' if datetime_awareness else 'timezone-naive'"),
+        (
+            "                        raise ValueError(f'The replacement datetime must be {expected} to match "
+            "the selected column.')"
+        ),
+        "                assignment = assignment.astype(result.dtype)",
+        "            if isinstance(result.dtype, pd.CategoricalDtype):",
+        "                if not candidate.iloc[selected].isin(result.cat.categories).all():",
+        "                    raise TypeError('an ordered fallback introduces a new category')",
+        "                assignment = assignment.astype(result.dtype)",
+        "            updated = result.mask(take, assignment)",
+        "        except (TypeError, ValueError, OverflowError) as error:",
+        "            if not isinstance(result.dtype, pd.CategoricalDtype):",
+        (
+            "                raise ValueError('A fallback column is incompatible with the selected Pandas target "
+            "column: ' + str(error)) from error"
+        ),
+        "            result = result.astype('string')",
+        "            candidate = fallback.astype('string')",
+        "            try:",
+        "                assignment = candidate.where(take)",
+        "                updated = result.mask(take, assignment)",
+        "            except (TypeError, ValueError, OverflowError) as widened_error:",
+        (
+            "                raise ValueError('A fallback column is incompatible with the selected Pandas text "
+            "column: ' + str(widened_error)) from widened_error"
+        ),
+        "        expected = assignment.iloc[selected].reset_index(drop=True)",
+        "        actual = updated.iloc[selected].reset_index(drop=True)",
+        "        try:",
+        "            exact = actual.eq(expected).fillna(False)",
+        "        except (TypeError, ValueError) as error:",
+        (
+            "            raise ValueError('A fallback column cannot be compared exactly with the selected Pandas "
+            "target column: ' + str(error)) from error"
+        ),
+        "        if not exact.all():",
+        (
+            "            raise ValueError('A fallback column cannot be represented exactly in the selected Pandas "
+            "target column. Convert the target column to a wider type first.')"
+        ),
+        "        result = updated",
+        "    return result",
         "",
         "",
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",

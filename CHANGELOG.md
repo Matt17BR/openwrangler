@@ -4,6 +4,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- Fill Missing Values can now take an ordered list of fallback columns. For each missing target cell, Open Wrangler
+  uses the first present value in the same row and leaves the cell missing when no fallback has a value.
+
 ### Fixed
 
 - Open VSX publication now runs inside the protected release job, where the publishing token is available. The

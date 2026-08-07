@@ -1960,6 +1960,10 @@ dd {
   grid-template-columns: minmax(120px, 1fr) minmax(96px, 0.8fr) minmax(120px, 1fr) auto;
 }
 
+.fallbackColumnRow {
+  grid-template-columns: minmax(160px, 1fr) auto;
+}
+
 .operationRowActions {
   align-items: center;
   display: flex;
