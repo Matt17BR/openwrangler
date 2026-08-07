@@ -191,7 +191,7 @@ Generated R can be copied, saved as a `.R` script, or inserted into the notebook
 dataframe. A local R document session opened in Editing mode can also export its cleaned result as CSV. R notebooks
 cannot export cleaned data yet, and R Parquet export is not supported yet.
 
-<a href="images/editor-acceptance/vscode-notebook-r-editing-dark.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="960"></a>
+<a href="images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
 The image shows Rename Column in VS Code. The packaged VS Code and Cursor runs exercise all twenty operations,
 including ordered row work, type-aware missing-value fills, column selection and conversion, the text tools, and the

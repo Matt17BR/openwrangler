@@ -41,6 +41,7 @@ const definitions = [
   ["gallery/notebook-polars.png", 1_440, 900],
   ["gallery/notebook-pyspark-detail.png", 820, 610],
   ["gallery/notebook-pyspark.png", 1_440, 900],
+  ["gallery/notebook-r-editing.png", 1_440, 900],
   ["gallery/notebook-variable-picker-detail.png", 602, 380],
   ["gallery/notebook-variable-picker.png", 1_040, 590],
   ["gallery/operation-catalog.png", 1_280, 874],
