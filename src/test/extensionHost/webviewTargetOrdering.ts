@@ -6,10 +6,9 @@ export interface RendererTargetOrderCandidate {
 }
 
 /**
- * Prioritize the newest Open Wrangler renderer targets before applying the
- * probe bound. Editors may retain detached or hidden webview targets after a
- * panel closes, so truncating discovery order can otherwise starve the current
- * panel behind older targets.
+ * Prioritize attached webviews by recency before applying the probe bound.
+ * Editors may retain old extension-labelled frames after replacing a webview,
+ * while the replacement initially has only a generic vscode-webview URL.
  */
 export function prioritizeNewestRendererTargets<T extends RendererTargetOrderCandidate>(
   candidates: readonly T[],
@@ -22,8 +21,8 @@ export function prioritizeNewestRendererTargets<T extends RendererTargetOrderCan
   return candidates
     .map((candidate, discoveryIndex) => ({ candidate, discoveryIndex }))
     .sort((left, right) => {
-      const classification = rendererTargetPriority(left.candidate) - rendererTargetPriority(right.candidate);
-      if (classification !== 0) return classification;
+      const webview = Number(!left.candidate.isWebview) - Number(!right.candidate.isWebview);
+      if (webview !== 0) return webview;
 
       const pageRecency = right.candidate.pageIndex - left.candidate.pageIndex;
       if (pageRecency !== 0) return pageRecency;
@@ -31,14 +30,46 @@ export function prioritizeNewestRendererTargets<T extends RendererTargetOrderCan
       const frameRecency = right.candidate.frameIndex - left.candidate.frameIndex;
       if (frameRecency !== 0) return frameRecency;
 
+      const classification =
+        Number(!left.candidate.isOpenWranglerWebview) - Number(!right.candidate.isOpenWranglerWebview);
+      if (classification !== 0) return classification;
+
       return right.discoveryIndex - left.discoveryIndex;
     })
     .slice(0, limit)
     .map(({ candidate }) => candidate);
 }
 
-function rendererTargetPriority(candidate: { isWebview: boolean; isOpenWranglerWebview: boolean }): number {
-  if (candidate.isOpenWranglerWebview) return 0;
-  if (candidate.isWebview) return 1;
-  return 2;
+export function classifyRendererUrl(url: string): {
+  protocol: string;
+  isWebview: boolean;
+  isOpenWranglerWebview: boolean;
+} {
+  let protocol = "other";
+  try {
+    const candidate = new URL(url).protocol.toLowerCase();
+    if (
+      candidate === "about:" ||
+      candidate === "file:" ||
+      candidate === "http:" ||
+      candidate === "https:" ||
+      candidate === "vscode-file:" ||
+      candidate === "vscode-webview:"
+    ) {
+      protocol = candidate;
+    }
+  } catch {
+    // Diagnostics retain only an allowlisted protocol classification.
+  }
+  const normalized = url.toLowerCase();
+  const isWebview = protocol === "vscode-webview:" || normalized.includes("vscode-webview");
+  return {
+    protocol,
+    isWebview,
+    isOpenWranglerWebview:
+      isWebview &&
+      (normalized.includes("matt17br.openwrangler") ||
+        normalized.includes("openwrangler") ||
+        normalized.includes("open-wrangler"))
+  };
 }

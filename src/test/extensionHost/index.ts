@@ -105,7 +105,7 @@ import {
   packagedWideSchemaColumns,
   packagedWideSchemaFixtureCsv
 } from "./screenshotEvidence";
-import { prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
+import { classifyRendererUrl, prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
 import { customEditorTabDiagnostic, findExactCustomEditorTab } from "./customEditorTabs";
 
 interface TestApi {
@@ -24693,38 +24693,6 @@ function openWranglerWebviewTargets(
     }
   }
   return prioritizeNewestRendererTargets(targets, limit);
-}
-
-function classifyRendererUrl(url: string): {
-  protocol: string;
-  isWebview: boolean;
-  isOpenWranglerWebview: boolean;
-} {
-  let protocol = "other";
-  try {
-    const candidate = new URL(url).protocol.toLowerCase();
-    if (
-      candidate === "about:" ||
-      candidate === "file:" ||
-      candidate === "http:" ||
-      candidate === "https:" ||
-      candidate === "vscode-file:" ||
-      candidate === "vscode-webview:"
-    ) {
-      protocol = candidate;
-    }
-  } catch {
-    // The diagnostic retains only an allowlisted protocol classification.
-  }
-  const normalized = url.toLowerCase();
-  return {
-    protocol,
-    isWebview: protocol === "vscode-webview:" || normalized.includes("vscode-webview"),
-    isOpenWranglerWebview:
-      normalized.includes("matt17br.openwrangler") ||
-      normalized.includes("openwrangler") ||
-      normalized.includes("open-wrangler")
-  };
 }
 
 function assertOpenWranglerWebviewLifecycle(workbench: Page, browser: Browser | null): void {
