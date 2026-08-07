@@ -123,7 +123,7 @@ export class OpenWranglerPanel {
       ({ webviewPanel }) => {
         if (webviewPanel.active) this.activate();
         else if (!webviewPanel.visible) this.deactivate();
-        else this.clearRendererStartupRecoveryTimer();
+        else this.scheduleRendererStartupRecovery();
       },
       undefined,
       this.disposables
@@ -1127,7 +1127,7 @@ export class OpenWranglerPanel {
       this.rendererStartupRecoveryAttempted ||
       this.rendererStartupRecoveryTimer ||
       !this.openResponse ||
-      !this.panel.active
+      !this.panel.visible
     ) {
       return;
     }
@@ -1138,7 +1138,7 @@ export class OpenWranglerPanel {
         this.rendererReady ||
         this.rendererStartupRecoveryAttempted ||
         !this.openResponse ||
-        !this.panel.active
+        !this.panel.visible
       ) {
         return;
       }

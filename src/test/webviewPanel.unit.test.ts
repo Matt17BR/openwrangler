@@ -776,11 +776,43 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   });
 
-  it("defers startup recovery while the renderer panel is inactive", async () => {
+  it("recovers a visible renderer even while its panel is inactive", async () => {
     vi.useFakeTimers();
     try {
       const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) }, { active: false });
       await harness.open();
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(harness.htmlAssignmentCount).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.htmlAssignmentCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a pending startup recovery when an active renderer becomes visible but inactive", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      await harness.open();
+      await vi.advanceTimersByTimeAsync(4_999);
+
+      harness.deactivate();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(harness.htmlAssignmentCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers startup recovery while the renderer panel is hidden", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      await harness.open();
+      harness.hide();
 
       await vi.advanceTimersByTimeAsync(10_000);
       expect(harness.htmlAssignmentCount).toBe(1);
@@ -804,11 +836,11 @@ describe("OpenWranglerPanel retained view state", () => {
 
       const second = createPanelHarness({ request: vi.fn(async () => openedResponse) }, { active: false });
       second.activate();
-      first.deactivate();
+      first.hide();
       await vi.advanceTimersByTimeAsync(1);
       expect(first.htmlAssignmentCount).toBe(1);
 
-      second.deactivate();
+      second.hide();
       first.activate();
       await vi.advanceTimersByTimeAsync(4_999);
       expect(first.htmlAssignmentCount).toBe(1);

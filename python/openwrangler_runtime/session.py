@@ -618,7 +618,7 @@ class SessionManager:
 
             draft = self._apply_transform_with_row_ids(session, base, bound_step)
             draft_shape = session.engine.shape(draft)
-            draft_schema = session.engine.schema(draft)
+            draft_schema = self._schema_after_transform(session.engine.schema(draft), bound_step)
             draft_lineage = derive_lineage(base_lineage, draft_schema, bound_step)
             session.draft_step = normalized
             session.draft_bound_step = bound_step
@@ -715,7 +715,7 @@ class SessionManager:
             before, _, before_shape, before_raw_schema = self._replay(session, session.bound_plan[:step_index])
             after = self._apply_transform_with_row_ids(session, before, bound_step)
             after_shape = session.engine.shape(after)
-            after_raw_schema = session.engine.schema(after)
+            after_raw_schema = self._schema_after_transform(session.engine.schema(after), bound_step)
 
             input_schema = deepcopy(session.plan_input_schemas[step_index])
             output_schema = (
@@ -1337,7 +1337,7 @@ class SessionManager:
         schema = session.source_schema
         for step in bound_plan:
             frame = self._apply_transform_with_row_ids(session, frame, step)
-            schema = session.engine.schema(frame)
+            schema = self._schema_after_transform(session.engine.schema(frame), step)
             lineage = derive_lineage(lineage, schema, step)
         shape = session.source_shape if not bound_plan else session.engine.shape(frame)
         return frame, lineage, shape, schema
@@ -1351,6 +1351,31 @@ class SessionManager:
         session.engine.validate_column_addressability(transformed)
         session.engine.validate_transformation_result(transformed)
         return session.engine.ensure_row_ids(transformed, f"{session.session_id}:{step['id']}")
+
+    @staticmethod
+    def _schema_after_transform(
+        schema: Sequence[Mapping[str, Any]],
+        step: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        result = deepcopy([dict(column) for column in schema])
+        if step.get("kind") != "fillMissingValues":
+            return result
+
+        params = step.get("params")
+        reference = params.get("column") if isinstance(params, Mapping) else None
+        position = reference.get("position") if isinstance(reference, Mapping) else None
+        name = reference.get("name") if isinstance(reference, Mapping) else None
+        if type(position) is not int or position < 0 or position >= len(result) or not isinstance(name, str):
+            raise EngineError("The bound fill-missing step has an invalid target column.")
+        if result[position].get("name") != name:
+            raise EngineError("The fill-missing result does not match its target column.")
+
+        # Lazy Polars and DuckDB schemas cannot report nullability without a
+        # data scan. A fill operation that returns successfully has replaced
+        # every null (and every float NaN) with a non-null value, so this one
+        # stronger fact can be recorded without profiling the source.
+        result[position]["nullable"] = False
+        return result
 
     def _clear_draft(self, session: Session) -> None:
         session.draft_step = None
