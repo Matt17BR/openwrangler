@@ -22,6 +22,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- A stalled editor now gets a second webview reload before giving up. The dataframe session stays open; the file is
+  not reopened and the runtime is not restarted.
 - Open VSX publication now runs inside the protected release job, where the publishing token is available. The
   workflow also requires explicit success output from `ovsx`; an empty token prompt can no longer look successful.
 - Open VSX verification now follows the registry's current verified namespace-publisher relationship instead of
