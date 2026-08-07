@@ -4757,8 +4757,11 @@ async function exerciseReleasedREditingJourney(
   const firstClone = testing.activeSession();
   assert.ok(firstClone, "The applied native R clone must retain its session.");
   assertReleasedRCloneGeneratedCode(firstClone.code ?? "", "score", "score_copy");
-  await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
-  await vscode.commands.executeCommand("openWrangler.selectStep", cloned.stepId);
+  const sidebar = await arrangePackagedProductSidebar(workbench, "inspection");
+  const cleaningSteps = sidebar.getByRole("tree", { name: /Cleaning Steps/u }).first();
+  const appliedClone = cleaningSteps.getByRole("treeitem", { name: /^1\. Clone column/u }).first();
+  await appliedClone.waitFor({ state: "visible", timeout: 10_000 });
+  await appliedClone.click();
   await waitFor(
     () => testing.activeSession()?.stepInspection?.stepId === cloned.stepId,
     30_000,

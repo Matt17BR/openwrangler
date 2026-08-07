@@ -1166,12 +1166,13 @@ function FillMissingFields({
       {mode === "median" ? (
         <p className="panelNote">
           The median ignores null and NaN cells and keeps the column type. Integer and decimal medians must fit that
-          type exactly.
+          type exactly. If every cell is missing, choose a specific value.
         </p>
       ) : mode === "mostFrequent" ? (
         <p className="panelNote">
-          Uses the most common non-missing value in the cleaned dataframe. Filters in the current view do not affect
-          this calculation. If missing cells need filling and values are tied, choose a specific value.
+          Uses the most common non-missing value in this column after earlier cleaning steps. Filters in the current
+          view do not affect this calculation. If there is no non-missing value or several values tie, choose a specific
+          value.
         </p>
       ) : (
         <>
