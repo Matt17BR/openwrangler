@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
+import { inspectOpenVsxPromotionWorkflow, OPEN_VSX_PUBLISH_RUN } from "./open-vsx-promotion-workflow.mjs";
 
 const source = readFileSync(new URL("../.github/workflows/open-vsx-promotion.yml", import.meta.url), "utf8");
 
@@ -9,10 +9,18 @@ test("Open VSX promotion is the protected exact-public-release flow", () => {
   assert.deepEqual(inspectOpenVsxPromotionWorkflow(source), []);
 });
 
+test("Open VSX duplicate publication accepts the registry's exact message", () => {
+  assert.match(
+    OPEN_VSX_PUBLISH_RUN,
+    /duplicate="Extension Matt17BR\.openwrangler \$RELEASE_VERSION is already published\. Skipping publish\."/u
+  );
+  assert.doesNotMatch(OPEN_VSX_PUBLISH_RUN, /openwrangler version \$RELEASE_VERSION/u);
+});
+
 test("Open VSX promotion rejects trigger, secret, source, channel, and publication drift", () => {
   const mutations = [
     source.replace("types:\n      - published", "types:\n      - edited"),
-    source.replace("  workflow_call:\n", "  not_workflow_call:\n"),
+    source.replace("  workflow_dispatch:\n", "  not_workflow_dispatch:\n"),
     source.replace("contents: read", "contents: write"),
     source.replace("group: openwrangler-release-publication", "group: open-vsx-${{ inputs.release_tag }}"),
     source.replace("queue: max", "queue: latest"),
@@ -41,9 +49,12 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
       "      - name: Skip protected source revalidation\n        run: echo skipped"
     ),
     source.replace("OVSX_PAT: ${{ secrets.OVSX_PAT }}", "OVSX_PAT: literal-token"),
+    source.replace('if [ -z "${OVSX_PAT:-}" ]; then', "if false; then"),
+    source.replace("PAT valid to publish at Matt17BR", "PAT accepted"),
     source.replace("npx --no-install ovsx verify-pat Matt17BR", "npx ovsx verify-pat someone"),
-    source.replace('if [ "$RELEASE_PRERELEASE" = "true" ]; then', 'if [ "$RELEASE_PRERELEASE" = "false" ]; then'),
-    source.replace("--pre-release --skip-duplicate", "--skip-duplicate"),
+    source.replace('case "$RELEASE_PRERELEASE" in', "case stable in"),
+    source.replace("--skip-duplicate canonical-release/openwrangler.vsix", "canonical-release/openwrangler.vsix"),
+    source.replace("Published Matt17BR.openwrangler v$RELEASE_VERSION", "Published something"),
     source.replace("node scripts/verify-open-vsx-github-release.mjs canonical-release --verify", "echo published"),
     source.replace("npx playwright-core install --with-deps chromium", "echo browser-skipped"),
     source.replace("steps.public_media_contract.outputs.required == 'true'", "always()"),

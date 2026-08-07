@@ -4,12 +4,6 @@ on:
   release:
     types:
       - published
-  workflow_call:
-    inputs:
-      release_tag:
-        description: Canonical GitHub release tag to promote
-        required: true
-        type: string
   workflow_dispatch:
     inputs:
       release_tag:
@@ -82,7 +76,23 @@ jobs:
       - name: Verify the Open VSX publisher token
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx --no-install ovsx verify-pat Matt17BR
+        run: |
+          if [ -z "${OVSX_PAT:-}" ]; then
+            echo "OVSX_PAT is unavailable in the publishing environment." >&2
+            exit 1
+          fi
+          if output="$(npx --no-install ovsx verify-pat Matt17BR 2>&1)"; then
+            :
+          else
+            status=$?
+            printf '%s\n' "$output"
+            exit "$status"
+          fi
+          printf '%s\n' "$output"
+          if ! grep -Fq "PAT valid to publish at Matt17BR" <<< "$output"; then
+            echo "ovsx did not confirm the Matt17BR publisher token." >&2
+            exit 1
+          fi
       - name: Reverify the release before Open VSX preflight
         env:
           AUTOMATION_SHA: ${{ steps.automation_source.outputs.automation_commit }}
@@ -107,12 +117,28 @@ jobs:
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
           RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
+          RELEASE_VERSION: ${{ steps.release_source.outputs.release_version }}
         run: |
-          if [ "$RELEASE_PRERELEASE" = "true" ]; then
-            npx --no-install ovsx publish --pre-release --skip-duplicate canonical-release/openwrangler.vsix
-          elif [ "$RELEASE_PRERELEASE" = "false" ]; then
-            npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
+          if [ -z "${OVSX_PAT:-}" ]; then
+            echo "OVSX_PAT is unavailable in the publishing environment." >&2
+            exit 1
+          fi
+          case "$RELEASE_PRERELEASE" in
+            true|false) ;;
+            *) exit 1 ;;
+          esac
+          if output="$(npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix 2>&1)"; then
+            :
           else
+            status=$?
+            printf '%s\n' "$output"
+            exit "$status"
+          fi
+          printf '%s\n' "$output"
+          published="Published Matt17BR.openwrangler v$RELEASE_VERSION"
+          duplicate="Extension Matt17BR.openwrangler $RELEASE_VERSION is already published. Skipping publish."
+          if ! grep -Fq "$published" <<< "$output" && ! grep -Fq "$duplicate" <<< "$output"; then
+            echo "ovsx did not confirm publication or an exact duplicate." >&2
             exit 1
           fi
       - name: Verify the exact public Open VSX release

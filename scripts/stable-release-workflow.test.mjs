@@ -20,8 +20,8 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "  linux-acceptance:\n    env:\n      OPEN_WRANGLER_EDITOR_DISPLAY: current\n    name: Linux release acceptance"
     ),
     source.replace(
-      "  release:\n    name: Publish GitHub and trigger Marketplace\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: ubuntu-24.04",
-      "  release:\n    name: Publish GitHub and trigger Marketplace\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: self-hosted"
+      "  release:\n    name: Publish GitHub and registries\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: ubuntu-24.04",
+      "  release:\n    name: Publish GitHub and registries\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: self-hosted"
     ),
     source.replace(
       "  acceptance-gate:\n    name: Require every stable acceptance result",
@@ -68,7 +68,7 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "      - name: Publish or verify the exact GitHub stable release",
       "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - name: Publish or verify the exact GitHub stable release"
     ),
-    source.replace("    timeout-minutes: 20", "    timeout-minutes: 19"),
+    source.replace("    timeout-minutes: 105", "    timeout-minutes: 19"),
     source.replace(
       "        run: node scripts/push-stable-release-tag.mjs",
       "        run: git push --force origin ${{ inputs.release_tag }}"
@@ -92,10 +92,42 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "node scripts/prepare-stable-candidate-tag.mjs --verify-remote",
       "node scripts/prepare-stable-candidate-tag.mjs --ignore-remote"
     ),
+    source.replace('if [ -z "${OVSX_PAT:-}" ]; then', "if false; then"),
+    source.replace("PAT valid to publish at Matt17BR", "PAT accepted"),
     source.replace(
-      "  promote-open-vsx:\n    needs: release\n    if: ${{ inputs.publish == true && needs.release.result == 'success' }}\n    uses: ./.github/workflows/open-vsx-promotion.yml\n    with:\n      release_tag: ${{ inputs.release_tag }}",
-      "  promote-open-vsx:\n    needs: acceptance-gate\n    uses: attacker/workflow.yml@main"
+      'if output="$(npx --no-install ovsx verify-pat Matt17BR 2>&1)"; then',
+      'if output="$(echo PAT valid to publish at Matt17BR)"; then'
     ),
+    source.replace(
+      'if output="$(npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix 2>&1)"; then',
+      'if output="$(echo Published Matt17BR.openwrangler v$RELEASE_VERSION)"; then'
+    ),
+    source.replace(
+      "RELEASE_VERSION: ${{ steps.canonical_release.outputs.extension_version }}",
+      "RELEASE_VERSION: 2.0.0"
+    ),
+    source.replace(
+      "      - name: Reverify the stable artifact before Open VSX publication\n        env:\n          EXPECTED_SHA: ${{ github.sha }}\n          RELEASE_TAG: ${{ inputs.release_tag }}\n        run: node scripts/verify-canonical-release-artifact.mjs canonical-release",
+      "      - name: Reverify the stable artifact before Open VSX publication\n        env:\n          EXPECTED_SHA: ${{ github.sha }}\n          RELEASE_TAG: ${{ inputs.release_tag }}\n        run: echo artifact accepted"
+    ),
+    source.replace(
+      "      - name: Reverify the stable artifact before Open VSX publication",
+      "      - run: echo intervening\n      - name: Reverify the stable artifact before Open VSX publication"
+    ),
+    source.replace("node scripts/verify-open-vsx-github-release.mjs canonical-release --verify", "echo published"),
+    source.replace(
+      "      - id: public_media_contract\n        name: Select the versioned public-media contract",
+      "      - name: Select the versioned public-media contract"
+    ),
+    source.replace(
+      'run: node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --wait-for-propagation',
+      "run: echo media verified"
+    ),
+    source.replace(
+      "      - name: Install the lockfile-pinned public-media browser\n        if: ${{ steps.public_media_contract.outputs.required == 'true' }}\n        run: npx playwright-core install --with-deps chromium",
+      "      - name: Install the lockfile-pinned public-media browser\n        if: ${{ steps.public_media_contract.outputs.required == 'true' }}\n        env:\n          OVSX_PAT: ${{ secrets.OVSX_PAT }}\n        run: npx playwright-core install --with-deps chromium"
+    ),
+    source.replace("steps.public_media_contract.outputs.required == 'true'", "always()"),
     source.replace(
       '          test "$EVENT_REF_TYPE" = "branch"\n          test "$EVENT_REF" = "refs/heads/main"',
       '          true\n          test "$EVENT_REF" = "refs/heads/main"'

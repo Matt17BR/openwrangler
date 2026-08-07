@@ -34,7 +34,13 @@ function requirePlainObject(value, label) {
 
 async function readBoundedResponse(response, maxBytes, label) {
   const declaredLength = response.headers.get("content-length");
-  if (declaredLength !== null && (!/^(?:0|[1-9]\d*)$/u.test(declaredLength) || Number(declaredLength) > maxBytes)) {
+  const contentEncoding = response.headers.get("content-encoding");
+  const hasIdentityEncoding = contentEncoding === null || contentEncoding === "" || contentEncoding === "identity";
+  if (
+    declaredLength !== null &&
+    hasIdentityEncoding &&
+    (!/^(?:0|[1-9]\d*)$/u.test(declaredLength) || Number(declaredLength) > maxBytes)
+  ) {
     throw new Error(`${label} exceeds its response-size bound.`);
   }
   if (response.body === null) return Buffer.alloc(0);
@@ -95,11 +101,8 @@ function validateMetadata(metadata, { channel, urls, version }) {
   ) {
     throw new Error("Open VSX metadata conflicts with the accepted stable extension.");
   }
-  if (
-    (metadata.verified !== true && metadata.verified !== false) ||
-    (metadata.unrelatedPublisher !== true && metadata.unrelatedPublisher !== false)
-  ) {
-    throw new Error("Open VSX publisher-verification metadata is malformed.");
+  if (metadata.verified !== true) {
+    throw new Error("Open VSX does not report Matt17BR as a verified publisher for this namespace.");
   }
 }
 
@@ -267,7 +270,7 @@ export async function waitForOpenVsxRelease({
     if (result.status === "exact") return result;
     if (attempt < attempts) await delay(delayMs);
   }
-  throw new Error("Open VSX did not expose the accepted stable release within the verification window.");
+  throw new Error(`Open VSX did not expose the accepted ${channel} release within the verification window.`);
 }
 
 function exactHead(root) {
