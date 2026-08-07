@@ -46,7 +46,7 @@ export const operationCatalog: readonly OperationCatalogItem[] = [
   item(
     "fillMissingValues",
     "Fill missing values",
-    "Replace missing cells with the column median or a typed value.",
+    "Fill missing cells using an option available for the column type.",
     "Rows / order",
     "symbol-null"
   ),

@@ -49,6 +49,7 @@ export interface AtomicFileTransactionOptions {
 
 export interface AtomicFileTransaction {
   readonly temporaryPath: string;
+  write(contents: Uint8Array): Promise<void>;
   prepareExternalWriter(): Promise<AtomicExternalWriterTarget>;
   commit(): Promise<void>;
   rollback(): Promise<void>;

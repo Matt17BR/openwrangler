@@ -4,9 +4,9 @@
 
 <h1 align="center">Open Wrangler</h1>
 
-<p align="center">A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks. It supports native Pandas and Polars editing, DuckDB and PySpark viewing, and early R notebook support in Open Wrangler 2 development builds.</p>
+<p align="center">A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks. It supports native Pandas and Polars editing, DuckDB and PySpark viewing, and R notebooks and documents in Open Wrangler 2 development builds.</p>
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/explore.png" width="1440" height="870"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/explore.png" width="960"></a>
 
 _The workbench shows the dataframe, column profiles, filters, and cleaning steps in one editor._
 
@@ -39,8 +39,10 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 
 Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
 3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package
-is missing, Open Wrangler lists it and asks before installing anything. Native R notebook sessions use the selected
-IRkernel instead of Python.
+is missing, Open Wrangler lists it and asks before installing anything. R notebooks use the selected IRkernel. On
+macOS and Linux, trusted `.R`, `.Rmd`, and `.qmd` documents use `Rscript` from `openWrangler.rscriptPath` or `PATH`
+and require `jsonlite` and `rlang`. R notebooks remain available on Windows; direct document execution is not yet
+available there.
 
 Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.
 
@@ -55,7 +57,7 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 ## Workbench
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/sidebar-overview.png"><img alt="Open Wrangler showing Operations, Summary, Filters and Sorts, and Cleaning Steps beside a dataframe draft" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/sidebar-overview.png" width="1440" height="874"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/sidebar-overview.png"><img alt="Open Wrangler showing Operations, Summary, Filters and Sorts, and Cleaning Steps beside a dataframe draft" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/sidebar-overview.png" width="960"></a>
 
 The sidebar keeps operations, dataset health, filters, sorts, and cleaning history beside the grid. See the
 [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) for file entry points,
@@ -69,8 +71,8 @@ JSONL/NDJSON open directly.
 
 <table>
   <tr>
-    <td width="58%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/file-explorer-action.png"><img alt="Opening a CSV in Open Wrangler from the VS Code Explorer context menu" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/file-explorer-action-detail.png" width="920" height="616"></a></td>
-    <td width="42%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/column-search-wide.png"><img alt="Searching to the final item in a 417-column synthetic dataframe" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/column-search-wide-detail.png" width="540" height="420"></a></td>
+    <td width="58%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/file-explorer-action.png"><img alt="Opening a CSV in Open Wrangler from the VS Code Explorer context menu" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/file-explorer-action-detail.png" width="920"></a></td>
+    <td width="42%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/column-search-wide.png"><img alt="Searching to the final item in a 417-column synthetic dataframe" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/column-search-wide-detail.png" width="540"></a></td>
   </tr>
   <tr>
     <td>Open supported files from Explorer, the editor toolbar, tab menu, Command Palette, or <strong>Open With</strong>.</td>
@@ -78,15 +80,15 @@ JSONL/NDJSON open directly.
   </tr>
 </table>
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/filter-result.png"><img alt="Open Wrangler showing a DACH filter, 14,285 matching rows, clear controls, and the same filter in the native sidebar" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/filter-result.png" width="1440" height="861"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/filter-result.png"><img alt="Open Wrangler showing a DACH filter, 14,285 matching rows, clear controls, and the same filter in the native sidebar" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/filter-result.png" width="960"></a>
 
 _The active filter matches 14,285 rows. The grid and sidebar show the same predicate and clear controls without
 changing the source._
 
 <table>
   <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/histogram-hover.png" width="448" height="480"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with inline priority, reorder, edit, and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/sort-priority.png" width="448" height="480"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/histogram-hover.png" width="448"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with inline priority, reorder, edit, and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/sort-priority.png" width="448"></a></td>
   </tr>
   <tr>
     <td>Hover or focus any histogram bin to see its range and row count.</td>
@@ -98,15 +100,18 @@ changing the source._
 
 Choose from 28 operations, including filling missing values, custom Pandas or Polars code, and transformations inferred
 from examples. A draft stays separate until you apply it, and applied steps can be inspected, edited, or undone.
+Fill Missing Values offers a median for numeric columns, the most common value for text, categorical, and boolean
+columns, or a specific value of the right type. A specific value may convert a categorical column to text; the most
+common value keeps its category type.
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png" width="1440" height="870"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/workflow.png" width="960"></a>
 
 _This preview shows the changed values and generated Polars code. The two sorts affect only the current view._
 
 <table>
   <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/latest-step-edited.png"><img alt="Cleaning Steps after editing the latest formula while preserving the earlier uppercase step" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/latest-step-edited-detail.png" width="448" height="440"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/latest-step-undone.png"><img alt="Cleaning Steps after undoing the formula and retaining the uppercase step" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/latest-step-undone-detail.png" width="448" height="440"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/latest-step-edited.png"><img alt="Cleaning Steps after editing the latest formula while preserving the earlier uppercase step" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/latest-step-edited-detail.png" width="448"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/latest-step-undone.png"><img alt="Cleaning Steps after undoing the formula and retaining the uppercase step" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/latest-step-undone-detail.png" width="448"></a></td>
   </tr>
   <tr>
     <td>Editing the latest step updates that history entry instead of adding a duplicate.</td>
@@ -125,8 +130,8 @@ Choose Notebook Preview Provider**.
 
 <table>
   <tr>
-    <td width="44%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling Pandas, Polars, and DuckDB variables by engine and dataframe type" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-variable-picker-detail.png" width="602" height="380"></a></td>
-    <td width="56%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-code-insertion.png" width="1000" height="288"></a></td>
+    <td width="44%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling Pandas, Polars, and DuckDB variables by engine and dataframe type" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-variable-picker-detail.png" width="602"></a></td>
+    <td width="56%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-code-insertion.png" width="960"></a></td>
   </tr>
   <tr>
     <td>The notebook picker labels each live variable by engine and dataframe type.</td>
@@ -136,16 +141,16 @@ Choose Notebook Preview Provider**.
 
 <table>
   <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/notebook-pandas.png"><img alt="Pandas dataframe previewed inline inside a VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-pandas-detail.png" width="698" height="535"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A native Polars notebook session with a formula draft and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-polars-detail.png" width="884" height="675"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/notebook-pandas.png"><img alt="Pandas dataframe previewed inline inside a VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-pandas-detail.png" width="698"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A native Polars notebook session with a formula draft and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-polars-detail.png" width="884"></a></td>
   </tr>
   <tr>
     <td>Pandas outputs open as live Pandas dataframes.</td>
     <td>Polars dataframes stay native and generate Polars code.</td>
   </tr>
   <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png" width="872" height="700"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820" height="610"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png" width="872"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png" width="820"></a></td>
   </tr>
   <tr>
     <td>DuckDB relations are view-only and do not require dataframe conversion.</td>
@@ -171,19 +176,45 @@ Closing the view leaves Spark work that has already started alone, so Open Wrang
 jobs.
 
 Open Wrangler 2 development builds can also open base R `data.frame`, tibble, and `data.table` variables from
-IRkernel. The R workbench supports paging, filters, multi-column sorts, value search, and profiles. Editing mode
-currently supports **Rename Column**, **Drop Columns**, **Select Columns**, **Clone Column**, **Convert type**,
-**Text Length**, and **Lowercase**. Select Columns keeps the order in which columns are chosen. Text Length accepts character and factor
-columns and counts Unicode characters. Lowercase accepts the same inputs and can update the source column or write to
-a new character column. Convert type handles strings, integers, floating-point values, booleans, dates, and datetimes.
-Values that cannot be converted become `NA`. All seven operations can be previewed, applied, discarded, inspected,
-edited, or undone.
-Generated R can be copied, saved as a `.R` script, or inserted into the notebook that opened the dataframe.
+IRkernel or a trusted R document on macOS or Linux. Choose **Run R Document in Open Wrangler…** from Explorer or the
+editor. A `.R` file runs once from its own directory. For `.Rmd` and `.qmd`, Open Wrangler runs the top-level
+backtick-fenced `{r}` cells in order in a separate R process. Relative reads work, unsaved changes are included, and
+the picker shows the dataframes created by that run.
+
+This document command does not render the document or attach to an existing Quarto, knitr, terminal, or R session.
+It accepts the common first-line YAML and fenced-cell form and rejects ambiguous chunk engines, indented cells, raw
+HTML/TeX containers, and other document syntax that could change which text is R code.
+
+The R workbench supports paging, filters, multi-column sorts, value search, profiles, and twenty cleaning operations:
+**Filter Rows**, **Sort Rows**, **Drop Missing Rows**, **Fill Missing Values**, **Drop Duplicates**, **Rename Column**,
+**Drop Columns**, **Select Columns**, **Clone Column**, **Convert type**, **Text Length**, **Lowercase**, **Uppercase**,
+**Find and replace**, **Capitalize**, **Strip text**, **Split text**, **Round**, **Floor**, and **Ceiling**. A viewing
+filter or sort can be copied into a cleaning step without changing the original dataframe. Drop Missing Rows treats
+`NA` and `NaN` as missing and can
+check any or all selected columns. Drop Duplicates can compare selected columns or the whole row and keep the first,
+last, or none of the repeated rows. Fill Missing Values offers the median for numeric columns, the most common value
+for character, factor, and logical columns, or a value entered by the user. It keeps `integer64`, factors, dates, and
+datetimes in their R types. Each operation uses the same preview, apply, discard, inspection, edit, and undo flow.
+The text operations accept character and factor columns, convert factors to character, and keep `NA`. Capitalize
+uppercases the first character and lowercases the rest. Strip text removes whitespace or a literal set of characters
+from both ends. Split text uses a literal delimiter, creates a new column, and returns `NA` when the requested part is
+missing. Find and replace supports literal text and regular expressions. In-place text changes cannot target an active
+`data.table` key; choosing a new output column leaves the key unchanged.
+
+Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
+results use R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's
+ties-to-even rule. An active `data.table` key cannot be changed in place, but the result can be written to a new
+column.
+
+Generated R can be copied, saved as a script, or inserted into the notebook or R document that opened the dataframe.
+A local R document session opened in Editing mode can also export its cleaned result as CSV. R notebooks cannot export
+cleaned data yet, and R Parquet export is not supported yet.
 
 Convert type does not change an active `data.table` key column. Clone that column first, then convert the copy.
 
-Other R cleaning operations, cleaned-data export, live dataframes from plain `.R` documents, R Markdown, and Quarto
-are not supported yet. They are planned after the native notebook path is complete. The
+The default outputs from `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and data-table
+paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are not
+supported. The remaining cleaning operations are not supported yet. The
 [current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2)
 show the live variable picker, profiles, a Rename Column draft, and generated R inserted into its notebook.
 
@@ -191,24 +222,24 @@ show the live variable picker, profiles, a Rename Column draft, and generated R 
 
 <table>
   <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-script.png"><img alt="Generated native Polars cleaning code saved as a Python script" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-script-detail.png" width="995" height="230"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data-detail.png" width="995" height="344"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-script.png"><img alt="Generated native Polars cleaning code saved as a Python script" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-script-detail.png" width="960"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/bafa557b73899489fe8c425ed7250f49fd893d3a/docs/images/readme/v1.2/gallery/export-data-detail.png" width="960"></a></td>
   </tr>
   <tr>
-    <td>Copy generated code or save it as a Python or R script. Python and R notebook sessions can also insert it into the notebook that opened the dataframe.</td>
-    <td>Editing sessions backed by Pandas, Polars, or DuckDB can export a cleaned CSV or Parquet file without overwriting the source.</td>
+    <td>Copy generated code or save it as a Python or R script. Notebook and R-source sessions can also insert it into the document that opened the dataframe.</td>
+    <td>Pandas, Polars, and DuckDB editing sessions export cleaned CSV or Parquet files. Local R document sessions opened in Editing mode export cleaned CSV files.</td>
   </tr>
 </table>
 
 ## Engines and formats
 
-| Engine               | Files                                  | Notebook data                         | How it runs                                                   |
-| -------------------- | -------------------------------------- | ------------------------------------- | ------------------------------------------------------------- |
-| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series          | Native; lazy scans for CSV, TSV, Parquet, and JSONL           |
-| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series                     | Native, including duplicate column labels                     |
-| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation                      | Native; notebook relations are viewing-only                   |
-| PySpark 4.2.x        | No                                     | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles     |
-| R (v2 development)   | No                                     | `data.frame`, tibble, `data.table`    | Native IRkernel viewing and seven current cleaning operations |
+| Engine               | Files                                  | Notebook data                         | How it runs                                               |
+| -------------------- | -------------------------------------- | ------------------------------------- | --------------------------------------------------------- |
+| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series          | Native; lazy scans for CSV, TSV, Parquet, and JSONL       |
+| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series                     | Native, including duplicate column labels                 |
+| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation                      | Native; notebook relations are viewing-only               |
+| PySpark 4.2.x        | No                                     | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles |
+| R (v2 development)   | `.R`, `.Rmd`, `.qmd` on macOS/Linux    | `data.frame`, tibble, `data.table`    | IRkernel for notebooks; owned Rscript for documents       |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
@@ -264,10 +295,13 @@ before v2 ships.
 
 - **v1:** keep improving performance, DuckDB coverage, and support for other desktop VS Code forks. Fork support is
   currently experimental.
-- **v2:** finish native R notebook support for data frames, tibbles, and `data.table`, then add Quarto and R Markdown.
-  Rename, Drop, Select, Clone, Convert type, Text Length, and Lowercase are available now. Generated R can be inserted
-  into its originating notebook. The rest of the cleaning catalog, data export, and plain `.R` workflows are planned
-  after the native notebook path is complete. The
+- **v2:** finish native R support for data frames, tibbles, and `data.table`. IRkernel notebooks and isolated `.R`,
+  `.Rmd`, and `.qmd` document runs are available on the development branch.
+  Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
+  Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor,
+  and Ceiling are available now. Generated R can be inserted into its originating notebook or R document. Local R
+  document sessions opened in Editing mode can export cleaned CSV files. The rest of the cleaning catalog,
+  cleaned-data export from R notebooks, and R Parquet export are still planned. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).

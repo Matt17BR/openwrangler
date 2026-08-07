@@ -657,7 +657,7 @@ lower_derived_capture <- openwrangler_r_frame_contract$capture_frame(
   nullability_source = lower_capture,
   source_positions = c(1L, 2L, 3L, 1L),
   output_ids = c("r:c:0", "r:c:1", "r:c:2", "c:step:lower-step:0"),
-  lower_text_positions = 4L
+  text_transform_positions = 4L
 )
 assert_identical(
   lower_derived[[4L]],
@@ -687,7 +687,7 @@ lower_tibble_capture <- openwrangler_r_frame_contract$capture_frame(
   lower_tibble_result,
   nullability_source = openwrangler_r_frame_contract$capture_frame(lower_tibble),
   source_positions = 1:3,
-  lower_text_positions = 2L
+  text_transform_positions = 2L
 )
 assert_identical(class(lower_tibble_result), c("tbl_df", "tbl", "data.frame"), "lowerText changed tibble class")
 assert_identical(lower_tibble_result[[2L]], c("alpha", NA_character_, "b\u00e9ta"), "lowerText did not lower factor labels")
@@ -760,6 +760,626 @@ assert_error(
 )
 assert_identical(invalid_lower_frame, invalid_lower_before, "failed lowerText mutated invalid source text")
 assert_identical(lower_frame, lower_before, "lowerText mutated its source data.frame")
+
+upper_result <- openwrangler_r_frame_contract$upper_text_column(
+  lower_frame,
+  list(id = "r:c:0", name = "duplicate"),
+  "upper copy"
+)
+upper_capture <- openwrangler_r_frame_contract$capture_frame(
+  upper_result,
+  nullability_source = lower_capture,
+  source_positions = c(1L, 2L, 3L, 1L),
+  output_ids = c("r:c:0", "r:c:1", "r:c:2", "c:step:upper-step:0"),
+  text_transform_positions = 4L
+)
+assert_identical(
+  upper_result[[4L]],
+  c("CAFÉ", "MIXED", NA_character_),
+  "upperText changed Unicode or NA behavior"
+)
+assert_identical(row.names(upper_result), row.names(lower_frame), "upperText changed explicit row names")
+assert_identical(upper_capture$descriptor$schema[[4L]]$id, "c:step:upper-step:0", "upperText lost output lineage")
+assert_identical(upper_capture$descriptor$schema[[4L]]$rawType, "character", "upperText returned the wrong type")
+
+text_tools_frame <- data.frame(
+  text = c("  hÉLLO world  ", "..[MiXeD]..", "left||||right", "tail||", NA_character_),
+  category = factor(c("fIRST", "sECOND", NA, "", "éLAN"), levels = c("fIRST", "sECOND", "", "éLAN")),
+  row.names = paste0("tool-", seq_len(5L)),
+  check.names = FALSE
+)
+text_tools_before <- unserialize(serialize(text_tools_frame, NULL, version = 3L))
+capitalized <- openwrangler_r_frame_contract$capitalize_text_column(
+  text_tools_frame,
+  list(id = "r:c:1", name = "category"),
+  "capitalized"
+)
+assert_identical(
+  capitalized$capitalized,
+  c("First", "Second", NA_character_, "", "Élan"),
+  "capitalizeText changed Unicode, empty, factor, or NA behavior"
+)
+assert_identical(typeof(capitalized$capitalized), "character", "capitalizeText retained factor storage")
+assert_identical(row.names(capitalized), row.names(text_tools_frame), "capitalizeText changed row names")
+
+default_stripped <- openwrangler_r_frame_contract$strip_text_column(
+  text_tools_frame,
+  list(id = "r:c:0", name = "text")
+)
+assert_identical(
+  default_stripped$text,
+  c("hÉLLO world", "..[MiXeD]..", "left||||right", "tail||", NA_character_),
+  "stripText changed the shared default whitespace behavior"
+)
+literal_stripped <- openwrangler_r_frame_contract$strip_text_column(
+  text_tools_frame,
+  list(id = "r:c:0", name = "text"),
+  ".[]",
+  "literal strip"
+)
+assert_identical(
+  literal_stripped$`literal strip`,
+  c("  hÉLLO world  ", "MiXeD", "left||||right", "tail||", NA_character_),
+  "stripText treated regex metacharacters as an expression"
+)
+
+split_empty <- openwrangler_r_frame_contract$split_text_column(
+  text_tools_frame,
+  list(id = "r:c:0", name = "text"),
+  "||",
+  1L,
+  "middle"
+)
+assert_identical(
+  split_empty$middle,
+  c(NA_character_, NA_character_, "", "", NA_character_),
+  "splitText did not preserve empty fields or NA out-of-range values"
+)
+split_tail <- openwrangler_r_frame_contract$split_text_column(
+  text_tools_frame,
+  list(id = "r:c:0", name = "text"),
+  "||",
+  2L,
+  "tail"
+)
+assert_identical(
+  split_tail$tail,
+  c(NA_character_, NA_character_, "right", NA_character_, NA_character_),
+  "splitText changed literal multi-character delimiter behavior"
+)
+non_nullable_split_source <- data.frame(text = c("plain", "also plain"), check.names = FALSE)
+non_nullable_split_capture <- openwrangler_r_frame_contract$capture_frame(non_nullable_split_source)
+non_nullable_split_result <- openwrangler_r_frame_contract$split_text_column(
+  non_nullable_split_source,
+  list(id = "r:c:0", name = "text"),
+  "||",
+  1L,
+  "part"
+)
+non_nullable_split_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  non_nullable_split_result,
+  nullability_source = non_nullable_split_capture,
+  source_positions = c(1L, 1L),
+  output_ids = c("r:c:0", "c:step:split-nullable:0"),
+  text_transform_positions = 2L
+)
+assert_identical(
+  non_nullable_split_result_capture$descriptor$schema[[2L]]$nullable,
+  TRUE,
+  "splitText hid out-of-range NA values behind non-null source metadata"
+)
+
+text_tools_tibble <- tibble::as_tibble(text_tools_frame)
+text_tools_tibble_before <- unserialize(serialize(text_tools_tibble, NULL, version = 3L))
+text_tools_tibble_result <- openwrangler_r_frame_contract$capitalize_text_column(
+  text_tools_tibble,
+  list(id = "r:c:1", name = "category")
+)
+assert_identical(
+  class(text_tools_tibble_result),
+  c("tbl_df", "tbl", "data.frame"),
+  "capitalizeText changed the tibble class"
+)
+assert_identical(text_tools_tibble_result[[2L]], c("First", "Second", NA_character_, "", "Élan"), "tibble capitalizeText changed values")
+assert_identical(text_tools_tibble, text_tools_tibble_before, "text tools mutated their source tibble")
+
+text_tools_table <- data.table::data.table(primary_key = c(" [B] ", " [a] "), payload = c("ONE||", "TWO||tail"))
+data.table::setkey(text_tools_table, primary_key)
+text_tools_table_before <- data.table::copy(text_tools_table)
+assert_error(
+  openwrangler_r_frame_contract$capitalize_text_column(
+    text_tools_table,
+    list(id = "r:c:0", name = "primary_key")
+  ),
+  "choose a new output column"
+)
+assert_error(
+  openwrangler_r_frame_contract$strip_text_column(
+    text_tools_table,
+    list(id = "r:c:0", name = "primary_key")
+  ),
+  "choose a new output column"
+)
+text_tools_table_result <- openwrangler_r_frame_contract$split_text_column(
+  text_tools_table,
+  list(id = "r:c:1", name = "payload"),
+  "||",
+  1L,
+  "suffix"
+)
+assert_identical(class(text_tools_table_result), c("data.table", "data.frame"), "splitText changed data.table class")
+assert_identical(data.table::key(text_tools_table_result), "primary_key", "splitText lost the data.table key")
+assert_identical(text_tools_table_result$suffix, c("", "tail"), "splitText changed keyed data.table row order")
+assert_identical(text_tools_table, text_tools_table_before, "text tools mutated their source data.table")
+
+for (invalid_text_tool in list(
+  list(code = "invalid-view-query", run = function() openwrangler_r_frame_contract$strip_text_column(
+    text_tools_frame,
+    list(id = "r:c:0", name = "text"),
+    ""
+  )),
+  list(code = "invalid-view-query", run = function() openwrangler_r_frame_contract$split_text_column(
+    text_tools_frame,
+    list(id = "r:c:0", name = "text"),
+    "",
+    0L,
+    "part"
+  )),
+  list(code = "invalid-range", run = function() openwrangler_r_frame_contract$split_text_column(
+    text_tools_frame,
+    list(id = "r:c:0", name = "text"),
+    "||",
+    -1L,
+    "part"
+  )),
+  list(code = "invalid-column-name", run = function() openwrangler_r_frame_contract$split_text_column(
+    text_tools_frame,
+    list(id = "r:c:0", name = "text"),
+    "||",
+    0L,
+    "text"
+  ))
+)) {
+  assert_error(invalid_text_tool$run(), invalid_text_tool$code)
+}
+assert_identical(text_tools_frame, text_tools_before, "text tools mutated their source data.frame")
+
+text_cleanup_frame <- data.frame(
+  text = c("alpha-12", "béta-34", NA_character_, ""),
+  category = factor(c("alpha", NA, "béta", "alpha"), levels = c("alpha", "béta")),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b", "row-c", "row-d")
+)
+text_cleanup_before <- unserialize(serialize(text_cleanup_frame, NULL, version = 3L))
+literal_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  text_cleanup_frame,
+  list(id = "r:c:0", name = "text"),
+  "-",
+  "/"
+)
+assert_identical(
+  literal_replaced$text,
+  c("alpha/12", "béta/34", NA_character_, ""),
+  "literal findReplace returned the wrong values"
+)
+regex_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  text_cleanup_frame,
+  list(id = "r:c:0", name = "text"),
+  "^(.+)-([0-9]+)$",
+  "\\2:\\1",
+  TRUE,
+  "regex result"
+)
+assert_identical(
+  regex_replaced$`regex result`,
+  c("12:alpha", "34:béta", NA_character_, ""),
+  "regex findReplace lost captures, Unicode, or NA"
+)
+assert_identical(row.names(regex_replaced), row.names(text_cleanup_frame), "findReplace changed explicit row names")
+factor_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  text_cleanup_frame,
+  list(id = "r:c:1", name = "category"),
+  "a",
+  "A",
+  FALSE,
+  "category result"
+)
+assert_identical(
+  factor_replaced$`category result`,
+  c("AlphA", NA_character_, "bétA", "AlphA"),
+  "findReplace did not convert factor labels to character"
+)
+assert_identical(typeof(factor_replaced$`category result`), "character", "findReplace retained factor storage")
+
+blank_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  data.frame(text = c("ab", "", NA_character_)),
+  list(id = "r:c:0", name = "text"),
+  "",
+  "\\1"
+)
+assert_identical(
+  blank_replaced$text,
+  c("\\1a\\1b\\1", "\\1", NA_character_),
+  "literal blank findReplace did not preserve replacement text at character boundaries"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    text_cleanup_frame,
+    list(id = "r:c:0", name = "text"),
+    "(",
+    "x",
+    TRUE
+  ),
+  "could not apply"
+)
+regex_warning_error <- tryCatch(
+  withCallingHandlers(
+    openwrangler_r_frame_contract$find_replace_column(
+      data.frame(text = paste0(strrep("a", 100L), "b")),
+      list(id = "r:c:0", name = "text"),
+      "(*LIMIT_MATCH=1)(a+)+$",
+      "x",
+      TRUE
+    ),
+    warning = function(warning) stop("a raw regex warning escaped the R frame contract", call. = FALSE)
+  ),
+  error = identity
+)
+assert_identical(
+  regex_warning_error$code,
+  "invalid-view-query",
+  "a regex resource warning did not fail the R draft as an invalid request"
+)
+assert_identical(
+  conditionMessage(regex_warning_error),
+  "Find and Replace could not apply the requested regular expression",
+  "the R regex-warning diagnostic exposed engine details"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = paste(rep("x", 8192L), collapse = "")),
+    list(id = "r:c:0", name = "text"),
+    "",
+    "x"
+  ),
+  "operation-output-too-large"
+)
+for (escaped_replacement in c("\\\\1", "\\\\U", "\\\\L")) {
+  escaped_result <- openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = strrep("a", 4000L)),
+    list(id = "r:c:0", name = "text"),
+    "(a)",
+    escaped_replacement,
+    TRUE
+  )
+  assert_identical(
+    as.integer(nchar(escaped_result$text, type = "bytes")),
+    8000L,
+    "an escaped literal replacement was misclassified as a backreference or case directive"
+  )
+}
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = strrep("a", 4096L)),
+    list(id = "r:c:0", name = "text"),
+    "a",
+    "xxx"
+  ),
+  "operation-output-too-large"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = strrep("a", 2700L)),
+    list(id = "r:c:0", name = "text"),
+    "(?=(a+))",
+    "\\1",
+    TRUE
+  ),
+  "operation-output-too-large"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    data.frame(text = strrep("a", 4096L)),
+    list(id = "r:c:0", name = "text"),
+    "(a)",
+    "\\1\\1\\1",
+    TRUE
+  ),
+  "operation-output-too-large"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    text_cleanup_frame,
+    list(id = "r:c:0", name = "text"),
+    "alpha",
+    "omega",
+    FALSE,
+    "category"
+  ),
+  "column-name-collision"
+)
+
+text_cleanup_table <- data.table::data.table(primary_key = c("b", "a"), payload = c("old-2", "old-1"))
+data.table::setkey(text_cleanup_table, primary_key)
+text_cleanup_table_before <- data.table::copy(text_cleanup_table)
+assert_error(
+  openwrangler_r_frame_contract$upper_text_column(
+    text_cleanup_table,
+    list(id = "r:c:0", name = "primary_key")
+  ),
+  "choose a new output column"
+)
+assert_error(
+  openwrangler_r_frame_contract$find_replace_column(
+    text_cleanup_table,
+    list(id = "r:c:0", name = "primary_key"),
+    "a",
+    "A"
+  ),
+  "choose a new output column"
+)
+table_replaced <- openwrangler_r_frame_contract$find_replace_column(
+  text_cleanup_table,
+  list(id = "r:c:0", name = "primary_key"),
+  "a",
+  "A",
+  FALSE,
+  "clean key"
+)
+assert_identical(data.table::key(table_replaced), "primary_key", "derived findReplace lost a data.table key")
+assert_identical(table_replaced$`clean key`, c("A", "b"), "derived findReplace changed keyed source order")
+assert_identical(text_cleanup_table, text_cleanup_table_before, "text transforms mutated their source data.table")
+assert_identical(text_cleanup_frame, text_cleanup_before, "text transforms mutated their source data.frame")
+
+fill_frame <- data.frame(
+  duplicate = c(1L, NA_integer_, 3L),
+  duplicate = c(1, NaN, NA_real_),
+  label = ordered(c("high", NA, "low"), levels = c("low", "high")),
+  enabled = c(TRUE, NA, FALSE),
+  date = as.Date(c("2026-01-01", NA, "2026-01-03")),
+  instant = as.POSIXct(c("2026-01-01 12:00:00", NA, "2026-01-03 12:00:00"), tz = "Europe/Berlin"),
+  wide = bit64::as.integer64(c("9007199254740993", NA, "9007199254740995")),
+  check.names = FALSE,
+  row.names = c("row-a", "row-b", "row-c")
+)
+fill_before <- unserialize(serialize(fill_frame, NULL, version = 3L))
+fill_capture <- openwrangler_r_frame_contract$capture_frame(fill_frame)
+fill_cases <- list(
+  list(position = 1L, name = "duplicate", replacement = list(kind = "median"), expected = c(1L, 2L, 3L)),
+  list(position = 2L, name = "duplicate", replacement = list(kind = "float", value = "2.5"), expected = c(1, 2.5, 2.5)),
+  list(
+    position = 3L,
+    name = "label",
+    replacement = list(kind = "string", value = "unknown"),
+    expected = ordered(c("high", "unknown", "low"), levels = c("low", "high", "unknown"))
+  ),
+  list(position = 4L, name = "enabled", replacement = list(kind = "boolean", value = TRUE), expected = c(TRUE, TRUE, FALSE)),
+  list(
+    position = 5L,
+    name = "date",
+    replacement = list(kind = "date", value = "2026-02-04"),
+    expected = as.Date(c("2026-01-01", "2026-02-04", "2026-01-03"))
+  ),
+  list(
+    position = 6L,
+    name = "instant",
+    replacement = list(kind = "datetime", value = "2026-02-04T05:06:07Z"),
+    expected = as.POSIXct(c("2026-01-01 12:00:00", "2026-02-04 06:06:07", "2026-01-03 12:00:00"), tz = "Europe/Berlin")
+  ),
+  list(
+    position = 7L,
+    name = "wide",
+    replacement = list(kind = "median"),
+    expected = bit64::as.integer64(c("9007199254740993", "9007199254740994", "9007199254740995"))
+  )
+)
+for (case in fill_cases) {
+  result <- openwrangler_r_frame_contract$fill_missing_column_at(
+    fill_frame,
+    case$position,
+    case$name,
+    case$replacement
+  )
+  result_capture <- openwrangler_r_frame_contract$capture_frame(
+    result,
+    nullability_source = fill_capture,
+    source_positions = seq_along(fill_capture$descriptor$schema),
+    fill_missing_positions = case$position
+  )
+  assert_identical(result[[case$position]], case$expected, sprintf("Fill Missing Values returned the wrong %s values", case$name))
+  assert_identical(result_capture$descriptor$schema[[case$position]]$nullable, FALSE, "a filled R column stayed nullable")
+  assert_identical(result_capture$descriptor$schema[[case$position]]$id, sprintf("r:c:%d", case$position - 1L), "Fill Missing Values changed column identity")
+  assert_identical(row.names(result), row.names(fill_frame), "Fill Missing Values changed explicit row names")
+}
+assert_identical(fill_frame, fill_before, "Fill Missing Values mutated its source data.frame")
+
+most_frequent_frame <- data.frame(
+  text = c("ready", NA, "ready", "later"),
+  label = ordered(c("high", NA, "high", "low"), levels = c("low", "high")),
+  enabled = c(TRUE, NA, TRUE, FALSE),
+  check.names = FALSE
+)
+most_frequent_before <- unserialize(serialize(most_frequent_frame, NULL, version = 3L))
+most_frequent_cases <- list(
+  list(position = 1L, expected = c("ready", "ready", "ready", "later")),
+  list(position = 2L, expected = ordered(c("high", "high", "high", "low"), levels = c("low", "high"))),
+  list(position = 3L, expected = c(TRUE, TRUE, TRUE, FALSE))
+)
+for (case in most_frequent_cases) {
+  result <- openwrangler_r_frame_contract$fill_missing_column_at(
+    most_frequent_frame,
+    case$position,
+    names(most_frequent_frame)[[case$position]],
+    list(kind = "mostFrequent")
+  )
+  assert_identical(
+    result[[case$position]],
+    case$expected,
+    sprintf("Most common value returned the wrong %s values", names(most_frequent_frame)[[case$position]])
+  )
+}
+assert_identical(
+  most_frequent_frame,
+  most_frequent_before,
+  "Most common value mutated its source data.frame"
+)
+
+complete_factor <- data.frame(
+  label = ordered(c("high", "low"), levels = c("low", "high"))
+)
+complete_factor_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  complete_factor,
+  1L,
+  "label",
+  list(kind = "string", value = "unused")
+)
+assert_identical(
+  complete_factor_result,
+  complete_factor,
+  "Fill Missing Values added an unused level to a complete factor"
+)
+complete_factor_most_frequent <- openwrangler_r_frame_contract$fill_missing_column_at(
+  complete_factor,
+  1L,
+  "label",
+  list(kind = "mostFrequent")
+)
+assert_identical(
+  complete_factor_most_frequent,
+  complete_factor,
+  "Most common value changed a complete factor or rejected its unused tie"
+)
+
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c("alpha", "beta", NA_character_)),
+    1L,
+    "value",
+    list(kind = "mostFrequent")
+  ),
+  "2 values are tied"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(NA_character_, NA_character_)),
+    1L,
+    "value",
+    list(kind = "mostFrequent")
+  ),
+  "no non-missing values"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c("ready", NA_character_)),
+    1L,
+    "value",
+    list(kind = "mostFrequent", value = "ready")
+  ),
+  "may not contain a value"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(1, NA_real_)),
+    1L,
+    "value",
+    list(kind = "mostFrequent")
+  ),
+  "incompatible"
+)
+
+dst_frame <- data.frame(
+  instant = as.POSIXct(c("2026-03-28 12:00:00", NA), tz = "Europe/Berlin")
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    dst_frame,
+    1L,
+    "instant",
+    list(kind = "datetime", value = "2026-03-29T02:30:00")
+  ),
+  "not a valid local datetime"
+)
+
+fill_tibble <- tibble::tibble(value = c(NA_character_, "ready"))
+fill_tibble_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  fill_tibble,
+  1L,
+  "value",
+  list(kind = "string", value = "missing")
+)
+assert_identical(class(fill_tibble_result), c("tbl_df", "tbl", "data.frame"), "Fill Missing Values changed tibble class")
+assert_identical(fill_tibble_result$value, c("missing", "ready"), "Fill Missing Values returned the wrong tibble values")
+
+fill_table <- data.table::data.table(primary_key = c(1L, 2L), payload = c(NA_character_, "ready"))
+data.table::setkey(fill_table, primary_key)
+fill_table_before <- data.table::copy(fill_table)
+fill_table_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  fill_table,
+  2L,
+  "payload",
+  list(kind = "string", value = "missing")
+)
+assert_identical(class(fill_table_result), c("data.table", "data.frame"), "Fill Missing Values changed data.table class")
+assert_identical(data.table::key(fill_table_result), "primary_key", "Fill Missing Values dropped an unaffected data.table key")
+assert_identical(fill_table_result$payload, c("missing", "ready"), "Fill Missing Values returned the wrong data.table values")
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    fill_table,
+    1L,
+    "primary_key",
+    list(kind = "integer", value = "0")
+  ),
+  "key column"
+)
+assert_identical(fill_table, fill_table_before, "Fill Missing Values mutated its source data.table")
+
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(1L, NA_integer_, 2L)),
+    1L,
+    "value",
+    list(kind = "median")
+  ),
+  "not an integer"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(NA_real_, NaN)),
+    1L,
+    "value",
+    list(kind = "median")
+  ),
+  "no present values"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(NA_character_, "ready")),
+    1L,
+    "value",
+    list(kind = "decimal", value = "1.0")
+  ),
+  "incompatible"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = as.Date(c(NA, "2026-01-01"))),
+    1L,
+    "value",
+    list(kind = "date", value = "2026-02-30")
+  ),
+  "valid date"
+)
+empty_fill <- data.frame(value = character())
+assert_identical(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    empty_fill,
+    1L,
+    "value",
+    list(kind = "string", value = "unused")
+  ),
+  empty_fill,
+  "Fill Missing Values changed an empty compatible frame"
+)
 
 cast_cases <- list(
   list(
@@ -2029,6 +2649,372 @@ assert_identical(
   "a duplicate column name was not resolved by positional ID"
 )
 
+committed_row_frame <- data.frame(
+  duplicate = c("b", "a", "a", "b", NA, "a", "a"),
+  duplicate = c(2, 1, 1, 1, 9, NA, NaN),
+  `non syntactic` = seq_len(7L),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+committed_row_before <- unserialize(serialize(committed_row_frame, NULL, version = 3L))
+committed_row_capture <- openwrangler_r_frame_contract$capture_frame(committed_row_frame)
+committed_sort <- openwrangler_r_frame_contract$transform_rows(
+  committed_row_capture,
+  view_query(sorts = list(
+    sort_rule("r:c:0", "duplicate", "asc", "last"),
+    sort_rule("r:c:1", "duplicate", "desc", "first")
+  ))
+)
+assert_identical(
+  committed_sort$sourcePositions,
+  c(6L, 7L, 2L, 3L, 1L, 4L, 5L),
+  "committed multi-sort changed priority, missing placement, or stable ties"
+)
+assert_identical(
+  committed_sort$frame[[3L]],
+  c(6L, 7L, 2L, 3L, 1L, 4L, 5L),
+  "committed multi-sort returned the wrong rows"
+)
+assert_identical(
+  names(committed_sort$frame),
+  c("duplicate", "duplicate", "non syntactic"),
+  "committed sorting repaired duplicate or non-syntactic names"
+)
+committed_sort_capture <- openwrangler_r_frame_contract$capture_frame(
+  committed_sort$frame,
+  nullability_source = committed_row_capture,
+  source_row_positions = committed_sort$sourcePositions
+)
+committed_sort_page <- openwrangler_r_frame_contract$materialize_page(
+  committed_sort_capture,
+  row_limit = 7L,
+  column_limit = 3L
+)
+assert_identical(
+  vapply(committed_sort_page$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", c(5L, 6L, 1L, 2L, 0L, 3L, 4L)),
+  "committed sorting regenerated row identities from output positions"
+)
+assert_identical(
+  committed_sort_capture$descriptor$shape$rows,
+  7L,
+  "committed sorting changed the source row-identity domain"
+)
+assert_identical(committed_row_frame, committed_row_before, "committed sorting mutated its source dataframe")
+
+committed_filter_model <- view_query(filters = list(column_filter(
+  "r:c:0",
+  "duplicate",
+  "string",
+  value_filter = list(
+    kind = "values",
+    selectedValues = list("a"),
+    includeNulls = FALSE,
+    includeNaN = FALSE
+  )
+)))
+committed_filter <- openwrangler_r_frame_contract$transform_rows(
+  committed_row_capture,
+  committed_filter_model
+)
+assert_identical(
+  committed_filter$sourcePositions,
+  c(2L, 3L, 6L, 7L),
+  "committed filtering changed non-float includeNaN=FALSE semantics"
+)
+committed_filter_capture <- openwrangler_r_frame_contract$capture_frame(
+  committed_filter$frame,
+  nullability_source = committed_row_capture,
+  source_row_positions = committed_filter$sourcePositions
+)
+committed_filter_page <- openwrangler_r_frame_contract$materialize_page(
+  committed_filter_capture,
+  row_limit = 4L,
+  column_limit = 3L
+)
+assert_identical(
+  vapply(committed_filter_page$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", c(1L, 2L, 5L, 6L)),
+  "committed filtering regenerated surviving row identities"
+)
+
+empty_named_frame <- data.frame(value = 1:2, row.names = c("named-a", "named-b"))
+empty_named_capture <- openwrangler_r_frame_contract$capture_frame(empty_named_frame)
+empty_named_filter <- openwrangler_r_frame_contract$transform_rows(
+  empty_named_capture,
+  view_query(filters = list(column_filter(
+    "r:c:0", "value", "integer", list(predicate("gt", 99L))
+  )))
+)
+assert_identical(empty_named_filter$sourcePositions, integer(), "the empty R filter retained source rows")
+empty_named_derived <- openwrangler_r_frame_contract$capture_frame(
+  empty_named_filter$frame,
+  nullability_source = empty_named_capture,
+  source_row_positions = empty_named_filter$sourcePositions
+)
+assert_identical(
+  empty_named_derived$descriptor$frameSemantics$rowNames,
+  "explicit",
+  "an empty derived frame lost the source explicit-row-name contract"
+)
+empty_named_page <- openwrangler_r_frame_contract$materialize_page(
+  empty_named_derived,
+  row_limit = 2L,
+  column_limit = 1L
+)
+assert_identical(empty_named_page$page$totalRows, 0L, "the empty derived frame reported source rows")
+assert_identical(empty_named_page$page$rows, I(list()), "the empty derived frame returned row payloads")
+nonempty_automatic_rows <- data.frame(value = 1:2)
+nonempty_mismatched_capture <- openwrangler_r_frame_contract$capture_frame(
+  nonempty_automatic_rows,
+  nullability_source = empty_named_capture,
+  source_row_positions = 1:2
+)
+assert_identical(
+  nonempty_mismatched_capture$descriptor$frameSemantics$rowNames,
+  "positional",
+  "derived row-name preservation was incorrectly extended to a non-empty frame"
+)
+
+committed_null <- openwrangler_r_frame_contract$transform_rows(
+  committed_row_capture,
+  view_query(filters = list(column_filter(
+    "r:c:1", "duplicate", "float", list(predicate("isNull"))
+  )))
+)
+committed_nan <- openwrangler_r_frame_contract$transform_rows(
+  committed_row_capture,
+  view_query(filters = list(column_filter(
+    "r:c:1", "duplicate", "float", list(predicate("isNaN"))
+  )))
+)
+assert_identical(committed_null$sourcePositions, 6L, "committed filtering did not keep float NA separate")
+assert_identical(committed_nan$sourcePositions, 7L, "committed filtering did not keep float NaN separate")
+
+committed_tibble <- tibble::as_tibble(committed_row_frame, .name_repair = "minimal")
+committed_tibble_before <- unserialize(serialize(committed_tibble, NULL, version = 3L))
+committed_tibble_filter <- openwrangler_r_frame_contract$transform_rows(
+  openwrangler_r_frame_contract$capture_frame(committed_tibble),
+  committed_filter_model
+)
+assert_identical(
+  class(committed_tibble_filter$frame),
+  c("tbl_df", "tbl", "data.frame"),
+  "committed filtering changed the tibble class"
+)
+assert_identical(committed_tibble, committed_tibble_before, "committed filtering mutated its source tibble")
+
+committed_table <- data.table::data.table(
+  primary_key = c(1L, 1L, 2L, 2L),
+  secondary_key = c(1L, 2L, 1L, 2L),
+  score = c(2, NA, 3, 1)
+)
+data.table::setkey(committed_table, primary_key, secondary_key)
+committed_table_before <- data.table::copy(committed_table)
+committed_table_capture <- openwrangler_r_frame_contract$capture_frame(committed_table)
+committed_table_filter <- openwrangler_r_frame_contract$transform_rows(
+  committed_table_capture,
+  view_query(filters = list(column_filter(
+    "r:c:0", "primary_key", "integer", list(predicate("equals", 1L))
+  )))
+)
+assert_identical(
+  data.table::key(committed_table_filter$frame),
+  c("primary_key", "secondary_key"),
+  "committed filtering discarded a still-valid data.table key"
+)
+committed_table_sort <- openwrangler_r_frame_contract$transform_rows(
+  committed_table_capture,
+  view_query(sorts = list(sort_rule("r:c:2", "score", "desc", "last")))
+)
+assert_identical(data.table::key(committed_table_sort$frame), NULL, "committed sorting retained a stale data.table key")
+assert_identical(
+  committed_table_sort$sourcePositions,
+  c(3L, 1L, 4L, 2L),
+  "committed data.table sorting changed row order or missing placement"
+)
+assert_true(identical(committed_table, committed_table_before), "committed row operations mutated the source data.table")
+
+row_reduction_frame <- data.frame(
+  duplicate = c("a", "a", "b", "b", "c", NA, NA, "z"),
+  duplicate = c(1, 1, NA, NA, 3, NA, NaN, Inf),
+  `non syntactic` = seq_len(8L),
+  row.names = paste0("source-", seq_len(8L)),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+row_reduction_before <- unserialize(serialize(row_reduction_frame, NULL, version = 3L))
+row_reduction_positions <- c(1L, 2L)
+row_reduction_names <- c("duplicate", "duplicate")
+drop_missing_any <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "any"
+)
+assert_identical(
+  drop_missing_any$sourcePositions,
+  c(1L, 2L, 5L, 8L),
+  "Drop Missing Rows any mode did not treat both NA and NaN as missing"
+)
+assert_identical(
+  row.names(drop_missing_any$frame),
+  paste0("source-", c(1L, 2L, 5L, 8L)),
+  "Drop Missing Rows changed explicit row names"
+)
+assert_identical(
+  names(drop_missing_any$frame),
+  c("duplicate", "duplicate", "non syntactic"),
+  "Drop Missing Rows repaired duplicate or non-syntactic names"
+)
+drop_missing_all <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "all"
+)
+assert_identical(
+  drop_missing_all$sourcePositions,
+  c(1L, 2L, 3L, 4L, 5L, 8L),
+  "Drop Missing Rows all mode did not require every selected value to be missing"
+)
+
+drop_duplicate_first <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "first"
+)
+drop_duplicate_last <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "last"
+)
+drop_duplicate_none <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_frame,
+  row_reduction_positions,
+  row_reduction_names,
+  "none"
+)
+assert_identical(
+  drop_duplicate_first$sourcePositions,
+  c(1L, 3L, 5L, 6L, 7L, 8L),
+  "Drop Duplicates first mode changed native NA/NaN equality or source order"
+)
+assert_identical(
+  drop_duplicate_last$sourcePositions,
+  c(2L, 4L, 5L, 6L, 7L, 8L),
+  "Drop Duplicates last mode changed native NA/NaN equality or source order"
+)
+assert_identical(
+  drop_duplicate_none$sourcePositions,
+  c(5L, 6L, 7L, 8L),
+  "Drop Duplicates none mode retained a repeated row"
+)
+assert_identical(row_reduction_frame, row_reduction_before, "R row reduction mutated its source dataframe")
+
+drop_duplicate_capture <- openwrangler_r_frame_contract$capture_frame(
+  drop_duplicate_first$frame,
+  nullability_source = openwrangler_r_frame_contract$capture_frame(row_reduction_frame),
+  source_row_positions = drop_duplicate_first$sourcePositions
+)
+drop_duplicate_page <- openwrangler_r_frame_contract$materialize_page(
+  drop_duplicate_capture,
+  row_limit = 8L,
+  column_limit = 3L
+)
+assert_identical(
+  vapply(drop_duplicate_page$page$rows, `[[`, character(1L), "id"),
+  sprintf("r:r:%d", drop_duplicate_first$sourcePositions - 1L),
+  "Drop Duplicates regenerated stable source-row identities"
+)
+
+row_reduction_tibble <- tibble::as_tibble(row_reduction_frame, .name_repair = "minimal")
+row_reduction_tibble_before <- unserialize(serialize(row_reduction_tibble, NULL, version = 3L))
+tibble_missing <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  row_reduction_tibble,
+  row_reduction_positions,
+  row_reduction_names,
+  "any"
+)
+tibble_duplicates <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_tibble,
+  row_reduction_positions,
+  row_reduction_names,
+  "none"
+)
+assert_identical(class(tibble_missing$frame), c("tbl_df", "tbl", "data.frame"), "Drop Missing Rows changed tibble class")
+assert_identical(class(tibble_duplicates$frame), c("tbl_df", "tbl", "data.frame"), "Drop Duplicates changed tibble class")
+assert_identical(row_reduction_tibble, row_reduction_tibble_before, "R row reduction mutated its source tibble")
+
+row_reduction_table <- data.table::data.table(
+  primary_key = c(1L, 1L, 2L, 2L, 3L),
+  payload = c("a", "a", NA, NA, "z")
+)
+data.table::setkey(row_reduction_table, primary_key)
+row_reduction_table_before <- data.table::copy(row_reduction_table)
+table_missing <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  row_reduction_table,
+  2L,
+  "payload",
+  "any"
+)
+table_duplicates <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  row_reduction_table,
+  c(1L, 2L),
+  c("primary_key", "payload"),
+  "first"
+)
+assert_identical(data.table::key(table_missing$frame), "primary_key", "Drop Missing Rows discarded a compatible data.table key")
+assert_identical(data.table::key(table_duplicates$frame), "primary_key", "Drop Duplicates discarded a compatible data.table key")
+assert_identical(table_duplicates$sourcePositions, c(1L, 3L, 5L), "Drop Duplicates changed keyed data.table order")
+assert_true(identical(row_reduction_table, row_reduction_table_before), "R row reduction mutated its source data.table")
+
+zero_column_rows <- structure(list(), row.names = c(NA_integer_, -3L), class = "data.frame")
+names(zero_column_rows) <- character()
+zero_column_missing <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  zero_column_rows,
+  integer(),
+  character(),
+  "any"
+)
+zero_column_duplicates <- openwrangler_r_frame_contract$drop_duplicate_rows_at(
+  zero_column_rows,
+  integer(),
+  character(),
+  "first"
+)
+assert_identical(zero_column_missing$sourcePositions, 1:3, "Drop Missing Rows changed a zero-column frame")
+assert_identical(zero_column_duplicates$sourcePositions, 1:3, "Drop Duplicates changed a zero-column frame")
+
+empty_named_reduction <- data.frame(value = c(NA_real_, NaN), row.names = c("missing", "nan"))
+empty_named_reduction_capture <- openwrangler_r_frame_contract$capture_frame(empty_named_reduction)
+empty_named_reduction_result <- openwrangler_r_frame_contract$drop_missing_rows_at(
+  empty_named_reduction,
+  1L,
+  "value",
+  "any"
+)
+empty_named_reduction_derived <- openwrangler_r_frame_contract$capture_frame(
+  empty_named_reduction_result$frame,
+  nullability_source = empty_named_reduction_capture,
+  source_row_positions = empty_named_reduction_result$sourcePositions
+)
+assert_identical(
+  empty_named_reduction_derived$descriptor$frameSemantics$rowNames,
+  "explicit",
+  "an empty row-reduction result lost explicit row-name semantics"
+)
+assert_error(
+  openwrangler_r_frame_contract$drop_missing_rows_at(row_reduction_frame, 2L, "wrong", "any"),
+  "stale-column"
+)
+assert_error(
+  openwrangler_r_frame_contract$drop_duplicate_rows_at(row_reduction_frame, 2L, "duplicate", "invalid"),
+  "invalid-view-query"
+)
+
 sort_window <- openwrangler_r_frame_contract$materialize_view_page(
   sort_capture,
   view_query = view_query(sorts = list(sort_rule("r:c:0", "group"))),
@@ -2425,6 +3411,10 @@ assert_error(
 grouped_tibble <- tibble::tibble(value = 1:2)
 class(grouped_tibble) <- c("grouped_df", class(grouped_tibble))
 assert_error(openwrangler_r_frame_contract$capture_frame(grouped_tibble), "unsupported-frame-class")
+
+collapse_grouped_frame <- data.frame(group = "a", value = 1L)
+class(collapse_grouped_frame) <- c("GRP_df", "grouped_df", "data.frame")
+assert_error(openwrangler_r_frame_contract$capture_frame(collapse_grouped_frame), "unsupported-frame-class")
 
 list_frame <- data.frame(value = I(list(1L, 2L)))
 assert_error(openwrangler_r_frame_contract$capture_frame(list_frame), "unsupported-column")

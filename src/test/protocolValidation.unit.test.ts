@@ -1269,7 +1269,7 @@ describe("protocol-v2 request validation", () => {
     );
   });
 
-  it("accepts R only as an identified live notebook frame in either session mode", () => {
+  it("keeps identified live R notebook frames valid in either session mode", () => {
     const source = {
       kind: "notebookVariable" as const,
       label: "r_frame",
@@ -1349,6 +1349,155 @@ describe("protocol-v2 request validation", () => {
     expect(
       validateTransportSchema({ protocolVersion: 2, requestId: "python-r-flavor", response: nonRWithFlavor })
     ).toBe(false);
+    const insertableNotebookOpened = {
+      ...opened,
+      metadata: {
+        ...rMetadata,
+        capabilities: { ...rMetadata.capabilities, notebookInsert: true, documentInsert: false }
+      }
+    };
+    expect(isOpenWranglerResponse(insertableNotebookOpened)).toBe(true);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "r-notebook-insertion",
+        response: insertableNotebookOpened
+      })
+    ).toBe(true);
+    const notebookWithDocumentInsertion = {
+      ...opened,
+      metadata: { ...rMetadata, capabilities: { ...rMetadata.capabilities, documentInsert: true } }
+    };
+    expect(isOpenWranglerResponse(notebookWithDocumentInsertion)).toBe(false);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "r-notebook-wrong-insertion",
+        response: notebookWithDocumentInsertion
+      })
+    ).toBe(false);
+  });
+
+  it("accepts an identified R document variable only with its canonical source URI", () => {
+    const source = {
+      kind: "documentVariable" as const,
+      label: "orders",
+      variableName: "orders",
+      uri: "file:///workspace/analysis.R"
+    };
+    const request = {
+      kind: "openSession" as const,
+      source,
+      backend: "r" as const,
+      mode: "editing" as const,
+      pageSize: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    };
+    const rMetadata = {
+      ...metadata,
+      backend: "r" as const,
+      rDataframeFlavor: "r.data.table" as const,
+      source,
+      capabilities: { ...metadata.capabilities, documentInsert: true }
+    };
+    const opened = { ...responses[1], metadata: rMetadata };
+    const requestEnvelope = (candidate: unknown) => ({
+      protocolVersion: 2,
+      requestId: "r-document-open",
+      priority: "interactive",
+      request: candidate
+    });
+
+    expect(isOpenWranglerRequest(request)).toBe(true);
+    expect(validateTransportSchema(requestEnvelope(request))).toBe(true);
+    expect(isOpenWranglerResponse(opened)).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-document-opened", response: opened })).toBe(
+      true
+    );
+
+    const remoteSource = {
+      ...source,
+      uri: "vscode-remote://ssh-remote+workstation/workspace/analysis.R"
+    };
+    expect(isOpenWranglerRequest({ ...request, source: remoteSource })).toBe(true);
+    expect(validateTransportSchema(requestEnvelope({ ...request, source: remoteSource }))).toBe(true);
+    const encodedSource = { ...source, uri: "file:///workspace/r%C3%A9sum%C3%A9%20analysis.R" };
+    expect(isOpenWranglerRequest({ ...request, source: encodedSource })).toBe(true);
+    expect(validateTransportSchema(requestEnvelope({ ...request, source: encodedSource }))).toBe(true);
+
+    const documentInsertionDisabled = {
+      ...opened,
+      metadata: { ...rMetadata, capabilities: { ...rMetadata.capabilities, documentInsert: false } }
+    };
+    expect(isOpenWranglerResponse(documentInsertionDisabled)).toBe(true);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "r-document-insertion-disabled",
+        response: documentInsertionDisabled
+      })
+    ).toBe(true);
+    const malformedDocumentInsertion = {
+      ...opened,
+      metadata: { ...rMetadata, capabilities: { ...rMetadata.capabilities, documentInsert: "yes" } }
+    };
+    expect(isOpenWranglerResponse(malformedDocumentInsertion)).toBe(false);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "r-document-insertion-malformed",
+        response: malformedDocumentInsertion
+      })
+    ).toBe(false);
+    const documentWithNotebookInsertion = {
+      ...opened,
+      metadata: { ...rMetadata, capabilities: { ...rMetadata.capabilities, notebookInsert: true } }
+    };
+    expect(isOpenWranglerResponse(documentWithNotebookInsertion)).toBe(false);
+    expect(
+      validateTransportSchema({
+        protocolVersion: 2,
+        requestId: "r-document-wrong-insertion",
+        response: documentWithNotebookInsertion
+      })
+    ).toBe(false);
+
+    const invalidSources: unknown[] = [
+      { kind: "documentVariable", label: "orders", uri: source.uri },
+      { kind: "documentVariable", label: "orders", variableName: "", uri: source.uri },
+      { kind: "documentVariable", label: "orders", variableName: "orders" },
+      { ...source, uri: "" },
+      { ...source, uri: "/workspace/analysis.R" },
+      { ...source, uri: "FILE:///workspace/analysis.R" },
+      { ...source, uri: "file:///workspace/analysis data.R" },
+      { ...source, uri: "file:///workspace/%zz.R" },
+      { ...source, path: "/workspace/analysis.R" },
+      { ...source, importOptions: {} }
+    ];
+    for (const invalidSource of invalidSources) {
+      const invalidRequest = { ...request, source: invalidSource };
+      const invalidOpened = { ...opened, metadata: { ...rMetadata, source: invalidSource } };
+      expect(isOpenWranglerRequest(invalidRequest)).toBe(false);
+      expect(validateTransportSchema(requestEnvelope(invalidRequest))).toBe(false);
+      expect(isOpenWranglerResponse(invalidOpened)).toBe(false);
+      expect(
+        validateTransportSchema({ protocolVersion: 2, requestId: "invalid-r-document-opened", response: invalidOpened })
+      ).toBe(false);
+    }
+
+    const sparkRequest = { ...request, backend: "pyspark" as const, mode: "viewing" as const };
+    expect(isOpenWranglerRequest(sparkRequest)).toBe(false);
+    expect(validateTransportSchema(requestEnvelope(sparkRequest))).toBe(false);
+    const { rDataframeFlavor: _rDataframeFlavor, ...metadataWithoutRFlavor } = rMetadata;
+    const sparkOpened = {
+      ...opened,
+      metadata: { ...metadataWithoutRFlavor, backend: "pyspark" as const, mode: "viewing" as const }
+    };
+    expect(isOpenWranglerResponse(sparkOpened)).toBe(false);
+    expect(
+      validateTransportSchema({ protocolVersion: 2, requestId: "spark-document-opened", response: sparkOpened })
+    ).toBe(false);
   });
 
   it("accepts only unique, non-empty stable IDs in summary projections", () => {
@@ -1408,6 +1557,7 @@ describe("protocol-v2 request validation", () => {
     });
     const validReplacements = [
       { kind: "median" },
+      { kind: "mostFrequent" },
       { kind: "string", value: "" },
       { kind: "integer", value: "99999999999999999999999999999999999999" },
       { kind: "float", value: "-1.25e+3" },
@@ -1424,6 +1574,7 @@ describe("protocol-v2 request validation", () => {
 
     for (const replacement of [
       { kind: "median", value: 1 },
+      { kind: "mostFrequent", value: "x" },
       { kind: "integer", value: "01" },
       { kind: "integer", value: "100000000000000000000000000000000000000" },
       { kind: "float", value: "NaN" },

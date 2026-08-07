@@ -18,6 +18,7 @@ import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordin
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
 import { exportFileSafely } from "./files/safeFileExport";
+import { insertGeneratedRDocumentCode } from "./r/rDocumentInsertion";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 type ViewSortAction = "moveUp" | "moveDown" | "remove";
@@ -39,6 +40,7 @@ export type NotebookInsertionDiagnosticStatus =
   | "missing-code"
   | "unsupported-source"
   | "missing-notebook"
+  | "missing-source-document"
   | "dispatching";
 
 class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vscode.Disposable {
@@ -305,6 +307,16 @@ export function registerNativeViews(
     const canChangePlan = canEditLatestStep(snapshot?.metadata);
     void vscode.commands.executeCommand("setContext", "openWrangler.hasDraft", hasDraft);
     void vscode.commands.executeCommand("setContext", "openWrangler.canChangePlan", canChangePlan);
+    void vscode.commands.executeCommand(
+      "setContext",
+      "openWrangler.canInsertNotebookCode",
+      snapshot?.metadata.capabilities?.notebookInsert === true
+    );
+    void vscode.commands.executeCommand(
+      "setContext",
+      "openWrangler.canInsertRDocumentCode",
+      snapshot?.metadata.capabilities?.documentInsert === true
+    );
   };
   updatePlanContexts(coordinator.activeSession());
   const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
@@ -499,7 +511,14 @@ export function registerNativeViews(
         return;
       }
       if (stepId === undefined) coordinator.clearActiveStepInspection();
-      if (!OpenWranglerPanel.sendEditorAction({ action: "selectStep", ...(stepId ? { stepId } : {}) })) {
+      if (
+        !(await OpenWranglerPanel.sendEditorActionForSession({
+          action: "selectStep",
+          expectedSessionId: snapshot.sessionId,
+          expectedRevision: snapshot.metadata.revision,
+          ...(stepId ? { stepId } : {})
+        }))
+      ) {
         void vscode.window.showInformationMessage("Open the active dataframe editor before selecting a cleaning step.");
       }
     }),
@@ -539,6 +558,61 @@ export function registerNativeViews(
         return false;
       }
     }),
+    vscode.commands.registerCommand("openWrangler.insertRDocumentCode", async () => {
+      lastNotebookInsertionStatus = undefined;
+      if (!(await requireTrustedWorkspace("insert generated code into an R document"))) {
+        lastNotebookInsertionStatus = "untrusted";
+        return false;
+      }
+      const snapshot = coordinator.activeSession();
+      const code = codePreview.codeForExport();
+      if (!snapshot || !code) {
+        lastNotebookInsertionStatus = "missing-code";
+        void vscode.window.showInformationMessage("Add a cleaning step before inserting generated code.");
+        return false;
+      }
+      if (!snapshot.metadata.capabilities.documentInsert || snapshot.metadata.source.kind !== "documentVariable") {
+        lastNotebookInsertionStatus = "unsupported-source";
+        void vscode.window.showWarningMessage("The active Open Wrangler session did not come from an R document.");
+        return false;
+      }
+      if (snapshot.metadata.backend !== "r") {
+        lastNotebookInsertionStatus = "unsupported-source";
+        void vscode.window.showWarningMessage("Only generated R can be inserted into an R source document.");
+        return false;
+      }
+      const origin = coordinator.activeTextDocumentOrigin();
+      if (!origin) {
+        lastNotebookInsertionStatus = "missing-source-document";
+        void vscode.window.showWarningMessage(
+          "Reopen and run the originating R document before inserting generated code."
+        );
+        return false;
+      }
+      lastNotebookInsertionStatus = "dispatching";
+      const insertion = await insertGeneratedRDocumentCode(origin, code);
+      lastNotebookInsertionStatus = insertion.status;
+      if (insertion.status === "stale") {
+        void vscode.window.showWarningMessage(
+          "The originating R document changed before Open Wrangler could insert the generated code. Run the document again."
+        );
+        return false;
+      }
+      if (insertion.status === "indeterminate") {
+        void vscode.window.showWarningMessage(
+          "VS Code accepted the R source edit, but Open Wrangler could not confirm its result. Inspect the file before retrying."
+        );
+        return false;
+      }
+      if (insertion.status === "rejected") {
+        void vscode.window.showErrorMessage("VS Code could not insert the generated Open Wrangler R code.");
+        return false;
+      }
+      void vscode.window.showInformationMessage(
+        `Inserted generated R into ${path.basename(origin.document.uri.fsPath)}.`
+      );
+      return true;
+    }),
     vscode.commands.registerCommand("openWrangler.insertNotebookCode", async () => {
       lastNotebookInsertionStatus = undefined;
       if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) {
@@ -554,9 +628,7 @@ export function registerNativeViews(
       }
       if (!snapshot.metadata.capabilities.notebookInsert || snapshot.metadata.source.kind !== "notebookVariable") {
         lastNotebookInsertionStatus = "unsupported-source";
-        void vscode.window.showWarningMessage(
-          "The active Open Wrangler session did not originate from a notebook variable."
-        );
+        void vscode.window.showWarningMessage("The active Open Wrangler session did not come from a notebook.");
         return false;
       }
       const notebook = coordinator.activeNotebookDocument();

@@ -31,6 +31,8 @@ const undoRequestId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const inspectRequestId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const inspectOutputRequestId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const inspectSecondPageRequestId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const exportRequestId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+const exportId = "01234567-89ab-4cde-8fab-0123456789ab";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -270,6 +272,68 @@ describe("native R kernel protocol", () => {
     ).toThrow("typed selection");
   });
 
+  it("validates private streamed CSV exports", () => {
+    const request: Extract<RKernelRequest, { kind: "exportData" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: exportRequestId,
+      kind: "exportData",
+      payload: { sessionId, revision: 4, exportId, format: "csv" }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    expect(
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: exportRequestId,
+          kind: "dataExported",
+          sessionId,
+          revision: 4,
+          exportId,
+          format: "csv",
+          rows: 3,
+          columns: 2,
+          bytes: 42
+        }),
+        exportRequestId
+      )
+    ).toEqual({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: exportRequestId,
+      kind: "dataExported",
+      sessionId,
+      revision: 4,
+      exportId,
+      format: "csv",
+      rows: 3,
+      columns: 2,
+      bytes: 42
+    });
+
+    expect(() =>
+      encodeRKernelRequest({
+        ...request,
+        payload: { ...request.payload, exportId: "../escape" }
+      } as RKernelRequest)
+    ).toThrow("canonical UUID");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: exportRequestId,
+          kind: "dataExported",
+          sessionId,
+          revision: 4,
+          exportId,
+          format: "csv",
+          rows: 3,
+          columns: 2,
+          bytes: -1
+        }),
+        exportRequestId
+      )
+    ).toThrow("supported range");
+  });
+
   it("validates page windows and repeated stable sort identities before dispatch", () => {
     const valid = openRequest();
     expect(JSON.parse(encodeRKernelRequest(valid))).toEqual(valid);
@@ -310,6 +374,210 @@ describe("native R kernel protocol", () => {
         payload: { ...valid.payload, variableName: String.fromCharCode(0xd800) }
       })
     ).toThrow("bounded string");
+  });
+
+  it("validates committed R sort/filter requests and bounded row-changing diffs", () => {
+    const sortRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "sort-step",
+          kind: "sortRows",
+          params: {
+            rules: [
+              {
+                column: { id: "r:c:0", name: "non syntactic" },
+                direction: "desc",
+                nulls: "first"
+              },
+              {
+                column: { id: "r:c:1", name: "duplicate" },
+                direction: "asc",
+                nulls: "last"
+              }
+            ]
+          }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(sortRequest))).toEqual(sortRequest);
+
+    const filterRequest: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      ...sortRequest,
+      payload: {
+        ...sortRequest.payload,
+        step: {
+          id: "filter-step",
+          kind: "filterRows",
+          params: {
+            filterModel: {
+              logic: "or",
+              filters: [
+                {
+                  column: { id: "r:c:0", name: "non syntactic" },
+                  type: "string",
+                  predicates: [],
+                  valueFilter: {
+                    kind: "values",
+                    selectedValues: ["alpha"],
+                    includeNulls: false,
+                    includeNaN: false
+                  }
+                },
+                {
+                  column: { id: "r:c:1", name: "duplicate" },
+                  type: "float",
+                  predicates: [{ kind: "predicate", operator: "isNaN" }]
+                }
+              ],
+              sort: [
+                {
+                  column: { id: "r:c:1", name: "duplicate" },
+                  direction: "desc",
+                  nulls: "last"
+                }
+              ]
+            }
+          }
+        }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(filterRequest))).toEqual(filterRequest);
+
+    const emptySort = structuredClone(sortRequest) as unknown as {
+      payload: { step: { params: { rules: unknown[] } } };
+    };
+    emptySort.payload.step.params.rules = [];
+    expect(() => encodeRKernelRequest(emptySort as unknown as RKernelRequest)).toThrow("sorts exceed");
+
+    const repeatedSort = structuredClone(sortRequest) as unknown as {
+      payload: { step: { params: { rules: Array<{ column: { id: string; name: string } }> } } };
+    };
+    repeatedSort.payload.step.params.rules[1]!.column = { id: "r:c:0", name: "non syntactic" };
+    expect(() => encodeRKernelRequest(repeatedSort as unknown as RKernelRequest)).toThrow("repeated column identity");
+
+    const malformedFilter = structuredClone(filterRequest) as unknown as {
+      payload: { step: { params: { filterModel: Record<string, unknown> } } };
+    };
+    malformedFilter.payload.step.params.filterModel.sorts = [];
+    expect(() => encodeRKernelRequest(malformedFilter as unknown as RKernelRequest)).toThrow("invalid fields");
+
+    const filteredPreview = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalFramePage(),
+      diff: { ...minimalRenameDiff(), removedRows: 1, truncated: true },
+      code: "open_wrangler_result <- frame\n"
+    };
+    expect(
+      decodeRKernelResponseJson(JSON.stringify(filteredPreview), previewRequestId, {
+        inputSchema: minimalFramePage().schema
+      })
+    ).toMatchObject({
+      kind: "stepPreview",
+      diff: { addedRows: 0, removedRows: 1, changedCells: 0, truncated: true }
+    });
+
+    for (const removedRows of [-1, R_FRAME_CONTRACT_LIMITS.rows + 1, 1.5]) {
+      expect(() =>
+        decodeRKernelResponseJson(
+          JSON.stringify({ ...filteredPreview, diff: { ...filteredPreview.diff, removedRows } }),
+          previewRequestId,
+          { inputSchema: minimalFramePage().schema }
+        )
+      ).toThrow("response.diff.removedRows");
+    }
+  });
+
+  it("strictly validates native R missing-row and duplicate-row requests", () => {
+    const base: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: { id: "drop-missing", kind: "dropMissingRows", params: { columns: [], how: "all" } },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(base))).toEqual(base);
+
+    const selectedMissing: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      ...base,
+      payload: {
+        ...base.payload,
+        step: {
+          id: "drop-missing-selected",
+          kind: "dropMissingRows",
+          params: {
+            columns: [
+              { id: "r:c:0", name: "non syntactic" },
+              { id: "r:c:1", name: "duplicate" }
+            ],
+            how: "any"
+          }
+        }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(selectedMissing))).toEqual(selectedMissing);
+
+    const allColumnsDuplicates: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      ...base,
+      payload: {
+        ...base.payload,
+        step: { id: "drop-duplicates-all", kind: "dropDuplicates", params: {} }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(allColumnsDuplicates))).toEqual(allColumnsDuplicates);
+
+    const selectedDuplicates: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      ...base,
+      payload: {
+        ...base.payload,
+        step: {
+          id: "drop-duplicates-selected",
+          kind: "dropDuplicates",
+          params: {
+            columns: [{ id: "r:c:0", name: "non syntactic" }],
+            keep: "none"
+          }
+        }
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(selectedDuplicates))).toEqual(selectedDuplicates);
+
+    const emptyDuplicates = structuredClone(selectedDuplicates) as unknown as {
+      payload: { step: { params: { columns: unknown[] } } };
+    };
+    emptyDuplicates.payload.step.params.columns = [];
+    expect(() => encodeRKernelRequest(emptyDuplicates as unknown as RKernelRequest)).toThrow("non-empty");
+
+    const repeatedMissing = structuredClone(selectedMissing) as unknown as {
+      payload: { step: { params: { columns: Array<{ id: string; name: string }> } } };
+    };
+    repeatedMissing.payload.step.params.columns[1] = { id: "r:c:0", name: "non syntactic" };
+    expect(() => encodeRKernelRequest(repeatedMissing as unknown as RKernelRequest)).toThrow("repeated identity");
+
+    for (const [request, value] of [
+      [selectedMissing, "some"],
+      [selectedDuplicates, "middle"]
+    ] as const) {
+      const malformed = structuredClone(request) as unknown as {
+        payload: { step: { params: { how?: string; keep?: string } } };
+      };
+      if (request.payload.step.kind === "dropMissingRows") malformed.payload.step.params.how = value;
+      else malformed.payload.step.params.keep = value;
+      expect(() => encodeRKernelRequest(malformed as unknown as RKernelRequest)).toThrow("invalid");
+    }
   });
 
   it("validates projected profile identities before dispatch", () => {
@@ -673,6 +941,323 @@ describe("native R kernel protocol", () => {
         inputSchema: minimalLowerFramePage().schema
       })
     ).toThrow("outside the returned page projection");
+  });
+
+  it("strictly validates native R uppercase and find-and-replace parameters", () => {
+    const uppercase: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "upper-step",
+          kind: "upperText",
+          params: { column: { id: "r:c:0", name: "value" }, newColumn: "VALUE" }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(JSON.parse(encodeRKernelRequest(uppercase))).toEqual(uppercase);
+
+    const findReplaceSteps = [
+      {
+        id: "replace-literal",
+        kind: "findReplace",
+        params: {
+          column: { id: "r:c:0", name: "value" },
+          find: ".",
+          replacement: "!",
+          regex: false,
+          newColumn: "literal result"
+        }
+      },
+      {
+        id: "replace-regex",
+        kind: "findReplace",
+        params: { column: { id: "r:c:0", name: "value" }, find: "[[:digit:]]+", replacement: "#", regex: true }
+      },
+      {
+        id: "replace-blank",
+        kind: "findReplace",
+        params: { column: { id: "r:c:0", name: "value" }, find: "", replacement: "_" }
+      }
+    ] as const;
+    for (const step of findReplaceSteps) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step, page: pageWindow() }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const malformedRegex = structuredClone(findReplaceSteps[0]) as unknown as {
+      params: { regex: unknown };
+    };
+    malformedRegex.params.regex = "false";
+    expect(() =>
+      encodeRKernelRequest({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step: malformedRegex, page: pageWindow() }
+      } as unknown as RKernelRequest)
+    ).toThrow("invalid regex flag");
+
+    const extra = structuredClone(findReplaceSteps[0]) as unknown as { params: Record<string, unknown> };
+    extra.params.extra = true;
+    expect(() =>
+      encodeRKernelRequest({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step: extra, page: pageWindow() }
+      } as unknown as RKernelRequest)
+    ).toThrow("invalid fields");
+
+    const oversized = structuredClone(findReplaceSteps[0]) as unknown as { params: { find: string } };
+    oversized.params.find = "é".repeat(4_097);
+    expect(() =>
+      encodeRKernelRequest({
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step: oversized, page: pageWindow() }
+      } as unknown as RKernelRequest)
+    ).toThrow("request.payload.step.params.find");
+  });
+
+  it("strictly validates native R capitalize, strip, and split parameters", () => {
+    const steps = [
+      {
+        id: "capitalize-step",
+        kind: "capitalizeText",
+        params: { column: { id: "r:c:0", name: "value" }, newColumn: "capitalized" }
+      },
+      {
+        id: "strip-default-step",
+        kind: "stripText",
+        params: { column: { id: "r:c:0", name: "value" }, characters: null }
+      },
+      {
+        id: "strip-custom-step",
+        kind: "stripText",
+        params: { column: { id: "r:c:0", name: "value" }, characters: " .", newColumn: "trimmed" }
+      },
+      {
+        id: "split-step",
+        kind: "splitText",
+        params: { column: { id: "r:c:0", name: "value" }, delimiter: "::", index: 1, newColumn: "part" }
+      }
+    ] as const;
+    for (const step of steps) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step, page: pageWindow() }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const expectRejected = (step: unknown, message: string) => {
+      expect(() =>
+        encodeRKernelRequest({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: previewRequestId,
+          kind: "previewStep",
+          payload: { sessionId, revision: 0, step, page: pageWindow() }
+        } as RKernelRequest)
+      ).toThrow(message);
+    };
+    expectRejected(
+      { ...steps[1], params: { ...steps[1].params, characters: "" } },
+      "request.payload.step.params.characters"
+    );
+    expectRejected(
+      { ...steps[2], params: { ...steps[2].params, characters: "x\u0000y" } },
+      "request.payload.step.params.characters"
+    );
+    expectRejected(
+      { ...steps[3], params: { ...steps[3].params, delimiter: "" } },
+      "request.payload.step.params.delimiter"
+    );
+    expectRejected({ ...steps[3], params: { ...steps[3].params, index: -1 } }, "request.payload.step.params.index");
+    expectRejected({ ...steps[3], params: { ...steps[3].params, index: 1.5 } }, "request.payload.step.params.index");
+    const missingOutput = structuredClone(steps[3]) as unknown as { params: Record<string, unknown> };
+    delete missingOutput.params.newColumn;
+    expectRejected(missingOutput, "invalid fields");
+    expectRejected({ ...steps[0], params: { ...steps[0].params, unexpected: true } }, "invalid fields");
+
+    const emptyCodeResponse = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalLowerFramePage(),
+      diff: minimalRenameDiff(),
+      code: ""
+    };
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(emptyCodeResponse), previewRequestId, {
+        inputSchema: minimalLowerFramePage().schema
+      })
+    ).toThrow("response.code");
+  });
+
+  it("strictly validates every native R Fill Missing Values replacement", () => {
+    const replacements = [
+      { kind: "median" },
+      { kind: "mostFrequent" },
+      { kind: "string", value: "unknown" },
+      { kind: "integer", value: "-42" },
+      { kind: "float", value: "1.25e+3" },
+      { kind: "decimal", value: "0.125" },
+      { kind: "boolean", value: false },
+      { kind: "date", value: "2026-08-06" },
+      { kind: "datetime", value: "2026-08-06T12:30:00Z" }
+    ] as const;
+
+    for (const replacement of replacements) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: {
+          sessionId,
+          revision: 0,
+          step: {
+            id: `fill-${replacement.kind}`,
+            kind: "fillMissingValues",
+            params: { column: { id: "r:c:0", name: "value" }, replacement }
+          },
+          page: pageWindow()
+        }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const invalidReplacements: ReadonlyArray<readonly [unknown, string]> = [
+      [{ kind: "median", value: "1" }, "may not contain a value"],
+      [{ kind: "mostFrequent", value: "ready" }, "may not contain a value"],
+      [{ kind: "string" }, "requires a value"],
+      [{ kind: "integer", value: "01" }, "canonical decimal text"],
+      [{ kind: "float", value: "NaN" }, "canonical decimal text"],
+      [{ kind: "boolean", value: "true" }, "true or false"],
+      [{ kind: "string", value: "🙂".repeat(3_000) }, "UTF-8 byte limit"],
+      [{ kind: "date", value: "06-08-2026" }, "YYYY-MM-DD"],
+      [{ kind: "datetime", value: "2026-08-06" }, "too short"],
+      [{ kind: "duration", value: "1" }, "unsupported kind"]
+    ];
+    for (const [replacement, message] of invalidReplacements) {
+      const request = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: {
+          sessionId,
+          revision: 0,
+          step: {
+            id: "fill-invalid",
+            kind: "fillMissingValues",
+            params: { column: { id: "r:c:0", name: "value" }, replacement }
+          },
+          page: pageWindow()
+        }
+      };
+      expect(() => encodeRKernelRequest(request as RKernelRequest)).toThrow(message);
+    }
+
+    const extraParameter = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "fill-extra",
+          kind: "fillMissingValues",
+          params: {
+            column: { id: "r:c:0", name: "value" },
+            replacement: { kind: "string", value: "unknown" },
+            extra: true
+          }
+        },
+        page: pageWindow()
+      }
+    };
+    expect(() => encodeRKernelRequest(extraParameter as RKernelRequest)).toThrow("invalid fields");
+  });
+
+  it("strictly validates native R Round, Floor, and Ceiling payloads", () => {
+    const steps = [
+      {
+        id: "round-negative-digits",
+        kind: "roundNumber",
+        params: { column: { id: "r:c:0", name: "value" }, decimals: -3 }
+      },
+      {
+        id: "round-positive-digits",
+        kind: "roundNumber",
+        params: { column: { id: "r:c:0", name: "value" }, decimals: 4, newColumn: "rounded" }
+      },
+      {
+        id: "floor-step",
+        kind: "floorNumber",
+        params: { column: { id: "r:c:0", name: "value" } }
+      },
+      {
+        id: "ceiling-step",
+        kind: "ceilNumber",
+        params: { column: { id: "r:c:0", name: "value" }, newColumn: "ceiling_value" }
+      }
+    ] as const;
+    for (const step of steps) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step, page: pageWindow() }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const expectRejected = (step: unknown, message: string) => {
+      expect(() =>
+        encodeRKernelRequest({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: previewRequestId,
+          kind: "previewStep",
+          payload: { sessionId, revision: 0, step, page: pageWindow() }
+        } as RKernelRequest)
+      ).toThrow(message);
+    };
+    expectRejected(
+      { ...steps[0], params: { ...steps[0].params, decimals: 1.5 } },
+      "request.payload.step.params.decimals"
+    );
+    expectRejected(
+      { ...steps[0], params: { ...steps[0].params, decimals: 2_147_483_648 } },
+      "request.payload.step.params.decimals"
+    );
+    expectRejected(
+      { ...steps[0], params: { ...steps[0].params, decimals: -2_147_483_648 } },
+      "request.payload.step.params.decimals"
+    );
+    expectRejected({ ...steps[2], params: { ...steps[2].params, decimals: 0 } }, "invalid fields");
+    expectRejected(
+      { ...steps[3], params: { ...steps[3].params, newColumn: "" } },
+      "request.payload.step.params.newColumn"
+    );
+    expectRejected({ ...steps[1], params: { ...steps[1].params, unexpected: true } }, "invalid fields");
+    const missingColumn = structuredClone(steps[1]) as unknown as { params: Record<string, unknown> };
+    delete missingColumn.params.column;
+    expectRejected(missingColumn, "invalid fields");
   });
 
   it("strictly validates native R Cast requests and type-changing cell diffs", () => {

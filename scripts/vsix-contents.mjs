@@ -26,11 +26,12 @@ export const allowedVsixEntryPatterns = [
   /^extension\/python\/openwrangler_runtime\/engines\/[^/]+\.py$/u,
   /^extension\/r\/$/u,
   /^extension\/r\/openwrangler_runtime\/$/u,
-  /^extension\/r\/openwrangler_runtime\/(?:frame_contract|kernel_agent)\.R$/u
+  /^extension\/r\/openwrangler_runtime\/(?:frame_contract|kernel_agent|process_agent)\.R$/u
 ];
 
 const rFrameContractEntry = "extension/r/openwrangler_runtime/frame_contract.R";
 const rKernelAgentEntry = "extension/r/openwrangler_runtime/kernel_agent.R";
+const rProcessAgentEntry = "extension/r/openwrangler_runtime/process_agent.R";
 
 const requiredVsixEntriesBeforeR = Object.freeze([
   "[Content_Types].xml",
@@ -61,7 +62,8 @@ const requiredVsixEntriesBeforeR = Object.freeze([
 export const requiredVsixEntries = Object.freeze([
   ...requiredVsixEntriesBeforeR,
   rFrameContractEntry,
-  rKernelAgentEntry
+  rKernelAgentEntry,
+  rProcessAgentEntry
 ]);
 
 export function requiredVsixEntriesForRelease({ requireRFrameContract = true } = {}) {

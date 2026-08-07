@@ -325,10 +325,11 @@ def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise OperationError("fillMissingValues.replacement must be an object.")
     kind = value.get("kind")
-    if kind == "median":
+    if kind in {"median", "mostFrequent"}:
         if set(value) != {"kind"}:
-            raise OperationError("A median fill replacement must contain only kind.")
-        return {"kind": "median"}
+            label = "median" if kind == "median" else "most common value"
+            raise OperationError(f"A {label} fill replacement may contain only kind.")
+        return {"kind": kind}
     if kind not in _FILL_REPLACEMENT_KINDS:
         raise OperationError(f"Unsupported fill replacement type: {kind!r}.")
     if set(value) != {"kind", "value"}:

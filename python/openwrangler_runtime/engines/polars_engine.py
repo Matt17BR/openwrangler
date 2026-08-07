@@ -922,6 +922,12 @@ class PolarsEngine(DataFrameEngine):
             if dtype.is_float():
                 expression = expression.fill_nan(None)
             replacement = params["replacement"]
+            if replacement.get("kind") == "mostFrequent":
+                if not _polars_has_missing(df, expression):
+                    return df
+                fill_value = _polars_most_frequent_value(df, column, expression)
+                literal = pl.lit(fill_value).cast(dtype, strict=True)
+                return df.with_columns(expression.fill_null(literal).alias(column))
             if replacement.get("kind") == "median":
                 semantic_type = infer_semantic_type(str(dtype))
                 if semantic_type == "float":
@@ -960,6 +966,8 @@ class PolarsEngine(DataFrameEngine):
                 "utf8",
             }
             if promotes_string:
+                if not _polars_has_missing(df, expression):
+                    return df
                 expression = expression.cast(pl.String)
                 literal = pl.lit(fill_value).cast(pl.String)
             else:
@@ -1347,7 +1355,22 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}    {expression} = {expression}.fill_nan(None)",
             ]
             replacement = params["replacement"]
-            if replacement.get("kind") == "median":
+            if replacement.get("kind") == "mostFrequent":
+                lines.extend(
+                    [
+                        f"{prefix}if _ow_polars_has_missing(df, {expression}):",
+                        (f"{prefix}    _fill_value_{index} = _ow_polars_most_frequent(df, {column!r}, {expression})"),
+                        (
+                            f"{prefix}    _fill_literal_{index} = "
+                            f"pl.lit(_fill_value_{index}).cast({schema}[{column!r}], strict=True)"
+                        ),
+                        (
+                            f"{prefix}    df = df.with_columns({expression}.fill_null(_fill_literal_{index})"
+                            f".alias({column!r}))"
+                        ),
+                    ]
+                )
+            elif replacement.get("kind") == "median":
                 aggregate = f"_fill_aggregate_{index}"
                 median = f"_fill_median_{index}"
                 lower = f"_fill_lower_{index}"
@@ -1439,14 +1462,16 @@ class PolarsEngine(DataFrameEngine):
                             "'varchar', 'char', 'uuid', 'enum'))"
                         ),
                         f"{prefix}if {promotes_string}:",
-                        f"{prefix}    {expression} = {expression}.cast(pl.String)",
-                        (f"{prefix}    {literal} = pl.lit(_fill_value_{index}).cast(pl.String)"),
+                        f"{prefix}    if _ow_polars_has_missing(df, {expression}):",
+                        f"{prefix}        {expression} = {expression}.cast(pl.String)",
+                        (f"{prefix}        {literal} = pl.lit(_fill_value_{index}).cast(pl.String)"),
+                        (f"{prefix}        df = df.with_columns({expression}.fill_null({literal}).alias({column!r}))"),
                         f"{prefix}else:",
                         (
                             f"{prefix}    {literal} = pl.lit(_fill_value_{index}) if {schema}[{column!r}] == pl.Null "
                             f"else pl.lit(_fill_value_{index}).cast({schema}[{column!r}], strict=True)"
                         ),
-                        f"{prefix}df = df.with_columns({expression}.fill_null({literal}).alias({column!r}))",
+                        (f"{prefix}    df = df.with_columns({expression}.fill_null({literal}).alias({column!r}))"),
                     ]
                 )
             return lines
@@ -1891,6 +1916,51 @@ def _polars_middle_values(frame: Any, expression: Any) -> tuple[Any, Any]:
     return values[0], values[-1]
 
 
+def _polars_has_missing(frame: Any, expression: Any) -> bool:
+    import polars as pl
+
+    query = frame.select(expression.is_null().any().alias("__ow_fill_has_missing"))
+    result = query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query
+    return bool(result.item())
+
+
+def _polars_most_frequent_value(frame: Any, column: str, expression: Any) -> Any:
+    import polars as pl
+
+    reserved = {column}
+    count_name = "__ow_fill_count"
+    while count_name in reserved:
+        count_name += "_"
+    reserved.add(count_name)
+    maximum_name = "__ow_fill_maximum"
+    while maximum_name in reserved:
+        maximum_name += "_"
+    reserved.add(maximum_name)
+    ties_name = "__ow_fill_ties"
+    while ties_name in reserved:
+        ties_name += "_"
+
+    counts = (
+        frame.select(expression.alias(column))
+        .filter(pl.col(column).is_not_null())
+        .group_by(column)
+        .len(name=count_name)
+    )
+    winners = counts.with_columns(pl.col(count_name).max().alias(maximum_name)).filter(
+        pl.col(count_name) == pl.col(maximum_name)
+    )
+    query = winners.select(pl.col(column).first().alias(column), pl.len().alias(ties_name))
+    result = query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query
+    tie_count = int(result[ties_name][0])
+    if tie_count == 0:
+        raise EngineError("This column has no non-missing values. Choose a specific value.")
+    if tie_count != 1:
+        raise EngineError(
+            f"This column has no single most common value: {tie_count} values are tied. Choose a specific value."
+        )
+    return result[column][0]
+
+
 def _generated_polars_fill_helpers() -> list[str]:
     return [
         "",
@@ -1935,6 +2005,47 @@ def _generated_polars_fill_helpers() -> list[str]:
         "    if len(values) != length:",
         "        raise ValueError('Polars could not retrieve the exact middle values for the median fill.')",
         "    return values[0], values[-1]",
+        "",
+        "",
+        "def _ow_polars_has_missing(frame, expression):",
+        "    query = frame.select(expression.is_null().any().alias('__ow_fill_has_missing'))",
+        ("    result = query.collect(engine='streaming') if isinstance(query, pl.LazyFrame) else query"),
+        "    return bool(result.item())",
+        "",
+        "",
+        "def _ow_polars_most_frequent(frame, column, expression):",
+        "    reserved = {column}",
+        "    count_name = '__ow_fill_count'",
+        "    while count_name in reserved:",
+        "        count_name += '_'",
+        "    reserved.add(count_name)",
+        "    maximum_name = '__ow_fill_maximum'",
+        "    while maximum_name in reserved:",
+        "        maximum_name += '_'",
+        "    reserved.add(maximum_name)",
+        "    ties_name = '__ow_fill_ties'",
+        "    while ties_name in reserved:",
+        "        ties_name += '_'",
+        "    counts = (",
+        "        frame.select(expression.alias(column))",
+        "        .filter(pl.col(column).is_not_null())",
+        "        .group_by(column)",
+        "        .len(name=count_name)",
+        "    )",
+        "    winners = counts.with_columns(pl.col(count_name).max().alias(maximum_name)).filter(",
+        "        pl.col(count_name) == pl.col(maximum_name)",
+        "    )",
+        "    query = winners.select(pl.col(column).first().alias(column), pl.len().alias(ties_name))",
+        ("    result = query.collect(engine='streaming') if isinstance(query, pl.LazyFrame) else query"),
+        "    tie_count = int(result[ties_name][0])",
+        "    if tie_count == 0:",
+        "        raise ValueError('This column has no non-missing values. Choose a specific value.')",
+        "    if tie_count != 1:",
+        (
+            "        raise ValueError(f'This column has no single most common value: {tie_count} values are tied. "
+            "Choose a specific value.')"
+        ),
+        "    return result[column][0]",
         "",
         "",
     ]

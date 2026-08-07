@@ -1,6 +1,6 @@
 # Native R runtime for Open Wrangler 2
 
-- Status: Accepted
+- Status: Accepted; amended for owned R-document processes
 - Date: 2026-08-03
 
 ## Context
@@ -10,9 +10,10 @@ package semantics, including `data.frame`, tibble, and `data.table`. Sending tho
 categorical behavior, and generated code. It would also make a Python environment an unnecessary requirement for an R
 workflow.
 
-R notebooks already have a well-defined execution owner: the selected IRkernel. Plain `.R` files, R Markdown, and
-Quarto documents do not all share that ownership model. An active terminal or a matching document URI is not enough to
-identify the R process that owns an object.
+R notebooks already have a well-defined execution owner: the selected IRkernel. An ordinary `.R` file can use an
+Open Wrangler-owned process. R Markdown and Quarto use that same ownership model for a deliberately smaller feature:
+Open Wrangler runs their lexical R cells in a new process. It does not attach to a rendering process, terminal, or
+editor extension.
 
 ## Decision
 
@@ -72,22 +73,45 @@ the current viewing filters, and the private dataset-statistics response binds i
 from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
 user to reopen the frame.
 
-Editing currently supports Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase. The first draft
-takes an isolated original;
-base data frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps
-committed and draft results separate, resolves every target by stable ID and captured name, and advances the session
-revision for preview, apply, discard, latest-step replacement, and undo. Applied-step inspection replays only the selected plan
-prefix. The kernel returns its code, input page, and output page separately, so two large pages are never forced into
-one response. Page responses omit schemas; the host restores the exact schemas it retained for that plan step before
-publishing the inspection. Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves
-the chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
+Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
+Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
+Capitalize, Strip text, Split text, Round, Floor, and Ceiling. The first draft takes an isolated original: base data
+frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps committed and draft results separate,
+resolves every target by stable ID and captured name, and advances the session revision for preview, apply, discard,
+latest-step replacement, and undo. Applied-step inspection replays only the selected plan prefix. The kernel returns
+its code, input page, and output page separately, so two large pages are never forced into one response. Page
+responses omit schemas; the host restores the exact schemas it retained for that plan step before publishing the
+inspection.
+
+Filter Rows and Sort Rows use the same typed rules as the read-only view, but become explicit cleaning steps only
+when the user creates a draft. Each source row has a private stable identity that survives filtering, sorting, plan
+history, and diff inspection. Active row counts are tracked separately from that source identity domain. Sort keys
+are applied in priority order with stable ties and independent missing-value placement. Filtering distinguishes `NA`
+from `NaN`. A filter keeps a compatible `data.table` key; an explicit sort clears it because the new row order no
+longer follows that key.
+
+Drop Missing Rows treats both `NA` and `NaN` as missing. It can remove rows when any selected column is missing or
+only when all selected columns are missing. Drop Duplicates compares selected columns, or all columns when none are
+specified, and can keep the first, last, or no row from each repeated group. Both operations keep source order,
+stable row identities, explicit row names, and compatible data-table keys.
+
+Fill Missing Values offers a typed value, an exact numeric median, or the most common non-missing value for character,
+factor, and logical columns. Automatic methods ignore `NA` and `NaN`. When a fill is needed, the most-common method
+requires one unambiguous result. Factors, ordered factors, `integer64`, dates, and datetimes stay in their native R
+types. Active data-table key columns are rejected because changing a key value could invalidate the stored order.
+
+Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the
+chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
 Text Length operation accepts character and factor columns, keeps `NA` values, and appends a derived integer column
 whose stable ID can be used by later steps. It counts Unicode characters rather than encoded bytes. The operations
-keep compatible data-table keys. Lowercase accepts character and factor columns, keeps `NA`, and either updates the
-column or appends a character column with a stable derived ID. An in-place change to a data-table key column is
-rejected; choosing a new output column keeps the key and row order. Generated R repeats the position and name checks and returns a copied
-result. Native, cross-language, and packaged-editor tests cover source isolation, executable code, keyed data tables,
-duplicate names, non-syntactic names, and mixed plans.
+keep compatible data-table keys. The text operations accept character and factor columns, convert factors to
+character, and keep `NA`. Lowercase, Uppercase, Capitalize, Strip text, and Find and replace either update the column
+or append a character column with a stable derived ID. Find and replace can use literal text or a regular expression.
+Strip text removes the default whitespace or a literal character set from both ends. Split text uses a literal
+delimiter, appends a new character column, and returns `NA` when the requested part does not exist. An in-place change
+to a data-table key column is rejected; choosing a new output column keeps the key and row order. Generated R repeats
+the position and name checks and returns a copied result. Native, cross-language, and packaged-editor tests cover source isolation, executable
+code, keyed data tables, duplicate names, non-syntactic names, row identity, and mixed plans.
 
 Convert type replaces one column while keeping its stable ID, name, and position. It supports character, integer,
 double, logical, Date, and UTC POSIXct output. An `integer64` source stays `integer64` when the target is integer.
@@ -95,28 +119,44 @@ Factors convert through their labels, failed parses become `NA`, and conversions
 precision are rejected. A keyed `data.table` column must be cloned before it can be converted. Generated R applies the
 same checks and conversion rules.
 
+Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
+outputs are R doubles, while `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and
+`-Inf`. Round follows R's ties-to-even rule. A keyed `data.table` column cannot be changed in place, but the result can
+be appended as a new column without changing the key.
+
 IRkernel sessions can insert generated R into the exact `NotebookDocument` captured when the dataframe session
 opened. The shared notebook helper creates one `r` cell and confirms that exact cell before reporting success. It does
 not rediscover the notebook from the active editor after an await.
 
-Support for `.R`, `.Rmd`, and `.qmd` documents requires a dedicated integration helper that owns all of the following:
+On macOS and Linux, R documents use a second supported transport. The command captures the sole open `TextDocument`, its version,
+and its complete in-memory text. It starts a private `Rscript --vanilla` process in the source directory and evaluates
+plain R once in a dedicated environment. Relative reads and `source()` therefore behave like the file itself,
+while console output stays separate from the file-based request channel. The process owns every discovered dataframe
+session and is stopped when its final panel closes. Generated code is inserted with one `WorkspaceEdit` only after the
+same document object and version are rechecked; success requires the complete resulting text to match.
 
-- the exact source document and version;
-- the R process or session in which the object exists;
-- object discovery and request dispatch;
-- code insertion and confirmation in that same document.
+For `.Rmd` and `.qmd`, the command accepts top-level backtick-fenced `{r}` cells and a bounded first-line YAML block.
+It blanks prose for display diagnostics but sends each enabled cell to R as a separate source unit. The process reads
+and parses every unit before evaluating them in order in the shared document environment. This prevents syntax from
+joining across cell boundaries. The command rejects alternate engines, indented R cells, later metadata blocks, raw
+HTML/TeX containers, ambiguous option syntax, and unsupported YAML forms. It does not promise knitr or Quarto render
+semantics; code that changes knitr defaults cannot change this lexical cell selection.
 
-Open Wrangler will not infer this ownership from the active terminal, global R state, or a document path. Attaching to
-a live variable may use only a documented stable public broker API or an Open Wrangler-owned helper and process. It may
-not inspect private Quarto or vscode-R sockets, temporary state, extension storage, or process-discovery details. Exact
-source-document code insertion can ship independently of live-variable attachment. Each document type remains
-unsupported until its helper and real-editor acceptance exist.
+Generated R is appended to R Markdown or Quarto as a top-level `{r}` cell. R Markdown insertion rejects a generated
+line that knitr would interpret as the end of the cell.
+
+Direct `.R` execution remains disabled on Windows until the extension can own and stop every descendant process;
+IRkernel notebook support remains available there.
+
+Open Wrangler will not infer document ownership from the active terminal, global R state, or a document path. A future
+live-render attachment may use only a documented public broker API. It may not inspect private Quarto or vscode-R
+sockets, temporary state, extension storage, or process-discovery details.
 
 The first public R build will use the `1.99.x` preview channel. It may ship only after `data.frame`, tibble, and
 `data.table` viewing plus the advertised editing workflow pass real IRkernel tests and packaged VS Code and Cursor
 acceptance. A stable 2.0 release must have native R transformation and generated-code coverage for every R surface it
-advertises. Quarto, R Markdown, and plain R support may be advertised only after their exact-document helpers pass the
-same release gates.
+advertises. The `.R` path may be advertised after its owned-process journey passes in packaged VS Code and Cursor.
+Quarto and R Markdown may be advertised only after their owned-document journey passes the same release gates.
 
 ## Consequences
 
@@ -124,10 +164,14 @@ same release gates.
 - The grid and transformation model can be shared, but execution, object ownership, type handling, and generated code
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
-  currently adds Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, and Lowercase with generated R code.
-  Generated R can be inserted into its originating IRkernel notebook. Other cleaning operations, cleaned-data export,
-  Quarto, R Markdown, and live dataframes from plain `.R` documents
-  remain unsupported.
+  currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
+  Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
+  Strip text, Split text, Round, Floor, and Ceiling with generated R code. Generated R can be inserted into its
+  originating IRkernel notebook or R document. A local R document session opened in Editing mode can export its committed result as CSV through a
+  private R artifact and an extension-host atomic save. IRkernel sessions cannot export cleaned data yet. R Parquet
+  export and other cleaning operations are not supported yet.
+- Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
+  data-table paths. Grouped `GRP_df` and indexed `indexed_frame` objects are outside the supported class contract.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
 - R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and

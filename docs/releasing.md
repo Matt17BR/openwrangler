@@ -106,11 +106,16 @@ npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --ver
 The verifier requires the remote README at that exact commit to byte-match the reviewed local README and its
 `package.json` version to match the supplied version. Before reading any PNG, it bounds the inventory's entry count,
 depth, relative-path bytes, individual file size, and cumulative size. Every declared file must then pass chunk CRC,
-IHDR/IDAT ordering, complete decode, exact 2× dimensions, standard sRGB, and immutable-byte checks. The two registries
-must show the exact version, all three surfaces must render the expected README content, and all 18 displayed images
-must retain the reviewed raw URL, natural dimensions, and DPR-2 density. A mutable default-branch GitHub page is never
-accepted. This versioned contract starts at `1.2.1`; an older exact release recovery skips both browser installation
-and this check so a new media inventory cannot invalidate historical publication.
+IHDR/IDAT ordering, complete decode, reviewed natural dimensions, standard sRGB, and immutable-byte checks. The two
+registries must show the exact version, all three surfaces must render the expected README content, and all 18
+displayed images must retain the reviewed raw URL and natural dimensions. Screenshot markup is width-only and capped
+at 960 CSS pixels; rendered images must stay inside that cap, their container, and the viewport, preserve their aspect ratio, and
+retain at least two natural pixels per CSS pixel. Three representative images are rechecked near 760px and 1400px
+viewport widths. Before publication, `npm run verify:readme-responsive-render` applies the same layout checks to the
+actual local README and gallery at both widths and rejects document-level horizontal overflow. A mutable
+default-branch GitHub page is never accepted. This versioned contract starts at `1.2.1`;
+an older exact release recovery skips both browser installation and this check so a new media inventory cannot
+invalidate historical publication.
 
 This is necessarily a post-publication observation gate: GitHub and registry writes have already occurred before
 their public rendering can be inspected. A failure marks the promotion workflow failed and requires remediation or a
@@ -236,9 +241,10 @@ The called promotion job declares `environment: publishing`; therefore its two s
 For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the reusable promotion job installs
 Chromium from the automation checkout's lockfile and runs the media verifier from the exact release tag. This keeps
 a v1 release tied to its own reviewed screenshot inventory when `main` has moved on. All declared
-PNGs must retain their exact 2× dimensions, standard sRGB declaration, file and aggregate budgets, valid chunk/decode
-structure, and immutable remote bytes. Every one of the 18 README images must then render from its exact reviewed URL
-without DPR-2 upscaling on GitHub, Visual Studio Marketplace, and Open VSX. Registry observations receive at most
+PNGs must retain their reviewed natural dimensions, standard sRGB declaration, file and aggregate budgets, valid
+chunk/decode structure, and immutable remote bytes. Every one of the 18 README images must then render from its exact
+reviewed URL without upscaling, aspect distortion, container overflow, or viewport overflow on GitHub, Visual Studio Marketplace, and
+Open VSX; representative images are rechecked near 760px and 1400px viewport widths. Registry observations receive at most
 forty fresh browser contexts at thirty-second intervals inside one thirty-minute propagation deadline; network fetches
 are bounded to sixty seconds, one browser attempt to three minutes, per-page and per-image operations to their
 configured Playwright deadlines, and context cleanup to ten seconds. Exact-source, inventory, malformed-image,

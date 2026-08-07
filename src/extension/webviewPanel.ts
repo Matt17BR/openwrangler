@@ -135,15 +135,49 @@ export class OpenWranglerPanel {
 
   static sendEditorAction(message: EditorActionMessage): boolean {
     const target =
-      message.action === "changeViewSort"
+      "expectedSessionId" in message && typeof message.expectedSessionId === "string"
         ? OpenWranglerPanel.visiblePanelForSession(message.expectedSessionId)
         : OpenWranglerPanel.activePanel;
     if (!target?.panel.visible) return false;
-    if (message.action === "openOperation" || message.action === "editLatest" || message.action === "selectStep") {
+    if (message.action === "openOperation" || message.action === "editLatest") {
       target.panel.reveal(target.panel.viewColumn, false);
     }
     void target.panel.webview.postMessage({ kind: "editorAction", ...message });
     return true;
+  }
+
+  static async sendEditorActionForSession(
+    message: EditorActionMessage & { expectedSessionId: string; expectedRevision: number }
+  ): Promise<boolean> {
+    let target = OpenWranglerPanel.visiblePanelForSession(message.expectedSessionId);
+    if (
+      !target ||
+      target.snapshot?.metadata.sessionId !== message.expectedSessionId ||
+      target.snapshot.metadata.revision !== message.expectedRevision
+    ) {
+      return false;
+    }
+    if (!target.hasHydratedRenderer()) {
+      const synchronized = await OpenWranglerPanel.ensurePanelSynchronizedForSession(
+        message.expectedSessionId,
+        Date.now() + RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS
+      );
+      if (!synchronized) return false;
+      target = OpenWranglerPanel.visiblePanelForSession(message.expectedSessionId);
+    }
+    if (
+      !target ||
+      !target.hasHydratedRenderer() ||
+      target.snapshot?.metadata.sessionId !== message.expectedSessionId ||
+      target.snapshot.metadata.revision !== message.expectedRevision
+    ) {
+      return false;
+    }
+    try {
+      return await target.panel.webview.postMessage({ kind: "editorAction", ...message });
+    } catch {
+      return false;
+    }
   }
 
   private static visiblePanelForSession(sessionId: string): OpenWranglerPanel | undefined {
@@ -265,7 +299,7 @@ export class OpenWranglerPanel {
     if (this.opening) return this.opening;
     if (this.disposed || this.sessionId) return;
     const { pageSize, columnLimit } = fetchGridBlockSize(this.backend);
-    const isFile = this.source.kind === "file";
+    const isFile = this.source.kind === "file" || this.source.kind === "documentVariable";
     const mode =
       this.backend === "pyspark"
         ? "viewing"
@@ -1629,6 +1663,8 @@ export type EditorActionMessage =
     }
   | {
       action: NonSortEditorAction;
+      expectedSessionId?: string;
+      expectedRevision?: number;
       operationKind?: OperationKind;
       stepId?: string;
       column?: string;

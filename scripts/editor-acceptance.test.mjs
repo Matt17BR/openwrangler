@@ -3254,6 +3254,67 @@ test("editor phases forward only a complete runner-owned Jupyter environment", a
   }
 });
 
+test("R Jupyter phases forward only their exact Rscript and private library", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-r-process-environment-"));
+  const resultPath = join(directory, "result.json");
+  const rscriptPath = join(directory, "Rscript");
+  const jupyterEnvironment = {
+    dataDir: join(directory, "jupyter", "data"),
+    runtimeDir: join(directory, "jupyter", "runtime"),
+    configDir: join(directory, "jupyter", "config"),
+    path: join(directory, "jupyter", "kernels"),
+    rscriptPath,
+    rLibraryDir: join(directory, "r-library")
+  };
+  let launchedEnvironment;
+  try {
+    for (const path of [
+      jupyterEnvironment.dataDir,
+      jupyterEnvironment.runtimeDir,
+      jupyterEnvironment.configDir,
+      jupyterEnvironment.path,
+      jupyterEnvironment.rLibraryDir
+    ]) {
+      await mkdir(path, { recursive: true });
+    }
+    await writeFile(rscriptPath, "exact Rscript\n", { mode: 0o700 });
+    await chmod(rscriptPath, 0o700);
+    await runEditorAcceptancePhase(
+      {
+        editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+        workspace: directory,
+        userData: SYNTHETIC_EDITOR_USER_DATA,
+        extensions: join(directory, "extensions"),
+        developmentPaths: [directory],
+        testModule: join(directory, "acceptance.js"),
+        python: join(directory, "python"),
+        phase: "jupyter-r",
+        resultPath,
+        jupyterEnvironment
+      },
+      {
+        platform: "darwin",
+        environment: {
+          PATH: "/safe/bin",
+          OPEN_WRANGLER_EDITOR_TEMP_ROOT: directory,
+          OPEN_WRANGLER_TEST_RSCRIPT: "/attacker/Rscript",
+          R_LIBS_USER: "/attacker/library"
+        },
+        spawnProcess(_executable, _arguments, options) {
+          launchedEnvironment = options.env;
+          return fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true }) });
+        }
+      }
+    );
+
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_RSCRIPT, rscriptPath);
+    assert.equal(launchedEnvironment.R_LIBS_USER, jupyterEnvironment.rLibraryDir);
+    assert.equal(launchedEnvironment.JUPYTER_DATA_DIR, jupyterEnvironment.dataDir);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("editor phases reject partial or invalid Jupyter environments before launch", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-invalid-jupyter-environment-"));
   const privateRoot = join(directory, "private");

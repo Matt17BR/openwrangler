@@ -117,6 +117,7 @@ interface TestApi {
         metadata: SessionMetadata;
         code?: string;
         viewState: PersistedViewingState;
+        stepInspectionActive?: boolean;
         stepInspection?: StepInspectionResponse;
       }
     | undefined;
@@ -154,6 +155,7 @@ interface TestApi {
     | "missing-code"
     | "unsupported-source"
     | "missing-notebook"
+    | "missing-source-document"
     | "dispatching"
     | undefined;
   viewSortDispatchStatus():
@@ -260,6 +262,28 @@ const RELEASED_JUPYTER_R_KERNEL_NAME = "openwrangler-r-acceptance";
 const RELEASED_JUPYTER_R_SETUP_RESULT = "__OW_RELEASED_R_SETUP__";
 const RELEASED_JUPYTER_R_BINDING_RESULT = "__OW_RELEASED_R_BINDING__";
 const RELEASED_JUPYTER_R_MEDIA_RESULT = "__OW_RELEASED_R_MEDIA__";
+const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
+  "sortRows",
+  "filterRows",
+  "dropMissingRows",
+  "fillMissingValues",
+  "dropDuplicates",
+  "selectColumns",
+  "dropColumns",
+  "renameColumn",
+  "cloneColumn",
+  "castColumn",
+  "textLength",
+  "findReplace",
+  "stripText",
+  "splitText",
+  "capitalizeText",
+  "lowerText",
+  "upperText",
+  "roundNumber",
+  "floorNumber",
+  "ceilNumber"
+]);
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
 const RELEASED_JUPYTER_REMOTE_KERNEL_LABEL = "Open Wrangler Remote Acceptance";
@@ -446,10 +470,10 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
-  assert.match(extension.packageJSON.description, /Explore files and notebook data in VS Code and Cursor/u);
-  assert.match(extension.packageJSON.description, /Clean and export with Pandas or Polars/u);
-  assert.match(extension.packageJSON.description, /DuckDB viewing is experimental/u);
-  assert.match(extension.packageJSON.description, /local PySpark 4\.2 Classic\/Connect batch viewing is supported/u);
+  assert.match(extension.packageJSON.description, /Explore files and live dataframes in VS Code and Cursor/u);
+  assert.match(extension.packageJSON.description, /Use Pandas, Polars, or DuckDB/u);
+  assert.match(extension.packageJSON.description, /view PySpark and R notebooks/u);
+  assert.match(extension.packageJSON.description, /run R, R Markdown, or Quarto sources on macOS or Linux/u);
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
@@ -473,6 +497,7 @@ export async function run(): Promise<void> {
     "openWrangler.changeImportOptions",
     "openWrangler.launchDataViewer",
     "openWrangler.openNotebookVariable",
+    "openWrangler.runRDocument",
     "openWrangler.chooseNotebookPreviewProvider",
     "openWrangler.checkJupyterIntegration",
     "openWrangler.changeRuntime",
@@ -488,6 +513,7 @@ export async function run(): Promise<void> {
     "openWrangler.copyCode",
     "openWrangler.exportCode",
     "openWrangler.insertNotebookCode",
+    "openWrangler.insertRDocumentCode",
     "openWrangler.exportData",
     "openWrangler.openSourceFile",
     "openWrangler.openWalkthrough",
@@ -541,6 +567,7 @@ export async function run(): Promise<void> {
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchColumnBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.filterMode"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.sessionOpenTimeoutMs"]);
+  assert.ok(contributions.configuration?.properties?.["openWrangler.rscriptPath"]);
   const enabledFileTypes = contributions.configuration?.properties?.["openWrangler.enabledFileTypes"] as
     { items?: { enum?: string[] }; default?: string[] } | undefined;
   assert.ok(enabledFileTypes?.items?.enum?.includes("xls"));
@@ -548,13 +575,27 @@ export async function run(): Promise<void> {
   assert.deepEqual(contributions.configurationDefaults?.["cursor.general.pinnedTitleActions"], [
     "openWrangler.openFile",
     "openWrangler.changeImportOptions",
-    "openWrangler.openNotebookVariable"
+    "openWrangler.openNotebookVariable",
+    "openWrangler.runRDocument"
   ]);
   assert.deepEqual(
     contributions.commands?.find((command) => command.command === "openWrangler.openFile"),
     {
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
+      icon: {
+        light: "media/action-icon-light.svg",
+        dark: "media/action-icon-dark.svg"
+      }
+    }
+  );
+  assert.deepEqual(
+    contributions.commands?.find((command) => command.command === "openWrangler.runRDocument"),
+    {
+      command: "openWrangler.runRDocument",
+      title: "Run R Document in Open Wrangler…",
+      shortTitle: "Run in Open Wrangler…",
+      category: "Open Wrangler",
       icon: {
         light: "media/action-icon-light.svg",
         dark: "media/action-icon-dark.svg"
@@ -585,7 +626,18 @@ export async function run(): Promise<void> {
   );
   const fileResourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
+  const rDocumentPredicate =
+    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
+  assert.ok(
+    explorerContextItems.some(
+      (item) =>
+        item.command === "openWrangler.runRDocument" &&
+        item.when === `!explorerResourceIsFolder && ${rDocumentPredicate}` &&
+        item.group === "navigation@49"
+    ),
+    `Explorer R documents must expose Run in Open Wrangler. Loaded: ${JSON.stringify(explorerContextItems)}`
+  );
   assert.ok(
     explorerContextItems.some(
       (item) =>
@@ -616,6 +668,15 @@ export async function run(): Promise<void> {
   assert.ok(
     contributions.menus?.["editor/title"]?.some(
       (item) =>
+        item.command === "openWrangler.runRDocument" &&
+        item.when === rDocumentPredicate &&
+        item.group === "navigation@1"
+    ),
+    "R document editors must expose the Open Wrangler title action."
+  );
+  assert.ok(
+    contributions.menus?.["editor/title"]?.some(
+      (item) =>
         item.command === "openWrangler.openFile" &&
         item.when ===
           `${fileResourcePredicate} && ` + "(!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)" &&
@@ -632,6 +693,15 @@ export async function run(): Promise<void> {
         item.group === "navigation@2"
     ),
     "Configurable Open Wrangler file editors must expose the Change Import Options title action."
+  );
+  assert.ok(
+    contributions.menus?.["editor/title/context"]?.some(
+      (item) =>
+        item.command === "openWrangler.runRDocument" &&
+        item.when === rDocumentPredicate &&
+        item.group === "navigation@49"
+    ),
+    "R document tabs must expose Run in Open Wrangler in their context menu."
   );
   assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
@@ -658,6 +728,15 @@ export async function run(): Promise<void> {
       (item) => item.command === "openWrangler.launchDataViewer" && item.when === "false"
     ),
     "The argument-only Jupyter viewer command must stay out of the Command Palette."
+  );
+  assert.ok(
+    contributions.menus?.["view/title"]?.some(
+      (item) =>
+        item.command === "openWrangler.insertRDocumentCode" &&
+        item.when === "view == openWrangler.codePreview && openWrangler.canInsertRDocumentCode" &&
+        item.group === "navigation@12"
+    ),
+    "R document sessions must expose generated-code insertion only when their exact source is active."
   );
   const notebookVariableWhen = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
   const notebookVariableToolbarWhen =
@@ -1086,6 +1165,21 @@ interface ReleasedDuckDbRecoverySession {
   readonly viewState: GridViewState;
 }
 
+interface ReleasedRDocumentFixture {
+  readonly sourceUri: vscode.Uri;
+  readonly decoyUri: vscode.Uri;
+  readonly processIdPath: string;
+  readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
+}
+
+interface ReleasedRLiterateDocumentFixture {
+  readonly kind: "rmarkdown" | "quarto";
+  readonly sourceUri: vscode.Uri;
+  readonly processIdPath: string;
+  readonly variableName: string;
+  readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
+}
+
 function isDataWranglerCoexistencePhase(phase: string): phase is DataWranglerCoexistencePhase {
   return (
     phase === "jupyter-coexist-open-select" ||
@@ -1443,6 +1537,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "  group = c(rep('A', 602L), rep('B', row_count - 602L)),",
     "  score = as.numeric(seq_len(row_count)),",
     "  label = sprintf('row-%04d', seq_len(row_count)),",
+    "  fractional_score = ifelse(seq_len(row_count) %% 2L == 0L, -as.numeric(seq_len(row_count)) - 0.25, as.numeric(seq_len(row_count)) + 0.25),",
     "  check.names = FALSE,",
     "  stringsAsFactors = FALSE",
     ")",
@@ -1554,6 +1649,165 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
       nbformat_minor: 5
     })
   );
+}
+
+function writeReleasedRDocumentFixture(directory: string): ReleasedRDocumentFixture {
+  const fixtureDirectory = path.join(directory, "plain-r");
+  mkdirSync(fixtureDirectory, { recursive: true });
+  const sourcePath = path.join(fixtureDirectory, "orders-analysis.R");
+  const decoyPath = path.join(fixtureDirectory, "decoy.R");
+  const helperPath = path.join(fixtureDirectory, "helpers.R");
+  const csvPath = path.join(fixtureDirectory, "orders.csv");
+  const processIdPath = path.join(fixtureDirectory, "open-wrangler-r.pid");
+  const sourceBytes = Buffer.from(
+    [
+      'source("helpers.R", local = TRUE)',
+      'orders_frame <- prepare_orders(utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE))',
+      'orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = "minimal")',
+      "orders_table <- data.table::as.data.table(orders_frame)",
+      "data.table::setkey(orders_table, row_id)",
+      'writeLines(as.character(Sys.getpid()), "open-wrangler-r.pid", useBytes = TRUE)',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const helperBytes = Buffer.from(
+    [
+      "prepare_orders <- function(frame) {",
+      '  stopifnot(identical(names(frame), c("row_id", "group", "score", "label")))',
+      "  frame$score <- as.numeric(frame$score)",
+      "  frame$label <- as.character(frame$label)",
+      "  frame",
+      "}",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const csvBytes = Buffer.from(
+    [
+      "row_id,group,score,label",
+      ...Array.from({ length: 240 }, (_, index) => {
+        const row = index + 1;
+        return `${row},${row % 2 === 0 ? "B" : "A"},${row},order-${String(row).padStart(3, "0")}`;
+      }),
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const decoyBytes = Buffer.from('decoy_frame <- data.frame(value = "do not edit")\n', "utf8");
+  for (const [file, bytes] of [
+    [sourcePath, sourceBytes],
+    [decoyPath, decoyBytes],
+    [helperPath, helperBytes],
+    [csvPath, csvBytes]
+  ] as const) {
+    writeFileSync(file, bytes);
+  }
+  return {
+    sourceUri: vscode.Uri.file(sourcePath),
+    decoyUri: vscode.Uri.file(decoyPath),
+    processIdPath,
+    immutableFiles: [
+      { path: sourcePath, bytes: sourceBytes },
+      { path: decoyPath, bytes: decoyBytes },
+      { path: helperPath, bytes: helperBytes },
+      { path: csvPath, bytes: csvBytes }
+    ]
+  };
+}
+
+function releasedRDocumentCleanedCsv(): Buffer {
+  return Buffer.from(
+    [
+      '"record_id","group","score","label"',
+      ...Array.from({ length: 240 }, (_, index) => {
+        const row = index + 1;
+        const group = row % 2 === 0 ? "B" : "A";
+        return `${row},"${group}",${row},"order-${String(row).padStart(3, "0")}"`;
+      }),
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+}
+
+function writeReleasedRLiterateDocumentFixture(
+  directory: string,
+  kind: "rmarkdown" | "quarto"
+): ReleasedRLiterateDocumentFixture {
+  const extension = kind === "quarto" ? "qmd" : "Rmd";
+  const fixtureDirectory = path.join(directory, kind);
+  mkdirSync(fixtureDirectory, { recursive: true });
+  const sourcePath = path.join(fixtureDirectory, `orders-analysis.${extension}`);
+  const csvPath = path.join(fixtureDirectory, "orders.csv");
+  const processIdPath = path.join(fixtureDirectory, "open-wrangler-r.pid");
+  const variableName = "literate_orders";
+  const frontMatter =
+    kind === "quarto"
+      ? ["---", "title: Regional orders", "format: html", "payload: |"]
+      : ["---", "title: Regional orders", "output: html_document", "payload: |"];
+  const sourceBytes = Buffer.from(
+    [
+      ...frontMatter,
+      "  ```{r}",
+      "  stop('A YAML block scalar is not an executable cell')",
+      "  ```",
+      "---",
+      "",
+      "# Regional orders",
+      "",
+      "This prose contains `data.frame(id = 0L)` but is not R code.",
+      "",
+      "<!--",
+      "```{r}",
+      "stop('An HTML comment is not an executable cell')",
+      "```",
+      "-->",
+      "",
+      "```{python}",
+      "raise RuntimeError('A Python cell must not run in the R document process')",
+      "```",
+      "",
+      "```{r disabled, eval=FALSE}",
+      "stop('A disabled R cell must not run')",
+      "```",
+      "",
+      "```{r load-orders, echo=FALSE}",
+      ...(kind === "quarto" ? ["#| label: load-regional-orders"] : []),
+      `${variableName} <- utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE)`,
+      `${variableName}$order_date <- as.Date(${variableName}$order_date)`,
+      `${variableName}$score[2L] <- NA_real_`,
+      'writeLines(as.character(Sys.getpid()), "open-wrangler-r.pid", useBytes = TRUE)',
+      "```",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const csvBytes = Buffer.from(
+    [
+      "order_id,market,score,order_date",
+      ...Array.from({ length: 60 }, (_, index) => {
+        const row = index + 1;
+        const market = ["DACH", "Nordics", "France", "Iberia"][index % 4];
+        const date = `2026-01-${String((index % 28) + 1).padStart(2, "0")}`;
+        return `${2400000 + row},${market},${(row * 1.25).toFixed(2)},${date}`;
+      }),
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  writeFileSync(sourcePath, sourceBytes);
+  writeFileSync(csvPath, csvBytes);
+  return {
+    kind,
+    sourceUri: vscode.Uri.file(sourcePath),
+    processIdPath,
+    variableName,
+    immutableFiles: [
+      { path: sourcePath, bytes: sourceBytes },
+      { path: csvPath, bytes: csvBytes }
+    ]
+  };
 }
 
 function assertReleasedRVersion(
@@ -1678,7 +1932,7 @@ async function exerciseReleasedRJupyterExtension(
     await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
     await executeReleasedNotebookCell(notebook, 0, RELEASED_JUPYTER_R_SETUP_RESULT, `${phase}:setup`, notebookEditor);
     const setup = releasedNotebookJsonResult(notebook.cellAt(0), RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
-    assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 24 });
+    assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
     assertReleasedRVersion(setup, kernelTarget, "R setup");
     assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
     if (kernelTarget.remote) {
@@ -1748,20 +2002,17 @@ async function exerciseReleasedRJupyterExtension(
       sort: true,
       profile: true,
       columnValues: true,
-      supportedOperations: [
-        "selectColumns",
-        "dropColumns",
-        "renameColumn",
-        "cloneColumn",
-        "castColumn",
-        "textLength",
-        "lowerText"
-      ]
+      supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
+
+    if (phase === "jupyter-r") {
+      await exerciseReleasedRDocumentJourney(testing, workbench, directory);
+      assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
+    }
 
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     await showExactReleasedNotebook(notebook);
@@ -1875,15 +2126,7 @@ async function exerciseReleasedRJupyterExtension(
         `the editable native ${expected.rDataframeFlavor} session`
       );
       assert.equal(session.metadata.mode, "editing");
-      assert.deepEqual(session.metadata.capabilities.supportedOperations, [
-        "selectColumns",
-        "dropColumns",
-        "renameColumn",
-        "cloneColumn",
-        "castColumn",
-        "textLength",
-        "lowerText"
-      ]);
+      assert.deepEqual(session.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
       const previewed = await previewReleasedRRename(
@@ -2058,6 +2301,834 @@ async function exerciseReleasedRJupyterExtension(
   if (acceptanceError) throw acceptanceError.value;
 }
 
+async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Page, directory: string): Promise<void> {
+  recordAcceptanceProgress("jupyter-r:document:create");
+  assert.equal(vscode.workspace.isTrusted, true, "Running a plain R file requires the trusted packaged workspace.");
+  assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must start without another session.");
+  const fixture = writeReleasedRDocumentFixture(directory);
+  const configuration = vscode.workspace.getConfiguration("openWrangler", fixture.sourceUri);
+  const filesConfiguration = vscode.workspace.getConfiguration("files", fixture.sourceUri);
+  const originalRscriptPath = configuration.inspect<string>("rscriptPath")?.workspaceValue;
+  const autoSaveInspection = filesConfiguration.inspect<string>("autoSave");
+  const originalAutoSave = autoSaveInspection?.workspaceValue;
+  const resolvedAutoSave = filesConfiguration.get<string>("autoSave", "off");
+  const exactRscript = process.env.OPEN_WRANGLER_TEST_RSCRIPT;
+  const initialProcessRoots = releasedRProcessRoots();
+  assert.ok(
+    exactRscript && path.isAbsolute(exactRscript) && !/[\0\r\n]/u.test(exactRscript),
+    "The packaged plain R journey requires the runner-owned exact Rscript path."
+  );
+  assert.equal(
+    configuration.inspect<"viewing" | "editing">("fileStartMode")?.defaultValue,
+    "editing",
+    "Plain R files must use the normal editable file-session default."
+  );
+
+  let sourceDocument: vscode.TextDocument | undefined;
+  let decoyDocument: vscode.TextDocument | undefined;
+  try {
+    await configuration.update("rscriptPath", exactRscript, vscode.ConfigurationTarget.Workspace);
+    recordAcceptanceProgress(
+      [
+        "jupyter-r:document:auto-save",
+        `default=${autoSaveInspection?.defaultValue ?? "unset"}`,
+        `global=${autoSaveInspection?.globalValue ?? "unset"}`,
+        `workspace=${autoSaveInspection?.workspaceValue ?? "unset"}`,
+        `resolved=${resolvedAutoSave}`
+      ].join(":")
+    );
+    if (resolvedAutoSave !== "off") {
+      await filesConfiguration.update("autoSave", "off", vscode.ConfigurationTarget.Workspace);
+    }
+    sourceDocument = await vscode.workspace.openTextDocument(fixture.sourceUri);
+    const sourceTextBefore = sourceDocument.getText();
+    const sourceVersionBefore = sourceDocument.version;
+    await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
+    assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
+
+    recordAcceptanceProgress("jupyter-r:document:first-run");
+    await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, "orders_frame", true);
+    const opened = await waitForReleasedRDocumentSession(
+      workbench,
+      testing,
+      sourceDocument,
+      "orders_frame",
+      "the data.frame opened from a real R source file"
+    );
+    assert.deepEqual(opened.metadata.shape, { rows: 240, columns: 4 });
+    assert.deepEqual(
+      opened.metadata.schema.map((column) => column.name),
+      ["row_id", "group", "score", "label"]
+    );
+    assert.deepEqual(opened.metadata.capabilities, {
+      editable: true,
+      lazy: false,
+      cancel: false,
+      exportCsv: true,
+      exportParquet: false,
+      filter: true,
+      sort: true,
+      profile: true,
+      columnValues: true,
+      supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS,
+      notebookInsert: false,
+      documentInsert: true
+    });
+    const firstProcessId = readReleasedRDocumentProcessId(fixture.processIdPath);
+    assert.equal(
+      acceptanceProcessIsAlive(firstProcessId),
+      true,
+      "The exact R source process must own the open session."
+    );
+    const processRoots = releasedRProcessRoots().filter((root) => !initialProcessRoots.includes(root));
+    assert.equal(processRoots.length, 1, "The plain R session must own one private process root.");
+    const processRoot = processRoots[0]!;
+
+    await exerciseReleasedRDocumentGrid(testing, workbench, opened.sessionId);
+    let app = await releasedRSessionApp(workbench, testing, opened.sessionId, "the editable plain R session");
+    const previewed = await previewReleasedRRename(
+      testing,
+      workbench,
+      app,
+      opened.sessionId,
+      "row_id",
+      "record_id",
+      undefined,
+      "orders_frame"
+    );
+    app = previewed.app;
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        return (
+          active?.sessionId === opened.sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "renameColumn" &&
+          step.id === previewed.stepId &&
+          step.params.column.name === "row_id" &&
+          step.params.newName === "record_id" &&
+          active.metadata.schema[0]?.name === "record_id"
+        );
+      },
+      30_000,
+      "applying the plain R rename"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      opened.sessionId,
+      "The applied plain R rename must reach its exact renderer before insertion."
+    );
+    const applied = testing.activeSession();
+    assert.ok(applied, "The applied plain R rename must retain its session.");
+    const generatedCode = applied.code ?? "";
+    assertReleasedRGeneratedCode(generatedCode, "record_id", "orders_frame");
+    assert.equal(applied.metadata.capabilities.documentInsert, true);
+    assert.equal(applied.metadata.capabilities.notebookInsert, false);
+
+    recordAcceptanceProgress("jupyter-r:document:export-cleaned-csv");
+    app = await releasedRSessionApp(workbench, testing, opened.sessionId, "the applied plain R session before export");
+    await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-document-export-"));
+    const exportPath = path.join(exportDirectory, "orders-cleaned.csv");
+    try {
+      await exportCleanedDataThroughCommand(workbench, exportPath);
+      await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R CSV export to appear");
+      assertExactBytes(
+        readFileSync(exportPath),
+        releasedRDocumentCleanedCsv(),
+        "The public R export command must write every cleaned row and the renamed schema."
+      );
+      assert.deepEqual(
+        readdirSync(exportDirectory),
+        [path.basename(exportPath)],
+        "The R CSV export must not retain a sibling temporary file."
+      );
+      assert.deepEqual(
+        readdirSync(path.join(processRoot, "exports")),
+        [],
+        "The R process must remove its private export artifact after the host has copied it."
+      );
+      assert.equal(sourceDocument.getText(), sourceTextBefore, "Export must not edit the open R source document.");
+      assert.equal(
+        sourceDocument.version,
+        sourceVersionBefore,
+        "Export must not change the R source document version."
+      );
+      assert.equal(sourceDocument.isDirty, false, "Export must leave the R source document clean.");
+      assertReleasedRDocumentFixtureUnchanged(fixture);
+    } finally {
+      cleanupAcceptanceTemporaryDirectory(exportDirectory);
+    }
+
+    recordAcceptanceProgress("jupyter-r:document:insert-with-decoy-active");
+    const insertionSourceDocument = sourceDocument;
+    const insertionSourceVersion = insertionSourceDocument.version;
+    const insertionSourceText = insertionSourceDocument.getText();
+    recordAcceptanceProgress("jupyter-r:document:insert:open-decoy");
+    decoyDocument = await vscode.workspace.openTextDocument(fixture.decoyUri);
+    recordAcceptanceProgress("jupyter-r:document:insert:decoy-opened");
+    const decoyTextBefore = decoyDocument.getText();
+    await vscode.window.showTextDocument(decoyDocument, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+    recordAcceptanceProgress("jupyter-r:document:insert:decoy-shown");
+    assert.equal(
+      vscode.window.activeTextEditor?.document,
+      decoyDocument,
+      "The insertion journey must keep an unrelated R document active."
+    );
+    assert.equal(insertionSourceDocument.version, insertionSourceVersion);
+    assert.equal(insertionSourceDocument.getText(), insertionSourceText);
+    testing.setActiveSession(opened.sessionId);
+    recordAcceptanceProgress("jupyter-r:document:insert:session-active");
+    const insertionSession = testing.activeSession();
+    assert.equal(insertionSession?.sessionId, opened.sessionId);
+    assert.equal(insertionSession.metadata.capabilities.documentInsert, true);
+    assert.equal(insertionSession.metadata.capabilities.notebookInsert, false);
+    const insertion = vscode.commands.executeCommand<boolean>("openWrangler.insertRDocumentCode");
+    recordAcceptanceProgress("jupyter-r:document:insert:dispatched");
+    const pendingInsertionReceipt = setTimeout(() => {
+      recordAcceptanceProgress(
+        [
+          "jupyter-r:document:insert:pending",
+          `status=${testing.notebookInsertionStatus() ?? "unset"}`,
+          `versionDelta=${insertionSourceDocument.version - insertionSourceVersion}`,
+          `textChanged=${insertionSourceDocument.getText() !== insertionSourceText}`,
+          `documentInsert=${testing.activeSession()?.metadata.capabilities.documentInsert === true}`
+        ].join(":")
+      );
+    }, 5_000);
+    let inserted: boolean | undefined;
+    try {
+      inserted = await withBoundedAcceptancePromise(insertion, 30_000, "plain R generated-code insertion");
+    } finally {
+      clearTimeout(pendingInsertionReceipt);
+    }
+    recordAcceptanceProgress(
+      [
+        "jupyter-r:document:insert:completed",
+        `status=${testing.notebookInsertionStatus() ?? "unset"}`,
+        `versionDelta=${insertionSourceDocument.version - insertionSourceVersion}`,
+        `textChanged=${insertionSourceDocument.getText() !== insertionSourceText}`
+      ].join(":")
+    );
+    assert.equal(inserted, true, "Generated R must insert into its exact source document.");
+    assert.equal(testing.notebookInsertionStatus(), "applied");
+    recordAcceptanceProgress("jupyter-r:document:insert:verify-active-decoy");
+    assert.equal(vscode.window.activeTextEditor?.document, decoyDocument);
+    assert.equal(decoyDocument.getText(), decoyTextBefore, "The active decoy R file must not change.");
+    assert.equal(decoyDocument.isDirty, false, "The active decoy R file must remain clean.");
+    recordAcceptanceProgress("jupyter-r:document:insert:verify-disk-unchanged");
+    assertReleasedRDocumentFixtureUnchanged(fixture);
+    recordAcceptanceProgress("jupyter-r:document:insert:verify-source-edit");
+    await waitFor(
+      () => {
+        assertReleasedRDocumentFixtureUnchanged(fixture);
+        return sourceDocument?.isDirty === true;
+      },
+      5_000,
+      "the generated R source edit to become dirty"
+    );
+    assert.equal(sourceDocument.isDirty, true, "Generated R insertion must remain an unsaved source edit.");
+    assert.ok(sourceDocument.version > sourceVersionBefore);
+    assert.ok(
+      sourceDocument.getText().includes(generatedCode.trimEnd()),
+      "The exact in-memory source must contain the generated cleaning code."
+    );
+    assert.equal(
+      sourceDocument.getText().split(generatedCode.trimEnd()).length - 1,
+      1,
+      "Generated R must be inserted exactly once."
+    );
+    assert.equal(sourceDocument.getText().startsWith(sourceTextBefore), true);
+    assertReleasedRDocumentFixtureUnchanged(fixture);
+
+    recordAcceptanceProgress("jupyter-r:document:undo-from-retained-panel");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === opened.sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.schema[0]?.name === "row_id" &&
+          (active.code ?? "") === ""
+        );
+      },
+      30_000,
+      "undoing the plain R rename"
+    );
+    assert.ok(
+      sourceDocument.getText().includes(generatedCode.trimEnd()),
+      "Undoing the session plan must not rewrite the user's unsaved R document."
+    );
+
+    recordAcceptanceProgress("jupyter-r:document:first-close");
+    await disposePackagedSessionPanel(testing, opened.sessionId, "the first plain R session");
+    await waitFor(() => !acceptanceProcessIsAlive(firstProcessId), 10_000, "the first private plain R process to stop");
+    await waitFor(
+      () => isDeepStrictEqual(releasedRProcessRoots(), initialProcessRoots),
+      10_000,
+      "the first private plain R process root to be removed"
+    );
+    assert.equal(testing.diagnostics().sessionCount, 0);
+
+    recordAcceptanceProgress("jupyter-r:document:rerun-unsaved-source");
+    await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
+    assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
+    await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, "open_wrangler_result", false);
+    const rerun = await waitForReleasedRDocumentSession(
+      workbench,
+      testing,
+      sourceDocument,
+      "open_wrangler_result",
+      "the generated result opened after rerunning the unsaved R source"
+    );
+    assert.equal(rerun.metadata.schema[0]?.name, "record_id");
+    assert.deepEqual(rerun.metadata.shape, { rows: 240, columns: 4 });
+    const rerunPage = await assertReleasedSessionPage(testing, rerun, "1", "jupyter-r-document-rerun-page");
+    assert.equal(rerunPage.metadata.schema[0]?.name, "record_id");
+    const secondProcessId = readReleasedRDocumentProcessId(fixture.processIdPath);
+    assert.equal(acceptanceProcessIsAlive(secondProcessId), true);
+    await disposePackagedSessionPanel(testing, rerun.sessionId, "the rerun plain R session");
+    await waitFor(
+      () => !acceptanceProcessIsAlive(secondProcessId),
+      10_000,
+      "the rerun private plain R process to stop"
+    );
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    assertReleasedRDocumentFixtureUnchanged(fixture);
+    assert.equal(sourceDocument.isDirty, true, "The generated source edit must still be unsaved before cleanup.");
+  } finally {
+    try {
+      await configuration.update("rscriptPath", originalRscriptPath, vscode.ConfigurationTarget.Workspace);
+    } finally {
+      if (sourceDocument && !sourceDocument.isClosed && sourceDocument.isDirty) {
+        recordAcceptanceProgress("jupyter-r:document:cleanup:revert-source");
+        await vscode.window.showTextDocument(sourceDocument, { preview: false, viewColumn: vscode.ViewColumn.One });
+        assert.equal(vscode.window.activeTextEditor?.document, sourceDocument);
+        await withBoundedAcceptancePromise(
+          vscode.commands.executeCommand("workbench.action.files.revert"),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "reverting the synthetic R source without saving it"
+        );
+        await waitFor(
+          () => !sourceDocument?.isDirty,
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "the synthetic R source to become clean after revert"
+        );
+        const originalSource = fixture.immutableFiles.find(
+          (file) => canonicalAcceptancePath(file.path) === canonicalAcceptancePath(fixture.sourceUri.fsPath)
+        );
+        assert.ok(originalSource, "The plain R fixture must retain its immutable source bytes.");
+        assertExactBytes(
+          Buffer.from(sourceDocument.getText(), "utf8"),
+          originalSource.bytes,
+          "Plain R cleanup must restore the in-memory source from its unchanged disk bytes."
+        );
+      }
+      const tabs = [fixture.sourceUri, fixture.decoyUri]
+        .map(textDocumentTab)
+        .filter((tab): tab is vscode.Tab => tab !== undefined);
+      if (tabs.length > 0) {
+        assert.equal(
+          await vscode.window.tabGroups.close(tabs, true),
+          true,
+          "Plain R cleanup must close its clean tabs."
+        );
+      }
+      assertReleasedRDocumentFixtureUnchanged(fixture);
+      if (resolvedAutoSave !== "off") {
+        await filesConfiguration.update("autoSave", originalAutoSave, vscode.ConfigurationTarget.Workspace);
+      }
+    }
+  }
+  await exerciseReleasedRLiterateDocumentJourneys(testing, workbench, directory);
+}
+
+async function exerciseReleasedRLiterateDocumentJourneys(
+  testing: TestApi,
+  workbench: Page,
+  directory: string
+): Promise<void> {
+  const fixtures = [
+    writeReleasedRLiterateDocumentFixture(directory, "rmarkdown"),
+    writeReleasedRLiterateDocumentFixture(directory, "quarto")
+  ];
+  const exactRscript = process.env.OPEN_WRANGLER_TEST_RSCRIPT;
+  assert.ok(
+    exactRscript && path.isAbsolute(exactRscript) && !/[\0\r\n]/u.test(exactRscript),
+    "The packaged R document journey requires the runner-owned exact Rscript path."
+  );
+  const configuration = vscode.workspace.getConfiguration("openWrangler", fixtures[0].sourceUri);
+  const filesConfiguration = vscode.workspace.getConfiguration("files", fixtures[0].sourceUri);
+  const originalRscriptPath = configuration.inspect<string>("rscriptPath")?.workspaceValue;
+  const originalAutoSave = filesConfiguration.inspect<string>("autoSave")?.workspaceValue;
+  const resolvedAutoSave = filesConfiguration.get<string>("autoSave", "off");
+  const openSessionIds = new Set<string>();
+  const liveProcessIds = new Set<number>();
+  const openedDocuments = new Map<string, vscode.TextDocument>();
+  let acceptanceError: { value: unknown } | undefined;
+
+  try {
+    await configuration.update("rscriptPath", exactRscript, vscode.ConfigurationTarget.Workspace);
+    if (resolvedAutoSave !== "off") {
+      await filesConfiguration.update("autoSave", "off", vscode.ConfigurationTarget.Workspace);
+    }
+    for (const fixture of fixtures) {
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:open`);
+      const document = await vscode.workspace.openTextDocument(fixture.sourceUri);
+      openedDocuments.set(fixture.sourceUri.toString(), document);
+      const sourceText = document.getText();
+      const sourceVersion = document.version;
+      await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
+      assert.equal(vscode.window.activeTextEditor?.document, document);
+
+      if (fixture.kind === "quarto") {
+        await invokeReleasedRDocumentTitleAction(workbench, fixture.sourceUri, fixture.variableName);
+      } else {
+        await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, fixture.variableName, false);
+      }
+      const opened = await waitForReleasedRDocumentSession(
+        workbench,
+        testing,
+        document,
+        fixture.variableName,
+        `the dataframe opened from a real ${fixture.kind} source document`
+      );
+      openSessionIds.add(opened.sessionId);
+      assert.deepEqual(opened.metadata.shape, { rows: 60, columns: 4 });
+      assert.deepEqual(
+        opened.metadata.schema.map((column) => column.name),
+        ["order_id", "market", "score", "order_date"]
+      );
+      assert.equal(opened.metadata.capabilities.documentInsert, true);
+      assert.equal(opened.metadata.capabilities.notebookInsert, false);
+      const page = await assertReleasedSessionPage(
+        testing,
+        opened,
+        "2400001",
+        `jupyter-r-document-${fixture.kind}-page`
+      );
+      assert.equal(page.metadata.backend, "r");
+      const processId = readReleasedRDocumentProcessId(fixture.processIdPath);
+      liveProcessIds.add(processId);
+      assert.equal(acceptanceProcessIsAlive(processId), true);
+
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:hydrate-panel`);
+      await requireFreshExactSessionPanelHydration(
+        testing,
+        opened.sessionId,
+        `The ${fixture.kind} renderer must acknowledge its first complete host snapshot.`
+      );
+      assert.equal(
+        await withAcceptanceOperationDeadline(
+          testing.synchronizePanel(opened.sessionId),
+          OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+          `the exact ${fixture.kind} panel synchronization`
+        ),
+        true,
+        `The ${fixture.kind} session must own a synchronized live dataframe panel before preview.`
+      );
+
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:preview`);
+      let app = await releasedRSessionApp(workbench, testing, opened.sessionId, `the ${fixture.kind} document session`);
+      const previewed = await previewReleasedRRename(
+        testing,
+        workbench,
+        app,
+        opened.sessionId,
+        "order_id",
+        "record_id",
+        undefined,
+        fixture.variableName
+      );
+      app = previewed.app;
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:apply`);
+      const applyButton = app
+        .getByRole("region", { name: "Draft review" })
+        .getByRole("button", { name: "Apply step", exact: true });
+      await applyButton.waitFor({ state: "visible", timeout: 10_000 });
+      assert.equal(await applyButton.isEnabled(), true, `The ${fixture.kind} Apply step button must be enabled.`);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:apply-ready`);
+      await applyButton.click({ timeout: 10_000 });
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:apply-dispatched`);
+      await waitFor(
+        () => {
+          const active = testing.activeSession();
+          return (
+            active?.sessionId === opened.sessionId &&
+            active.metadata.draftStep === undefined &&
+            active.metadata.steps.length === 1 &&
+            active.metadata.steps[0]?.id === previewed.stepId &&
+            active.metadata.steps[0]?.kind === "renameColumn" &&
+            active.metadata.schema[0]?.name === "record_id"
+          );
+        },
+        30_000,
+        `applying the ${fixture.kind} rename`
+      );
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:apply-confirmed`);
+      const applied = testing.activeSession();
+      assert.ok(applied, `The ${fixture.kind} rename must retain its active session.`);
+      assert.match(applied.code ?? "", /record_id/u);
+
+      testing.setActiveSession(opened.sessionId);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert`);
+      const inserted = await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand<boolean>("openWrangler.insertRDocumentCode"),
+        30_000,
+        `${fixture.kind} generated-code insertion`
+      );
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-completed`);
+      assert.equal(inserted, true);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-result-confirmed`);
+      assert.equal(testing.notebookInsertionStatus(), "applied");
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-status-confirmed`);
+      assert.ok(document.version > sourceVersion);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-version-confirmed`);
+      await waitFor(
+        () => {
+          assertReleasedRDocumentFixtureUnchanged(fixture);
+          return document.isDirty;
+        },
+        5_000,
+        `the generated ${fixture.kind} source edit to become dirty`
+      );
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-dirty-confirmed`);
+      assert.equal(document.getText().startsWith(sourceText), true);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-prefix-confirmed`);
+      assert.match(document.getText(), /\n\n```\{r\}\n[\s\S]*record_id[\s\S]*\n```\n$/u);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-shape-confirmed`);
+      assertReleasedRDocumentFixtureUnchanged(fixture);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:insert-disk-confirmed`);
+
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:close`);
+      await disposePackagedSessionPanel(testing, opened.sessionId, `the ${fixture.kind} document session`);
+      openSessionIds.delete(opened.sessionId);
+      await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, `the ${fixture.kind} R process to stop`);
+      liveProcessIds.delete(processId);
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:revert`);
+      await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand("workbench.action.files.revert"),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `reverting the ${fixture.kind} source without saving it`
+      );
+      await waitFor(() => !document.isDirty, WORKBENCH_OPERATION_TIMEOUT_MS, `the ${fixture.kind} source to revert`);
+      assert.equal(document.getText(), sourceText);
+      assertReleasedRDocumentFixtureUnchanged(fixture);
+      const tab = textDocumentTab(fixture.sourceUri);
+      if (tab) assert.equal(await vscode.window.tabGroups.close(tab, true), true);
+      openedDocuments.delete(fixture.sourceUri.toString());
+      recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:complete`);
+    }
+  } catch (error) {
+    acceptanceError = { value: error };
+  } finally {
+    for (const sessionId of openSessionIds) {
+      try {
+        await disposePackagedSessionPanel(testing, sessionId, "the failed literate R document session");
+      } catch (error) {
+        acceptanceError ??= { value: error };
+      }
+    }
+    for (const processId of liveProcessIds) {
+      try {
+        await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, "the failed literate R process to stop");
+      } catch (error) {
+        acceptanceError ??= { value: error };
+      }
+    }
+    for (const fixture of fixtures) {
+      const document = openedDocuments.get(fixture.sourceUri.toString());
+      if (document && !document.isClosed && document.isDirty) {
+        try {
+          await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
+          await withBoundedAcceptancePromise(
+            vscode.commands.executeCommand("workbench.action.files.revert"),
+            WORKBENCH_OPERATION_TIMEOUT_MS,
+            `reverting the failed ${fixture.kind} source without saving it`
+          );
+          await waitFor(
+            () => !document.isDirty,
+            WORKBENCH_OPERATION_TIMEOUT_MS,
+            `the failed ${fixture.kind} source to revert`
+          );
+        } catch (error) {
+          acceptanceError ??= { value: error };
+        }
+      }
+      const tab = textDocumentTab(fixture.sourceUri);
+      if (tab && !document?.isDirty) {
+        try {
+          assert.equal(await vscode.window.tabGroups.close(tab, true), true);
+        } catch (error) {
+          acceptanceError ??= { value: error };
+        }
+      }
+      try {
+        assertReleasedRDocumentFixtureUnchanged(fixture);
+      } catch (error) {
+        acceptanceError ??= { value: error };
+      }
+    }
+    try {
+      await configuration.update("rscriptPath", originalRscriptPath, vscode.ConfigurationTarget.Workspace);
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+    if (resolvedAutoSave !== "off") {
+      try {
+        await filesConfiguration.update("autoSave", originalAutoSave, vscode.ConfigurationTarget.Workspace);
+      } catch (error) {
+        acceptanceError ??= { value: error };
+      }
+    }
+  }
+  if (acceptanceError) throw acceptanceError.value;
+}
+
+async function invokeReleasedRDocumentTitleAction(
+  workbench: Page,
+  source: vscode.Uri,
+  variableName: string
+): Promise<void> {
+  await workbench.bringToFront();
+  const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
+  const action = activeGroup.getByRole("button", { name: /Run(?: R Document)? in Open Wrangler/u }).first();
+  if ((await action.count()) > 0 && (await action.isVisible())) {
+    await action.click();
+  } else {
+    const more = activeGroup.locator('[aria-label="More Actions..."]:visible').first();
+    await more.click();
+    const menuItem = workbench
+      .locator('.context-view.monaco-menu-container [role="menuitem"]:visible')
+      .filter({ hasText: /Run(?: R Document)? in Open Wrangler/u })
+      .first();
+    await menuItem.waitFor({ state: "visible", timeout: 10_000 });
+    await menuItem.click();
+  }
+  const title = `Open Wrangler: Choose a dataframe from ${path.basename(source.fsPath)}`;
+  const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
+  await picker.waitFor({ state: "visible", timeout: 30_000 });
+  const input = picker.locator(".quick-input-box input:visible").first();
+  await input.fill(variableName);
+  const row = await releasedJupyterQuickPickRow(picker, variableName);
+  assert.ok(row, `The R document title action did not expose ${JSON.stringify(variableName)}.`);
+  await row.click();
+}
+
+async function invokeReleasedRDocumentVariable(
+  workbench: Page,
+  source: vscode.Uri,
+  variableName: string,
+  assertDiscovery: boolean
+): Promise<void> {
+  const outcome = vscode.commands.executeCommand<boolean>("openWrangler.runRDocument", source);
+  const title = `Open Wrangler: Choose a dataframe from ${path.basename(source.fsPath)}`;
+  const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
+  const first = await Promise.race([
+    picker.waitFor({ state: "visible", timeout: 30_000 }).then(() => ({ kind: "picker" as const })),
+    Promise.resolve(outcome).then((value) => ({ kind: "outcome" as const, value }))
+  ]);
+  assert.equal(
+    first.kind,
+    "picker",
+    `The public R-file command ended before showing its real picker: ${JSON.stringify(first)}.`
+  );
+  if (assertDiscovery) {
+    for (const [name, flavor] of [
+      ["orders_frame", "data.frame"],
+      ["orders_tibble", "tibble"],
+      ["orders_table", "data.table"]
+    ] as const) {
+      const row = await releasedJupyterQuickPickRow(picker, name);
+      assert.ok(row, `The plain R picker must expose ${name}.`);
+      assert.match((await row.innerText()).replace(/\s+/gu, " "), new RegExp(`R · ${flavor}`, "u"));
+    }
+  }
+  const input = picker.locator(".quick-input-box input:visible").first();
+  await input.fill(variableName);
+  const row = await releasedJupyterQuickPickRow(picker, variableName);
+  assert.ok(row, `The plain R picker did not expose ${JSON.stringify(variableName)}.`);
+  await row.click();
+  assert.equal(
+    await withBoundedAcceptancePromise(outcome, 30_000, `the public R-file command for ${variableName}`),
+    true
+  );
+}
+
+async function waitForReleasedRDocumentSession(
+  workbench: Page,
+  testing: TestApi,
+  document: vscode.TextDocument,
+  variableName: string,
+  description: string
+): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> {
+  try {
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.kind === "documentVariable" &&
+          active.metadata.source.variableName === variableName &&
+          active.metadata.source.uri === document.uri.toString()
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      description,
+      () => JSON.stringify(testing.diagnostics())
+    );
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} ` +
+        `Plain R panel state: ${JSON.stringify({
+          alert: await visibleOpenWranglerPanelAlert(workbench),
+          sessionTabs: releasedJupyterSessionTabs().map((tab) => tab.label),
+          coordinator: testing.diagnostics(),
+          ui: await boundedImportPromptDiagnostics(workbench)
+        })}`
+    );
+  }
+  assert.equal(
+    vscode.workspace.textDocuments.filter((candidate) => candidate.uri.toString() === document.uri.toString()).length,
+    1,
+    "The plain R session must retain one exact source document."
+  );
+  const active = testing.activeSession();
+  assert.ok(active, `${description} must publish an active session.`);
+  assert.equal(active.metadata.backend, "r");
+  assert.equal(active.metadata.rDataframeFlavor, "r.data.frame");
+  assert.equal(active.metadata.mode, "editing");
+  assert.equal(active.metadata.source.kind, "documentVariable");
+  assert.equal(active.metadata.source.variableName, variableName);
+  assert.equal(active.metadata.source.uri, document.uri.toString());
+  assert.equal(active.metadata.capabilities.notebookInsert, false);
+  assert.equal(active.metadata.capabilities.documentInsert, true);
+  return active;
+}
+
+async function exerciseReleasedRDocumentGrid(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The plain R renderer must acknowledge its first complete host snapshot."
+  );
+  const app = await releasedRSessionApp(workbench, testing, sessionId, "the plain R grid session");
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+  assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
+  const visibleRows = app.getByRole("status", { name: "Visible rows" });
+  await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–200 of 240", 10_000, "the first R block");
+  await app.getByRole("button", { name: "Next block", exact: true }).click();
+  await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 201–240 of 240", 10_000, "the second R block");
+  await app.getByRole("button", { name: "Previous block", exact: true }).click();
+  await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–200 of 240", 10_000, "the restored R block");
+
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill("score");
+  await app
+    .getByRole("option", { name: /^score,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await columnSearch.press("Enter");
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  const drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  const profile = drawer.getByRole("tabpanel");
+  await profile.getByRole("heading", { name: "score", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await profile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
+    state: "visible",
+    timeout: 30_000
+  });
+  await assertReleasedProfileStat(profile, "Rows", "240");
+  await assertReleasedProfileStat(profile, "Min", "1");
+  await assertReleasedProfileStat(profile, "Max", "240");
+
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  const filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
+  await filterPanel.getByRole("button", { name: "Use advanced filters", exact: true }).click();
+  await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+  await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
+  await filterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+  await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.filteredShape.rows === 120 &&
+        active.viewState.filterModel.filters.length === 1 &&
+        active.viewState.filterModel.filters[0]?.column === "group"
+      );
+    },
+    30_000,
+    "the plain R group filter"
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  const active = testing.activeSession();
+  assert.ok(active, "The sorted plain R session must remain active.");
+  const first = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: "jupyter-r-document-sorted-page",
+    offset: 0,
+    limit: 1,
+    filterModel: active.viewState.filterModel
+  });
+  assert.equal(first.kind, "page");
+  if (first.kind !== "page") throw new Error("The sorted plain R page did not resolve.");
+  assert.equal(first.page.totalRows, 120);
+  assert.equal(first.page.rows[0]?.values[0]?.display, "240");
+  assert.equal(first.page.rows[0]?.values[1]?.display, "B");
+  assert.equal(first.page.rows[0]?.values[2]?.display, "240");
+}
+
+function readReleasedRDocumentProcessId(processIdPath: string): number {
+  const bytes = readFileSync(processIdPath);
+  assert.ok(bytes.byteLength > 0 && bytes.byteLength <= 32, "The plain R process ID marker must stay bounded.");
+  const text = bytes.toString("utf8").trim();
+  assert.match(text, /^[1-9][0-9]*$/u);
+  const processId = Number(text);
+  assert.ok(Number.isSafeInteger(processId) && processId > 0);
+  return processId;
+}
+
+function releasedRProcessRoots(): string[] {
+  return readdirSync(tmpdir(), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^openwrangler-r-/u.test(entry.name))
+    .map((entry) => path.join(tmpdir(), entry.name))
+    .sort();
+}
+
+function assertReleasedRDocumentFixtureUnchanged(
+  fixture: Pick<ReleasedRDocumentFixture | ReleasedRLiterateDocumentFixture, "immutableFiles">
+): void {
+  for (const file of fixture.immutableFiles) {
+    assertExactBytes(
+      readFileSync(file.path),
+      file.bytes,
+      `Plain R acceptance must not change ${path.basename(file.path)}.`
+    );
+  }
+}
+
+function textDocumentTab(uri: vscode.Uri): vscode.Tab | undefined {
+  return vscode.window.tabGroups.all
+    .flatMap((group) => group.tabs)
+    .find((tab) => tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString());
+}
+
 async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
   await requireFreshExactSessionPanelHydration(
     testing,
@@ -2120,7 +3191,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     timeout: 30_000
   });
   await assertReleasedProfileStat(datasetProfile, "Rows", "1,205");
-  await assertReleasedProfileStat(datasetProfile, "Columns", "24");
+  await assertReleasedProfileStat(datasetProfile, "Columns", "25");
   await assertReleasedProfileStat(datasetProfile, "Missing cells", "1");
   await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "1");
   await assertReleasedProfileStat(datasetProfile, "Duplicate rows", "0");
@@ -2253,14 +3324,14 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     timeout: 30_000
   });
   await assertReleasedProfileStat(filteredDatasetProfile, "Rows", "1");
-  await assertReleasedProfileStat(filteredDatasetProfile, "Columns", "24");
+  await assertReleasedProfileStat(filteredDatasetProfile, "Columns", "25");
   await assertReleasedProfileStat(filteredDatasetProfile, "Rows before filters", "1,205");
   await assertReleasedProfileStat(filteredDatasetProfile, "Missing cells", "0");
   await assertReleasedProfileStat(filteredDatasetProfile, "Rows with missing values", "0");
   await assertReleasedProfileStat(filteredDatasetProfile, "Duplicate rows", "0");
   const filteredStats = testing.activeSession()?.metadata.stats;
   assert.ok(filteredStats, "The filtered R dataset profile must reach the confirmed host state.");
-  assert.equal(filteredStats.missingValuesByColumn.length, 24);
+  assert.equal(filteredStats.missingValuesByColumn.length, 25);
   assert.ok(
     filteredStats.missingValuesByColumn.every((item) => item.count === 0),
     "The one filtered R row must not contain a missing value."
@@ -2343,8 +3414,10 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   await columnSearch.press("Enter");
   const finalColumn = app.locator('th[data-column="extra_20"]');
   await finalColumn.waitFor({ state: "visible", timeout: 10_000 });
+  const finalColumnIndex = testing.activeSession()?.metadata.schema.findIndex((column) => column.name === "extra_20");
+  assert.ok(finalColumnIndex !== undefined && finalColumnIndex >= 0, "The complete R schema must retain extra_20.");
   await app
-    .locator('td[data-grid-row="1204"][data-grid-column="23"]')
+    .locator(`td[data-grid-row="1204"][data-grid-column="${finalColumnIndex}"]`)
     .filter({ hasText: "value-20-1205" })
     .waitFor({ state: "visible", timeout: 10_000 });
 
@@ -2398,6 +3471,855 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   if (groupFirst.kind === "page") assert.equal(groupFirst.page.rows[0]?.values[0]?.display, "602");
 }
 
+async function exerciseReleasedRPersistentRowsJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  phase: "jupyter-r" | "jupyter-r-remote"
+): Promise<void> {
+  recordAcceptanceProgress(`${phase}:editing:persistent-sort`);
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the R persistent-sort session");
+  const sortDraftId = await previewReleasedRSortRows(testing, app, sessionId);
+  let active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep?.kind === "sortRows", "The R Sort rows preview must retain its draft.");
+  assert.equal(active.metadata.draftStep.id, sortDraftId);
+  assert.deepEqual(
+    active.metadata.draftStep.params.rules.map((rule) => ({
+      column: rule.column.name,
+      direction: rule.direction,
+      nulls: rule.nulls
+    })),
+    [
+      { column: "group", direction: "asc", nulls: "last" },
+      { column: "score", direction: "desc", nulls: "last" }
+    ]
+  );
+  assertReleasedRRowGeneratedCode(active.code ?? "", "sortRows");
+  let first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-sort-draft`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    { id: "r:r:601", label: "case-0602", values: ["602", "A", "602"] }
+  );
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Sort rows draft");
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.steps.length === 1 &&
+        current.metadata.steps[0]?.kind === "sortRows" &&
+        current.metadata.steps[0].id === sortDraftId &&
+        current.metadata.shape.rows === 1_205
+      );
+    },
+    30_000,
+    "applying the native R Sort rows step"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Sort rows step must reach its exact renderer before inspection."
+  );
+  await vscode.commands.executeCommand("openWrangler.selectStep", sortDraftId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === sortDraftId,
+    30_000,
+    "the applied native R Sort rows inspection"
+  );
+  let inspection = testing.activeSession()?.stepInspection;
+  assert.ok(inspection, "The applied R Sort rows step must publish its inspection.");
+  assert.deepEqual(inspection.diff, {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: true
+  });
+  assert.equal(inspection.inputPage.rows[0]?.id, "r:r:0");
+  assert.equal(inspection.outputPage.rows[0]?.id, "r:r:601");
+  assertReleasedRRowGeneratedCode(inspection.code, "sortRows");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Sort rows session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Sort rows inspection"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Sort rows session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.shape.rows === 1_205 &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the native R Sort rows step"
+  );
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-sort-undone`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, value: first.values[0]?.display },
+    { id: "r:r:0", label: "case-0001", value: "1" }
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:persistent-filter-view`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before building a filtered view");
+  const profiles = app.getByRole("button", { name: "Column profiles and filters", exact: true });
+  await profiles.click();
+  let drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  let filterPanel = drawer.locator(".filterSortPanel").first();
+  const advanced = filterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
+  if ((await advanced.count()) > 0) await advanced.click();
+  await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+  await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
+  await filterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+  await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.metadata.filteredShape.rows === 603 &&
+        current.viewState.filterModel.filters.length === 1 &&
+        current.viewState.filterModel.filters[0]?.column === "group"
+      );
+    },
+    30_000,
+    "the R group viewing filter"
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  active = testing.activeSession();
+  assert.ok(active, "The R persistent-filter journey requires its active view.");
+  assert.equal(active.metadata.shape.rows, 1_205);
+  assert.equal(active.metadata.filteredShape.rows, 603);
+  assert.equal(active.viewState.filterModel.filters.length, 1);
+  assert.deepEqual(
+    active.viewState.filterModel.sort.map((rule) => ({
+      column: rule.column,
+      direction: rule.direction,
+      nulls: rule.nulls
+    })),
+    [
+      { column: "score", direction: "desc", nulls: "last" },
+      { column: "group", direction: "asc", nulls: "last" }
+    ]
+  );
+  const viewingModel = JSON.parse(JSON.stringify(active.viewState.filterModel)) as FilterModel;
+  const expectedFilteredFirst = {
+    id: "r:r:1204",
+    label: "case-1205",
+    values: ["1205", "B", "1205"]
+  };
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-view`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:persistent-filter-discard`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R view before Filter rows preview");
+  const discardedFilterId = await previewReleasedRFilterRows(testing, app, sessionId);
+  active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep?.kind === "filterRows", "The R Filter rows preview must retain its draft.");
+  assert.equal(active.metadata.draftStep.id, discardedFilterId);
+  assert.equal(active.metadata.shape.rows, 603);
+  assert.deepEqual(active.viewState.filterModel, viewingModel);
+  assertReleasedRRowGeneratedCode(active.code ?? "", "filterRows");
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-draft`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Filter rows draft before discard");
+  await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.shape.rows === 1_205 &&
+        current.metadata.filteredShape.rows === 603 &&
+        isDeepStrictEqual(current.viewState.filterModel, viewingModel) &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "discarding the native R Filter rows preview without changing its view"
+  );
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-discarded`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:persistent-filter-apply`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R view before applying Filter rows");
+  const filterStepId = await previewReleasedRFilterRows(testing, app, sessionId);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Filter rows draft before apply");
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.steps.length === 1 &&
+        current.metadata.steps[0]?.kind === "filterRows" &&
+        current.metadata.steps[0].id === filterStepId &&
+        current.metadata.shape.rows === 603 &&
+        current.metadata.filteredShape.rows === 603 &&
+        isDeepStrictEqual(current.viewState.filterModel, viewingModel)
+      );
+    },
+    30_000,
+    "applying the native R Filter rows step"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Filter rows step must reach its exact renderer before inspection."
+  );
+  await vscode.commands.executeCommand("openWrangler.selectStep", filterStepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === filterStepId,
+    30_000,
+    "the applied native R Filter rows inspection"
+  );
+  inspection = testing.activeSession()?.stepInspection;
+  assert.ok(inspection, "The applied R Filter rows step must publish its inspection.");
+  assert.deepEqual(inspection.diff, {
+    addedRows: 0,
+    removedRows: 602,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: true
+  });
+  assert.equal(inspection.inputPage.rows[0]?.id, "r:r:0");
+  assert.equal(inspection.outputPage.rows[0]?.id, "r:r:1204");
+  assertReleasedRRowGeneratedCode(inspection.code, "filterRows");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Filter rows session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Filter rows inspection"
+  );
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-applied`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Filter rows session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.shape.rows === 1_205 &&
+        current.metadata.filteredShape.rows === 603 &&
+        isDeepStrictEqual(current.viewState.filterModel, viewingModel) &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the native R Filter rows step without changing its view"
+  );
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-undone`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
+    expectedFilteredFirst
+  );
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before clearing its test view");
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.metadata.filteredShape.rows === 1_205 &&
+        current.viewState.filterModel.filters.length === 0 &&
+        current.viewState.filterModel.sort.length === 0
+      );
+    },
+    30_000,
+    "clearing the native R persistent-row acceptance view"
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-persistent-rows-cleanup`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, value: first.values[0]?.display },
+    { id: "r:r:0", label: "case-0001", value: "1" }
+  );
+}
+
+async function exerciseReleasedRRowReductionJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  phase: "jupyter-r" | "jupyter-r-remote"
+): Promise<void> {
+  recordAcceptanceProgress(`${phase}:editing:row-reduction-view`);
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the R row-reduction viewing filter");
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  let drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  let filterPanel = drawer.locator(".filterSortPanel").first();
+  const advanced = filterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
+  if ((await advanced.count()) > 0) await advanced.click();
+  await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "row_id" });
+  await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("between");
+  await filterPanel.getByLabel("between predicate value", { exact: true }).fill("1");
+  await filterPanel.getByLabel("Between predicate upper bound", { exact: true }).fill("10");
+  await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.shape.rows === 1_205 &&
+        current.metadata.filteredShape.rows === 10 &&
+        current.viewState.filterModel.filters[0]?.column === "row_id"
+      );
+    },
+    30_000,
+    "the unrelated R row-reduction viewing filter"
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+
+  recordAcceptanceProgress(`${phase}:editing:drop-missing-rows`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop missing rows session");
+  const missingStepId = await previewReleasedRDropMissingRows(testing, app, sessionId);
+  let active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep?.kind === "dropMissingRows");
+  assert.equal(active.metadata.draftStep.id, missingStepId);
+  assert.equal(active.metadata.draftStep.params.columns, undefined);
+  assert.equal(active.metadata.draftStep.params.how, "any");
+  assert.equal(active.metadata.shape.rows, 1_204);
+  assert.equal(active.metadata.filteredShape.rows, 9);
+  assertReleasedRRowReductionGeneratedCode(active.code ?? "", "dropMissingRows");
+  let first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-drop-missing-draft`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, value: first.values[0]?.display },
+    { id: "r:r:1", label: "case-0002", value: "2" }
+  );
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop missing rows draft");
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.steps.length === 1 &&
+        current.metadata.steps[0]?.kind === "dropMissingRows" &&
+        current.metadata.steps[0].id === missingStepId &&
+        current.metadata.shape.rows === 1_204 &&
+        current.metadata.filteredShape.rows === 9
+      );
+    },
+    30_000,
+    "applying native R Drop missing rows"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Drop missing rows step must reach its exact renderer before inspection."
+  );
+  await vscode.commands.executeCommand("openWrangler.selectStep", missingStepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === missingStepId,
+    30_000,
+    "the applied native R Drop missing rows inspection"
+  );
+  let inspection = testing.activeSession()?.stepInspection;
+  assert.ok(inspection);
+  assert.deepEqual(inspection.diff, {
+    addedRows: 0,
+    removedRows: 1,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: true
+  });
+  assert.equal(inspection.inputPage.rows[0]?.id, "r:r:0");
+  assert.equal(inspection.outputPage.rows[0]?.id, "r:r:1");
+  assertReleasedRRowReductionGeneratedCode(inspection.code, "dropMissingRows");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Drop missing rows session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Drop missing rows inspection"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop missing rows session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.shape.rows === 1_205 &&
+        current.metadata.filteredShape.rows === 10
+      );
+    },
+    30_000,
+    "undoing native R Drop missing rows"
+  );
+  first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-drop-missing-undone`);
+  assert.deepEqual(
+    { id: first.id, label: first.rowLabel, value: first.values[0]?.display },
+    { id: "r:r:0", label: "case-0001", value: "1" }
+  );
+
+  app = await releasedRSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "the R row-reduction session before clearing its view"
+  );
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.filteredShape.rows === 1_205 &&
+        current.viewState.filterModel.filters.length === 0
+      );
+    },
+    30_000,
+    "clearing the R row-reduction viewing filter"
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+
+  recordAcceptanceProgress(`${phase}:editing:drop-duplicates`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop duplicates session");
+  const duplicateStepId = await previewReleasedRDropDuplicates(testing, app, sessionId);
+  active = testing.activeSession();
+  assert.ok(active?.metadata.draftStep?.kind === "dropDuplicates");
+  assert.equal(active.metadata.draftStep.id, duplicateStepId);
+  assert.deepEqual(
+    active.metadata.draftStep.params.columns?.map((column) => column.name),
+    ["group"]
+  );
+  assert.equal(active.metadata.draftStep.params.keep, "first");
+  assert.equal(active.metadata.shape.rows, 2);
+  assertReleasedRRowReductionGeneratedCode(active.code ?? "", "dropDuplicates");
+  let page = await releasedRVisibleRows(testing, sessionId, `${phase}-drop-duplicates-draft`, 2);
+  assert.deepEqual(
+    page.map((row) => ({ id: row.id, label: row.rowLabel, group: row.values[1]?.display })),
+    [
+      { id: "r:r:0", label: "case-0001", group: "A" },
+      { id: "r:r:602", label: "case-0603", group: "B" }
+    ]
+  );
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop duplicates draft");
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.steps.length === 1 &&
+        current.metadata.steps[0]?.kind === "dropDuplicates" &&
+        current.metadata.steps[0].id === duplicateStepId &&
+        current.metadata.shape.rows === 2
+      );
+    },
+    30_000,
+    "applying native R Drop duplicates"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Drop duplicates step must reach its exact renderer before inspection."
+  );
+  await vscode.commands.executeCommand("openWrangler.selectStep", duplicateStepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === duplicateStepId,
+    30_000,
+    "the applied native R Drop duplicates inspection"
+  );
+  inspection = testing.activeSession()?.stepInspection;
+  assert.ok(inspection);
+  assert.deepEqual(inspection.diff, {
+    addedRows: 0,
+    removedRows: 1_203,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: true
+  });
+  assert.deepEqual(
+    inspection.outputPage.rows.slice(0, 2).map((row) => row.id),
+    ["r:r:0", "r:r:602"]
+  );
+  assertReleasedRRowReductionGeneratedCode(inspection.code, "dropDuplicates");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the inspected R Drop duplicates session");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the native R Drop duplicates inspection"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop duplicates session before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.shape.rows === 1_205 &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing native R Drop duplicates"
+  );
+  page = await releasedRVisibleRows(testing, sessionId, `${phase}-drop-duplicates-undone`, 2);
+  assert.deepEqual(
+    page.map((row) => ({ id: row.id, label: row.rowLabel, value: row.values[0]?.display })),
+    [
+      { id: "r:r:0", label: "case-0001", value: "1" },
+      { id: "r:r:1", label: "case-0002", value: "2" }
+    ]
+  );
+}
+
+async function exerciseReleasedRFillMissingJourney(
+  testing: TestApi,
+  workbench: Page,
+  app: Locator,
+  sessionId: string,
+  phase: "jupyter-r"
+): Promise<void> {
+  recordAcceptanceProgress(`${phase}:editing:fill-missing-preview-apply-undo`);
+  const original = testing.activeSession();
+  assert.equal(original?.sessionId, sessionId, "The packaged R fill journey must retain its exact session.");
+  assert.ok(original, "The packaged R fill journey requires one active session.");
+  assert.equal(original.metadata.steps.length, 0, "The packaged R fill journey must start from the original frame.");
+  const target = original.metadata.schema.find((column) => column.name === "extra_20");
+  assert.ok(target, "The packaged R fill journey requires the nullable extra_20 column.");
+  assert.equal(target.type, "string");
+  assert.equal(target.rawType, "character");
+  assert.equal(target.nullable, true);
+
+  const replacement = "filled by Open Wrangler";
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill(target.name);
+  await app
+    .getByRole("option", { name: new RegExp(`^${target.name},`, "u") })
+    .first()
+    .waitFor({
+      state: "visible",
+      timeout: 10_000
+    });
+  await columnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === target.id,
+    10_000,
+    "navigating to the nullable R column before filling it"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Fill missing values source column");
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("fill missing");
+  await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  const fillColumn = dialog.getByLabel("Column", { exact: true });
+  await fillColumn.waitFor({ state: "visible", timeout: 10_000 });
+  await fillColumn.selectOption(target.id);
+  const fillMode = dialog.getByLabel("Fill with", { exact: true });
+  await fillMode.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await fillMode.inputValue(),
+    "mostFrequent",
+    "A nullable R character column should initially offer its type-aware automatic fill."
+  );
+  assert.deepEqual(await fillMode.locator("option").allTextContents(), ["Most common value", "Specific value"]);
+  await fillMode.selectOption("value");
+  const replacementInput = dialog.getByLabel("Replacement value", { exact: true });
+  await replacementInput.waitFor({ state: "visible", timeout: 10_000 });
+  await replacementInput.fill(replacement);
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "fillMissingValues" &&
+        draft.params.column.id === target.id &&
+        draft.params.column.name === target.name &&
+        isDeepStrictEqual(draft.params.replacement, { kind: "string", value: replacement }) &&
+        active.metadata.schema.find((column) => column.id === target.id)?.nullable === false
+      );
+    },
+    30_000,
+    "previewing native R Fill missing values through its operation form"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
+  const stepId = preview.metadata.draftStep.id;
+  assert.match(preview.code ?? "", /\.ow_fill_values/u);
+  assert.match(preview.code ?? "", /filled by Open Wrangler/u);
+  assert.doesNotMatch(preview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
+  const review = app.getByRole("region", { name: "Draft review" });
+  await review.waitFor({ state: "visible", timeout: 10_000 });
+  await review.getByText("Fill missing values", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await review
+    .locator('[aria-label="Data diff summary"]')
+    .getByText(/^1 existing cell changed(?: in this block)?$/u)
+    .waitFor({ state: "visible", timeout: 10_000 });
+
+  await review.getByRole("button", { name: "Apply step", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.id === stepId &&
+        step.kind === "fillMissingValues" &&
+        active.metadata.schema.find((column) => column.id === target.id)?.nullable === false
+      );
+    },
+    30_000,
+    "applying native R Fill missing values through Draft review"
+  );
+  await app.getByRole("group", { name: "Cleaning plan" }).getByText("1 applied step").waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  const applied = testing.activeSession();
+  assert.ok(applied, "The applied R Fill missing values step must retain its exact session.");
+  assert.match(applied.code ?? "", /\.ow_fill_values/u);
+
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  const undoState = (): Record<string, unknown> => {
+    const active = testing.activeSession();
+    return {
+      revision: active?.metadata.revision,
+      appliedRevision: applied.metadata.revision,
+      stepCount: active?.metadata.steps.length,
+      draft: active?.metadata.draftStep?.kind,
+      targetNullable: active?.metadata.schema.find((column) => column.id === target.id)?.nullable,
+      codeEmpty: (active?.code ?? "") === "",
+      scheduler: testing.sessionSchedulerState(sessionId)
+    };
+  };
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const scheduler = testing.sessionSchedulerState(sessionId);
+      return (
+        (active?.metadata.revision ?? applied.metadata.revision) > applied.metadata.revision ||
+        scheduler?.activeForegroundOperation === true ||
+        (scheduler?.interactiveQueueLength ?? 0) > 0
+      );
+    },
+    5_000,
+    "the native R Fill missing values Undo click to dispatch once",
+    () => JSON.stringify(undoState())
+  );
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema.find((column) => column.id === target.id)?.nullable === true &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing native R Fill missing values through the editor",
+    () => JSON.stringify(undoState())
+  );
+  const returnColumn = original.metadata.schema.find((column) => column.name === "row_id");
+  assert.ok(returnColumn, "The packaged R fill journey must be able to return to the first editing column.");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after undoing Fill missing values");
+  const returnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await returnSearch.fill(returnColumn.name);
+  await app
+    .getByRole("option", { name: new RegExp(`^${returnColumn.name},`, "u") })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await returnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === returnColumn.id,
+    10_000,
+    "returning to the first R column after the fill journey"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The first R column must be visible before the unrelated rename journey starts."
+  );
+}
+
+async function previewAndDiscardReleasedRTextTool(
+  testing: TestApi,
+  sessionId: string,
+  column: SessionMetadata["schema"][number],
+  kind: "stripText" | "splitText"
+): Promise<void> {
+  const base = testing.activeSession();
+  assert.ok(base, `The R ${kind} check requires one active session.`);
+  const reference = { id: column.id, name: column.name };
+  const step: Extract<TransformStep, { kind: "stripText" | "splitText" }> =
+    kind === "stripText"
+      ? { id: "released-r-strip-label", kind, params: { column: reference, characters: "row-" } }
+      : {
+          id: "released-r-split-label",
+          kind,
+          params: { column: reference, delimiter: "-", index: 1, newColumn: "label_number" }
+        };
+  const preview = await testing.request({
+    kind: "previewStep",
+    sessionId,
+    revision: base.metadata.revision,
+    step,
+    offset: 0,
+    limit: 1,
+    columnOffset: kind === "splitText" ? base.metadata.schema.length : column.position,
+    columnLimit: 1
+  });
+  assert.equal(preview.kind, "stepPreview", `Native R ${kind} must preview.`);
+  if (preview.kind !== "stepPreview") throw new Error(`Native R ${kind} did not preview.`);
+  assert.equal(preview.page.rows[0]?.values[0]?.display, "0001");
+  assert.ok(preview.code.includes(kind === "splitText" ? ".ow_text_delimiter" : ".ow_text_strip_characters"));
+  assert.doesNotMatch(preview.code, /\b(?:pandas|polars|python)\b/iu);
+  const discarded = await testing.request({
+    kind: "discardDraft",
+    sessionId,
+    revision: preview.revision,
+    offset: 0,
+    limit: 1,
+    columnOffset: 0,
+    columnLimit: 1
+  });
+  assert.equal(discarded.kind, "planUpdated", `Native R ${kind} must discard cleanly.`);
+}
+
+async function releasedRVisibleRows(
+  testing: TestApi,
+  sessionId: string,
+  requestId: string,
+  limit: number
+): Promise<GridPage["rows"]> {
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, "The native R row check must retain its exact session.");
+  assert.ok(active, "The native R row check requires one active session.");
+  const response = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: requestId,
+    offset: 0,
+    limit,
+    filterModel: active.viewState.filterModel
+  });
+  assert.equal(response.kind, "page");
+  if (response.kind !== "page") throw new Error("The native R row request did not return a page.");
+  return response.page.rows;
+}
+
+async function releasedRFirstVisibleRow(
+  testing: TestApi,
+  sessionId: string,
+  requestId: string
+): Promise<GridPage["rows"][number]> {
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, "The native R row check must retain its exact session.");
+  assert.ok(active, "The native R row check requires one active session.");
+  const response = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: requestId,
+    offset: 0,
+    limit: 1,
+    filterModel: active.viewState.filterModel
+  });
+  assert.equal(response.kind, "page");
+  if (response.kind !== "page") throw new Error("The native R first-row request did not return a page.");
+  const row = response.page.rows[0];
+  assert.ok(row, "The native R first-row request must return one row.");
+  return row;
+}
+
 async function exerciseReleasedREditingJourney(
   testing: TestApi,
   workbench: Page,
@@ -2432,15 +4354,7 @@ async function exerciseReleasedREditingJourney(
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: [
-      "selectColumns",
-      "dropColumns",
-      "renameColumn",
-      "cloneColumn",
-      "castColumn",
-      "textLength",
-      "lowerText"
-    ]
+    supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS
   });
   assert.deepEqual(
     opened.metadata.schema.slice(0, 4).map((column) => column.name),
@@ -2450,6 +4364,15 @@ async function exerciseReleasedREditingJourney(
   assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
   await app.getByRole("button", { name: "Add step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+
+  if (phase === "jupyter-r") {
+    await exerciseReleasedRPersistentRowsJourney(testing, workbench, sessionId, phase);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after persistent row operations");
+    await exerciseReleasedRRowReductionJourney(testing, workbench, sessionId, phase);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after row reduction operations");
+    await exerciseReleasedRFillMissingJourney(testing, workbench, app, sessionId, phase);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after Fill missing values");
+  }
 
   recordAcceptanceProgress(`${phase}:editing:preview-discard`);
   const discarded = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
@@ -2923,13 +4846,40 @@ async function exerciseReleasedREditingJourney(
   const firstClone = testing.activeSession();
   assert.ok(firstClone, "The applied native R clone must retain its session.");
   assertReleasedRCloneGeneratedCode(firstClone.code ?? "", "score", "score_copy");
-  await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
-  await vscode.commands.executeCommand("openWrangler.selectStep", cloned.stepId);
-  await waitFor(
-    () => testing.activeSession()?.stepInspection?.stepId === cloned.stepId,
-    30_000,
-    "the applied native R Clone Column inspection"
-  );
+  const sidebar = await arrangePackagedProductSidebar(workbench, "inspection");
+  const cleaningSteps = sidebar.getByRole("tree", { name: /Cleaning Steps/u }).first();
+  const appliedClone = cleaningSteps.getByRole("treeitem", { name: /^1\. Clone column/u }).first();
+  await appliedClone.waitFor({ state: "visible", timeout: 10_000 });
+  await appliedClone.click();
+  try {
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return active?.stepInspectionActive || active?.stepInspection?.stepId === cloned.stepId;
+      },
+      10_000,
+      "dispatching the applied native R Clone Column inspection"
+    );
+    await waitFor(
+      () => testing.activeSession()?.stepInspection?.stepId === cloned.stepId,
+      30_000,
+      "the applied native R Clone Column inspection"
+    );
+  } catch (error) {
+    const active = testing.activeSession();
+    throw new Error(
+      `The Cleaning Steps selection did not complete for ${cloned.stepId}. State: ${JSON.stringify({
+        sessionId: active?.sessionId,
+        stepInspectionActive: active?.stepInspectionActive ?? false,
+        inspectedStepId: active?.stepInspection?.stepId,
+        appliedStepIds: active?.metadata.steps.map((step) => step.id),
+        scheduler: testing.sessionSchedulerState(sessionId),
+        panelHydrated: testing.panelHydrated(sessionId),
+        panelSynchronizable: testing.panelSynchronizable(sessionId)
+      })}`,
+      { cause: error }
+    );
+  }
   const cloneInspection = testing.activeSession()?.stepInspection;
   assert.ok(cloneInspection, "Selecting the applied R Clone Column step must publish its inspection.");
   assert.deepEqual(cloneInspection.diff, {
@@ -3155,6 +5105,81 @@ async function exerciseReleasedREditingJourney(
     "undoing the native R Text Length step"
   );
 
+  if (phase === "jupyter-r") {
+    recordAcceptanceProgress(`${phase}:editing:find-replace-picker-preview-apply-undo`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Find and replace");
+    const replaced = await previewReleasedRFindReplace(testing, workbench, app, sessionId, "group", "A", "Alpha");
+    app = replaced.app;
+    const replaceReview = app.getByRole("region", { name: "Draft review" });
+    await replaceReview.getByText("Find and replace", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await replaceReview.getByRole("button", { name: "Apply step", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "findReplace" &&
+          step.id === replaced.stepId &&
+          step.params.column.name === "group" &&
+          step.params.find === "A" &&
+          step.params.replacement === "Alpha" &&
+          step.params.regex === false
+        );
+      },
+      30_000,
+      "applying native R Find and replace"
+    );
+    const findApplied = testing.activeSession();
+    assert.ok(findApplied, "The applied native R Find and replace step must retain its session.");
+    const groupAfterReplace = findApplied.metadata.schema.find((column) => column.name === "group");
+    assert.ok(groupAfterReplace, "The native R Find and replace journey must retain group.");
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R Find and replace result must reach its exact renderer before inspection."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Find and replace session");
+    const groupSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await groupSearch.fill(groupAfterReplace.name);
+    await app
+      .getByRole("option", { name: new RegExp(`^${groupAfterReplace.name},`, "u") })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await groupSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === groupAfterReplace.id,
+      10_000,
+      "revealing the replaced R column"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The replaced R column must be visible before its rendered value is checked."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Find and replace result");
+    await app
+      .locator(`td[data-grid-row="0"][data-grid-column="${groupAfterReplace.position}"]`)
+      .getByText("Alpha", { exact: true })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          (active.code ?? "") === ""
+        );
+      },
+      30_000,
+      "undoing native R Find and replace"
+    );
+  }
+
   recordAcceptanceProgress(`${phase}:editing:convert-type-preview-apply-undo`);
   const castBase = testing.activeSession();
   assert.ok(castBase, "The restored R session must remain available for Convert type.");
@@ -3284,6 +5309,245 @@ async function exerciseReleasedREditingJourney(
     isNaN: false
   });
 
+  if (phase === "jupyter-r") {
+    recordAcceptanceProgress(`${phase}:editing:numeric-rounding-preview-apply-undo`);
+    const roundingBase = testing.activeSession();
+    assert.ok(roundingBase, "The restored R session must remain available for numeric rounding.");
+    assert.deepEqual(roundingBase.viewState.filterModel.filters, []);
+    assert.deepEqual(roundingBase.viewState.filterModel.sort, []);
+    const roundingColumn = roundingBase.metadata.schema.find((column) => column.name === "fractional_score");
+    assert.ok(roundingColumn, "The packaged R numeric-rounding run requires the fractional score column.");
+
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Round");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const roundingDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await roundingDialog.getByPlaceholder("Search operations").fill("round");
+    await roundingDialog.getByRole("button", { name: /^Round\b/u }).click();
+    await roundingDialog.getByLabel("Numeric column", { exact: true }).selectOption(roundingColumn.id);
+    await roundingDialog.getByLabel("Decimal places", { exact: true }).fill("0");
+    await roundingDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const draft = active?.metadata.draftStep;
+        return (
+          active?.sessionId === sessionId &&
+          draft?.kind === "roundNumber" &&
+          draft.params.column.id === roundingColumn.id &&
+          draft.params.decimals === 0
+        );
+      },
+      30_000,
+      "previewing native R Round through its visible form"
+    );
+    const roundingPreview = testing.activeSession();
+    assert.ok(roundingPreview?.metadata.draftStep?.kind === "roundNumber");
+    assert.match(roundingPreview.code ?? "", /\bround\s*\(/u);
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Round preview must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Round preview");
+    const roundedCell = app.locator(`td[data-grid-row="0"][data-grid-column="${roundingColumn.position}"]`);
+    await roundedCell.waitFor({ state: "visible", timeout: 10_000 });
+    const roundedDisplay = Number((await roundedCell.innerText()).trim());
+    assert.equal(Number.isFinite(roundedDisplay), true, "The visible R Round preview must contain a number.");
+    assert.equal(Number.isInteger(roundedDisplay), true, "The visible R Round preview must use zero decimal places.");
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.steps[0]?.kind === "roundNumber",
+      30_000,
+      "applying native R Round"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R Round step must reach its renderer."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Round session");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Round");
+
+    recordAcceptanceProgress(`${phase}:editing:floor-picker-preview-discard`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Floor");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const floorDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await floorDialog.getByPlaceholder("Search operations").fill("floor");
+    await floorDialog.getByRole("button", { name: /^Floor\b/u }).click();
+    await floorDialog.getByLabel("Numeric column", { exact: true }).selectOption(roundingColumn.id);
+    await floorDialog.getByLabel("Output column (blank replaces in place)", { exact: true }).fill("score_floor");
+    await floorDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const draft = active?.metadata.draftStep;
+        return (
+          active?.sessionId === sessionId &&
+          draft?.kind === "floorNumber" &&
+          draft.params.column.id === roundingColumn.id &&
+          draft.params.newColumn === "score_floor" &&
+          active.metadata.schema.at(-1)?.id === `c:step:${draft.id}:0`
+        );
+      },
+      30_000,
+      "previewing native R Floor through its visible form"
+    );
+    const floorPreview = testing.activeSession();
+    assert.ok(floorPreview?.metadata.draftStep?.kind === "floorNumber");
+    assert.match(floorPreview.code ?? "", /\bfloor\s*\(/u);
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Floor preview must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Floor preview");
+    const floorColumn = testing.activeSession()?.metadata.schema.find((column) => column.name === "score_floor");
+    assert.ok(floorColumn, "The visible R Floor preview must retain its derived column.");
+    const floorColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await floorColumnSearch.fill("score_floor");
+    await app
+      .getByRole("option", { name: /^score_floor,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await floorColumnSearch.press("Enter");
+    for (const [row, expected] of [
+      [0, "1"],
+      [1, "-3"]
+    ] as const) {
+      await waitForLocatorText(
+        app.locator(`td[data-grid-row="${row}"][data-grid-column="${floorColumn.position}"]`),
+        (text) => text.trim() === expected,
+        10_000,
+        `the visible R Floor value in row ${row + 1}`
+      );
+    }
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Discard", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          !active.metadata.schema.some((column) => column.name === "score_floor")
+        );
+      },
+      30_000,
+      "discarding native R Floor"
+    );
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The discarded R Floor draft must settle.");
+
+    const ceilingBase = testing.activeSession();
+    assert.ok(ceilingBase, "The restored R session must remain available for Ceiling.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Ceiling");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const ceilingDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await ceilingDialog.getByPlaceholder("Search operations").fill("ceiling");
+    await ceilingDialog.getByRole("button", { name: /^Ceiling\b/u }).click();
+    await ceilingDialog.getByLabel("Numeric column", { exact: true }).selectOption(roundingColumn.id);
+    await ceilingDialog.getByLabel("Output column (blank replaces in place)", { exact: true }).fill("score_ceiling");
+    await ceilingDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const draft = active?.metadata.draftStep;
+        return (
+          active?.sessionId === sessionId &&
+          draft?.kind === "ceilNumber" &&
+          draft.params.column.id === roundingColumn.id &&
+          draft.params.newColumn === "score_ceiling"
+        );
+      },
+      30_000,
+      "previewing native R Ceiling through its visible form"
+    );
+    const ceilingPreview = testing.activeSession();
+    assert.ok(ceilingPreview?.metadata.draftStep?.kind === "ceilNumber");
+    assert.equal(ceilingPreview.metadata.schema.at(-1)?.id, `c:step:${ceilingPreview.metadata.draftStep.id}:0`);
+    assert.match(ceilingPreview.code ?? "", /\bceiling\s*\(/u);
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Ceiling preview must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Ceiling preview");
+    const ceilingColumn = testing.activeSession()?.metadata.schema.find((column) => column.name === "score_ceiling");
+    assert.ok(ceilingColumn, "The visible R Ceiling preview must retain its derived column.");
+    const ceilingColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await ceilingColumnSearch.fill("score_ceiling");
+    await app
+      .getByRole("option", { name: /^score_ceiling,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await ceilingColumnSearch.press("Enter");
+    for (const [row, expected] of [
+      [0, "2"],
+      [1, "-2"]
+    ] as const) {
+      await waitForLocatorText(
+        app.locator(`td[data-grid-row="${row}"][data-grid-column="${ceilingColumn.position}"]`),
+        (text) => text.trim() === expected,
+        10_000,
+        `the visible R Ceiling value in row ${row + 1}`
+      );
+    }
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Discard", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          !active.metadata.schema.some((column) => column.name === "score_ceiling")
+        );
+      },
+      30_000,
+      "discarding native R Ceiling"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The discarded R Floor and Ceiling previews must reach their renderer."
+    );
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:numeric-rounding-source-after-undo`);
+  }
+
+  if (phase === "jupyter-r") {
+    const capitalizeBase = testing.activeSession();
+    assert.ok(capitalizeBase, "The restored R session must remain available for Capitalize.");
+    const labelColumn = capitalizeBase.metadata.schema.find((column) => column.name === "label");
+    assert.ok(labelColumn, "The packaged R Capitalize journey requires the label column.");
+
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Capitalize");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const textDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await textDialog.getByPlaceholder("Search operations").fill("capitalize");
+    await textDialog.getByRole("button", { name: /^Capitalize/u }).click();
+    await textDialog.getByLabel("Text column", { exact: true }).selectOption(labelColumn.id);
+    await textDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.draftStep?.kind === "capitalizeText",
+      30_000,
+      "previewing native R Capitalize through its visible form"
+    );
+    const capitalizePreview = testing.activeSession();
+    assert.ok(capitalizePreview?.metadata.draftStep?.kind === "capitalizeText");
+    assert.match(capitalizePreview.code ?? "", /\btoupper\b/u);
+    assert.doesNotMatch(capitalizePreview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
+    const capitalizedRows = await releasedRVisibleRows(testing, sessionId, `${phase}-capitalize-page`, 1);
+    assert.equal(capitalizedRows[0]?.values[labelColumn.position]?.display, "Row-0001");
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.steps[0]?.kind === "capitalizeText",
+      30_000,
+      "applying native R Capitalize"
+    );
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "R Capitalize must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Capitalize session");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Capitalize");
+  }
+
   recordAcceptanceProgress(`${phase}:editing:lowercase-preview-apply-undo`);
   const lowercaseBase = testing.activeSession();
   assert.ok(lowercaseBase, "The restored R session must remain available for Lowercase.");
@@ -3335,6 +5599,63 @@ async function exerciseReleasedREditingJourney(
   assert.equal(lowercaseUndo.page.rows[0]?.values[1]?.display, "A");
   await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:lowercase-source-after-undo`);
 
+  if (phase === "jupyter-r") {
+    recordAcceptanceProgress(`${phase}:editing:uppercase-preview-apply-undo`);
+    const uppercaseBase = testing.activeSession();
+    assert.ok(uppercaseBase, "The restored R session must remain available for Uppercase.");
+    const labelColumn = uppercaseBase.metadata.schema.find((column) => column.name === "label");
+    assert.ok(labelColumn, "The packaged R Uppercase journey requires the label column.");
+    const uppercasePreview = await testing.request({
+      kind: "previewStep",
+      sessionId,
+      revision: uppercaseBase.metadata.revision,
+      step: {
+        id: "released-r-uppercase-label",
+        kind: "upperText",
+        params: { column: { id: labelColumn.id, name: labelColumn.name } }
+      },
+      offset: 0,
+      limit: 20,
+      columnOffset: labelColumn.position,
+      columnLimit: 1
+    });
+    assert.equal(uppercasePreview.kind, "stepPreview", "Packaged native R Uppercase must preview in place.");
+    if (uppercasePreview.kind !== "stepPreview") throw new Error("The packaged R Uppercase preview failed.");
+    assert.equal(uppercasePreview.page.rows[0]?.values[0]?.display, "ROW-0001");
+    assert.match(uppercasePreview.code, /toupper/u);
+    assert.ok(uppercasePreview.diff.changedCells > 0);
+    const uppercaseApplied = await testing.request({
+      kind: "applyDraft",
+      sessionId,
+      revision: uppercasePreview.revision,
+      offset: 0,
+      limit: 20,
+      columnOffset: labelColumn.position,
+      columnLimit: 1
+    });
+    assert.equal(uppercaseApplied.kind, "planUpdated", "Packaged native R Uppercase must apply.");
+    if (uppercaseApplied.kind !== "planUpdated") throw new Error("The packaged R Uppercase apply failed.");
+    assert.equal(uppercaseApplied.page.rows[0]?.values[0]?.display, "ROW-0001");
+    const uppercaseUndo = await testing.request({
+      kind: "undoStep",
+      sessionId,
+      revision: uppercaseApplied.revision,
+      offset: 0,
+      limit: 20,
+      columnOffset: labelColumn.position,
+      columnLimit: 1
+    });
+    assert.equal(uppercaseUndo.kind, "planUpdated", "Packaged native R Uppercase must undo.");
+    if (uppercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Uppercase undo failed.");
+    assert.equal(uppercaseUndo.page.rows[0]?.values[0]?.display, "row-0001");
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:text-cleaning-source-after-undo`);
+    // These direct coordinator checks intentionally follow the final Open Wrangler
+    // renderer mutation so their newer revisions cannot leave a later UI action stale.
+    await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
+    await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:additional-text-tools-source-after-undo`);
+  }
+
   if (phase === "jupyter-r" && screenshotOutput) {
     await captureReleasedJupyterCodeInsertion(
       workbench,
@@ -3350,6 +5671,171 @@ async function exerciseReleasedREditingJourney(
       }
     );
   }
+}
+
+async function previewReleasedRSortRows(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Sort rows/u }).click();
+  await dialog.getByLabel("Column 1", { exact: true }).selectOption({ label: "group" });
+  await dialog.getByLabel("Direction", { exact: true }).nth(0).selectOption("asc");
+  await dialog.getByLabel("Missing", { exact: true }).nth(0).selectOption("last");
+  await dialog.getByRole("button", { name: "Add sort column", exact: true }).click();
+  await dialog.getByLabel("Column 2", { exact: true }).selectOption({ label: "score" });
+  await dialog.getByLabel("Direction", { exact: true }).nth(1).selectOption("desc");
+  await dialog.getByLabel("Missing", { exact: true }).nth(1).selectOption("last");
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "sortRows" &&
+        draft.params.rules.length === 2 &&
+        draft.params.rules[0]?.column.name === "group" &&
+        draft.params.rules[1]?.column.name === "score" &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.shape.rows === 1_205
+      );
+    },
+    30_000,
+    "the native R Sort rows preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Sort rows preview must reach its exact renderer."
+  );
+  const draft = testing.activeSession()?.metadata.draftStep;
+  assert.ok(draft?.kind === "sortRows", "The native R Sort rows preview must retain its draft.");
+  return draft.id;
+}
+
+async function previewReleasedRFilterRows(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Filter rows/u }).click();
+  await dialog.getByText("1 filters", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByText("2 sorts", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "filterRows" &&
+        draft.params.filterModel.filters.length === 1 &&
+        draft.params.filterModel.filters[0]?.column.name === "group" &&
+        draft.params.filterModel.sort.map((rule) => rule.column.name).join(",") === "score,group" &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.shape.rows === 603
+      );
+    },
+    30_000,
+    "the native R Filter rows preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Filter rows preview must reach its exact renderer."
+  );
+  const draft = testing.activeSession()?.metadata.draftStep;
+  assert.ok(draft?.kind === "filterRows", "The native R Filter rows preview must retain its draft.");
+  return draft.id;
+}
+
+async function previewReleasedRDropMissingRows(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Drop missing rows/u }).click();
+  await dialog.getByLabel("Drop when", { exact: true }).selectOption("any");
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "dropMissingRows" &&
+        draft.params.columns === undefined &&
+        draft.params.how === "any" &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.shape.rows === 1_204
+      );
+    },
+    30_000,
+    "the native R Drop missing rows preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Drop missing rows preview must reach its exact renderer."
+  );
+  const draft = testing.activeSession()?.metadata.draftStep;
+  assert.ok(draft?.kind === "dropMissingRows");
+  return draft.id;
+}
+
+async function previewReleasedRDropDuplicates(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Drop duplicates/u }).click();
+  await dialog.getByRole("checkbox", { name: "group", exact: true }).check();
+  await dialog.getByLabel("Keep", { exact: true }).selectOption("first");
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "dropDuplicates" &&
+        draft.params.columns?.length === 1 &&
+        draft.params.columns[0]?.name === "group" &&
+        draft.params.keep === "first" &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.shape.rows === 2
+      );
+    },
+    30_000,
+    "the native R Drop duplicates preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Drop duplicates preview must reach its exact renderer."
+  );
+  const draft = testing.activeSession()?.metadata.draftStep;
+  assert.ok(draft?.kind === "dropDuplicates");
+  return draft.id;
+}
+
+function assertReleasedRRowGeneratedCode(code: string, kind: "sortRows" | "filterRows"): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes('get("orders_frame", envir = parent.env(environment()), inherits = FALSE)'));
+  assert.ok(code.includes(kind === "sortRows" ? "# Sort rows" : "# Filter rows"));
+  assert.ok(code.includes(".ow_rows"));
+  assert.ok(code.includes(".ow_sort_values"));
+  if (kind === "filterRows") assert.ok(code.includes(".ow_filter_mask_1"));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+function assertReleasedRRowReductionGeneratedCode(code: string, kind: "dropMissingRows" | "dropDuplicates"): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes('get("orders_frame", envir = parent.env(environment()), inherits = FALSE)'));
+  assert.ok(code.includes(kind === "dropMissingRows" ? "# Drop missing rows" : "# Drop duplicates"));
+  assert.ok(code.includes(".ow_rows"));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 
 async function previewReleasedRTextLength(
@@ -3410,6 +5896,62 @@ async function previewReleasedRTextLength(
   return {
     app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Text Length preview"),
     stepId
+  };
+}
+
+async function previewReleasedRFindReplace(
+  testing: TestApi,
+  workbench: Page,
+  app: Locator,
+  sessionId: string,
+  sourceName: string,
+  find: string,
+  replacement: string
+): Promise<Readonly<{ app: Locator; stepId: string }>> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: /^Find and replace/u }).click();
+  await dialog.getByLabel("Text column", { exact: true }).selectOption({ label: sourceName });
+  await dialog.getByLabel("Find (blank matches empty boundaries)", { exact: true }).fill(find);
+  await dialog.getByLabel("Replace with", { exact: true }).fill(replacement);
+  await dialog.getByRole("checkbox", { name: "Use regular expression", exact: true }).uncheck();
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "findReplace" &&
+        draft.params.column.name === sourceName &&
+        draft.params.find === find &&
+        draft.params.replacement === replacement &&
+        draft.params.regex === false &&
+        draft.params.newColumn === undefined &&
+        active.metadata.steps.length === 0
+      );
+    },
+    30_000,
+    "the native R Find and replace preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  const active = testing.activeSession();
+  assert.ok(
+    active?.metadata.draftStep?.kind === "findReplace",
+    "The native R Find and replace preview must retain its draft."
+  );
+  assertReleasedRFindReplaceGeneratedCode(active.code ?? "", sourceName, find, replacement, false);
+  const codePreview = await waitForCodePreview(workbench, replacement, "R");
+  assertReleasedRFindReplaceCodeSurface(await codePreview.innerText(), sourceName, find, replacement, false);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The native R Find and replace preview must be acknowledged by its exact renderer."
+  );
+  return {
+    app: await releasedRSessionApp(workbench, testing, sessionId, "the native R Find and replace preview"),
+    stepId: active.metadata.draftStep.id
   };
 }
 
@@ -3729,8 +6271,8 @@ async function previewReleasedRRename(
 function assertReleasedRGeneratedCode(code: string, newName: string, variableName = "orders_frame"): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
   assert.ok(
-    code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`),
-    `Generated R code must read ${JSON.stringify(variableName)} from the notebook kernel.`
+    code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`),
+    `Generated R code must read ${JSON.stringify(variableName)} from the environment that runs the script.`
   );
   assert.ok(code.includes(JSON.stringify(newName)), `Generated R code must contain ${JSON.stringify(newName)}.`);
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
@@ -3738,7 +6280,7 @@ function assertReleasedRGeneratedCode(code: string, newName: string, variableNam
 
 function assertReleasedRDropGeneratedCode(code: string, sourceName: string, variableName = "orders_frame"): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_drop_positions"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
@@ -3751,11 +6293,41 @@ function assertReleasedRTextLengthGeneratedCode(
   variableName = "orders_frame"
 ): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_text_length_position"));
   assert.ok(code.includes("nchar("));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.ok(code.includes(JSON.stringify(newColumn)));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+function assertReleasedRFindReplaceGeneratedCode(
+  code: string,
+  sourceName: string,
+  find: string,
+  replacement: string,
+  regex: boolean,
+  variableName = "orders_frame"
+): void {
+  assertReleasedRFindReplaceCodeSurface(code, sourceName, find, replacement, regex, variableName);
+  assert.ok(code.includes("gsub("));
+}
+
+function assertReleasedRFindReplaceCodeSurface(
+  code: string,
+  sourceName: string,
+  find: string,
+  replacement: string,
+  regex: boolean,
+  variableName = "orders_frame"
+): void {
+  assert.match(code, /open_wrangler_result <- local\(\{/u);
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
+  assert.ok(code.includes(".ow_text_position"));
+  assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.ok(code.includes(`.ow_text_find <- ${JSON.stringify(find)}`));
+  assert.ok(code.includes(`.ow_text_replacement <- ${JSON.stringify(replacement)}`));
+  assert.ok(code.includes(`.ow_text_regex <- ${regex ? "TRUE" : "FALSE"}`));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 
@@ -3766,7 +6338,7 @@ function assertReleasedRCastGeneratedCode(
   variableName = "orders_frame"
 ): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_cast_position"));
   assert.ok(code.includes(".ow_cast_values"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
@@ -3781,7 +6353,7 @@ function assertReleasedRCloneGeneratedCode(
   variableName = "orders_frame"
 ): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_clone_position"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.ok(code.includes(JSON.stringify(newName)));
@@ -3794,7 +6366,7 @@ function assertReleasedRSelectGeneratedCode(
   variableName = "orders_frame"
 ): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = .GlobalEnv, inherits = FALSE)`));
+  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_select_positions"));
   for (const name of selectedNames) assert.ok(code.includes(JSON.stringify(name)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
@@ -10282,6 +12854,28 @@ async function exercisePackagedFirstUseInteractionJourney(
     "Closing Insights must restore focus to its toolbar toggle."
   );
 
+  recordAcceptanceProgress("platform-smoke:fill-most-common");
+  await previewMostCommonAccountNote(app, testing);
+  app = await rediscoverApp("Most-common fill validation");
+  const fillDraft = testing.activeSession();
+  assert.equal(fillDraft?.metadata.draftStep?.kind, "fillMissingValues");
+  assert.deepEqual(fillDraft?.metadata.draftStep?.params.replacement, { kind: "mostFrequent" });
+  assert.equal(fillDraft?.metadata.schema.find((column) => column.id === accountNote.id)?.nullable, false);
+  assert.match(fillDraft?.code ?? "", /_ow_polars_most_frequent/u);
+  const fillReview = app.getByRole("region", { name: "Draft review" });
+  await fillReview.waitFor({ state: "visible", timeout: 10_000 });
+  await fillReview.getByText("Fill missing values", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await fillReview.getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () =>
+      testing.activeSession()?.metadata.draftStep === undefined &&
+      testing.activeSession()?.metadata.steps.length === 0 &&
+      testing.activeSession()?.metadata.schema.find((column) => column.id === accountNote.id)?.nullable === true,
+    30_000,
+    "discarding the most-common fill preview"
+  );
+  await fillReview.waitFor({ state: "hidden", timeout: 10_000 });
+
   recordAcceptanceProgress("platform-smoke:draft-discard");
   await previewUppercaseMarket(app, testing, "market_upper");
   const draftCodePreview = await waitForCodePreview(workbench, "market_upper");
@@ -10467,6 +13061,42 @@ async function exercisePackagedFirstUseInteractionJourney(
   await clearReleasedJupyterScreenshotTransientUi(workbench);
 }
 
+async function previewMostCommonAccountNote(app: Locator, testing: TestApi): Promise<void> {
+  const active = testing.activeSession();
+  assert.ok(active, "The most-common fill preview requires one active dataframe session.");
+  const accountNote = columnReference(active.metadata, "account_note");
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("fill missing");
+  await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  await dialog.getByLabel("Column", { exact: true }).selectOption(accountNote.id);
+  const fillMode = dialog.getByLabel("Fill with", { exact: true });
+  await fillMode.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await fillMode.inputValue(),
+    "mostFrequent",
+    "Selecting a nullable text column should choose its most useful automatic fill."
+  );
+  await dialog
+    .getByText("Filters in the current view do not affect this calculation.", { exact: false })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const draft = testing.activeSession()?.metadata.draftStep;
+      return (
+        draft?.kind === "fillMissingValues" &&
+        draft.params.column.id === accountNote.id &&
+        draft.params.replacement.kind === "mostFrequent"
+      );
+    },
+    30_000,
+    "the most-common text fill preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+}
+
 async function previewUppercaseMarket(app: Locator, testing: TestApi, newColumn: string): Promise<void> {
   await app.getByRole("button", { name: "Add step", exact: true }).click();
   const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
@@ -10538,6 +13168,20 @@ async function previewRevenueProjection(app: Locator, testing: TestApi, newColum
 
 async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, destination: string): Promise<void> {
   await app.getByRole("button", { name: "Export", exact: true }).click();
+  await completeCleanedDataExportDialog(workbench, destination);
+}
+
+async function exportCleanedDataThroughCommand(workbench: Page, destination: string): Promise<void> {
+  const completion = vscode.commands.executeCommand<boolean>("openWrangler.exportData");
+  await completeCleanedDataExportDialog(workbench, destination);
+  assert.equal(
+    await withBoundedAcceptancePromise(completion, 30_000, "the public cleaned-data export command"),
+    true,
+    "The zero-argument cleaned-data export command must report success."
+  );
+}
+
+async function completeCleanedDataExportDialog(workbench: Page, destination: string): Promise<void> {
   const formatPicker = workbench
     .locator(".quick-input-widget:visible")
     .filter({ hasText: "Export Cleaned Data" })

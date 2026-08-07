@@ -19,6 +19,13 @@ openwrangler_r_frame_contract <- local({
   maximum_sort_cache_bytes <- 32L * 1024L * 1024L
   maximum_factor_levels <- 100000L
   maximum_text_bytes <- 8192L
+  default_strip_characters <- paste0(
+    " \t\n\r\v\f",
+    "\u001c\u001d\u001e\u001f",
+    "\u0085\u00a0\u1680",
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a",
+    "\u2028\u2029\u202f\u205f\u3000"
+  )
   maximum_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
   maximum_column_id_bytes <- 2048L
@@ -90,6 +97,28 @@ openwrangler_r_frame_contract <- local({
     }
     if (nchar(converted, type = "bytes") > maximum_bytes) {
       abort("text-too-large", sprintf("%s exceeds %d UTF-8 bytes", label, maximum_bytes))
+    }
+    converted
+  }
+
+  bounded_operation_output <- function(value, operation_name) {
+    if (!is.character(value) || length(value) != 1L || is.na(value)) {
+      abort("internal-error", sprintf("%s returned an invalid R text result", operation_name))
+    }
+    encoding <- Encoding(value)
+    if (identical(encoding, "bytes")) {
+      abort("invalid-view-query", sprintf("%s produced invalid UTF-8 text", operation_name))
+    }
+    source_encoding <- if (identical(encoding, "latin1")) "latin1" else "UTF-8"
+    converted <- iconv(value, from = source_encoding, to = "UTF-8", sub = NA_character_)
+    if (is.na(converted)) {
+      abort("invalid-view-query", sprintf("%s produced invalid UTF-8 text", operation_name))
+    }
+    if (nchar(converted, type = "bytes") > maximum_text_bytes) {
+      abort(
+        "operation-output-too-large",
+        sprintf("%s would produce text longer than %d UTF-8 bytes", operation_name, maximum_text_bytes)
+      )
     }
     converted
   }
@@ -191,6 +220,20 @@ openwrangler_r_frame_contract <- local({
         value != floor(value)
     ) {
       abort("invalid-range", sprintf("%s must be a whole number from 0 through %s", label, format(maximum)))
+    }
+    as.double(value)
+  }
+
+  signed_whole_number <- function(value, label, maximum) {
+    if (
+      length(value) != 1L ||
+        !is.numeric(value) ||
+        is.na(value) ||
+        !is.finite(value) ||
+        abs(value) > maximum ||
+        value != floor(value)
+    ) {
+      abort("invalid-view-query", sprintf("%s is outside its supported range", label))
     }
     as.double(value)
   }
@@ -753,6 +796,21 @@ openwrangler_r_frame_contract <- local({
     parsed <- suppressWarnings(as.POSIXct(strptime(normalized, format = format, tz = timezone)))
     if (length(parsed) != 1L || is.na(parsed)) {
       abort("invalid-view-value", sprintf("%s is not a valid datetime", label))
+    }
+    if (!has_zone) {
+      local <- as.POSIXlt(parsed, tz = timezone)
+      expected_seconds <- seconds + if (identical(fraction, "")) 0 else as.double(fraction)
+      expected_date <- as.integer(strsplit(parts[[2L]], "-", fixed = TRUE)[[1L]])
+      if (
+        local$year + 1900L != expected_date[[1L]] ||
+          local$mon + 1L != expected_date[[2L]] ||
+          local$mday != expected_date[[3L]] ||
+          local$hour != hours ||
+          local$min != minutes ||
+          abs(local$sec - expected_seconds) > 1e-6
+      ) {
+        abort("invalid-view-value", sprintf("%s is not a valid local datetime in %s", label, timezone))
+      }
     }
     exact_double(as.double(parsed))
   }
@@ -1569,9 +1627,12 @@ openwrangler_r_frame_contract <- local({
     value,
     nullability_source = NULL,
     source_positions = NULL,
+    source_row_positions = NULL,
     output_ids = NULL,
     text_length_positions = NULL,
-    lower_text_positions = NULL,
+    text_transform_positions = NULL,
+    numeric_transform_positions = NULL,
+    fill_missing_positions = NULL,
     cast_positions = NULL,
     cast_dtypes = NULL
   ) {
@@ -1583,9 +1644,12 @@ openwrangler_r_frame_contract <- local({
       is.null(nullability_source) &&
         (
           !is.null(source_positions) ||
+            !is.null(source_row_positions) ||
             !is.null(output_ids) ||
             !is.null(text_length_positions) ||
-            !is.null(lower_text_positions) ||
+            !is.null(text_transform_positions) ||
+            !is.null(numeric_transform_positions) ||
+            !is.null(fill_missing_positions) ||
             !is.null(cast_positions) ||
             !is.null(cast_dtypes)
         )
@@ -1598,8 +1662,14 @@ openwrangler_r_frame_contract <- local({
     if (!is.null(text_length_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R text-length outputs require explicit source mappings and identities")
     }
-    if (!is.null(lower_text_positions) && is.null(source_positions)) {
-      abort("internal-error", "R lowercase outputs require explicit source mappings")
+    if (!is.null(text_transform_positions) && is.null(source_positions)) {
+      abort("internal-error", "R text-transform outputs require explicit source mappings")
+    }
+    if (!is.null(numeric_transform_positions) && is.null(source_positions)) {
+      abort("internal-error", "R numeric-transform outputs require explicit source mappings")
+    }
+    if (!is.null(fill_missing_positions) && is.null(source_positions)) {
+      abort("internal-error", "R fill-missing outputs require explicit source mappings")
     }
     if (xor(is.null(cast_positions), is.null(cast_dtypes))) {
       abort("internal-error", "R cast outputs require positions and target dtypes together")
@@ -1617,6 +1687,55 @@ openwrangler_r_frame_contract <- local({
       validate_values = TRUE,
       metrics = metrics
     )
+    row_count <- inspected$descriptor$shape$rows
+    if (!is.null(nullability_source) && row_count == 0L) {
+      # An empty derived base data.frame has no row.names payload from which R
+      # can recover whether the source used automatic or explicit row names.
+      # The source capture remains authoritative until rows exist again.
+      inspected$descriptor$frameSemantics$rowNames <-
+        nullability_source$descriptor$frameSemantics$rowNames
+    }
+    row_identity_domain <- if (is.null(nullability_source)) {
+      row_count
+    } else {
+      nullability_source$rowIdentityDomain
+    }
+    row_origins <- if (is.null(nullability_source)) {
+      seq_len(row_count)
+    } else {
+      source_row_count <- nullability_source$descriptor$shape$rows
+      if (is.null(source_row_positions)) {
+        if (row_count != source_row_count) {
+          abort("internal-error", "a derived R frame changed height without a source-row mapping")
+        }
+        source_row_positions <- seq_len(source_row_count)
+      }
+      if (
+        !is.numeric(source_row_positions) ||
+          anyNA(source_row_positions) ||
+          any(!is.finite(source_row_positions)) ||
+          any(source_row_positions != floor(source_row_positions)) ||
+          length(source_row_positions) != row_count ||
+          any(source_row_positions < 1L) ||
+          any(source_row_positions > source_row_count) ||
+          anyDuplicated(source_row_positions)
+      ) {
+        abort("internal-error", "a derived R frame has an invalid source-row mapping")
+      }
+      nullability_source$rowOrigins[as.integer(source_row_positions)]
+    }
+    if (
+      !is.numeric(row_origins) ||
+        anyNA(row_origins) ||
+        any(!is.finite(row_origins)) ||
+        any(row_origins != floor(row_origins)) ||
+        length(row_origins) != row_count ||
+        any(row_origins < 1L) ||
+        any(row_origins > row_identity_domain) ||
+        anyDuplicated(row_origins)
+    ) {
+      abort("internal-error", "an R capture has invalid stable row identities")
+    }
     if (!is.null(nullability_source)) {
       source_schema <- nullability_source$descriptor$schema
       output_schema <- inspected$descriptor$schema
@@ -1655,21 +1774,37 @@ openwrangler_r_frame_contract <- local({
         }
         text_length_positions <- as.integer(text_length_positions)
       }
-      if (is.null(lower_text_positions)) {
-        lower_text_positions <- integer()
+      if (is.null(text_transform_positions)) {
+        text_transform_positions <- integer()
       } else {
         if (
-          !is.numeric(lower_text_positions) ||
-            anyNA(lower_text_positions) ||
-            any(!is.finite(lower_text_positions)) ||
-            any(lower_text_positions != floor(lower_text_positions)) ||
-            any(lower_text_positions < 1L) ||
-            any(lower_text_positions > length(output_schema)) ||
-            anyDuplicated(lower_text_positions)
+          !is.numeric(text_transform_positions) ||
+            anyNA(text_transform_positions) ||
+            any(!is.finite(text_transform_positions)) ||
+            any(text_transform_positions != floor(text_transform_positions)) ||
+            any(text_transform_positions < 1L) ||
+            any(text_transform_positions > length(output_schema)) ||
+            anyDuplicated(text_transform_positions)
         ) {
-          abort("internal-error", "a derived R frame has invalid lowercase output positions")
+          abort("internal-error", "a derived R frame has invalid text-transform output positions")
         }
-        lower_text_positions <- as.integer(lower_text_positions)
+        text_transform_positions <- as.integer(text_transform_positions)
+      }
+      if (is.null(numeric_transform_positions)) {
+        numeric_transform_positions <- integer()
+      } else {
+        if (
+          !is.numeric(numeric_transform_positions) ||
+            anyNA(numeric_transform_positions) ||
+            any(!is.finite(numeric_transform_positions)) ||
+            any(numeric_transform_positions != floor(numeric_transform_positions)) ||
+            any(numeric_transform_positions < 1L) ||
+            any(numeric_transform_positions > length(output_schema)) ||
+            anyDuplicated(numeric_transform_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid numeric-transform output positions")
+        }
+        numeric_transform_positions <- as.integer(numeric_transform_positions)
       }
       if (is.null(cast_positions)) {
         cast_positions <- integer()
@@ -1692,7 +1827,29 @@ openwrangler_r_frame_contract <- local({
         }
         cast_positions <- as.integer(cast_positions)
       }
-      transformed_positions <- c(text_length_positions, lower_text_positions, cast_positions)
+      if (is.null(fill_missing_positions)) {
+        fill_missing_positions <- integer()
+      } else {
+        if (
+          !is.numeric(fill_missing_positions) ||
+            anyNA(fill_missing_positions) ||
+            any(!is.finite(fill_missing_positions)) ||
+            any(fill_missing_positions != floor(fill_missing_positions)) ||
+            any(fill_missing_positions < 1L) ||
+            any(fill_missing_positions > length(output_schema)) ||
+            anyDuplicated(fill_missing_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid fill-missing output positions")
+        }
+        fill_missing_positions <- as.integer(fill_missing_positions)
+      }
+      transformed_positions <- c(
+        text_length_positions,
+        text_transform_positions,
+        numeric_transform_positions,
+        fill_missing_positions,
+        cast_positions
+      )
       if (anyDuplicated(transformed_positions)) {
         abort("internal-error", "an R output cannot have more than one transformed-column mapping")
       }
@@ -1759,12 +1916,24 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid text-length output")
           }
-        } else if (index %in% lower_text_positions) {
+        } else if (index %in% text_transform_positions) {
           if (
             !source_column$semantics$kind %in% c("character", "factor") ||
               !identical(output_column$semantics$kind, "character")
           ) {
-            abort("internal-error", "a derived R frame has an invalid lowercase output")
+            abort("internal-error", "a derived R frame has an invalid text-transform output")
+          }
+        } else if (index %in% numeric_transform_positions) {
+          expected_kind <- if (identical(source_column$semantics$kind, "integer64")) {
+            "integer64"
+          } else {
+            "double"
+          }
+          if (
+            !source_column$semantics$kind %in% c("integer", "double", "integer64") ||
+              !identical(output_column$semantics$kind, expected_kind)
+          ) {
+            abort("internal-error", "a derived R frame has an invalid numeric-transform output")
           }
         } else if (index %in% cast_positions) {
           cast_index <- match(index, cast_positions)
@@ -1786,6 +1955,34 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid cast output")
           }
+        } else if (index %in% fill_missing_positions) {
+          source_semantics <- source_column$semantics
+          output_semantics <- output_column$semantics
+          factor_semantics_match <- FALSE
+          if (
+            identical(source_semantics$kind, "factor") &&
+              identical(output_semantics$kind, "factor")
+          ) {
+            source_levels <- source_semantics$levels
+            output_levels <- output_semantics$levels
+            source_without_levels <- source_semantics
+            output_without_levels <- output_semantics
+            source_without_levels$levels <- NULL
+            output_without_levels$levels <- NULL
+            factor_semantics_match <-
+              identical(source_without_levels, output_without_levels) &&
+                length(output_levels) >= length(source_levels) &&
+                length(output_levels) <= length(source_levels) + 1L &&
+                identical(output_levels[seq_along(source_levels)], source_levels)
+          }
+          if (
+            !identical(output_ids[[index]], mapped_source_ids[[index]]) ||
+              !identical(output_column$rawType, source_column$rawType) ||
+              !identical(output_column$type, source_column$type) ||
+              (!identical(output_semantics, source_semantics) && !factor_semantics_match)
+          ) {
+            abort("internal-error", "a derived R frame has an invalid fill-missing output")
+          }
         } else {
           if (
             !identical(output_column$rawType, source_column$rawType) ||
@@ -1796,7 +1993,13 @@ openwrangler_r_frame_contract <- local({
           }
         }
         inspected$descriptor$schema[[index]]$id <- output_ids[[index]]
-        inspected$descriptor$schema[[index]]$nullable <- if (index %in% cast_positions) {
+        inspected$descriptor$schema[[index]]$nullable <- if (index %in% fill_missing_positions) {
+          FALSE
+        } else if (index %in% cast_positions) {
+          isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
+        } else if (index %in% text_transform_positions) {
+          isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
+        } else if (index %in% numeric_transform_positions) {
           isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
         } else {
           source_nullable[[index]]
@@ -1833,6 +2036,8 @@ openwrangler_r_frame_contract <- local({
     capture$snapshot <- snapshot
     capture$sourceReader <- NULL
     capture$descriptor <- inspected$descriptor
+    capture$rowOrigins <- row_origins
+    capture$rowIdentityDomain <- row_identity_domain
     capture$metadataBytes <- inspected$metadataBytes
     capture$metrics <- metrics
     capture$sortCache <- new_sort_cache()
@@ -1860,6 +2065,8 @@ openwrangler_r_frame_contract <- local({
     capture$liveState$hasInitialFrame <- TRUE
     capture$liveState$initialFrame <- value
     capture$descriptor <- inspected$descriptor
+    capture$rowOrigins <- seq_len(inspected$descriptor$shape$rows)
+    capture$rowIdentityDomain <- inspected$descriptor$shape$rows
     capture$metadataBytes <- inspected$metadataBytes
     capture$metrics <- metrics
     capture$sortCache <- new_sort_cache()
@@ -2051,7 +2258,17 @@ openwrangler_r_frame_contract <- local({
     text_length_column_at(value, resolved$position, resolved$name, new_name)
   }
 
-  lower_text_column_at <- function(value, position, old_name, new_name = NULL) {
+  transform_text_column_at <- function(value, position, old_name, new_name, operation, transform) {
+    operation_name <- switch(
+      operation,
+      lowerText = "Lowercase",
+      upperText = "Uppercase",
+      capitalizeText = "Capitalize",
+      stripText = "Strip text",
+      splitText = "Split text",
+      findReplace = "Find and Replace",
+      abort("internal-error", "the R text transform is unsupported")
+    )
     inspected <- inspect_frame(
       value,
       conservative_nullable = TRUE,
@@ -2061,19 +2278,19 @@ openwrangler_r_frame_contract <- local({
     column_count <- inspected$descriptor$shape$columns
     position <- whole_number(position, "column position", column_count)
     if (position < 1L || position > column_count) {
-      abort("stale-column", "the lowercase column position no longer matches the R dataframe")
+      abort("stale-column", sprintf("the %s column position no longer matches the R dataframe", operation))
     }
     position <- as.integer(position)
     old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
     source_column <- inspected$descriptor$schema[[position]]
     if (!identical(source_column$name, old_name)) {
-      abort("stale-column", "the lowercase column name no longer matches the R dataframe")
+      abort("stale-column", sprintf("the %s column name no longer matches the R dataframe", operation))
     }
     if (is_private_column_name(old_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
     if (!source_column$semantics$kind %in% c("character", "factor")) {
-      abort("invalid-view-query", "lowerText requires a character or factor column")
+      abort("invalid-view-query", sprintf("%s requires a character or factor column", operation))
     }
 
     in_place <- is.null(new_name)
@@ -2091,7 +2308,7 @@ openwrangler_r_frame_contract <- local({
       abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
     }
     if (!in_place && column_count >= maximum_columns) {
-      abort("invalid-view-query", "lowerText exceeds the supported R column limit")
+      abort("invalid-view-query", sprintf("%s exceeds the supported R column limit", operation))
     }
     if (
       in_place &&
@@ -2100,35 +2317,44 @@ openwrangler_r_frame_contract <- local({
     ) {
       abort(
         "invalid-view-query",
-        "lowerText cannot replace a data.table key column; choose a new output column"
+        sprintf("%s cannot replace a data.table key column; choose a new output column", operation)
       )
     }
 
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- as.character(result[[position]])
-    validated <- vapply(seq_along(source_values), function(index) {
+    transformed <- vapply(seq_along(source_values), function(index) {
       if (is.na(source_values[[index]])) return(NA_character_)
-      bounded_utf8(source_values[[index]], sprintf("lowerText value %d", index))
-    }, character(1L), USE.NAMES = FALSE)
-    lowered <- tolower(validated)
-    lowered <- vapply(seq_along(lowered), function(index) {
-      if (is.na(lowered[[index]])) return(NA_character_)
-      bounded_utf8(lowered[[index]], sprintf("lowerText result %d", index))
+      source_value <- bounded_utf8(source_values[[index]], sprintf("%s value %d", operation, index))
+      output <- transform(source_value)
+      if (
+        identical(operation, "splitText") &&
+          is.character(output) &&
+          length(output) == 1L &&
+          is.na(output)
+      ) {
+        return(NA_character_)
+      }
+      bounded_operation_output(output, operation_name)
     }, character(1L), USE.NAMES = FALSE)
     if (in_place) {
       if (identical(inspected$flavor, "r.data.table")) {
-        data.table::set(result, j = position, value = lowered)
+        data.table::set(result, j = position, value = transformed)
       } else {
-        result[[position]] <- lowered
+        result[[position]] <- transformed
       }
     } else if (identical(inspected$flavor, "r.data.table")) {
-      data.table::set(result, j = new_name, value = lowered)
+      data.table::set(result, j = new_name, value = transformed)
     } else {
       original_names <- names(result)
-      result[[length(result) + 1L]] <- lowered
+      result[[length(result) + 1L]] <- transformed
       names(result) <- c(original_names, new_name)
     }
     result
+  }
+
+  lower_text_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_text_column_at(value, position, old_name, new_name, "lowerText", tolower)
   }
 
   lower_text_column <- function(value, column_reference, new_name = NULL) {
@@ -2140,6 +2366,686 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     lower_text_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  upper_text_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_text_column_at(value, position, old_name, new_name, "upperText", toupper)
+  }
+
+  upper_text_column <- function(value, column_reference, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    upper_text_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  capitalize_text_value <- function(value) {
+    characters <- strsplit(value, "", fixed = TRUE)[[1L]]
+    if (length(characters) == 0L) return("")
+    paste0(
+      toupper(characters[[1L]]),
+      if (length(characters) == 1L) "" else tolower(paste0(characters[-1L], collapse = ""))
+    )
+  }
+
+  capitalize_text_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_text_column_at(value, position, old_name, new_name, "capitalizeText", capitalize_text_value)
+  }
+
+  capitalize_text_column <- function(value, column_reference, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    capitalize_text_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  strip_text_column_at <- function(value, position, old_name, characters = NULL, new_name = NULL) {
+    if (is.null(characters)) {
+      characters <- default_strip_characters
+    } else {
+      characters <- bounded_utf8(characters, "characters")
+      if (identical(characters, "")) {
+        abort("invalid-view-query", "stripText.characters must be a non-empty string or null")
+      }
+    }
+    strip_characters <- unique(strsplit(characters, "", fixed = TRUE)[[1L]])
+    strip_value <- function(source) {
+      source_characters <- strsplit(source, "", fixed = TRUE)[[1L]]
+      retained <- which(!source_characters %in% strip_characters)
+      if (length(retained) == 0L) return("")
+      paste0(source_characters[seq.int(retained[[1L]], retained[[length(retained)]])], collapse = "")
+    }
+    transform_text_column_at(value, position, old_name, new_name, "stripText", strip_value)
+  }
+
+  strip_text_column <- function(value, column_reference, characters = NULL, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    strip_text_column_at(value, resolved$position, resolved$name, characters, new_name)
+  }
+
+  split_text_value <- function(value, delimiter, index) {
+    matches <- gregexpr(delimiter, value, fixed = TRUE)[[1L]]
+    if (length(matches) == 1L && identical(as.integer(matches[[1L]]), -1L)) {
+      return(if (identical(index, 0)) value else NA_character_)
+    }
+    part_count <- length(matches) + 1L
+    if (index >= part_count) return(NA_character_)
+    part <- as.integer(index) + 1L
+    match_lengths <- attr(matches, "match.length", exact = TRUE)
+    start <- if (part == 1L) 1L else matches[[part - 1L]] + match_lengths[[part - 1L]]
+    end <- if (part <= length(matches)) matches[[part]] - 1L else nchar(value, type = "chars")
+    if (start > end) "" else substr(value, start, end)
+  }
+
+  split_text_column_at <- function(value, position, old_name, delimiter, index, new_name) {
+    delimiter <- bounded_utf8(delimiter, "delimiter")
+    if (identical(delimiter, "")) {
+      abort("invalid-view-query", "splitText.delimiter must be a non-empty string")
+    }
+    index <- whole_number(index, "index", .Machine$integer.max)
+    if (is.null(new_name)) {
+      abort("invalid-column-name", "splitText requires a new output column")
+    }
+    new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+    if (identical(new_name, old_name)) {
+      abort("invalid-column-name", "splitText requires a new output column")
+    }
+    transform_text_column_at(
+      value,
+      position,
+      old_name,
+      new_name,
+      "splitText",
+      function(source) split_text_value(source, delimiter, index)
+    )
+  }
+
+  split_text_column <- function(value, column_reference, delimiter, index, new_name) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    split_text_column_at(value, resolved$position, resolved$name, delimiter, index, new_name)
+  }
+
+  find_replace_column_at <- function(
+    value,
+    position,
+    old_name,
+    find,
+    replacement,
+    regex = FALSE,
+    new_name = NULL
+  ) {
+    find <- bounded_utf8(find, "find")
+    replacement <- bounded_utf8(replacement, "replacement")
+    if (!is.logical(regex) || length(regex) != 1L || is.na(regex)) {
+      abort("invalid-view-query", "findReplace.regex must be TRUE or FALSE")
+    }
+    operation_name <- "Find and Replace"
+    reject_oversized_output <- function() {
+      abort(
+        "operation-output-too-large",
+        sprintf("%s would produce text longer than %d UTF-8 bytes", operation_name, maximum_text_bytes)
+      )
+    }
+    require_bounded_size <- function(bytes) {
+      if (!is.finite(bytes) || bytes > maximum_text_bytes) reject_oversized_output()
+    }
+    checked_regex <- function(expression) {
+      tryCatch(
+        withCallingHandlers(
+          force(expression),
+          warning = function(warning) stop("regex evaluation failed", call. = FALSE)
+        ),
+        error = function(error) {
+          abort("invalid-view-query", "Find and Replace could not apply the requested regular expression")
+        }
+      )
+    }
+    parse_regex_replacement <- function(value) {
+      characters <- strsplit(value, "", fixed = TRUE)[[1L]]
+      plain_literal_bytes <- 0
+      case_literal_bytes <- 0
+      plain_references <- integer(9L)
+      case_references <- integer(9L)
+      case_conversion <- FALSE
+      add_literal <- function(character) {
+        bytes <- as.double(nchar(character, type = "bytes"))
+        if (case_conversion) {
+          case_literal_bytes <<- case_literal_bytes + bytes
+        } else {
+          plain_literal_bytes <<- plain_literal_bytes + bytes
+        }
+      }
+      index <- 1L
+      while (index <= length(characters)) {
+        character <- characters[[index]]
+        if (!identical(character, "\\")) {
+          add_literal(character)
+          index <- index + 1L
+          next
+        }
+        if (index == length(characters)) {
+          add_literal("\\")
+          break
+        }
+        escaped <- characters[[index + 1L]]
+        if (identical(escaped, "\\")) {
+          add_literal("\\")
+        } else if (escaped %in% as.character(seq_len(9L))) {
+          reference <- as.integer(escaped)
+          if (case_conversion) {
+            case_references[[reference]] <- case_references[[reference]] + 1L
+          } else {
+            plain_references[[reference]] <- plain_references[[reference]] + 1L
+          }
+        } else if (escaped %in% c("U", "L")) {
+          case_conversion <- TRUE
+        } else if (identical(escaped, "E")) {
+          case_conversion <- FALSE
+        } else {
+          add_literal("\\")
+          add_literal(escaped)
+        }
+        index <- index + 2L
+      }
+      list(
+        plainLiteralBytes = plain_literal_bytes,
+        caseLiteralBytes = case_literal_bytes,
+        plainReferences = plain_references,
+        caseReferences = case_references
+      )
+    }
+    capture_bytes <- function(match_vector, capture_index, byte_prefix) {
+      starts <- attr(match_vector, "capture.start", exact = TRUE)
+      lengths <- attr(match_vector, "capture.length", exact = TRUE)
+      if (
+        is.null(starts) ||
+          is.null(lengths) ||
+          !is.matrix(starts) ||
+          !is.matrix(lengths) ||
+          ncol(starts) < capture_index ||
+          ncol(lengths) < capture_index
+      ) {
+        return(0)
+      }
+      capture_starts <- starts[, capture_index]
+      capture_lengths <- lengths[, capture_index]
+      if (isTRUE(attr(match_vector, "useBytes", exact = TRUE))) {
+        return(sum(as.double(capture_lengths[capture_starts >= 0L & capture_lengths > 0L])))
+      }
+      sum(vapply(seq_along(capture_starts), function(index) {
+        start <- capture_starts[[index]]
+        capture_length <- capture_lengths[[index]]
+        if (start < 0L || capture_length <= 0L) return(0)
+        end <- start + capture_length
+        if (start < 1L || end > length(byte_prefix)) return(as.double(maximum_text_bytes))
+        byte_prefix[[end]] - byte_prefix[[start]]
+      }, numeric(1L), USE.NAMES = FALSE))
+    }
+    parsed_regex_replacement <- if (isTRUE(regex)) parse_regex_replacement(replacement) else NULL
+    replace_value <- function(value) {
+      input_bytes <- as.double(nchar(value, type = "bytes"))
+      replacement_bytes <- as.double(nchar(replacement, type = "bytes"))
+      if (isTRUE(regex)) {
+        matches <- checked_regex(gregexpr(find, value, perl = TRUE))
+        positions <- matches[[1L]]
+        if (length(positions) == 1L && identical(as.integer(positions[[1L]]), -1L)) return(value)
+        matched_values <- regmatches(value, matches)[[1L]]
+        matched_bytes <- sum(as.double(nchar(matched_values, type = "bytes")))
+        capture_byte_prefix <- if (isTRUE(attr(positions, "useBytes", exact = TRUE))) {
+          NULL
+        } else {
+          c(0, cumsum(as.double(nchar(strsplit(value, "", fixed = TRUE)[[1L]], type = "bytes"))))
+        }
+        replacement_bound <- length(matched_values) * (
+          parsed_regex_replacement$plainLiteralBytes +
+            parsed_regex_replacement$caseLiteralBytes * 16
+        )
+        for (capture_index in seq_len(9L)) {
+          capture_size <- capture_bytes(positions, capture_index, capture_byte_prefix)
+          replacement_bound <- replacement_bound +
+            parsed_regex_replacement$plainReferences[[capture_index]] * capture_size +
+            parsed_regex_replacement$caseReferences[[capture_index]] * capture_size * 16
+        }
+        require_bounded_size(input_bytes - matched_bytes + replacement_bound)
+        return(checked_regex(gsub(find, replacement, value, perl = TRUE)))
+      }
+      if (identical(find, "")) {
+        require_bounded_size(input_bytes + (nchar(value, type = "chars") + 1) * replacement_bytes)
+        literal_replacement <- gsub("\\", "\\\\", replacement, fixed = TRUE)
+        return(gsub("", literal_replacement, value, perl = TRUE))
+      }
+      matches <- gregexpr(find, value, fixed = TRUE)[[1L]]
+      match_count <- if (
+        length(matches) == 1L && identical(as.integer(matches[[1L]]), -1L)
+      ) 0 else length(matches)
+      require_bounded_size(
+        input_bytes + match_count * (replacement_bytes - nchar(find, type = "bytes"))
+      )
+      if (match_count == 0L) return(value)
+      gsub(find, replacement, value, fixed = TRUE)
+    }
+    transform_text_column_at(
+      value,
+      position,
+      old_name,
+      new_name,
+      "findReplace",
+      replace_value
+    )
+  }
+
+  find_replace_column <- function(
+    value,
+    column_reference,
+    find,
+    replacement,
+    regex = FALSE,
+    new_name = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    find_replace_column_at(
+      value,
+      resolved$position,
+      resolved$name,
+      find,
+      replacement,
+      regex,
+      new_name
+    )
+  }
+
+  round_integer64_values <- function(values, digits) {
+    if (!requireNamespace("bit64", quietly = TRUE)) {
+      abort("missing-package", "bit64 is required to round an integer64 column")
+    }
+    if (digits >= 0) return(values)
+
+    places <- -digits
+    present <- !is.na(values)
+    if (!any(present)) return(values)
+    zero <- bit64::as.integer64(0L)
+    magnitude <- abs(values[present])
+    if (places > 19) {
+      rounded <- rep(zero, length(magnitude))
+    } else if (places == 19) {
+      half <- bit64::as.integer64("5000000000000000000")
+      if (any(magnitude > half)) {
+        abort("operation-output-too-large", "Round would produce a value outside the integer64 range")
+      }
+      rounded <- rep(zero, length(magnitude))
+    } else {
+      unit <- bit64::as.integer64(paste0("1", strrep("0", as.integer(places))))
+      quotient <- magnitude %/% unit
+      remainder <- magnitude %% unit
+      half <- unit %/% bit64::as.integer64(2L)
+      round_up <- remainder > half |
+        (remainder == half & quotient %% bit64::as.integer64(2L) == bit64::as.integer64(1L))
+      maximum_quotient <- bit64::as.integer64("9223372036854775807") %/% unit
+      if (any(round_up & quotient >= maximum_quotient)) {
+        abort("operation-output-too-large", "Round would produce a value outside the integer64 range")
+      }
+      quotient[round_up] <- quotient[round_up] + bit64::as.integer64(1L)
+      rounded <- quotient * unit
+    }
+    rounded[values[present] < zero] <- -rounded[values[present] < zero]
+    if (anyNA(rounded)) {
+      abort("operation-output-too-large", "Round would produce a value outside the integer64 range")
+    }
+    result <- values
+    result[present] <- rounded
+    result
+  }
+
+  transform_numeric_column_at <- function(
+    value,
+    position,
+    old_name,
+    operation,
+    digits = 0,
+    new_name = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the numeric column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    source_column <- inspected$descriptor$schema[[position]]
+    if (!identical(source_column$name, old_name)) {
+      abort("stale-column", "the numeric column name no longer matches the R dataframe")
+    }
+    if (!source_column$semantics$kind %in% c("integer", "double", "integer64")) {
+      abort("invalid-view-query", sprintf("%s requires a numeric R column", operation))
+    }
+    if (!operation %in% c("roundNumber", "floorNumber", "ceilNumber")) {
+      abort("internal-error", "the R numeric transform is unsupported")
+    }
+    digits <- signed_whole_number(digits, "digits", .Machine$integer.max)
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (!is.null(new_name)) {
+      new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+      if (identical(new_name, "")) abort("invalid-column-name", "new_name must not be empty")
+      if (is_private_column_name(new_name)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+    }
+    in_place <- is.null(new_name) || identical(new_name, old_name)
+    if (!in_place && any(names(value) == new_name)) {
+      abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
+    }
+    if (!in_place && column_count >= maximum_columns) {
+      abort("invalid-view-query", sprintf("%s exceeds the supported R column limit", operation))
+    }
+    source_key <- if (identical(inspected$flavor, "r.data.table")) {
+      data.table::key(value) %||% character()
+    } else {
+      character()
+    }
+    if (in_place && old_name %in% source_key) {
+      abort(
+        "invalid-view-query",
+        sprintf("%s cannot replace a data.table key column; choose a new output column", operation)
+      )
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    source_values <- result[[position]]
+    transformed <- if (identical(source_column$semantics$kind, "integer64")) {
+      if (identical(operation, "roundNumber")) round_integer64_values(source_values, digits) else source_values
+    } else {
+      switch(
+        operation,
+        roundNumber = base::round(source_values, digits = digits),
+        floorNumber = base::floor(source_values),
+        ceilNumber = base::ceiling(source_values)
+      )
+    }
+    if (in_place) {
+      if (identical(inspected$flavor, "r.data.table")) {
+        data.table::set(result, j = position, value = transformed)
+      } else {
+        result[[position]] <- transformed
+      }
+    } else if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = new_name, value = transformed)
+    } else {
+      original_names <- names(result)
+      result[[length(result) + 1L]] <- transformed
+      names(result) <- c(original_names, new_name)
+    }
+    result
+  }
+
+  round_number_column_at <- function(value, position, old_name, digits = 0, new_name = NULL) {
+    transform_numeric_column_at(value, position, old_name, "roundNumber", digits, new_name)
+  }
+
+  floor_number_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_numeric_column_at(value, position, old_name, "floorNumber", 0, new_name)
+  }
+
+  ceil_number_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_numeric_column_at(value, position, old_name, "ceilNumber", 0, new_name)
+  }
+
+  integer64_fill_value <- function(text, label) {
+    if (!requireNamespace("bit64", quietly = TRUE)) {
+      abort("missing-package", "bit64 is required to fill an integer64 column")
+    }
+    parsed <- suppressWarnings(bit64::as.integer64(validate_integer64_text(text, label)))
+    if (is.na(parsed)) {
+      abort("invalid-view-value", sprintf("%s is not representable by bit64", label))
+    }
+    parsed
+  }
+
+  exact_integer64_median <- function(values) {
+    if (!requireNamespace("bit64", quietly = TRUE)) {
+      abort("missing-package", "bit64 is required to calculate an integer64 median")
+    }
+    ordered <- sort(values)
+    count <- length(ordered)
+    lower <- ordered[[(count + 1L) %/% 2L]]
+    upper <- ordered[[(count + 2L) %/% 2L]]
+    if (count %% 2L == 1L) return(lower)
+    zero <- bit64::as.integer64(0L)
+    two <- bit64::as.integer64(2L)
+    midpoint <- if ((lower < zero && upper < zero) || (lower >= zero && upper >= zero)) {
+      difference <- upper - lower
+      if (!identical(as.character(difference %% two), "0")) {
+        abort("invalid-view-value", "the integer64 median is not an integer")
+      }
+      lower + difference %/% two
+    } else {
+      total <- lower + upper
+      if (!identical(as.character(total %% two), "0")) {
+        abort("invalid-view-value", "the integer64 median is not an integer")
+      }
+      total %/% two
+    }
+    if (is.na(midpoint)) abort("invalid-view-value", "the integer64 median is outside the supported range")
+    midpoint
+  }
+
+  fill_missing_value <- function(column, descriptor, replacement) {
+    replacement <- exact_named_list_optional(
+      replacement,
+      "kind",
+      "value",
+      "replacement"
+    )
+    kind <- scalar_choice(
+      replacement$kind,
+      c("median", "mostFrequent", "string", "integer", "float", "decimal", "boolean", "date", "datetime"),
+      "replacement$kind"
+    )
+    if (kind %in% c("median", "mostFrequent")) {
+      if (!identical(names(replacement), "kind")) {
+        abort("invalid-view-query", "a calculated replacement may not contain a value")
+      }
+    } else if (!setequal(names(replacement), c("kind", "value"))) {
+      abort("invalid-view-query", "a typed replacement requires exactly one value")
+    }
+
+    semantic_kind <- descriptor$semantics$kind
+    compatible <- switch(
+      semantic_kind,
+      character = kind %in% c("mostFrequent", "string"),
+      factor = kind %in% c("mostFrequent", "string"),
+      integer = kind %in% c("median", "integer"),
+      integer64 = kind %in% c("median", "integer"),
+      double = kind %in% c("median", "integer", "float"),
+      logical = kind %in% c("mostFrequent", "boolean"),
+      date = identical(kind, "date"),
+      datetime = identical(kind, "datetime"),
+      FALSE
+    )
+    if (!compatible) {
+      abort("invalid-view-query", "the replacement is incompatible with the selected R column")
+    }
+
+    missing <- is.na(column)
+    if (kind %in% c("median", "mostFrequent") && !any(missing)) {
+      return(list(column = column, addedFactorLevel = FALSE))
+    }
+    if (identical(kind, "median")) {
+      present <- column[!missing]
+      if (length(present) == 0L) {
+        abort("invalid-view-value", "the median is unavailable because the selected column has no present values")
+      }
+      fill <- if (identical(semantic_kind, "integer64")) {
+        exact_integer64_median(present)
+      } else {
+        ordered <- sort(present)
+        count <- length(ordered)
+        lower <- ordered[[(count + 1L) %/% 2L]]
+        upper <- ordered[[(count + 2L) %/% 2L]]
+        midpoint <- lower / 2 + upper / 2
+        if (is.nan(midpoint)) {
+          abort("invalid-view-value", "the selected column has no usable numeric median")
+        }
+        if (identical(semantic_kind, "integer")) {
+          if (!is.finite(midpoint) || midpoint != floor(midpoint)) {
+            abort("invalid-view-value", "the integer median is not an integer")
+          }
+          midpoint <- as.integer(midpoint)
+          if (is.na(midpoint)) abort("invalid-view-value", "the integer median is outside the R integer range")
+        }
+        midpoint
+      }
+      result <- column
+      result[missing] <- fill
+      return(list(column = result, addedFactorLevel = FALSE))
+    }
+    if (identical(kind, "mostFrequent")) {
+      present <- column[!missing]
+      if (length(present) == 0L) {
+        abort(
+          "invalid-view-value",
+          "This column has no non-missing values. Choose a specific value."
+        )
+      }
+      candidates <- unique(present)
+      counts <- tabulate(match(present, candidates), nbins = length(candidates))
+      winners <- which(counts == max(counts))
+      if (length(winners) != 1L) {
+        abort(
+          "invalid-view-value",
+          sprintf(
+            "This column has no single most common value: %d values are tied. Choose a specific value.",
+            length(winners)
+          )
+        )
+      }
+      result <- column
+      result[missing] <- candidates[[winners[[1L]]]]
+      return(list(column = result, addedFactorLevel = FALSE))
+    }
+
+    value <- replacement$value
+    if (identical(semantic_kind, "character")) {
+      fill <- bounded_utf8(value, "replacement$value")
+      result <- column
+      result[missing] <- fill
+      return(list(column = result, addedFactorLevel = FALSE))
+    }
+    if (identical(semantic_kind, "factor")) {
+      fill <- bounded_utf8(value, "replacement$value")
+      if (!any(missing)) return(list(column = column, addedFactorLevel = FALSE))
+      source_levels <- levels(column)
+      added <- !fill %in% source_levels
+      target_levels <- if (added) c(source_levels, fill) else source_levels
+      result <- factor(as.character(column), levels = target_levels, ordered = is.ordered(column))
+      result[missing] <- fill
+      return(list(column = result, addedFactorLevel = added))
+    }
+    if (identical(semantic_kind, "integer")) {
+      text <- normalize_integer_text(value, "replacement$value")
+      numeric_value <- suppressWarnings(as.double(text))
+      if (!is.finite(numeric_value) || numeric_value < -2147483647 || numeric_value > 2147483647) {
+        abort("invalid-view-value", "replacement$value is outside the R integer range")
+      }
+      fill <- as.integer(numeric_value)
+    } else if (identical(semantic_kind, "integer64")) {
+      text <- normalize_integer_text(value, "replacement$value")
+      fill <- integer64_fill_value(text, "replacement$value")
+    } else if (identical(semantic_kind, "double")) {
+      fill <- parse_finite_number(value, "replacement$value")
+    } else if (identical(semantic_kind, "logical")) {
+      fill <- parse_boolean(value, "replacement$value")
+    } else if (identical(semantic_kind, "date")) {
+      fill <- as.Date(as.double(parse_date_key(value, "replacement$value")), origin = "1970-01-01")
+    } else if (identical(semantic_kind, "datetime")) {
+      fill <- as.double(parse_datetime_key(value, descriptor$semantics, "replacement$value"))
+    } else {
+      abort("invalid-view-query", "the selected R column cannot be filled")
+    }
+    result <- column
+    result[missing] <- fill
+    list(column = result, addedFactorLevel = FALSE)
+  }
+
+  fill_missing_column_at <- function(value, position, old_name, replacement) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the fill-missing column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    descriptor <- inspected$descriptor$schema[[position]]
+    if (!identical(descriptor$name, old_name)) {
+      abort("stale-column", "the fill-missing column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
+    }
+    filled <- fill_missing_value(value[[position]], descriptor, replacement)
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = filled$column)
+    } else {
+      result[[position]] <- filled$column
+    }
+    result
+  }
+
+  fill_missing_column <- function(value, column_reference, replacement) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    fill_missing_column_at(value, resolved$position, resolved$name, replacement)
   }
 
   cast_text_source <- function(column, kind, label) {
@@ -2539,12 +3445,120 @@ openwrangler_r_frame_contract <- local({
     select_columns_at(value, positions, expected_names)
   }
 
+  resolve_row_operation_columns <- function(value, positions, expected_names, operation) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    if (
+      !is.numeric(positions) ||
+        anyNA(positions) ||
+        any(!is.finite(positions)) ||
+        any(positions != floor(positions)) ||
+        any(positions < 1L) ||
+        any(positions > column_count) ||
+        anyDuplicated(positions)
+    ) {
+      abort("stale-column", sprintf("the %s column positions no longer match the R dataframe", operation))
+    }
+    positions <- as.integer(positions)
+    if (!is.character(expected_names) || length(expected_names) != length(positions) || anyNA(expected_names)) {
+      abort("stale-column", sprintf("the %s column names no longer match the R dataframe", operation))
+    }
+    expected_names <- vapply(seq_along(expected_names), function(index) {
+      bounded_utf8(expected_names[[index]], sprintf("expected_names[[%d]]", index), maximum_name_bytes)
+    }, character(1L), USE.NAMES = FALSE)
+    if (!identical(names(value)[positions], expected_names)) {
+      abort("stale-column", sprintf("the %s column names no longer match the R dataframe", operation))
+    }
+    if (any(vapply(expected_names, is_private_column_name, logical(1L), USE.NAMES = FALSE))) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    list(inspected = inspected, positions = positions)
+  }
+
+  subset_rows_at <- function(value, inspected, row_positions) {
+    row_count <- inspected$descriptor$shape$rows
+    if (
+      !is.numeric(row_positions) ||
+        anyNA(row_positions) ||
+        any(!is.finite(row_positions)) ||
+        any(row_positions != floor(row_positions)) ||
+        any(row_positions < 1L) ||
+        any(row_positions > row_count) ||
+        anyDuplicated(row_positions)
+    ) {
+      abort("internal-error", "an R row operation produced invalid source positions")
+    }
+    row_positions <- as.integer(row_positions)
+    snapshot <- isolated_snapshot(value, inspected$flavor)
+    result <- if (identical(inspected$flavor, "r.data.table")) {
+      snapshot[row_positions]
+    } else {
+      snapshot[row_positions, , drop = FALSE]
+    }
+    list(frame = result, sourcePositions = row_positions)
+  }
+
+  drop_missing_rows_at <- function(value, positions, expected_names, how = "any") {
+    resolved <- resolve_row_operation_columns(value, positions, expected_names, "drop-missing")
+    if (!is.character(how) || length(how) != 1L || is.na(how) || !how %in% c("any", "all")) {
+      abort("invalid-view-query", "dropMissingRows how must be any or all")
+    }
+    if (length(resolved$positions) == 0L) {
+      return(subset_rows_at(value, resolved$inspected, seq_len(resolved$inspected$descriptor$shape$rows)))
+    }
+    present <- lapply(resolved$positions, function(position) !is.na(value[[position]]))
+    keep <- if (identical(how, "all")) Reduce(`|`, present) else Reduce(`&`, present)
+    subset_rows_at(value, resolved$inspected, which(keep))
+  }
+
+  drop_duplicate_rows_at <- function(value, positions, expected_names, keep = "first") {
+    resolved <- resolve_row_operation_columns(value, positions, expected_names, "drop-duplicates")
+    if (!is.character(keep) || length(keep) != 1L || is.na(keep) || !keep %in% c("first", "last", "none")) {
+      abort("invalid-view-query", "dropDuplicates keep must be first, last, or none")
+    }
+    if (length(resolved$positions) == 0L) {
+      return(subset_rows_at(value, resolved$inspected, seq_len(resolved$inspected$descriptor$shape$rows)))
+    }
+    compared <- if (identical(resolved$inspected$flavor, "r.data.table")) {
+      value[, resolved$positions, with = FALSE]
+    } else {
+      value[resolved$positions]
+    }
+    duplicates <- if (identical(keep, "first")) {
+      duplicated(compared)
+    } else if (identical(keep, "last")) {
+      duplicated(compared, fromLast = TRUE)
+    } else {
+      duplicated(compared) | duplicated(compared, fromLast = TRUE)
+    }
+    subset_rows_at(value, resolved$inspected, which(!duplicates))
+  }
+
   validate_capture <- function(capture) {
     if (
       !inherits(capture, "openwrangler_r_frame_capture") ||
         !is.environment(capture) ||
         !environmentIsLocked(capture) ||
-        !capture$mode %in% c("isolated", "live")
+        !capture$mode %in% c("isolated", "live") ||
+        !is.numeric(capture$rowOrigins) ||
+        !is.numeric(capture$rowIdentityDomain) ||
+        length(capture$rowIdentityDomain) != 1L ||
+        is.na(capture$rowIdentityDomain) ||
+        !is.finite(capture$rowIdentityDomain) ||
+        capture$rowIdentityDomain < capture$descriptor$shape$rows ||
+        capture$rowIdentityDomain != floor(capture$rowIdentityDomain) ||
+        length(capture$rowOrigins) != capture$descriptor$shape$rows ||
+        anyNA(capture$rowOrigins) ||
+        any(!is.finite(capture$rowOrigins)) ||
+        any(capture$rowOrigins != floor(capture$rowOrigins)) ||
+        any(capture$rowOrigins < 1L) ||
+        any(capture$rowOrigins > capture$rowIdentityDomain) ||
+        anyDuplicated(capture$rowOrigins)
     ) {
       abort("invalid-capture", "capture must come from capture_frame or capture_live_frame")
     }
@@ -2585,6 +3599,82 @@ openwrangler_r_frame_contract <- local({
     )
     if (!identical(inspected$descriptor, capture$descriptor)) source_changed()
     value
+  }
+
+  write_csv <- function(capture, target_path) {
+    validate_capture(capture)
+    if (capture$descriptor$shape$columns == 0L) {
+      abort(
+        "export-write-failed",
+        "CSV export requires at least one column because CSV cannot preserve a zero-column dataframe's row count"
+      )
+    }
+    target_path <- bounded_utf8(target_path, "target_path", 32768L)
+    if (
+      identical(target_path, "") ||
+        !(
+          startsWith(target_path, "/") ||
+            startsWith(target_path, "\\\\") ||
+            grepl("^[A-Za-z]:[/\\\\]", target_path, perl = TRUE)
+        )
+    ) {
+      abort("invalid-export-target", "target_path must be absolute")
+    }
+    if (file.exists(target_path)) {
+      abort("export-target-changed", "the private R export artifact already exists")
+    }
+
+    frame <- read_capture_frame(capture)
+    connection <- NULL
+    created <- FALSE
+    completed <- FALSE
+    on.exit({
+      if (!is.null(connection)) try(close(connection), silent = TRUE)
+      if (created && !completed && file.exists(target_path)) try(unlink(target_path, force = TRUE), silent = TRUE)
+    }, add = TRUE)
+    tryCatch(
+      {
+        connection <- file(target_path, open = "wx", encoding = "UTF-8")
+        created <- TRUE
+        utils::write.table(
+          frame,
+          file = connection,
+          sep = ",",
+          eol = "\n",
+          na = "",
+          dec = ".",
+          row.names = FALSE,
+          col.names = TRUE,
+          quote = TRUE,
+          qmethod = "double"
+        )
+        flush(connection)
+        close(connection)
+        connection <- NULL
+      },
+      openwrangler_r_frame_error = function(error) stop(error),
+      error = function(error) {
+        abort("export-write-failed", "the R dataframe could not be written as CSV")
+      }
+    )
+
+    invisible(read_capture_frame(capture))
+    details <- file.info(target_path)
+    if (
+      nrow(details) != 1L ||
+        is.na(details$size[[1L]]) ||
+        !is.finite(details$size[[1L]]) ||
+        details$size[[1L]] < 0 ||
+        isTRUE(details$isdir[[1L]])
+    ) {
+      abort("export-target-changed", "the private R export artifact could not be verified")
+    }
+    completed <- TRUE
+    list(
+      rows = capture$descriptor$shape$rows,
+      columns = capture$descriptor$shape$columns,
+      bytes = as.double(details$size[[1L]])
+    )
   }
 
   resolve_page_window <- function(
@@ -2750,6 +3840,25 @@ openwrangler_r_frame_contract <- local({
     list(rows = row_positions, totalRows = length(row_positions), resolved = resolved)
   }
 
+  transform_rows <- function(capture, view_query) {
+    validate_capture(capture)
+    frame <- read_capture_frame(capture)
+    view <- view_row_positions(capture, frame, view_query, apply_sorts = TRUE)
+    source_positions <- if (is.null(view$rows)) seq_len(capture$descriptor$shape$rows) else view$rows
+    result <- if (identical(capture$descriptor$dataframeFlavor, "r.data.table")) {
+      subset <- frame[source_positions]
+      if (length(view$resolved$sorts) != 0L) data.table::setkey(subset, NULL)
+      subset
+    } else {
+      frame[source_positions, , drop = FALSE]
+    }
+    list(
+      frame = result,
+      sourcePositions = source_positions,
+      resolved = view$resolved
+    )
+  }
+
   materialize_rows <- function(
     capture,
     frame,
@@ -2798,7 +3907,7 @@ openwrangler_r_frame_contract <- local({
         )
       })
       row <- list(
-        id = sprintf("r:r:%d", source_row - 1L),
+        id = sprintf("r:r:%.0f", capture$rowOrigins[[source_row]] - 1),
         rowNumber = as.integer(window$rowOffset) + row_index - 1L,
         values = json_array(values)
       )
@@ -2814,8 +3923,10 @@ openwrangler_r_frame_contract <- local({
       row
     })
 
+    published_descriptor <- descriptor
+    published_descriptor$shape$rows <- capture$rowIdentityDomain
     c(
-      descriptor,
+      published_descriptor,
       list(page = list(
         offset = window$rowOffset,
         limit = window$rowLimit,
@@ -3083,12 +4194,31 @@ openwrangler_r_frame_contract <- local({
     text_length_column_at = text_length_column_at,
     lower_text_column = lower_text_column,
     lower_text_column_at = lower_text_column_at,
+    upper_text_column = upper_text_column,
+    upper_text_column_at = upper_text_column_at,
+    capitalize_text_column = capitalize_text_column,
+    capitalize_text_column_at = capitalize_text_column_at,
+    strip_text_column = strip_text_column,
+    strip_text_column_at = strip_text_column_at,
+    split_text_column = split_text_column,
+    split_text_column_at = split_text_column_at,
+    find_replace_column = find_replace_column,
+    find_replace_column_at = find_replace_column_at,
+    round_number_column_at = round_number_column_at,
+    floor_number_column_at = floor_number_column_at,
+    ceil_number_column_at = ceil_number_column_at,
+    fill_missing_column = fill_missing_column,
+    fill_missing_column_at = fill_missing_column_at,
     cast_column = cast_column,
     cast_column_at = cast_column_at,
     drop_columns = drop_columns,
     drop_columns_at = drop_columns_at,
     select_columns = select_columns,
     select_columns_at = select_columns_at,
+    drop_missing_rows_at = drop_missing_rows_at,
+    drop_duplicate_rows_at = drop_duplicate_rows_at,
+    transform_rows = transform_rows,
+    write_csv = write_csv,
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,
     materialize_view_page = materialize_view_page,

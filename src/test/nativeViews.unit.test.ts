@@ -28,6 +28,7 @@ const nativeMocks = vi.hoisted(() => ({
   treeDataProviders: new Map<string, TestTreeProvider>(),
   webviewViewProviders: new Map<string, { resolveWebviewView(view: unknown): void }>(),
   sendEditorAction: vi.fn(() => true),
+  sendEditorActionForSession: vi.fn(async () => true),
   showInformationMessage: vi.fn(async () => undefined),
   showWarningMessage: vi.fn(async () => undefined),
   showErrorMessage: vi.fn(async () => undefined),
@@ -40,7 +41,8 @@ const nativeMocks = vi.hoisted(() => ({
   activeNotebookEditor: undefined as
     | { notebook: { uri: unknown; isClosed: boolean; cellCount: number }; selections: Array<{ end: number }> }
     | undefined,
-  insertGeneratedNotebookCell: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" }))
+  insertGeneratedNotebookCell: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" })),
+  insertGeneratedRDocumentCode: vi.fn(async (): Promise<{ status: NotebookInsertionStatus }> => ({ status: "applied" }))
 }));
 
 vi.mock("vscode", () => {
@@ -154,10 +156,16 @@ vi.mock("vscode", () => {
 
 vi.mock("../extension/webviewPanel", () => ({
   SESSION_BOUND_EXPORT_DATA_COMMAND: "openWrangler.internal.exportSessionData",
-  OpenWranglerPanel: { sendEditorAction: nativeMocks.sendEditorAction }
+  OpenWranglerPanel: {
+    sendEditorAction: nativeMocks.sendEditorAction,
+    sendEditorActionForSession: nativeMocks.sendEditorActionForSession
+  }
 }));
 vi.mock("../extension/notebooks/notebookInsertion", () => ({
   insertGeneratedNotebookCell: nativeMocks.insertGeneratedNotebookCell
+}));
+vi.mock("../extension/r/rDocumentInsertion", () => ({
+  insertGeneratedRDocumentCode: nativeMocks.insertGeneratedRDocumentCode
 }));
 vi.mock("../extension/configuration", () => ({
   getSetting: <T>(_key: string, fallback: T): T => fallback
@@ -179,6 +187,8 @@ describe("native operation commands", () => {
     nativeMocks.executeCommand.mockClear();
     nativeMocks.sendEditorAction.mockClear();
     nativeMocks.sendEditorAction.mockReturnValue(true);
+    nativeMocks.sendEditorActionForSession.mockClear();
+    nativeMocks.sendEditorActionForSession.mockResolvedValue(true);
     nativeMocks.showInformationMessage.mockClear();
     nativeMocks.showWarningMessage.mockClear();
     nativeMocks.showErrorMessage.mockClear();
@@ -193,6 +203,8 @@ describe("native operation commands", () => {
     nativeMocks.activeNotebookEditor = undefined;
     nativeMocks.insertGeneratedNotebookCell.mockReset();
     nativeMocks.insertGeneratedNotebookCell.mockResolvedValue({ status: "applied" });
+    nativeMocks.insertGeneratedRDocumentCode.mockReset();
+    nativeMocks.insertGeneratedRDocumentCode.mockResolvedValue({ status: "applied" });
   });
 
   it("forwards startOperation without a kind to the generic webview operation picker", async () => {
@@ -202,6 +214,40 @@ describe("native operation commands", () => {
 
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledOnce();
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({ action: "openOperation" });
+  });
+
+  it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
+    const registered = register(noDraftSnapshot());
+
+    await command("openWrangler.selectStep")(appliedStep.id);
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "selectStep",
+      expectedSessionId: "session",
+      expectedRevision: 0,
+      stepId: appliedStep.id
+    });
+    expect(registered.clearActiveStepInspection).not.toHaveBeenCalled();
+
+    nativeMocks.sendEditorActionForSession.mockClear();
+    await command("openWrangler.selectStep")("retired-step");
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "That cleaning step is no longer available in the active dataframe."
+    );
+
+    await command("openWrangler.selectStep")();
+    expect(registered.clearActiveStepInspection).toHaveBeenCalledOnce();
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "selectStep",
+      expectedSessionId: "session",
+      expectedRevision: 0
+    });
+
+    nativeMocks.sendEditorActionForSession.mockResolvedValueOnce(false);
+    await command("openWrangler.selectStep")(appliedStep.id);
+    expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith(
+      "Open the active dataframe editor before selecting a cleaning step."
+    );
   });
 
   it("shows and dispatches only operations advertised by the active dataframe", async () => {
@@ -796,6 +842,32 @@ describe("native operation commands", () => {
     );
   });
 
+  it("offers only CSV when an editable R document session advertises native export", async () => {
+    const active = rDocumentSnapshot();
+    active.metadata.capabilities = {
+      ...active.metadata.capabilities,
+      exportCsv: true,
+      exportParquet: false
+    };
+    const registered = register(active);
+    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => (items as unknown[])[0]);
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+    expect(nativeMocks.showQuickPick).toHaveBeenCalledWith(
+      [{ label: "CSV", description: "Comma-separated values", format: "csv" }],
+      { title: "Export Cleaned Data", placeHolder: "Choose a file format" }
+    );
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith({
+      title: "Export Cleaned Data",
+      defaultUri: expect.objectContaining({ fsPath: "/workspace/orders.cleaned.csv" }),
+      filters: { CSV: ["csv"] },
+      saveLabel: "Export data"
+    });
+    expect(registered.exportData).toHaveBeenCalledWith("session", 0, "/workspace/orders.cleaned.csv", "csv");
+  });
+
   it("rejects a session-bound export when its originating revision advances during the Save dialog", async () => {
     const origin = exportableSnapshot("origin-session", "orders.csv", 3);
     const registered = register(origin);
@@ -986,6 +1058,25 @@ describe("native operation commands", () => {
     });
   });
 
+  it("uses the R-file insertion command only for a document-variable session", async () => {
+    const active = rDocumentSnapshot();
+    const origin = {
+      kind: "textDocument" as const,
+      document: {
+        uri: { fsPath: "/workspace/analysis.R", toString: () => "file:///workspace/analysis.R" },
+        version: 1
+      },
+      version: 1
+    };
+    register(active, undefined, origin);
+
+    await expect(command("openWrangler.insertRDocumentCode")()).resolves.toBe(true);
+
+    expect(nativeMocks.insertGeneratedRDocumentCode).toHaveBeenCalledWith(origin, active.code);
+    expect(nativeMocks.insertGeneratedNotebookCell).not.toHaveBeenCalled();
+    expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith("Inserted generated R into analysis.R.");
+  });
+
   it("does not wait for an actionless missing-code notification", async () => {
     const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
     const active = notebookVariableSnapshot();
@@ -1056,11 +1147,13 @@ describe("native operation commands", () => {
 
 function register(
   snapshot: ActiveSessionSnapshot,
-  notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number }
+  notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number },
+  textDocumentOrigin?: unknown
 ): {
   setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void;
   setSession(snapshot: ActiveSessionSnapshot): void;
   exportData: ReturnType<typeof vi.fn>;
+  clearActiveStepInspection: ReturnType<typeof vi.fn>;
   notebookInsertionStatus():
     | "applied"
     | "stale"
@@ -1070,6 +1163,7 @@ function register(
     | "missing-code"
     | "unsupported-source"
     | "missing-notebook"
+    | "missing-source-document"
     | "dispatching"
     | undefined;
   viewSortDispatchStatus():
@@ -1094,11 +1188,14 @@ function register(
     })
   );
   const activeSessionListeners = new Set<(snapshot: ActiveSessionSnapshot | undefined) => unknown>();
+  const clearActiveStepInspection = vi.fn();
   const coordinator = {
     activeSession: () => activeSnapshot,
     sessionSnapshot: (sessionId: string) => sessions.get(sessionId),
     exportData,
     activeNotebookDocument: () => notebookDocument,
+    activeTextDocumentOrigin: () => textDocumentOrigin,
+    clearActiveStepInspection,
     onDidChangeActiveSession: (listener: (snapshot: ActiveSessionSnapshot | undefined) => unknown) => {
       activeSessionListeners.add(listener);
       return { dispose: () => activeSessionListeners.delete(listener) };
@@ -1119,6 +1216,7 @@ function register(
       sessions.set(nextSnapshot.sessionId, nextSnapshot);
     },
     exportData,
+    clearActiveStepInspection,
     notebookInsertionStatus: () => nativeViews.notebookInsertionStatus(),
     viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus()
   };
@@ -1256,6 +1354,34 @@ function rNotebookSnapshot(): ActiveSessionSnapshot {
   return result;
 }
 
+function rDocumentSnapshot(): ActiveSessionSnapshot {
+  const result = noDraftSnapshot();
+  result.code = "clean_data <- function(df) {\n  df\n}\n";
+  result.metadata = {
+    ...result.metadata,
+    backend: "r",
+    rDataframeFlavor: "r.data.frame",
+    mode: "editing",
+    source: {
+      kind: "documentVariable",
+      label: "orders",
+      variableName: "orders",
+      uri: "file:///workspace/orders.R"
+    },
+    capabilities: {
+      editable: true,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      notebookInsert: false,
+      documentInsert: true,
+      supportedOperations: ["renameColumn"]
+    }
+  };
+  return result;
+}
+
 function notebookDocument(uri: string, cellCount: number, isClosed = false) {
   return {
     uri: { toString: () => uri },
@@ -1271,6 +1397,9 @@ function snapshot(
     sessionId: "session",
     code: "def clean_data(df):\n    return df\n",
     metadata: {
+      protocolVersion: 2,
+      sessionId: "session",
+      revision: 0,
       backend: "pandas",
       source: { kind: "file", label: "sample.csv", path: "/tmp/sample.csv" },
       ...plan

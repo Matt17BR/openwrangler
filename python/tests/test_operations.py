@@ -147,6 +147,7 @@ def test_row_order_operations_reject_name_only_transform_columns(operation) -> N
     "replacement",
     [
         {"kind": "median"},
+        {"kind": "mostFrequent"},
         {"kind": "string", "value": ""},
         {"kind": "integer", "value": "99999999999999999999999999999999999999"},
         {"kind": "float", "value": "-1.25e+3"},
@@ -171,6 +172,7 @@ def test_fill_missing_validation_accepts_exact_typed_replacements(replacement: d
     "replacement",
     [
         {"kind": "median", "value": 1},
+        {"kind": "mostFrequent", "value": "x"},
         {"kind": "integer", "value": "01"},
         {"kind": "integer", "value": "100000000000000000000000000000000000000"},
         {"kind": "float", "value": "NaN"},

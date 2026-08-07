@@ -726,6 +726,7 @@ const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
   "OPEN_WRANGLER_TEST_PHASE",
   "OPEN_WRANGLER_TEST_PROGRESS",
   "OPEN_WRANGLER_TEST_PYTHON",
+  "OPEN_WRANGLER_TEST_RSCRIPT",
   "OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR",
   "OPEN_WRANGLER_TEST_RUN_ID",
   "OPEN_WRANGLER_TEST_RESULT"
@@ -2988,12 +2989,16 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
     ["path", "JUPYTER_PATH"]
   ];
   const ownKeys = Reflect.ownKeys(jupyterEnvironment);
+  const hasRProcessEnvironment =
+    Object.prototype.hasOwnProperty.call(jupyterEnvironment, "rscriptPath") ||
+    Object.prototype.hasOwnProperty.call(jupyterEnvironment, "rLibraryDir");
+  const expectedOwnKeyCount = fields.length + (hasRProcessEnvironment ? 2 : 0);
   if (
-    ownKeys.length !== fields.length ||
+    ownKeys.length !== expectedOwnKeyCount ||
     fields.some(([field]) => !Object.prototype.hasOwnProperty.call(jupyterEnvironment, field))
   ) {
     throw new Error(
-      "An editor acceptance Jupyter environment must define exactly dataDir, runtimeDir, configDir, and path."
+      "An editor acceptance Jupyter environment must define its four Jupyter directories and, when present, both exact R process fields."
     );
   }
   const environment = {};
@@ -3028,6 +3033,47 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
       throw new Error(`An editor acceptance Jupyter environment ${field} must stay inside its private runner root.`);
     }
     environment[key] = value;
+  }
+  if (hasRProcessEnvironment) {
+    const rscriptPath = jupyterEnvironment.rscriptPath;
+    const rLibraryDir = jupyterEnvironment.rLibraryDir;
+    if (
+      typeof rscriptPath !== "string" ||
+      !isAbsolute(rscriptPath) ||
+      /[\0\r\n]/u.test(rscriptPath) ||
+      typeof rLibraryDir !== "string" ||
+      !isAbsolute(rLibraryDir) ||
+      /[\0\r\n]/u.test(rLibraryDir) ||
+      isSensitiveEditorEnvironmentValue(rscriptPath) ||
+      isSensitiveEditorEnvironmentValue(rLibraryDir)
+    ) {
+      throw new Error("An editor acceptance R process environment must use safe absolute single-line paths.");
+    }
+    let canonicalRscript;
+    let canonicalRLibrary;
+    try {
+      const rscriptMetadata = lstatSync(rscriptPath, { bigint: true });
+      const libraryMetadata = lstatSync(rLibraryDir, { bigint: true });
+      if (!rscriptMetadata.isFile() || rscriptMetadata.isSymbolicLink()) throw new Error("invalid Rscript");
+      if (!libraryMetadata.isDirectory() || libraryMetadata.isSymbolicLink()) throw new Error("invalid R library");
+      canonicalRscript = realpathSync(rscriptPath);
+      canonicalRLibrary = realpathSync(rLibraryDir);
+    } catch {
+      throw new Error(
+        "An editor acceptance R process environment requires an existing exact Rscript and private R library."
+      );
+    }
+    const containedLibrary = relative(canonicalRoot, canonicalRLibrary);
+    if (
+      containedLibrary.length === 0 ||
+      containedLibrary === ".." ||
+      containedLibrary.startsWith(`..${sep}`) ||
+      isAbsolute(containedLibrary)
+    ) {
+      throw new Error("The editor acceptance R library must stay inside its private runner root.");
+    }
+    environment.OPEN_WRANGLER_TEST_RSCRIPT = canonicalRscript;
+    environment.R_LIBS_USER = canonicalRLibrary;
   }
   return environment;
 }
