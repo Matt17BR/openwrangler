@@ -472,8 +472,11 @@ export async function run(): Promise<void> {
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
   assert.match(extension.packageJSON.description, /Explore and clean dataframes in VS Code and Cursor/u);
   assert.match(extension.packageJSON.description, /with Pandas, Polars, DuckDB, or R/u);
-  assert.match(extension.packageJSON.description, /View local PySpark notebooks/u);
-  assert.match(extension.packageJSON.description, /run R, R Markdown, or Quarto sources on macOS or Linux/u);
+  assert.match(extension.packageJSON.description, /View local PySpark DataFrames in notebooks/u);
+  assert.match(
+    extension.packageJSON.description,
+    /Run R files and supported R Markdown\/Quarto cells on macOS or Linux/u
+  );
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));

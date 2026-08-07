@@ -236,6 +236,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const gallery = readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8");
   const mediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.2.md"), "utf8");
   const testing = readFileSync(resolve(root, "docs", "testing.md"), "utf8");
+  const releasing = readFileSync(resolve(root, "docs", "releasing.md"), "utf8");
   const extensionHost = readFileSync(resolve(root, "src", "test", "extensionHost", "index.ts"), "utf8");
   const screenshotEvidence = readFileSync(
     resolve(root, "src", "test", "extensionHost", "screenshotEvidence.ts"),
@@ -704,6 +705,16 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /All twenty operations use draft preview, generated R, apply, discard, inspection/u);
   assert.match(
     gallery,
+    /Fill Missing Values can use[\s\S]{0,160}mean of a double column[\s\S]{0,240}ordered\s+list of same-type columns/u
+  );
+  assert.match(gallery, /These methods ignore `NA` and `NaN`\./u);
+  assert.match(
+    gallery,
+    /R notebook and local R document sessions opened in Editing mode can export their cleaned result as CSV\./u
+  );
+  assert.doesNotMatch(gallery, /R notebooks\s+cannot export cleaned data yet/u);
+  assert.match(
+    gallery,
     /This Rename Column draft shows the changed schema and generated R before the step is applied/u
   );
   assert.match(
@@ -806,6 +817,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(mediaSpec, /aspect ratio/u);
   assert.deepEqual(PUBLIC_MEDIA_RESPONSIVE_WIDTHS, [760, 1_400]);
   assert.match(mediaSpec, /2 MiB per PNG and 32 MiB for the complete inventory/u);
+  assert.match(mediaSpec, /checks all 46 PNGs/u);
+  assert.match(mediaSpec, /Every one of the 19\s+rendered README images/u);
+  assert.match(mediaSpec, /Four representative images repeat those checks/u);
+  assert.match(releasing, /Four representative images are rechecked near 760px and 1400px/u);
   assert.match(mediaSpec, /Private setup, restart-probe, and runtime-transfer cells are collapsed/u);
   assert.match(mediaSpec, /setup cell is too implementation-focused for product documentation/u);
   assert.match(testing, /compose:readme-media[\s\S]{0,160}accepted packaged-editor and\s+production-webview sources/u);
@@ -814,6 +829,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(testing, /Private Monaco DOM structure is\s+not part of that proof/u);
   assert.match(testing, /public product media\s+at 2× physical density/u);
   assert.match(testing, /ordinary visual baselines remain 1×/u);
+  assert.match(testing, /All 46\s+declared PNGs/u);
+  assert.match(testing, /All 19 README images are checked/u);
+  assert.match(testing, /hero, histogram, PySpark workbench, and R editing scene/u);
 });
 
 function assertProductImagePresentation(document, label, declaredDimensions) {

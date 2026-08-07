@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.1] - 2026-08-07
+
 ### Added
 
 - Fill Missing Values can now take an ordered list of fallback columns. For each missing target cell, Open Wrangler
@@ -12,6 +14,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   ignores nulls and NaNs and is not affected by viewing filters or sorts.
 - R notebook sessions opened in Editing mode can now export their committed cleaning result as CSV. R writes the
   file in the selected IRkernel, and the extension transfers it in bounded chunks into the normal atomic Save path.
+
+### Changed
+
+- Corrected the R gallery and Marketplace description so they match the current missing-value, notebook-export,
+  R Markdown, and Quarto behavior.
 
 ### Fixed
 

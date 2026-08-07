@@ -469,12 +469,13 @@ npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --ver
 The check rejects a mutable GitHub branch, source/version mismatch, undeclared media series, missing or orphaned
 inventory entries, stale registry versions or README content, and any displayed image whose rendered `src` or
 `currentSrc` is not the exact immutable raw URL in the reviewed README. Before reading a PNG, traversal caps the
-inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 45
+inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 46
 declared PNGs then require valid chunk CRCs, one ordered IHDR/sRGB/IDAT/IEND structure, a successful full decode,
-reviewed natural dimensions, sRGB, and immutable remote equality. All 18 README images are checked at DPR 2 on each
+reviewed natural dimensions, sRGB, and immutable remote equality. All 19 README images are checked at DPR 2 on each
 of the three public surfaces. They must stay within their declared width, rendered container, and viewport, preserve their
 natural aspect ratio within one CSS pixel of height rounding, and retain at least two natural pixels per rendered CSS
-pixel. The hero, histogram, and PySpark workbench repeat those checks near 760px and 1400px viewport widths.
+pixel. The hero, histogram, PySpark workbench, and R editing scene repeat those checks near 760px and 1400px viewport
+widths.
 
 The versioned gate begins with `1.2.1`; older recovery runs skip browser installation and public-media verification.
 For protected versions, the workflow runs the verifier from the exact release checkout with

@@ -68,7 +68,7 @@ describe("Marketplace and walkthrough copy", () => {
   it("states the engine, notebook, and R source boundaries directly", () => {
     expect(manifest.description).toBe(
       "Explore and clean dataframes in VS Code and Cursor with Pandas, Polars, DuckDB, or R. " +
-        "View local PySpark notebooks, and run R, R Markdown, or Quarto sources on macOS or Linux."
+        "View local PySpark DataFrames in notebooks. Run R files and supported R Markdown/Quarto cells on macOS or Linux."
     );
 
     const walkthrough = manifest.contributes?.walkthroughs?.find((candidate) => candidate.id === "gettingStarted");
