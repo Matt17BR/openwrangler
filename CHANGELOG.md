@@ -37,6 +37,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Cursor now reloads an editor whose first session message stalls, without opening the dataframe or runtime session
   a second time.
+- **Add step** and **Edit latest** now wait for an in-progress grid request instead of dropping a click. Operation
+  forms also keep their entered values when Cursor repeats the same renderer snapshot.
 - Large R step inspections now fetch code and data blocks separately instead of combining two valid pages into one
   oversized kernel response.
 - The grid now shows a final partial page when the browser has reached its maximum scroll position.

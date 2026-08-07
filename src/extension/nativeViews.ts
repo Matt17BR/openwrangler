@@ -450,13 +450,17 @@ export function registerNativeViews(
     vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
-      if (snapshot && kind !== undefined && !supportsOperation(snapshot.metadata.capabilities, kind)) {
+      if (!snapshot) {
+        void vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before adding a cleaning step.");
+        return;
+      }
+      if (kind !== undefined && !supportsOperation(snapshot.metadata.capabilities, kind)) {
         void vscode.window.showInformationMessage(
           `${operationByKind(kind).title} is not available for this dataframe.`
         );
         return;
       }
-      if (snapshot && !canStartOperation(snapshot.metadata, kind)) {
+      if (!canStartOperation(snapshot.metadata, kind)) {
         void vscode.window.showInformationMessage(
           snapshot.metadata.draftStep
             ? "Apply or discard the current draft before adding another cleaning step."
@@ -465,10 +469,12 @@ export function registerNativeViews(
         return;
       }
       if (
-        !OpenWranglerPanel.sendEditorAction({
+        !(await OpenWranglerPanel.sendEditorActionForSession({
           action: "openOperation",
+          expectedSessionId: snapshot.sessionId,
+          expectedRevision: snapshot.metadata.revision,
           ...(kind === undefined ? {} : { operationKind: kind })
-        })
+        }))
       ) {
         void vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before adding a cleaning step.");
       }
@@ -481,7 +487,7 @@ export function registerNativeViews(
     ),
     vscode.commands.registerCommand("openWrangler.editLatestStep", async () => {
       const snapshot = coordinator.activeSession();
-      if (!canEditLatestStep(snapshot?.metadata)) {
+      if (!snapshot || !canEditLatestStep(snapshot.metadata)) {
         void vscode.window.showInformationMessage(
           snapshot?.metadata.draftStep
             ? "Apply or discard the current draft before editing the latest step."
@@ -489,7 +495,13 @@ export function registerNativeViews(
         );
         return;
       }
-      if (!OpenWranglerPanel.sendEditorAction({ action: "editLatest" })) {
+      if (
+        !(await OpenWranglerPanel.sendEditorActionForSession({
+          action: "editLatest",
+          expectedSessionId: snapshot.sessionId,
+          expectedRevision: snapshot.metadata.revision
+        }))
+      ) {
         void vscode.window.showInformationMessage(
           "Open the active dataframe editor before editing the latest cleaning step."
         );
