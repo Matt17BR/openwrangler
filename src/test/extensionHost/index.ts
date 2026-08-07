@@ -5531,8 +5531,18 @@ async function exerciseReleasedREditingJourney(
     assert.ok(capitalizePreview?.metadata.draftStep?.kind === "capitalizeText");
     assert.match(capitalizePreview.code ?? "", /\btoupper\b/u);
     assert.doesNotMatch(capitalizePreview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
-    const capitalizedRows = await releasedRVisibleRows(testing, sessionId, `${phase}-capitalize-page`, 1);
-    assert.equal(capitalizedRows[0]?.values[labelColumn.position]?.display, "Row-0001");
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The R Capitalize preview must reach its renderer."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Capitalize preview");
+    await waitForLocatorText(
+      app.locator(`td[data-grid-row="0"][data-grid-column="${labelColumn.position}"]`),
+      (text) => text.trim() === "Row-0001",
+      10_000,
+      "the visible R Capitalize value in row 1"
+    );
     await app
       .getByRole("region", { name: "Draft review" })
       .getByRole("button", { name: "Apply step", exact: true })
