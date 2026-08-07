@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -277,6 +277,51 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
     } finally {
       subscription.dispose();
       await transport.dispose();
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("rejects an export artifact rewritten in place while it is streaming", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-export-rewrite-test-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: "frame <- data.frame(value = 1:3)"
+    });
+    try {
+      const sessionId = randomUUID();
+      await transport.open("frame", pageWindow(), { requestedSessionId: sessionId });
+      let rewritten = false;
+      await expect(
+        transport.exportData(sessionId, 0, "csv", async () => {
+          if (rewritten) return;
+          const [processRoot] = await readdir(temporaryParent);
+          const exportRoot = resolve(temporaryParent, processRoot!, "exports");
+          const [artifact] = await readdir(exportRoot);
+          const artifactPath = resolve(exportRoot, artifact!);
+          const before = await stat(artifactPath, { bigint: true });
+          const bytes = await readFile(artifactPath);
+
+          await writeFile(artifactPath, Buffer.alloc(bytes.byteLength, 0x78), { flag: "r+" });
+
+          const after = await stat(artifactPath, { bigint: true });
+          expect(after.dev).toBe(before.dev);
+          expect(after.ino).toBe(before.ino);
+          expect(after.size).toBe(before.size);
+          rewritten = true;
+        })
+      ).rejects.toThrow("changing private R export artifact");
+      expect(rewritten).toBe(true);
+
+      await expect(transport.discoverVariables()).resolves.toMatchObject({
+        variables: [{ name: "frame" }]
+      });
+      await transport.close(sessionId);
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
       await rm(temporaryParent, { recursive: true, force: true });
     }
   }, 30_000);

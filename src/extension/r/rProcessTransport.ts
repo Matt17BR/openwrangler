@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
-import { access, chmod, lstat, mkdir, mkdtemp, open, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, type BigIntStats } from "node:fs";
+import { access, chmod, lstat, mkdir, mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -46,6 +46,10 @@ const FORCED_STOP_MS = 2_000;
 const PROCESS_GROUP_POLL_MS = 25;
 const MAX_RETIRED_SESSION_IDS = 1_024;
 const EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
+const PRIVATE_READ_FLAGS =
+  fsConstants.O_RDONLY |
+  (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0) |
+  (typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0);
 
 export interface RProcessVariableDescriptor {
   readonly name: string;
@@ -867,19 +871,52 @@ async function waitForResponse(owned: OwnedProcess, responsePath: string, maximu
 }
 
 async function tryReadResponse(responsePath: string, maximumBytes: number): Promise<string | undefined> {
-  let details;
+  let handle;
   try {
-    details = await stat(responsePath);
+    handle = await open(responsePath, PRIVATE_READ_FLAGS);
   } catch (error) {
     if (isMissingFile(error)) return undefined;
     throw error;
   }
-  if (!details.isFile() || details.size > maximumBytes) {
-    throw new Error("Open Wrangler rejected an invalid R process response artifact.");
-  }
-  const bytes = await readFile(responsePath);
-  if (bytes.byteLength !== details.size || bytes.byteLength > maximumBytes) {
-    throw new Error("Open Wrangler rejected a changing or oversized R process response artifact.");
+  let bytes: Buffer;
+  try {
+    const opened = privateArtifactSnapshot(
+      await handle.stat({ bigint: true }),
+      BigInt(maximumBytes),
+      "R process response"
+    );
+    const namedBefore = privateArtifactSnapshot(
+      await lstat(responsePath, { bigint: true }),
+      BigInt(maximumBytes),
+      "R process response"
+    );
+    if (!samePrivateArtifactSnapshot(opened, namedBefore)) {
+      throw new Error("Open Wrangler rejected a changing R process response artifact.");
+    }
+    bytes = Buffer.alloc(Number(opened.size));
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+      if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0) {
+        throw new Error("Open Wrangler received a truncated R process response artifact.");
+      }
+      offset += bytesRead;
+    }
+    const completed = privateArtifactSnapshot(
+      await handle.stat({ bigint: true }),
+      BigInt(maximumBytes),
+      "R process response"
+    );
+    const namedAfter = privateArtifactSnapshot(
+      await lstat(responsePath, { bigint: true }),
+      BigInt(maximumBytes),
+      "R process response"
+    );
+    if (!samePrivateArtifactSnapshot(opened, completed) || !samePrivateArtifactSnapshot(opened, namedAfter)) {
+      throw new Error("Open Wrangler rejected a changing R process response artifact.");
+    }
+  } finally {
+    await handle.close();
   }
   await unlink(responsePath);
   return bytes.toString("utf8");
@@ -891,21 +928,21 @@ async function streamPrivateExportArtifact(
   writeChunk: (chunk: Uint8Array) => Promise<void>
 ): Promise<void> {
   const expectedSize = BigInt(expectedBytes);
-  const entry = await lstat(artifactPath, { bigint: true });
-  if (entry.isSymbolicLink() || !entry.isFile() || entry.nlink !== 1n || entry.size !== expectedSize) {
-    throw new Error("Open Wrangler rejected an invalid private R export artifact.");
-  }
-  const noFollow = "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
-  const handle = await open(artifactPath, fsConstants.O_RDONLY | noFollow);
+  const handle = await open(artifactPath, PRIVATE_READ_FLAGS);
   try {
-    const opened = await handle.stat({ bigint: true });
-    if (
-      !opened.isFile() ||
-      opened.nlink !== 1n ||
-      opened.dev !== entry.dev ||
-      opened.ino !== entry.ino ||
-      opened.size !== expectedSize
-    ) {
+    const opened = privateArtifactSnapshot(
+      await handle.stat({ bigint: true }),
+      expectedSize,
+      "private R export",
+      expectedSize
+    );
+    const namedBefore = privateArtifactSnapshot(
+      await lstat(artifactPath, { bigint: true }),
+      expectedSize,
+      "private R export",
+      expectedSize
+    );
+    if (!samePrivateArtifactSnapshot(opened, namedBefore)) {
       throw new Error("Open Wrangler rejected a changing private R export artifact.");
     }
     let offset = 0;
@@ -917,24 +954,59 @@ async function streamPrivateExportArtifact(
       await writeChunk(chunk.subarray(0, bytesRead));
       offset += bytesRead;
     }
-    const afterRead = await handle.stat({ bigint: true });
-    const currentEntry = await lstat(artifactPath, { bigint: true });
-    if (
-      afterRead.dev !== opened.dev ||
-      afterRead.ino !== opened.ino ||
-      afterRead.size !== opened.size ||
-      currentEntry.isSymbolicLink() ||
-      !currentEntry.isFile() ||
-      currentEntry.nlink !== 1n ||
-      currentEntry.dev !== opened.dev ||
-      currentEntry.ino !== opened.ino ||
-      currentEntry.size !== opened.size
-    ) {
+    const afterRead = privateArtifactSnapshot(
+      await handle.stat({ bigint: true }),
+      expectedSize,
+      "private R export",
+      expectedSize
+    );
+    const namedAfter = privateArtifactSnapshot(
+      await lstat(artifactPath, { bigint: true }),
+      expectedSize,
+      "private R export",
+      expectedSize
+    );
+    if (!samePrivateArtifactSnapshot(opened, afterRead) || !samePrivateArtifactSnapshot(opened, namedAfter)) {
       throw new Error("Open Wrangler rejected a changing private R export artifact.");
     }
   } finally {
     await handle.close();
   }
+}
+
+function privateArtifactSnapshot(
+  metadata: BigIntStats,
+  maximumBytes: bigint,
+  label: string,
+  expectedBytes?: bigint
+): BigIntStats {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    metadata.size < 0n ||
+    metadata.size > maximumBytes ||
+    metadata.size > BigInt(Number.MAX_SAFE_INTEGER) ||
+    (expectedBytes !== undefined && metadata.size !== expectedBytes)
+  ) {
+    throw new Error(`Open Wrangler rejected an invalid ${label} artifact.`);
+  }
+  return metadata;
+}
+
+function samePrivateArtifactSnapshot(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.uid === right.uid &&
+    left.gid === right.gid &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs &&
+    left.birthtimeNs === right.birthtimeNs
+  );
 }
 
 async function removePrivateExportArtifact(artifactPath: string): Promise<void> {
