@@ -61,6 +61,7 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
   acquirePreparedAcceptanceAction,
+  activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
@@ -10259,48 +10260,7 @@ async function openReleasedRendererVariableSession(
     description,
     activate: async () => {
       recordAcceptanceProgress(`${checkpoint}:activate`);
-      assert.equal(
-        await action.evaluate((element) => {
-          type RendererActionElement = {
-            readonly isConnected: boolean;
-            readonly ownerDocument: { readonly activeElement: unknown };
-            dataset: Record<string, string | undefined>;
-            focus(): void;
-            addEventListener(
-              type: "click",
-              listener: (event: { readonly isTrusted: boolean }) => void,
-              options: { once: boolean }
-            ): void;
-          };
-          const candidate = element as RendererActionElement;
-          if (!candidate.isConnected) return false;
-          candidate.dataset.openWranglerAcceptanceActivation = "pending";
-          candidate.addEventListener(
-            "click",
-            (event) => {
-              if (event.isTrusted) candidate.dataset.openWranglerAcceptanceActivation = "seen";
-            },
-            { once: true }
-          );
-          candidate.focus();
-          return candidate.ownerDocument.activeElement === candidate;
-        }),
-        true,
-        "The exact notebook renderer action must remain connected and accept focus before activation."
-      );
-      await withAcceptanceOperationDeadline(
-        action.click(),
-        WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-        "the exact notebook renderer action to receive one Playwright click"
-      );
-      assert.equal(
-        await action.evaluate(
-          (element) =>
-            (element as { dataset: Record<string, string | undefined> }).dataset.openWranglerAcceptanceActivation
-        ),
-        "seen",
-        "The exact notebook renderer action must receive one trusted click."
-      );
+      await activateNotebookRendererButtonOnce(workbench, action);
     },
     receipt,
     authoritativeReceiptAfterActivationFailure: receipt
@@ -22564,11 +22524,14 @@ async function exercisePackagedRendererProvenance(
       await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
         description: "notebook A's renderer action while notebook B is active",
         activate: () =>
-          withAcceptanceOperationDeadline(
-            originButton.click(),
-            WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-            "the exact notebook renderer action to receive one Playwright click"
-          ),
+          activateNotebookRendererButtonOnce(workbench, originButton, () => {
+            assert.equal(
+              vscode.window.activeNotebookEditor?.notebook,
+              openedSecondNotebook,
+              "Notebook B must still be active at notebook A's renderer-action boundary."
+            );
+            recordAcceptanceProgress("verify:notebook-renderer:click-boundary");
+          }),
         receipt: waitForOriginReceipt,
         authoritativeReceiptAfterActivationFailure: waitForOriginReceipt
       });
@@ -22752,10 +22715,7 @@ interface NotebookRendererLoadObserver {
 interface NotebookRendererButton {
   readonly page: Page;
   readonly frame: Frame;
-  readonly pointer: {
-    click(x: number, y: number): Promise<void>;
-  };
-  click(): Promise<void>;
+  click(options?: { readonly force?: boolean; readonly timeout?: number }): Promise<void>;
   boundingBox(): Promise<{
     readonly x: number;
     readonly y: number;
@@ -22764,6 +22724,24 @@ interface NotebookRendererButton {
   } | null>;
   evaluate<Result>(pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result>;
   dispose(): Promise<void>;
+}
+
+async function activateNotebookRendererButtonOnce(
+  workbench: Page,
+  button: NotebookRendererButton,
+  immediatelyBeforeClick?: () => void
+): Promise<void> {
+  const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
+  await withAcceptanceOperationDeadline(
+    workbench.bringToFront(),
+    WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+    "the private editor workbench to come to front"
+  );
+  const remainingMs = deadline - Date.now();
+  if (remainingMs < 1) {
+    throw new Error(`Timed out waiting for the notebook renderer action after ${WORKBENCH_PLAYWRIGHT_TIMEOUT_MS} ms.`);
+  }
+  await activateExactAcceptanceElementOnce(button, remainingMs, immediatelyBeforeClick);
 }
 
 function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObserver {
@@ -23015,8 +22993,7 @@ async function resolveNestedNotebookRendererButton(
   return {
     page: frame.page(),
     frame,
-    pointer: frame.page().mouse,
-    click: () => element.click(),
+    click: (options) => element.click(options),
     boundingBox: () => element.boundingBox(),
     evaluate: <Result>(pageFunction: (candidate: unknown) => Result | Promise<Result>) =>
       element.evaluate(pageFunction),

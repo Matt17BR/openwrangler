@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   acquirePreparedAcceptanceAction,
-  activateAcceptancePointerTargetAtCurrentCenter,
+  activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
   IndeterminateAcceptanceActionError,
   ignoreRetiredRendererProbeFailure,
@@ -35,6 +35,69 @@ function page(mainFrame: FakeFrame, closed = false): FakePage {
 }
 
 const connectedBrowser = { isConnected: () => true };
+
+interface FakeExactAcceptanceElement {
+  readonly isConnected: boolean;
+  readonly disabled: boolean;
+  readonly ownerDocument: {
+    elementFromPoint(x: number, y: number): FakeExactAcceptanceElement | null;
+  };
+  readonly dataset: Record<string, string | undefined>;
+  addEventListener(
+    type: "click",
+    listener: (event: { readonly isTrusted: boolean }) => void,
+    options: { readonly once: boolean }
+  ): void;
+  contains(node: FakeExactAcceptanceElement | null): boolean;
+  getAttribute(name: string): string | null;
+  getBoundingClientRect(): {
+    readonly left: number;
+    readonly top: number;
+    readonly width: number;
+    readonly height: number;
+  };
+}
+
+function exactAcceptanceTarget(
+  options: {
+    readonly covered?: boolean;
+    readonly disabled?: boolean;
+    readonly ariaDisabled?: boolean;
+    readonly trusted?: boolean;
+    readonly clickError?: Error;
+    readonly stalledEvaluation?: 1 | 2;
+  } = {}
+) {
+  let listener: ((event: { readonly isTrusted: boolean }) => void) | undefined;
+  let evaluateCalls = 0;
+  const occluder = {} as FakeExactAcceptanceElement;
+  const element: FakeExactAcceptanceElement = {
+    isConnected: true,
+    disabled: options.disabled ?? false,
+    ownerDocument: {
+      elementFromPoint: () => (options.covered ? occluder : element)
+    },
+    dataset: {},
+    addEventListener: (_type, nextListener) => {
+      listener = nextListener;
+    },
+    contains: () => false,
+    getAttribute: (name) => (name === "aria-disabled" && options.ariaDisabled ? "true" : null),
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 80, height: 30 })
+  };
+  const target = {
+    click: vi.fn(async (_clickOptions: { readonly force: true; readonly timeout: number }) => {
+      if (options.clickError) throw options.clickError;
+      listener?.({ isTrusted: options.trusted ?? true });
+    }),
+    async evaluate<Result>(pageFunction: (candidate: unknown) => Result | Promise<Result>): Promise<Result> {
+      evaluateCalls += 1;
+      if (evaluateCalls === options.stalledEvaluation) return new Promise<Result>(() => undefined);
+      return pageFunction(element);
+    }
+  };
+  return { element, evaluateCalls: () => evaluateCalls, target };
+}
 
 describe("extension-host Playwright lifecycle", () => {
   it("invokes an acceptance action once and treats its receipt as completion", async () => {
@@ -302,63 +365,91 @@ describe("extension-host Playwright lifecycle", () => {
     expect(replacementClick).toHaveBeenCalledOnce();
   });
 
-  it("sends one physical click to the exact target's verified current center", async () => {
-    const ownerPointer = { click: vi.fn().mockResolvedValue(undefined) };
-    const nonOwnerPointer = { click: vi.fn().mockResolvedValue(undefined) };
-    const target = {
-      pointer: ownerPointer,
-      boundingBox: vi.fn().mockResolvedValue({ x: 10, y: 20, width: 80, height: 30 }),
-      evaluate: vi.fn().mockResolvedValue(true)
-    };
-
-    await activateAcceptancePointerTargetAtCurrentCenter(target, 10_000);
-
-    expect(target.boundingBox).toHaveBeenCalledOnce();
-    expect(target.evaluate).toHaveBeenCalledOnce();
-    expect(ownerPointer.click).toHaveBeenCalledOnce();
-    expect(ownerPointer.click).toHaveBeenCalledWith(50, 35);
-    expect(nonOwnerPointer.click).not.toHaveBeenCalled();
-  });
-
-  it("records an action boundary only after center ownership is proven and immediately before the pointer click", async () => {
-    const events: string[] = [];
-    const target = {
-      pointer: {
-        click: vi.fn(async () => {
-          events.push("pointer-click");
-        })
-      },
-      boundingBox: vi.fn(async () => {
-        events.push("bounding-box");
-        return { x: 10, y: 20, width: 80, height: 30 };
-      }),
-      async evaluate<Result>(_pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result> {
-        events.push("center-owned");
-        return true as Result;
-      }
-    };
-
-    await activateAcceptancePointerTargetAtCurrentCenter(target, 10_000, () => {
-      events.push("action-boundary");
+  it("sends one trusted click to the exact ready element", async () => {
+    const { element, evaluateCalls, target } = exactAcceptanceTarget();
+    const boundary = vi.fn(() => {
+      expect(target.click).not.toHaveBeenCalled();
     });
 
-    expect(events).toEqual(["bounding-box", "center-owned", "action-boundary", "pointer-click"]);
+    await activateExactAcceptanceElementOnce(target, 10_000, boundary);
+
+    expect(boundary).toHaveBeenCalledOnce();
+    expect(evaluateCalls()).toBe(2);
+    expect(target.click).toHaveBeenCalledOnce();
+    const clickOptions = target.click.mock.calls[0]?.[0];
+    expect(clickOptions?.force).toBe(true);
+    expect(clickOptions?.timeout).toBeGreaterThan(0);
+    expect(clickOptions?.timeout).toBeLessThanOrEqual(10_000);
+    expect(element.dataset.openWranglerAcceptanceActivation).toBe("seen");
   });
 
-  it("does not dispatch a pointer click when the exact target no longer owns its center", async () => {
-    const pointer = { click: vi.fn().mockResolvedValue(undefined) };
-    const actionBoundary = vi.fn();
-    const target = {
-      pointer,
-      boundingBox: vi.fn().mockResolvedValue({ x: 10, y: 20, width: 80, height: 30 }),
-      evaluate: vi.fn().mockResolvedValue(false)
-    };
+  it.each([
+    ["covered", { covered: true }, "covered"],
+    ["disabled", { disabled: true }, "disabled"],
+    ["aria-disabled", { ariaDisabled: true }, "disabled"]
+  ] as const)("does not click an exact %s element", async (_label, options, reason) => {
+    const { evaluateCalls, target } = exactAcceptanceTarget(options);
 
-    await expect(activateAcceptancePointerTargetAtCurrentCenter(target, 10_000, actionBoundary)).rejects.toThrow(
-      "The exact acceptance pointer target does not own its current center point."
+    await expect(activateExactAcceptanceElementOnce(target, 10_000)).rejects.toThrow(
+      `The exact acceptance element is not ready for one click (${reason}).`
     );
-    expect(actionBoundary).not.toHaveBeenCalled();
-    expect(pointer.click).not.toHaveBeenCalled();
+    expect(evaluateCalls()).toBe(1);
+    expect(target.click).not.toHaveBeenCalled();
+  });
+
+  it("fails after exactly one click when no trusted event receipt is recorded", async () => {
+    const { evaluateCalls, target } = exactAcceptanceTarget({ trusted: false });
+
+    await expect(activateExactAcceptanceElementOnce(target, 10_000)).rejects.toThrow(
+      "The exact acceptance element did not receive one trusted click."
+    );
+    expect(target.click).toHaveBeenCalledOnce();
+    expect(evaluateCalls()).toBe(2);
+  });
+
+  it("does not retry or inspect after the exact click rejects", async () => {
+    const clickError = new Error("Cursor rejected the click");
+    const { evaluateCalls, target } = exactAcceptanceTarget({ clickError });
+
+    await expect(activateExactAcceptanceElementOnce(target, 10_000)).rejects.toBe(clickError);
+    expect(target.click).toHaveBeenCalledOnce();
+    expect(evaluateCalls()).toBe(1);
+  });
+
+  it("bounds a stalled exact-element readiness check before any click", async () => {
+    vi.useFakeTimers();
+    try {
+      const { evaluateCalls, target } = exactAcceptanceTarget({ stalledEvaluation: 1 });
+      const outcome = activateExactAcceptanceElementOnce(target, 10_000);
+      const assertion = expect(outcome).rejects.toThrow(
+        "Timed out waiting for the exact acceptance element readiness after 10000 ms."
+      );
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+      expect(target.click).not.toHaveBeenCalled();
+      expect(evaluateCalls()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a stalled trusted-click receipt without issuing another click", async () => {
+    vi.useFakeTimers();
+    try {
+      const { evaluateCalls, target } = exactAcceptanceTarget({ stalledEvaluation: 2 });
+      const outcome = activateExactAcceptanceElementOnce(target, 10_000);
+      const assertion = expect(outcome).rejects.toThrow(
+        "Timed out waiting for the exact acceptance element trusted-click receipt after 10000 ms."
+      );
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+      expect(target.click).toHaveBeenCalledOnce();
+      expect(evaluateCalls()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retains both a missing receipt and failed natural dismissal", async () => {
