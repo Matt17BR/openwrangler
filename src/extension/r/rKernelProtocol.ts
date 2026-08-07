@@ -29,6 +29,7 @@ const maximumVariableNameBytes = 1_024;
 const maximumDiagnosticBytes = 4_096;
 const maximumGeneratedCodeBytes = 4 * 1_024 * 1_024;
 const maximumStepIdBytes = R_FRAME_CONTRACT_LIMITS.stepIdBytes;
+const maximumFillFallbackColumns = 64;
 
 export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "duplicate_session",
@@ -1007,8 +1008,8 @@ function validateTransformStep(value: unknown): void {
   }
   if (step.kind === "fillMissingValues") {
     const params = exactRecord(step.params, ["column", "replacement"], "R kernel fill-missing parameters");
-    validateColumnReference(params.column, "request.payload.step.params.column");
-    validateFillMissingReplacement(params.replacement);
+    const column = validateColumnReference(params.column, "request.payload.step.params.column");
+    validateFillMissingReplacement(params.replacement, column.id);
     return;
   }
   if (step.kind === "roundNumber" || step.kind === "floorNumber" || step.kind === "ceilNumber") {
@@ -1133,13 +1134,35 @@ function validateTransformStep(value: unknown): void {
   fail("R kernel transform step has an unsupported operation.");
 }
 
-function validateFillMissingReplacement(value: unknown): void {
-  const replacement = exactRecord(value, ["kind"], ["value"], "R kernel fill-missing replacement");
+function validateFillMissingReplacement(value: unknown, targetColumnId: string): void {
+  const replacement = exactRecord(value, ["kind"], ["value", "columns"], "R kernel fill-missing replacement");
   if (replacement.kind === "median" || replacement.kind === "mostFrequent") {
-    if (replacement.value !== undefined) fail("A calculated replacement may not contain a value.");
+    if (replacement.value !== undefined || replacement.columns !== undefined) {
+      fail("A calculated replacement may not contain a value or fallback columns.");
+    }
     return;
   }
-  if (replacement.value === undefined) fail("A typed fill-missing replacement requires a value.");
+  if (replacement.kind === "fallbackColumns") {
+    if (replacement.value !== undefined) fail("A fallback-column replacement may not contain a value.");
+    if (
+      !Array.isArray(replacement.columns) ||
+      replacement.columns.length === 0 ||
+      replacement.columns.length > maximumFillFallbackColumns
+    ) {
+      fail("R kernel fallback columns must be a bounded non-empty array.");
+    }
+    const seen = new Set<string>();
+    for (const [index, candidate] of replacement.columns.entries()) {
+      const reference = validateColumnReference(candidate, `request.payload.step.params.replacement.columns[${index}]`);
+      if (reference.id === targetColumnId) fail("The fill target cannot also be a fallback column.");
+      if (seen.has(reference.id)) fail("R kernel fallback columns contain a repeated identity.");
+      seen.add(reference.id);
+    }
+    return;
+  }
+  if (replacement.value === undefined || replacement.columns !== undefined) {
+    fail("A typed fill-missing replacement requires a value and may not contain fallback columns.");
+  }
   if (replacement.kind === "boolean") {
     if (typeof replacement.value !== "boolean") fail("A boolean replacement must be true or false.");
     return;

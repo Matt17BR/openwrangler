@@ -9,6 +9,7 @@ openwrangler_r_frame_contract <- local({
   maximum_predicates_per_filter <- 64L
   maximum_selected_values_per_filter <- 10000L
   maximum_sort_rules <- 64L
+  maximum_fill_fallback_columns <- 64L
   maximum_profile_columns <- 64L
   maximum_profile_rows <- 1000000L
   maximum_profile_cells <- 5000000L
@@ -1633,6 +1634,7 @@ openwrangler_r_frame_contract <- local({
     text_transform_positions = NULL,
     numeric_transform_positions = NULL,
     fill_missing_positions = NULL,
+    fallback_fill_positions = NULL,
     cast_positions = NULL,
     cast_dtypes = NULL
   ) {
@@ -1650,6 +1652,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(text_transform_positions) ||
             !is.null(numeric_transform_positions) ||
             !is.null(fill_missing_positions) ||
+            !is.null(fallback_fill_positions) ||
             !is.null(cast_positions) ||
             !is.null(cast_dtypes)
         )
@@ -1670,6 +1673,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(fill_missing_positions) && is.null(source_positions)) {
       abort("internal-error", "R fill-missing outputs require explicit source mappings")
+    }
+    if (!is.null(fallback_fill_positions) && is.null(source_positions)) {
+      abort("internal-error", "R fallback-fill outputs require explicit source mappings")
     }
     if (xor(is.null(cast_positions), is.null(cast_dtypes))) {
       abort("internal-error", "R cast outputs require positions and target dtypes together")
@@ -1843,11 +1849,28 @@ openwrangler_r_frame_contract <- local({
         }
         fill_missing_positions <- as.integer(fill_missing_positions)
       }
+      if (is.null(fallback_fill_positions)) {
+        fallback_fill_positions <- integer()
+      } else {
+        if (
+          !is.numeric(fallback_fill_positions) ||
+            anyNA(fallback_fill_positions) ||
+            any(!is.finite(fallback_fill_positions)) ||
+            any(fallback_fill_positions != floor(fallback_fill_positions)) ||
+            any(fallback_fill_positions < 1L) ||
+            any(fallback_fill_positions > length(output_schema)) ||
+            anyDuplicated(fallback_fill_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid fallback-fill output positions")
+        }
+        fallback_fill_positions <- as.integer(fallback_fill_positions)
+      }
       transformed_positions <- c(
         text_length_positions,
         text_transform_positions,
         numeric_transform_positions,
         fill_missing_positions,
+        fallback_fill_positions,
         cast_positions
       )
       if (anyDuplicated(transformed_positions)) {
@@ -1955,7 +1978,7 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid cast output")
           }
-        } else if (index %in% fill_missing_positions) {
+        } else if (index %in% c(fill_missing_positions, fallback_fill_positions)) {
           source_semantics <- source_column$semantics
           output_semantics <- output_column$semantics
           factor_semantics_match <- FALSE
@@ -1972,7 +1995,10 @@ openwrangler_r_frame_contract <- local({
             factor_semantics_match <-
               identical(source_without_levels, output_without_levels) &&
                 length(output_levels) >= length(source_levels) &&
-                length(output_levels) <= length(source_levels) + 1L &&
+                (
+                  index %in% fallback_fill_positions ||
+                    length(output_levels) <= length(source_levels) + 1L
+                ) &&
                 identical(output_levels[seq_along(source_levels)], source_levels)
           }
           if (
@@ -1995,6 +2021,8 @@ openwrangler_r_frame_contract <- local({
         inspected$descriptor$schema[[index]]$id <- output_ids[[index]]
         inspected$descriptor$schema[[index]]$nullable <- if (index %in% fill_missing_positions) {
           FALSE
+        } else if (index %in% fallback_fill_positions) {
+          anyNA(snapshot[[index]])
         } else if (index %in% cast_positions) {
           isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
         } else if (index %in% text_transform_positions) {
@@ -3046,6 +3074,142 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     fill_missing_column_at(value, resolved$position, resolved$name, replacement)
+  }
+
+  fill_missing_from_fallback_columns_at <- function(
+    value,
+    position,
+    old_name,
+    fallback_positions,
+    fallback_names
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the fill-missing column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    target_descriptor <- inspected$descriptor$schema[[position]]
+    if (!identical(target_descriptor$name, old_name)) {
+      abort("stale-column", "the fill-missing column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
+    }
+    if (
+      !is.numeric(fallback_positions) ||
+        anyNA(fallback_positions) ||
+        any(!is.finite(fallback_positions)) ||
+        any(fallback_positions != floor(fallback_positions)) ||
+        length(fallback_positions) == 0L ||
+        length(fallback_positions) > maximum_fill_fallback_columns ||
+        any(fallback_positions < 1L) ||
+        any(fallback_positions > column_count) ||
+        anyDuplicated(fallback_positions) ||
+        any(fallback_positions == position) ||
+        !is.character(fallback_names) ||
+        anyNA(fallback_names) ||
+        length(fallback_names) != length(fallback_positions)
+    ) {
+      abort("invalid-view-query", "the fallback-column selection is invalid")
+    }
+    fallback_positions <- as.integer(fallback_positions)
+    fallback_names <- vapply(seq_along(fallback_names), function(index) {
+      name <- bounded_utf8(fallback_names[[index]], sprintf("fallback_names[[%d]]", index), maximum_name_bytes)
+      if (is_private_column_name(name)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+      if (!identical(inspected$descriptor$schema[[fallback_positions[[index]]]]$name, name)) {
+        abort("stale-column", "a fallback column name no longer matches the R dataframe")
+      }
+      name
+    }, character(1L), USE.NAMES = FALSE)
+
+    target_kind <- target_descriptor$semantics$kind
+    compatible_fallback_kind <- function(fallback_kind) {
+      if (target_kind %in% c("character", "factor")) return(fallback_kind %in% c("character", "factor"))
+      if (target_kind %in% c("integer", "integer64")) return(fallback_kind %in% c("integer", "integer64"))
+      identical(fallback_kind, target_kind) && target_kind %in% c("double", "logical", "date", "datetime")
+    }
+    fallback_descriptors <- lapply(fallback_positions, function(fallback_position) {
+      descriptor <- inspected$descriptor$schema[[fallback_position]]
+      if (!compatible_fallback_kind(descriptor$semantics$kind)) {
+        abort(
+          "invalid-view-query",
+          sprintf("fallback column %s is incompatible with the selected R column", descriptor$name)
+        )
+      }
+      descriptor
+    })
+
+    result_values <- value[[position]]
+    if (identical(target_kind, "factor")) {
+      result_text <- as.character(result_values)
+      target_levels <- levels(result_values)
+      for (index in seq_along(fallback_positions)) {
+        fallback_text <- as.character(value[[fallback_positions[[index]]]])
+        use <- is.na(result_text) & !is.na(fallback_text)
+        if (!any(use)) next
+        additions <- unique(fallback_text[use])
+        additions <- additions[!additions %in% target_levels]
+        if (length(target_levels) + length(additions) > maximum_factor_levels) {
+          abort("factor-levels-too-large", sprintf("the filled factor has more than %d levels", maximum_factor_levels))
+        }
+        target_levels <- c(target_levels, additions)
+        result_text[use] <- fallback_text[use]
+      }
+      result_values <- factor(result_text, levels = target_levels, ordered = is.ordered(result_values))
+    } else {
+      for (index in seq_along(fallback_positions)) {
+        fallback_values <- value[[fallback_positions[[index]]]]
+        use <- is.na(result_values) & !is.na(fallback_values)
+        if (!any(use)) next
+        fallback_kind <- fallback_descriptors[[index]]$semantics$kind
+        converted <- if (identical(target_kind, "character")) {
+          as.character(fallback_values[use])
+        } else if (identical(target_kind, "integer") && identical(fallback_kind, "integer64")) {
+          if (!requireNamespace("bit64", quietly = TRUE)) {
+            abort("missing-package", "bit64 is required to fill an integer column from integer64")
+          }
+          selected <- fallback_values[use]
+          minimum <- bit64::as.integer64("-2147483647")
+          maximum <- bit64::as.integer64("2147483647")
+          if (any(selected < minimum | selected > maximum)) {
+            abort("invalid-view-value", "a fallback integer64 value is outside the R integer range")
+          }
+          as.integer(as.character(selected))
+        } else if (identical(target_kind, "integer64") && identical(fallback_kind, "integer")) {
+          if (!requireNamespace("bit64", quietly = TRUE)) {
+            abort("missing-package", "bit64 is required to fill an integer64 column")
+          }
+          bit64::as.integer64(fallback_values[use])
+        } else {
+          fallback_values[use]
+        }
+        result_values[use] <- converted
+      }
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = result_values)
+    } else {
+      result[[position]] <- result_values
+    }
+    result
   }
 
   cast_text_source <- function(column, kind, label) {
@@ -4209,6 +4373,7 @@ openwrangler_r_frame_contract <- local({
     ceil_number_column_at = ceil_number_column_at,
     fill_missing_column = fill_missing_column,
     fill_missing_column_at = fill_missing_column_at,
+    fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,
     cast_column = cast_column,
     cast_column_at = cast_column_at,
     drop_columns = drop_columns,
@@ -4237,6 +4402,7 @@ openwrangler_r_frame_contract <- local({
       predicatesPerFilter = maximum_predicates_per_filter,
       selectedValuesPerFilter = maximum_selected_values_per_filter,
       sortRules = maximum_sort_rules,
+      fillFallbackColumns = maximum_fill_fallback_columns,
       profileColumns = maximum_profile_columns,
       profileRows = maximum_profile_rows,
       profileCells = maximum_profile_cells,

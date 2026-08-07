@@ -1141,9 +1141,58 @@ describe("native R kernel protocol", () => {
       expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
     }
 
+    const fallbackRequest = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: {
+        sessionId,
+        revision: 0,
+        step: {
+          id: "fill-fallback-columns",
+          kind: "fillMissingValues",
+          params: {
+            column: { id: "r:c:0", name: "value" },
+            replacement: {
+              kind: "fallbackColumns",
+              columns: [
+                { id: "r:c:2", name: "first" },
+                { id: "r:c:1", name: "second" }
+              ]
+            }
+          }
+        },
+        page: pageWindow()
+      }
+    } as RKernelRequest;
+    expect(JSON.parse(encodeRKernelRequest(fallbackRequest))).toEqual(fallbackRequest);
+
     const invalidReplacements: ReadonlyArray<readonly [unknown, string]> = [
       [{ kind: "median", value: "1" }, "may not contain a value"],
       [{ kind: "mostFrequent", value: "ready" }, "may not contain a value"],
+      [{ kind: "fallbackColumns", columns: [] }, "bounded non-empty array"],
+      [{ kind: "fallbackColumns", columns: [{ id: "r:c:0", name: "value" }] }, "cannot also be a fallback"],
+      [
+        {
+          kind: "fallbackColumns",
+          columns: [
+            { id: "r:c:1", name: "first" },
+            { id: "r:c:1", name: "first" }
+          ]
+        },
+        "repeated identity"
+      ],
+      [
+        {
+          kind: "fallbackColumns",
+          columns: Array.from({ length: 65 }, (_, index) => ({ id: `r:c:${index + 1}`, name: `c${index}` }))
+        },
+        "bounded non-empty array"
+      ],
+      [
+        { kind: "fallbackColumns", columns: [{ id: "r:c:1", name: "first" }], value: "wrong" },
+        "may not contain a value"
+      ],
       [{ kind: "string" }, "requires a value"],
       [{ kind: "integer", value: "01" }, "canonical decimal text"],
       [{ kind: "float", value: "NaN" }, "canonical decimal text"],

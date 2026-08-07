@@ -149,6 +149,77 @@ def test_fill_missing_binds_one_exact_duplicate_column() -> None:
     assert public["params"]["column"] == ref("c:source:1", "duplicate")
 
 
+def test_fill_missing_binds_ordered_fallback_columns_by_identity() -> None:
+    public = step(
+        "fillMissingValues",
+        column=ref("c:source:2", "value"),
+        replacement={
+            "kind": "fallbackColumns",
+            "columns": [ref("c:source:1", "duplicate"), ref("c:source:0", "duplicate")],
+        },
+    )
+
+    bound = bind_step(public, SCHEMA, LINEAGE)
+
+    assert bound["params"]["replacement"] == {
+        "kind": "fallbackColumns",
+        "columns": [
+            {"id": "c:source:1", "name": "duplicate", "position": 1},
+            {"id": "c:source:0", "name": "duplicate", "position": 0},
+        ],
+    }
+    assert public["params"]["replacement"]["columns"] == [
+        ref("c:source:1", "duplicate"),
+        ref("c:source:0", "duplicate"),
+    ]
+
+
+def test_fill_missing_binding_rejects_target_cross_type_and_oversized_fallbacks() -> None:
+    with pytest.raises(ColumnBindingError, match="target cannot also be"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:source:2", "value"),
+                replacement={"kind": "fallbackColumns", "columns": [ref("c:source:2", "value")]},
+            ),
+            SCHEMA,
+            LINEAGE,
+        )
+
+    mixed_schema = [{"name": "target", "type": "integer"}, {"name": "fallback", "type": "float"}]
+    mixed_lineage = [{"id": "c:target", "name": "target"}, {"id": "c:fallback", "name": "fallback"}]
+    with pytest.raises(ColumnBindingError, match="same data type"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:target", "target"),
+                replacement={"kind": "fallbackColumns", "columns": [ref("c:fallback", "fallback")]},
+            ),
+            mixed_schema,
+            mixed_lineage,
+        )
+
+    large_schema = [{"name": "target", "type": "integer"}] + [
+        {"name": f"fallback_{index}", "type": "integer"} for index in range(65)
+    ]
+    large_lineage = [{"id": "c:target", "name": "target"}] + [
+        {"id": f"c:fallback:{index}", "name": f"fallback_{index}"} for index in range(65)
+    ]
+    with pytest.raises(ColumnBindingError, match="at most 64"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:target", "target"),
+                replacement={
+                    "kind": "fallbackColumns",
+                    "columns": [ref(item["id"], item["name"]) for item in large_lineage[1:]],
+                },
+            ),
+            large_schema,
+            large_lineage,
+        )
+
+
 @pytest.mark.parametrize(
     ("column_type", "replacement"),
     [

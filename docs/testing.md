@@ -23,8 +23,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   whole-row comparison, source order, stable row identities, and R's treatment of `NA` and `NaN`. Both cover duplicate and
   non-syntactic names, base data frames, tibbles, keyed data tables, stale references, source isolation, and executable
   generated R. Fill Missing Values tests cover `NA` and `NaN`, typed replacements, exact integer and `integer64`
-  medians, factor levels and no-op levels, dates, DST gaps, current-source timezones, the 8 KiB R text limit, nullable
-  metadata, key safety, and executable generated R. Rename, Drop,
+  medians, ordered same-row fallback priority, unresolved values, factor levels and no-op levels, dates, DST gaps,
+  current-source timezones, the 8 KiB R text limit, nullable metadata, key safety, and executable generated R. Rename, Drop,
   Select, Clone, Convert type, Text Length, Lowercase, Uppercase, and Find and replace tests resolve duplicate and
   non-syntactic names by stable identity, preserve base, tibble, and keyed `data.table` semantics, and prove that
   drafts and generated R leave the source unchanged.

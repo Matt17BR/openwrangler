@@ -1370,6 +1370,13 @@ class SessionManager:
         if result[position].get("name") != name:
             raise EngineError("The fill-missing result does not match its target column.")
 
+        replacement = params.get("replacement") if isinstance(params, Mapping) else None
+        if isinstance(replacement, Mapping) and replacement.get("kind") == "fallbackColumns":
+            # Ordered fallbacks may themselves be missing.  Keep the engine's
+            # observed nullability (or a lazy engine's conservative metadata)
+            # instead of claiming that every target cell was resolved.
+            return result
+
         # Lazy Polars and DuckDB schemas cannot report nullability without a
         # data scan. A fill operation that returns successfully has replaced
         # every null (and every float NaN) with a non-null value, so this one

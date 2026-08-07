@@ -916,12 +916,18 @@ class PolarsEngine(DataFrameEngine):
             return df.filter(expression)
         if kind == "fillMissingValues":
             column = bound_column_name(params["column"], kind)
+            replacement = params["replacement"]
+            if replacement.get("kind") == "fallbackColumns":
+                return _polars_fill_missing_from_columns(
+                    df,
+                    column,
+                    [bound_column_name(fallback, kind) for fallback in replacement["columns"]],
+                )
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             dtype = schema[column]
             expression = pl.col(column)
             if dtype.is_float():
                 expression = expression.fill_nan(None)
-            replacement = params["replacement"]
             if replacement.get("kind") == "mostFrequent":
                 if not _polars_has_missing(df, expression):
                     return df
@@ -1346,6 +1352,10 @@ class PolarsEngine(DataFrameEngine):
             ]
         if kind == "fillMissingValues":
             column = bound_column_name(params["column"], kind)
+            replacement = params["replacement"]
+            if replacement.get("kind") == "fallbackColumns":
+                fallback_columns = [bound_column_name(fallback, kind) for fallback in replacement["columns"]]
+                return [(f"{prefix}df = _ow_polars_fill_missing_from_columns(df, {column!r}, {fallback_columns!r})")]
             schema = f"_fill_schema_{index}"
             expression = f"_fill_expression_{index}"
             lines = [
@@ -1354,7 +1364,6 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}if {schema}[{column!r}].is_float():",
                 f"{prefix}    {expression} = {expression}.fill_nan(None)",
             ]
-            replacement = params["replacement"]
             if replacement.get("kind") == "mostFrequent":
                 lines.extend(
                     [
@@ -1916,6 +1925,72 @@ def _polars_middle_values(frame: Any, expression: Any) -> tuple[Any, Any]:
     return values[0], values[-1]
 
 
+def _polars_fill_missing_from_columns(frame: Any, target: str, fallbacks: list[str]) -> Any:
+    import polars as pl
+
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    target_dtype = schema[target]
+    output_dtype = target_dtype
+    if target_dtype.base_type() == pl.Enum and any(schema[fallback] != target_dtype for fallback in fallbacks):
+        # Enum domains are closed.  Check only values that can actually win the
+        # ordered fallback chain; an unused later fallback must not widen an
+        # otherwise unchanged Enum column.
+        probe_target = pl.col(target)
+        probe_remaining = probe_target.is_null()
+        probe_widening = pl.lit(False)
+        for fallback in fallbacks:
+            probe_candidate = pl.col(fallback)
+            if schema[fallback].is_float():
+                probe_candidate = probe_candidate.fill_nan(None)
+            probe_available = probe_candidate.is_not_null()
+            probe_selected = probe_remaining & probe_available
+            if schema[fallback] != target_dtype:
+                probe_widening = probe_widening | (
+                    probe_selected & probe_candidate.cast(target_dtype, strict=False).is_null()
+                )
+            probe_remaining = probe_remaining & ~probe_available
+        probe_query = frame.select(probe_widening.any().alias("__ow_fill_enum_widens"))
+        probe_result = probe_query.collect(engine="streaming") if isinstance(probe_query, pl.LazyFrame) else probe_query
+        if bool(probe_result.item()):
+            output_dtype = pl.String
+    target_value = pl.col(target)
+    target_missing = target_value.is_null()
+    if target_dtype.is_float():
+        target_missing = target_missing | target_value.is_nan()
+    remaining = target_missing
+    candidates = []
+    for fallback in fallbacks:
+        fallback_dtype = schema[fallback]
+        if target_dtype == pl.Float32 and fallback_dtype == pl.Float64:
+            raise EngineError(
+                f"Fallback column {fallback!r} cannot be represented exactly as Float32. "
+                "Convert the target column to Float64 first."
+            )
+        if target_dtype.base_type() in {pl.Decimal, pl.Datetime} and fallback_dtype != target_dtype:
+            raise EngineError(
+                f"Fallback column {fallback!r} has Polars type {fallback_dtype}, not {target_dtype}. "
+                "Convert the columns to one exact type before filling."
+            )
+        candidate = pl.col(fallback)
+        if fallback_dtype.is_float():
+            candidate = candidate.fill_nan(None)
+        available = candidate.is_not_null()
+        # Mask values that cannot win before the strict cast.  A wider value
+        # elsewhere in the fallback column must not fail a row whose target or
+        # earlier fallback already supplied the result.
+        selected = pl.when(remaining & available).then(candidate).otherwise(None)
+        candidates.append(selected.cast(output_dtype, strict=True))
+        remaining = remaining & ~available
+
+    fallback_value = pl.coalesce(candidates)
+    # Keep the original target scalar when no fallback resolves it.  In
+    # particular, an unresolved float NaN remains NaN rather than becoming a
+    # null merely because NaN participates in missing-value matching.
+    output_target = target_value.cast(output_dtype, strict=True) if output_dtype != target_dtype else target_value
+    result = pl.when(target_missing & fallback_value.is_not_null()).then(fallback_value).otherwise(output_target)
+    return frame.with_columns(result.alias(target))
+
+
 def _polars_has_missing(frame: Any, expression: Any) -> bool:
     import polars as pl
 
@@ -2005,6 +2080,70 @@ def _generated_polars_fill_helpers() -> list[str]:
         "    if len(values) != length:",
         "        raise ValueError('Polars could not retrieve the exact middle values for the median fill.')",
         "    return values[0], values[-1]",
+        "",
+        "",
+        "def _ow_polars_fill_missing_from_columns(frame, target, fallbacks):",
+        "    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema",
+        "    target_dtype = schema[target]",
+        "    output_dtype = target_dtype",
+        (
+            "    if target_dtype.base_type() == pl.Enum and "
+            "any(schema[fallback] != target_dtype for fallback in fallbacks):"
+        ),
+        "        probe_target = pl.col(target)",
+        "        probe_remaining = probe_target.is_null()",
+        "        probe_widening = pl.lit(False)",
+        "        for fallback in fallbacks:",
+        "            probe_candidate = pl.col(fallback)",
+        "            if schema[fallback].is_float():",
+        "                probe_candidate = probe_candidate.fill_nan(None)",
+        "            probe_available = probe_candidate.is_not_null()",
+        "            probe_selected = probe_remaining & probe_available",
+        "            if schema[fallback] != target_dtype:",
+        "                probe_widening = probe_widening | (",
+        ("                    probe_selected & probe_candidate.cast(target_dtype, strict=False).is_null()"),
+        "                )",
+        "            probe_remaining = probe_remaining & ~probe_available",
+        "        probe_query = frame.select(probe_widening.any().alias('__ow_fill_enum_widens'))",
+        "        probe_result = (",
+        "            probe_query.collect(engine='streaming') if isinstance(probe_query, pl.LazyFrame) else probe_query",
+        "        )",
+        "        if probe_result.item():",
+        "            output_dtype = pl.String",
+        "    target_value = pl.col(target)",
+        "    target_missing = target_value.is_null()",
+        "    if target_dtype.is_float():",
+        "        target_missing = target_missing | target_value.is_nan()",
+        "    remaining = target_missing",
+        "    candidates = []",
+        "    for fallback in fallbacks:",
+        "        fallback_dtype = schema[fallback]",
+        "        if target_dtype == pl.Float32 and fallback_dtype == pl.Float64:",
+        (
+            "            raise ValueError(f'Fallback column {fallback!r} cannot be represented exactly as "
+            "Float32. Convert the target column to Float64 first.')"
+        ),
+        "        if target_dtype.base_type() in {pl.Decimal, pl.Datetime} and fallback_dtype != target_dtype:",
+        (
+            "            raise ValueError(f'Fallback column {fallback!r} has Polars type {fallback_dtype}, "
+            "not {target_dtype}. Convert the columns to one exact type before filling.')"
+        ),
+        "        candidate = pl.col(fallback)",
+        "        if fallback_dtype.is_float():",
+        "            candidate = candidate.fill_nan(None)",
+        "        available = candidate.is_not_null()",
+        "        selected = pl.when(remaining & available).then(candidate).otherwise(None)",
+        "        candidates.append(selected.cast(output_dtype, strict=True))",
+        "        remaining = remaining & ~available",
+        "    fallback_value = pl.coalesce(candidates)",
+        "    output_target = (",
+        "        target_value.cast(output_dtype, strict=True) if output_dtype != target_dtype else target_value",
+        "    )",
+        (
+            "    result = pl.when(target_missing & fallback_value.is_not_null()).then(fallback_value)"
+            ".otherwise(output_target)"
+        ),
+        "    return frame.with_columns(result.alias(target))",
         "",
         "",
         "def _ow_polars_has_missing(frame, expression):",

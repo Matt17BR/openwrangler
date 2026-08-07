@@ -126,6 +126,7 @@ COLUMN_TYPES = {
 _FILL_INTEGER_TEXT = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 _FILL_NUMBER_TEXT = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$")
 _FILL_REPLACEMENT_KINDS = {"string", "integer", "float", "decimal", "boolean", "date", "datetime"}
+_MAX_FILL_FALLBACK_COLUMNS = 64
 _PORTABLE_FILL_INTEGER_LIMIT = 10**38 - 1
 _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "renameColumn": ("column",),
@@ -238,6 +239,10 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
         raise OperationError("dropMissingRows.how must be any or all.")
     elif kind == "fillMissingValues":
         params["replacement"] = _normalize_fill_missing_replacement(params["replacement"])
+        if params["replacement"].get("kind") == "fallbackColumns" and any(
+            reference["id"] == params["column"]["id"] for reference in params["replacement"]["columns"]
+        ):
+            raise OperationError("A fill target cannot also be one of its fallback columns.")
     elif kind == "dropDuplicates" and params.get("keep", "first") not in {"first", "last", "none"}:
         raise OperationError("dropDuplicates.keep must be first, last, or none.")
     elif kind == "castColumn" and params["dtype"] not in CAST_DTYPES:
@@ -330,6 +335,21 @@ def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
             label = "median" if kind == "median" else "most common value"
             raise OperationError(f"A {label} fill replacement may contain only kind.")
         return {"kind": kind}
+    if kind == "fallbackColumns":
+        if set(value) != {"kind", "columns"}:
+            raise OperationError("A fallback-column replacement must contain exactly kind and columns.")
+        columns = _normalize_column_reference_list(
+            value.get("columns"),
+            "fillMissingValues.replacement.columns",
+        )
+        if len(columns) > _MAX_FILL_FALLBACK_COLUMNS:
+            raise OperationError(
+                f"A fallback-column replacement may contain at most {_MAX_FILL_FALLBACK_COLUMNS} columns."
+            )
+        return {
+            "kind": kind,
+            "columns": columns,
+        }
     if kind not in _FILL_REPLACEMENT_KINDS:
         raise OperationError(f"Unsupported fill replacement type: {kind!r}.")
     if set(value) != {"kind", "value"}:
@@ -598,6 +618,10 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
         "formatDatetime",
     }:
         references.append(("column.name", params["column"].get("name")))
+        if kind == "fillMissingValues" and params["replacement"].get("kind") == "fallbackColumns":
+            references.extend(
+                ("replacement.columns.name", item.get("name")) for item in params["replacement"]["columns"]
+            )
     elif kind == "formula":
         references.append(("leftColumn.name", params["leftColumn"].get("name")))
         if "rightColumn" in params:

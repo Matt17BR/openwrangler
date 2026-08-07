@@ -47,6 +47,7 @@ row_reduction_view_session_id <- "29292929-2929-4929-8929-292929292929"
 fill_session_id <- "30303030-3030-4030-8030-303030303030"
 fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
 most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
+fallback_fill_session_id <- "40404040-4040-4040-8040-404040404040"
 text_cleanup_session_id <- "34343434-3434-4434-8434-343434343434"
 text_cleanup_table_session_id <- "35353535-3535-4535-8535-353535353535"
 text_failure_session_id <- "36363636-3636-4636-8636-363636363636"
@@ -3027,6 +3028,165 @@ assert_identical(source_environment$fill_frame, fill_source_before, "the R Fill 
 fill_closed <- dispatch("closeSession", list(sessionId = fill_session_id))
 assert_identical(fill_closed$kind, "closed", "the R Fill Missing Values session did not close")
 
+source_environment$fallback_fill_frame <- data.frame(
+  target_partial = ordered(c(NA, "high", NA, NA), levels = c("low", "high")),
+  target_complete = ordered(c(NA, "high", NA, NA), levels = c("low", "high")),
+  first = factor(c("medium", "ignored", "low", NA), levels = c("medium", "ignored", "low")),
+  second = c("late", "ignored", "unused", "last"),
+  row.names = paste0("fallback-", 1:4)
+)
+fallback_fill_before <- unserialize(serialize(source_environment$fallback_fill_frame, NULL, version = 3L))
+fallback_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = fallback_fill_session_id, variableName = "fallback_fill_frame", page = page_window())
+)
+assert_identical(fallback_fill_open$kind, "page", "the R fallback-fill session did not open")
+
+fallback_fill_empty <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fallback_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "fallback-empty",
+      "r:c:0",
+      "target_partial",
+      list(kind = "fallbackColumns", columns = I(list()))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(fallback_fill_empty$kind, "error", "R fallback fill accepted an empty fallback list")
+assert_identical(fallback_fill_empty$code, "invalid_request", "the empty R fallback diagnostic changed")
+
+fallback_fill_partial <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fallback_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "fallback-partial",
+      "r:c:0",
+      "target_partial",
+      list(
+        kind = "fallbackColumns",
+        columns = I(list(list(id = "r:c:2", name = "first")))
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(fallback_fill_partial$kind, "stepPreview", "R fallback fill did not preview")
+assert_identical(
+  fallback_fill_partial$page$schema[[1L]]$nullable,
+  TRUE,
+  "an unresolved R fallback fill was published as non-nullable"
+)
+assert_identical(fallback_fill_partial$diff$changedCells, 2L, "R fallback priority returned an inexact diff")
+fallback_fill_partial_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = fallback_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(fallback_fill_partial_discard$action, "discard", "the partial R fallback draft did not discard")
+
+fallback_fill_complete_step <- fill_step(
+  "fallback-complete",
+  "r:c:1",
+  "target_complete",
+  list(
+    kind = "fallbackColumns",
+    columns = I(list(
+      list(id = "r:c:2", name = "first"),
+      list(id = "r:c:3", name = "second")
+    ))
+  )
+)
+fallback_fill_complete_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fallback_fill_session_id,
+    revision = 2L,
+    step = fallback_fill_complete_step,
+    page = page_window()
+  )
+)
+assert_identical(fallback_fill_complete_preview$kind, "stepPreview", "complete R fallback fill did not preview")
+assert_identical(
+  fallback_fill_complete_preview$page$schema[[2L]]$nullable,
+  FALSE,
+  "a complete R fallback fill stayed nullable"
+)
+assert_identical(
+  unlist(fallback_fill_complete_preview$page$schema[[2L]]$semantics$levels, use.names = FALSE),
+  c("low", "high", "medium", "last"),
+  "R fallback fill changed factor-level order"
+)
+assert_identical(fallback_fill_complete_preview$diff$changedCells, 3L, "complete R fallback fill returned an inexact diff")
+fallback_fill_complete_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = fallback_fill_session_id, revision = 3L, page = page_window())
+)
+assert_identical(fallback_fill_complete_apply$action, "apply", "complete R fallback fill did not apply")
+if (!grepl(".ow_fill_from_columns", fallback_fill_complete_apply$code, fixed = TRUE)) {
+  stop("generated R fallback fill lost its native helper", call. = FALSE)
+}
+assign("fallback_fill_frame", source_environment$fallback_fill_frame, envir = .GlobalEnv)
+eval(parse(text = fallback_fill_complete_apply$code), envir = .GlobalEnv)
+fallback_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  fallback_fill_generated$target_complete,
+  ordered(c("medium", "high", "low", "last"), levels = c("low", "high", "medium", "last")),
+  "generated R fallback fill changed factor values, priority, or levels"
+)
+assert_identical(
+  get("fallback_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  fallback_fill_before,
+  "generated R fallback fill mutated its source"
+)
+rm("open_wrangler_result", envir = .GlobalEnv)
+stale_fallback_source <- fallback_fill_before
+stale_fallback_source$first <- as.character(stale_fallback_source$first)
+assign("fallback_fill_frame", stale_fallback_source, envir = .GlobalEnv)
+stale_fallback_error <- tryCatch(
+  {
+    eval(parse(text = fallback_fill_complete_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = identity
+)
+if (is.null(stale_fallback_error) || !grepl("column type is stale", conditionMessage(stale_fallback_error), fixed = TRUE)) {
+  stop("generated R fallback fill accepted a stale fallback type", call. = FALSE)
+}
+if (exists("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)) {
+  rm("open_wrangler_result", envir = .GlobalEnv)
+}
+rm("fallback_fill_frame", envir = .GlobalEnv)
+fallback_fill_inspection <- inspect_step(
+  fallback_fill_session_id,
+  4L,
+  "fallback-complete",
+  page_window()
+)
+assert_identical(fallback_fill_inspection$kind, "stepInspection", "applied R fallback fill was not inspectable")
+assert_identical(fallback_fill_inspection$diff$changedCells, 3L, "R fallback inspection lost its diff")
+fallback_fill_undo <- dispatch(
+  "undoStep",
+  list(sessionId = fallback_fill_session_id, revision = 4L, page = page_window())
+)
+assert_identical(fallback_fill_undo$action, "undo", "R fallback fill did not undo")
+assert_identical(
+  fallback_fill_undo$page$schema[[2L]]$nullable,
+  TRUE,
+  "undo did not restore R fallback target nullability"
+)
+assert_identical(
+  source_environment$fallback_fill_frame,
+  fallback_fill_before,
+  "the R fallback-fill lifecycle mutated its source"
+)
+fallback_fill_closed <- dispatch("closeSession", list(sessionId = fallback_fill_session_id))
+assert_identical(fallback_fill_closed$kind, "closed", "the R fallback-fill session did not close")
+
 source_environment$most_fill_frame <- data.frame(
   label = ordered(c("high", NA, "high", "low"), levels = c("low", "high")),
   row.names = c("most-a", "most-b", "most-c", "most-d")
@@ -5005,6 +5165,7 @@ missing_package_contract <- list(
   floor_number_column_at = function(...) stop("unexpected floor", call. = FALSE),
   ceil_number_column_at = function(...) stop("unexpected ceiling", call. = FALSE),
   fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
+  fill_missing_from_fallback_columns_at = function(...) stop("unexpected fallback fill", call. = FALSE),
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
@@ -5149,6 +5310,21 @@ if (
     !identical(conditionMessage(missing_fill_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without Fill Missing Values support", call. = FALSE)
+}
+missing_fallback_fill_contract <- missing_package_contract
+missing_fallback_fill_contract$fill_missing_from_fallback_columns_at <- NULL
+missing_fallback_fill_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_fallback_fill_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_fallback_fill_error) ||
+    !identical(conditionMessage(missing_fallback_fill_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without fallback-column fill support", call. = FALSE)
 }
 missing_cast_contract <- missing_package_contract
 missing_cast_contract$cast_column_at <- NULL

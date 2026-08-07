@@ -464,30 +464,70 @@ openwrangler_r_kernel_agent <- local({
     as.integer(session$revision + 1L)
   }
 
-  decode_fill_missing_replacement <- function(value) {
+  decode_fill_missing_replacement <- function(value, limits, target_column) {
     replacement <- exact_record(
       value,
       "kind",
       "request.payload.step.params.replacement",
-      optional_fields = "value"
+      optional_fields = c("value", "columns")
     )
     kind <- bounded_text(
       replacement$kind,
       "request.payload.step.params.replacement.kind",
       16L
     )
-    supported <- c("median", "mostFrequent", "string", "integer", "float", "decimal", "boolean", "date", "datetime")
+    supported <- c(
+      "median",
+      "mostFrequent",
+      "fallbackColumns",
+      "string",
+      "integer",
+      "float",
+      "decimal",
+      "boolean",
+      "date",
+      "datetime"
+    )
     if (!kind %in% supported) {
       abort("invalid_request", "request.payload.step.params.replacement.kind is unsupported")
     }
     if (kind %in% c("median", "mostFrequent")) {
-      if ("value" %in% names(replacement)) {
-        abort("invalid_request", "a calculated replacement may not contain a value")
+      if (!identical(names(replacement), "kind")) {
+        abort("invalid_request", "a calculated replacement may not contain a value or fallback columns")
       }
       return(list(kind = kind))
     }
+    if (identical(kind, "fallbackColumns")) {
+      if (!setequal(names(replacement), c("kind", "columns"))) {
+        abort("invalid_request", "a fallback-column replacement requires exactly kind and columns")
+      }
+      columns <- replacement$columns
+      if (
+        !is.list(columns) ||
+          is.object(columns) ||
+          !is.null(names(columns)) ||
+          length(columns) == 0L ||
+          length(columns) > limits$fillFallbackColumns
+      ) {
+        abort("invalid_request", "fallback columns must be a bounded non-empty array")
+      }
+      columns <- lapply(seq_along(columns), function(index) {
+        decode_column_reference(
+          columns[[index]],
+          sprintf("request.payload.step.params.replacement.columns[%d]", index),
+          limits$columnIdBytes
+        )
+      })
+      ids <- vapply(columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (anyDuplicated(ids)) abort("invalid_request", "fallback columns contain a repeated column identity")
+      if (target_column$id %in% ids) abort("invalid_request", "the fill target cannot also be a fallback column")
+      return(list(kind = kind, columns = columns))
+    }
     if (!"value" %in% names(replacement)) {
       abort("invalid_request", "a typed replacement requires a value")
+    }
+    if ("columns" %in% names(replacement)) {
+      abort("invalid_request", "a typed replacement may not contain fallback columns")
     }
     if (identical(kind, "boolean")) {
       if (!is.logical(replacement$value) || length(replacement$value) != 1L || is.na(replacement$value)) {
@@ -610,16 +650,17 @@ openwrangler_r_kernel_agent <- local({
         c("column", "replacement"),
         "request.payload.step.params"
       )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
       return(list(
         id = step_id,
         kind = kind,
         params = list(
-          column = decode_column_reference(
-            params$column,
-            "request.payload.step.params.column",
-            limits$columnIdBytes
-          ),
-          replacement = decode_fill_missing_replacement(params$replacement)
+          column = column,
+          replacement = decode_fill_missing_replacement(params$replacement, limits, column)
         )
       ))
     }
@@ -1113,18 +1154,22 @@ openwrangler_r_kernel_agent <- local({
     column <- schema[[position]]
     semantic_kind <- column$semantics$kind
     replacement_kind <- step$params$replacement$kind
-    compatible <- switch(
-      semantic_kind,
-      character = replacement_kind %in% c("mostFrequent", "string"),
-      factor = replacement_kind %in% c("mostFrequent", "string"),
-      integer = replacement_kind %in% c("median", "integer"),
-      integer64 = replacement_kind %in% c("median", "integer"),
-      double = replacement_kind %in% c("median", "integer", "float"),
-      logical = replacement_kind %in% c("mostFrequent", "boolean"),
-      date = identical(replacement_kind, "date"),
-      datetime = identical(replacement_kind, "datetime"),
-      FALSE
-    )
+    compatible <- if (identical(replacement_kind, "fallbackColumns")) {
+      semantic_kind %in% c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime")
+    } else {
+      switch(
+        semantic_kind,
+        character = replacement_kind %in% c("mostFrequent", "string"),
+        factor = replacement_kind %in% c("mostFrequent", "string"),
+        integer = replacement_kind %in% c("median", "integer"),
+        integer64 = replacement_kind %in% c("median", "integer"),
+        double = replacement_kind %in% c("median", "integer", "float"),
+        logical = replacement_kind %in% c("mostFrequent", "boolean"),
+        date = identical(replacement_kind, "date"),
+        datetime = identical(replacement_kind, "datetime"),
+        FALSE
+      )
+    }
     if (!compatible) {
       abort("invalid_request", "The replacement is incompatible with the selected R column", TRUE)
     }
@@ -1132,6 +1177,42 @@ openwrangler_r_kernel_agent <- local({
     if (is.null(key_column_ids)) key_column_ids <- character()
     if (column$id %in% key_column_ids) {
       abort("invalid_request", "Fill Missing Values cannot replace a data.table key column", TRUE)
+    }
+    fallback_columns <- list()
+    if (identical(replacement_kind, "fallbackColumns")) {
+      compatible_fallback_kind <- function(fallback_kind) {
+        if (semantic_kind %in% c("character", "factor")) return(fallback_kind %in% c("character", "factor"))
+        if (semantic_kind %in% c("integer", "integer64")) return(fallback_kind %in% c("integer", "integer64"))
+        identical(fallback_kind, semantic_kind)
+      }
+      fallback_columns <- lapply(seq_along(step$params$replacement$columns), function(index) {
+        reference <- step$params$replacement$columns[[index]]
+        fallback_matches <- which(vapply(schema, function(candidate) identical(candidate$id, reference$id), logical(1L)))
+        if (
+          length(fallback_matches) != 1L ||
+            !identical(schema[[fallback_matches[[1L]]]]$name, reference$name)
+        ) {
+          abort("stale_column", "A fallback column reference no longer matches the active R dataframe", TRUE)
+        }
+        fallback_position <- as.integer(fallback_matches[[1L]])
+        fallback <- schema[[fallback_position]]
+        if (identical(fallback$id, column$id)) {
+          abort("invalid_request", "The fill target cannot also be a fallback column", TRUE)
+        }
+        if (!compatible_fallback_kind(fallback$semantics$kind)) {
+          abort(
+            "invalid_request",
+            sprintf("Fallback column %s is incompatible with the selected R column", fallback$name),
+            TRUE
+          )
+        }
+        list(
+          id = fallback$id,
+          position = fallback_position,
+          oldName = fallback$name,
+          semanticKind = fallback$semantics$kind
+        )
+      })
     }
     list(
       id = step$id,
@@ -1145,7 +1226,8 @@ openwrangler_r_kernel_agent <- local({
       semanticKind = semantic_kind,
       ordered = isTRUE(column$semantics$ordered),
       levels = if (is.null(column$semantics$levels)) character() else column$semantics$levels,
-      replacement = step$params$replacement
+      replacement = step$params$replacement,
+      fallbackColumns = fallback_columns
     )
   }
 
@@ -1504,18 +1586,30 @@ openwrangler_r_kernel_agent <- local({
     }
     if (identical(step$kind, "fillMissingValues")) {
       bound <- bind_fill_missing_step(capture, step)
-      result <- frame_contract$fill_missing_column_at(
-        source,
-        bound$position,
-        bound$oldName,
-        bound$replacement
-      )
+      fallback_fill <- identical(bound$replacement$kind, "fallbackColumns")
+      result <- if (fallback_fill) {
+        frame_contract$fill_missing_from_fallback_columns_at(
+          source,
+          bound$position,
+          bound$oldName,
+          vapply(bound$fallbackColumns, `[[`, integer(1L), "position", USE.NAMES = FALSE),
+          vapply(bound$fallbackColumns, `[[`, character(1L), "oldName", USE.NAMES = FALSE)
+        )
+      } else {
+        frame_contract$fill_missing_column_at(
+          source,
+          bound$position,
+          bound$oldName,
+          bound$replacement
+        )
+      }
       return(list(
         capture = frame_contract$capture_frame(
           result,
           nullability_source = capture,
           source_positions = seq_along(capture$descriptor$schema),
-          fill_missing_positions = bound$position
+          fill_missing_positions = if (fallback_fill) NULL else bound$position,
+          fallback_fill_positions = if (fallback_fill) bound$position else NULL
         ),
         bound = bound
       ))
@@ -2093,6 +2187,9 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_fill_replacement <- function(replacement) {
+    if (identical(replacement$kind, "fallbackColumns")) {
+      abort("runtime_error", "Generated R code received fallback columns through the scalar fill path")
+    }
     if (replacement$kind %in% c("median", "mostFrequent")) {
       return(sprintf("list(kind = %s)", r_string(replacement$kind)))
     }
@@ -2214,11 +2311,52 @@ openwrangler_r_kernel_agent <- local({
       "    } else stop(\"Open Wrangler cannot fill this R column type\", call. = FALSE)",
       "    .ow_values[.ow_missing] <- .ow_fill",
       "    .ow_values",
+      "  }",
+      "  .ow_fill_from_columns <- function(.ow_values, .ow_semantic_kind, .ow_fallbacks, .ow_fallback_kinds, .ow_factor_limit) {",
+      "    if (!is.list(.ow_fallbacks) || length(.ow_fallbacks) == 0L || length(.ow_fallbacks) != length(.ow_fallback_kinds)) stop(\"Open Wrangler received invalid fallback columns\", call. = FALSE)",
+      "    if (.ow_semantic_kind == \"factor\") {",
+      "      .ow_text <- as.character(.ow_values)",
+      "      .ow_levels <- levels(.ow_values)",
+      "      for (.ow_index in seq_along(.ow_fallbacks)) {",
+      "        .ow_fallback_text <- as.character(.ow_fallbacks[[.ow_index]])",
+      "        .ow_use <- is.na(.ow_text) & !is.na(.ow_fallback_text)",
+      "        if (!any(.ow_use)) next",
+      "        .ow_additions <- unique(.ow_fallback_text[.ow_use])",
+      "        .ow_additions <- .ow_additions[!.ow_additions %in% .ow_levels]",
+      "        if (length(.ow_levels) + length(.ow_additions) > .ow_factor_limit) stop(\"Open Wrangler factor level limit reached\", call. = FALSE)",
+      "        .ow_levels <- c(.ow_levels, .ow_additions)",
+      "        .ow_text[.ow_use] <- .ow_fallback_text[.ow_use]",
+      "      }",
+      "      return(factor(.ow_text, levels = .ow_levels, ordered = is.ordered(.ow_values)))",
+      "    }",
+      "    .ow_result_values <- .ow_values",
+      "    for (.ow_index in seq_along(.ow_fallbacks)) {",
+      "      .ow_fallback <- .ow_fallbacks[[.ow_index]]",
+      "      .ow_fallback_kind <- .ow_fallback_kinds[[.ow_index]]",
+      "      .ow_use <- is.na(.ow_result_values) & !is.na(.ow_fallback)",
+      "      if (!any(.ow_use)) next",
+      "      .ow_converted <- if (.ow_semantic_kind == \"character\") {",
+      "        as.character(.ow_fallback[.ow_use])",
+      "      } else if (.ow_semantic_kind == \"integer\" && .ow_fallback_kind == \"integer64\") {",
+      "        if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required to fill an integer column from integer64\", call. = FALSE)",
+      "        .ow_selected <- .ow_fallback[.ow_use]",
+      "        .ow_minimum <- bit64::as.integer64(\"-2147483647\"); .ow_maximum <- bit64::as.integer64(\"2147483647\")",
+      "        if (any(.ow_selected < .ow_minimum | .ow_selected > .ow_maximum)) stop(\"Open Wrangler fallback value is outside the R integer range\", call. = FALSE)",
+      "        as.integer(as.character(.ow_selected))",
+      "      } else if (.ow_semantic_kind == \"integer64\" && .ow_fallback_kind == \"integer\") {",
+      "        if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required to fill an integer64 column\", call. = FALSE)",
+      "        bit64::as.integer64(.ow_fallback[.ow_use])",
+      "      } else {",
+      "        .ow_fallback[.ow_use]",
+      "      }",
+      "      .ow_result_values[.ow_use] <- .ow_converted",
+      "    }",
+      "    .ow_result_values",
       "  }"
     )
   }
 
-  compile_plan <- function(variable_name, bound_plan, maximum_columns) {
+  compile_plan <- function(variable_name, bound_plan, maximum_columns, maximum_factor_levels) {
     if (length(bound_plan) == 0L) return("")
     lines <- c(
       "open_wrangler_result <- local({",
@@ -2634,6 +2772,7 @@ openwrangler_r_kernel_agent <- local({
           )
         }
       } else if (identical(step$kind, "fillMissingValues")) {
+        fallback_fill <- identical(step$replacement$kind, "fallbackColumns")
         lines <- c(
           lines,
           sprintf("  .ow_fill_position <- %dL", step$position),
@@ -2641,16 +2780,55 @@ openwrangler_r_kernel_agent <- local({
           "  if (ncol(.ow_result) < .ow_fill_position || !identical(names(.ow_result)[[.ow_fill_position]], .ow_fill_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
           "  .ow_fill_source <- .ow_result[[.ow_fill_position]]",
           row_type_guard(".ow_fill_source", list(semanticsKind = step$semanticKind)),
-          "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_fill_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Fill Missing Values cannot replace a data.table key column\", call. = FALSE)",
-          "  .ow_fill_timezone <- attr(.ow_fill_source, \"tzone\", exact = TRUE)",
-          "  if (is.null(.ow_fill_timezone) || identical(.ow_fill_timezone, \"\")) .ow_fill_timezone <- \"UTC\"",
-          "  if (!is.character(.ow_fill_timezone) || length(.ow_fill_timezone) != 1L || is.na(.ow_fill_timezone)) stop(\"Open Wrangler received an unsupported POSIXct timezone\", call. = FALSE)",
-          sprintf(
-            "  .ow_fill_result <- .ow_fill_values(.ow_fill_source, %s, %s, %s)",
-            r_string(step$semanticKind),
-            r_fill_replacement(step$replacement),
-            ".ow_fill_timezone"
-          ),
+          "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_fill_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Fill Missing Values cannot replace a data.table key column\", call. = FALSE)"
+        )
+        if (fallback_fill) {
+          fallback_variables <- character(length(step$fallbackColumns))
+          for (fallback_index in seq_along(step$fallbackColumns)) {
+            fallback <- step$fallbackColumns[[fallback_index]]
+            fallback_variable <- sprintf(".ow_fill_fallback_%d", fallback_index)
+            fallback_variables[[fallback_index]] <- fallback_variable
+            lines <- c(
+              lines,
+              sprintf("  if (ncol(.ow_result) < %dL || !identical(names(.ow_result)[[%dL]], %s)) stop(\"Open Wrangler fallback column reference is stale\", call. = FALSE)", fallback$position, fallback$position, r_string(fallback$oldName)),
+              sprintf("  %s <- .ow_result[[%dL]]", fallback_variable, fallback$position),
+              row_type_guard(fallback_variable, list(semanticsKind = fallback$semanticKind))
+            )
+          }
+          fallback_list <- sprintf("list(%s)", paste(fallback_variables, collapse = ", "))
+          fallback_kinds <- r_character_vector(vapply(
+            step$fallbackColumns,
+            `[[`,
+            character(1L),
+            "semanticKind",
+            USE.NAMES = FALSE
+          ))
+          lines <- c(
+            lines,
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_from_columns(.ow_fill_source, %s, %s, %s, %dL)",
+              r_string(step$semanticKind),
+              fallback_list,
+              fallback_kinds,
+              maximum_factor_levels
+            )
+          )
+        } else {
+          lines <- c(
+            lines,
+            "  .ow_fill_timezone <- attr(.ow_fill_source, \"tzone\", exact = TRUE)",
+            "  if (is.null(.ow_fill_timezone) || identical(.ow_fill_timezone, \"\")) .ow_fill_timezone <- \"UTC\"",
+            "  if (!is.character(.ow_fill_timezone) || length(.ow_fill_timezone) != 1L || is.na(.ow_fill_timezone)) stop(\"Open Wrangler received an unsupported POSIXct timezone\", call. = FALSE)",
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_values(.ow_fill_source, %s, %s, %s)",
+              r_string(step$semanticKind),
+              r_fill_replacement(step$replacement),
+              ".ow_fill_timezone"
+            )
+          )
+        }
+        lines <- c(
+          lines,
           "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_fill_position, value = .ow_fill_result) else .ow_result[[.ow_fill_position]] <- .ow_fill_result"
         )
       } else if (identical(step$kind, "castColumn")) {
@@ -2870,7 +3048,12 @@ openwrangler_r_kernel_agent <- local({
       action = action,
       revision = session$revision,
       page = materialize(frame_contract, active_capture(session), page),
-      code = compile_plan(session$variableName, session$boundPlan, frame_contract$limits$columns)
+      code = compile_plan(
+        session$variableName,
+        session$boundPlan,
+        frame_contract$limits$columns,
+        frame_contract$limits$factorLevels
+      )
     )
   }
 
@@ -2893,6 +3076,7 @@ openwrangler_r_kernel_agent <- local({
       "floor_number_column_at",
       "ceil_number_column_at",
       "fill_missing_column_at",
+      "fill_missing_from_fallback_columns_at",
       "cast_column_at",
       "drop_columns_at",
       "select_columns_at",
@@ -3185,7 +3369,8 @@ openwrangler_r_kernel_agent <- local({
           code = compile_plan(
             candidate$variableName,
             candidate_bound_plan,
-            frame_contract$limits$columns
+            frame_contract$limits$columns,
+            frame_contract$limits$factorLevels
           )
         )
         preflight_response(response)
@@ -3228,7 +3413,8 @@ openwrangler_r_kernel_agent <- local({
             code = compile_plan(
               session$variableName,
               utils::head(session$boundPlan, step_index),
-              frame_contract$limits$columns
+              frame_contract$limits$columns,
+              frame_contract$limits$factorLevels
             )
           ))
         }
