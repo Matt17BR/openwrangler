@@ -1192,6 +1192,7 @@ describe("native R kernel protocol", () => {
 
   it("strictly validates every native R Fill Missing Values replacement", () => {
     const replacements = [
+      { kind: "mean" },
       { kind: "median" },
       { kind: "mostFrequent" },
       { kind: "string", value: "unknown" },
@@ -1249,6 +1250,7 @@ describe("native R kernel protocol", () => {
     expect(JSON.parse(encodeRKernelRequest(fallbackRequest))).toEqual(fallbackRequest);
 
     const invalidReplacements: ReadonlyArray<readonly [unknown, string]> = [
+      [{ kind: "mean", value: "1" }, "may not contain a value"],
       [{ kind: "median", value: "1" }, "may not contain a value"],
       [{ kind: "mostFrequent", value: "ready" }, "may not contain a value"],
       [{ kind: "fallbackColumns", columns: [] }, "bounded non-empty array"],

@@ -1109,7 +1109,7 @@ class PandasEngine(DataFrameEngine):
                     f"_open_wrangler_mask({series}, _open_wrangler_is_nan)"
                 ),
             ]
-            if replacement.get("kind") in {"median", "mostFrequent"}:
+            if replacement.get("kind") in {"mean", "median", "mostFrequent"}:
                 replacement_kind = str(replacement["kind"])
                 value = "None"
             else:
@@ -2430,13 +2430,24 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
 
     missing = _null_mask(series) | _nan_mask(series)
     replacement_kind = replacement.get("kind")
+    semantic_type = _pandas_semantic_type(series)
+    if replacement_kind == "mean":
+        if semantic_type != "float":
+            raise EngineError("Mean fill requires a floating-point column.")
+        if not bool(missing.any()):
+            return series.copy()
+        fill_value = _pandas_stable_float_mean(series, missing)
+        try:
+            return series.copy().mask(missing, fill_value)
+        except (TypeError, ValueError) as error:
+            raise EngineError(f"The mean is incompatible with the selected Pandas column: {error}") from error
+
     if replacement_kind == "median":
         if not bool(missing.any()):
             return series.copy()
         present = [value for value, is_missing in zip(series.array, missing.array, strict=True) if not is_missing]
         if not present:
             raise EngineError("Cannot fill with the median because the selected column has no present numeric values.")
-        semantic_type = _pandas_semantic_type(series)
         ordered = sorted(present)
         lower = ordered[(len(ordered) - 1) // 2]
         upper = ordered[len(ordered) // 2]
@@ -2470,7 +2481,6 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
             ) from error
 
     fill_value = decode_fill_replacement(replacement)
-    semantic_type = _pandas_semantic_type(series)
     if semantic_type == "decimal":
         precision, scale = _pandas_decimal_spec(
             series,
@@ -2486,6 +2496,33 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
         return target.mask(missing, fill_value)
     except (TypeError, ValueError) as error:
         raise EngineError(f"The replacement value is incompatible with the selected Pandas column: {error}") from error
+
+
+def _pandas_stable_float_mean(series: Any, missing: Any) -> float:
+    import numpy as np
+
+    try:
+        values = np.asarray(series.array[~missing.array], dtype=np.float64)
+    except (OverflowError, TypeError, ValueError) as error:
+        raise EngineError(
+            "Cannot fill with the mean because the selected column contains a value that cannot be represented "
+            "as a floating-point number."
+        ) from error
+    if values.size == 0:
+        raise EngineError("Cannot fill with the mean because the selected column has no present numeric values.")
+    has_positive_infinity = bool(np.isposinf(values).any())
+    has_negative_infinity = bool(np.isneginf(values).any())
+    if has_positive_infinity and has_negative_infinity:
+        raise EngineError("Cannot fill with the mean because positive and negative infinity make it undefined.")
+    if has_positive_infinity:
+        return float("inf")
+    if has_negative_infinity:
+        return float("-inf")
+    scale = float(np.max(np.abs(values)))
+    if scale == 0:
+        return 0.0
+    scaled_mean = float(np.mean(values / scale))
+    return max(-1.0, min(1.0, scaled_mean)) * scale
 
 
 def _pandas_most_frequent_value(present: Iterable[Any]) -> Any:
@@ -2550,6 +2587,8 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "        return 'decimal'",
         "    if pd.api.types.is_object_dtype(series.dtype):",
         "        inferred = pd.api.types.infer_dtype(series, skipna=True)",
+        "        if inferred in {'floating', 'mixed-integer-float'}:",
+        "            return 'float'",
         "        if inferred == 'decimal':",
         "            return 'decimal'",
         "        if inferred in {'integer', 'mixed-integer'}:",
@@ -2725,6 +2764,42 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "",
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",
         "    semantic_type = _open_wrangler_fill_semantic_type(series)",
+        "    if replacement_kind == 'mean':",
+        "        if semantic_type != 'float':",
+        "            raise ValueError('Mean fill requires a floating-point column.')",
+        "        if not missing.any():",
+        "            return series.copy()",
+        "        try:",
+        "            values = np.asarray(series.array[~missing.array], dtype=np.float64)",
+        "        except (OverflowError, TypeError, ValueError) as error:",
+        (
+            "            raise ValueError('Cannot fill with the mean because the selected column contains a value "
+            "that cannot be represented as a floating-point number.') from error"
+        ),
+        "        if values.size == 0:",
+        (
+            "            raise ValueError('Cannot fill with the mean because the selected column has no "
+            "present numeric values.')"
+        ),
+        "        has_positive_infinity = bool(np.isposinf(values).any())",
+        "        has_negative_infinity = bool(np.isneginf(values).any())",
+        "        if has_positive_infinity and has_negative_infinity:",
+        (
+            "            raise ValueError('Cannot fill with the mean because positive and negative infinity "
+            "make it undefined.')"
+        ),
+        "        if has_positive_infinity:",
+        "            fill_value = float('inf')",
+        "        elif has_negative_infinity:",
+        "            fill_value = float('-inf')",
+        "        else:",
+        "            scale = float(np.max(np.abs(values)))",
+        "            if scale == 0:",
+        "                fill_value = 0.0",
+        "            else:",
+        "                scaled_mean = float(np.mean(values / scale))",
+        "                fill_value = max(-1.0, min(1.0, scaled_mean)) * scale",
+        "        return series.copy().mask(missing, fill_value)",
         "    if replacement_kind == 'median':",
         "        if not missing.any():",
         "            return series.copy()",

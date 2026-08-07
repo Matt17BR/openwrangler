@@ -330,9 +330,9 @@ def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise OperationError("fillMissingValues.replacement must be an object.")
     kind = value.get("kind")
-    if kind in {"median", "mostFrequent"}:
+    if kind in {"mean", "median", "mostFrequent"}:
         if set(value) != {"kind"}:
-            label = "median" if kind == "median" else "most common value"
+            label = {"mean": "mean", "median": "median", "mostFrequent": "most common value"}[kind]
             raise OperationError(f"A {label} fill replacement may contain only kind.")
         return {"kind": kind}
     if kind == "fallbackColumns":

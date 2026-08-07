@@ -8,6 +8,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Fill Missing Values can now take an ordered list of fallback columns. For each missing target cell, Open Wrangler
   uses the first present value in the same row and leaves the cell missing when no fallback has a value.
+- Floating-point columns can now fill missing values with their mean in Pandas, Polars, DuckDB, and R. The calculation
+  ignores nulls and NaNs and is not affected by viewing filters or sorts.
 - R notebook sessions opened in Editing mode can now export their committed cleaning result as CSV. R writes the
   file in the selected IRkernel, and the extension transfers it in bounded chunks into the normal atomic Save path.
 

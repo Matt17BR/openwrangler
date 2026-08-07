@@ -2899,10 +2899,10 @@ openwrangler_r_frame_contract <- local({
     )
     kind <- scalar_choice(
       replacement$kind,
-      c("median", "mostFrequent", "string", "integer", "float", "decimal", "boolean", "date", "datetime"),
+      c("mean", "median", "mostFrequent", "string", "integer", "float", "decimal", "boolean", "date", "datetime"),
       "replacement$kind"
     )
-    if (kind %in% c("median", "mostFrequent")) {
+    if (kind %in% c("mean", "median", "mostFrequent")) {
       if (!identical(names(replacement), "kind")) {
         abort("invalid-view-query", "a calculated replacement may not contain a value")
       }
@@ -2917,7 +2917,7 @@ openwrangler_r_frame_contract <- local({
       factor = kind %in% c("mostFrequent", "string"),
       integer = kind %in% c("median", "integer"),
       integer64 = kind %in% c("median", "integer"),
-      double = kind %in% c("median", "integer", "float"),
+      double = kind %in% c("mean", "median", "integer", "float"),
       logical = kind %in% c("mostFrequent", "boolean"),
       date = identical(kind, "date"),
       datetime = identical(kind, "datetime"),
@@ -2928,8 +2928,34 @@ openwrangler_r_frame_contract <- local({
     }
 
     missing <- is.na(column)
-    if (kind %in% c("median", "mostFrequent") && !any(missing)) {
+    if (kind %in% c("mean", "median", "mostFrequent") && !any(missing)) {
       return(list(column = column, addedFactorLevel = FALSE))
+    }
+    if (identical(kind, "mean")) {
+      present <- column[!missing]
+      if (length(present) == 0L) {
+        abort("invalid-view-value", "the mean is unavailable because the selected column has no present values")
+      }
+      has_positive_infinity <- any(is.infinite(present) & present > 0)
+      has_negative_infinity <- any(is.infinite(present) & present < 0)
+      if (has_positive_infinity && has_negative_infinity) {
+        abort("invalid-view-value", "the selected column has no usable numeric mean")
+      }
+      if (has_positive_infinity) {
+        fill <- Inf
+      } else if (has_negative_infinity) {
+        fill <- -Inf
+      } else {
+        scale <- max(abs(present))
+        fill <- if (scale == 0) {
+          0
+        } else {
+          max(-1, min(1, mean(present / scale))) * scale
+        }
+      }
+      result <- column
+      result[missing] <- fill
+      return(list(column = result, addedFactorLevel = FALSE))
     }
     if (identical(kind, "median")) {
       present <- column[!missing]

@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 5L
+  transport_version <- 6L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
@@ -478,6 +478,7 @@ openwrangler_r_kernel_agent <- local({
       16L
     )
     supported <- c(
+      "mean",
       "median",
       "mostFrequent",
       "fallbackColumns",
@@ -492,7 +493,7 @@ openwrangler_r_kernel_agent <- local({
     if (!kind %in% supported) {
       abort("invalid_request", "request.payload.step.params.replacement.kind is unsupported")
     }
-    if (kind %in% c("median", "mostFrequent")) {
+    if (kind %in% c("mean", "median", "mostFrequent")) {
       if (!identical(names(replacement), "kind")) {
         abort("invalid_request", "a calculated replacement may not contain a value or fallback columns")
       }
@@ -1164,7 +1165,7 @@ openwrangler_r_kernel_agent <- local({
         factor = replacement_kind %in% c("mostFrequent", "string"),
         integer = replacement_kind %in% c("median", "integer"),
         integer64 = replacement_kind %in% c("median", "integer"),
-        double = replacement_kind %in% c("median", "integer", "float"),
+        double = replacement_kind %in% c("mean", "median", "integer", "float"),
         logical = replacement_kind %in% c("mostFrequent", "boolean"),
         date = identical(replacement_kind, "date"),
         datetime = identical(replacement_kind, "datetime"),
@@ -2191,7 +2192,7 @@ openwrangler_r_kernel_agent <- local({
     if (identical(replacement$kind, "fallbackColumns")) {
       abort("runtime_error", "Generated R code received fallback columns through the scalar fill path")
     }
-    if (replacement$kind %in% c("median", "mostFrequent")) {
+    if (replacement$kind %in% c("mean", "median", "mostFrequent")) {
       return(sprintf("list(kind = %s)", r_string(replacement$kind)))
     }
     value <- if (identical(replacement$kind, "boolean")) {
@@ -2236,7 +2237,22 @@ openwrangler_r_kernel_agent <- local({
       "  .ow_fill_values <- function(.ow_values, .ow_semantic_kind, .ow_replacement, .ow_timezone) {",
       "    .ow_missing <- is.na(.ow_values)",
       "    .ow_replacement_kind <- .ow_replacement$kind",
-      "    if (.ow_replacement_kind == \"median\") {",
+      "    if (.ow_replacement_kind == \"mean\") {",
+      "      if (!any(.ow_missing)) return(.ow_values)",
+      "      .ow_present <- .ow_values[!.ow_missing]",
+      "      if (length(.ow_present) == 0L) stop(\"Open Wrangler cannot calculate a mean without present values\", call. = FALSE)",
+      "      .ow_positive_infinity <- any(is.infinite(.ow_present) & .ow_present > 0)",
+      "      .ow_negative_infinity <- any(is.infinite(.ow_present) & .ow_present < 0)",
+      "      if (.ow_positive_infinity && .ow_negative_infinity) stop(\"Open Wrangler could not calculate a usable numeric mean\", call. = FALSE)",
+      "      if (.ow_positive_infinity) {",
+      "        .ow_fill <- Inf",
+      "      } else if (.ow_negative_infinity) {",
+      "        .ow_fill <- -Inf",
+      "      } else {",
+      "        .ow_scale <- max(abs(.ow_present))",
+      "        .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, mean(.ow_present / .ow_scale))) * .ow_scale",
+      "      }",
+      "    } else if (.ow_replacement_kind == \"median\") {",
       "      if (!any(.ow_missing)) return(.ow_values)",
       "      .ow_present <- .ow_values[!.ow_missing]",
       "      if (length(.ow_present) == 0L) stop(\"Open Wrangler cannot calculate a median without present values\", call. = FALSE)",

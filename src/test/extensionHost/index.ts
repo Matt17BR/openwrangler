@@ -1545,6 +1545,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "  orders_frame[[sprintf('extra_%02d', column_index)]] <- sprintf('value-%02d-%04d', column_index, seq_len(row_count))",
     "}",
     "orders_frame$extra_20[1L] <- NA_character_",
+    "orders_frame$fractional_score[603L] <- NA_real_",
     "row.names(orders_frame) <- sprintf('case-%04d', seq_len(row_count))",
     "orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = 'minimal')",
     "orders_table <- data.table::as.data.table(orders_frame)",
@@ -3229,8 +3230,8 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   });
   await assertReleasedProfileStat(datasetProfile, "Rows", "1,205");
   await assertReleasedProfileStat(datasetProfile, "Columns", "25");
-  await assertReleasedProfileStat(datasetProfile, "Missing cells", "1");
-  await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "1");
+  await assertReleasedProfileStat(datasetProfile, "Missing cells", "2");
+  await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "2");
   await assertReleasedProfileStat(datasetProfile, "Duplicate rows", "0");
 
   await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
@@ -3869,7 +3870,7 @@ async function exerciseReleasedRRowReductionJourney(
   assert.equal(active.metadata.draftStep.id, missingStepId);
   assert.equal(active.metadata.draftStep.params.columns, undefined);
   assert.equal(active.metadata.draftStep.params.how, "any");
-  assert.equal(active.metadata.shape.rows, 1_204);
+  assert.equal(active.metadata.shape.rows, 1_203);
   assert.equal(active.metadata.filteredShape.rows, 9);
   assertReleasedRRowReductionGeneratedCode(active.code ?? "", "dropMissingRows");
   let first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-drop-missing-draft`);
@@ -3892,7 +3893,7 @@ async function exerciseReleasedRRowReductionJourney(
         current.metadata.steps.length === 1 &&
         current.metadata.steps[0]?.kind === "dropMissingRows" &&
         current.metadata.steps[0].id === missingStepId &&
-        current.metadata.shape.rows === 1_204 &&
+        current.metadata.shape.rows === 1_203 &&
         current.metadata.filteredShape.rows === 9
       );
     },
@@ -3914,7 +3915,7 @@ async function exerciseReleasedRRowReductionJourney(
   assert.ok(inspection);
   assert.deepEqual(inspection.diff, {
     addedRows: 0,
-    removedRows: 1,
+    removedRows: 2,
     addedColumns: [],
     removedColumns: [],
     changedCells: 0,
@@ -4099,13 +4100,27 @@ async function exerciseReleasedRFillMissingJourney(
   assert.equal(original?.sessionId, sessionId, "The packaged R fill journey must retain its exact session.");
   assert.ok(original, "The packaged R fill journey requires one active session.");
   assert.equal(original.metadata.steps.length, 0, "The packaged R fill journey must start from the original frame.");
-  const target = original.metadata.schema.find((column) => column.name === "extra_20");
-  assert.ok(target, "The packaged R fill journey requires the nullable extra_20 column.");
-  assert.equal(target.type, "string");
-  assert.equal(target.rawType, "character");
+  const target = original.metadata.schema.find((column) => column.name === "fractional_score");
+  assert.ok(target, "The packaged R fill journey requires the nullable fractional_score column.");
+  assert.equal(target.type, "float");
+  assert.equal(target.rawType, "double");
   assert.equal(target.nullable, true);
+  const sourceGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: original.metadata.revision,
+    viewRequestId: `${phase}-fill-mean-source-gap`,
+    offset: 602,
+    limit: 1,
+    filterModel: original.viewState.filterModel,
+    columnOffset: target.position,
+    columnLimit: 1
+  });
+  assert.equal(sourceGap.kind, "page");
+  if (sourceGap.kind !== "page") throw new Error("The native R mean-fill source page did not resolve.");
+  assert.deepEqual(sourceGap.page.columnIds, [target.id]);
+  assert.equal(sourceGap.page.rows[0]?.values[0]?.isNull, true);
 
-  const replacement = "filled by Open Wrangler";
   const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill(target.name);
   await app
@@ -4130,22 +4145,17 @@ async function exerciseReleasedRFillMissingJourney(
   const fillColumn = dialog.getByLabel("Column", { exact: true });
   await fillColumn.waitFor({ state: "visible", timeout: 10_000 });
   await fillColumn.selectOption(target.id);
-  const fillMode = dialog.getByLabel("Fill with", { exact: true });
+  const fillMode = dialog.getByLabel("Method", { exact: true });
   await fillMode.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(
-    await fillMode.inputValue(),
-    "mostFrequent",
-    "A nullable R character column should initially offer its type-aware automatic fill."
-  );
+  await fillMode.locator('option[value="mean"]').waitFor({ state: "attached", timeout: 10_000 });
+  assert.equal(await fillMode.inputValue(), "median", "A floating-point R column should default to Median.");
   assert.deepEqual(await fillMode.locator("option").allTextContents(), [
-    "Most common value",
+    "Median",
+    "Mean",
     "Other columns (first available)",
     "Specific value"
   ]);
-  await fillMode.selectOption("value");
-  const replacementInput = dialog.getByLabel("Replacement value", { exact: true });
-  await replacementInput.waitFor({ state: "visible", timeout: 10_000 });
-  await replacementInput.fill(replacement);
+  await fillMode.selectOption("mean");
   await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
   await waitFor(
     () => {
@@ -4156,7 +4166,7 @@ async function exerciseReleasedRFillMissingJourney(
         draft?.kind === "fillMissingValues" &&
         draft.params.column.id === target.id &&
         draft.params.column.name === target.name &&
-        isDeepStrictEqual(draft.params.replacement, { kind: "string", value: replacement }) &&
+        isDeepStrictEqual(draft.params.replacement, { kind: "mean" }) &&
         active.metadata.schema.find((column) => column.id === target.id)?.nullable === false
       );
     },
@@ -4169,14 +4179,33 @@ async function exerciseReleasedRFillMissingJourney(
   assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
   const stepId = preview.metadata.draftStep.id;
   assert.match(preview.code ?? "", /\.ow_fill_values/u);
-  assert.match(preview.code ?? "", /filled by Open Wrangler/u);
+  assert.match(preview.code ?? "", /mean\(\.ow_present \/ \.ow_scale\)/u);
   assert.doesNotMatch(preview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
+  const previewGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: `${phase}-fill-mean-preview-gap`,
+    offset: 602,
+    limit: 1,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: target.position,
+    columnLimit: 1
+  });
+  assert.equal(previewGap.kind, "page");
+  if (previewGap.kind !== "page") throw new Error("The native R mean-fill preview page did not resolve.");
+  assert.deepEqual(previewGap.page.columnIds, [target.id]);
+  const previewValue = previewGap.page.rows[0]?.values[0];
+  assert.ok(previewValue?.kind === "number");
+  assert.equal(previewValue.isNull, false);
+  assert.equal(previewValue.isNaN, false);
+  assert.equal(Number.isFinite(previewValue.raw), true);
   const review = app.getByRole("region", { name: "Draft review" });
   await review.waitFor({ state: "visible", timeout: 10_000 });
   await review.getByText("Fill missing values", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await review
     .locator('[aria-label="Data diff summary"]')
-    .getByText(/^1 existing cell changed(?: in this block)?$/u)
+    .getByText("No value changes in this block", { exact: true })
     .waitFor({ state: "visible", timeout: 10_000 });
 
   await review.getByRole("button", { name: "Apply step", exact: true }).click();
@@ -4190,6 +4219,7 @@ async function exerciseReleasedRFillMissingJourney(
         active.metadata.steps.length === 1 &&
         step?.id === stepId &&
         step.kind === "fillMissingValues" &&
+        isDeepStrictEqual(step.params.replacement, { kind: "mean" }) &&
         active.metadata.schema.find((column) => column.id === target.id)?.nullable === false
       );
     },
@@ -4203,6 +4233,7 @@ async function exerciseReleasedRFillMissingJourney(
   const applied = testing.activeSession();
   assert.ok(applied, "The applied R Fill missing values step must retain its exact session.");
   assert.match(applied.code ?? "", /\.ow_fill_values/u);
+  assert.match(applied.code ?? "", /mean\(\.ow_present \/ \.ow_scale\)/u);
 
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   const undoState = (): Record<string, unknown> => {
@@ -4246,6 +4277,23 @@ async function exerciseReleasedRFillMissingJourney(
     "undoing native R Fill missing values through the editor",
     () => JSON.stringify(undoState())
   );
+  const restored = testing.activeSession();
+  assert.ok(restored, "The undone native R mean-fill session must remain active.");
+  const restoredGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: restored.metadata.revision,
+    viewRequestId: `${phase}-fill-mean-restored-gap`,
+    offset: 602,
+    limit: 1,
+    filterModel: restored.viewState.filterModel,
+    columnOffset: target.position,
+    columnLimit: 1
+  });
+  assert.equal(restoredGap.kind, "page");
+  if (restoredGap.kind !== "page") throw new Error("The undone native R mean-fill page did not resolve.");
+  assert.deepEqual(restoredGap.page.columnIds, [target.id]);
+  assert.equal(restoredGap.page.rows[0]?.values[0]?.isNull, true);
   const returnColumn = original.metadata.schema.find((column) => column.name === "row_id");
   assert.ok(returnColumn, "The packaged R fill journey must be able to return to the first editing column.");
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after undoing Fill missing values");
@@ -5929,7 +5977,7 @@ async function previewReleasedRDropMissingRows(testing: TestApi, app: Locator, s
         draft.params.columns === undefined &&
         draft.params.how === "any" &&
         active.metadata.steps.length === 0 &&
-        active.metadata.shape.rows === 1_204
+        active.metadata.shape.rows === 1_203
       );
     },
     30_000,
@@ -13267,7 +13315,7 @@ async function previewMostCommonAccountNote(app: Locator, testing: TestApi): Pro
   await dialog.getByPlaceholder("Search operations").fill("fill missing");
   await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
   await dialog.getByLabel("Column", { exact: true }).selectOption(accountNote.id);
-  const fillMode = dialog.getByLabel("Fill with", { exact: true });
+  const fillMode = dialog.getByLabel("Method", { exact: true });
   await fillMode.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(
     await fillMode.inputValue(),

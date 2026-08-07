@@ -46,16 +46,17 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 Post-1.0 viewing-filter hardening keeps the completed filter surface usable as well as semantically correct. Focused React coverage proves that removing a final selected value removes the column filter itself, changing per-column logic cannot create an empty filter, and **Filter rows** stays disabled for an effective-empty query. A two-column interaction keeps every active filter visible, removes one value or predicate without disturbing siblings, and preserves sorts on the same or another column. The native Filters tree exercises the same whole-column removal through the host/webview action boundary.
 
 **Fill missing values** works on one stable column at a time. Numeric columns can use the median of their present
-values. Text, categorical, and boolean columns can use the most common non-missing value. Supported scalar columns
-can use an explicit value of the matching type. They can also use an ordered list of same-type fallback columns: the
-first present value in each row wins, while a row with no present fallback stays missing. Automatic methods ignore
-both null and NaN. When missing cells need filling, a tie or an all-missing column asks the user for a specific value
-instead. A no-op keeps the exact native column type. On Python engines, a specific value or a fallback from a different
-categorical domain may widen the result to text; the preview shows that type change. The most-common method uses an
-existing value and keeps its category type. Integer and decimal medians must fit that type exactly; decimal values must
-also fit its scale, and datetime values must match its timezone awareness. Applying the draft adds the step to Open
-Wrangler's cleaning plan. It never changes the original dataframe. Generated Pandas, Polars, DuckDB, and R code uses
-the same rules. Focused tests cover the dialog and the preview, apply, edit, discard, and undo lifecycle.
+values, and floating-point columns can use their mean. Text, categorical, and boolean columns can use the most common
+non-missing value. Supported scalar columns can use an explicit value of the matching type. They can also use an
+ordered list of same-type fallback columns: the first present value in each row wins, while a row with no present
+fallback stays missing. Automatic methods ignore both null and NaN. When missing cells need filling, a tie, an
+all-missing column, or an undefined mean asks the user for another method. A no-op keeps the exact native column type.
+On Python engines, a specific value or a fallback from a different categorical domain may widen the result to text;
+the preview shows that type change. The most-common method uses an existing value and keeps its category type. Integer
+and decimal medians must fit that type exactly; decimal values must also fit its scale, and datetime values must match
+its timezone awareness. Applying the draft adds the step to Open Wrangler's cleaning plan. It never changes the
+original dataframe. Generated Pandas, Polars, DuckDB, and R code uses the same rules. Focused tests cover the dialog
+and the preview, apply, edit, discard, and undo lifecycle.
 
 Cleaning-step preview, apply, latest-step edit, discard, and undo now preserve the independent viewing query instead of resetting it. Parameterized Pandas, Polars, and DuckDB runtime coverage keeps compatible selected values, searches, predicates, and ordered multi-sorts; prunes missing, ambiguous, or semantic-type-changed references; restores the exact pre-draft query on discard when the view was untouched; and keeps an explicit in-draft edit authoritative through Discard or Apply. Immediate undo restores the pre-first-apply query only when no later view edit occurred, including across latest-step replacement. Coordinator persistence restores the validated draft-base receipt before replaying a draft and then restores the independent current view; malformed or stale receipt/view sections fall back independently. React coverage verifies that confirmed Discard retains the runtime-published filters and sort priority.
 

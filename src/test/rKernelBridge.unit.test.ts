@@ -3088,6 +3088,64 @@ describe("canonical R kernel bridge", () => {
     });
   });
 
+  it("previews a native R mean fill for a floating-point column", async () => {
+    const source = replaceContractCell(frameContract(), "r:c:0", {
+      kind: "null",
+      raw: null,
+      display: "NA",
+      isNull: true,
+      isNaN: false
+    });
+    const meanValue = rCell("number", "3", "3");
+    const output = fillMissingContract(source, "r:c:0", meanValue);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-mean",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:0", name: "value" },
+        replacement: { kind: "mean" }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: output,
+      diff: fillMissingDiff("r:c:0", "value", meanValue),
+      code: "open_wrangler_result <- orders"
+    });
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:0", type: "float", nullable: false })]),
+        draftStep: { params: { replacement: { kind: "mean" } } }
+      }
+    });
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      step,
+      expect.any(Object),
+      expect.any(Array),
+      undefined,
+      expect.any(Object)
+    );
+  });
+
   it("fills native R values from ordered fallback columns with dynamic nullability and isolated drafts", async () => {
     const fallbackValue: RFrameCell = {
       kind: "string",

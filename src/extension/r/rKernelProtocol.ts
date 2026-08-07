@@ -20,7 +20,7 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 5 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 6 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -1243,7 +1243,7 @@ function validateTransformStep(value: unknown): void {
 
 function validateFillMissingReplacement(value: unknown, targetColumnId: string): void {
   const replacement = exactRecord(value, ["kind"], ["value", "columns"], "R kernel fill-missing replacement");
-  if (replacement.kind === "median" || replacement.kind === "mostFrequent") {
+  if (replacement.kind === "mean" || replacement.kind === "median" || replacement.kind === "mostFrequent") {
     if (replacement.value !== undefined || replacement.columns !== undefined) {
       fail("A calculated replacement may not contain a value or fallback columns.");
     }

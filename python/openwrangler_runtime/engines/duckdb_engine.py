@@ -822,7 +822,7 @@ class DuckDBEngine(DataFrameEngine):
             if replacement.get("kind") == "fallbackColumns":
                 fallback_columns = [bound_column_name(fallback, kind) for fallback in replacement["columns"]]
                 return [(f"{prefix}df = _ow_fill_missing_from_columns(df, {column!r}, {fallback_columns!r})")]
-            if replacement.get("kind") in {"median", "mostFrequent"}:
+            if replacement.get("kind") in {"mean", "median", "mostFrequent"}:
                 return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, None)"]
             value = generated_fill_replacement_expression(replacement)
             return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, {value})"]
@@ -1046,6 +1046,54 @@ class DuckDBEngine(DataFrameEngine):
         identifier = _quote_ident(column)
         valid = _valid_predicate(identifier, raw_type)
         missing = f"NOT ({valid})"
+
+        if replacement.get("kind") == "mean":
+            if semantic_type != "float":
+                raise EngineError("Mean fill requires a floating-point column.")
+            missing_count = int(self._terminal_scalar(frame, f"SELECT count(*) FILTER (WHERE {missing}) FROM ow"))
+            if missing_count == 0:
+                return frame
+            positive_infinity = "CAST('Infinity' AS DOUBLE)"
+            negative_infinity = "CAST('-Infinity' AS DOUBLE)"
+            stats = self._terminal_rows(
+                frame,
+                (
+                    f"SELECT count(*) FILTER (WHERE {valid} AND {identifier} = {positive_infinity}), "
+                    f"count(*) FILTER (WHERE {valid} AND {identifier} = {negative_infinity}), "
+                    f"max(abs({identifier})) FILTER (WHERE {valid} AND isfinite({identifier})) FROM ow"
+                ),
+            )[0]
+            has_positive_infinity = int(stats[0]) > 0
+            has_negative_infinity = int(stats[1]) > 0
+            if has_positive_infinity and has_negative_infinity:
+                raise EngineError("Cannot fill with the mean because positive and negative infinity make it undefined.")
+            if has_positive_infinity:
+                mean = float("inf")
+            elif has_negative_infinity:
+                mean = float("-inf")
+            else:
+                scale = stats[2]
+                if scale is None:
+                    raise EngineError(
+                        "Cannot fill with the mean because the selected column has no present numeric values."
+                    )
+                scale = float(scale)
+                if scale == 0:
+                    mean = 0.0
+                else:
+                    scaled_mean = float(
+                        self._terminal_scalar(
+                            frame,
+                            (
+                                f"SELECT avg({identifier} / {_sql_literal(scale)}) "
+                                f"FILTER (WHERE {valid} AND isfinite({identifier})) FROM ow"
+                            ),
+                        )
+                    )
+                    mean = max(-1.0, min(1.0, scaled_mean)) * scale
+            replacement_sql = f"CAST({_sql_literal(mean)} AS {raw_type})"
+            expression = f"CASE WHEN {missing} THEN {replacement_sql} ELSE {identifier} END"
+            return self._assign(frame, column, expression)
 
         if replacement.get("kind") == "mostFrequent":
             missing_count = int(self._terminal_scalar(frame, f"SELECT count(*) FILTER (WHERE {missing}) FROM ow"))
@@ -2328,6 +2376,54 @@ def _ow_fill_missing(df, column, replacement_kind, value):
     identifier = _ow_ident(column)
     valid = _ow_valid(identifier, raw_type)
     missing = "NOT (" + valid + ")"
+    if replacement_kind == "mean":
+        if not _ow_is_float(raw_type):
+            raise ValueError("Mean fill requires a floating-point column.")
+        missing_count = int(
+            _ow_query(df, "SELECT count(*) FILTER (WHERE " + missing + ") FROM ow").fetchone()[0]
+        )
+        if missing_count == 0:
+            return df
+        positive_infinity = "CAST('Infinity' AS DOUBLE)"
+        negative_infinity = "CAST('-Infinity' AS DOUBLE)"
+        stats = _ow_query(
+            df,
+            "SELECT count(*) FILTER (WHERE " + valid + " AND " + identifier + " = "
+            + positive_infinity + "), count(*) FILTER (WHERE " + valid + " AND " + identifier
+            + " = " + negative_infinity + "), max(abs(" + identifier + ")) FILTER (WHERE "
+            + valid + " AND isfinite(" + identifier + ")) FROM ow",
+        ).fetchone()
+        has_positive_infinity = int(stats[0]) > 0
+        has_negative_infinity = int(stats[1]) > 0
+        if has_positive_infinity and has_negative_infinity:
+            raise ValueError(
+                "Cannot fill with the mean because positive and negative infinity make it undefined."
+            )
+        if has_positive_infinity:
+            mean = float("inf")
+        elif has_negative_infinity:
+            mean = float("-inf")
+        else:
+            scale = stats[2]
+            if scale is None:
+                raise ValueError(
+                    "Cannot fill with the mean because the selected column has no present numeric values."
+                )
+            scale = float(scale)
+            if scale == 0:
+                mean = 0.0
+            else:
+                scaled_mean = float(
+                    _ow_query(
+                        df,
+                        "SELECT avg(" + identifier + " / " + _ow_literal(scale) + ") FILTER (WHERE "
+                        + valid + " AND isfinite(" + identifier + ")) FROM ow",
+                    ).fetchone()[0]
+                )
+                mean = max(-1.0, min(1.0, scaled_mean)) * scale
+        replacement = "CAST(" + _ow_literal(mean) + " AS " + raw_type + ")"
+        expression = "CASE WHEN " + missing + " THEN " + replacement + " ELSE " + identifier + " END"
+        return _ow_assign(df, column, expression)
     if replacement_kind == "mostFrequent":
         missing_count = int(
             _ow_query(df, "SELECT count(*) FILTER (WHERE " + missing + ") FROM ow").fetchone()[0]
