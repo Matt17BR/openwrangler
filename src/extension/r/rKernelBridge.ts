@@ -1,18 +1,32 @@
 import { randomUUID } from "node:crypto";
+import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
+import { supportsViewPredicate } from "../../shared/filterModel";
 import {
   PROTOCOL_VERSION,
   type CellValue,
+  type CastColumnTransformStep,
+  type CapitalizeTextTransformStep,
+  type CloneColumnTransformStep,
   type ColumnSchema,
   type ColumnSummary,
   type DataDiff,
   type DatasetStatsRequest,
   type DropColumnsTransformStep,
+  type DropDuplicatesTransformStep,
+  type DropMissingRowsTransformStep,
   type ErrorResponse,
+  type ExportDataRequest,
+  type CeilNumberTransformStep,
+  type FindReplaceTransformStep,
+  type FillMissingValuesTransformStep,
   type FilterModel,
+  type FilterRowsTransformStep,
+  type FloorNumberTransformStep,
   type GridPage,
   type InspectStepRequest,
+  type LowerTextTransformStep,
   type OpenSessionRequest,
   type OperationKind,
   type OpenWranglerRequest,
@@ -21,16 +35,23 @@ import {
   type PreviewStepRequest,
   type RenameColumnTransformStep,
   type RetainedTransformStep,
+  type RoundNumberTransformStep,
   type SelectColumnsTransformStep,
   type SessionMetadata,
   type SessionMode,
   type SessionSource,
   type SummaryRequest,
+  type SortRowsTransformStep,
+  type SplitTextTransformStep,
+  type StripTextTransformStep,
+  type TextLengthTransformStep,
+  type UpperTextTransformStep,
   type SourceCapabilities,
   type ValueCount,
   type ValuesRequest
 } from "../../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
+import { beginAtomicFileTransaction, type AtomicFileTransaction } from "../files/safeFileExport";
 import {
   RKernelDiagnosticError,
   RKernelSessionTransport,
@@ -40,6 +61,7 @@ import {
 import type {
   RKernelColumnFilter,
   RKernelColumnReference,
+  RKernelDataExportResult,
   RKernelDatasetStatsResult,
   RKernelPageWindow,
   RKernelPlanUpdatedResult,
@@ -47,10 +69,12 @@ import type {
   RKernelSortRule,
   RKernelStepInspectionResult,
   RKernelStepPreviewResult,
+  RKernelTransformFilterModel,
   RKernelViewQuery
 } from "./rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
+  type RColumnSchema,
   type RColumnType,
   type RDataframeFlavor,
   type RFrameCell,
@@ -63,27 +87,75 @@ import {
 } from "./rNotebookVariableDiscovery";
 
 const CLOSED_SESSION_LIMIT = 1_024;
+const R_DATA_EXPORT_TIMEOUT_MS = 30 * 60_000;
+const R_PRIVATE_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_";
 const R_SUPPORTED_OPERATIONS = Object.freeze([
+  "sortRows",
+  "filterRows",
+  "dropMissingRows",
+  "fillMissingValues",
+  "dropDuplicates",
   "selectColumns",
   "dropColumns",
-  "renameColumn"
+  "renameColumn",
+  "cloneColumn",
+  "castColumn",
+  "textLength",
+  "findReplace",
+  "stripText",
+  "splitText",
+  "capitalizeText",
+  "lowerText",
+  "upperText",
+  "roundNumber",
+  "floorNumber",
+  "ceilNumber"
 ] as OperationKind[]) as OperationKind[];
 
-type RTransformStep = RenameColumnTransformStep | DropColumnsTransformStep | SelectColumnsTransformStep;
+type RTransformStep =
+  | SortRowsTransformStep
+  | FilterRowsTransformStep
+  | DropMissingRowsTransformStep
+  | FillMissingValuesTransformStep
+  | DropDuplicatesTransformStep
+  | RenameColumnTransformStep
+  | CloneColumnTransformStep
+  | CastColumnTransformStep
+  | TextLengthTransformStep
+  | FindReplaceTransformStep
+  | StripTextTransformStep
+  | SplitTextTransformStep
+  | CapitalizeTextTransformStep
+  | LowerTextTransformStep
+  | UpperTextTransformStep
+  | RoundNumberTransformStep
+  | FloorNumberTransformStep
+  | CeilNumberTransformStep
+  | DropColumnsTransformStep
+  | SelectColumnsTransformStep;
 
-const R_CAPABILITIES: SourceCapabilities = Object.freeze({
+const R_BASE_CAPABILITIES = Object.freeze({
   editable: true,
   lazy: false,
   cancel: false,
   exportCsv: false,
   exportParquet: false,
-  notebookInsert: false,
   filter: true,
   sort: true,
   profile: true,
   columnValues: true,
   supportedOperations: R_SUPPORTED_OPERATIONS
+} satisfies Omit<SourceCapabilities, "notebookInsert" | "documentInsert">);
+
+const R_BRIDGE_CAPABILITIES: SourceCapabilities = Object.freeze({
+  ...R_BASE_CAPABILITIES,
+  notebookInsert: true,
+  documentInsert: true
 });
+
+export interface RKernelBridgeFileOperations {
+  readonly beginTransaction?: typeof beginAtomicFileTransaction;
+}
 
 /** Narrow transport surface used by the canonical bridge and its contract tests. */
 export interface RKernelBridgeTransport {
@@ -114,6 +186,7 @@ export interface RKernelBridgeTransport {
     revision: number,
     step: RKernelTransformStep,
     page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
     replaceStepId?: string,
     options?: RKernelRequestOptions
   ): Promise<RKernelStepPreviewResult>;
@@ -140,8 +213,17 @@ export interface RKernelBridgeTransport {
     revision: number,
     stepId: string,
     page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
+    outputSchema: readonly RColumnSchema[],
     options?: RKernelRequestOptions
   ): Promise<RKernelStepInspectionResult>;
+  exportData?(
+    sessionId: string,
+    revision: number,
+    format: "csv",
+    writeChunk: (chunk: Uint8Array) => Promise<void>,
+    options?: RKernelRequestOptions
+  ): Promise<RKernelDataExportResult>;
   close(sessionId: string, options?: RKernelRequestOptions): Promise<void>;
   isSessionMapped(sessionId: string): boolean;
   dispose(): Promise<void>;
@@ -151,20 +233,35 @@ interface RBridgeSession {
   readonly sessionId: string;
   readonly source: SessionSource;
   readonly dataframeFlavor: RDataframeFlavor;
-  readonly shape: Readonly<{ rows: number; columns: number }>;
+  /** Original source row count; this remains the stable row-identity domain. */
+  readonly sourceRows: number;
   readonly sourceSchema: readonly ColumnSchema[];
+  readonly sourceRSchema: readonly RColumnSchema[];
   readonly sourceKeyColumnIds: readonly string[];
+  readonly exportCsv: boolean;
   readonly rowNames: RFramePageContract["frameSemantics"]["rowNames"];
   mode: SessionMode;
   revision: number;
   schema: readonly ColumnSchema[];
+  rSchema: readonly RColumnSchema[];
   committedSchema: readonly ColumnSchema[];
+  committedRSchema: readonly RColumnSchema[];
+  committedRows: number;
+  committedKeyColumnIds: readonly string[];
   filterModel: FilterModel;
+  rows: number;
+  keyColumnIds: readonly string[];
   steps: readonly RetainedTransformStep[];
   planInputSchemas: readonly (readonly ColumnSchema[])[];
+  planInputRSchemas: readonly (readonly RColumnSchema[])[];
+  planInputRows: readonly number[];
+  planInputKeyColumnIds: readonly (readonly string[])[];
   draftStep?: RTransformStep;
   draftReplacesStepId?: string;
   draftInputSchema?: readonly ColumnSchema[];
+  draftInputRSchema?: readonly RColumnSchema[];
+  draftInputRows?: number;
+  draftInputKeyColumnIds?: readonly string[];
   draftBaseFilterModel?: FilterModel;
   draftBaseViewChangeEpoch?: number;
   viewChangeEpoch: number;
@@ -190,6 +287,7 @@ export class RKernelBridge implements OpenWranglerBridge {
   private readonly closedSessionIds = new Set<string>();
   private readonly diagnosticSink: (message: string) => void;
   private readonly runtimeVersion: string;
+  private readonly beginFileTransaction: typeof beginAtomicFileTransaction;
   private kernelGeneration = 0;
   private idleRequested = false;
   private disposed = false;
@@ -204,7 +302,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     const binding = claimVerifiedRNotebookVariableSelection(notebookDocument, verifiedSelection);
     try {
       const transport = new RKernelSessionTransport(context, notebookDocument, randomUUID, randomUUID(), binding);
-      return new RKernelBridge(context, notebookDocument, transport, randomUUID, diagnosticSink, binding.variable);
+      return new RKernelBridge(context, transport, randomUUID, diagnosticSink, binding.variable);
     } catch (error) {
       binding.dispose();
       throw error;
@@ -213,16 +311,17 @@ export class RKernelBridge implements OpenWranglerBridge {
 
   constructor(
     context: vscode.ExtensionContext,
-    notebookDocument: vscode.NotebookDocument,
     transport: RKernelBridgeTransport,
     private readonly createSessionId: () => string = randomUUID,
     diagnosticSink?: (message: string) => void,
-    private readonly verifiedVariable?: RNotebookVariableDescriptor
+    private readonly verifiedVariable?: RNotebookVariableDescriptor,
+    fileOperations: RKernelBridgeFileOperations = {}
   ) {
     this.transport = transport;
     this.diagnosticSink = diagnosticSink ?? ((message) => appendRDiagnostic(context, message));
     const version = context.extension?.packageJSON?.version;
     this.runtimeVersion = typeof version === "string" && version.length > 0 ? version : "0.0.0";
+    this.beginFileTransaction = fileOperations.beginTransaction ?? beginAtomicFileTransaction;
     this.invalidationSubscription = transport.onDidInvalidateKernel(() => {
       this.kernelGeneration += 1;
       for (const session of this.sessions.values()) session.invalidated = true;
@@ -239,7 +338,7 @@ export class RKernelBridge implements OpenWranglerBridge {
           kind: "initialized",
           protocolVersion: PROTOCOL_VERSION,
           runtimeVersion: this.runtimeVersion,
-          capabilities: R_CAPABILITIES
+          capabilities: R_BRIDGE_CAPABILITIES
         };
       case "openSession":
         return this.openSession(withHostSessionIdentity(request, this.createSessionId), options);
@@ -259,6 +358,8 @@ export class RKernelBridge implements OpenWranglerBridge {
         return this.updatePlan(request, options);
       case "inspectStep":
         return this.inspectStep(request, options);
+      case "exportData":
+        return this.exportData(request, options);
       case "closeSession":
         return this.closeSession(request.sessionId, options);
       default:
@@ -326,7 +427,13 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (this.verifiedVariable && result.page.dataframeFlavor !== this.verifiedVariable.dataframeFlavor) {
         throw new Error("The selected R dataframe changed before Open Wrangler opened it.");
       }
-      const session = sessionFromContract(sessionId, request.source, request.mode ?? "viewing", result.page);
+      const session = sessionFromContract(
+        sessionId,
+        request.source,
+        request.mode ?? "viewing",
+        result.page,
+        isExportableRDocumentSource(request.source) && this.transport.exportData !== undefined
+      );
       this.sessions.set(sessionId, session);
       return {
         kind: "sessionOpened",
@@ -375,7 +482,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (session.revision !== expectedRevision || session.schema !== expectedSchema) {
         return staleResponseError(request.sessionId, request.viewRequestId);
       }
-      assertSessionContract(session, contract, request, expectedSchema);
+      assertSessionContract(session, contract, request, expectedSchema, session.rows, session.keyColumnIds, view);
       const nextFilterModel = copyFilterModel(request.filterModel);
       if (!isDeepStrictEqual(session.filterModel, nextFilterModel)) session.viewChangeEpoch += 1;
       session.filterModel = nextFilterModel;
@@ -437,7 +544,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (confirmed.revision !== expectedRevision || confirmed.schema !== expectedSchema) {
         return staleResponseError(request.sessionId, request.viewRequestId);
       }
-      assertSummaryContract(confirmed, columns, summaries);
+      assertSummaryContract(confirmed, columns, summaries, view);
       return {
         kind: "summary",
         revision: confirmed.revision,
@@ -570,7 +677,24 @@ export class RKernelBridge implements OpenWranglerBridge {
       );
     }
     if (
+      request.step.kind !== "sortRows" &&
+      request.step.kind !== "filterRows" &&
+      request.step.kind !== "dropMissingRows" &&
+      request.step.kind !== "fillMissingValues" &&
+      request.step.kind !== "dropDuplicates" &&
       request.step.kind !== "renameColumn" &&
+      request.step.kind !== "cloneColumn" &&
+      request.step.kind !== "castColumn" &&
+      request.step.kind !== "textLength" &&
+      request.step.kind !== "findReplace" &&
+      request.step.kind !== "stripText" &&
+      request.step.kind !== "splitText" &&
+      request.step.kind !== "capitalizeText" &&
+      request.step.kind !== "lowerText" &&
+      request.step.kind !== "upperText" &&
+      request.step.kind !== "roundNumber" &&
+      request.step.kind !== "floorNumber" &&
+      request.step.kind !== "ceilNumber" &&
       request.step.kind !== "dropColumns" &&
       request.step.kind !== "selectColumns"
     ) {
@@ -583,6 +707,9 @@ export class RKernelBridge implements OpenWranglerBridge {
     }
 
     let inputSchema: readonly ColumnSchema[];
+    let inputRSchema: readonly RColumnSchema[];
+    let inputRows: number;
+    let inputKeyColumnIds: readonly string[];
     if (request.replaceStepId !== undefined) {
       const latest = confirmed.steps.at(-1);
       if (!latest || latest.id !== request.replaceStepId || request.step.id !== request.replaceStepId) {
@@ -594,18 +721,28 @@ export class RKernelBridge implements OpenWranglerBridge {
         );
       }
       inputSchema = confirmed.planInputSchemas.at(-1) ?? confirmed.committedSchema;
+      inputRSchema = confirmed.planInputRSchemas.at(-1) ?? confirmed.committedRSchema;
+      inputRows = confirmed.planInputRows.at(-1) ?? confirmed.committedRows;
+      inputKeyColumnIds = confirmed.planInputKeyColumnIds.at(-1) ?? confirmed.committedKeyColumnIds;
     } else {
       if (confirmed.steps.some((step) => step.id === request.step.id)) {
         return errorResponse("invalid_request", "Applied R step IDs must be unique.", true, request.sessionId);
       }
       inputSchema = confirmed.committedSchema;
+      inputRSchema = confirmed.committedRSchema;
+      inputRows = confirmed.committedRows;
+      inputKeyColumnIds = confirmed.committedKeyColumnIds;
     }
 
     let targetSchema: readonly ColumnSchema[];
+    let targetKeyColumnIds: readonly string[];
     let nextFilterModel: FilterModel;
     let view: RKernelViewQuery;
+    let rStep: RKernelTransformStep;
     try {
-      targetSchema = schemaAfterRStep(inputSchema, request.step);
+      targetSchema = schemaAfterRStep(inputSchema, request.step, inputKeyColumnIds);
+      targetKeyColumnIds = keyColumnsAfterRStep(inputKeyColumnIds, targetSchema, request.step);
+      rStep = rTransformStep(request.step, inputSchema);
       nextFilterModel = reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
       view = resolveViewQuery(nextFilterModel, targetSchema);
       validatePageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit);
@@ -622,13 +759,13 @@ export class RKernelBridge implements OpenWranglerBridge {
     const expectedSchema = confirmed.schema;
     const draftBaseFilterModel = copyFilterModel(confirmed.filterModel);
     const draftBaseViewChangeEpoch = confirmed.viewChangeEpoch;
-    const rStep = rTransformStep(request.step);
     try {
       const result = await this.transport.previewStep(
         request.sessionId,
         expectedRevision,
         rStep,
         pageWindow(request.offset, request.limit, request.columnOffset, request.columnLimit, view),
+        inputRSchema,
         request.replaceStepId,
         transportOptions(options)
       );
@@ -640,15 +777,35 @@ export class RKernelBridge implements OpenWranglerBridge {
         confirmed.invalidated = true;
         return staleResponseError(request.sessionId);
       }
-      assertMutationContract(confirmed, result.page, request, targetSchema);
-      assertStructuralDiff(request.step, inputSchema, targetSchema, result.diff);
+      const targetRows = rowCountAfterRStep(request.step, inputRows, result.diff);
+      assertMutationContract(
+        confirmed,
+        result.page,
+        request,
+        targetSchema,
+        targetRows,
+        targetKeyColumnIds,
+        view,
+        request.step.kind === "castColumn"
+          ? request.step.params.column.id
+          : request.step.kind === "splitText"
+            ? `c:step:${request.step.id}:0`
+            : undefined
+      );
+      assertMutationDiff(request.step, inputSchema, targetSchema, inputRows, targetRows, result.page, result.diff);
 
       confirmed.revision = result.revision;
       confirmed.schema = schemaFromContract(result.page);
+      confirmed.rSchema = result.page.schema;
+      confirmed.rows = targetRows;
+      confirmed.keyColumnIds = Object.freeze([...targetKeyColumnIds]);
       confirmed.filterModel = nextFilterModel;
       confirmed.draftStep = copyRTransformStep(request.step);
       confirmed.draftReplacesStepId = request.replaceStepId;
       confirmed.draftInputSchema = copySchema(inputSchema);
+      confirmed.draftInputRSchema = inputRSchema;
+      confirmed.draftInputRows = inputRows;
+      confirmed.draftInputKeyColumnIds = Object.freeze([...inputKeyColumnIds]);
       confirmed.draftBaseFilterModel = draftBaseFilterModel;
       confirmed.draftBaseViewChangeEpoch = draftBaseViewChangeEpoch;
       return {
@@ -678,18 +835,39 @@ export class RKernelBridge implements OpenWranglerBridge {
     const confirmed = session as RBridgeSession;
 
     let targetSchema: readonly ColumnSchema[];
+    let targetRSchema: readonly RColumnSchema[];
+    let targetRows: number;
+    let targetKeyColumnIds: readonly string[];
     let nextFilterModel: FilterModel;
     if (request.kind === "applyDraft") {
-      if (!confirmed.draftStep || !confirmed.draftInputSchema) {
+      if (
+        !confirmed.draftStep ||
+        !confirmed.draftInputSchema ||
+        !confirmed.draftInputRSchema ||
+        confirmed.draftInputRows === undefined ||
+        !confirmed.draftInputKeyColumnIds
+      ) {
         return errorResponse("invalid_request", "There is no R draft step to apply.", true, request.sessionId);
       }
       targetSchema = confirmed.schema;
+      targetRSchema = confirmed.rSchema;
+      targetRows = confirmed.rows;
+      targetKeyColumnIds = confirmed.keyColumnIds;
       nextFilterModel = copyFilterModel(confirmed.filterModel);
     } else if (request.kind === "discardDraft") {
-      if (!confirmed.draftStep || !confirmed.draftInputSchema) {
+      if (
+        !confirmed.draftStep ||
+        !confirmed.draftInputSchema ||
+        !confirmed.draftInputRSchema ||
+        confirmed.draftInputRows === undefined ||
+        !confirmed.draftInputKeyColumnIds
+      ) {
         return errorResponse("invalid_request", "There is no R draft step to discard.", true, request.sessionId);
       }
       targetSchema = confirmed.committedSchema;
+      targetRSchema = confirmed.committedRSchema;
+      targetRows = confirmed.committedRows;
+      targetKeyColumnIds = confirmed.committedKeyColumnIds;
       nextFilterModel =
         confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel
           ? copyFilterModel(confirmed.draftBaseFilterModel)
@@ -707,6 +885,9 @@ export class RKernelBridge implements OpenWranglerBridge {
         return errorResponse("invalid_request", "There is no applied R step to undo.", true, request.sessionId);
       }
       targetSchema = confirmed.planInputSchemas.at(-1) ?? confirmed.sourceSchema;
+      targetRSchema = confirmed.planInputRSchemas.at(-1) ?? confirmed.sourceRSchema;
+      targetRows = confirmed.planInputRows.at(-1) ?? confirmed.sourceRows;
+      targetKeyColumnIds = confirmed.planInputKeyColumnIds.at(-1) ?? confirmed.sourceKeyColumnIds;
       const latest = confirmed.steps.at(-1) as RetainedTransformStep;
       const restore = confirmed.lastAppliedViewRestore;
       nextFilterModel =
@@ -752,20 +933,41 @@ export class RKernelBridge implements OpenWranglerBridge {
         confirmed.invalidated = true;
         return staleResponseError(request.sessionId);
       }
-      assertMutationContract(confirmed, result.page, request, targetSchema);
+      assertMutationContract(confirmed, result.page, request, targetSchema, targetRows, targetKeyColumnIds, view);
+      if (!isDeepStrictEqual(targetRSchema, result.page.schema)) {
+        throw new Error("The R kernel returned a cleaning-plan update for the wrong R schema.");
+      }
 
       const priorRestore = confirmed.lastAppliedViewRestore;
       if (request.kind === "applyDraft") {
         const draftStep = confirmed.draftStep as RTransformStep;
         const draftInputSchema = confirmed.draftInputSchema as readonly ColumnSchema[];
+        const draftInputRSchema = confirmed.draftInputRSchema as readonly RColumnSchema[];
+        const draftInputRows = confirmed.draftInputRows as number;
+        const draftInputKeyColumnIds = confirmed.draftInputKeyColumnIds as readonly string[];
         if (confirmed.draftReplacesStepId === undefined) {
           confirmed.steps = [...confirmed.steps, copyRTransformStep(draftStep)];
           confirmed.planInputSchemas = [...confirmed.planInputSchemas, copySchema(draftInputSchema)];
+          confirmed.planInputRSchemas = [...confirmed.planInputRSchemas, draftInputRSchema];
+          confirmed.planInputRows = [...confirmed.planInputRows, draftInputRows];
+          confirmed.planInputKeyColumnIds = [
+            ...confirmed.planInputKeyColumnIds,
+            Object.freeze([...draftInputKeyColumnIds])
+          ];
         } else {
           confirmed.steps = [...confirmed.steps.slice(0, -1), copyRTransformStep(draftStep)];
           confirmed.planInputSchemas = [...confirmed.planInputSchemas.slice(0, -1), copySchema(draftInputSchema)];
+          confirmed.planInputRSchemas = [...confirmed.planInputRSchemas.slice(0, -1), draftInputRSchema];
+          confirmed.planInputRows = [...confirmed.planInputRows.slice(0, -1), draftInputRows];
+          confirmed.planInputKeyColumnIds = [
+            ...confirmed.planInputKeyColumnIds.slice(0, -1),
+            Object.freeze([...draftInputKeyColumnIds])
+          ];
         }
         confirmed.committedSchema = schemaFromContract(result.page);
+        confirmed.committedRSchema = result.page.schema;
+        confirmed.committedRows = targetRows;
+        confirmed.committedKeyColumnIds = Object.freeze([...targetKeyColumnIds]);
         if (confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel) {
           let before = copyFilterModel(confirmed.draftBaseFilterModel);
           if (
@@ -788,12 +990,21 @@ export class RKernelBridge implements OpenWranglerBridge {
       } else if (request.kind === "undoStep") {
         confirmed.steps = confirmed.steps.slice(0, -1);
         confirmed.planInputSchemas = confirmed.planInputSchemas.slice(0, -1);
+        confirmed.planInputRSchemas = confirmed.planInputRSchemas.slice(0, -1);
+        confirmed.planInputRows = confirmed.planInputRows.slice(0, -1);
+        confirmed.planInputKeyColumnIds = confirmed.planInputKeyColumnIds.slice(0, -1);
         confirmed.committedSchema = schemaFromContract(result.page);
+        confirmed.committedRSchema = result.page.schema;
+        confirmed.committedRows = targetRows;
+        confirmed.committedKeyColumnIds = Object.freeze([...targetKeyColumnIds]);
         confirmed.lastAppliedViewRestore = undefined;
       }
 
       confirmed.revision = result.revision;
       confirmed.schema = schemaFromContract(result.page);
+      confirmed.rSchema = result.page.schema;
+      confirmed.rows = targetRows;
+      confirmed.keyColumnIds = Object.freeze([...targetKeyColumnIds]);
       confirmed.filterModel = nextFilterModel;
       clearDraft(confirmed);
       return {
@@ -833,10 +1044,27 @@ export class RKernelBridge implements OpenWranglerBridge {
       );
     }
     const inputSchema = session.planInputSchemas[stepIndex] as readonly ColumnSchema[];
+    const inputRSchema = session.planInputRSchemas[stepIndex] as readonly RColumnSchema[];
+    const inputRows = session.planInputRows[stepIndex];
+    if (inputRows === undefined) throw new Error("The R bridge is missing an applied-step input row count.");
+    const inputKeyColumnIds = session.planInputKeyColumnIds[stepIndex];
+    if (!inputKeyColumnIds) throw new Error("The R bridge is missing applied-step input key metadata.");
     const outputSchema =
       session.planInputSchemas[stepIndex + 1] ??
       (stepIndex === session.steps.length - 1 ? session.committedSchema : undefined);
     if (!outputSchema) throw new Error("The R bridge is missing an applied-step output schema.");
+    const outputRSchema =
+      session.planInputRSchemas[stepIndex + 1] ??
+      (stepIndex === session.steps.length - 1 ? session.committedRSchema : undefined);
+    if (!outputRSchema) throw new Error("The R bridge is missing an applied-step output R schema.");
+    const outputRows =
+      session.planInputRows[stepIndex + 1] ??
+      (stepIndex === session.steps.length - 1 ? session.committedRows : undefined);
+    if (outputRows === undefined) throw new Error("The R bridge is missing an applied-step output row count.");
+    const outputKeyColumnIds =
+      session.planInputKeyColumnIds[stepIndex + 1] ??
+      (stepIndex === session.steps.length - 1 ? session.committedKeyColumnIds : undefined);
+    if (!outputKeyColumnIds) throw new Error("The R bridge is missing applied-step output key metadata.");
     const expectedRevision = session.revision;
     const page = pageWindow(
       request.offset,
@@ -851,6 +1079,8 @@ export class RKernelBridge implements OpenWranglerBridge {
         expectedRevision,
         request.stepId,
         page,
+        inputRSchema,
+        outputRSchema,
         transportOptions(options)
       );
       if (session.invalidated) return kernelChangedError(request.sessionId);
@@ -865,12 +1095,50 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (result.stepIndex !== stepIndex || result.stepId !== request.stepId) {
         throw new Error("The R kernel inspected a different cleaning step.");
       }
-      assertMutationContract(session, result.inputPage, request, inputSchema);
-      assertMutationContract(session, result.outputPage, request, outputSchema);
-      if (!sameSchema(inputSchema, result.inputSchema) || !sameSchema(outputSchema, result.outputSchema)) {
+      assertMutationContract(
+        session,
+        result.inputPage,
+        request,
+        inputSchema,
+        inputRows,
+        inputKeyColumnIds,
+        emptyRViewQuery()
+      );
+      assertMutationContract(
+        session,
+        result.outputPage,
+        request,
+        outputSchema,
+        outputRows,
+        outputKeyColumnIds,
+        emptyRViewQuery()
+      );
+      if (
+        !sameSchema(inputSchema, result.inputSchema) ||
+        !sameSchema(outputSchema, result.outputSchema) ||
+        !isDeepStrictEqual(inputRSchema, result.inputSchema) ||
+        !isDeepStrictEqual(outputRSchema, result.outputSchema)
+      ) {
         throw new Error("The R kernel returned mismatched applied-step schemas.");
       }
-      assertStructuralDiff(session.steps[stepIndex] as RTransformStep, inputSchema, outputSchema, result.diff);
+      const diff = inspectionDiff(
+        session.steps[stepIndex] as RTransformStep,
+        inputSchema,
+        outputSchema,
+        result.inputPage,
+        result.outputPage,
+        inputRows,
+        outputRows
+      );
+      assertMutationDiff(
+        session.steps[stepIndex] as RTransformStep,
+        inputSchema,
+        outputSchema,
+        inputRows,
+        outputRows,
+        result.outputPage,
+        diff
+      );
       return {
         kind: "stepInspection",
         revision: session.revision,
@@ -880,11 +1148,132 @@ export class RKernelBridge implements OpenWranglerBridge {
         outputPage: gridPageFromContract(result.outputPage),
         inputSchema: copySchema(inputSchema),
         outputSchema: copySchema(outputSchema),
-        diff: copyDiff(result.diff),
+        diff: copyDiff(diff),
         code: result.code
       };
     } catch (error) {
       if (session.invalidated) return kernelChangedError(request.sessionId);
+      if (error instanceof RKernelDiagnosticError) return diagnosticResponse(error, request.sessionId);
+      throw error;
+    }
+  }
+
+  private async exportData(request: ExportDataRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) return unknownSessionError(request.sessionId);
+    if (session.invalidated) return kernelChangedError(request.sessionId);
+    const writer = this.transport.exportData;
+    if (!session.exportCsv || !writer || request.format !== "csv") {
+      return errorResponse(
+        "unsupported_operation",
+        "Cleaned-data export is available as CSV for local R document sessions opened in Editing mode.",
+        true,
+        request.sessionId
+      );
+    }
+    if (session.mode !== "editing") {
+      return errorResponse(
+        "unsupported_mode",
+        "Change this R session to Editing mode before exporting cleaned data.",
+        true,
+        request.sessionId
+      );
+    }
+    const stale = staleRevisionError(session, request.revision);
+    if (stale) return stale;
+    if (session.draftStep) {
+      return errorResponse(
+        "invalid_request",
+        "Apply or discard the current R draft before exporting cleaned data.",
+        true,
+        request.sessionId
+      );
+    }
+    if (!path.isAbsolute(request.path)) {
+      return errorResponse(
+        "invalid_request",
+        "Choose an absolute file-system destination for the R export.",
+        true,
+        request.sessionId
+      );
+    }
+
+    const expectedGeneration = this.kernelGeneration;
+    const expectedRevision = session.revision;
+    const expectedRows = session.committedRows;
+    const expectedColumns = session.committedSchema.length;
+    let transaction: AtomicFileTransaction | undefined;
+    let settled = false;
+    try {
+      transaction = await this.beginFileTransaction({
+        destination: vscode.Uri.file(request.path),
+        protectedSources: [documentSourceUri(session.source)]
+      });
+      const output = transaction;
+      if (this.disposed || this.sessions.get(request.sessionId) !== session) {
+        await transaction.rollback();
+        settled = true;
+        return unknownSessionError(request.sessionId);
+      }
+      if (session.invalidated || expectedGeneration !== this.kernelGeneration) {
+        await transaction.rollback();
+        settled = true;
+        return kernelChangedError(request.sessionId);
+      }
+      if (session.revision !== expectedRevision) {
+        await transaction.rollback();
+        settled = true;
+        return staleResponseError(request.sessionId);
+      }
+      const result = await writer.call(
+        this.transport,
+        request.sessionId,
+        expectedRevision,
+        "csv",
+        (chunk) => output.write(chunk),
+        transportOptions({
+          ...options,
+          timeoutMs: options.timeoutMs ?? R_DATA_EXPORT_TIMEOUT_MS
+        })
+      );
+
+      if (this.disposed || this.sessions.get(request.sessionId) !== session) {
+        await transaction.rollback();
+        settled = true;
+        return unknownSessionError(request.sessionId);
+      }
+      if (session.invalidated || expectedGeneration !== this.kernelGeneration) {
+        await transaction.rollback();
+        settled = true;
+        return kernelChangedError(request.sessionId);
+      }
+      if (session.revision !== expectedRevision) {
+        await transaction.rollback();
+        settled = true;
+        return staleResponseError(request.sessionId);
+      }
+      assertRExportResult(result, request.sessionId, expectedRevision, expectedRows, expectedColumns);
+      await transaction.commit();
+      settled = true;
+      return {
+        kind: "dataExported",
+        revision: expectedRevision,
+        path: request.path,
+        format: "csv",
+        shape: { rows: result.rows, columns: result.columns }
+      };
+    } catch (error) {
+      if (transaction && !settled) {
+        try {
+          await transaction.rollback();
+          settled = true;
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            "R data export failed and its unpublished temporary file could not be settled safely."
+          );
+        }
+      }
       if (error instanceof RKernelDiagnosticError) return diagnosticResponse(error, request.sessionId);
       throw error;
     }
@@ -911,7 +1300,10 @@ export class RKernelBridge implements OpenWranglerBridge {
     options: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
     const sessionId = session.sessionId;
-    if (session.invalidated) {
+    // A kernel restart retires its process-local mapping, but a detached
+    // mutation only invalidates the bridge view while the transport still
+    // owns the live session. The latter must receive a real terminal close.
+    if (session.invalidated && !this.transport.isSessionMapped(sessionId)) {
       this.sessions.delete(sessionId);
       this.rememberClosedSession(sessionId);
       return { kind: "sessionClosed", sessionId };
@@ -999,10 +1391,13 @@ function withHostSessionIdentity(request: OpenSessionRequest, createId: () => st
 
 function validateOpenRequest(request: OpenSessionRequest): ErrorResponse | undefined {
   const sessionId = request.requestedSessionId;
-  if (request.source.kind !== "notebookVariable" || !request.source.variableName) {
+  if (
+    (request.source.kind !== "notebookVariable" && request.source.kind !== "documentVariable") ||
+    !request.source.variableName
+  ) {
     return errorResponse(
       "unsupported_source",
-      "R sessions currently open named variables from an R notebook.",
+      "R sessions open named variables from an R notebook or an Open Wrangler R source session.",
       true,
       sessionId
     );
@@ -1102,16 +1497,19 @@ function assertColumnValuesContract(
     throw new Error("The R kernel returned values for the wrong column or request limit.");
   }
   const expectedType = requireRColumnType(schema.type);
-  if (
-    result.values.some(
-      (entry) =>
-        !Number.isSafeInteger(entry.count) ||
-        entry.count < 1 ||
-        entry.selectionValue === undefined ||
-        entry.selectionValue.columnType !== expectedType
-    )
-  ) {
-    throw new Error("The R kernel returned values with incompatible typed selections.");
+  let returnedCount = 0;
+  for (const entry of result.values) {
+    if (
+      !Number.isSafeInteger(entry.count) ||
+      entry.count < 1 ||
+      entry.count > session.rows ||
+      entry.count > session.rows - returnedCount ||
+      entry.selectionValue === undefined ||
+      entry.selectionValue.columnType !== expectedType
+    ) {
+      throw new Error("The R kernel returned values with incompatible typed selections or row counts.");
+    }
+    returnedCount += entry.count;
   }
 }
 
@@ -1167,6 +1565,105 @@ function resolveSorts(filterModel: FilterModel, schema: readonly ColumnSchema[])
   );
 }
 
+function resolveTransformSortRules(
+  rules: readonly SortRowsTransformStep["params"]["rules"][number][],
+  schema: readonly ColumnSchema[],
+  purpose: string
+): readonly RKernelSortRule[] {
+  if (rules.length > R_FRAME_CONTRACT_LIMITS.sortRules) {
+    throw new TypeError(`${purpose} supports at most ${R_FRAME_CONTRACT_LIMITS.sortRules} sort rules.`);
+  }
+  const seen = new Set<string>();
+  return Object.freeze(
+    rules.map((rule) => {
+      const column = requireTransformColumn(rule.column, schema, purpose);
+      if (seen.has(column.id)) throw new TypeError(`${purpose} repeats the same R column identity.`);
+      seen.add(column.id);
+      return Object.freeze({
+        column: Object.freeze({ id: column.id, name: column.name }),
+        direction: rule.direction,
+        nulls: rule.nulls
+      });
+    })
+  );
+}
+
+function resolveTransformFilterModel(
+  model: FilterRowsTransformStep["params"]["filterModel"],
+  schema: readonly ColumnSchema[]
+): RKernelTransformFilterModel {
+  if (model.filters.length > R_FRAME_CONTRACT_LIMITS.filters) {
+    throw new TypeError(`Filter rows supports at most ${R_FRAME_CONTRACT_LIMITS.filters} column filters.`);
+  }
+  const seen = new Set<string>();
+  const filters = Object.freeze(
+    model.filters.map<RKernelColumnFilter>((filter) => {
+      const column = requireTransformColumn(filter.column, schema, "Filter rows");
+      if (seen.has(column.id)) throw new TypeError("Filter rows repeats the same R column identity.");
+      seen.add(column.id);
+      const type = requireRColumnType(column.type);
+      if (filter.type !== type) {
+        throw new TypeError(
+          `Filter rows declares ${filter.type} for ${JSON.stringify(column.name)}, but the R column is ${type}.`
+        );
+      }
+      if (filter.predicates.length > R_FRAME_CONTRACT_LIMITS.predicatesPerFilter) {
+        throw new TypeError(
+          `Filter rows supports at most ${R_FRAME_CONTRACT_LIMITS.predicatesPerFilter} predicates per column.`
+        );
+      }
+      for (const predicate of filter.predicates) {
+        if (!supportsViewPredicate(type, predicate.operator)) {
+          throw new TypeError(`The ${predicate.operator} predicate is not available for R ${type} columns.`);
+        }
+      }
+      if (
+        filter.valueFilter &&
+        filter.valueFilter.selectedValues.length > R_FRAME_CONTRACT_LIMITS.selectedValuesPerFilter
+      ) {
+        throw new TypeError(
+          `Filter rows supports at most ${R_FRAME_CONTRACT_LIMITS.selectedValuesPerFilter} selected values per column.`
+        );
+      }
+      return Object.freeze({
+        column: Object.freeze({ id: column.id, name: column.name }),
+        type,
+        ...(filter.logic ? { logic: filter.logic } : {}),
+        ...(filter.valueFilter
+          ? {
+              valueFilter: Object.freeze({
+                ...filter.valueFilter,
+                selectedValues: Object.freeze([...filter.valueFilter.selectedValues])
+              })
+            }
+          : {}),
+        predicates: Object.freeze(filter.predicates.map((predicate) => Object.freeze({ ...predicate })))
+      });
+    })
+  );
+  return Object.freeze({
+    ...(model.logic ? { logic: model.logic } : {}),
+    filters,
+    sort: resolveTransformSortRules(model.sort, schema, "Filter rows")
+  });
+}
+
+function requireTransformColumn(
+  reference: Readonly<{ id: string; name: string }>,
+  schema: readonly ColumnSchema[],
+  purpose: string
+): ColumnSchema {
+  const matches = schema.filter((column) => column.id === reference.id && column.name === reference.name);
+  if (matches.length !== 1) {
+    throw new TypeError(`${purpose} contains a stale or mismatched R column reference.`);
+  }
+  const column = matches[0] as ColumnSchema;
+  if (column.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  return column;
+}
+
 function validateProfileRequest(
   request: SummaryRequest | DatasetStatsRequest,
   session: RBridgeSession | undefined
@@ -1196,14 +1693,19 @@ function resolveProfileColumns(
 function assertSummaryContract(
   session: RBridgeSession,
   requested: readonly RKernelColumnReference[],
-  summaries: readonly ColumnSummary[]
+  summaries: readonly ColumnSummary[],
+  view: RKernelViewQuery
 ): void {
   if (summaries.length !== requested.length) {
     throw new Error("The R kernel returned summaries for the wrong column projection.");
   }
   const schemaById = new Map(session.schema.map((column) => [column.id, column]));
   const totalRows = summaries[0]?.totalCount ?? 0;
-  if (totalRows > session.shape.rows || summaries.some((summary) => summary.totalCount !== totalRows)) {
+  if (
+    totalRows > session.rows ||
+    (view.filters.length === 0 && totalRows !== session.rows) ||
+    summaries.some((summary) => summary.totalCount !== totalRows)
+  ) {
     throw new Error("The R kernel returned summaries for inconsistent filtered views.");
   }
   for (const [index, summary] of summaries.entries()) {
@@ -1243,8 +1745,8 @@ function assertDatasetStatsContract(
   const rows = result.totalRows;
   const columns = session.schema.length;
   if (
-    rows > session.shape.rows ||
-    (view.filters.length === 0 && rows !== session.shape.rows) ||
+    rows > session.rows ||
+    (view.filters.length === 0 && rows !== session.rows) ||
     result.stats.missingRows > rows ||
     result.stats.duplicateRows > Math.max(0, rows - 1) ||
     result.stats.missingCells > rows * columns ||
@@ -1268,30 +1770,42 @@ function sessionFromContract(
   sessionId: string,
   source: SessionSource,
   mode: SessionMode,
-  contract: RFramePageContract
+  contract: RFramePageContract,
+  exportCsv: boolean
 ): RBridgeSession {
   const schema = schemaFromContract(contract);
   return {
     sessionId,
     source: copySource(source),
     dataframeFlavor: contract.dataframeFlavor,
-    shape: Object.freeze({ ...contract.shape }),
+    sourceRows: contract.shape.rows,
     sourceSchema: schema,
+    sourceRSchema: contract.schema,
     sourceKeyColumnIds: Object.freeze([...contract.frameSemantics.keyColumnIds]),
+    exportCsv,
     committedSchema: schema,
+    committedRSchema: contract.schema,
+    committedRows: contract.page.totalRows,
+    committedKeyColumnIds: Object.freeze([...contract.frameSemantics.keyColumnIds]),
     schema,
+    rSchema: contract.schema,
+    rows: contract.page.totalRows,
+    keyColumnIds: Object.freeze([...contract.frameSemantics.keyColumnIds]),
     rowNames: contract.frameSemantics.rowNames,
     mode,
     revision: 0,
     filterModel: emptyFilterModel(),
     steps: Object.freeze([]),
     planInputSchemas: Object.freeze([]),
+    planInputRSchemas: Object.freeze([]),
+    planInputRows: Object.freeze([]),
+    planInputKeyColumnIds: Object.freeze([]),
     viewChangeEpoch: 0,
     invalidated: false
   };
 }
 
-function metadataFor(session: RBridgeSession, filteredRows: number = session.shape.rows): SessionMetadata {
+function metadataFor(session: RBridgeSession, filteredRows: number = session.rows): SessionMetadata {
   return {
     protocolVersion: PROTOCOL_VERSION,
     sessionId: session.sessionId,
@@ -1300,8 +1814,8 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.sha
     rDataframeFlavor: session.dataframeFlavor,
     mode: session.mode,
     source: copySource(session.source),
-    capabilities: R_CAPABILITIES,
-    shape: { rows: session.shape.rows, columns: session.schema.length },
+    capabilities: rCapabilitiesForSource(session.source, session.mode === "editing" && session.exportCsv),
+    shape: { rows: session.rows, columns: session.schema.length },
     filteredShape: { rows: filteredRows, columns: session.schema.length },
     schema: copySchema(session.schema),
     filterModel: copyFilterModel(session.filterModel),
@@ -1312,6 +1826,61 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.sha
     ...(session.draftStep ? { draftStep: copyRTransformStep(session.draftStep) } : {}),
     ...(session.draftReplacesStepId ? { draftReplacesStepId: session.draftReplacesStepId } : {})
   };
+}
+
+function rCapabilitiesForSource(source: SessionSource, exportCsv: boolean): SourceCapabilities {
+  return {
+    ...R_BASE_CAPABILITIES,
+    exportCsv,
+    notebookInsert: source.kind === "notebookVariable",
+    ...(source.kind === "documentVariable" ? { documentInsert: true } : {})
+  };
+}
+
+function documentSourceUri(source: SessionSource): vscode.Uri {
+  if (source.kind !== "documentVariable" || !source.uri) {
+    throw new TypeError("R CSV export requires an originating R document URI.");
+  }
+  const uri = vscode.Uri.parse(source.uri, true);
+  if (uri.scheme !== "file" || !uri.fsPath) {
+    throw new TypeError("R CSV export requires a local R document source.");
+  }
+  return uri;
+}
+
+function isExportableRDocumentSource(source: SessionSource): boolean {
+  if (source.kind !== "documentVariable" || !source.uri) return false;
+  try {
+    const uri = vscode.Uri.parse(source.uri, true);
+    // The public export request currently retains only a filesystem path, not
+    // the Save-dialog URI authority. Do not advertise remote export until the
+    // host can preserve and revalidate that authority end to end.
+    return uri.scheme === "file" && Boolean(uri.fsPath);
+  } catch {
+    return false;
+  }
+}
+
+function assertRExportResult(
+  result: RKernelDataExportResult,
+  sessionId: string,
+  revision: number,
+  rows: number,
+  columns: number
+): void {
+  if (
+    result.sessionId !== sessionId ||
+    result.revision !== revision ||
+    result.format !== "csv" ||
+    !Number.isSafeInteger(result.rows) ||
+    result.rows < 0 ||
+    result.rows !== rows ||
+    !Number.isSafeInteger(result.columns) ||
+    result.columns < 0 ||
+    result.columns !== columns
+  ) {
+    throw new Error("The R runtime returned a mismatched cleaned-data export result.");
+  }
 }
 
 function gridPageFromContract(contract: RFramePageContract): GridPage {
@@ -1349,22 +1918,25 @@ function assertSessionContract(
   session: RBridgeSession,
   contract: RFramePageContract,
   request: PageWindowCoordinates,
-  expectedSchema: readonly ColumnSchema[]
+  expectedSchema: readonly ColumnSchema[],
+  expectedRows: number,
+  expectedKeyColumnIds: readonly string[],
+  view: RKernelViewQuery
 ): void {
   const resolvedColumnOffset = Math.min(request.columnOffset, expectedSchema.length);
   const expectedColumnIds = expectedSchema
     .slice(resolvedColumnOffset, resolvedColumnOffset + request.columnLimit)
     .map((column) => column.id);
-  const expectedKeyColumnIds = retainedKeyPrefix(session.sourceKeyColumnIds, expectedSchema);
   const mismatches = [
     contract.dataframeFlavor === session.dataframeFlavor ? undefined : "dataframe flavor",
-    contract.shape.rows === session.shape.rows ? undefined : "row count",
+    contract.shape.rows === session.sourceRows ? undefined : "row-identity domain",
     contract.shape.columns === expectedSchema.length ? undefined : "column count",
     contract.frameSemantics.rowNames === session.rowNames ? undefined : "row-name semantics",
     isDeepStrictEqual(contract.frameSemantics.keyColumnIds, expectedKeyColumnIds) ? undefined : "key columns",
     contract.page.offset === request.offset ? undefined : "row offset",
     contract.page.limit === request.limit ? undefined : "row limit",
-    contract.page.totalRows <= session.shape.rows ? undefined : "filtered row count",
+    contract.page.totalRows <= expectedRows ? undefined : "filtered row count",
+    view.filters.length > 0 || contract.page.totalRows === expectedRows ? undefined : "active row count",
     contract.page.columnOffset === resolvedColumnOffset ? undefined : "column offset",
     contract.page.columnLimit === request.columnLimit ? undefined : "column limit",
     sameSchema(expectedSchema, contract.schema) ? undefined : "schema",
@@ -1379,9 +1951,27 @@ function assertMutationContract(
   session: RBridgeSession,
   contract: RFramePageContract,
   request: PageWindowCoordinates,
-  expectedSchema: readonly ColumnSchema[]
+  expectedSchema: readonly ColumnSchema[],
+  expectedRows: number,
+  expectedKeyColumnIds: readonly string[],
+  view: RKernelViewQuery,
+  dynamicNullableColumnId?: string
 ): void {
-  assertSessionContract(session, contract, request, expectedSchema);
+  if (dynamicNullableColumnId === undefined) {
+    assertSessionContract(session, contract, request, expectedSchema, expectedRows, expectedKeyColumnIds, view);
+    return;
+  }
+  const actualTarget = contract.schema.find((column) => column.id === dynamicNullableColumnId);
+  const expectedTarget = expectedSchema.find((column) => column.id === dynamicNullableColumnId);
+  if (!actualTarget || !expectedTarget || (expectedTarget.nullable && !actualTarget.nullable)) {
+    throw new Error("The R dataframe contract returned invalid nullability for the converted column.");
+  }
+  const normalized = Object.freeze(
+    expectedSchema.map((column) =>
+      column.id === dynamicNullableColumnId ? Object.freeze({ ...column, nullable: actualTarget.nullable }) : column
+    )
+  );
+  assertSessionContract(session, contract, request, normalized, expectedRows, expectedKeyColumnIds, view);
 }
 
 function sameSchema(expected: readonly ColumnSchema[], actual: RFramePageContract["schema"]): boolean {
@@ -1421,9 +2011,36 @@ function copySchema(schema: readonly ColumnSchema[]): ColumnSchema[] {
   return schema.map((column) => ({ ...column }));
 }
 
-function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransformStep): readonly ColumnSchema[] {
+function schemaAfterRStep(
+  inputSchema: readonly ColumnSchema[],
+  step: RTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  if (
+    step.kind === "sortRows" ||
+    step.kind === "filterRows" ||
+    step.kind === "dropMissingRows" ||
+    step.kind === "dropDuplicates"
+  ) {
+    return Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })));
+  }
   if (step.kind === "selectColumns") return schemaAfterSelect(inputSchema, step);
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
+  if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
+  if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);
+  if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step, activeKeyColumnIds);
+  if (isRNumericRoundingStep(step)) return schemaAfterNumericRounding(inputSchema, step, activeKeyColumnIds);
+  if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
+  if (
+    step.kind === "findReplace" ||
+    step.kind === "stripText" ||
+    step.kind === "splitText" ||
+    step.kind === "capitalizeText" ||
+    step.kind === "lowerText" ||
+    step.kind === "upperText"
+  ) {
+    return schemaAfterTextTransform(inputSchema, step, activeKeyColumnIds);
+  }
   const matches = inputSchema.filter(
     (column) => column.id === step.params.column.id && column.name === step.params.column.name
   );
@@ -1440,6 +2057,459 @@ function schemaAfterRStep(inputSchema: readonly ColumnSchema[], step: RTransform
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
   );
+}
+
+function schemaAfterNumericRounding(
+  inputSchema: readonly ColumnSchema[],
+  step: RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const label = numericRoundingLabel(step);
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError(`The ${label.toLowerCase()} column reference no longer matches the active R dataframe.`);
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (source.rawType !== "integer" && source.rawType !== "double" && source.rawType !== "integer64") {
+    throw new TypeError(`${label} requires an R integer, double, or integer64 column.`);
+  }
+  if (
+    step.kind === "roundNumber" &&
+    step.params.decimals !== undefined &&
+    (!Number.isSafeInteger(step.params.decimals) || Math.abs(step.params.decimals) > 2_147_483_647)
+  ) {
+    throw new TypeError("Round requires a decimal-place count within R's integer range.");
+  }
+
+  const outputName = step.params.newColumn;
+  if (outputName !== undefined && outputName.length === 0) {
+    throw new TypeError(`The ${label.toLowerCase()} R column name may not be empty.`);
+  }
+  const inPlace = outputName === undefined || outputName === source.name;
+  const targetType =
+    source.rawType === "integer64"
+      ? { rawType: "integer64", type: "integer" as const }
+      : { rawType: "double", type: "float" as const };
+  if (inPlace) {
+    if (activeKeyColumnIds.includes(source.id)) {
+      throw new TypeError(`${label} cannot replace a keyed data.table column in place. Choose a new output column.`);
+    }
+    return Object.freeze(
+      inputSchema.map((column) => Object.freeze(column.id === source.id ? { ...column, ...targetType } : { ...column }))
+    );
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError(`${label} exceeds the R frame contract column limit.`);
+  }
+  if (Buffer.byteLength(outputName, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError(`The ${label.toLowerCase()} R column name exceeds the frame contract limit.`);
+  }
+  if (outputName.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError(
+      `The ${label.toLowerCase()} R column name uses Open Wrangler's reserved private row-identity prefix.`
+    );
+  }
+  if (inputSchema.some((column) => column.name === outputName)) {
+    throw new TypeError(`The R column name ${JSON.stringify(outputName)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
+    throw new TypeError(`The ${label.toLowerCase()} R column identity exceeds the frame contract limit.`);
+  }
+  if (inputSchema.some((column) => column.id === id)) {
+    throw new TypeError(`The ${label.toLowerCase()} R column identity already exists in the active dataframe.`);
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: outputName,
+      position: inputSchema.length,
+      ...targetType,
+      nullable: source.nullable
+    })
+  ]);
+}
+
+function isRNumericRoundingStep(
+  step: RTransformStep
+): step is RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep {
+  return step.kind === "roundNumber" || step.kind === "floorNumber" || step.kind === "ceilNumber";
+}
+
+function isRNumericRoundingInPlace(
+  step: RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep
+): boolean {
+  return step.params.newColumn === undefined || step.params.newColumn === step.params.column.name;
+}
+
+function numericRoundingLabel(
+  step: RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep
+): "Round" | "Floor" | "Ceiling" {
+  if (step.kind === "roundNumber") return "Round";
+  if (step.kind === "floorNumber") return "Floor";
+  return "Ceiling";
+}
+
+function keyColumnsAfterRStep(
+  inputKeyColumnIds: readonly string[],
+  outputSchema: readonly ColumnSchema[],
+  step: RTransformStep
+): readonly string[] {
+  if (step.kind === "sortRows" || (step.kind === "filterRows" && step.params.filterModel.sort.length > 0)) {
+    return Object.freeze([]);
+  }
+  return Object.freeze([...retainedKeyPrefix(inputKeyColumnIds, outputSchema)]);
+}
+
+function rowCountAfterRStep(step: RTransformStep, inputRows: number, diff: DataDiff): number {
+  if (isRRowReductionStep(step)) {
+    if (diff.addedRows !== 0 || diff.removedRows > inputRows) {
+      throw new Error(`The R kernel returned invalid row counts for ${rowOperationLabel(step)}.`);
+    }
+    return inputRows - diff.removedRows;
+  }
+  if (diff.addedRows !== 0 || diff.removedRows !== 0) {
+    throw new Error(`The R kernel returned an unexpected row-count change for ${step.kind}.`);
+  }
+  return inputRows;
+}
+
+function isRRowReductionStep(
+  step: RTransformStep
+): step is FilterRowsTransformStep | DropMissingRowsTransformStep | DropDuplicatesTransformStep {
+  return step.kind === "filterRows" || step.kind === "dropMissingRows" || step.kind === "dropDuplicates";
+}
+
+function rowOperationLabel(
+  step: FilterRowsTransformStep | DropMissingRowsTransformStep | DropDuplicatesTransformStep
+): string {
+  if (step.kind === "filterRows") return "Filter rows";
+  if (step.kind === "dropMissingRows") return "Drop missing rows";
+  return "Drop duplicates";
+}
+
+function schemaAfterFillMissing(
+  inputSchema: readonly ColumnSchema[],
+  step: FillMissingValuesTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The fill-missing column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (activeKeyColumnIds.includes(source.id)) {
+    throw new TypeError("Fill Missing Values cannot replace a data.table key column. Clone the column first.");
+  }
+  const replacement = step.params.replacement;
+  const compatible =
+    (source.type === "string" && (replacement.kind === "mostFrequent" || replacement.kind === "string")) ||
+    (source.type === "integer" && (replacement.kind === "median" || replacement.kind === "integer")) ||
+    (source.type === "float" &&
+      (replacement.kind === "median" || replacement.kind === "integer" || replacement.kind === "float")) ||
+    (source.type === "boolean" && (replacement.kind === "mostFrequent" || replacement.kind === "boolean")) ||
+    (source.type === "date" && replacement.kind === "date") ||
+    (source.type === "datetime" && replacement.kind === "datetime");
+  if (!compatible) {
+    throw new TypeError(`The ${replacement.kind} replacement is incompatible with R ${source.rawType}.`);
+  }
+  if (
+    replacement.kind === "string" &&
+    Buffer.byteLength(replacement.value, "utf8") > R_FRAME_CONTRACT_LIMITS.textBytes
+  ) {
+    throw new TypeError("The R replacement text exceeds the frame contract limit.");
+  }
+  return Object.freeze(
+    inputSchema.map((column) => Object.freeze(column.id === source.id ? { ...column, nullable: false } : { ...column }))
+  );
+}
+
+function schemaAfterCast(
+  inputSchema: readonly ColumnSchema[],
+  step: CastColumnTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The converted column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (activeKeyColumnIds.includes(source.id)) {
+    throw new TypeError(
+      "Convert type cannot replace a data.table key column. Clone the column first, then convert it."
+    );
+  }
+
+  const target = rCastTarget(source.rawType, step.params.dtype);
+  return Object.freeze(
+    inputSchema.map((column) =>
+      Object.freeze(
+        column.id === source.id
+          ? { ...column, rawType: target.rawType, type: target.type, nullable: source.nullable }
+          : { ...column }
+      )
+    )
+  );
+}
+
+function rCastTarget(
+  sourceRawType: string,
+  dtype: CastColumnTransformStep["params"]["dtype"]
+): Readonly<{ rawType: string; type: ColumnSchema["type"] }> {
+  const factor = sourceRawType === "factor" || sourceRawType === "ordered factor";
+  const text = sourceRawType === "character" || factor;
+  const ordinaryScalar =
+    sourceRawType === "logical" || sourceRawType === "integer" || sourceRawType === "double" || text;
+  if (dtype === "string") {
+    if (
+      !ordinaryScalar &&
+      sourceRawType !== "Date" &&
+      sourceRawType !== "POSIXct" &&
+      sourceRawType !== "difftime" &&
+      sourceRawType !== "integer64"
+    ) {
+      throw new TypeError(`Convert type does not support R ${sourceRawType} columns.`);
+    }
+    return { rawType: "character", type: "string" };
+  }
+  if (dtype === "integer") {
+    if (sourceRawType === "integer64") return { rawType: "integer64", type: "integer" };
+    if (!ordinaryScalar) throw unsupportedRCast(sourceRawType, dtype);
+    return { rawType: "integer", type: "integer" };
+  }
+  if (dtype === "float") {
+    if (!ordinaryScalar) throw unsupportedRCast(sourceRawType, dtype);
+    return { rawType: "double", type: "float" };
+  }
+  if (dtype === "boolean") {
+    if (!ordinaryScalar) throw unsupportedRCast(sourceRawType, dtype);
+    return { rawType: "logical", type: "boolean" };
+  }
+  if (dtype === "date") {
+    if (!text && sourceRawType !== "Date" && sourceRawType !== "POSIXct") {
+      throw unsupportedRCast(sourceRawType, dtype);
+    }
+    return { rawType: "Date", type: "date" };
+  }
+  if (dtype === "datetime") {
+    if (!text && sourceRawType !== "Date" && sourceRawType !== "POSIXct") {
+      throw unsupportedRCast(sourceRawType, dtype);
+    }
+    return { rawType: "POSIXct", type: "datetime" };
+  }
+  throw new TypeError("Convert type received an unsupported R target type.");
+}
+
+function unsupportedRCast(sourceRawType: string, dtype: string): TypeError {
+  return new TypeError(`Convert type cannot safely convert R ${sourceRawType} values to ${dtype}.`);
+}
+
+function schemaAfterTextTransform(
+  inputSchema: readonly ColumnSchema[],
+  step:
+    | FindReplaceTransformStep
+    | StripTextTransformStep
+    | SplitTextTransformStep
+    | CapitalizeTextTransformStep
+    | LowerTextTransformStep
+    | UpperTextTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const label = textTransformLabel(step);
+  const description = label.toLowerCase();
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError(`The ${description} column reference no longer matches the active R dataframe.`);
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (source.type !== "string") throw new TypeError(`${label} requires an R string or factor column.`);
+  const outputName = step.params.newColumn;
+  if (outputName !== undefined && outputName.length === 0) {
+    throw new TypeError(`The ${description} R column name may not be empty.`);
+  }
+  const inPlace = outputName === undefined || outputName === source.name;
+  if (step.kind === "splitText" && inPlace) {
+    throw new TypeError("Split text requires a new output column.");
+  }
+  if (inPlace) {
+    if (activeKeyColumnIds.includes(source.id)) {
+      throw new TypeError(
+        `${label} cannot replace a keyed data.table column in place. Choose a new output column instead.`
+      );
+    }
+    return Object.freeze(
+      inputSchema.map((column) =>
+        Object.freeze(
+          column.id === source.id ? { ...column, rawType: "character", type: "string" as const } : { ...column }
+        )
+      )
+    );
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError(`${label} exceeds the R frame contract column limit.`);
+  }
+  if (Buffer.byteLength(outputName, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError(`The ${description} R column name exceeds the frame contract limit.`);
+  }
+  if (outputName.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError(`The ${description} R column name uses Open Wrangler's reserved private row-identity prefix.`);
+  }
+  if (inputSchema.some((column) => column.name === outputName)) {
+    throw new TypeError(`The R column name ${JSON.stringify(outputName)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
+    throw new TypeError(`The ${description} R column identity exceeds the frame contract limit.`);
+  }
+  if (inputSchema.some((column) => column.id === id)) {
+    throw new TypeError(`The ${description} R column identity already exists in the active dataframe.`);
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: outputName,
+      position: inputSchema.length,
+      rawType: "character",
+      type: "string" as const,
+      nullable: source.nullable
+    })
+  ]);
+}
+
+function textTransformLabel(
+  step:
+    | FindReplaceTransformStep
+    | StripTextTransformStep
+    | SplitTextTransformStep
+    | CapitalizeTextTransformStep
+    | LowerTextTransformStep
+    | UpperTextTransformStep
+): "Find and Replace" | "Strip text" | "Split text" | "Capitalize" | "Lowercase" | "Uppercase" {
+  if (step.kind === "findReplace") return "Find and Replace";
+  if (step.kind === "stripText") return "Strip text";
+  if (step.kind === "splitText") return "Split text";
+  if (step.kind === "capitalizeText") return "Capitalize";
+  if (step.kind === "lowerText") return "Lowercase";
+  return "Uppercase";
+}
+
+function schemaAfterTextLength(
+  inputSchema: readonly ColumnSchema[],
+  step: TextLengthTransformStep
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The text-length column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (source.type !== "string") {
+    throw new TypeError("Text Length requires an R string column.");
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Text Length exceeds the R frame contract column limit.");
+  }
+  if (step.params.newColumn.length === 0) throw new TypeError("The text-length R column name may not be empty.");
+  if (Buffer.byteLength(step.params.newColumn, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The text-length R column name exceeds the frame contract limit.");
+  }
+  if (step.params.newColumn.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The text-length R column name uses Open Wrangler's reserved private row-identity prefix.");
+  }
+  if (inputSchema.some((column) => column.name === step.params.newColumn)) {
+    throw new TypeError(`The R column name ${JSON.stringify(step.params.newColumn)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
+    throw new TypeError("The text-length R column identity exceeds the frame contract limit.");
+  }
+  if (inputSchema.some((column) => column.id === id)) {
+    throw new TypeError("The text-length R column identity already exists in the active dataframe.");
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: step.params.newColumn,
+      position: inputSchema.length,
+      rawType: "integer",
+      type: "integer" as const,
+      nullable: source.nullable
+    })
+  ]);
+}
+
+function schemaAfterClone(
+  inputSchema: readonly ColumnSchema[],
+  step: CloneColumnTransformStep
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The clone column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be cloned.");
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Clone Column exceeds the R frame contract column limit.");
+  }
+  if (step.params.newName.length === 0) throw new TypeError("The cloned R column name may not be empty.");
+  if (Buffer.byteLength(step.params.newName, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The cloned R column name exceeds the frame contract limit.");
+  }
+  if (step.params.newName.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The cloned R column name uses Open Wrangler's reserved private row-identity prefix.");
+  }
+  if (inputSchema.some((column) => column.name === step.params.newName)) {
+    throw new TypeError(`The R column name ${JSON.stringify(step.params.newName)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
+    throw new TypeError("The cloned R column identity exceeds the frame contract limit.");
+  }
+  if (inputSchema.some((column) => column.id === id)) {
+    throw new TypeError("The cloned R column identity already exists in the active dataframe.");
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: step.params.newName,
+      position: inputSchema.length,
+      rawType: source.rawType,
+      type: source.type,
+      nullable: source.nullable
+    })
+  ]);
 }
 
 function schemaAfterSelect(
@@ -1551,7 +2621,50 @@ function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, Colum
   );
 }
 
-function rTransformStep(step: RTransformStep): RKernelTransformStep {
+function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema[]): RKernelTransformStep {
+  if (step.kind === "sortRows") {
+    const rules = resolveTransformSortRules(step.params.rules, inputSchema, "Sort rows");
+    const first = rules[0];
+    if (!first) throw new TypeError("Sort rows requires at least one R sort rule.");
+    return Object.freeze({
+      id: step.id,
+      kind: "sortRows" as const,
+      params: Object.freeze({
+        rules: rules as readonly [RKernelSortRule, ...RKernelSortRule[]]
+      })
+    });
+  }
+  if (step.kind === "filterRows") {
+    return Object.freeze({
+      id: step.id,
+      kind: "filterRows" as const,
+      params: Object.freeze({ filterModel: resolveTransformFilterModel(step.params.filterModel, inputSchema) })
+    });
+  }
+  if (step.kind === "dropMissingRows") {
+    const columns = resolveRowReductionColumns(step.params.columns, inputSchema, "Drop missing rows", true);
+    return Object.freeze({
+      id: step.id,
+      kind: "dropMissingRows" as const,
+      params: Object.freeze({
+        ...(columns === undefined ? {} : { columns }),
+        ...(step.params.how === undefined ? {} : { how: step.params.how })
+      })
+    });
+  }
+  if (step.kind === "dropDuplicates") {
+    const columns = resolveRowReductionColumns(step.params.columns, inputSchema, "Drop duplicates", false);
+    return Object.freeze({
+      id: step.id,
+      kind: "dropDuplicates" as const,
+      params: Object.freeze({
+        ...(columns === undefined
+          ? {}
+          : { columns: columns as readonly [RKernelColumnReference, ...RKernelColumnReference[]] }),
+        ...(step.params.keep === undefined ? {} : { keep: step.params.keep })
+      })
+    });
+  }
   if (step.kind === "selectColumns") {
     const columns = step.params.columns.map((column) => Object.freeze({ ...column }));
     if (!columns[0]) throw new TypeError("Select Columns requires at least one R column.");
@@ -1574,6 +2687,116 @@ function rTransformStep(step: RTransformStep): RKernelTransformStep {
       })
     });
   }
+  if (step.kind === "cloneColumn") {
+    return Object.freeze({
+      id: step.id,
+      kind: "cloneColumn" as const,
+      params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newName: step.params.newName })
+    });
+  }
+  if (step.kind === "fillMissingValues") {
+    return Object.freeze({
+      id: step.id,
+      kind: "fillMissingValues" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        replacement: Object.freeze({ ...step.params.replacement })
+      })
+    });
+  }
+  if (step.kind === "castColumn") {
+    return Object.freeze({
+      id: step.id,
+      kind: "castColumn" as const,
+      params: Object.freeze({ column: Object.freeze({ ...step.params.column }), dtype: step.params.dtype })
+    });
+  }
+  if (step.kind === "textLength") {
+    return Object.freeze({
+      id: step.id,
+      kind: "textLength" as const,
+      params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newColumn: step.params.newColumn })
+    });
+  }
+  if (step.kind === "capitalizeText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "capitalizeText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "stripText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "stripText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.params.characters === undefined ? {} : { characters: step.params.characters }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "splitText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "splitText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        delimiter: step.params.delimiter,
+        index: step.params.index,
+        newColumn: step.params.newColumn
+      })
+    });
+  }
+  if (step.kind === "lowerText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "lowerText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "upperText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "upperText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "findReplace") {
+    return Object.freeze({
+      id: step.id,
+      kind: "findReplace" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        find: step.params.find,
+        replacement: step.params.replacement,
+        ...(step.params.regex === undefined ? {} : { regex: step.params.regex }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (isRNumericRoundingStep(step)) {
+    return Object.freeze({
+      id: step.id,
+      kind: step.kind,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.kind === "roundNumber" && step.params.decimals !== undefined
+          ? { decimals: step.params.decimals }
+          : {}),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
   return Object.freeze({
     id: step.id,
     kind: "renameColumn" as const,
@@ -1581,7 +2804,81 @@ function rTransformStep(step: RTransformStep): RKernelTransformStep {
   });
 }
 
+function resolveRowReductionColumns(
+  columns: readonly RKernelColumnReference[] | undefined,
+  inputSchema: readonly ColumnSchema[],
+  operation: "Drop missing rows" | "Drop duplicates",
+  allowEmpty: boolean
+): readonly RKernelColumnReference[] | undefined {
+  if (columns === undefined) return undefined;
+  if (allowEmpty && columns.length === 0) return undefined;
+  if ((!allowEmpty && columns.length === 0) || columns.length > inputSchema.length) {
+    throw new TypeError(`${operation} requires a bounded${allowEmpty ? "" : " non-empty"} R column selection.`);
+  }
+  const seen = new Set<string>();
+  return Object.freeze(
+    columns.map((reference) => {
+      if (seen.has(reference.id)) throw new TypeError(`${operation} cannot target the same R column more than once.`);
+      seen.add(reference.id);
+      const matches = inputSchema.filter((column) => column.id === reference.id && column.name === reference.name);
+      if (matches.length !== 1) {
+        throw new TypeError(`${operation} contains a column reference that no longer matches the active R dataframe.`);
+      }
+      const column = matches[0] as ColumnSchema;
+      if (column.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+        throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+      }
+      return Object.freeze({ id: column.id, name: column.name });
+    })
+  );
+}
+
 function copyRTransformStep(step: RTransformStep): RTransformStep {
+  if (step.kind === "sortRows") {
+    const rules = step.params.rules.map((rule) => ({ ...rule, column: { ...rule.column } }));
+    const first = rules[0];
+    if (!first) throw new TypeError("Sort rows requires at least one R sort rule.");
+    return {
+      id: step.id,
+      kind: "sortRows",
+      params: { rules: rules as SortRowsTransformStep["params"]["rules"] }
+    };
+  }
+  if (step.kind === "filterRows") {
+    return {
+      id: step.id,
+      kind: "filterRows",
+      params: { filterModel: copyTransformFilterModel(step.params.filterModel) }
+    };
+  }
+  if (step.kind === "dropMissingRows") {
+    return {
+      id: step.id,
+      kind: "dropMissingRows",
+      params: {
+        ...(step.params.columns === undefined ? {} : { columns: step.params.columns.map((column) => ({ ...column })) }),
+        ...(step.params.how === undefined ? {} : { how: step.params.how })
+      }
+    };
+  }
+  if (step.kind === "dropDuplicates") {
+    const columns = step.params.columns?.map((column) => ({ ...column }));
+    if (columns !== undefined && !columns[0]) {
+      throw new TypeError("Drop duplicates requires at least one R column when a selection is supplied.");
+    }
+    return {
+      id: step.id,
+      kind: "dropDuplicates",
+      params: {
+        ...(columns === undefined
+          ? {}
+          : {
+              columns: columns as [RKernelColumnReference, ...RKernelColumnReference[]]
+            }),
+        ...(step.params.keep === undefined ? {} : { keep: step.params.keep })
+      }
+    };
+  }
   if (step.kind === "selectColumns") {
     const columns = step.params.columns.map((column) => ({ ...column }));
     if (!columns[0]) throw new TypeError("Select Columns requires at least one R column.");
@@ -1600,6 +2897,113 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { columns: columns as [RKernelColumnReference, ...RKernelColumnReference[]] }
     };
   }
+  if (step.kind === "cloneColumn") {
+    return {
+      id: step.id,
+      kind: "cloneColumn",
+      params: { column: { ...step.params.column }, newName: step.params.newName }
+    };
+  }
+  if (step.kind === "fillMissingValues") {
+    return {
+      id: step.id,
+      kind: "fillMissingValues",
+      params: { column: { ...step.params.column }, replacement: { ...step.params.replacement } }
+    };
+  }
+  if (step.kind === "castColumn") {
+    return {
+      id: step.id,
+      kind: "castColumn",
+      params: { column: { ...step.params.column }, dtype: step.params.dtype }
+    };
+  }
+  if (step.kind === "textLength") {
+    return {
+      id: step.id,
+      kind: "textLength",
+      params: { column: { ...step.params.column }, newColumn: step.params.newColumn }
+    };
+  }
+  if (step.kind === "capitalizeText") {
+    return {
+      id: step.id,
+      kind: "capitalizeText",
+      params: {
+        column: { ...step.params.column },
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
+  if (step.kind === "stripText") {
+    return {
+      id: step.id,
+      kind: "stripText",
+      params: {
+        column: { ...step.params.column },
+        ...(step.params.characters === undefined ? {} : { characters: step.params.characters }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
+  if (step.kind === "splitText") {
+    return {
+      id: step.id,
+      kind: "splitText",
+      params: {
+        column: { ...step.params.column },
+        delimiter: step.params.delimiter,
+        index: step.params.index,
+        newColumn: step.params.newColumn
+      }
+    };
+  }
+  if (step.kind === "lowerText") {
+    return {
+      id: step.id,
+      kind: "lowerText",
+      params: {
+        column: { ...step.params.column },
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
+  if (step.kind === "upperText") {
+    return {
+      id: step.id,
+      kind: "upperText",
+      params: {
+        column: { ...step.params.column },
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
+  if (step.kind === "findReplace") {
+    return {
+      id: step.id,
+      kind: "findReplace",
+      params: {
+        column: { ...step.params.column },
+        find: step.params.find,
+        replacement: step.params.replacement,
+        ...(step.params.regex === undefined ? {} : { regex: step.params.regex }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
+  if (isRNumericRoundingStep(step)) {
+    return {
+      id: step.id,
+      kind: step.kind,
+      params: {
+        column: { ...step.params.column },
+        ...(step.kind === "roundNumber" && step.params.decimals !== undefined
+          ? { decimals: step.params.decimals }
+          : {}),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
   return {
     id: step.id,
     kind: "renameColumn",
@@ -1607,8 +3011,51 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
   };
 }
 
+function copyTransformFilterModel(
+  model: FilterRowsTransformStep["params"]["filterModel"]
+): FilterRowsTransformStep["params"]["filterModel"] {
+  return {
+    ...(model.logic ? { logic: model.logic } : {}),
+    filters: model.filters.map((filter) => ({
+      ...filter,
+      column: { ...filter.column },
+      predicates: filter.predicates.map((predicate) => ({ ...predicate })),
+      ...(filter.valueFilter
+        ? {
+            valueFilter: {
+              ...filter.valueFilter,
+              selectedValues: [...filter.valueFilter.selectedValues]
+            }
+          }
+        : {})
+    })),
+    sort: model.sort.map((rule) => ({ ...rule, column: { ...rule.column } }))
+  };
+}
+
 function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
-  if (step.kind !== "renameColumn" && step.kind !== "dropColumns" && step.kind !== "selectColumns") {
+  if (
+    step.kind !== "sortRows" &&
+    step.kind !== "filterRows" &&
+    step.kind !== "dropMissingRows" &&
+    step.kind !== "fillMissingValues" &&
+    step.kind !== "dropDuplicates" &&
+    step.kind !== "renameColumn" &&
+    step.kind !== "cloneColumn" &&
+    step.kind !== "castColumn" &&
+    step.kind !== "textLength" &&
+    step.kind !== "findReplace" &&
+    step.kind !== "stripText" &&
+    step.kind !== "splitText" &&
+    step.kind !== "capitalizeText" &&
+    step.kind !== "lowerText" &&
+    step.kind !== "upperText" &&
+    step.kind !== "roundNumber" &&
+    step.kind !== "floorNumber" &&
+    step.kind !== "ceilNumber" &&
+    step.kind !== "dropColumns" &&
+    step.kind !== "selectColumns"
+  ) {
     throw new TypeError("The R bridge retained an unsupported cleaning step.");
   }
   return copyRTransformStep(step);
@@ -1624,16 +3071,162 @@ function retainedKeyPrefix(sourceKeyColumnIds: readonly string[], schema: readon
   return retained;
 }
 
-function assertStructuralDiff(
+function inspectionDiff(
   step: RTransformStep,
   inputSchema: readonly ColumnSchema[],
   outputSchema: readonly ColumnSchema[],
+  inputPage: RFramePageContract,
+  outputPage: RFramePageContract,
+  inputRows: number,
+  outputRows: number
+): DataDiff {
+  if (step.kind === "sortRows" || isRRowReductionStep(step)) {
+    const fullyRepresented =
+      inputPage.page.offset === 0 &&
+      outputPage.page.offset === 0 &&
+      inputPage.page.totalRows === inputRows &&
+      inputPage.page.rows.length === inputRows &&
+      outputPage.page.totalRows === outputRows &&
+      outputPage.page.rows.length === outputRows;
+    return {
+      addedRows: 0,
+      removedRows: step.kind === "sortRows" ? 0 : inputRows - outputRows,
+      addedColumns: [],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: !fullyRepresented
+    };
+  }
+  if (
+    inputPage.page.totalRows !== outputPage.page.totalRows ||
+    inputPage.page.rows.length !== outputPage.page.rows.length ||
+    inputPage.page.rows.some((row, index) => {
+      const outputRow = outputPage.page.rows[index];
+      return !outputRow || outputRow.id !== row.id || outputRow.rowNumber !== row.rowNumber;
+    })
+  ) {
+    throw new Error("The R kernel returned inspection pages for different rows.");
+  }
+  const inputIds = new Set(inputSchema.map((column) => column.id));
+  const outputIds = new Set(outputSchema.map((column) => column.id));
+  const addedColumns = outputSchema.filter((column) => !inputIds.has(column.id)).map((column) => column.name);
+  const removedColumns = inputSchema.filter((column) => !outputIds.has(column.id)).map((column) => column.name);
+  const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
+  const numericRoundingInPlace = isRNumericRoundingStep(step) && isRNumericRoundingInPlace(step);
+  const changedInPlace =
+    step.kind === "castColumn" || step.kind === "fillMissingValues" || textTransformInPlace || numericRoundingInPlace;
+  if (!changedInPlace) {
+    return {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns,
+      removedColumns,
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    };
+  }
+
+  const columnId = step.params.column.id;
+  const inputPosition = inputPage.page.columnIds.indexOf(columnId);
+  const outputPosition = outputPage.page.columnIds.indexOf(columnId);
+  if (inputPosition < 0 || outputPosition < 0) {
+    return {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns,
+      removedColumns,
+      changedCells: 0,
+      cells: [],
+      truncated: true
+    };
+  }
+
+  const inputRowsById = new Map(inputPage.page.rows.map((row) => [row.id, row]));
+  const matchedInputIds = new Set<string>();
+  const cells: DataDiff["cells"] = [];
+  let changedCells = 0;
+  for (const outputRow of outputPage.page.rows) {
+    const inputRow = inputRowsById.get(outputRow.id);
+    if (!inputRow) continue;
+    matchedInputIds.add(inputRow.id);
+    const before = cellValueFromR(inputRow.values[inputPosition] as RFrameCell);
+    const after = cellValueFromR(outputRow.values[outputPosition] as RFrameCell);
+    if (isDeepStrictEqual(before, after)) continue;
+    changedCells += 1;
+    if (cells.length < 500) {
+      cells.push({
+        rowNumber: outputRow.rowNumber,
+        columnId,
+        column: step.params.column.name,
+        before,
+        after
+      });
+    }
+  }
+  const unmatchedRows =
+    matchedInputIds.size !== inputPage.page.rows.length || matchedInputIds.size !== outputPage.page.rows.length;
+  return {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns,
+    removedColumns,
+    changedCells,
+    cells,
+    truncated:
+      unmatchedRows ||
+      inputPage.page.totalRows > inputPage.page.rows.length ||
+      outputPage.page.totalRows > outputPage.page.rows.length ||
+      changedCells > cells.length
+  };
+}
+
+function assertMutationDiff(
+  step: RTransformStep,
+  inputSchema: readonly ColumnSchema[],
+  outputSchema: readonly ColumnSchema[],
+  inputRows: number,
+  outputRows: number,
+  outputPage: RFramePageContract,
   diff: DataDiff
 ): void {
+  if (step.kind === "sortRows" || isRRowReductionStep(step)) {
+    const expectedRemovedRows = step.kind === "sortRows" ? 0 : inputRows - outputRows;
+    const fullyRepresented =
+      outputPage.page.offset === 0 &&
+      outputPage.page.totalRows === outputRows &&
+      outputPage.page.rows.length === outputRows;
+    const valid =
+      isDeepStrictEqual(inputSchema, outputSchema) &&
+      diff.addedRows === 0 &&
+      diff.removedRows === expectedRemovedRows &&
+      diff.addedColumns.length === 0 &&
+      diff.removedColumns.length === 0 &&
+      diff.changedCells === 0 &&
+      diff.cells.length === 0 &&
+      (fullyRepresented || diff.truncated);
+    if (!valid) throw new Error("The R kernel returned an invalid row-operation diff.");
+    return;
+  }
   const outputIds = outputSchema.map((column) => column.id);
   const outputIdSet = new Set(outputIds);
   const inputIds = inputSchema.map((column) => column.id);
   const expectedRemoved = inputSchema.filter((column) => !outputIdSet.has(column.id)).map((column) => column.name);
+  const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
+  const numericRoundingInPlace = isRNumericRoundingStep(step) && isRNumericRoundingInPlace(step);
+  const changedInPlace =
+    textTransformInPlace || numericRoundingInPlace || step.kind === "fillMissingValues" || step.kind === "castColumn";
+  const expectedAdded =
+    step.kind === "cloneColumn"
+      ? [step.params.newName]
+      : step.kind === "textLength"
+        ? [step.params.newColumn]
+        : isRTextTransformStep(step) && !textTransformInPlace
+          ? [step.params.newColumn as string]
+          : isRNumericRoundingStep(step) && !numericRoundingInPlace
+            ? [step.params.newColumn as string]
+            : [];
   const stepMatches =
     step.kind === "selectColumns"
       ? isDeepStrictEqual(
@@ -1645,17 +3238,101 @@ function assertStructuralDiff(
             outputIds,
             inputIds.filter((id) => !step.params.columns.some((column) => column.id === id))
           ) && expectedRemoved.length === step.params.columns.length
-        : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+        : step.kind === "cloneColumn"
+          ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+          : step.kind === "textLength"
+            ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+            : isRTextTransformStep(step) && !textTransformInPlace
+              ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+              : isRNumericRoundingStep(step) && !numericRoundingInPlace
+                ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+                : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+  const projectedPosition = changedInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
+  const changedInput = changedInPlace
+    ? inputSchema.find((column) => column.id === step.params.column.id && column.name === step.params.column.name)
+    : undefined;
+  const outputRowsByNumber = new Map(outputPage.page.rows.map((row) => [row.rowNumber, row]));
+  const cellsMatch =
+    changedInPlace && changedInput
+      ? diff.changedCells <= outputPage.page.rows.length &&
+        (projectedPosition >= 0 || (diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated)) &&
+        diff.cells.every((cell) => {
+          const outputRow = outputRowsByNumber.get(cell.rowNumber);
+          return (
+            projectedPosition >= 0 &&
+            outputRow !== undefined &&
+            cell.columnId === step.params.column.id &&
+            cell.column === step.params.column.name &&
+            cell.before !== null &&
+            cell.after !== null &&
+            isCellCompatibleWithColumn(cell.before, changedInput) &&
+            !isDeepStrictEqual(cell.before, cell.after) &&
+            isDeepStrictEqual(cell.after, cellValueFromR(outputRow.values[projectedPosition] as RFrameCell))
+          );
+        }) &&
+        diff.changedCells >= diff.cells.length &&
+        (diff.truncated || diff.changedCells === diff.cells.length)
+      : diff.changedCells === 0 && diff.cells.length === 0 && diff.truncated === false;
   const valid =
     diff.addedRows === 0 &&
     diff.removedRows === 0 &&
-    diff.addedColumns.length === 0 &&
+    isDeepStrictEqual(diff.addedColumns, expectedAdded) &&
     isDeepStrictEqual(diff.removedColumns, expectedRemoved) &&
-    diff.changedCells === 0 &&
-    diff.cells.length === 0 &&
-    diff.truncated === false &&
+    cellsMatch &&
     stepMatches;
-  if (!valid) throw new Error("The R kernel returned a structural diff for the wrong columns.");
+  if (!valid) throw new Error("The R kernel returned a mutation diff for the wrong columns or cells.");
+}
+
+function isRTextTransformStep(
+  step: RTransformStep
+): step is
+  | FindReplaceTransformStep
+  | StripTextTransformStep
+  | SplitTextTransformStep
+  | CapitalizeTextTransformStep
+  | LowerTextTransformStep
+  | UpperTextTransformStep {
+  return (
+    step.kind === "findReplace" ||
+    step.kind === "stripText" ||
+    step.kind === "splitText" ||
+    step.kind === "capitalizeText" ||
+    step.kind === "lowerText" ||
+    step.kind === "upperText"
+  );
+}
+
+function isRTextTransformInPlace(
+  step:
+    | FindReplaceTransformStep
+    | StripTextTransformStep
+    | SplitTextTransformStep
+    | CapitalizeTextTransformStep
+    | LowerTextTransformStep
+    | UpperTextTransformStep
+): boolean {
+  return step.params.newColumn === undefined || step.params.newColumn === step.params.column.name;
+}
+
+function isCellCompatibleWithColumn(cell: CellValue, column: ColumnSchema): boolean {
+  if (cell.isNull) return column.nullable && cell.kind === "null";
+  if (cell.isNaN) return column.type === "float" && cell.kind === "nan";
+  if (cell.kind === "infinity") return column.type === "float";
+  const expectedKinds: Readonly<Record<ColumnSchema["type"], readonly CellValue["kind"][]>> = {
+    string: ["string"],
+    integer: ["integer"],
+    float: ["number"],
+    decimal: ["decimal"],
+    boolean: ["boolean"],
+    datetime: ["datetime"],
+    date: ["date"],
+    duration: ["duration"],
+    binary: [],
+    list: [],
+    struct: [],
+    unknown: []
+  };
+  return cell.isNull === false && cell.isNaN === false && expectedKinds[column.type].includes(cell.kind);
 }
 
 function copyDiff(diff: DataDiff): DataDiff {
@@ -1678,6 +3355,9 @@ function clearDraft(session: RBridgeSession): void {
   session.draftStep = undefined;
   session.draftReplacesStepId = undefined;
   session.draftInputSchema = undefined;
+  session.draftInputRSchema = undefined;
+  session.draftInputRows = undefined;
+  session.draftInputKeyColumnIds = undefined;
   session.draftBaseFilterModel = undefined;
   session.draftBaseViewChangeEpoch = undefined;
 }
@@ -1796,7 +3476,7 @@ function unknownSessionError(sessionId: string, viewRequestId?: string): ErrorRe
 function kernelChangedError(sessionId: string, viewRequestId?: string): ErrorResponse {
   return errorResponse(
     "r_kernel_changed",
-    "The originating R kernel changed. Reopen the variable from its notebook.",
+    "The originating R runtime changed. Reopen the variable from its source.",
     true,
     sessionId,
     viewRequestId

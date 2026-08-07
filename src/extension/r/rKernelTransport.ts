@@ -25,6 +25,7 @@ import {
   type RKernelPlanUpdatedResult,
   type RKernelTransformStep,
   type RKernelRequest,
+  type RKernelResponseDecodeContext,
   type RKernelResponse,
   type RKernelStepInspectionResult,
   type RKernelStepPreviewResult,
@@ -36,7 +37,7 @@ import {
   buildRKernelTeardownCode,
   readRRuntimeFiles
 } from "./rKernelRuntimeBundle";
-import type { RFramePageContract } from "./rFrameContract";
+import type { RColumnSchema, RFramePageContract } from "./rFrameContract";
 import type { RNotebookKernelSelectionBinding } from "./rNotebookVariableDiscovery";
 
 const FAILED_OPEN_CLOSE_TIMEOUT_MS = 5_000;
@@ -299,6 +300,7 @@ export class RKernelSessionTransport {
     revision: number,
     step: RKernelTransformStep,
     page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
     replaceStepId?: string,
     options: RKernelRequestOptions = {}
   ): Promise<RKernelStepPreviewResult> {
@@ -310,7 +312,7 @@ export class RKernelSessionTransport {
       ...(replaceStepId === undefined ? {} : { replaceStepId })
     });
     encodeRKernelRequest(request);
-    const response = await this.executeMappedRequest(sessionId, request, options);
+    const response = await this.executeMappedRequest(sessionId, request, options, { inputSchema });
     if (response.kind === "error") throw new RKernelDiagnosticError(response);
     if (response.kind !== "stepPreview" || response.sessionId !== sessionId || response.revision !== revision + 1) {
       throw new Error("The R kernel returned a mismatched step preview.");
@@ -356,31 +358,63 @@ export class RKernelSessionTransport {
     revision: number,
     stepId: string,
     page: RKernelPageWindow,
+    inputSchema: readonly RColumnSchema[],
+    outputSchema: readonly RColumnSchema[],
     options: RKernelRequestOptions = {}
   ): Promise<RKernelStepInspectionResult> {
-    const request = this.request("inspectStep", { sessionId, revision, stepId, page });
-    encodeRKernelRequest(request);
-    const response = await this.executeMappedRequest(sessionId, request, options);
-    if (response.kind === "error") throw new RKernelDiagnosticError(response);
+    const started = performance.now();
+    const timeoutMs = requestTimeout(options.timeoutMs);
+    const remainingOptions = (): RKernelRequestOptions => ({
+      ...options,
+      timeoutMs: Math.floor(remainingTimeout(timeoutMs, started))
+    });
+    const infoRequest = this.request("inspectStepInfo", { sessionId, revision, stepId });
+    encodeRKernelRequest(infoRequest);
+    const info = await this.executeMappedRequest(sessionId, infoRequest, remainingOptions());
+    if (info.kind === "error") throw new RKernelDiagnosticError(info);
     if (
-      response.kind !== "stepInspection" ||
-      response.sessionId !== sessionId ||
-      response.stepId !== stepId ||
-      response.revision !== revision
+      info.kind !== "stepInspectionInfo" ||
+      info.sessionId !== sessionId ||
+      info.stepId !== stepId ||
+      info.revision !== revision
     ) {
-      throw new Error("The R kernel returned a mismatched applied-step inspection.");
+      throw new Error("The R kernel returned mismatched applied-step inspection metadata.");
+    }
+    const inspectPage = async (side: "input" | "output") => {
+      const request = this.request("inspectStepPage", { sessionId, revision, stepId, side, page });
+      encodeRKernelRequest(request);
+      const response = await this.executeMappedRequest(sessionId, request, remainingOptions(), {
+        inputSchema,
+        outputSchema,
+        inspectionSide: side
+      });
+      if (response.kind === "error") throw new RKernelDiagnosticError(response);
+      if (
+        response.kind !== "stepInspectionPage" ||
+        response.sessionId !== sessionId ||
+        response.stepId !== stepId ||
+        response.revision !== revision ||
+        response.side !== side
+      ) {
+        throw new Error("The R kernel returned a mismatched applied-step inspection page.");
+      }
+      return response;
+    };
+    const input = await inspectPage("input");
+    const output = await inspectPage("output");
+    if (info.stepIndex !== input.stepIndex || info.stepIndex !== output.stepIndex) {
+      throw new Error("The R kernel returned mismatched applied-step inspection pages.");
     }
     return Object.freeze({
       sessionId,
-      revision: response.revision,
-      stepId: response.stepId,
-      stepIndex: response.stepIndex,
-      inputPage: response.inputPage,
-      outputPage: response.outputPage,
-      inputSchema: response.inputSchema,
-      outputSchema: response.outputSchema,
-      diff: response.diff,
-      code: response.code
+      revision: output.revision,
+      stepId: output.stepId,
+      stepIndex: output.stepIndex,
+      inputPage: input.page,
+      outputPage: output.page,
+      inputSchema,
+      outputSchema,
+      code: info.code
     });
   }
 
@@ -422,10 +456,12 @@ export class RKernelSessionTransport {
           | "applyDraft"
           | "discardDraft"
           | "undoStep"
-          | "inspectStep";
+          | "inspectStepInfo"
+          | "inspectStepPage";
       }
     >,
-    options: RKernelRequestOptions
+    options: RKernelRequestOptions,
+    decodeContext?: RKernelResponseDecodeContext
   ): Promise<RKernelResponse> {
     this.assertActive();
     const started = performance.now();
@@ -437,7 +473,7 @@ export class RKernelSessionTransport {
     await withKernelTimeout(preflight, timeoutMs, () => undefined, options.cancellation);
     await this.waitForKernelSettlement(kernel, timeoutMs, started, options.cancellation);
     assertDispatchAllowed(options.cancellation, remainingTimeout(timeoutMs, started));
-    const completion = this.executeRequest(kernel, request);
+    const completion = this.executeRequest(kernel, request, decodeContext);
     void completion.catch(() => undefined);
     let detachedReason: DetachedBridgeRequestReason | undefined;
     let response: RKernelResponse;
@@ -742,11 +778,15 @@ export class RKernelSessionTransport {
     throw new Error("The selected R notebook kernel changed before Open Wrangler dispatched its request.");
   }
 
-  private async executeRequest(kernel: Kernel, request: RKernelRequest): Promise<RKernelResponse> {
+  private async executeRequest(
+    kernel: Kernel,
+    request: RKernelRequest,
+    decodeContext?: RKernelResponseDecodeContext
+  ): Promise<RKernelResponse> {
     const payload = encodeRKernelRequest(request);
     const marker = request.requestId.replaceAll("-", "");
     const output = await this.executeKernelText(kernel, buildRKernelDispatchCode(payload, marker));
-    return decodeRKernelResponseJson(parseMarkedResponse(output, marker), request.requestId);
+    return decodeRKernelResponseJson(parseMarkedResponse(output, marker), request.requestId, decodeContext);
   }
 
   private async executeKernelText(kernel: Kernel, code: string): Promise<string> {
@@ -956,7 +996,8 @@ function isRMutationRequest(
         | "applyDraft"
         | "discardDraft"
         | "undoStep"
-        | "inspectStep";
+        | "inspectStepInfo"
+        | "inspectStepPage";
     }
   >
 ): boolean {

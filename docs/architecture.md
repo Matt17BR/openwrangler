@@ -7,18 +7,29 @@ Open Wrangler has three cooperating parts:
 1. The VS Code extension host owns commands, trusted-workspace enforcement, editor and view providers, session coordination, filesystem prompts, runtime processes, and Jupyter access.
 2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute dataframe code directly.
 3. A language runtime owns dataframe work. Python sessions use the bundled runtime in a selected interpreter or active
-   Jupyter kernel. R notebook sessions use the bundled R reader inside the selected IRkernel.
+   Jupyter kernel. R notebooks use the bundled R reader inside the selected IRkernel. On macOS and Linux, a trusted
+   `.R`, `.Rmd`, or `.qmd` document runs in its own Open Wrangler `Rscript` process.
 
-Most sections below describe the released Python runtime. The Open Wrangler 2 branch also connects native R notebook
-sessions to the shared protocol, coordinator, notebook command, grid, filters, sorts, value picker, and profiles. Its
-editing surface currently supports Rename Column, Drop Columns, and ordered Select Columns through the shared draft
-and cleaning-history UI.
+Python and R sessions use the same coordinator, grid, filters, sorts, profiles, draft review, and cleaning history.
+R currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
+Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
+Capitalize, Strip text, Split text, Round, Floor, and Ceiling.
 The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
 
 Supported file resources share one `openWrangler.openFile` command across the Explorer menu, editor-tab menu, editor-title toolbar, and Command Palette. The handler prefers the URI supplied by the invoking menu and otherwise resolves the active text, third-party custom, or modified diff tab before falling back to the file picker. Direct targets and native-picker results both pass the same URI-scheme, enabled-format, regular-file, and existence validation before automatic import detection or runtime creation; Quick Input is reserved for the explicit **Change Import Options** recovery path. Explicit **Reopen Editor With** selection applies the same resource safety checks but deliberately remains available for a format omitted from the launch-command and picker enabled-format list. The standalone runtime resolver consumes the exact persisted source URI, preserving a `vscode-remote` scheme and authority for resource-scoped Python settings and Python-extension environment selection; only absent or malformed URI metadata falls back to a concrete file path. The title and tab-menu contributions are hidden inside Open Wrangler itself and on unsupported virtual resources. Cursor intentionally hides third-party editor-title actions unless pinned, so the manifest declaratively contributes `openWrangler.openFile` to Cursor's `cursor.general.pinnedTitleActions` default. This changes no stored setting, preserves an explicit setting override, and avoids command aliases, built-in-prefix impersonation, or activation-time editor mutation; VS Code renders the same standard `navigation` contribution directly. Cursor 3.11's normal icon-visibility toggle cannot outrank this pinned default, so a user who wants the icon hidden must explicitly configure the pinned-title-action list without this command.
+
+R documents use the separate `openWrangler.runRDocument` command on macOS and Linux extension hosts. It appears for trusted local and remote `.R`, `.Rmd`, and `.qmd` resources
+in Explorer, the editor title, and the tab menu, and is pinned alongside the file and notebook actions in Cursor. The
+command captures the exact open `TextDocument`, version, and in-memory text before R starts. It never substitutes a
+different active editor after an await. The document must remain the sole open object for its URI through variable
+discovery and selection. Plain `.R` text is one source unit. R Markdown and Quarto use only top-level
+backtick-fenced `{r}` cells from a first-line-YAML document. Every cell is parsed separately before any cell runs,
+then the parsed cells share one private R environment in document order. This is an isolated lexical R-cell run, not
+a knitr/Quarto render or an attachment to a terminal or editor extension. Syntax that can change code ownership,
+including alternate chunk engines, indented cells, later metadata blocks, and raw HTML/TeX containers, is rejected.
 
 The notebook launch command uses the same **Open in Open Wrangler** primary and compact title. VS Code can render the compact title in its global notebook toolbar while Cursor renders the primary title for its pinned editor action; keeping the accessible names identical prevents host-specific command drift without adding aliases or editor-specific activation logic.
 
@@ -46,6 +57,11 @@ original null or empty-string value remains in metadata. R's reserved integer an
 sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matrix/raw/complex columns, subclasses, and
 unrecognized attributes fail instead of losing R semantics. Source positions provide stable row identity. Explicit R
 row names travel separately as row labels and appear in the grid gutter instead of becoming a data column.
+
+This class-based boundary also covers the default frames created by the `collapse` package. `collapse::qDF()` returns a
+base `data.frame`; `qTBL()` and `qDT()` return the already supported tibble and `data.table` class vectors. Open Wrangler
+does not load or depend on `collapse`. Grouped `GRP_df` and indexed `indexed_frame` objects are rejected because
+silently dropping their grouping or index metadata would change their meaning.
 
 The same module applies compound viewing filters and an ordered list of viewing sorts before it builds a page. Every
 filter and sort names a column by both its stable ID and captured name, which keeps duplicate names unambiguous
@@ -76,8 +92,8 @@ from the same correlated request; the R encoder, TypeScript decoder, and bridge 
 Profiling reads the live R object again and rejects a changed shape, schema, or column semantics. Viewing queries do
 not modify the source object.
 
-`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 4, exact fields, canonical
-class/type combinations, unique stable source-column IDs, contiguous column positions, unique in-range source row IDs,
+`src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 5, exact fields, canonical
+class/type combinations, unique stable column IDs, contiguous column positions, unique in-range source row IDs,
 logical row positions, matching row and column windows, and values valid for their R column. Positional frames may not send row labels;
 explicit row-name frames must send one bounded label for every returned row. The current limits are 2,048 source
 columns, 64 sort rules, 100,000 factor levels, 1,000 rows and 256 columns per page, 100,000 cells per page, 8 KiB per
@@ -94,16 +110,49 @@ request IDs, and oversized responses. The runtime sources are base64-embedded in
 IRkernel does not need access to the extension filesystem.
 
 Viewing does not copy the complete R object. The first editing request takes one isolated source snapshot, then keeps
-the original, committed result, and optional draft separate. Rename, Drop, and Select Columns resolve every
+the original, committed result, and optional draft separate. Filter Rows and Sort Rows reuse the typed viewing rules
+after binding every referenced column by stable ID and name. Drop Missing Rows treats `NA` and `NaN` as missing. In
+Any mode it drops a row if at least one selected value is missing; in All mode it drops a row only if every selected
+value is missing. Drop Duplicates compares the selected columns, or all columns by default, and can keep the first,
+last, or no row from each repeated group. All four row operations retain the original private row identity while
+tracking the active row count separately. The two drop operations preserve source order and compatible `data.table`
+keys. Filtering does the same; an explicit sort keeps stable ties and clears key metadata because its new order no
+longer promises that key. Rename, Drop, Select, Clone, Fill Missing Values, Convert type, Text Length, Lowercase,
+Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling resolve every
 `{id, name}` reference to one exact position, so duplicate and non-syntactic names remain unambiguous. Drop Columns
 refuses to remove the final visible column. Select Columns keeps the chosen order. Both operations keep stable IDs for
-retained columns. Base data frames and tibbles are copied with R serialization; `data.table` uses
+retained columns. Clone Column appends a copy with the stable ID `c:step:<step-id>:0`, allowing later steps to target
+the new column independently. Text Length accepts character and factor input, appends a nullable integer column with
+the same derived-ID form, and uses `nchar(..., type = "chars")` so Unicode text is counted as characters rather than
+bytes while `NA` remains missing. The text operations accept character and factor input, convert factors to their
+labels, and keep `NA`. Lowercase and Uppercase call R's native casing functions. Capitalize uppercases the first
+character and lowercases the rest. Find and replace uses `gsub()` with literal or regular-expression matching. Strip
+text removes the shared whitespace set by default or a literal set of characters from both ends. Split text uses a
+literal delimiter, always creates a new character column, and returns `NA` when the requested part does not exist.
+Except for Split text, each operation can update the source column or create a character column. An in-place change to
+a `data.table` key column is rejected; choosing a new output column leaves the existing key and row order alone. Base
+data frames and tibbles are copied with R serialization; `data.table` uses
 `data.table::copy()` and native column selection, preserving compatible keys without mutating the notebook variable.
+Fill Missing Values offers a typed value, an exact numeric median, or the most common non-missing value for character,
+factor, and logical columns. Median and most-common calculations ignore `NA` and `NaN`. When missing cells need
+filling, ties and all-missing columns fail before a draft is published. Factors, ordered factors, dates, datetimes,
+and `integer64` keep their native types. A no-op returns the unchanged column. Key columns are blocked because
+replacing a key value can invalidate the data-table order. R text replacements use the frame contract's 8 KiB UTF-8
+limit, which the operation form checks before preview.
+Convert type replaces one column while retaining its name, position, and stable ID. It targets character, integer,
+double, logical, Date, or UTC POSIXct output, and factors convert through their labels. An `integer64` source stays
+`integer64` when the target is integer. A supported value that cannot be parsed becomes `NA`; conversions that would
+lose units or `integer64` precision fail. Active data-table key columns must be cloned before conversion.
+Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
+outputs are R doubles. `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and `-Inf`,
+and Round follows R's ties-to-even rule. An in-place change to an active `data.table` key is rejected; writing to a
+new output column is allowed and leaves the key alone.
 A live session reports nullability conservatively; isolating it for editing or changing the schema keeps retained
-nullability metadata instead of narrowing it from the current values. Preview, apply, discard, latest-step replacement,
+nullability metadata unless Fill Missing Values has removed every missing value. Preview, apply, discard, latest-step replacement,
 undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
 response before publishing the candidate state. Generated code repeats the positional and stale-name checks for all
-three operations, returns a new R object, and can be copied or saved as a `.R` script.
+twenty operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
+for the chosen rules instead of embedding a generic interpreter in every preview.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
 session. It checks that the captured document is the only open object for its URI before and after kernel lookup and
@@ -115,22 +164,55 @@ ends the mappings. Close uses the mapped kernel and never looks one up by URI. S
 have fixed bounds, and repeated disposal joins the same cleanup operation. Once a mutation returns its correlated
 response, a later host cancellation cannot hide the new revision.
 
+`RProcessSessionTransport` provides the same request interface for trusted R documents. It starts one private
+`Rscript --vanilla` process and uses the document's directory for relative `read.csv()` and `source()` calls. Plain R
+source is parsed once. R Markdown and Quarto cells are written as separate bounded source units; the process reads
+and parses every unit before it evaluates them in order in one dedicated environment. Runtime paths travel in private environment variables that
+are removed before user code runs, so `commandArgs(trailingOnly = TRUE)` behaves as it would for a normal no-argument
+script. User output cannot corrupt protocol messages: requests and responses use bounded files under one private
+temporary directory, and responses are published by atomic rename. Requests are serialized inside that process while
+different source sessions may run independently. Closing the panel closes its R session, stops the owned process, and
+removes its temporary directory.
+
+An editable local R document session can export its committed cleaning result as CSV. R writes only to an opaque file in
+that process's private temporary directory. The extension opens and verifies that regular file, streams it in bounded
+chunks into the existing atomic file transaction, rechecks the R artifact, and then publishes the user-selected
+destination. R never receives the destination path. Drafts, stale revisions, notebook kernels, and Parquet requests
+are rejected. Viewing filters and sorts are not part of the exported cleaning result.
+
+Direct R-document execution is currently disabled on Windows. Node's ordinary child-process API cannot prove that every
+process started by user R code has exited. The command can be enabled there only after the extension owns the R
+process tree with a Windows Job Object or an equivalent mechanism. IRkernel notebook sessions are unaffected.
+
 Errors raised by the R frame reader do not arrive as an undifferentiated runtime failure. The kernel agent maps them to
 a fixed response-code list that includes `unsupported_frame`, `missing_package`, `page_too_large`, `stale_column`,
 `stale_revision`, and `unsupported_operation`. Messages are limited to 4 KiB, and TypeScript rejects any unrecognized
-code. Native variable discovery requires `jsonlite` and `rlang` in the selected kernel. It recognizes exact base
-`data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The notebook
-command enables native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
-mode currently exposes Rename Column, Drop Columns, and Select Columns. Other cleaning operations, cleaned-data export,
-R notebook insertion, Quarto, R Markdown, and plain `.R` documents remain unsupported. R sessions open with header
-profiles off so opening a frame does not immediately scan every visible column. Users can enable them, and the profile
-drawer still loads the selected column or dataset on request. The packaged VS Code/Cursor viewing journey selects a real R column and checks its
-rendered count, distinct values, minimum, and maximum, then opens the Dataset tab and checks the rendered missing and
-duplicate-row statistics. The native contract passes on R 4.4 and 4.5. The local packaged journey passes in VS Code
-and Cursor with R 4.5.2. The hosted gate also passes against a containerized IRkernel in VS Code, including kernel
-restart, reopening the frame, and final session cleanup. The packaged editing journey covers Rename, Drop, and Select
-Columns. Its base-data-frame path previews, applies, inspects, discards, and undoes the operations, checks generated R,
-and verifies that every notebook object stays unchanged.
+code. Native variable discovery requires `jsonlite` and `rlang` in the selected R runtime. It recognizes exact base
+`data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. Notebook and R-document
+commands enable native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
+mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
+Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
+Capitalize, Strip text, Split text, Round, Floor, and Ceiling. Operations outside this 20-operation set are not
+supported in R yet.
+Generated R can be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session. Notebook
+insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the complete
+resulting document text; R Markdown and Quarto insert a new top-level `{r}` cell, and R Markdown rejects generated
+code containing a standalone backtick fence that knitr would close early. A stale or ambiguous document is never retried. R sessions open with header profiles off so opening
+a frame does not immediately scan every visible column. Users can enable header profiles,
+and the profile drawer still loads the selected column or dataset on request. The packaged VS Code/Cursor viewing run
+checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate
+rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
+The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
+frame, and final session cleanup. The packaged VS Code and Cursor runs cover all twenty operations, including the
+visible forms for Find and replace, Uppercase, Round, Floor, and Ceiling. The
+base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
+applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,
+and undo. The run checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed
+data tables additionally cover editable open plus Rename and Drop preview/discard. The direct R suites cover all
+twenty operations, plus class and key behavior for tibbles and data tables. The packaged run opens the Round, Floor,
+and Ceiling forms and checks their derived values before applying or discarding the draft. An applied-step
+inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
+retained input and output schemas and calculates the public diff only after all three responses agree.
 
 An open interrupted below ordinary protocol error handling, such as a notebook kernel interrupt during Spark page preparation, still disposes the partially acquired engine before re-raising the interruption. The requested session identity is released in the same `finally` path, so a later exact reopen cannot collide with a leaked reservation or retained adapter plan.
 
@@ -150,7 +232,7 @@ For Pandas and Polars, formatter registration retains `text/plain`, suppresses o
 
 The Jupyter extension remains optional and is never a package dependency. Its Variables action and Open Wrangler's notebook-variable command converge on the same exact `NotebookDocument`-owned launch path. Menu placement uses only stable VS Code context: VS Code exposes the command in the notebook toolbar, or in the editor title when the global notebook toolbar is disabled; Cursor receives the same canonical command as a declaratively pinned editor-title action because it does not currently render the third-party notebook-toolbar contribution consistently. One immutable app-name-derived context selects that Cursor fallback during activation and suppresses the standard notebook-toolbar contribution, so a host can never render both actions together. No Jupyter-private context key determines visibility or provenance. At command receipt, a manual toolbar launch reconciles any direct public URI with the public active `NotebookEditor` and `TabInputNotebook`; every available signal must identify the same URI, the tab and document must both use the exact `jupyter-notebook` type, and exactly one still-open `NotebookDocument` must own it. That exact object is captured before the variable prompt and revalidated afterward, so toolbar focus may clear `activeNotebookEditor` without permitting a URI-only, stale-tab, duplicate-document, non-Jupyter, or private-context fallback. The command still validates the released Jupyter API, exact notebook, kernel, and dataframe value before opening a session. Jupyter owns the first-use kernel-access consent; denial persists until the user changes Jupyter's access decision and cannot be bypassed by Open Wrangler. A kernel restart invalidates the bridge generation, after which the coordinator reacquires the exact notebook kernel, transfers the runtime again, and replays only the last confirmed plan. Status invalidation remains scoped to the exact observed generation, while a timeout or cancellation before dispatch may detach only its still-current acquisition epoch. After dispatch, a host timeout or cancellation is a typed indeterminate boundary rather than transport loss: the observed kernel generation remains owned, the exact execution stays alive with a never-cancelled token, and the coordinator parks that session behind its settlement promise. Reads are never replayed through that boundary; mutations restore the last confirmed state only after the original execution settles. A failed or detached open likewise chains exact-kernel candidate cleanup after its original open settles, so an early `unknown_session` close can never retire an identity before a late open creates it. Released-package acceptance therefore uses independently rooted allow and deny profiles, workspaces, Jupyter state, and IPython state so consent and kernels cannot leak between cases. Those phases run a disposable dependency-only kernel interpreter that cannot import `openwrangler_runtime` before Open Wrangler bootstraps it; the same absence is rechecked after an observed real kernel restart, preventing an editable development install from masking failed runtime transfer or recovery.
 
-Pandas, Polars, and DuckDB adapters implement the same engine contract for schema, blocks, profiling, viewing queries, transformations, code generation, and exports. Each adapter retains its native frame type; runtime paths never bridge a dataframe through another engine. An ordered engine registry stores factories rather than adapter singletons: automatic file selection tries fresh Polars, DuckDB, then Pandas candidates, closes every rejected candidate, and transfers the matching instance to exactly one session. Immutable engine capabilities independently describe supported source kinds, editing, lazy file extensions, exports, shutdown interruption, and request cancellation; wire capabilities combine those facts with the current source and session mode. `python/openwrangler_runtime/operations.py` is the validated operation registry and shared transformation IR boundary: it rejects unknown operations, malformed predicates/sorts, invalid option types, and conflicting group aliases before an adapter runs them. Engine results and executable generated functions must agree on semantic output while generated code remains idiomatic to the source engine. Shared semantics include stable ordered sorts with per-column null placement, source-ordered groups with null-excluding `nUnique`/`first`/`last`, independently typed null and NaN filters, missing-value fills that treat null and NaN alike while excluding both from a median, distinct values ordered by count descending then display text ascending, null/blank-excluding categorical encodings, output-collision rejection, globally ordered one-hot output for numeric, boolean, date, and text values, categorical-null-safe multi-label encoding, empty literal find replacement at every text boundary, and finite-only min-max scaling. Explicit fill values are type-checked before their stable column reference is bound. Median fills preserve the native column type; an integer midpoint must be integral and a decimal midpoint must fit the existing precision and scale exactly. Explicit decimal values follow the same exact-scale rule. Datetime replacements must match the column's timezone awareness. Unicode casing remains native and is golden-tested per adapter; default stripping uses one explicit Unicode/control-whitespace set in every live and generated path. Pandas custom-code execution and its generated function recursively isolate object-dtype cell values before arbitrary code runs, because Pandas' normal deep copy does not clone nested Python objects.
+Pandas, Polars, and DuckDB adapters implement the same engine contract for schema, blocks, profiling, viewing queries, transformations, code generation, and exports. Each adapter retains its native frame type; runtime paths never bridge a dataframe through another engine. An ordered engine registry stores factories rather than adapter singletons: automatic file selection tries fresh Polars, DuckDB, then Pandas candidates, closes every rejected candidate, and transfers the matching instance to exactly one session. Immutable engine capabilities independently describe supported source kinds, editing, lazy file extensions, exports, shutdown interruption, and request cancellation; wire capabilities combine those facts with the current source and session mode. `python/openwrangler_runtime/operations.py` is the validated operation registry and shared transformation IR boundary: it rejects unknown operations, malformed predicates/sorts, invalid option types, and conflicting group aliases before an adapter runs them. Engine results and executable generated functions must agree on semantic output while generated code remains idiomatic to the source engine. Shared semantics include stable ordered sorts with per-column null placement, source-ordered groups with null-excluding `nUnique`/`first`/`last`, independently typed null and NaN filters, missing-value fills that treat null and NaN alike, distinct values ordered by count descending then display text ascending, null/blank-excluding categorical encodings, output-collision rejection, globally ordered one-hot output for numeric, boolean, date, and text values, categorical-null-safe multi-label encoding, empty literal find replacement at every text boundary, and finite-only min-max scaling. Explicit fill values are type-checked before their stable column reference is bound. Median and most-common fills exclude missing values and operate on the complete cleaned dataframe, independently of viewing filters. When a fill is needed, the most-common method requires one winner under the engine's native equality; ties and all-missing columns return a clear error. A column without missing cells returns unchanged before any widening or cast. On Python engines, an explicit value can widen a categorical or enum column to text; a most-common fill uses an existing value and preserves the category type. Median fills preserve the native column type; an integer midpoint must be integral and a decimal midpoint must fit the existing precision and scale exactly. Explicit decimal values follow the same exact-scale rule. Datetime replacements must match the column's timezone awareness. Unicode casing remains native and is golden-tested per adapter; default stripping uses one explicit Unicode/control-whitespace set in every live and generated path. Pandas custom-code execution and its generated function recursively isolate object-dtype cell values before arbitrary code runs, because Pandas' normal deep copy does not clone nested Python objects.
 
 Text summaries carry an optional protocol-v2 `text` block only for semantic string columns. It always contains an exact `emptyCount`; either all three length scalars (`minLength`, `maxLength`, and `meanLength`) are present or none are. Nulls and NaNs never contribute, an empty string is exactly a zero-length value without trimming, and length means Unicode code points rather than UTF-8 bytes or UTF-16 code units. A zero minimum therefore requires a positive empty count, an all-empty column has only zero length statistics, and an all-null text column reports `emptyCount: 0` with no invented bounds. Pandas and eager Polars compute the values within their native frames; lazy Polars, DuckDB, and PySpark use fixed-size native aggregate projections. Pandas mixed-object and non-string categorical columns fall back to the same normalized cell display used by the grid, avoiding both engine conversion and a disagreement between visible text and measured text. Saved notebook snapshots use the identical contract over their bounded captured truth. The validator rejects negative, partial, non-finite, contradictory, or non-string text summaries, while omission remains valid for saved protocol-v2 output created before this field existed. Column profiles hide a zero-valued NaN row for text but retain it whenever Pandas reports actual NaN-backed missing values.
 

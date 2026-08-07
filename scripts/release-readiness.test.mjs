@@ -150,6 +150,7 @@ function releaseVsixEntries(packageJson = stablePackage) {
     ["extension/media/icon-128.png", "icon"],
     ["extension/r/openwrangler_runtime/frame_contract.R", "openwrangler_frame_contract <- function(frame) frame\n"],
     ["extension/r/openwrangler_runtime/kernel_agent.R", "openwrangler_kernel_agent <- list()\n"],
+    ["extension/r/openwrangler_runtime/process_agent.R", 'quit(save = "no")\n'],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/trusted_pickle_to_parquet.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
@@ -807,16 +808,33 @@ test("keeps the same compact editor support tiers in every README channel", () =
   assert.equal(stableLinks.get("checksummed GitHub Release"), "https://github.com/Matt17BR/openwrangler/releases");
 });
 
-test("uses linked live badges instead of a prose stable status", () => {
-  assert.doesNotMatch(STABLE_README_RELEASE_SECTION, /Release status/iu);
-  for (const expected of [
-    "https://img.shields.io/github/v/release/Matt17BR/openwrangler",
-    "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main",
-    "https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg",
-    "https://img.shields.io/open-vsx/v/Matt17BR/openwrangler",
-    "https://img.shields.io/github/license/Matt17BR/openwrangler"
-  ]) {
-    assert.ok(STABLE_README_RELEASE_SECTION.includes(expected));
+test("points preview installs at the published prerelease channels", () => {
+  const previewLinks = new Map(
+    [...PREVIEW_README_RELEASE_SECTION.matchAll(/\[([^\]]+)\]\(([^)]+)\)/gu)].map((match) => [match[1], match[2]])
+  );
+  assert.equal(
+    previewLinks.get("Visual Studio Marketplace"),
+    "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"
+  );
+  assert.equal(previewLinks.get("Open VSX"), "https://open-vsx.org/extension/Matt17BR/openwrangler");
+  assert.equal(previewLinks.get("GitHub prerelease"), "https://github.com/Matt17BR/openwrangler/releases");
+  assert.match(PREVIEW_README_RELEASE_SECTION, /Install Pre-Release Version/u);
+  assert.match(PREVIEW_README_RELEASE_SECTION, /latest `1\.99\.x` version/u);
+  assert.doesNotMatch(PREVIEW_README_RELEASE_SECTION, /clone|npm install|npm run package|python3 -m venv/iu);
+});
+
+test("uses linked live badges instead of a prose release status", () => {
+  for (const section of [PREVIEW_README_RELEASE_SECTION, STABLE_README_RELEASE_SECTION]) {
+    assert.doesNotMatch(section, /Release status/iu);
+    for (const expected of [
+      "https://img.shields.io/github/v/release/Matt17BR/openwrangler",
+      "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main",
+      "https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg",
+      "https://img.shields.io/open-vsx/v/Matt17BR/openwrangler",
+      "https://img.shields.io/github/license/Matt17BR/openwrangler"
+    ]) {
+      assert.ok(section.includes(expected));
+    }
   }
 });
 
@@ -1193,7 +1211,13 @@ test("verify-vsix rejects each shipped-document source mismatch end to end", asy
 
   const sourcePackage = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8"));
   const baseEntries = releaseVsixEntries(sourcePackage);
-  baseEntries.set("extension.vsixmanifest", manifest({ version: sourcePackage.version }));
+  baseEntries.set(
+    "extension.vsixmanifest",
+    manifest({
+      version: sourcePackage.version,
+      properties: sourcePackage.preview ? '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />' : ""
+    })
+  );
   for (const [source, archive] of [
     ["README.md", "extension/readme.md"],
     ["CHANGELOG.md", "extension/changelog.md"],
@@ -1330,8 +1354,35 @@ test("structurally gates the candidate-first preview workflow and exact artifact
     },
     (workflow) => {
       workflow.jobs["released-jupyter"].steps.find(
-        (step) => step.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "1"
+        (step) => step.id === "packaged_editor"
       ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "0";
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find((step) =>
+        String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")
+      ).with["r-version"] = "4.5";
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find((step) => step.name === "Install R contract packages").run =
+        "echo skipped";
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find((step) => step.run === "npm run test:r-contract").env.RSCRIPT =
+        "Rscript";
+    },
+    (workflow) => {
+      const jupyterSteps = workflow.jobs["released-jupyter"].steps;
+      const runIndex = jupyterSteps.findIndex((step) => step.id === "packaged_editor_r");
+      jupyterSteps.splice(runIndex, 0, { run: "echo changed-after-verification" });
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find((step) => step.id === "packaged_editor_r").run =
+        "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find(
+        (step) => step.name === "Upload R-Jupyter failure diagnostics"
+      ).with.path = "tmp/**";
     },
     (workflow) => {
       workflow.jobs["remote-ssh"].steps.find((step) =>

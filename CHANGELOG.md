@@ -4,71 +4,46 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.0] - 2026-08-07
+
 ### Added
 
-- Added **Fill missing values** for Pandas, Polars, and DuckDB. A draft can replace null and NaN cells in one
-  column with its median or a value of the matching type, then preview, apply, edit, discard, replay, or undo it like
-  any other cleaning step. Median fills keep the existing column type. Integer and decimal medians must fit that type
-  exactly, decimal values must fit the column scale, and datetime values must match the column's timezone awareness.
-  Generated Python code follows the same rules without converting the dataframe to another engine.
-- Added the first R notebook viewer for Open Wrangler 2. The notebook picker can open base `data.frame`, tibble, and
-  `data.table` objects directly from IRkernel, page across the complete frame, apply compound viewing filters and
-  ordered sorts, search and select column values, and calculate filter-aware column and dataset profiles. Profiles
-  include missing and distinct counts, common values, numeric statistics and histograms, text lengths, boolean
-  counts, and date ranges. Explicit R row names appear in the grid gutter and stay with their source rows after a
-  query.
-- Added the first native R cleaning operation for Open Wrangler 2. **Rename Column** uses the regular draft, code
-  preview, apply, discard, inspection, edit-latest, and undo workflow for base data frames, tibbles, and data tables.
-  It keeps the notebook object unchanged, generates executable R, and lets users copy that code or save it as a `.R`
-  script.
-- Added **Drop Columns** as the second native R cleaning operation. It binds selected columns by stable identity,
-  keeps duplicate and non-syntactic names unambiguous, preserves the dataframe class and data-table keys, and
-  generates executable R without changing the notebook object.
-- Added **Select Columns** for native R sessions. It keeps columns in the order chosen by the user, preserves stable
-  identities and compatible data-table keys, and uses the same preview, apply, inspection, edit, and undo flow as the
-  other operations. Rename, Drop, and Select Columns are the R cleaning operations available today; cleaned-data export,
-  notebook insertion, plain `.R` files, R Markdown, and Quarto are still in development.
+- Added native R support for base `data.frame`, tibble, and `data.table` variables in IRkernel notebooks. On
+  macOS and Linux, Open Wrangler can also run trusted `.R` files and supported R cells from `.Rmd` and `.qmd`
+  documents in its own R process.
+- Added 20 R cleaning operations with data and code previews, apply/discard, history, latest-step editing, and undo.
+  Generated R can be copied, saved, or inserted into the notebook or document that opened the dataframe.
+- Added CSV export for local R document sessions opened in Editing mode. R notebook export and R Parquet export are
+  not included in this preview.
+- Added support for ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` without making
+  `collapse` a runtime dependency.
+- Added type-aware missing-value replacement for Pandas, Polars, DuckDB, and R. Numeric columns can use their median,
+  text-like and boolean columns can use their most common value, and supported columns accept a typed value entered
+  by the user.
 
 ### Changed
 
-- README and gallery screenshots now use width-only display caps. Narrow Marketplace pages keep the PNG aspect ratio,
-  while wider Open VSX pages stop at 960 CSS pixels; the original high-resolution files are unchanged.
-- Renamed **Export Python Script** to **Export Generated Script**. Python sessions keep the `.clean.py` default;
-  generated R code uses `.clean.R` and an R script filter.
-- The Open Wrangler 2 notebook gate now tests local R in VS Code and Cursor and a containerized R kernel in VS Code.
-  It covers filters, value selection, profiles, paging, sort order, kernel restart, source preservation, and cleanup
-  with fixed R and package versions.
-- Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
-  ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
-  to the notebook's source object.
-- Added a packaged-editor R editing screenshot and expanded the acceptance journey. VS Code and Cursor exercise
-  Rename, Drop, and Select Columns against real IRkernel sessions. The base-data-frame journey previews, applies,
-  inspects, discards, and undoes the operations, checks generated R, copies and saves Rename code, and verifies that
-  the notebook objects are unchanged.
-- The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
-- Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
-  VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and
-  view-only; streaming DataFrames, files, cleaning, exports, saved output, remote or authenticated clusters, and Spark
-  setup are not supported.
-- PySpark column profiles now check and collect their ten displayed values in one Spark job. If the values are too
-  large, Spark returns only their byte counts. Ordinary profiles no longer run the same grouped query twice.
-- PySpark open errors now explain unsupported streaming or Variant data, conflicting or reserved column names, and
-  objects missing standard DataFrame operations, with a suggested fix where available.
-- PySpark sessions now label unsorted rows as **Source order** and explicitly sorted rows as **Sorted**. The ordering
-  badge explains Spark's behavior for unsorted rows and tells users to add a unique final sort key for repeatable
-  rows.
-- PySpark Classic now gives each Open Wrangler request its own Spark job group and restores the notebook's previous
-  job settings. Queued work is dropped when a view closes or changes; work already running is left alone so unrelated
-  notebook jobs are not cancelled.
-- Recreating a PySpark Classic variable after stopping its old Spark session now reopens the live notebook data
-  instead of failing while Open Wrangler reads request properties from the stopped Spark context.
-- Spark Connect now tells temporary endpoint failures apart from a server session or DataFrame that no longer exists.
-  Both leave the confirmed grid in place. Lost server state also drops runtime page blocks so stale data is not served;
-  Open Wrangler does not create a replacement Spark session or DataFrame. After rerunning the notebook cell, users can
-  choose **Reconnect** to bind the same variable again; ordinary page retry remains available only for temporary
-  endpoint failures.
-- Future stable and preview releases now ship from `main`. Releases through v1.2.2 can still be recovered from their
-  immutable tags, but the old v1 maintenance branch is no longer part of normal development or publishing.
+- PySpark opens its first page without counting or caching the whole DataFrame. Profiles use fewer Spark jobs, source
+  order is labelled clearly, and stopped or replaced sessions can reconnect without hiding the last confirmed grid.
+- README and gallery screenshots now keep their aspect ratio on the Visual Studio Marketplace and stop growing past
+  960 CSS pixels on Open VSX. The original high-resolution PNGs are unchanged.
+- Added a full-resolution R editing screenshot to the README and product gallery.
+- Renamed **Export Python Script** to **Export Generated Script**. Python uses the `.clean.py` default, while R uses
+  `.clean.R`.
+- Preview releases now run the R 4.5.2 contract tests and install the candidate VSIX in VS Code and Cursor for the R
+  notebook and document tests before publishing.
+
+### Fixed
+
+- Large R step inspections now fetch code and data blocks separately instead of combining two valid pages into one
+  oversized kernel response.
+- The grid now shows a final partial page when the browser has reached its maximum scroll position.
+- R process responses are read through validated file descriptors, so replacing a response path cannot change the
+  bytes Open Wrangler accepts.
+
+### Security
+
+- Updated the nested `js-yaml` copies used by development and packaging tools to 4.3.1.
 
 ## [1.2.2] - 2026-08-04
 

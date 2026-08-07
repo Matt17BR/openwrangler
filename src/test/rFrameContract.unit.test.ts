@@ -7,7 +7,7 @@ function decodeCandidate(candidate: Record<string, unknown>) {
 
 function minimalContract(): Record<string, unknown> {
   return {
-    contractVersion: 4,
+    contractVersion: 5,
     dataframeFlavor: "r.data.frame",
     shape: { rows: 1, columns: 1 },
     frameSemantics: { classes: ["data.frame"], rowNames: "positional", keyColumnIds: [] },
@@ -96,6 +96,95 @@ describe("native R frame contract decoder", () => {
       { id: "r:c:2", name: "value" }
     ]);
   });
+
+  it("accepts a bounded step-derived column identity", () => {
+    const candidate = minimalContract();
+    candidate.shape = { rows: 1, columns: 2 };
+    candidate.schema = [
+      ...(candidate.schema as unknown[]),
+      {
+        id: "c:step:clone:with:colons:0",
+        name: "value copy",
+        position: 1,
+        rawType: "integer",
+        type: "integer",
+        nullable: false,
+        semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] }
+      }
+    ];
+    const page = candidate.page as Record<string, unknown>;
+    page.columnLimit = 2;
+    page.columnIds = ["r:c:0", "c:step:clone:with:colons:0"];
+    const row = (page.rows as Array<Record<string, unknown>>)[0];
+    if (!row) throw new Error("test row missing");
+    row.values = [
+      { kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false },
+      { kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false }
+    ];
+
+    expect(decodeCandidate(candidate).schema.map(({ id }) => id)).toEqual(["r:c:0", "c:step:clone:with:colons:0"]);
+  });
+
+  it("accepts a derived identity whose step component is exactly at its UTF-8 byte limit", () => {
+    const candidate = minimalContract();
+    const stepId = "é".repeat(R_FRAME_CONTRACT_LIMITS.stepIdBytes / 2);
+    expect(Buffer.byteLength(stepId, "utf8")).toBe(R_FRAME_CONTRACT_LIMITS.stepIdBytes);
+    const id = `c:step:${stepId}:0`;
+    (candidate.schema as Array<Record<string, unknown>>)[0]!.id = id;
+    (candidate.page as Record<string, unknown>).columnIds = [id];
+
+    expect(decodeCandidate(candidate).schema[0]?.id).toBe(id);
+  });
+
+  it("rejects a derived identity whose step component exceeds its UTF-8 byte limit", () => {
+    const candidate = minimalContract();
+    const stepId = `${"é".repeat(R_FRAME_CONTRACT_LIMITS.stepIdBytes / 2)}x`;
+    expect(Buffer.byteLength(stepId, "utf8")).toBe(R_FRAME_CONTRACT_LIMITS.stepIdBytes + 1);
+    const id = `c:step:${stepId}:0`;
+    (candidate.schema as Array<Record<string, unknown>>)[0]!.id = id;
+    (candidate.page as Record<string, unknown>).columnIds = [id];
+
+    expect(() => decodeCandidate(candidate)).toThrow("oversized step identity");
+  });
+
+  it.each(["c:step::0", "c:step:clone:-1", "c:step:clone:00", "c:step:clone:2048", "created:clone:0"])(
+    "rejects malformed derived column identity %s",
+    (id) => {
+      const candidate = minimalContract();
+      (candidate.schema as Array<Record<string, unknown>>)[0]!.id = id;
+      (candidate.page as Record<string, unknown>).columnIds = [id];
+
+      expect(() => decodeCandidate(candidate)).toThrow("stable R column ID");
+    }
+  );
+
+  it("rejects a derived column identity containing NUL", () => {
+    const candidate = minimalContract();
+    const id = "c:step:clone\u0000id:0";
+    (candidate.schema as Array<Record<string, unknown>>)[0]!.id = id;
+    (candidate.page as Record<string, unknown>).columnIds = [id];
+
+    expect(() => decodeCandidate(candidate)).toThrow("stable R column ID");
+  });
+
+  it("rejects an oversized derived column identity", () => {
+    const candidate = minimalContract();
+    const id = `c:step:${"x".repeat(R_FRAME_CONTRACT_LIMITS.columnIdBytes)}:0`;
+    (candidate.schema as Array<Record<string, unknown>>)[0]!.id = id;
+    (candidate.page as Record<string, unknown>).columnIds = [id];
+
+    expect(() => decodeCandidate(candidate)).toThrow("schema[0].id must be a bounded UTF-8 string");
+  });
+
+  it.each(["__open_wrangler_internal_row_id_forged", "__OPEN_WRANGLER_INTERNAL_ROW_ID_forged"])(
+    "rejects a transported schema name in the private row-identity namespace: %s",
+    (name) => {
+      const candidate = minimalContract();
+      (candidate.schema as Array<Record<string, unknown>>)[0]!.name = name;
+
+      expect(() => decodeCandidate(candidate)).toThrow("private row-identity prefix");
+    }
+  );
 
   it("keeps explicit row names as bounded labels without changing source identity", () => {
     const candidate = minimalContract();

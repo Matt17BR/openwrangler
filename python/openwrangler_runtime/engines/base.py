@@ -297,8 +297,9 @@ def decode_fill_replacement(replacement: Mapping[str, Any]) -> Any:
     """Decode one validated, explicitly typed fill value into a native Python scalar."""
 
     kind = replacement.get("kind")
-    if kind == "median":
-        raise EngineError("A median fill does not contain an explicit replacement value.")
+    if kind in {"median", "mostFrequent"}:
+        label = "median" if kind == "median" else "most common value"
+        raise EngineError(f"A {label} fill does not contain an explicit replacement value.")
     if kind not in {"string", "integer", "float", "decimal", "boolean", "date", "datetime"}:
         raise EngineError(f"Unsupported fill replacement type: {kind!r}.")
     try:

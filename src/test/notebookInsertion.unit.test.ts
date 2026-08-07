@@ -115,9 +115,67 @@ describe("generated notebook insertion", () => {
     expect(notebook.cellAt(0).metadata.openWrangler).toEqual({
       source: "frame",
       backend: "polars",
+      languageId: "python",
       generated: true,
       insertionId: expect.any(String)
     });
+    expect(notebook.cellAt(0).document.languageId).toBe("python");
+  });
+
+  it("inserts and proves an R cell with an R-specific marker", async () => {
+    const notebook = fakeNotebook("file:///workspace/origin.ipynb");
+    insertionMocks.notebookDocuments.push(notebook);
+    insertionMocks.applyEdit.mockImplementationOnce(async () => {
+      applyCapturedEdit(notebook);
+      return true;
+    });
+
+    await expect(insertR(notebook)).resolves.toEqual({ status: "applied" });
+
+    expect(notebook.cellAt(0).document.languageId).toBe("r");
+    expect(notebook.cellAt(0).document.getText()).toBe("open_wrangler_result <- frame\n");
+    expect(notebook.cellAt(0).metadata.openWrangler).toEqual({
+      source: "frame",
+      backend: "r",
+      languageId: "r",
+      generated: true,
+      insertionId: expect.any(String)
+    });
+  });
+
+  it("does not prove an insertion whose resulting cell has a different language", async () => {
+    vi.useFakeTimers();
+    const notebook = fakeNotebook("file:///workspace/origin.ipynb");
+    insertionMocks.notebookDocuments.push(notebook);
+    insertionMocks.applyEdit.mockImplementationOnce(async () => {
+      applyCapturedEdit(notebook, "python");
+      fireNotebookChange(notebook);
+      return true;
+    });
+
+    const pending = insertR(notebook);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toEqual({ status: "indeterminate" });
+    expect(insertionMocks.applyEdit).toHaveBeenCalledOnce();
+    expect(notebook.cellCount).toBe(1);
+  });
+
+  it("rejects unsupported cell languages before building or dispatching an edit", async () => {
+    const notebook = fakeNotebook("file:///workspace/origin.ipynb");
+    insertionMocks.notebookDocuments.push(notebook);
+
+    await expect(
+      insertGeneratedNotebookCell(notebook as unknown as NotebookDocument, 0, "1 + 1\n", {
+        source: "frame",
+        backend: "r",
+        languageId: "julia" as never
+      })
+    ).rejects.toThrow("support only Python or R");
+
+    expect(insertionMocks.capturedEdit).toBeUndefined();
+    expect(insertionMocks.applyEdit).not.toHaveBeenCalled();
   });
 
   it("proves an exact insertion even when applyEdit itself never settles", async () => {
@@ -305,8 +363,16 @@ function insert(notebook: FakeNotebook) {
     notebook as unknown as NotebookDocument,
     0,
     "def clean_data(df):\n    return df\n",
-    { source: "frame", backend: "polars" }
+    { source: "frame", backend: "polars", languageId: "python" }
   );
+}
+
+function insertR(notebook: FakeNotebook) {
+  return insertGeneratedNotebookCell(notebook as unknown as NotebookDocument, 0, "open_wrangler_result <- frame\n", {
+    source: "frame",
+    backend: "r",
+    languageId: "r"
+  });
 }
 
 function fakeNotebook(uri: string): FakeNotebook {
@@ -327,13 +393,13 @@ function fakeNotebook(uri: string): FakeNotebook {
   };
 }
 
-function applyCapturedEdit(notebook: FakeNotebook): void {
+function applyCapturedEdit(notebook: FakeNotebook, languageId?: string): void {
   const edit = insertionMocks.capturedEdit;
   if (!edit) throw new Error("No notebook edit was captured.");
   const cells = edit.newCells.map<FakeCell>((cell) => ({
     kind: cell.kind,
     document: {
-      languageId: cell.languageId,
+      languageId: languageId ?? cell.languageId,
       getText: () => cell.value
     },
     metadata: cell.metadata

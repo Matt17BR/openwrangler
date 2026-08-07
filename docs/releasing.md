@@ -54,6 +54,10 @@ Git commit rather than from later worktree state. It rejects linked or replaced 
 the verified VSIX, checksum, and provenance document. Every stable acceptance job downloads that same artifact ID.
 The preview workflow uses the separate preview form below; neither channel invents provenance after packaging.
 
+Every Open Wrangler 2 preview runs the R 4.5.2 contract tests. Before publishing, the workflow installs the same
+candidate VSIX in VS Code and Cursor and runs the R notebook and document tests. Failures use the same redacted
+diagnostics as the other packaged editor tests.
+
 The preview-only form of the same author is `node scripts/create-canonical-release-artifact.mjs <candidate> --out-dir <directory> --preview-release`. It binds a clean exact `EXPECTED_SHA`, the intended numeric `RELEASE_TAG`, preview source/package/runtime identity, the VSIX pre-release marker, and immutable candidate bytes, but deliberately does not invoke stable parity, changelog, or README readiness and does not require the intended tag to exist. It emits the same three filenames as stable with the distinct `openwrangler-canonical-preview-release-artifact-v1` provenance protocol and `preview: true`. Pre-tag acceptance uses `scripts/verify-preview-release-artifact.mjs`; public registry intake independently revalidates the same triple. Historical two-file previews are not canonical inputs and are rejected rather than receiving invented provenance.
 
 The content guard parses GitHub-flavored Markdown and requires exactly one active canonical 1.0 Pandas/Polars table in the top-level section of `docs/feature-parity.md`; every exact ordered row must be Done and carry human completion text plus at least one positive `test:`, `workflow:`, or `record:` reference to a tracked file of the matching kind. Empty, malformed, untracked, placeholder, and future-action evidence fails. Fenced, indented, HTML-commented, or raw-HTML decoys cannot satisfy either that table or the one real dated changelog section, which must also contain a substantive bullet under an accepted change category. The guard pins the fixed `Matt17BR.openwrangler` identity, rejects duplicate JSON members, and requires the complete parsed packaged manifest to equal the source manifest. An exact `vsce` probe found no package-manifest transformation, so none is currently allowed; any future tool transformation must be documented, normalized narrowly, and covered before it can enter this gate. Source and packaged Python runtime versions and the canonical VSIX identity/channel must agree with the tag, with explicit `preview: false` and no prerelease VSIX property.
@@ -275,29 +279,7 @@ Microsoft documents [branch and tag filters as an OR](https://learn.microsoft.co
 while path filters are defined in terms of changed files on an included branch. Keeping tags path-independent
 prevents a later release tag from being silently suppressed by an unrelated path decision.
 
-The protected branch subscriptions are only recovery signals. Before authentication, intake requires the checkout to equal
-the exact event commit and classifies its Git history. Only a single-parent commit that changes at least one of
-these reviewed pipeline, lockfile, metadata, archive, and verifier closure files may continue:
-
-- `azure-pipelines-marketplace.yml`
-- `package-lock.json`
-- `package.json`
-- `scripts/bounded-file-read.mjs`
-- `scripts/copy-extension-test-runtime-assets.mjs`
-- `scripts/cursor-acquisition.mjs`
-- `scripts/download-canonical-github-release.mjs`
-- `scripts/editor-acceptance-evidence.mjs`
-- `scripts/editor-acceptance.mjs`
-- `scripts/installed-performance-report.mjs`
-- `scripts/installed-performance-system.mjs`
-- `scripts/marketplace-identity-profile.mjs`
-- `scripts/marketplace-release-intake.mjs`
-- `scripts/packaged-editor-orchestration.mjs`
-- `scripts/prepare-xvfb.mjs`
-- `scripts/release-metadata.mjs`
-- `scripts/remote-workspace-acquisition.mjs`
-- `scripts/remote-workspace-contract.mjs`
-- `scripts/run-installed-performance.mjs`
-- `scripts/strict-json.mjs`
-- `scripts/verify-canonical-release-artifact.mjs`
-- `scripts/verify-marketplace-publication.mjs`
+The protected branch subscriptions are recovery signals only. Before authentication, intake requires the checkout to
+match the event commit. Automatic recovery continues only for a single-parent commit that changes a reviewed path.
+The canonical allowlist is `MARKETPLACE_RECOVERY_PATHS` in `scripts/marketplace-release-intake.mjs`; its unit test
+checks the complete list so this guide does not maintain a second copy.

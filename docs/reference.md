@@ -4,38 +4,40 @@
 
 ## Commands
 
-| Command                                      | Title                                                    |
-| -------------------------------------------- | -------------------------------------------------------- |
-| `openWrangler.openFile`                      | Open in Open Wrangler                                    |
-| `openWrangler.openPath`                      | Open Wrangler: Open File Path                            |
-| `openWrangler.convertTrustedPickle`          | Convert Trusted Pickle to Parquet…                       |
-| `openWrangler.changeImportOptions`           | Open Wrangler: Change Import Options                     |
-| `openWrangler.launchDataViewer`              | Open Wrangler: Launch Selected Notebook Variable         |
-| `openWrangler.openNotebookVariable`          | Open in Open Wrangler                                    |
-| `openWrangler.checkJupyterIntegration`       | Open Wrangler: Check Jupyter Integration                 |
-| `openWrangler.chooseNotebookPreviewProvider` | Open Wrangler: Choose Notebook Preview Provider          |
-| `openWrangler.changeRuntime`                 | Open Wrangler: Change Runtime                            |
-| `openWrangler.clearRuntime`                  | Open Wrangler: Clear Runtime Override                    |
-| `openWrangler.installRuntimeDependencies`    | Open Wrangler: Install Runtime Dependencies              |
-| `openWrangler.revalidateRuntimeDependencies` | Open Wrangler: Revalidate Runtime Dependencies           |
-| `openWrangler.startOperation`                | Open Wrangler: Add Cleaning Step                         |
-| `openWrangler.applyStep`                     | Open Wrangler: Apply Draft Step                          |
-| `openWrangler.discardStep`                   | Open Wrangler: Discard Draft Step                        |
-| `openWrangler.editLatestStep`                | Open Wrangler: Edit Latest Step                          |
-| `openWrangler.selectStep`                    | Open Wrangler: Inspect Applied Step                      |
-| `openWrangler.undoStep`                      | Open Wrangler: Undo Latest Step                          |
-| `openWrangler.openViewSort`                  | Open Wrangler: Edit View Sorts                           |
-| `openWrangler.moveViewSortUp`                | Open Wrangler: Move View Sort Up                         |
-| `openWrangler.moveViewSortDown`              | Open Wrangler: Move View Sort Down                       |
-| `openWrangler.removeViewSort`                | Open Wrangler: Remove View Sort                          |
-| `openWrangler.copyCode`                      | Open Wrangler: Copy Generated Code                       |
-| `openWrangler.exportCode`                    | Open Wrangler: Export Generated Script                   |
-| `openWrangler.insertNotebookCode`            | Open Wrangler: Insert Function into Originating Notebook |
-| `openWrangler.exportData`                    | Open Wrangler: Export Cleaned Data                       |
-| `openWrangler.openSourceFile`                | Open Wrangler: Open Source File                          |
-| `openWrangler.openWalkthrough`               | Open Wrangler: Open Getting Started                      |
-| `openWrangler.openSettings`                  | Open Wrangler: Open Settings                             |
-| `openWrangler.reportIssue`                   | Open Wrangler: Report Issue                              |
+| Command                                      | Title                                                          |
+| -------------------------------------------- | -------------------------------------------------------------- |
+| `openWrangler.openFile`                      | Open in Open Wrangler                                          |
+| `openWrangler.openPath`                      | Open Wrangler: Open File Path                                  |
+| `openWrangler.convertTrustedPickle`          | Convert Trusted Pickle to Parquet…                             |
+| `openWrangler.changeImportOptions`           | Open Wrangler: Change Import Options                           |
+| `openWrangler.launchDataViewer`              | Open Wrangler: Launch Selected Notebook Variable               |
+| `openWrangler.openNotebookVariable`          | Open in Open Wrangler                                          |
+| `openWrangler.runRDocument`                  | Run R Document in Open Wrangler…                               |
+| `openWrangler.checkJupyterIntegration`       | Open Wrangler: Check Jupyter Integration                       |
+| `openWrangler.chooseNotebookPreviewProvider` | Open Wrangler: Choose Notebook Preview Provider                |
+| `openWrangler.changeRuntime`                 | Open Wrangler: Change Runtime                                  |
+| `openWrangler.clearRuntime`                  | Open Wrangler: Clear Runtime Override                          |
+| `openWrangler.installRuntimeDependencies`    | Open Wrangler: Install Runtime Dependencies                    |
+| `openWrangler.revalidateRuntimeDependencies` | Open Wrangler: Revalidate Runtime Dependencies                 |
+| `openWrangler.startOperation`                | Open Wrangler: Add Cleaning Step                               |
+| `openWrangler.applyStep`                     | Open Wrangler: Apply Draft Step                                |
+| `openWrangler.discardStep`                   | Open Wrangler: Discard Draft Step                              |
+| `openWrangler.editLatestStep`                | Open Wrangler: Edit Latest Step                                |
+| `openWrangler.selectStep`                    | Open Wrangler: Inspect Applied Step                            |
+| `openWrangler.undoStep`                      | Open Wrangler: Undo Latest Step                                |
+| `openWrangler.openViewSort`                  | Open Wrangler: Edit View Sorts                                 |
+| `openWrangler.moveViewSortUp`                | Open Wrangler: Move View Sort Up                               |
+| `openWrangler.moveViewSortDown`              | Open Wrangler: Move View Sort Down                             |
+| `openWrangler.removeViewSort`                | Open Wrangler: Remove View Sort                                |
+| `openWrangler.copyCode`                      | Open Wrangler: Copy Generated Code                             |
+| `openWrangler.exportCode`                    | Open Wrangler: Export Generated Script                         |
+| `openWrangler.insertNotebookCode`            | Open Wrangler: Insert Generated Code into Originating Notebook |
+| `openWrangler.insertRDocumentCode`           | Open Wrangler: Insert Generated Code into Originating R File   |
+| `openWrangler.exportData`                    | Open Wrangler: Export Cleaned Data                             |
+| `openWrangler.openSourceFile`                | Open Wrangler: Open Source File                                |
+| `openWrangler.openWalkthrough`               | Open Wrangler: Open Getting Started                            |
+| `openWrangler.openSettings`                  | Open Wrangler: Open Settings                                   |
+| `openWrangler.reportIssue`                   | Open Wrangler: Report Issue                                    |
 
 ## Keyboard shortcuts
 
@@ -62,6 +64,7 @@
 | `openWrangler.fetchColumnBlockSize`    | `number`  | `16`                                           | None                                                      | Number of dataframe columns fetched for each horizontal grid block.                                                                                                                                    |
 | `openWrangler.panelRevealBehavior`     | `string`  | `"onDraft"`                                    | `"onDraft"`, `"always"`, `"never"`                        | When to reveal the bottom-panel Code Preview: on the first draft in each session, once when each session opens, or never automatically.                                                                |
 | `openWrangler.pythonPath`              | `string`  | `""`                                           | None                                                      | Optional Python 3.10-3.14 executable override. When empty, Open Wrangler uses the selected Python extension environment, then a system interpreter.                                                    |
+| `openWrangler.rscriptPath`             | `string`  | `""`                                           | None                                                      | Optional Rscript executable used for .R, .Rmd, and .qmd documents on macOS or Linux. When empty, Open Wrangler resolves Rscript from PATH.                                                             |
 | `openWrangler.sessionOpenTimeoutMs`    | `number`  | `60000`                                        | None                                                      | Maximum duration for opening a dataframe session, including cold engine and notebook-kernel initialization.                                                                                            |
 | `openWrangler.requestTimeoutMs`        | `number`  | `30000`                                        | None                                                      | Maximum duration for runtime requests other than session opening before recovery restarts and replays the session.                                                                                     |
 

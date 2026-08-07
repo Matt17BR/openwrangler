@@ -742,7 +742,11 @@ class PandasEngine(DataFrameEngine):
         needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
         needs_nullable_result_helpers = any(step["kind"] in {"groupBy", "byExample"} for step in plan)
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
-        needs_counter = any(step["kind"] in {"oneHotEncode", "multiLabelBinarize"} for step in plan)
+        needs_counter = any(
+            step["kind"] in {"oneHotEncode", "multiLabelBinarize"}
+            or (step["kind"] == "fillMissingValues" and step["params"]["replacement"].get("kind") == "mostFrequent")
+            for step in plan
+        )
         lines = ["from collections import Counter"] if needs_counter else []
         if needs_object_isolation:
             lines.append("from copy import deepcopy")
@@ -1085,8 +1089,8 @@ class PandasEngine(DataFrameEngine):
                     f"_open_wrangler_mask({series}, _open_wrangler_is_nan)"
                 ),
             ]
-            if replacement.get("kind") == "median":
-                replacement_kind = "median"
+            if replacement.get("kind") in {"median", "mostFrequent"}:
+                replacement_kind = str(replacement["kind"])
                 value = "None"
             else:
                 replacement_kind = str(replacement["kind"])
@@ -2326,7 +2330,8 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     import pandas as pd
 
     missing = _null_mask(series) | _nan_mask(series)
-    if replacement.get("kind") == "median":
+    replacement_kind = replacement.get("kind")
+    if replacement_kind == "median":
         if not bool(missing.any()):
             return series.copy()
         present = [value for value, is_missing in zip(series.array, missing.array, strict=True) if not is_missing]
@@ -2353,6 +2358,18 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
         except (TypeError, ValueError) as error:
             raise EngineError(f"The median is incompatible with the selected Pandas column: {error}") from error
 
+    if replacement_kind == "mostFrequent":
+        if not bool(missing.any()):
+            return series.copy()
+        present = (value for value, is_missing in zip(series.array, missing.array, strict=True) if not is_missing)
+        fill_value = _pandas_most_frequent_value(present)
+        try:
+            return series.copy().mask(missing, fill_value)
+        except (TypeError, ValueError) as error:
+            raise EngineError(
+                f"The most common value is incompatible with the selected Pandas column: {error}"
+            ) from error
+
     fill_value = decode_fill_replacement(replacement)
     semantic_type = _pandas_semantic_type(series)
     if semantic_type == "decimal":
@@ -2363,13 +2380,31 @@ def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
         fill_value = decimal_at_scale(Decimal(fill_value), precision, scale)
     elif semantic_type == "datetime":
         fill_value = require_datetime_fill_awareness(fill_value, _pandas_datetime_awareness(series))
-    target = series.astype("string") if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()
     if not bool(missing.any()):
-        return target
+        return series.copy()
+    target = series.astype("string") if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()
     try:
         return target.mask(missing, fill_value)
     except (TypeError, ValueError) as error:
         raise EngineError(f"The replacement value is incompatible with the selected Pandas column: {error}") from error
+
+
+def _pandas_most_frequent_value(present: Iterable[Any]) -> Any:
+    from collections import Counter
+
+    try:
+        counts = Counter(present)
+    except TypeError as error:
+        raise EngineError("Most common value is unavailable for values that cannot be compared exactly.") from error
+    if not counts:
+        raise EngineError("This column has no non-missing values. Choose a specific value.")
+    highest = max(counts.values())
+    winners = [value for value, count in counts.items() if count == highest]
+    if len(winners) != 1:
+        raise EngineError(
+            f"This column has no single most common value: {len(winners)} values are tied. Choose a specific value."
+        )
+    return winners[0]
 
 
 def _pandas_decimal_spec(series: Any, present: list[Any]) -> tuple[int, int]:
@@ -2492,10 +2527,10 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "",
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",
         "    semantic_type = _open_wrangler_fill_semantic_type(series)",
-        "    present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
         "    if replacement_kind == 'median':",
         "        if not missing.any():",
         "            return series.copy()",
+        "        present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
         "        if not present:",
         (
             "            raise ValueError('Cannot fill with the median because the selected column has no "
@@ -2529,8 +2564,32 @@ def _generated_pandas_fill_helpers() -> list[str]:
             "finite median.')"
         ),
         "        return series.copy().mask(missing, fill_value)",
+        "    if replacement_kind == 'mostFrequent':",
+        "        if not missing.any():",
+        "            return series.copy()",
+        "        try:",
+        (
+            "            counts = Counter(item for item, is_missing in zip(series.array, missing.array) "
+            "if not is_missing)"
+        ),
+        "        except TypeError as error:",
+        (
+            "            raise ValueError('Most common value is unavailable for values that cannot be compared "
+            "exactly.') from error"
+        ),
+        "        if not counts:",
+        "            raise ValueError('This column has no non-missing values. Choose a specific value.')",
+        "        highest = max(counts.values())",
+        "        winners = [value for value, count in counts.items() if count == highest]",
+        "        if len(winners) != 1:",
+        (
+            "            raise ValueError(f'This column has no single most common value: {len(winners)} values "
+            "are tied. Choose a specific value.')"
+        ),
+        "        return series.copy().mask(missing, winners[0])",
         "    fill_value = replacement_value",
         "    if semantic_type == 'decimal':",
+        "        present = [item for item, is_missing in zip(series.array, missing.array) if not is_missing]",
         "        precision, scale = _open_wrangler_decimal_spec(series, present)",
         "        fill_value = _open_wrangler_decimal_at_scale(Decimal(fill_value), precision, scale)",
         "    elif semantic_type == 'datetime':",
@@ -2539,8 +2598,10 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "        if value_aware != column_aware:",
         "            expected = 'timezone-aware' if column_aware else 'timezone-naive'",
         "            raise ValueError(f'The replacement datetime must be {expected} to match the selected column.')",
+        "    if not missing.any():",
+        "        return series.copy()",
         "    target = series.astype('string') if isinstance(series.dtype, pd.CategoricalDtype) else series.copy()",
-        "    return target if not missing.any() else target.mask(missing, fill_value)",
+        "    return target.mask(missing, fill_value)",
         "",
         "",
     ]

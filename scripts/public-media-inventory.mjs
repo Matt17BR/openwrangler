@@ -1,6 +1,6 @@
 export const PUBLIC_MEDIA_ROOT_PATH = "docs/images/readme/";
 export const PUBLIC_MEDIA_SERIES_PATH = `${PUBLIC_MEDIA_ROOT_PATH}v1.2/`;
-export const PUBLIC_README_IMAGE_COUNT = 18;
+export const PUBLIC_README_IMAGE_COUNT = 19;
 export const PUBLIC_MEDIA_MAX_INVENTORY_ENTRIES = 64;
 export const PUBLIC_MEDIA_MAX_DIRECTORY_DEPTH = 4;
 export const PUBLIC_MEDIA_MAX_RELATIVE_PATH_BYTES = 240;
@@ -41,6 +41,7 @@ const definitions = [
   ["gallery/notebook-polars.png", 1_440, 900],
   ["gallery/notebook-pyspark-detail.png", 820, 610],
   ["gallery/notebook-pyspark.png", 1_440, 900],
+  ["gallery/notebook-r-editing.png", 1_440, 900],
   ["gallery/notebook-variable-picker-detail.png", 602, 380],
   ["gallery/notebook-variable-picker.png", 1_040, 590],
   ["gallery/operation-catalog.png", 1_280, 874],

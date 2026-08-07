@@ -153,6 +153,8 @@ def test_fill_missing_binds_one_exact_duplicate_column() -> None:
     ("column_type", "replacement"),
     [
         ("integer", {"kind": "median"}),
+        ("string", {"kind": "mostFrequent"}),
+        ("boolean", {"kind": "mostFrequent"}),
         ("float", {"kind": "integer", "value": "0"}),
         ("decimal", {"kind": "decimal", "value": "1.25"}),
         ("string", {"kind": "string", "value": "unknown"}),
@@ -183,6 +185,7 @@ def test_fill_missing_binding_accepts_only_portable_type_matches(
     ("column_type", "replacement"),
     [
         ("string", {"kind": "median"}),
+        ("integer", {"kind": "mostFrequent"}),
         ("integer", {"kind": "string", "value": "1"}),
         ("boolean", {"kind": "integer", "value": "0"}),
         ("date", {"kind": "datetime", "value": "2026-08-05T18:20:00"}),

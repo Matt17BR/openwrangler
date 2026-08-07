@@ -54,7 +54,7 @@ interface CoordinatedSession extends RuntimeSessionState {
   publicRevision: number;
   openRequest: OpenSessionRequest;
   backendPreference?: DataBackend;
-  notebookDocument?: vscode.NotebookDocument;
+  origin?: CoordinatedSessionOrigin;
   activeViewContextId?: string;
   latestRequestedViewContextId?: string;
   latestRequestedPageRequestId?: string;
@@ -77,6 +77,17 @@ interface CoordinatedSession extends RuntimeSessionState {
   stepInspection?: StepInspectionResponse;
   latestStepInspectionKey?: string;
 }
+
+export interface TextDocumentSessionOrigin {
+  readonly kind: "textDocument";
+  readonly document: vscode.TextDocument;
+  readonly version: number;
+}
+
+type CoordinatedSessionOrigin =
+  Readonly<{ kind: "notebook"; document: vscode.NotebookDocument }> | TextDocumentSessionOrigin;
+
+type BridgeSessionOrigin = vscode.NotebookDocument | TextDocumentSessionOrigin;
 
 interface QueuedSessionOperation {
   request: SessionBoundRequest;
@@ -164,9 +175,10 @@ export class SessionCoordinator implements vscode.Disposable {
 
   readonly onDidChangeActiveSession = this.activeSessionEmitter.event;
 
-  createBridge(delegate: OpenWranglerBridge, notebookDocument?: vscode.NotebookDocument): OpenWranglerBridge {
+  createBridge(delegate: OpenWranglerBridge, origin?: BridgeSessionOrigin): OpenWranglerBridge {
+    const confirmedOrigin = normalizeSessionOrigin(origin);
     return {
-      request: (request, options) => this.request(delegate, request, options, notebookDocument),
+      request: (request, options) => this.request(delegate, request, options, confirmedOrigin),
       listExcelSheets: (sessionId, source, backend, options) =>
         this.listExcelSheets(delegate, sessionId, source, backend, options),
       reconfigureFileSession: (sessionId, revision, source, options) =>
@@ -312,7 +324,13 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   activeNotebookDocument(): vscode.NotebookDocument | undefined {
-    return this.activeSessionId ? this.sessions.get(this.activeSessionId)?.notebookDocument : undefined;
+    const origin = this.activeSessionId ? this.sessions.get(this.activeSessionId)?.origin : undefined;
+    return origin?.kind === "notebook" ? origin.document : undefined;
+  }
+
+  activeTextDocumentOrigin(): TextDocumentSessionOrigin | undefined {
+    const origin = this.activeSessionId ? this.sessions.get(this.activeSessionId)?.origin : undefined;
+    return origin?.kind === "textDocument" ? origin : undefined;
   }
 
   clearActiveStepInspection(): void {
@@ -462,7 +480,7 @@ export class SessionCoordinator implements vscode.Disposable {
     delegate: OpenWranglerBridge,
     request: OpenWranglerRequest,
     options?: BridgeRequestOptions,
-    notebookDocument?: vscode.NotebookDocument
+    origin?: CoordinatedSessionOrigin
   ): Promise<OpenWranglerResponse> {
     if (this.disposed) {
       return protocolError(
@@ -474,7 +492,7 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
     if (request.kind === "openSession") {
-      return this.open(delegate, request, options, notebookDocument);
+      return this.open(delegate, request, options, origin);
     }
     if (!isSessionBoundRequest(request)) {
       return delegate.request(request, options);
@@ -560,27 +578,27 @@ export class SessionCoordinator implements vscode.Disposable {
     delegate: OpenWranglerBridge,
     request: OpenSessionRequest,
     options?: BridgeRequestOptions,
-    notebookDocument?: vscode.NotebookDocument
+    origin?: CoordinatedSessionOrigin
   ): Promise<OpenWranglerResponse> {
-    if (
-      options?.backendPreference !== undefined &&
-      options.backendPreference !== "auto" &&
-      request.backend !== options.backendPreference
-    ) {
-      return protocolError(
-        "invalid_backend_preference",
-        `The host backend preference ${options.backendPreference} does not match the pinned open-session backend.`,
-        false
-      );
-    }
-    const invalidNotebookOrigin = notebookDocument ? notebookOriginMismatch(request, notebookDocument) : undefined;
-    if (invalidNotebookOrigin) {
-      return protocolError("invalid_notebook_origin", invalidNotebookOrigin, true);
-    }
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     try {
+      if (
+        options?.backendPreference !== undefined &&
+        options.backendPreference !== "auto" &&
+        request.backend !== options.backendPreference
+      ) {
+        return protocolError(
+          "invalid_backend_preference",
+          `The host backend preference ${options.backendPreference} does not match the pinned open-session backend.`,
+          false
+        );
+      }
+      const invalidOrigin = sessionOriginMismatch(request, origin);
+      if (invalidOrigin) {
+        return protocolError("invalid_source_origin", invalidOrigin, true);
+      }
       return await this.serializeSessionEstablishment(delegate, () =>
-        this.openTracked(delegate, request, options, notebookDocument)
+        this.openTracked(delegate, request, options, origin)
       );
     } finally {
       const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
@@ -595,8 +613,10 @@ export class SessionCoordinator implements vscode.Disposable {
     delegate: OpenWranglerBridge,
     request: OpenSessionRequest,
     options?: BridgeRequestOptions,
-    notebookDocument?: vscode.NotebookDocument
+    origin?: CoordinatedSessionOrigin
   ): Promise<OpenWranglerResponse> {
+    const invalidOrigin = sessionOriginMismatch(request, origin);
+    if (invalidOrigin) return protocolError("invalid_source_origin", invalidOrigin, true);
     const response = await delegate.request(request, options);
     if (response.kind === "error" || response.kind === "cancelled") return response;
     if (response.kind !== "sessionOpened") {
@@ -617,7 +637,7 @@ export class SessionCoordinator implements vscode.Disposable {
       runtimeRevision: response.metadata.revision,
       openRequest: confirmedReplayOpenRequest(request, response.metadata),
       ...(backendPreference ? { backendPreference } : {}),
-      ...(notebookDocument ? { notebookDocument } : {}),
+      ...(origin ? { origin } : {}),
       delegate,
       interactiveQueue: [],
       backgroundQueue: [],
@@ -632,10 +652,10 @@ export class SessionCoordinator implements vscode.Disposable {
       liveReconnectRequired: false,
       recoveryRequired: false
     };
-    const staleNotebookOrigin = notebookDocument ? notebookOriginMismatch(request, notebookDocument) : undefined;
-    if (staleNotebookOrigin) {
+    const staleOrigin = sessionOriginMismatch(request, origin);
+    if (staleOrigin) {
       await this.closeRuntimeState(session, "invalid open runtime");
-      return protocolError("invalid_notebook_origin", staleNotebookOrigin, true);
+      return protocolError("invalid_source_origin", staleOrigin, true);
     }
     const openedMismatch = sessionOpenedResponseMismatch(request, response);
     if (openedMismatch) {
@@ -728,10 +748,10 @@ export class SessionCoordinator implements vscode.Disposable {
         false
       );
     }
-    const finalNotebookOrigin = notebookDocument ? notebookOriginMismatch(request, notebookDocument) : undefined;
-    if (finalNotebookOrigin) {
+    const finalOrigin = sessionOriginMismatch(request, origin);
+    if (finalOrigin) {
       await this.closeRuntimeState(session, "invalid open runtime");
-      return protocolError("invalid_notebook_origin", finalNotebookOrigin, true);
+      return protocolError("invalid_source_origin", finalOrigin, true);
     }
     this.sessions.set(publicId, session);
     this.setActive(publicId);
@@ -2229,7 +2249,7 @@ export class SessionCoordinator implements vscode.Disposable {
   ): Promise<boolean> {
     if (!this.isLiveSession(session) || session.closing) return false;
     if (isStillCurrent && !isStillCurrent()) return false;
-    if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) return false;
+    if (session.origin && sessionOriginMismatch(session.openRequest, session.origin)) return false;
     const persisted = persistedSessionState(
       session.metadata,
       gridState(session.viewState),
@@ -2260,8 +2280,8 @@ export class SessionCoordinator implements vscode.Disposable {
         code: "",
         viewState: initialViewingState(response.metadata)
       };
-      if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) {
-        throw new Error("The originating notebook became ambiguous while recovery was opening its runtime session.");
+      if (session.origin && sessionOriginMismatch(session.openRequest, session.origin)) {
+        throw new Error("The originating source changed while recovery was opening its runtime session.");
       }
       const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response, true);
       if (openedMismatch) throw new Error(openedMismatch);
@@ -2278,8 +2298,8 @@ export class SessionCoordinator implements vscode.Disposable {
         requiredSchema !== undefined
       );
       if (isStillCurrent && !isStillCurrent()) throw new Error("The recovery request was superseded.");
-      if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) {
-        throw new Error("The originating notebook became ambiguous while recovery was restoring its runtime session.");
+      if (session.origin && sessionOriginMismatch(session.openRequest, session.origin)) {
+        throw new Error("The originating source changed while recovery was restoring its runtime session.");
       }
     } catch {
       if (candidate) await this.closeRuntimeState(candidate, "recovery candidate");
@@ -2851,6 +2871,34 @@ function normalizeFilterModel(model: FilterModel): unknown {
   };
 }
 
+function normalizeSessionOrigin(origin: BridgeSessionOrigin | undefined): CoordinatedSessionOrigin | undefined {
+  if (!origin) return undefined;
+  if (isTextDocumentSessionOrigin(origin)) {
+    if (!Number.isSafeInteger(origin.version) || origin.version < 0) {
+      throw new TypeError("A source-document origin requires a valid captured document version.");
+    }
+    return Object.freeze({ kind: "textDocument", document: origin.document, version: origin.version });
+  }
+  return Object.freeze({ kind: "notebook", document: origin });
+}
+
+function isTextDocumentSessionOrigin(origin: BridgeSessionOrigin): origin is TextDocumentSessionOrigin {
+  return "kind" in origin && origin.kind === "textDocument";
+}
+
+function sessionOriginMismatch(
+  request: OpenSessionRequest,
+  origin: CoordinatedSessionOrigin | undefined
+): string | undefined {
+  if (request.source.kind === "documentVariable" && origin?.kind !== "textDocument") {
+    return "A live document-variable session requires its exact originating text document.";
+  }
+  if (!origin) return undefined;
+  return origin.kind === "notebook"
+    ? notebookOriginMismatch(request, origin.document)
+    : textDocumentOriginMismatch(request, origin);
+}
+
 function notebookOriginMismatch(request: OpenSessionRequest, notebook: vscode.NotebookDocument): string | undefined {
   if (request.source.kind !== "notebookVariable" || !request.source.uri) {
     return "Notebook provenance may be attached only to a live notebook-variable session.";
@@ -2860,6 +2908,27 @@ function notebookOriginMismatch(request: OpenSessionRequest, notebook: vscode.No
   }
   if (!isSoleOpenNotebookDocument(notebook)) {
     return "The originating notebook is no longer open. Reopen it and try again.";
+  }
+  return undefined;
+}
+
+function textDocumentOriginMismatch(
+  request: OpenSessionRequest,
+  origin: TextDocumentSessionOrigin
+): string | undefined {
+  if (request.source.kind !== "documentVariable" || !request.source.uri) {
+    return "Source-document provenance may be attached only to a live document-variable session.";
+  }
+  const document = origin.document;
+  if (request.source.uri !== document.uri.toString()) {
+    return "The document variable source did not match its originating text document.";
+  }
+  const matches = vscode.workspace.textDocuments.filter((candidate) => candidate.uri.toString() === request.source.uri);
+  if (document.isClosed || matches.length !== 1 || matches[0] !== document) {
+    return "The originating source document is no longer uniquely open. Reopen it and try again.";
+  }
+  if (document.version !== origin.version) {
+    return "The originating source document changed after Open Wrangler captured it. Run the file again.";
   }
   return undefined;
 }

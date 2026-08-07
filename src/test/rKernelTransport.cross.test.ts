@@ -394,16 +394,11 @@ ${close.code}
       kind: "applyDraft",
       payload: { sessionId: editingSessionId, revision: 3, page: projectedPage }
     });
-    const inspect = requestCode({
-      transportVersion: R_KERNEL_TRANSPORT_VERSION,
-      requestId: ids.inspect,
-      kind: "inspectStep",
-      payload: {
-        sessionId: editingSessionId,
-        revision: 4,
-        stepId: "rename-step",
-        page: projectedPage
-      }
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId: editingSessionId,
+      revision: 4,
+      stepId: "rename-step",
+      page: projectedPage
     });
     const edit = requestCode(step(ids.edit, 4, "duplicate", "updated duplicate", "rename-step"));
     const editApply = requestCode({
@@ -434,7 +429,9 @@ ${stale.code}
 ${discard.code}
 ${secondPreview.code}
 ${apply.code}
-${inspect.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
 ${edit.code}
 ${editApply.code}
 ${undo.code}
@@ -442,7 +439,11 @@ stopifnot(identical(frame, frame_before))
 ${close.code}
 `);
 
-    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    if (opened.kind !== "page") throw new Error("Expected an opened native R rename session.");
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
+      inputSchema: opened.page.schema
+    });
     expect(previewed).toMatchObject({
       kind: "stepPreview",
       revision: 1,
@@ -467,21 +468,49 @@ ${close.code}
     const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
     expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 4 });
     if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R rename.");
-    const inspected = decodeRKernelResponseJson(marked(result.stdout, inspect.marker), ids.inspect);
-    expect(inspected).toMatchObject({
-      kind: "stepInspection",
+    const inspectedInfo = decodeRKernelResponseJson(marked(result.stdout, inspect.info.marker), inspect.infoRequestId);
+    const inspectedInput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.input.marker),
+      inspect.inputRequestId,
+      { inputSchema: opened.page.schema, inspectionSide: "input" }
+    );
+    const inspectedOutput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.output.marker),
+      inspect.outputRequestId,
+      { outputSchema: applied.page.schema, inspectionSide: "output" }
+    );
+    expect(inspectedInput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "input",
       revision: 4,
       stepId: "rename-step",
-      stepIndex: 0,
-      diff: { changedCells: 0, cells: [] }
+      stepIndex: 0
     });
-    if (inspected.kind !== "stepInspection") throw new Error("Expected an applied native R rename inspection.");
-    expect(inspected.inputSchema.map((column) => column.name)).toEqual(["duplicate", "duplicate", "label"]);
-    expect(inspected.outputSchema.map((column) => column.name)).toEqual(["duplicate", "second duplicate", "label"]);
-    expect(inspected.inputPage.page.columnIds).toEqual(["r:c:1"]);
-    expect(inspected.outputPage.page.columnIds).toEqual(["r:c:1"]);
-    expect(inspected.code).toContain("second duplicate");
-    const edited = decodeRKernelResponseJson(marked(result.stdout, edit.marker), ids.edit);
+    expect(inspectedOutput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "output",
+      revision: 4,
+      stepId: "rename-step",
+      stepIndex: 0
+    });
+    if (inspectedInput.kind !== "stepInspectionPage" || inspectedOutput.kind !== "stepInspectionPage") {
+      throw new Error("Expected both applied native R rename inspection pages.");
+    }
+    if (inspectedInfo.kind !== "stepInspectionInfo") {
+      throw new Error("Expected applied native R rename inspection metadata.");
+    }
+    expect(inspectedInput.page.schema.map((column) => column.name)).toEqual(["duplicate", "duplicate", "label"]);
+    expect(inspectedOutput.page.schema.map((column) => column.name)).toEqual([
+      "duplicate",
+      "second duplicate",
+      "label"
+    ]);
+    expect(inspectedInput.page.page.columnIds).toEqual(["r:c:1"]);
+    expect(inspectedOutput.page.page.columnIds).toEqual(["r:c:1"]);
+    expect(inspectedInfo.code).toContain("second duplicate");
+    const edited = decodeRKernelResponseJson(marked(result.stdout, edit.marker), ids.edit, {
+      inputSchema: opened.page.schema
+    });
     expect(edited).toMatchObject({ kind: "stepPreview", revision: 5 });
     if (edited.kind !== "stepPreview") throw new Error("Expected an edited native R rename preview.");
     expect(edited.page.schema.map((column) => column.name)).toEqual(["duplicate", "updated duplicate", "label"]);
@@ -573,11 +602,11 @@ cat("generated-ok\\n")
       kind: "applyDraft",
       payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
     });
-    const inspect = requestCode({
-      transportVersion: R_KERNEL_TRANSPORT_VERSION,
-      requestId: ids.inspect,
-      kind: "inspectStep",
-      payload: { sessionId: editingSessionId, revision: 4, stepId: "drop-step", page: pageWindow() }
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId: editingSessionId,
+      revision: 4,
+      stepId: "drop-step",
+      page: pageWindow()
     });
     const undoRename = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -606,14 +635,20 @@ ${dropPreview.code}
 ${dropApply.code}
 ${renamePreview.code}
 ${renameApply.code}
-${inspect.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
 ${undoRename.code}
 ${undoDrop.code}
 stopifnot(identical(frame, frame_before))
 ${close.code}
 `);
 
-    const dropped = decodeRKernelResponseJson(marked(result.stdout, dropPreview.marker), ids.dropPreview);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    if (opened.kind !== "page") throw new Error("Expected an opened native R Drop Columns session.");
+    const dropped = decodeRKernelResponseJson(marked(result.stdout, dropPreview.marker), ids.dropPreview, {
+      inputSchema: opened.page.schema
+    });
     expect(dropped).toMatchObject({ kind: "stepPreview", diff: { removedColumns: ["duplicate"] } });
     if (dropped.kind !== "stepPreview") throw new Error("Expected a native R drop preview.");
     expect(dropped.page.schema.map(({ id, position }) => ({ id, position }))).toEqual([
@@ -632,11 +667,25 @@ ${close.code}
       { id: "r:c:1", name: "remaining duplicate" },
       { id: "r:c:2", name: "label" }
     ]);
-    const inspected = decodeRKernelResponseJson(marked(result.stdout, inspect.marker), ids.inspect);
-    expect(inspected).toMatchObject({
-      kind: "stepInspection",
-      stepId: "drop-step",
-      diff: { removedColumns: ["duplicate"] }
+    const inspectedInput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.input.marker),
+      inspect.inputRequestId,
+      { inputSchema: opened.page.schema, inspectionSide: "input" }
+    );
+    const inspectedOutput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.output.marker),
+      inspect.outputRequestId,
+      { outputSchema: dropped.page.schema, inspectionSide: "output" }
+    );
+    expect(inspectedInput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "input",
+      stepId: "drop-step"
+    });
+    expect(inspectedOutput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "output",
+      stepId: "drop-step"
     });
     const afterRenameUndo = decodeRKernelResponseJson(marked(result.stdout, undoRename.marker), ids.undoRename);
     expect(afterRenameUndo).toMatchObject({ kind: "planUpdated", action: "undo", revision: 5 });
@@ -705,11 +754,11 @@ cat("generated-ok\n")
       kind: "applyDraft",
       payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
     });
-    const inspect = requestCode({
-      transportVersion: R_KERNEL_TRANSPORT_VERSION,
-      requestId: ids.inspect,
-      kind: "inspectStep",
-      payload: { sessionId: editingSessionId, revision: 2, stepId: "select-step", page: pageWindow() }
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId: editingSessionId,
+      revision: 2,
+      stepId: "select-step",
+      page: pageWindow()
     });
     const renamePreview = requestCode({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -764,7 +813,9 @@ ${bootstrap}
 ${open.code}
 ${selectPreview.code}
 ${selectApply.code}
-${inspect.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
 ${renamePreview.code}
 ${renameApply.code}
 ${undoRename.code}
@@ -773,7 +824,11 @@ stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 ${close.code}
 `);
 
-    const selected = decodeRKernelResponseJson(marked(result.stdout, selectPreview.marker), ids.selectPreview);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    if (opened.kind !== "page") throw new Error("Expected an opened native R Select Columns session.");
+    const selected = decodeRKernelResponseJson(marked(result.stdout, selectPreview.marker), ids.selectPreview, {
+      inputSchema: opened.page.schema
+    });
     expect(selected).toMatchObject({
       kind: "stepPreview",
       diff: { removedColumns: ["score"] },
@@ -791,15 +846,31 @@ ${close.code}
       action: "apply",
       revision: 2
     });
-    const inspected = decodeRKernelResponseJson(marked(result.stdout, inspect.marker), ids.inspect);
-    expect(inspected).toMatchObject({
-      kind: "stepInspection",
-      stepId: "select-step",
-      diff: { removedColumns: ["score"] }
+    const inspectedInput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.input.marker),
+      inspect.inputRequestId,
+      { inputSchema: opened.page.schema, inspectionSide: "input" }
+    );
+    const inspectedOutput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.output.marker),
+      inspect.outputRequestId,
+      { outputSchema: selected.page.schema, inspectionSide: "output" }
+    );
+    expect(inspectedInput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "input",
+      stepId: "select-step"
     });
-    if (inspected.kind !== "stepInspection") throw new Error("Expected an applied R Select Columns inspection.");
-    expect(inspected.inputSchema.map((column) => column.id)).toEqual(["r:c:0", "r:c:1", "r:c:2", "r:c:3"]);
-    expect(inspected.outputSchema.map((column) => column.id)).toEqual(["r:c:2", "r:c:1", "r:c:0"]);
+    expect(inspectedOutput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "output",
+      stepId: "select-step"
+    });
+    if (inspectedInput.kind !== "stepInspectionPage" || inspectedOutput.kind !== "stepInspectionPage") {
+      throw new Error("Expected both applied R Select Columns inspection pages.");
+    }
+    expect(inspectedInput.page.schema.map((column) => column.id)).toEqual(["r:c:0", "r:c:1", "r:c:2", "r:c:3"]);
+    expect(inspectedOutput.page.schema.map((column) => column.id)).toEqual(["r:c:2", "r:c:1", "r:c:0"]);
 
     const renamed = decodeRKernelResponseJson(marked(result.stdout, renameApply.marker), ids.renameApply);
     expect(renamed).toMatchObject({ kind: "planUpdated", action: "apply", revision: 4 });
@@ -837,6 +908,932 @@ stopifnot(identical(names(open_wrangler_result), c("label", "secondary_key", "ke
 stopifnot(identical(data.table::key(open_wrangler_result), c("key_a", "secondary_key")))
 stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 cat("generated-ok\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
+  it("runs native R Clone Column then Rename Column against the derived identity", () => {
+    const editingSessionId = "40000000-0000-4000-8000-000000000001";
+    const cloneStepId = `clone-${"x".repeat(130)}`;
+    const cloneColumnId = `c:step:${cloneStepId}:0`;
+    expect(Buffer.byteLength(cloneColumnId, "utf8")).toBeGreaterThan(128);
+    const ids = {
+      open: "40000000-0000-4000-8000-000000000002",
+      clonePreview: "40000000-0000-4000-8000-000000000003",
+      cloneApply: "40000000-0000-4000-8000-000000000004",
+      renamePreview: "40000000-0000-4000-8000-000000000005",
+      renameApply: "40000000-0000-4000-8000-000000000006",
+      inspect: "40000000-0000-4000-8000-000000000007",
+      undoRename: "40000000-0000-4000-8000-000000000008",
+      undoClone: "40000000-0000-4000-8000-000000000009",
+      close: "40000000-0000-4000-8000-00000000000a"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const clonePreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.clonePreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: cloneStepId,
+          kind: "cloneColumn",
+          params: { column: { id: "r:c:2", name: "duplicate" }, newName: "copied value" }
+        },
+        page: pageWindow()
+      }
+    });
+    const cloneApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.cloneApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const renamePreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.renamePreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 2,
+        step: {
+          id: "rename-clone-step",
+          kind: "renameColumn",
+          params: {
+            column: { id: cloneColumnId, name: "copied value" },
+            newName: "renamed copy"
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const renameApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.renameApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
+    });
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId: editingSessionId,
+      revision: 4,
+      stepId: cloneStepId,
+      page: pageWindow()
+    });
+    const undoRename = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undoRename,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 4, page: pageWindow() }
+    });
+    const undoClone = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undoClone,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 5, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+stopifnot(requireNamespace("data.table", quietly = TRUE))
+frame <- data.table::data.table(row_key = c(1L, 2L), duplicate = c(10, 20), duplicate = c(30, 40))
+data.table::setnames(frame, "row_key", "key")
+data.table::setkey(frame, key)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${clonePreview.code}
+${cloneApply.code}
+${renamePreview.code}
+${renameApply.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
+${undoRename.code}
+${undoClone.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    if (opened.kind !== "page") throw new Error("Expected an opened native R Clone Column session.");
+    const cloned = decodeRKernelResponseJson(marked(result.stdout, clonePreview.marker), ids.clonePreview, {
+      inputSchema: opened.page.schema
+    });
+    expect(cloned).toMatchObject({
+      kind: "stepPreview",
+      diff: { addedColumns: ["copied value"], removedColumns: [] },
+      page: { frameSemantics: { keyColumnIds: ["r:c:0"] } }
+    });
+    if (cloned.kind !== "stepPreview") throw new Error("Expected a native R Clone Column preview.");
+    expect(cloned.page.schema.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "r:c:0", name: "key" },
+      { id: "r:c:1", name: "duplicate" },
+      { id: "r:c:2", name: "duplicate" },
+      { id: cloneColumnId, name: "copied value" }
+    ]);
+    expect(cloned.page.schema[3]).toMatchObject({
+      rawType: cloned.page.schema[2]?.rawType,
+      type: cloned.page.schema[2]?.type,
+      nullable: cloned.page.schema[2]?.nullable
+    });
+    expect(cloned.page.page.rows.map((row) => row.values[3])).toEqual(
+      cloned.page.page.rows.map((row) => row.values[2])
+    );
+    expect(decodeRKernelResponseJson(marked(result.stdout, cloneApply.marker), ids.cloneApply)).toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2
+    });
+
+    const renameDraft = decodeRKernelResponseJson(marked(result.stdout, renamePreview.marker), ids.renamePreview, {
+      inputSchema: cloned.page.schema
+    });
+    expect(renameDraft).toMatchObject({ kind: "stepPreview", revision: 3 });
+
+    const renamed = decodeRKernelResponseJson(marked(result.stdout, renameApply.marker), ids.renameApply);
+    expect(renamed).toMatchObject({ kind: "planUpdated", action: "apply", revision: 4 });
+    if (renamed.kind !== "planUpdated") throw new Error("Expected the applied R Clone then Rename plan.");
+    expect(renamed.page.schema.at(-1)).toMatchObject({ id: cloneColumnId, name: "renamed copy" });
+    expect(renamed.page.frameSemantics.keyColumnIds).toEqual(["r:c:0"]);
+
+    const inspectedInput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.input.marker),
+      inspect.inputRequestId,
+      { inputSchema: opened.page.schema, inspectionSide: "input" }
+    );
+    const inspectedOutput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.output.marker),
+      inspect.outputRequestId,
+      { outputSchema: cloned.page.schema, inspectionSide: "output" }
+    );
+    expect(inspectedInput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "input",
+      stepId: cloneStepId
+    });
+    expect(inspectedOutput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "output",
+      stepId: cloneStepId
+    });
+    if (inspectedInput.kind !== "stepInspectionPage" || inspectedOutput.kind !== "stepInspectionPage") {
+      throw new Error("Expected both applied R Clone Column inspection pages.");
+    }
+    expect(inspectedInput.page.schema.map((column) => column.id)).toEqual(["r:c:0", "r:c:1", "r:c:2"]);
+    expect(inspectedOutput.page.schema.at(-1)).toMatchObject({ id: cloneColumnId, name: "copied value" });
+
+    const afterRenameUndo = decodeRKernelResponseJson(marked(result.stdout, undoRename.marker), ids.undoRename);
+    expect(afterRenameUndo).toMatchObject({ kind: "planUpdated", action: "undo", revision: 5 });
+    if (afterRenameUndo.kind !== "planUpdated") throw new Error("Expected the R derived-column rename undo.");
+    expect(afterRenameUndo.page.schema.at(-1)).toMatchObject({
+      id: cloneColumnId,
+      name: "copied value"
+    });
+    const restored = decodeRKernelResponseJson(marked(result.stdout, undoClone.marker), ids.undoClone);
+    expect(restored).toMatchObject({ kind: "planUpdated", action: "undo", revision: 6 });
+    if (restored.kind !== "planUpdated") throw new Error("Expected the R Clone Column undo.");
+    expect(restored.page.schema.map((column) => column.id)).toEqual(["r:c:0", "r:c:1", "r:c:2"]);
+
+    expect(renamed.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+    const generated = runR(`
+stopifnot(requireNamespace("data.table", quietly = TRUE))
+frame <- data.table::data.table(row_key = c(1L, 2L), duplicate = c(10, 20), duplicate = c(30, 40))
+data.table::setnames(frame, "row_key", "key")
+data.table::setkey(frame, key)
+frame_before <- serialize(frame, NULL, version = 3L)
+${renamed.code}
+stopifnot(identical(names(open_wrangler_result), c("key", "duplicate", "duplicate", "renamed copy")))
+stopifnot(identical(open_wrangler_result[[4L]], frame[[3L]]))
+stopifnot(identical(data.table::key(open_wrangler_result), "key"))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
+  it("runs native R Text Length through preview, apply, inspection, undo, and generated code", () => {
+    const editingSessionId = "50000000-0000-4000-8000-000000000001";
+    const stepId = "text-length-unicode";
+    const outputId = `c:step:${stepId}:0`;
+    const ids = {
+      open: "50000000-0000-4000-8000-000000000002",
+      preview: "50000000-0000-4000-8000-000000000003",
+      apply: "50000000-0000-4000-8000-000000000004",
+      inspect: "50000000-0000-4000-8000-000000000005",
+      undo: "50000000-0000-4000-8000-000000000006",
+      close: "50000000-0000-4000-8000-000000000007"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const preview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: stepId,
+          kind: "textLength",
+          params: { column: { id: "r:c:0", name: "label" }, newColumn: "label length" }
+        },
+        page: pageWindow()
+      }
+    });
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId: editingSessionId,
+      revision: 2,
+      stepId,
+      page: pageWindow()
+    });
+    const undo = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undo,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 2, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(
+  label = c("na\\u00efve", "\\u6771\\u4eac", "\\U0001F9EA", NA_character_),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
+${undo.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    if (opened.kind !== "page") throw new Error("Expected an opened native R Text Length session.");
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
+      inputSchema: opened.page.schema
+    });
+    expect(previewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: ["label length"],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      }
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R Text Length preview.");
+    expect(previewed.page.schema.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "r:c:0", name: "label" },
+      { id: outputId, name: "label length" }
+    ]);
+    expect(previewed.page.schema[1]).toMatchObject({
+      id: outputId,
+      rawType: "integer",
+      type: "integer",
+      nullable: true,
+      semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] }
+    });
+    expect(previewed.page.page.rows[3]?.values[0]).toMatchObject({ kind: "null", raw: null, isNull: true });
+    expect(previewed.page.page.rows.map((row) => row.values[1])).toMatchObject([
+      { kind: "integer", raw: "5", isNull: false, isNaN: false },
+      { kind: "integer", raw: "2", isNull: false, isNaN: false },
+      { kind: "integer", raw: "1", isNull: false, isNaN: false },
+      { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false }
+    ]);
+
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R Text Length step.");
+    expect(applied.page.schema[1]).toMatchObject({ id: outputId, name: "label length", type: "integer" });
+
+    const inspectedInput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.input.marker),
+      inspect.inputRequestId,
+      { inputSchema: opened.page.schema, inspectionSide: "input" }
+    );
+    const inspectedOutput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.output.marker),
+      inspect.outputRequestId,
+      { outputSchema: applied.page.schema, inspectionSide: "output" }
+    );
+    expect(inspectedInput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "input",
+      revision: 2,
+      stepId,
+      stepIndex: 0
+    });
+    expect(inspectedOutput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "output",
+      revision: 2,
+      stepId,
+      stepIndex: 0
+    });
+    if (inspectedInput.kind !== "stepInspectionPage" || inspectedOutput.kind !== "stepInspectionPage") {
+      throw new Error("Expected both applied R Text Length inspection pages.");
+    }
+    expect(inspectedInput.page.schema.map((column) => column.id)).toEqual(["r:c:0"]);
+    expect(inspectedOutput.page.schema.map((column) => column.id)).toEqual(["r:c:0", outputId]);
+    expect(inspectedOutput.page.page.rows.map((row) => row.values[1])).toEqual(
+      previewed.page.page.rows.map((row) => row.values[1])
+    );
+
+    const undone = decodeRKernelResponseJson(marked(result.stdout, undo.marker), ids.undo);
+    expect(undone).toMatchObject({ kind: "planUpdated", action: "undo", revision: 3, code: "" });
+    if (undone.kind !== "planUpdated") throw new Error("Expected the R Text Length undo.");
+    expect(undone.page.schema.map((column) => column.id)).toEqual(["r:c:0"]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+
+    expect(applied.code).toContain("nchar");
+    expect(applied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+    const generated = runR(`
+frame <- data.frame(
+  label = c("na\\u00efve", "\\u6771\\u4eac", "\\U0001F9EA", NA_character_),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${applied.code}
+stopifnot(identical(names(open_wrangler_result), c("label", "label length")))
+stopifnot(identical(open_wrangler_result[[2L]], c(5L, 2L, 1L, NA_integer_)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
+  it("runs native R lowercase in place through the TypeScript transport lifecycle", () => {
+    const editingSessionId = "51000000-0000-4000-8000-000000000001";
+    const stepId = "lowercase-factor";
+    const ids = {
+      open: "51000000-0000-4000-8000-000000000002",
+      preview: "51000000-0000-4000-8000-000000000003",
+      apply: "51000000-0000-4000-8000-000000000004",
+      inspect: "51000000-0000-4000-8000-000000000005",
+      undo: "51000000-0000-4000-8000-000000000006",
+      close: "51000000-0000-4000-8000-000000000007"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const preview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: stepId,
+          kind: "lowerText",
+          params: { column: { id: "r:c:0", name: "label" } }
+        },
+        page: pageWindow()
+      }
+    });
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId: editingSessionId,
+      revision: 2,
+      stepId,
+      page: pageWindow()
+    });
+    const undo = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undo,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 2, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(
+  label = factor(c("ALPHA", "MiXeD", NA_character_)),
+  stringsAsFactors = TRUE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
+${undo.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    if (opened.kind !== "page") throw new Error("Expected an opened native R lowercase session.");
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
+      inputSchema: opened.page.schema
+    });
+    expect(previewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      page: {
+        schema: [expect.objectContaining({ id: "r:c:0", name: "label", rawType: "character", type: "string" })]
+      },
+      diff: {
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 2,
+        truncated: false
+      }
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R lowercase preview.");
+    expect(previewed.page.page.rows.map((row) => row.values[0])).toMatchObject([
+      { kind: "string", raw: "alpha", display: "alpha" },
+      { kind: "string", raw: "mixed", display: "mixed" },
+      { kind: "null", raw: null, display: "NA", isNull: true }
+    ]);
+    expect(previewed.diff.cells.map(({ rowNumber, columnId, column }) => ({ rowNumber, columnId, column }))).toEqual([
+      { rowNumber: 0, columnId: "r:c:0", column: "label" },
+      { rowNumber: 1, columnId: "r:c:0", column: "label" }
+    ]);
+
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R lowercase step.");
+    expect(applied.page.schema[0]).toMatchObject({ id: "r:c:0", rawType: "character", type: "string" });
+
+    const inspectedInput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.input.marker),
+      inspect.inputRequestId,
+      { inputSchema: opened.page.schema, inspectionSide: "input" }
+    );
+    const inspectedOutput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.output.marker),
+      inspect.outputRequestId,
+      { outputSchema: applied.page.schema, inspectionSide: "output" }
+    );
+    expect(inspectedInput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "input",
+      stepId,
+      stepIndex: 0
+    });
+    expect(inspectedOutput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "output",
+      stepId,
+      stepIndex: 0
+    });
+    if (inspectedInput.kind !== "stepInspectionPage" || inspectedOutput.kind !== "stepInspectionPage") {
+      throw new Error("Expected both applied R lowercase inspection pages.");
+    }
+    expect(inspectedInput.page.schema[0]).toMatchObject({ id: "r:c:0", rawType: "factor", type: "string" });
+    expect(inspectedOutput.page.schema[0]).toMatchObject({ id: "r:c:0", rawType: "character", type: "string" });
+
+    const undone = decodeRKernelResponseJson(marked(result.stdout, undo.marker), ids.undo);
+    expect(undone).toMatchObject({ kind: "planUpdated", action: "undo", revision: 3, code: "" });
+    if (undone.kind !== "planUpdated") throw new Error("Expected the R lowercase undo.");
+    expect(undone.page.schema[0]).toMatchObject({ id: "r:c:0", rawType: "factor", type: "string" });
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+    expect(applied.code).toContain("tolower");
+    expect(applied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+  });
+
+  it("chains native R uppercase with literal, regex, and blank replacements", () => {
+    const editingSessionId = "51100000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "51100000-0000-4000-8000-000000000002",
+      upperPreview: "51100000-0000-4000-8000-000000000003",
+      upperApply: "51100000-0000-4000-8000-000000000004",
+      literalPreview: "51100000-0000-4000-8000-000000000005",
+      literalApply: "51100000-0000-4000-8000-000000000006",
+      regexPreview: "51100000-0000-4000-8000-000000000007",
+      regexApply: "51100000-0000-4000-8000-000000000008",
+      blankPreview: "51100000-0000-4000-8000-000000000009",
+      close: "51100000-0000-4000-8000-00000000000a"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const upperPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.upperPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: "uppercase-derived",
+          kind: "upperText",
+          params: { column: { id: "r:c:0", name: "label" }, newColumn: "upper" }
+        },
+        page: pageWindow()
+      }
+    });
+    const upperApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.upperApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const literalPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.literalPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 2,
+        step: {
+          id: "replace-literal-derived",
+          kind: "findReplace",
+          params: {
+            column: { id: "r:c:0", name: "label" },
+            find: ".",
+            replacement: "!",
+            regex: false,
+            newColumn: "literal"
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const literalApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.literalApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
+    });
+    const regexPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.regexPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 4,
+        step: {
+          id: "replace-regex-derived",
+          kind: "findReplace",
+          params: {
+            column: { id: "r:c:0", name: "label" },
+            find: "[[:digit:]]+",
+            replacement: "#",
+            regex: true,
+            newColumn: "regex"
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const regexApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.regexApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 5, page: pageWindow() }
+    });
+    const blankPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.blankPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 6,
+        step: {
+          id: "replace-blank-in-place",
+          kind: "findReplace",
+          params: { column: { id: "r:c:0", name: "label" }, find: "", replacement: "_" }
+        },
+        page: pageWindow()
+      }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(
+  label = factor(c("a.b 42", "naive2", NA_character_)),
+  stringsAsFactors = TRUE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${upperPreview.code}
+${upperApply.code}
+${literalPreview.code}
+${literalApply.code}
+${regexPreview.code}
+${regexApply.code}
+${blankPreview.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    if (opened.kind !== "page") throw new Error("Expected an opened native R text-cleaning session.");
+    const upperPreviewed = decodeRKernelResponseJson(marked(result.stdout, upperPreview.marker), ids.upperPreview, {
+      inputSchema: opened.page.schema
+    });
+    expect(upperPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      page: {
+        schema: [
+          expect.objectContaining({ id: "r:c:0", rawType: "factor" }),
+          expect.objectContaining({ id: "c:step:uppercase-derived:0", name: "upper", rawType: "character" })
+        ]
+      },
+      diff: { addedColumns: ["upper"], changedCells: 0 }
+    });
+    const upperApplied = decodeRKernelResponseJson(marked(result.stdout, upperApply.marker), ids.upperApply);
+    if (upperApplied.kind !== "planUpdated") throw new Error("Expected the native R uppercase apply.");
+
+    const literalPreviewed = decodeRKernelResponseJson(
+      marked(result.stdout, literalPreview.marker),
+      ids.literalPreview,
+      { inputSchema: upperApplied.page.schema }
+    );
+    expect(literalPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 3,
+      page: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "c:step:replace-literal-derived:0", name: "literal" })
+        ])
+      },
+      diff: { addedColumns: ["literal"], changedCells: 0 }
+    });
+    const literalApplied = decodeRKernelResponseJson(marked(result.stdout, literalApply.marker), ids.literalApply);
+    if (literalApplied.kind !== "planUpdated") throw new Error("Expected the literal replacement apply.");
+
+    const regexPreviewed = decodeRKernelResponseJson(marked(result.stdout, regexPreview.marker), ids.regexPreview, {
+      inputSchema: literalApplied.page.schema
+    });
+    expect(regexPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 5,
+      page: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "c:step:replace-regex-derived:0", name: "regex" })
+        ])
+      },
+      diff: { addedColumns: ["regex"], changedCells: 0 }
+    });
+    const regexApplied = decodeRKernelResponseJson(marked(result.stdout, regexApply.marker), ids.regexApply);
+    if (regexApplied.kind !== "planUpdated") throw new Error("Expected the regex replacement apply.");
+
+    const blankPreviewed = decodeRKernelResponseJson(marked(result.stdout, blankPreview.marker), ids.blankPreview, {
+      inputSchema: regexApplied.page.schema
+    });
+    expect(blankPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 7,
+      page: {
+        schema: [
+          expect.objectContaining({ id: "r:c:0", name: "label", rawType: "character", type: "string" }),
+          expect.objectContaining({ name: "upper" }),
+          expect.objectContaining({ name: "literal" }),
+          expect.objectContaining({ name: "regex" })
+        ]
+      },
+      diff: { addedColumns: [], changedCells: 2, truncated: false }
+    });
+    if (blankPreviewed.kind !== "stepPreview") throw new Error("Expected the blank replacement preview.");
+    expect(blankPreviewed.page.page.rows.map((row) => row.values[0])).toMatchObject([
+      { kind: "string", raw: "_a_._b_ _4_2_", display: "_a_._b_ _4_2_" },
+      { kind: "string", raw: "_n_a_i_v_e_2_", display: "_n_a_i_v_e_2_" },
+      { kind: "null", raw: null, display: "NA", isNull: true }
+    ]);
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+    expect(blankPreviewed.code).toContain("toupper");
+    expect(blankPreviewed.code).toContain("gsub");
+    expect(blankPreviewed.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+
+    const generated = runR(`
+frame <- data.frame(
+  label = factor(c("a.b 42", "naive2", NA_character_)),
+  stringsAsFactors = TRUE,
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${blankPreviewed.code}
+stopifnot(identical(names(open_wrangler_result), c("label", "upper", "literal", "regex")))
+stopifnot(identical(open_wrangler_result$label, c("_a_._b_ _4_2_", "_n_a_i_v_e_2_", NA_character_)))
+stopifnot(identical(open_wrangler_result$literal, c("a!b 42", "naive2", NA_character_)))
+stopifnot(identical(open_wrangler_result$regex, c("a.b #", "naive#", NA_character_)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
+  it("runs native R type conversion through preview, history, undo, and generated code", () => {
+    const editingSessionId = "52000000-0000-4000-8000-000000000001";
+    const stepId = "cast-text-to-integer";
+    const ids = {
+      open: "52000000-0000-4000-8000-000000000002",
+      preview: "52000000-0000-4000-8000-000000000003",
+      apply: "52000000-0000-4000-8000-000000000004",
+      inspect: "52000000-0000-4000-8000-000000000005",
+      undo: "52000000-0000-4000-8000-000000000006",
+      close: "52000000-0000-4000-8000-000000000007"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const preview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: stepId,
+          kind: "castColumn",
+          params: { column: { id: "r:c:0", name: "amount" }, dtype: "integer" }
+        },
+        page: pageWindow()
+      }
+    });
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId: editingSessionId,
+      revision: 2,
+      stepId,
+      page: pageWindow()
+    });
+    const undo = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undo,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 2, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(amount = c("42.9", "bad", NA_character_), check.names = FALSE)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
+${undo.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    if (opened.kind !== "page") throw new Error("Expected an opened native R type-conversion session.");
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
+      inputSchema: opened.page.schema
+    });
+    expect(previewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      page: {
+        schema: [
+          expect.objectContaining({ id: "r:c:0", name: "amount", rawType: "integer", type: "integer", nullable: true })
+        ]
+      },
+      diff: { addedColumns: [], removedColumns: [], changedCells: 2, truncated: false }
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R type-conversion preview.");
+    expect(previewed.page.page.rows.map((row) => row.values[0])).toMatchObject([
+      { kind: "integer", raw: "42", display: "42" },
+      { kind: "null", raw: null, display: "NA", isNull: true },
+      { kind: "null", raw: null, display: "NA", isNull: true }
+    ]);
+    expect(previewed.diff.cells.map(({ rowNumber, columnId, column }) => ({ rowNumber, columnId, column }))).toEqual([
+      { rowNumber: 0, columnId: "r:c:0", column: "amount" },
+      { rowNumber: 1, columnId: "r:c:0", column: "amount" }
+    ]);
+
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R type conversion.");
+    expect(applied.page.schema[0]).toMatchObject({ id: "r:c:0", rawType: "integer", type: "integer" });
+
+    const inspectedInput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.input.marker),
+      inspect.inputRequestId,
+      { inputSchema: opened.page.schema, inspectionSide: "input" }
+    );
+    const inspectedOutput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.output.marker),
+      inspect.outputRequestId,
+      { outputSchema: applied.page.schema, inspectionSide: "output" }
+    );
+    expect(inspectedInput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "input",
+      stepId,
+      stepIndex: 0,
+      page: { schema: [expect.objectContaining({ id: "r:c:0", rawType: "character", type: "string" })] }
+    });
+    expect(inspectedOutput).toMatchObject({
+      kind: "stepInspectionPage",
+      side: "output",
+      stepId,
+      stepIndex: 0,
+      page: { schema: [expect.objectContaining({ id: "r:c:0", rawType: "integer", type: "integer" })] }
+    });
+
+    const undone = decodeRKernelResponseJson(marked(result.stdout, undo.marker), ids.undo);
+    expect(undone).toMatchObject({ kind: "planUpdated", action: "undo", revision: 3, code: "" });
+    if (undone.kind !== "planUpdated") throw new Error("Expected the native R type-conversion undo.");
+    expect(undone.page.schema[0]).toMatchObject({ id: "r:c:0", rawType: "character", type: "string" });
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+
+    expect(applied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+    const generated = runR(`
+frame <- data.frame(amount = c("42.9", "bad", NA_character_), check.names = FALSE)
+frame_before <- serialize(frame, NULL, version = 3L)
+${applied.code}
+stopifnot(identical(open_wrangler_result[[1L]], c(42L, NA_integer_, NA_integer_)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
 `);
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
@@ -887,7 +1884,13 @@ function runR(code: string) {
       R_ENVIRON_USER: ""
     }
   });
-  if (result.error) throw result.error;
+  if (result.error) {
+    const stderr = result.stderr.trim();
+    throw new Error(
+      `R kernel transport fixture failed before exit (${result.error.message})${stderr.length > 0 ? `: ${stderr}` : ""}`,
+      { cause: result.error }
+    );
+  }
   if (result.status !== 0) {
     throw new Error(`R kernel transport fixture failed (${result.status ?? "signal"}): ${result.stderr.trim()}`);
   }
@@ -898,6 +1901,33 @@ function runR(code: string) {
 function requestCode(request: RKernelRequest): { readonly marker: string; readonly code: string } {
   const marker = request.requestId.replaceAll("-", "");
   return { marker, code: buildRKernelDispatchCode(encodeRKernelRequest(request), marker) };
+}
+
+function inspectionRequestCodes(
+  requestId: string,
+  payload: Omit<Extract<RKernelRequest, { kind: "inspectStepPage" }>["payload"], "side">
+) {
+  const inputRequestId = `${requestId.slice(0, -1)}e`;
+  const outputRequestId = `${requestId.slice(0, -1)}f`;
+  const info = requestCode({
+    transportVersion: R_KERNEL_TRANSPORT_VERSION,
+    requestId,
+    kind: "inspectStepInfo",
+    payload: { sessionId: payload.sessionId, revision: payload.revision, stepId: payload.stepId }
+  });
+  const input = requestCode({
+    transportVersion: R_KERNEL_TRANSPORT_VERSION,
+    requestId: inputRequestId,
+    kind: "inspectStepPage",
+    payload: { ...payload, side: "input" }
+  });
+  const output = requestCode({
+    transportVersion: R_KERNEL_TRANSPORT_VERSION,
+    requestId: outputRequestId,
+    kind: "inspectStepPage",
+    payload: { ...payload, side: "output" }
+  });
+  return { info, input, output, infoRequestId: requestId, inputRequestId, outputRequestId } as const;
 }
 
 function marked(output: string, marker: string): string {

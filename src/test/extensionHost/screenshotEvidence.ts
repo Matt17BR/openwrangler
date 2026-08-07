@@ -56,7 +56,8 @@ export const PACKAGED_SCREENSHOT_SCENES = [
   "notebook-duckdb",
   "notebook-pyspark",
   "notebook-r",
-  "notebook-r-editing"
+  "notebook-r-editing",
+  "notebook-r-code-insertion"
 ] as const;
 export const PACKAGED_SCREENSHOT_FEATURED_COLUMNS = [
   "order_id",

@@ -36,7 +36,8 @@ const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "
 const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
 const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
 const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
-type FillValueKind = Exclude<FillMissingReplacement, { kind: "median" }>["kind"];
+type FillMode = "median" | "mostFrequent" | "value";
+type FillValueKind = Exclude<FillMissingReplacement, { kind: "median" } | { kind: "mostFrequent" }>["kind"];
 const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
   "integer",
@@ -47,6 +48,7 @@ const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "datetime",
   "unknown"
 ]);
+const mostFrequentColumnTypes: ReadonlySet<ColumnType> = new Set(["string", "boolean"]);
 const fillValueKindOptions: readonly [FillValueKind, string][] = [
   ["string", "Text"],
   ["integer", "Integer"],
@@ -687,7 +689,7 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
     );
   }
   if (kind === "fillMissingValues") {
-    return <FillMissingFields columns={columns} initialStep={initialStep} />;
+    return <FillMissingFields backend={metadata.backend} columns={columns} initialStep={initialStep} />;
   }
   if (kind === "dropDuplicates") {
     return (
@@ -1089,72 +1091,88 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
   return null;
 }
 
-function FillMissingFields({ columns, initialStep }: { columns: ColumnSchema[]; initialStep?: TransformStep }) {
+function FillMissingFields({
+  backend,
+  columns,
+  initialStep
+}: {
+  backend: SessionMetadata["backend"];
+  columns: ColumnSchema[];
+  initialStep?: TransformStep;
+}) {
   const initialParams = initialStep?.kind === "fillMissingValues" ? initialStep.params : undefined;
   const initialReplacement = initialParams?.replacement;
-  const medianColumns = compatibleColumns(columns, numericColumnTypes);
-  const valueColumns = compatibleColumns(columns, fillValueColumnTypes);
-  const [mode, setMode] = useState<"median" | "value">(
-    initialReplacement
-      ? initialReplacement.kind === "median"
-        ? "median"
-        : "value"
-      : medianColumns.length
-        ? "median"
-        : "value"
-  );
-  const availableColumns = mode === "median" ? medianColumns : valueColumns;
+  const availableColumns = compatibleColumns(columns, fillValueColumnTypes);
   const savedColumnId = columnReferenceId(initialParams?.column);
   const [selectedColumnId, setSelectedColumnId] = useState(() =>
     savedColumnId && availableColumns.some((column) => column.id === savedColumnId)
       ? savedColumnId
-      : (availableColumns[0]?.id ?? "")
+      : (availableColumns.find((column) => column.nullable)?.id ?? availableColumns[0]?.id ?? "")
   );
   const selectedColumn = availableColumns.find((column) => column.id === selectedColumnId);
-  const initialKind = initialReplacement?.kind !== "median" ? initialReplacement?.kind : undefined;
+  const savedMode: FillMode | undefined = initialReplacement
+    ? initialReplacement.kind === "median" || initialReplacement.kind === "mostFrequent"
+      ? initialReplacement.kind
+      : "value"
+    : undefined;
+  const [mode, setMode] = useState<FillMode>(() =>
+    savedMode && fillModesForColumn(selectedColumn).includes(savedMode)
+      ? savedMode
+      : defaultFillModeForColumn(selectedColumn)
+  );
+  const initialKind =
+    initialReplacement?.kind !== "median" && initialReplacement?.kind !== "mostFrequent"
+      ? initialReplacement?.kind
+      : undefined;
   const [unknownValueKind, setUnknownValueKind] = useState<FillValueKind>(initialKind ?? "string");
 
-  const changeMode = (nextMode: "median" | "value") => {
-    const nextColumns = nextMode === "median" ? medianColumns : valueColumns;
-    setMode(nextMode);
-    setSelectedColumnId((current) =>
-      nextColumns.some((column) => column.id === current) ? current : (nextColumns[0]?.id ?? "")
-    );
-  };
   const changeColumn = (id: string) => {
     setSelectedColumnId(id);
     const column = availableColumns.find((candidate) => candidate.id === id);
-    if (column?.type !== "unknown") setUnknownValueKind(fillValueKindForColumn(column?.type));
+    setUnknownValueKind(column?.type === "unknown" ? "string" : fillValueKindForColumn(column?.type));
+    setMode((current) => (fillModesForColumn(column).includes(current) ? current : defaultFillModeForColumn(column)));
   };
   const valueKind =
     selectedColumn?.type === "unknown" ? unknownValueKind : fillValueKindForColumn(selectedColumn?.type);
-  const savedValue = initialReplacement?.kind !== "median" ? String(initialReplacement?.value) : "";
+  const savedValue =
+    initialReplacement?.kind !== "median" && initialReplacement?.kind !== "mostFrequent"
+      ? String(initialReplacement?.value)
+      : "";
+  const fillModes = fillModesForColumn(selectedColumn);
 
   return (
     <>
-      <label className="formField">
-        <span>Fill with</span>
-        <select name="fillMode" value={mode} onChange={(event) => changeMode(event.target.value as "median" | "value")}>
-          <option value="value">A value</option>
-          <option value="median">Column median</option>
-        </select>
-      </label>
       <ColumnReferenceSelect
         name="column"
-        label={mode === "median" ? "Numeric column" : "Column"}
+        label="Column"
         columns={availableColumns}
         value={selectedColumnId}
         onChange={changeColumn}
-        emptyMessage={
-          mode === "median"
-            ? "No numeric columns are available. Choose a typed value or convert a column first."
-            : "No scalar columns support a typed replacement."
-        }
+        emptyMessage="No supported columns are available."
       />
+      <label className="formField">
+        <span>Fill with</span>
+        <select
+          name="fillMode"
+          aria-label="Fill with"
+          value={mode}
+          onChange={(event) => setMode(event.target.value as FillMode)}
+        >
+          {fillModes.includes("median") && <option value="median">Median</option>}
+          {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
+          <option value="value">Specific value</option>
+        </select>
+      </label>
       {mode === "median" ? (
         <p className="panelNote">
           The median ignores null and NaN cells and keeps the column type. Integer and decimal medians must fit that
-          type exactly.
+          type exactly. If every cell is missing, choose a specific value.
+        </p>
+      ) : mode === "mostFrequent" ? (
+        <p className="panelNote">
+          Uses the most common non-missing value in this column after earlier cleaning steps. Filters in the current
+          view do not affect this calculation. If there is no non-missing value or several values tie, choose a specific
+          value.
         </p>
       ) : (
         <>
@@ -1176,11 +1194,27 @@ function FillMissingFields({ columns, initialStep }: { columns: ColumnSchema[]; 
           ) : (
             <input type="hidden" name="fillValueKind" value={valueKind} />
           )}
-          <FillReplacementInput kind={valueKind} defaultValue={savedValue} />
+          <FillReplacementInput backend={backend} kind={valueKind} defaultValue={savedValue} />
+          {selectedColumn?.type === "string" && (
+            <p className="panelNote">
+              For categorical columns, a specific value may convert the column to text. Most common value keeps the
+              category type.
+            </p>
+          )}
         </>
       )}
     </>
   );
+}
+
+function fillModesForColumn(column: ColumnSchema | undefined): FillMode[] {
+  if (column && numericColumnTypes.has(column.type)) return ["median", "value"];
+  if (column && mostFrequentColumnTypes.has(column.type)) return ["mostFrequent", "value"];
+  return ["value"];
+}
+
+function defaultFillModeForColumn(column: ColumnSchema | undefined): FillMode {
+  return fillModesForColumn(column)[0];
 }
 
 function fillValueKindForColumn(type: ColumnType | undefined): FillValueKind {
@@ -1214,7 +1248,15 @@ function normalizeFillNumericValue(kind: FillValueKind, value: string): string {
   return `${sign === "-" ? "-" : ""}${coefficient}${exponent}`;
 }
 
-function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; defaultValue: string }) {
+function FillReplacementInput({
+  backend,
+  kind,
+  defaultValue
+}: {
+  backend: SessionMetadata["backend"];
+  kind: FillValueKind;
+  defaultValue: string;
+}) {
   if (kind === "boolean") {
     return (
       <SelectField
@@ -1237,6 +1279,7 @@ function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; def
       : kind === "datetime"
         ? "Replacement value (ISO date and time)"
         : "Replacement number";
+  const rTextLimit = backend === "r" && kind === "string" ? 8_192 : undefined;
   return (
     <TextField
       key={kind}
@@ -1245,7 +1288,8 @@ function FillReplacementInput({ kind, defaultValue }: { kind: FillValueKind; def
       defaultValue={defaultValue}
       required={kind !== "string"}
       inputMode={kind === "integer" ? "numeric" : kind === "float" || kind === "decimal" ? "decimal" : undefined}
-      maxLength={kind === "string" ? 65_536 : kind === "integer" ? 40 : kind === "decimal" ? 128 : 64}
+      maxLength={kind === "string" ? (rTextLimit ?? 65_536) : kind === "integer" ? 40 : kind === "decimal" ? 128 : 64}
+      maxUtf8Bytes={rTextLimit}
       normalizeOnBlur={
         kind === "integer" || kind === "float" || kind === "decimal"
           ? (value) => normalizeFillNumericValue(kind, value)
@@ -1288,10 +1332,14 @@ function buildParams(
     const useSaved = savedFilterModel !== undefined && value("filterSource") !== "current";
     return { filterModel: useSaved ? savedFilterModel : transformFilterModel(filterModel, availableColumns) };
   }
-  if (kind === "dropMissingRows") return { columns: columnReferences("columns"), how: value("how") };
+  if (kind === "dropMissingRows") {
+    const columns = columnReferences("columns");
+    return { ...(columns.length > 0 ? { columns } : {}), how: value("how") };
+  }
   if (kind === "fillMissingValues") {
-    if (value("fillMode") === "median") {
-      return { column: columnReference("column"), replacement: { kind: "median" } };
+    const fillMode = value("fillMode");
+    if (fillMode === "median" || fillMode === "mostFrequent") {
+      return { column: columnReference("column"), replacement: { kind: fillMode } };
     }
     const replacementKind = value("fillValueKind");
     const rawValue = value("fillValue");
@@ -1825,6 +1873,7 @@ function TextField({
   step,
   inputMode,
   maxLength,
+  maxUtf8Bytes,
   normalizeOnBlur
 }: {
   name: string;
@@ -1836,12 +1885,22 @@ function TextField({
   step?: number | "any";
   inputMode?: "numeric" | "decimal";
   maxLength?: number;
+  maxUtf8Bytes?: number;
   normalizeOnBlur?: (value: string) => string;
 }) {
+  const helpId = useId();
+  const validateByteLength = (input: HTMLInputElement) => {
+    if (maxUtf8Bytes === undefined) return;
+    const byteLength = new TextEncoder().encode(input.value).byteLength;
+    input.setCustomValidity(
+      byteLength > maxUtf8Bytes ? `Use at most ${maxUtf8Bytes.toLocaleString()} UTF-8 bytes.` : ""
+    );
+  };
   return (
     <label className="formField">
       <span>{label}</span>
       <input
+        aria-label={label}
         name={name}
         type={type}
         min={min}
@@ -1850,14 +1909,18 @@ function TextField({
         maxLength={maxLength}
         defaultValue={defaultValue}
         required={required}
+        aria-describedby={maxUtf8Bytes === undefined ? undefined : helpId}
+        onInput={(event) => validateByteLength(event.currentTarget)}
         onBlur={
-          normalizeOnBlur
+          normalizeOnBlur || maxUtf8Bytes !== undefined
             ? (event) => {
-                event.currentTarget.value = normalizeOnBlur(event.currentTarget.value);
+                if (normalizeOnBlur) event.currentTarget.value = normalizeOnBlur(event.currentTarget.value);
+                validateByteLength(event.currentTarget);
               }
             : undefined
         }
       />
+      {maxUtf8Bytes !== undefined && <small id={helpId}>R text replacements can use up to 8,192 UTF-8 bytes.</small>}
     </label>
   );
 }

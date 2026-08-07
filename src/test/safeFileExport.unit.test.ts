@@ -78,6 +78,23 @@ describe("safe file export transactions", () => {
     expect(await temporaryFiles(directory)).toEqual([]);
   });
 
+  it("publishes sequential streamed chunks in order through the reserved handle", async () => {
+    const fixture = await sourceAndDestination(directory);
+    const transaction = await beginAtomicFileTransaction({
+      destination: fileUri(fixture.destination),
+      protectedSources: [fileUri(fixture.source)],
+      createTemporaryId: () => "stream-success"
+    });
+
+    await transaction.write(Buffer.from("value,count\n"));
+    await transaction.write(Buffer.from("12.5,2\n"));
+    await transaction.commit();
+
+    expect(await readFile(fixture.destination, "utf8")).toBe("value,count\n12.5,2\n");
+    expect(await readFile(fixture.source, "utf8")).toBe(SOURCE_CONTENTS);
+    expect(await temporaryFiles(directory)).toEqual([]);
+  });
+
   it("rolls back an unused reservation without changing the source or destination", async () => {
     const fixture = await sourceAndDestination(directory);
     const transaction = await beginAtomicFileTransaction({
