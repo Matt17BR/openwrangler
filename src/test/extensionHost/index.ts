@@ -4989,6 +4989,68 @@ async function exerciseReleasedREditingJourney(
     "undoing the native R Text Length step"
   );
 
+  if (phase === "jupyter-r") {
+    recordAcceptanceProgress(`${phase}:editing:find-replace-picker-preview-apply-undo`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Find and replace");
+    const replaced = await previewReleasedRFindReplace(testing, workbench, app, sessionId, "group", "A", "Alpha");
+    app = replaced.app;
+    const replaceReview = app.getByRole("region", { name: "Draft review" });
+    await replaceReview.getByText("Find and replace", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await replaceReview.getByRole("button", { name: "Apply step", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const step = active?.metadata.steps[0];
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          step?.kind === "findReplace" &&
+          step.id === replaced.stepId &&
+          step.params.column.name === "group" &&
+          step.params.find === "A" &&
+          step.params.replacement === "Alpha" &&
+          step.params.regex === false
+        );
+      },
+      30_000,
+      "applying native R Find and replace"
+    );
+    const findApplied = testing.activeSession();
+    assert.ok(findApplied, "The applied native R Find and replace step must retain its session.");
+    const groupAfterReplace = findApplied.metadata.schema.find((column) => column.name === "group");
+    assert.ok(groupAfterReplace, "The native R Find and replace journey must retain group.");
+    const replacedPage = await testing.request({
+      kind: "getPage",
+      sessionId,
+      revision: findApplied.metadata.revision,
+      viewRequestId: `${phase}-editing-find-replace-page`,
+      offset: 0,
+      limit: 1,
+      filterModel: findApplied.viewState.filterModel,
+      columnOffset: groupAfterReplace.position,
+      columnLimit: 1
+    });
+    assert.equal(replacedPage.kind, "page");
+    if (replacedPage.kind !== "page") throw new Error("The applied R Find and replace step did not return a page.");
+    assert.equal(replacedPage.page.rows[0]?.values[0]?.display, "Alpha");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Find and replace session before undo");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          (active.code ?? "") === ""
+        );
+      },
+      30_000,
+      "undoing native R Find and replace"
+    );
+  }
+
   recordAcceptanceProgress(`${phase}:editing:convert-type-preview-apply-undo`);
   const castBase = testing.activeSession();
   assert.ok(castBase, "The restored R session must remain available for Convert type.");
@@ -5170,66 +5232,6 @@ async function exerciseReleasedREditingJourney(
   await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:lowercase-source-after-undo`);
 
   if (phase === "jupyter-r") {
-    recordAcceptanceProgress(`${phase}:editing:find-replace-picker-preview-apply-undo`);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Find and replace");
-    const replaced = await previewReleasedRFindReplace(testing, workbench, app, sessionId, "group", "A", "Alpha");
-    app = replaced.app;
-    const replaceReview = app.getByRole("region", { name: "Draft review" });
-    await replaceReview.getByText("Find and replace", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-    await replaceReview.getByRole("button", { name: "Apply step", exact: true }).click();
-    await waitFor(
-      () => {
-        const active = testing.activeSession();
-        const step = active?.metadata.steps[0];
-        return (
-          active?.sessionId === sessionId &&
-          active.metadata.draftStep === undefined &&
-          active.metadata.steps.length === 1 &&
-          step?.kind === "findReplace" &&
-          step.id === replaced.stepId &&
-          step.params.column.name === "group" &&
-          step.params.find === "A" &&
-          step.params.replacement === "Alpha" &&
-          step.params.regex === false
-        );
-      },
-      30_000,
-      "applying native R Find and replace"
-    );
-    const findApplied = testing.activeSession();
-    assert.ok(findApplied, "The applied native R Find and replace step must retain its session.");
-    const groupAfterReplace = findApplied.metadata.schema.find((column) => column.name === "group");
-    assert.ok(groupAfterReplace, "The native R Find and replace journey must retain group.");
-    const replacedPage = await testing.request({
-      kind: "getPage",
-      sessionId,
-      revision: findApplied.metadata.revision,
-      viewRequestId: `${phase}-editing-find-replace-page`,
-      offset: 0,
-      limit: 1,
-      filterModel: findApplied.viewState.filterModel,
-      columnOffset: groupAfterReplace.position,
-      columnLimit: 1
-    });
-    assert.equal(replacedPage.kind, "page");
-    if (replacedPage.kind !== "page") throw new Error("The applied R Find and replace step did not return a page.");
-    assert.equal(replacedPage.page.rows[0]?.values[0]?.display, "Alpha");
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Find and replace session before undo");
-    await app.getByRole("button", { name: "Undo", exact: true }).click();
-    await waitFor(
-      () => {
-        const active = testing.activeSession();
-        return (
-          active?.sessionId === sessionId &&
-          active.metadata.steps.length === 0 &&
-          active.metadata.draftStep === undefined &&
-          (active.code ?? "") === ""
-        );
-      },
-      30_000,
-      "undoing native R Find and replace"
-    );
-
     recordAcceptanceProgress(`${phase}:editing:uppercase-preview-apply-undo`);
     const uppercaseBase = testing.activeSession();
     assert.ok(uppercaseBase, "The restored R session must remain available for Uppercase.");
@@ -5568,7 +5570,7 @@ async function previewReleasedRFindReplace(
   );
   assertReleasedRFindReplaceGeneratedCode(active.code ?? "", sourceName, find, replacement, false);
   const codePreview = await waitForCodePreview(workbench, replacement, "R");
-  assertReleasedRFindReplaceGeneratedCode(await codePreview.innerText(), sourceName, find, replacement, false);
+  assertReleasedRFindReplaceCodeSurface(await codePreview.innerText(), sourceName, find, replacement, false);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -5934,10 +5936,21 @@ function assertReleasedRFindReplaceGeneratedCode(
   regex: boolean,
   variableName = "orders_frame"
 ): void {
+  assertReleasedRFindReplaceCodeSurface(code, sourceName, find, replacement, regex, variableName);
+  assert.ok(code.includes("gsub("));
+}
+
+function assertReleasedRFindReplaceCodeSurface(
+  code: string,
+  sourceName: string,
+  find: string,
+  replacement: string,
+  regex: boolean,
+  variableName = "orders_frame"
+): void {
   assert.match(code, /open_wrangler_result <- local\(\{/u);
   assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
   assert.ok(code.includes(".ow_text_position"));
-  assert.ok(code.includes("gsub("));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.ok(code.includes(`.ow_text_find <- ${JSON.stringify(find)}`));
   assert.ok(code.includes(`.ow_text_replacement <- ${JSON.stringify(replacement)}`));
