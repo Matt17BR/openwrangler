@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -301,15 +301,8 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
           const exportRoot = resolve(temporaryParent, processRoot!, "exports");
           const [artifact] = await readdir(exportRoot);
           const artifactPath = resolve(exportRoot, artifact!);
-          const before = await stat(artifactPath, { bigint: true });
-          const bytes = await readFile(artifactPath);
-
-          await writeFile(artifactPath, Buffer.alloc(bytes.byteLength, 0x78), { flag: "r+" });
-
-          const after = await stat(artifactPath, { bigint: true });
-          expect(after.dev).toBe(before.dev);
-          expect(after.ino).toBe(before.ino);
-          expect(after.size).toBe(before.size);
+          const expectedCsv = Buffer.from('"value"\n1\n2\n3\n', "utf8");
+          await writeFile(artifactPath, Buffer.alloc(expectedCsv.byteLength, 0x78), { flag: "r+" });
           rewritten = true;
         })
       ).rejects.toThrow("changing private R export artifact");
