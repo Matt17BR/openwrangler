@@ -5020,21 +5020,16 @@ async function exerciseReleasedREditingJourney(
     assert.ok(findApplied, "The applied native R Find and replace step must retain its session.");
     const groupAfterReplace = findApplied.metadata.schema.find((column) => column.name === "group");
     assert.ok(groupAfterReplace, "The native R Find and replace journey must retain group.");
-    const replacedPage = await testing.request({
-      kind: "getPage",
+    await requireFreshExactSessionPanelHydration(
+      testing,
       sessionId,
-      revision: findApplied.metadata.revision,
-      viewRequestId: `${phase}-editing-find-replace-page`,
-      offset: 0,
-      limit: 1,
-      filterModel: findApplied.viewState.filterModel,
-      columnOffset: groupAfterReplace.position,
-      columnLimit: 1
-    });
-    assert.equal(replacedPage.kind, "page");
-    if (replacedPage.kind !== "page") throw new Error("The applied R Find and replace step did not return a page.");
-    assert.equal(replacedPage.page.rows[0]?.values[0]?.display, "Alpha");
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R Find and replace session before undo");
+      "The applied R Find and replace result must reach its exact renderer before inspection."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Find and replace session");
+    await app
+      .locator(`td[data-grid-row="0"][data-grid-column="${groupAfterReplace.position}"]`)
+      .getByText("Alpha", { exact: true })
+      .waitFor({ state: "visible", timeout: 10_000 });
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(
       () => {
