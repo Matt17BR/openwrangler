@@ -74,9 +74,8 @@ from the same request. Same-schema changes made in the notebook are therefore vi
 user to reopen the frame.
 
 Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
-Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, and Find and
-replace. The first draft takes an isolated original;
-base data frames and tibbles use R
+Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
+Capitalize, Strip text, and Split text. The first draft takes an isolated original: base data frames and tibbles use R
 serialization, while data tables use `data.table::copy()`. The runtime keeps committed and draft results separate,
 resolves every target by stable ID and captured name, and advances the session revision for preview, apply, discard,
 latest-step replacement, and undo. Applied-step inspection replays only the selected plan prefix. The kernel returns
@@ -105,11 +104,13 @@ Dropping columns keeps retained IDs stable and refuses to remove the final colum
 chosen order. Cloning appends a copy with its own stable derived ID, which later steps can address directly. The
 Text Length operation accepts character and factor columns, keeps `NA` values, and appends a derived integer column
 whose stable ID can be used by later steps. It counts Unicode characters rather than encoded bytes. The operations
-keep compatible data-table keys. Lowercase, Uppercase, and Find and replace accept character and factor columns and
-keep `NA`. They either update the column or append a character column with a stable derived ID. Find and replace can
-use literal text or a regular expression. An in-place change to a data-table key column is
-rejected; choosing a new output column keeps the key and row order. Generated R repeats the position and name checks
-and returns a copied result. Native, cross-language, and packaged-editor tests cover source isolation, executable
+keep compatible data-table keys. The text operations accept character and factor columns, convert factors to
+character, and keep `NA`. Lowercase, Uppercase, Capitalize, Strip text, and Find and replace either update the column
+or append a character column with a stable derived ID. Find and replace can use literal text or a regular expression.
+Strip text removes the default whitespace or a literal character set from both ends. Split text uses a literal
+delimiter, appends a new character column, and returns `NA` when the requested part does not exist. An in-place change
+to a data-table key column is rejected; choosing a new output column keeps the key and row order. Generated R repeats
+the position and name checks and returns a copied result. Native, cross-language, and packaged-editor tests cover source isolation, executable
 code, keyed data tables, duplicate names, non-syntactic names, row identity, and mixed plans.
 
 Convert type replaces one column while keeping its stable ID, name, and position. It supports character, integer,
@@ -159,8 +160,8 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
   stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
-  Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, and Find and replace with
-  generated R code. Generated R can be inserted
+  Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
+  Strip text, and Split text with generated R code. Generated R can be inserted
   into its originating IRkernel notebook or R document. Other cleaning operations and cleaned-data export remain
   unsupported.
 - Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and

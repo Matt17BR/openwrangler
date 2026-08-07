@@ -6,6 +6,7 @@ import {
   PROTOCOL_VERSION,
   type CellValue,
   type CastColumnTransformStep,
+  type CapitalizeTextTransformStep,
   type CloneColumnTransformStep,
   type ColumnSchema,
   type ColumnSummary,
@@ -36,6 +37,8 @@ import {
   type SessionSource,
   type SummaryRequest,
   type SortRowsTransformStep,
+  type SplitTextTransformStep,
+  type StripTextTransformStep,
   type TextLengthTransformStep,
   type UpperTextTransformStep,
   type SourceCapabilities,
@@ -91,6 +94,9 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "castColumn",
   "textLength",
   "findReplace",
+  "stripText",
+  "splitText",
+  "capitalizeText",
   "lowerText",
   "upperText"
 ] as OperationKind[]) as OperationKind[];
@@ -106,6 +112,9 @@ type RTransformStep =
   | CastColumnTransformStep
   | TextLengthTransformStep
   | FindReplaceTransformStep
+  | StripTextTransformStep
+  | SplitTextTransformStep
+  | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
   | DropColumnsTransformStep
@@ -641,6 +650,9 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "castColumn" &&
       request.step.kind !== "textLength" &&
       request.step.kind !== "findReplace" &&
+      request.step.kind !== "stripText" &&
+      request.step.kind !== "splitText" &&
+      request.step.kind !== "capitalizeText" &&
       request.step.kind !== "lowerText" &&
       request.step.kind !== "upperText" &&
       request.step.kind !== "dropColumns" &&
@@ -734,7 +746,11 @@ export class RKernelBridge implements OpenWranglerBridge {
         targetRows,
         targetKeyColumnIds,
         view,
-        request.step.kind === "castColumn" ? request.step.params.column.id : undefined
+        request.step.kind === "castColumn"
+          ? request.step.params.column.id
+          : request.step.kind === "splitText"
+            ? `c:step:${request.step.id}:0`
+            : undefined
       );
       assertMutationDiff(request.step, inputSchema, targetSchema, inputRows, targetRows, result.page, result.diff);
 
@@ -1804,7 +1820,14 @@ function schemaAfterRStep(
   if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
-  if (step.kind === "findReplace" || step.kind === "lowerText" || step.kind === "upperText") {
+  if (
+    step.kind === "findReplace" ||
+    step.kind === "stripText" ||
+    step.kind === "splitText" ||
+    step.kind === "capitalizeText" ||
+    step.kind === "lowerText" ||
+    step.kind === "upperText"
+  ) {
     return schemaAfterTextTransform(inputSchema, step, activeKeyColumnIds);
   }
   const matches = inputSchema.filter(
@@ -1991,7 +2014,13 @@ function unsupportedRCast(sourceRawType: string, dtype: string): TypeError {
 
 function schemaAfterTextTransform(
   inputSchema: readonly ColumnSchema[],
-  step: FindReplaceTransformStep | LowerTextTransformStep | UpperTextTransformStep,
+  step:
+    | FindReplaceTransformStep
+    | StripTextTransformStep
+    | SplitTextTransformStep
+    | CapitalizeTextTransformStep
+    | LowerTextTransformStep
+    | UpperTextTransformStep,
   activeKeyColumnIds: readonly string[]
 ): readonly ColumnSchema[] {
   const label = textTransformLabel(step);
@@ -2012,6 +2041,9 @@ function schemaAfterTextTransform(
     throw new TypeError(`The ${description} R column name may not be empty.`);
   }
   const inPlace = outputName === undefined || outputName === source.name;
+  if (step.kind === "splitText" && inPlace) {
+    throw new TypeError("Split text requires a new output column.");
+  }
   if (inPlace) {
     if (activeKeyColumnIds.includes(source.id)) {
       throw new TypeError(
@@ -2059,9 +2091,18 @@ function schemaAfterTextTransform(
 }
 
 function textTransformLabel(
-  step: FindReplaceTransformStep | LowerTextTransformStep | UpperTextTransformStep
-): "Find and Replace" | "Lowercase" | "Uppercase" {
+  step:
+    | FindReplaceTransformStep
+    | StripTextTransformStep
+    | SplitTextTransformStep
+    | CapitalizeTextTransformStep
+    | LowerTextTransformStep
+    | UpperTextTransformStep
+): "Find and Replace" | "Strip text" | "Split text" | "Capitalize" | "Lowercase" | "Uppercase" {
   if (step.kind === "findReplace") return "Find and Replace";
+  if (step.kind === "stripText") return "Strip text";
+  if (step.kind === "splitText") return "Split text";
+  if (step.kind === "capitalizeText") return "Capitalize";
   if (step.kind === "lowerText") return "Lowercase";
   return "Uppercase";
 }
@@ -2369,6 +2410,39 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       params: Object.freeze({ column: Object.freeze({ ...step.params.column }), newColumn: step.params.newColumn })
     });
   }
+  if (step.kind === "capitalizeText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "capitalizeText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "stripText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "stripText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.params.characters === undefined ? {} : { characters: step.params.characters }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "splitText") {
+    return Object.freeze({
+      id: step.id,
+      kind: "splitText" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        delimiter: step.params.delimiter,
+        index: step.params.index,
+        newColumn: step.params.newColumn
+      })
+    });
+  }
   if (step.kind === "lowerText") {
     return Object.freeze({
       id: step.id,
@@ -2530,6 +2604,39 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { column: { ...step.params.column }, newColumn: step.params.newColumn }
     };
   }
+  if (step.kind === "capitalizeText") {
+    return {
+      id: step.id,
+      kind: "capitalizeText",
+      params: {
+        column: { ...step.params.column },
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
+  if (step.kind === "stripText") {
+    return {
+      id: step.id,
+      kind: "stripText",
+      params: {
+        column: { ...step.params.column },
+        ...(step.params.characters === undefined ? {} : { characters: step.params.characters }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
+  if (step.kind === "splitText") {
+    return {
+      id: step.id,
+      kind: "splitText",
+      params: {
+        column: { ...step.params.column },
+        delimiter: step.params.delimiter,
+        index: step.params.index,
+        newColumn: step.params.newColumn
+      }
+    };
+  }
   if (step.kind === "lowerText") {
     return {
       id: step.id,
@@ -2604,6 +2711,9 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "castColumn" &&
     step.kind !== "textLength" &&
     step.kind !== "findReplace" &&
+    step.kind !== "stripText" &&
+    step.kind !== "splitText" &&
+    step.kind !== "capitalizeText" &&
     step.kind !== "lowerText" &&
     step.kind !== "upperText" &&
     step.kind !== "dropColumns" &&
@@ -2830,12 +2940,31 @@ function assertMutationDiff(
 
 function isRTextTransformStep(
   step: RTransformStep
-): step is FindReplaceTransformStep | LowerTextTransformStep | UpperTextTransformStep {
-  return step.kind === "findReplace" || step.kind === "lowerText" || step.kind === "upperText";
+): step is
+  | FindReplaceTransformStep
+  | StripTextTransformStep
+  | SplitTextTransformStep
+  | CapitalizeTextTransformStep
+  | LowerTextTransformStep
+  | UpperTextTransformStep {
+  return (
+    step.kind === "findReplace" ||
+    step.kind === "stripText" ||
+    step.kind === "splitText" ||
+    step.kind === "capitalizeText" ||
+    step.kind === "lowerText" ||
+    step.kind === "upperText"
+  );
 }
 
 function isRTextTransformInPlace(
-  step: FindReplaceTransformStep | LowerTextTransformStep | UpperTextTransformStep
+  step:
+    | FindReplaceTransformStep
+    | StripTextTransformStep
+    | SplitTextTransformStep
+    | CapitalizeTextTransformStep
+    | LowerTextTransformStep
+    | UpperTextTransformStep
 ): boolean {
   return step.params.newColumn === undefined || step.params.newColumn === step.params.column.name;
 }

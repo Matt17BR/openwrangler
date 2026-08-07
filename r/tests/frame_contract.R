@@ -782,6 +782,168 @@ assert_identical(row.names(upper_result), row.names(lower_frame), "upperText cha
 assert_identical(upper_capture$descriptor$schema[[4L]]$id, "c:step:upper-step:0", "upperText lost output lineage")
 assert_identical(upper_capture$descriptor$schema[[4L]]$rawType, "character", "upperText returned the wrong type")
 
+text_tools_frame <- data.frame(
+  text = c("  hÉLLO world  ", "..[MiXeD]..", "left||||right", "tail||", NA_character_),
+  category = factor(c("fIRST", "sECOND", NA, "", "éLAN"), levels = c("fIRST", "sECOND", "", "éLAN")),
+  row.names = paste0("tool-", seq_len(5L)),
+  check.names = FALSE
+)
+text_tools_before <- unserialize(serialize(text_tools_frame, NULL, version = 3L))
+capitalized <- openwrangler_r_frame_contract$capitalize_text_column(
+  text_tools_frame,
+  list(id = "r:c:1", name = "category"),
+  "capitalized"
+)
+assert_identical(
+  capitalized$capitalized,
+  c("First", "Second", NA_character_, "", "Élan"),
+  "capitalizeText changed Unicode, empty, factor, or NA behavior"
+)
+assert_identical(typeof(capitalized$capitalized), "character", "capitalizeText retained factor storage")
+assert_identical(row.names(capitalized), row.names(text_tools_frame), "capitalizeText changed row names")
+
+default_stripped <- openwrangler_r_frame_contract$strip_text_column(
+  text_tools_frame,
+  list(id = "r:c:0", name = "text")
+)
+assert_identical(
+  default_stripped$text,
+  c("hÉLLO world", "..[MiXeD]..", "left||||right", "tail||", NA_character_),
+  "stripText changed the shared default whitespace behavior"
+)
+literal_stripped <- openwrangler_r_frame_contract$strip_text_column(
+  text_tools_frame,
+  list(id = "r:c:0", name = "text"),
+  ".[]",
+  "literal strip"
+)
+assert_identical(
+  literal_stripped$`literal strip`,
+  c("  hÉLLO world  ", "MiXeD", "left||||right", "tail||", NA_character_),
+  "stripText treated regex metacharacters as an expression"
+)
+
+split_empty <- openwrangler_r_frame_contract$split_text_column(
+  text_tools_frame,
+  list(id = "r:c:0", name = "text"),
+  "||",
+  1L,
+  "middle"
+)
+assert_identical(
+  split_empty$middle,
+  c(NA_character_, NA_character_, "", "", NA_character_),
+  "splitText did not preserve empty fields or NA out-of-range values"
+)
+split_tail <- openwrangler_r_frame_contract$split_text_column(
+  text_tools_frame,
+  list(id = "r:c:0", name = "text"),
+  "||",
+  2L,
+  "tail"
+)
+assert_identical(
+  split_tail$tail,
+  c(NA_character_, NA_character_, "right", NA_character_, NA_character_),
+  "splitText changed literal multi-character delimiter behavior"
+)
+non_nullable_split_source <- data.frame(text = c("plain", "also plain"), check.names = FALSE)
+non_nullable_split_capture <- openwrangler_r_frame_contract$capture_frame(non_nullable_split_source)
+non_nullable_split_result <- openwrangler_r_frame_contract$split_text_column(
+  non_nullable_split_source,
+  list(id = "r:c:0", name = "text"),
+  "||",
+  1L,
+  "part"
+)
+non_nullable_split_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  non_nullable_split_result,
+  nullability_source = non_nullable_split_capture,
+  source_positions = c(1L, 1L),
+  output_ids = c("r:c:0", "c:step:split-nullable:0"),
+  text_transform_positions = 2L
+)
+assert_identical(
+  non_nullable_split_result_capture$descriptor$schema[[2L]]$nullable,
+  TRUE,
+  "splitText hid out-of-range NA values behind non-null source metadata"
+)
+
+text_tools_tibble <- tibble::as_tibble(text_tools_frame)
+text_tools_tibble_before <- unserialize(serialize(text_tools_tibble, NULL, version = 3L))
+text_tools_tibble_result <- openwrangler_r_frame_contract$capitalize_text_column(
+  text_tools_tibble,
+  list(id = "r:c:1", name = "category")
+)
+assert_identical(
+  class(text_tools_tibble_result),
+  c("tbl_df", "tbl", "data.frame"),
+  "capitalizeText changed the tibble class"
+)
+assert_identical(text_tools_tibble_result[[2L]], c("First", "Second", NA_character_, "", "Élan"), "tibble capitalizeText changed values")
+assert_identical(text_tools_tibble, text_tools_tibble_before, "text tools mutated their source tibble")
+
+text_tools_table <- data.table::data.table(primary_key = c(" [B] ", " [a] "), payload = c("ONE||", "TWO||tail"))
+data.table::setkey(text_tools_table, primary_key)
+text_tools_table_before <- data.table::copy(text_tools_table)
+assert_error(
+  openwrangler_r_frame_contract$capitalize_text_column(
+    text_tools_table,
+    list(id = "r:c:0", name = "primary_key")
+  ),
+  "choose a new output column"
+)
+assert_error(
+  openwrangler_r_frame_contract$strip_text_column(
+    text_tools_table,
+    list(id = "r:c:0", name = "primary_key")
+  ),
+  "choose a new output column"
+)
+text_tools_table_result <- openwrangler_r_frame_contract$split_text_column(
+  text_tools_table,
+  list(id = "r:c:1", name = "payload"),
+  "||",
+  1L,
+  "suffix"
+)
+assert_identical(class(text_tools_table_result), c("data.table", "data.frame"), "splitText changed data.table class")
+assert_identical(data.table::key(text_tools_table_result), "primary_key", "splitText lost the data.table key")
+assert_identical(text_tools_table_result$suffix, c("", "tail"), "splitText changed keyed data.table row order")
+assert_identical(text_tools_table, text_tools_table_before, "text tools mutated their source data.table")
+
+for (invalid_text_tool in list(
+  list(code = "invalid-view-query", run = function() openwrangler_r_frame_contract$strip_text_column(
+    text_tools_frame,
+    list(id = "r:c:0", name = "text"),
+    ""
+  )),
+  list(code = "invalid-view-query", run = function() openwrangler_r_frame_contract$split_text_column(
+    text_tools_frame,
+    list(id = "r:c:0", name = "text"),
+    "",
+    0L,
+    "part"
+  )),
+  list(code = "invalid-range", run = function() openwrangler_r_frame_contract$split_text_column(
+    text_tools_frame,
+    list(id = "r:c:0", name = "text"),
+    "||",
+    -1L,
+    "part"
+  )),
+  list(code = "invalid-column-name", run = function() openwrangler_r_frame_contract$split_text_column(
+    text_tools_frame,
+    list(id = "r:c:0", name = "text"),
+    "||",
+    0L,
+    "text"
+  ))
+)) {
+  assert_error(invalid_text_tool$run(), invalid_text_tool$code)
+}
+assert_identical(text_tools_frame, text_tools_before, "text tools mutated their source data.frame")
+
 text_cleanup_frame <- data.frame(
   text = c("alpha-12", "béta-34", NA_character_, ""),
   category = factor(c("alpha", NA, "béta", "alpha"), levels = c("alpha", "béta")),

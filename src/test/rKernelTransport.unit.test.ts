@@ -966,6 +966,85 @@ describe("native R kernel protocol", () => {
     ).toThrow("request.payload.step.params.find");
   });
 
+  it("strictly validates native R capitalize, strip, and split parameters", () => {
+    const steps = [
+      {
+        id: "capitalize-step",
+        kind: "capitalizeText",
+        params: { column: { id: "r:c:0", name: "value" }, newColumn: "capitalized" }
+      },
+      {
+        id: "strip-default-step",
+        kind: "stripText",
+        params: { column: { id: "r:c:0", name: "value" }, characters: null }
+      },
+      {
+        id: "strip-custom-step",
+        kind: "stripText",
+        params: { column: { id: "r:c:0", name: "value" }, characters: " .", newColumn: "trimmed" }
+      },
+      {
+        id: "split-step",
+        kind: "splitText",
+        params: { column: { id: "r:c:0", name: "value" }, delimiter: "::", index: 1, newColumn: "part" }
+      }
+    ] as const;
+    for (const step of steps) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step, page: pageWindow() }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const expectRejected = (step: unknown, message: string) => {
+      expect(() =>
+        encodeRKernelRequest({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: previewRequestId,
+          kind: "previewStep",
+          payload: { sessionId, revision: 0, step, page: pageWindow() }
+        } as RKernelRequest)
+      ).toThrow(message);
+    };
+    expectRejected(
+      { ...steps[1], params: { ...steps[1].params, characters: "" } },
+      "request.payload.step.params.characters"
+    );
+    expectRejected(
+      { ...steps[2], params: { ...steps[2].params, characters: "x\u0000y" } },
+      "request.payload.step.params.characters"
+    );
+    expectRejected(
+      { ...steps[3], params: { ...steps[3].params, delimiter: "" } },
+      "request.payload.step.params.delimiter"
+    );
+    expectRejected({ ...steps[3], params: { ...steps[3].params, index: -1 } }, "request.payload.step.params.index");
+    expectRejected({ ...steps[3], params: { ...steps[3].params, index: 1.5 } }, "request.payload.step.params.index");
+    const missingOutput = structuredClone(steps[3]) as unknown as { params: Record<string, unknown> };
+    delete missingOutput.params.newColumn;
+    expectRejected(missingOutput, "invalid fields");
+    expectRejected({ ...steps[0], params: { ...steps[0].params, unexpected: true } }, "invalid fields");
+
+    const emptyCodeResponse = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalLowerFramePage(),
+      diff: minimalRenameDiff(),
+      code: ""
+    };
+    expect(() =>
+      decodeRKernelResponseJson(JSON.stringify(emptyCodeResponse), previewRequestId, {
+        inputSchema: minimalLowerFramePage().schema
+      })
+    ).toThrow("response.code");
+  });
+
   it("strictly validates every native R Fill Missing Values replacement", () => {
     const replacements = [
       { kind: "median" },

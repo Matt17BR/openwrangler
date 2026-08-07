@@ -154,6 +154,36 @@ export interface RKernelUpperTextStep {
   }>;
 }
 
+export interface RKernelCapitalizeTextStep {
+  readonly id: string;
+  readonly kind: "capitalizeText";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    readonly newColumn?: string;
+  }>;
+}
+
+export interface RKernelStripTextStep {
+  readonly id: string;
+  readonly kind: "stripText";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    readonly characters?: string | null;
+    readonly newColumn?: string;
+  }>;
+}
+
+export interface RKernelSplitTextStep {
+  readonly id: string;
+  readonly kind: "splitText";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    delimiter: string;
+    index: number;
+    newColumn: string;
+  }>;
+}
+
 export interface RKernelFindReplaceStep {
   readonly id: string;
   readonly kind: "findReplace";
@@ -236,6 +266,9 @@ export type RKernelTransformStep =
   | RKernelTextLengthStep
   | RKernelLowerTextStep
   | RKernelUpperTextStep
+  | RKernelCapitalizeTextStep
+  | RKernelStripTextStep
+  | RKernelSplitTextStep
   | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
   | RKernelDropColumnsStep
@@ -899,20 +932,41 @@ function validateTransformStep(value: unknown): void {
     boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     return;
   }
-  if (step.kind === "lowerText") {
-    const params = exactRecord(step.params, ["column"], ["newColumn"], "R kernel lowercase parameters");
+  if (step.kind === "lowerText" || step.kind === "upperText" || step.kind === "capitalizeText") {
+    const operation = step.kind === "lowerText" ? "lowercase" : step.kind === "upperText" ? "uppercase" : "capitalize";
+    const params = exactRecord(step.params, ["column"], ["newColumn"], `R kernel ${operation} parameters`);
     validateColumnReference(params.column, "request.payload.step.params.column");
     if (params.newColumn !== undefined) {
       boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     }
     return;
   }
-  if (step.kind === "upperText") {
-    const params = exactRecord(step.params, ["column"], ["newColumn"], "R kernel uppercase parameters");
+  if (step.kind === "stripText") {
+    const params = exactRecord(step.params, ["column"], ["characters", "newColumn"], "R kernel strip-text parameters");
     validateColumnReference(params.column, "request.payload.step.params.column");
+    if (params.characters !== undefined && params.characters !== null) {
+      boundedText(
+        params.characters,
+        "request.payload.step.params.characters",
+        R_FRAME_CONTRACT_LIMITS.textBytes,
+        false
+      );
+    }
     if (params.newColumn !== undefined) {
       boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     }
+    return;
+  }
+  if (step.kind === "splitText") {
+    const params = exactRecord(
+      step.params,
+      ["column", "delimiter", "index", "newColumn"],
+      "R kernel split-text parameters"
+    );
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    boundedText(params.delimiter, "request.payload.step.params.delimiter", R_FRAME_CONTRACT_LIMITS.textBytes, false);
+    boundedInteger(params.index, "request.payload.step.params.index", 2_147_483_647);
+    boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     return;
   }
   if (step.kind === "findReplace") {

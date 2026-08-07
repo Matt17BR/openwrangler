@@ -1977,7 +1977,10 @@ async function exerciseReleasedRJupyterExtension(
         "textLength",
         "findReplace",
         "lowerText",
-        "upperText"
+        "upperText",
+        "capitalizeText",
+        "stripText",
+        "splitText"
       ]
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
@@ -2116,7 +2119,10 @@ async function exerciseReleasedRJupyterExtension(
         "textLength",
         "findReplace",
         "lowerText",
-        "upperText"
+        "upperText",
+        "capitalizeText",
+        "stripText",
+        "splitText"
       ]);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
@@ -2374,7 +2380,10 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
         "textLength",
         "findReplace",
         "lowerText",
-        "upperText"
+        "upperText",
+        "capitalizeText",
+        "stripText",
+        "splitText"
       ],
       notebookInsert: false,
       documentInsert: true
@@ -4167,6 +4176,50 @@ async function exerciseReleasedRFillMissingJourney(
   );
 }
 
+async function previewAndDiscardReleasedRTextTool(
+  testing: TestApi,
+  sessionId: string,
+  column: SessionMetadata["schema"][number],
+  kind: "stripText" | "splitText"
+): Promise<void> {
+  const base = testing.activeSession();
+  assert.ok(base, `The R ${kind} check requires one active session.`);
+  const reference = { id: column.id, name: column.name };
+  const step: Extract<TransformStep, { kind: "stripText" | "splitText" }> =
+    kind === "stripText"
+      ? { id: "released-r-strip-label", kind, params: { column: reference, characters: "row-" } }
+      : {
+          id: "released-r-split-label",
+          kind,
+          params: { column: reference, delimiter: "-", index: 1, newColumn: "label_number" }
+        };
+  const preview = await testing.request({
+    kind: "previewStep",
+    sessionId,
+    revision: base.metadata.revision,
+    step,
+    offset: 0,
+    limit: 1,
+    columnOffset: kind === "splitText" ? base.metadata.schema.length : column.position,
+    columnLimit: 1
+  });
+  assert.equal(preview.kind, "stepPreview", `Native R ${kind} must preview.`);
+  if (preview.kind !== "stepPreview") throw new Error(`Native R ${kind} did not preview.`);
+  assert.equal(preview.page.rows[0]?.values[0]?.display, "0001");
+  assert.ok(preview.code.includes(kind === "splitText" ? ".ow_text_delimiter" : ".ow_text_strip_characters"));
+  assert.doesNotMatch(preview.code, /\b(?:pandas|polars|python)\b/iu);
+  const discarded = await testing.request({
+    kind: "discardDraft",
+    sessionId,
+    revision: preview.revision,
+    offset: 0,
+    limit: 1,
+    columnOffset: 0,
+    columnLimit: 1
+  });
+  assert.equal(discarded.kind, "planUpdated", `Native R ${kind} must discard cleanly.`);
+}
+
 async function releasedRVisibleRows(
   testing: TestApi,
   sessionId: string,
@@ -4264,7 +4317,10 @@ async function exerciseReleasedREditingJourney(
       "textLength",
       "findReplace",
       "lowerText",
-      "upperText"
+      "upperText",
+      "capitalizeText",
+      "stripText",
+      "splitText"
     ]
   });
   assert.deepEqual(
@@ -5297,6 +5353,42 @@ async function exerciseReleasedREditingJourney(
     if (uppercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Uppercase undo failed.");
     assert.equal(uppercaseUndo.page.rows[0]?.values[0]?.display, "row-0001");
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:text-cleaning-source-after-undo`);
+
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Capitalize");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const textDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await textDialog.getByPlaceholder("Search operations").fill("capitalize");
+    await textDialog.getByRole("button", { name: /^Capitalize/u }).click();
+    await textDialog.getByLabel("Text column", { exact: true }).selectOption(labelColumn.id);
+    await textDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.draftStep?.kind === "capitalizeText",
+      30_000,
+      "previewing native R Capitalize through its visible form"
+    );
+    const capitalizePreview = testing.activeSession();
+    assert.ok(capitalizePreview?.metadata.draftStep?.kind === "capitalizeText");
+    assert.match(capitalizePreview.code ?? "", /\btoupper\b/u);
+    assert.doesNotMatch(capitalizePreview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
+    const capitalizedRows = await releasedRVisibleRows(testing, sessionId, `${phase}-capitalize-page`, 1);
+    assert.equal(capitalizedRows[0]?.values[labelColumn.position]?.display, "Row-0001");
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.steps[0]?.kind === "capitalizeText",
+      30_000,
+      "applying native R Capitalize"
+    );
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "R Capitalize must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Capitalize session");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Capitalize");
+
+    await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
+    await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:additional-text-tools-source-after-undo`);
   }
 
   if (phase === "jupyter-r" && screenshotOutput) {

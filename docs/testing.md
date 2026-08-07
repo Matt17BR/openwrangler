@@ -533,7 +533,7 @@ generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R`
 
 Focused R and TypeScript tests on the current v2 branch cover Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase,
-and Find and replace in
+Find and replace, Capitalize, Strip text, and Split text in
 Editing mode. They
 exercise draft preview, executable generated R, mixed plans, apply, discard, inspection, latest-step editing, undo,
 revision errors, exact-kernel correlation, stable retained-column identities, and source isolation for base data
@@ -541,21 +541,24 @@ frames, tibbles, and keyed data tables. Filter and Sort cover stable source-row 
 compound priority, missing placement, `NA` versus `NaN`, and row-aware diffs. Clone Column proves stable derived
 identity and later editing of the copy; Text Length proves Unicode character counts, `NA` preservation, integer output,
 and stable lineage.
-Lowercase and Uppercase cover factor-to-character conversion, native R casing, `NA`, in-place and derived output, and
-key safety. Find and replace covers literal and regular-expression matching with the same output and key rules.
+Lowercase, Uppercase, and Capitalize cover factor-to-character conversion, native R casing, `NA`, in-place and derived
+output, and key safety. Find and replace covers literal and regular-expression matching with the same output and key
+rules. Strip text covers the default whitespace and selected edge characters. Split text covers literal delimiters,
+empty parts, out-of-range `NA`, and required derived output.
 Convert type covers all six target types, failed parses, factors, temporal values, `integer64`, key safety, executable
 generated R, and exact typed diffs. Drop Missing Rows covers the Any and All modes and treats both `NA` and `NaN` as
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites cover all fourteen operations. The packaged journey runs the twelve earlier operations in both editors. The
+suites cover all seventeen operations. The packaged journey runs the twelve earlier operations in both editors. The
 local VS Code path also opens the real Find and replace form and applies Uppercase.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact
 code as one `r` cell in the originating notebook, leaves every existing cell unchanged, and checks the source objects
 again after editing. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns; the
-direct R suites cover all fourteen operations for all three flavors.
+direct R suites cover the full seventeen-operation catalog, plus class and key behavior for tibbles and data tables.
+The three newer text tools are not part of the recorded installed-editor journey yet.
 
 On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start another VS Code or Cursor process.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public

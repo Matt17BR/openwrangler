@@ -55,6 +55,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added **Uppercase** and **Find and replace** for native R sessions. Both accept character and factor columns, keep
   `NA`, and can update the source or create a character column. Find and replace supports literal text and regular
   expressions. Active data-table key columns cannot be changed in place.
+- Added **Capitalize**, **Strip text**, and **Split text** for native R sessions. Factors become character columns and
+  `NA` stays missing. Strip text removes whitespace or selected characters from both ends, while Split text uses a
+  literal delimiter and returns `NA` when the requested part is missing. In-place changes reject active data-table key
+  columns. Generated R matches the workbench preview.
 - R notebook sessions can now insert generated cleaning code into the notebook that opened the dataframe. Open
   Wrangler adds one `r` cell and confirms the exact edit before reporting success.
 - Trusted `.R` files can now run in an Open Wrangler-owned R process. The variable picker lists base data frames,
@@ -92,8 +96,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   preview, apply, inspection, discard, latest-step editing, and undo; Convert type is applied and undone. Drop Missing
   Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The journey also checks
   generated R, copies and saves Rename code, and verifies that the notebook objects are unchanged. Separate tibble and
-  keyed-data-table sessions preview and discard Rename and Drop Columns; direct R tests cover all fourteen operations
-  for all three flavors.
+  keyed-data-table sessions preview and discard Rename and Drop Columns. That recorded installed-editor run covers
+  fourteen operations. Direct R tests cover the full seventeen-operation catalog, plus class and key behavior for
+  tibbles and data tables.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and

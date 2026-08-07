@@ -19,6 +19,13 @@ openwrangler_r_frame_contract <- local({
   maximum_sort_cache_bytes <- 32L * 1024L * 1024L
   maximum_factor_levels <- 100000L
   maximum_text_bytes <- 8192L
+  default_strip_characters <- paste0(
+    " \t\n\r\v\f",
+    "\u001c\u001d\u001e\u001f",
+    "\u0085\u00a0\u1680",
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a",
+    "\u2028\u2029\u202f\u205f\u3000"
+  )
   maximum_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
   maximum_column_id_bytes <- 2048L
@@ -1942,6 +1949,8 @@ openwrangler_r_frame_contract <- local({
           FALSE
         } else if (index %in% cast_positions) {
           isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
+        } else if (index %in% text_transform_positions) {
+          isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
         } else {
           source_nullable[[index]]
         }
@@ -2204,6 +2213,9 @@ openwrangler_r_frame_contract <- local({
       operation,
       lowerText = "Lowercase",
       upperText = "Uppercase",
+      capitalizeText = "Capitalize",
+      stripText = "Strip text",
+      splitText = "Split text",
       findReplace = "Find and Replace",
       abort("internal-error", "the R text transform is unsupported")
     )
@@ -2264,7 +2276,16 @@ openwrangler_r_frame_contract <- local({
     transformed <- vapply(seq_along(source_values), function(index) {
       if (is.na(source_values[[index]])) return(NA_character_)
       source_value <- bounded_utf8(source_values[[index]], sprintf("%s value %d", operation, index))
-      bounded_operation_output(transform(source_value), operation_name)
+      output <- transform(source_value)
+      if (
+        identical(operation, "splitText") &&
+          is.character(output) &&
+          length(output) == 1L &&
+          is.na(output)
+      ) {
+        return(NA_character_)
+      }
+      bounded_operation_output(output, operation_name)
     }, character(1L), USE.NAMES = FALSE)
     if (in_place) {
       if (identical(inspected$flavor, "r.data.table")) {
@@ -2310,6 +2331,108 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     upper_text_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  capitalize_text_value <- function(value) {
+    characters <- strsplit(value, "", fixed = TRUE)[[1L]]
+    if (length(characters) == 0L) return("")
+    paste0(
+      toupper(characters[[1L]]),
+      if (length(characters) == 1L) "" else tolower(paste0(characters[-1L], collapse = ""))
+    )
+  }
+
+  capitalize_text_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_text_column_at(value, position, old_name, new_name, "capitalizeText", capitalize_text_value)
+  }
+
+  capitalize_text_column <- function(value, column_reference, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    capitalize_text_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  strip_text_column_at <- function(value, position, old_name, characters = NULL, new_name = NULL) {
+    if (is.null(characters)) {
+      characters <- default_strip_characters
+    } else {
+      characters <- bounded_utf8(characters, "characters")
+      if (identical(characters, "")) {
+        abort("invalid-view-query", "stripText.characters must be a non-empty string or null")
+      }
+    }
+    strip_characters <- unique(strsplit(characters, "", fixed = TRUE)[[1L]])
+    strip_value <- function(source) {
+      source_characters <- strsplit(source, "", fixed = TRUE)[[1L]]
+      retained <- which(!source_characters %in% strip_characters)
+      if (length(retained) == 0L) return("")
+      paste0(source_characters[seq.int(retained[[1L]], retained[[length(retained)]])], collapse = "")
+    }
+    transform_text_column_at(value, position, old_name, new_name, "stripText", strip_value)
+  }
+
+  strip_text_column <- function(value, column_reference, characters = NULL, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    strip_text_column_at(value, resolved$position, resolved$name, characters, new_name)
+  }
+
+  split_text_value <- function(value, delimiter, index) {
+    matches <- gregexpr(delimiter, value, fixed = TRUE)[[1L]]
+    if (length(matches) == 1L && identical(as.integer(matches[[1L]]), -1L)) {
+      return(if (identical(index, 0)) value else NA_character_)
+    }
+    part_count <- length(matches) + 1L
+    if (index >= part_count) return(NA_character_)
+    part <- as.integer(index) + 1L
+    match_lengths <- attr(matches, "match.length", exact = TRUE)
+    start <- if (part == 1L) 1L else matches[[part - 1L]] + match_lengths[[part - 1L]]
+    end <- if (part <= length(matches)) matches[[part]] - 1L else nchar(value, type = "chars")
+    if (start > end) "" else substr(value, start, end)
+  }
+
+  split_text_column_at <- function(value, position, old_name, delimiter, index, new_name) {
+    delimiter <- bounded_utf8(delimiter, "delimiter")
+    if (identical(delimiter, "")) {
+      abort("invalid-view-query", "splitText.delimiter must be a non-empty string")
+    }
+    index <- whole_number(index, "index", .Machine$integer.max)
+    if (is.null(new_name)) {
+      abort("invalid-column-name", "splitText requires a new output column")
+    }
+    new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+    if (identical(new_name, old_name)) {
+      abort("invalid-column-name", "splitText requires a new output column")
+    }
+    transform_text_column_at(
+      value,
+      position,
+      old_name,
+      new_name,
+      "splitText",
+      function(source) split_text_value(source, delimiter, index)
+    )
+  }
+
+  split_text_column <- function(value, column_reference, delimiter, index, new_name) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    split_text_column_at(value, resolved$position, resolved$name, delimiter, index, new_name)
   }
 
   find_replace_column_at <- function(
@@ -3804,6 +3927,12 @@ openwrangler_r_frame_contract <- local({
     lower_text_column_at = lower_text_column_at,
     upper_text_column = upper_text_column,
     upper_text_column_at = upper_text_column_at,
+    capitalize_text_column = capitalize_text_column,
+    capitalize_text_column_at = capitalize_text_column_at,
+    strip_text_column = strip_text_column,
+    strip_text_column_at = strip_text_column_at,
+    split_text_column = split_text_column,
+    split_text_column_at = split_text_column_at,
     find_replace_column = find_replace_column,
     find_replace_column_at = find_replace_column_at,
     fill_missing_column = fill_missing_column,

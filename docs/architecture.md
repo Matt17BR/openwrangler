@@ -14,7 +14,7 @@ Most sections below describe the released Python runtime. The Open Wrangler 2 br
 dataframes created by trusted R documents to the same coordinator, grid, filters, sorts, profiles, draft review, and
 cleaning history. Its current R operations are Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length, Lowercase,
-Uppercase, and Find and replace.
+Uppercase, Find and replace, Capitalize, Strip text, and Split text.
 The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
@@ -119,16 +119,19 @@ last, or no row from each repeated group. All four row operations retain the ori
 tracking the active row count separately. The two drop operations preserve source order and compatible `data.table`
 keys. Filtering does the same; an explicit sort keeps stable ties and clears key metadata because its new order no
 longer promises that key. Rename, Drop, Select, Clone, Fill Missing Values, Convert type, Text Length, Lowercase,
-Uppercase, and Find and replace resolve every
+Uppercase, Find and replace, Capitalize, Strip text, and Split text resolve every
 `{id, name}` reference to one exact position, so duplicate and non-syntactic names remain unambiguous. Drop Columns
 refuses to remove the final visible column. Select Columns keeps the chosen order. Both operations keep stable IDs for
 retained columns. Clone Column appends a copy with the stable ID `c:step:<step-id>:0`, allowing later steps to target
 the new column independently. Text Length accepts character and factor input, appends a nullable integer column with
 the same derived-ID form, and uses `nchar(..., type = "chars")` so Unicode text is counted as characters rather than
-bytes while `NA` remains missing. Lowercase and Uppercase accept the same input types and call R's native casing
-functions after converting factors to their labels. Find and replace uses `gsub()` with literal or regular-expression
-matching. Each operation can update the source column or create a character column. An in-place change to a
-`data.table` key column is rejected; choosing a new output column leaves the existing key and row order alone. Base
+bytes while `NA` remains missing. The text operations accept character and factor input, convert factors to their
+labels, and keep `NA`. Lowercase and Uppercase call R's native casing functions. Capitalize uppercases the first
+character and lowercases the rest. Find and replace uses `gsub()` with literal or regular-expression matching. Strip
+text removes the shared whitespace set by default or a literal set of characters from both ends. Split text uses a
+literal delimiter, always creates a new character column, and returns `NA` when the requested part does not exist.
+Except for Split text, each operation can update the source column or create a character column. An in-place change to
+a `data.table` key column is rejected; choosing a new output column leaves the existing key and row order alone. Base
 data frames and tibbles are copied with R serialization; `data.table` uses
 `data.table::copy()` and native column selection, preserving compatible keys without mutating the notebook variable.
 Fill Missing Values offers a typed value, an exact numeric median, or the most common non-missing value for character,
@@ -145,7 +148,7 @@ A live session reports nullability conservatively; isolating it for editing or c
 nullability metadata unless Fill Missing Values has removed every missing value. Preview, apply, discard, latest-step replacement,
 undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
 response before publishing the candidate state. Generated code repeats the positional and stale-name checks for all
-fourteen operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
+seventeen operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
 for the chosen rules instead of embedding a generic interpreter in every preview.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
@@ -195,8 +198,8 @@ earlier operations. The local VS Code path also opens the real Find and replace 
 base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
 applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,
 and undo. The journey checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed
-data tables additionally cover editable open plus Rename and Drop preview/discard; the direct R suites run all fourteen
-operations across all three flavors. An applied-step
+data tables additionally cover editable open plus Rename and Drop preview/discard. The direct R suites cover the full
+seventeen-operation catalog, plus class and key behavior for tibbles and data tables. An applied-step
 inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
 retained input and output schemas and calculates the public diff only after all three responses agree.
 

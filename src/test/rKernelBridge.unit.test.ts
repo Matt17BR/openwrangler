@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import type {
+  CapitalizeTextTransformStep,
   CastColumnTransformStep,
   CloneColumnTransformStep,
   ColumnSummary,
@@ -11,6 +12,8 @@ import type {
   OpenWranglerRequest,
   SelectColumnsTransformStep,
   SourceCapabilities,
+  SplitTextTransformStep,
+  StripTextTransformStep,
   TextLengthTransformStep
 } from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
@@ -1443,6 +1446,9 @@ describe("canonical R kernel bridge", () => {
             "castColumn",
             "textLength",
             "findReplace",
+            "stripText",
+            "splitText",
+            "capitalizeText",
             "lowerText",
             "upperText"
           ]
@@ -3712,6 +3718,168 @@ describe("canonical R kernel bridge", () => {
     ).rejects.toThrow("mutation diff");
   });
 
+  it("bridges native R capitalize, strip, and split with stable text identities", async () => {
+    type TextStep = CapitalizeTextTransformStep | StripTextTransformStep | SplitTextTransformStep;
+    const base = replaceContractCell(frameContract(), "r:c:6", {
+      kind: "string",
+      raw: "mIXed::CASE",
+      display: "mIXed::CASE",
+      isNull: false,
+      isNaN: false
+    });
+    const factor = factorContract(base, "r:c:6", ["mIXed::CASE"]);
+    const cases: ReadonlyArray<{
+      readonly keyed: boolean;
+      readonly step: TextStep;
+      readonly page: (source: RFramePageContract) => RFramePageContract;
+      readonly diff: DataDiff;
+      readonly outputId: string;
+      readonly outputName: string;
+    }> = [
+      {
+        keyed: false,
+        step: {
+          id: "r-capitalize",
+          kind: "capitalizeText",
+          params: { column: { id: "r:c:6", name: "missing" } }
+        },
+        page: (source) => capitalizeTextContract(source, "r:c:6", "r-capitalize"),
+        diff: lowerDiff("r:c:6", "missing", "mIXed::CASE", "Mixed::case"),
+        outputId: "r:c:6",
+        outputName: "missing"
+      },
+      {
+        keyed: true,
+        step: {
+          id: "r-strip-derived",
+          kind: "stripText",
+          params: { column: { id: "r:c:6", name: "missing" }, characters: null, newColumn: "trimmed" }
+        },
+        page: (source) => textTransformContract(source, "r:c:6", "r-strip-derived", "trimmed", (value) => value),
+        diff: cloneDiff("trimmed"),
+        outputId: "c:step:r-strip-derived:0",
+        outputName: "trimmed"
+      },
+      {
+        keyed: false,
+        step: {
+          id: "r-split-derived",
+          kind: "splitText",
+          params: { column: { id: "r:c:6", name: "missing" }, delimiter: "::", index: 2, newColumn: "part" }
+        },
+        page: (source) =>
+          withColumnNullable(
+            textTransformContract(source, "r:c:6", "r-split-derived", "part", (value) => value),
+            "c:step:r-split-derived:0",
+            true
+          ),
+        diff: cloneDiff("part"),
+        outputId: "c:step:r-split-derived:0",
+        outputName: "part"
+      }
+    ];
+
+    for (const candidate of cases) {
+      const source = candidate.keyed
+        ? dataTableContract(factor, ["r:c:6"])
+        : candidate.step.kind === "splitText"
+          ? withColumnNullable(factor, "r:c:6", false)
+          : factor;
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: candidate.page(source),
+        diff: candidate.diff,
+        code: "open_wrangler_result <- orders"
+      });
+      const preview = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: candidate.step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      });
+      expect(transport.previewStep).toHaveBeenCalledWith(
+        sessionId,
+        0,
+        candidate.step,
+        expect.any(Object),
+        expect.any(Array),
+        undefined,
+        expect.any(Object)
+      );
+      expect(preview).toMatchObject({
+        kind: "stepPreview",
+        metadata: {
+          schema: expect.arrayContaining([
+            expect.objectContaining({
+              id: candidate.outputId,
+              name: candidate.outputName,
+              rawType: "character",
+              type: "string"
+            })
+          ])
+        },
+        diff: {
+          addedColumns: candidate.outputId === "r:c:6" ? [] : [candidate.outputName],
+          changedCells: candidate.outputId === "r:c:6" ? 1 : 0
+        }
+      });
+    }
+
+    for (const step of [
+      {
+        id: "r-strip-keyed",
+        kind: "stripText" as const,
+        params: { column: { id: "r:c:6", name: "missing" } }
+      },
+      {
+        id: "r-split-in-place",
+        kind: "splitText" as const,
+        params: {
+          column: { id: "r:c:6", name: "missing" },
+          delimiter: "-",
+          index: 0,
+          newColumn: "missing"
+        }
+      },
+      {
+        id: "r-split-private",
+        kind: "splitText" as const,
+        params: {
+          column: { id: "r:c:6", name: "missing" },
+          delimiter: "-",
+          index: 0,
+          newColumn: "__open_wrangler_internal_row_id_public"
+        }
+      }
+    ]) {
+      const source = step.kind === "stripText" ? dataTableContract(factor, ["r:c:6"]) : factor;
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+    }
+  });
+
   it("rejects Select Columns responses with the wrong retained data-table key prefix", async () => {
     const source = dataTableContract(frameContract(), ["r:c:0", "r:c:1"]);
     const selected = selectContract(source, ["r:c:3", "r:c:1", "r:c:0"]);
@@ -4606,6 +4774,21 @@ function upperTextContract(
   return textTransformContract(source, columnId, stepId, newColumn, (value) => value.toUpperCase());
 }
 
+function capitalizeTextContract(
+  source: RFramePageContract,
+  columnId: string,
+  stepId: string,
+  newColumn?: string
+): RFramePageContract {
+  return textTransformContract(
+    source,
+    columnId,
+    stepId,
+    newColumn,
+    (value) => value.slice(0, 1).toUpperCase() + value.slice(1).toLowerCase()
+  );
+}
+
 function findReplaceContract(
   source: RFramePageContract,
   columnId: string,
@@ -4862,6 +5045,9 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "castColumn",
       "textLength",
       "findReplace",
+      "stripText",
+      "splitText",
+      "capitalizeText",
       "lowerText",
       "upperText"
     ]

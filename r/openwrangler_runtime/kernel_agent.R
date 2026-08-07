@@ -7,6 +7,13 @@ openwrangler_r_kernel_agent <- local({
   maximum_response_bytes <- 17L * 1024L * 1024L
   maximum_generated_code_bytes <- 4L * 1024L * 1024L
   maximum_revision <- .Machine$integer.max
+  default_strip_characters <- paste0(
+    " \t\n\r\v\f",
+    "\u001c\u001d\u001e\u001f",
+    "\u0085\u00a0\u1680",
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a",
+    "\u2028\u2029\u202f\u205f\u3000"
+  )
   identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 
   abort <- function(code, message, recoverable = FALSE) {
@@ -652,7 +659,7 @@ openwrangler_r_kernel_agent <- local({
         )
       ))
     }
-    if (kind %in% c("lowerText", "upperText")) {
+    if (kind %in% c("lowerText", "upperText", "capitalizeText")) {
       params <- exact_record(
         step$params,
         "column",
@@ -685,10 +692,99 @@ openwrangler_r_kernel_agent <- local({
         } else {
           bounded_text(
             paste0("c:step:", step_id, ":0"),
-            sprintf("the derived R %s column identity", if (identical(kind, "lowerText")) "lowercase" else "uppercase"),
+            sprintf(
+              "the derived R %s column identity",
+              switch(kind, lowerText = "lowercase", upperText = "uppercase", capitalizeText = "capitalized")
+            ),
             limits$columnIdBytes
           )
         }
+      ))
+    }
+    if (identical(kind, "stripText")) {
+      params <- exact_record(
+        step$params,
+        "column",
+        "request.payload.step.params",
+        optional_fields = c("characters", "newColumn")
+      )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      characters <- NULL
+      if ("characters" %in% names(params) && !is.null(params$characters)) {
+        characters <- bounded_text(params$characters, "request.payload.step.params.characters", 8192L)
+        if (identical(characters, "")) {
+          abort("invalid_request", "request.payload.step.params.characters must be a non-empty string or null")
+        }
+      }
+      new_column <- NULL
+      if ("newColumn" %in% names(params)) {
+        new_column <- bounded_text(
+          params$newColumn,
+          "request.payload.step.params.newColumn",
+          maximum_variable_name_bytes
+        )
+        if (identical(new_column, "")) {
+          abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+        }
+      }
+      in_place <- is.null(new_column) || identical(new_column, column$name)
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(column = column, characters = characters, newColumn = new_column),
+        outputId = if (in_place) {
+          column$id
+        } else {
+          bounded_text(
+            paste0("c:step:", step_id, ":0"),
+            "the derived R stripped-text column identity",
+            limits$columnIdBytes
+          )
+        }
+      ))
+    }
+    if (identical(kind, "splitText")) {
+      params <- exact_record(
+        step$params,
+        c("column", "delimiter", "index", "newColumn"),
+        "request.payload.step.params"
+      )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      delimiter <- bounded_text(params$delimiter, "request.payload.step.params.delimiter", 8192L)
+      if (identical(delimiter, "")) {
+        abort("invalid_request", "request.payload.step.params.delimiter must be a non-empty string")
+      }
+      index <- whole_number(params$index, "request.payload.step.params.index", maximum_revision)
+      new_column <- bounded_text(
+        params$newColumn,
+        "request.payload.step.params.newColumn",
+        maximum_variable_name_bytes
+      )
+      if (identical(new_column, "") || identical(new_column, column$name)) {
+        abort("invalid_request", "request.payload.step.params.newColumn must name a new output column")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(
+          column = column,
+          delimiter = delimiter,
+          index = index,
+          newColumn = new_column
+        ),
+        outputId = bounded_text(
+          paste0("c:step:", step_id, ":0"),
+          "the derived R split-text column identity",
+          limits$columnIdBytes
+        )
       ))
     }
     if (identical(kind, "findReplace")) {
@@ -792,6 +888,9 @@ openwrangler_r_kernel_agent <- local({
       "textLength",
       "lowerText",
       "upperText",
+      "capitalizeText",
+      "stripText",
+      "splitText",
       "findReplace",
       "fillMissingValues",
       "castColumn"
@@ -880,6 +979,11 @@ openwrangler_r_kernel_agent <- local({
       bound$find <- step$params$find
       bound$replacement <- step$params$replacement
       bound$regex <- step$params$regex
+    } else if (identical(step$kind, "stripText")) {
+      bound$characters <- step$params$characters
+    } else if (identical(step$kind, "splitText")) {
+      bound$delimiter <- step$params$delimiter
+      bound$index <- step$params$index
     }
     bound
   }
@@ -1182,13 +1286,29 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
-    if (step$kind %in% c("lowerText", "upperText", "findReplace")) {
+    if (step$kind %in% c("lowerText", "upperText", "capitalizeText", "stripText", "splitText", "findReplace")) {
       bound <- bind_text_transform_step(capture, step)
       new_name <- if (isTRUE(bound$inPlace)) NULL else bound$newName
       result <- switch(
         step$kind,
         lowerText = frame_contract$lower_text_column_at(source, bound$position, bound$oldName, new_name),
         upperText = frame_contract$upper_text_column_at(source, bound$position, bound$oldName, new_name),
+        capitalizeText = frame_contract$capitalize_text_column_at(source, bound$position, bound$oldName, new_name),
+        stripText = frame_contract$strip_text_column_at(
+          source,
+          bound$position,
+          bound$oldName,
+          bound$characters,
+          new_name
+        ),
+        splitText = frame_contract$split_text_column_at(
+          source,
+          bound$position,
+          bound$oldName,
+          bound$delimiter,
+          bound$index,
+          new_name
+        ),
         findReplace = frame_contract$find_replace_column_at(
           source,
           bound$position,
@@ -1995,11 +2115,21 @@ openwrangler_r_kernel_agent <- local({
           "    names(.ow_result) <- c(.ow_text_length_existing_names, .ow_text_length_name)",
           "  }"
         )
-      } else if (step$kind %in% c("lowerText", "upperText", "findReplace")) {
+      } else if (step$kind %in% c(
+        "lowerText",
+        "upperText",
+        "capitalizeText",
+        "stripText",
+        "splitText",
+        "findReplace"
+      )) {
         operation_name <- switch(
           step$kind,
           lowerText = "Lowercase",
           upperText = "Uppercase",
+          capitalizeText = "Capitalize",
+          stripText = "Strip text",
+          splitText = "Split text",
           findReplace = "Find and Replace"
         )
         lines <- c(
@@ -2080,6 +2210,18 @@ openwrangler_r_kernel_agent <- local({
               "  }"
             )
           }
+        } else if (identical(step$kind, "stripText")) {
+          strip_characters <- if (is.null(step$characters)) default_strip_characters else step$characters
+          lines <- c(
+            lines,
+            sprintf("  .ow_text_strip_characters <- strsplit(%s, \"\", fixed = TRUE)[[1L]]", r_string(strip_characters))
+          )
+        } else if (identical(step$kind, "splitText")) {
+          lines <- c(
+            lines,
+            sprintf("  .ow_text_delimiter <- %s", r_string(step$delimiter)),
+            sprintf("  .ow_text_part_index <- %.0f", step$index)
+          )
         }
         lines <- c(
           lines,
@@ -2102,6 +2244,35 @@ openwrangler_r_kernel_agent <- local({
           lines <- c(lines, "    .ow_output <- tolower(.ow_utf8)")
         } else if (identical(step$kind, "upperText")) {
           lines <- c(lines, "    .ow_output <- toupper(.ow_utf8)")
+        } else if (identical(step$kind, "capitalizeText")) {
+          lines <- c(
+            lines,
+            "    .ow_characters <- strsplit(.ow_utf8, \"\", fixed = TRUE)[[1L]]",
+            "    .ow_output <- if (length(.ow_characters) == 0L) \"\" else paste0(toupper(.ow_characters[[1L]]), if (length(.ow_characters) == 1L) \"\" else tolower(paste0(.ow_characters[-1L], collapse = \"\")))"
+          )
+        } else if (identical(step$kind, "stripText")) {
+          lines <- c(
+            lines,
+            "    .ow_characters <- strsplit(.ow_utf8, \"\", fixed = TRUE)[[1L]]",
+            "    .ow_retained <- which(!.ow_characters %in% .ow_text_strip_characters)",
+            "    .ow_output <- if (length(.ow_retained) == 0L) \"\" else paste0(.ow_characters[seq.int(.ow_retained[[1L]], .ow_retained[[length(.ow_retained)]])], collapse = \"\")"
+          )
+        } else if (identical(step$kind, "splitText")) {
+          lines <- c(
+            lines,
+            "    .ow_matches <- gregexpr(.ow_text_delimiter, .ow_utf8, fixed = TRUE)[[1L]]",
+            "    if (length(.ow_matches) == 1L && identical(as.integer(.ow_matches[[1L]]), -1L)) {",
+            "      .ow_output <- if (identical(.ow_text_part_index, 0)) .ow_utf8 else NA_character_",
+            "    } else if (.ow_text_part_index >= length(.ow_matches) + 1L) {",
+            "      .ow_output <- NA_character_",
+            "    } else {",
+            "      .ow_part <- as.integer(.ow_text_part_index) + 1L",
+            "      .ow_match_lengths <- attr(.ow_matches, \"match.length\", exact = TRUE)",
+            "      .ow_start <- if (.ow_part == 1L) 1L else .ow_matches[[.ow_part - 1L]] + .ow_match_lengths[[.ow_part - 1L]]",
+            "      .ow_end <- if (.ow_part <= length(.ow_matches)) .ow_matches[[.ow_part]] - 1L else nchar(.ow_utf8, type = \"chars\")",
+            "      .ow_output <- if (.ow_start > .ow_end) \"\" else substr(.ow_utf8, .ow_start, .ow_end)",
+            "    }"
+          )
         } else {
           lines <- c(
             lines,
@@ -2153,6 +2324,11 @@ openwrangler_r_kernel_agent <- local({
         }
         lines <- c(
           lines,
+          if (identical(step$kind, "splitText")) {
+            "    if (is.character(.ow_output) && length(.ow_output) == 1L && is.na(.ow_output)) return(NA_character_)"
+          } else {
+            character()
+          },
           "    if (!is.character(.ow_output) || length(.ow_output) != 1L || is.na(.ow_output)) stop(\"Open Wrangler text transform returned an invalid result\", call. = FALSE)",
           sprintf(
             "    if (identical(Encoding(.ow_output), \"bytes\")) stop(\"Open Wrangler %s produced invalid UTF-8 text\", call. = FALSE)",
@@ -2286,7 +2462,17 @@ openwrangler_r_kernel_agent <- local({
   ) {
     added_columns <- if (
       bound$kind %in% c("cloneColumn", "textLength") ||
-        (bound$kind %in% c("lowerText", "upperText", "findReplace") && !isTRUE(bound$inPlace))
+        (
+          bound$kind %in% c(
+            "lowerText",
+            "upperText",
+            "capitalizeText",
+            "stripText",
+            "splitText",
+            "findReplace"
+          ) &&
+            !isTRUE(bound$inPlace)
+        )
     ) {
       bound$newName
     } else {
@@ -2324,7 +2510,16 @@ openwrangler_r_kernel_agent <- local({
           length(after_page$page$rows) == after_rows
       truncated <- !(before_complete && after_complete)
     } else if (
-      bound$kind %in% c("lowerText", "upperText", "findReplace", "fillMissingValues", "castColumn") &&
+      bound$kind %in% c(
+        "lowerText",
+        "upperText",
+        "capitalizeText",
+        "stripText",
+        "splitText",
+        "findReplace",
+        "fillMissingValues",
+        "castColumn"
+      ) &&
         isTRUE(bound$inPlace)
     ) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
@@ -2425,6 +2620,9 @@ openwrangler_r_kernel_agent <- local({
       "text_length_column_at",
       "lower_text_column_at",
       "upper_text_column_at",
+      "capitalize_text_column_at",
+      "strip_text_column_at",
+      "split_text_column_at",
       "find_replace_column_at",
       "fill_missing_column_at",
       "cast_column_at",

@@ -2095,7 +2095,10 @@ text_transform_step <- function(
   new_column = NULL,
   find = NULL,
   replacement = NULL,
-  regex = NULL
+  regex = NULL,
+  characters = NULL,
+  delimiter = NULL,
+  index = NULL
 ) {
   params <- list(column = list(id = column_id, name = column_name))
   if (!is.null(new_column)) params$newColumn <- new_column
@@ -2103,6 +2106,11 @@ text_transform_step <- function(
     params$find <- find
     params$replacement <- replacement
     params$regex <- regex
+  } else if (identical(kind, "stripText") && !is.null(characters)) {
+    params$characters <- characters
+  } else if (identical(kind, "splitText")) {
+    params$delimiter <- delimiter
+    params$index <- index
   }
   list(id = id, kind = kind, params = params)
 }
@@ -2131,6 +2139,44 @@ text_cleanup_malformed <- dispatch(
 )
 assert_identical(text_cleanup_malformed$kind, "error", "R Find and Replace accepted a non-logical regex flag")
 assert_identical(text_cleanup_malformed$code, "invalid_request", "the malformed R Find and Replace diagnostic changed")
+
+strip_malformed <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 0L,
+    step = text_transform_step(
+      "stripText",
+      "strip-malformed",
+      "r:c:0",
+      "text",
+      characters = ""
+    ),
+    page = page_window()
+  )
+)
+assert_identical(strip_malformed$kind, "error", "R Strip text accepted an empty character set")
+assert_identical(strip_malformed$code, "invalid_request", "the malformed R Strip text diagnostic changed")
+
+split_malformed <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 0L,
+    step = text_transform_step(
+      "splitText",
+      "split-malformed",
+      "r:c:0",
+      "text",
+      new_column = "text",
+      delimiter = "-",
+      index = 0L
+    ),
+    page = page_window()
+  )
+)
+assert_identical(split_malformed$kind, "error", "R Split text accepted an in-place output")
+assert_identical(split_malformed$code, "invalid_request", "the malformed R Split text diagnostic changed")
 
 upper_preview <- dispatch(
   "previewStep",
@@ -2265,6 +2311,124 @@ find_blank_discard <- dispatch(
   list(sessionId = text_cleanup_session_id, revision = 6L, page = page_window())
 )
 assert_identical(find_blank_discard$action, "discard", "blank-literal R Find and Replace did not discard")
+
+capitalize_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 7L,
+    step = text_transform_step(
+      "capitalizeText",
+      "capitalize-step",
+      "r:c:1",
+      "category",
+      new_column = "capitalized category"
+    ),
+    page = page_window(column_offset = 3L, column_limit = 1L)
+  )
+)
+assert_identical(capitalize_preview$kind, "stepPreview", "derived R Capitalize did not preview")
+assert_identical(
+  capitalize_preview$page$page$columnIds,
+  list("c:step:capitalize-step:0"),
+  "derived R Capitalize lost its output identity"
+)
+assert_identical(capitalize_preview$page$schema[[4L]]$rawType, "character", "R Capitalize retained factor storage")
+capitalize_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_cleanup_session_id, revision = 8L, page = page_window())
+)
+assert_identical(capitalize_apply$action, "apply", "derived R Capitalize did not apply")
+
+strip_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 9L,
+    step = text_transform_step(
+      "stripText",
+      "strip-step",
+      "r:c:0",
+      "text",
+      new_column = "stripped text",
+      characters = ".[]-1234"
+    ),
+    page = page_window(column_offset = 4L, column_limit = 1L)
+  )
+)
+assert_identical(strip_preview$kind, "stepPreview", "derived R Strip text did not preview")
+assert_identical(
+  vapply(strip_preview$page$page$rows[1:2], function(row) row$values[[1L]]$raw, character(1L)),
+  c("alpha", "béta"),
+  "R Strip text treated literal metacharacters as a regular expression"
+)
+assert_identical(strip_preview$page$page$rows[[3L]]$values[[1L]]$isNull, TRUE, "R Strip text lost source NA")
+strip_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_cleanup_session_id, revision = 10L, page = page_window())
+)
+assert_identical(strip_apply$action, "apply", "derived R Strip text did not apply")
+
+split_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = text_cleanup_session_id,
+    revision = 11L,
+    step = text_transform_step(
+      "splitText",
+      "split-step",
+      "r:c:0",
+      "text",
+      new_column = "suffix",
+      delimiter = "-",
+      index = 1L
+    ),
+    page = page_window(column_offset = 5L, column_limit = 1L)
+  )
+)
+assert_identical(split_preview$kind, "stepPreview", "derived R Split text did not preview")
+assert_identical(
+  split_preview$page$page$columnIds,
+  list("c:step:split-step:0"),
+  "derived R Split text lost its output identity"
+)
+assert_identical(
+  vapply(split_preview$page$page$rows[1:2], function(row) row$values[[1L]]$raw, character(1L)),
+  c("12", "34"),
+  "R Split text changed zero-based literal delimiter behavior"
+)
+assert_identical(split_preview$page$page$rows[[3L]]$values[[1L]]$isNull, TRUE, "R Split text lost source NA")
+split_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = text_cleanup_session_id, revision = 12L, page = page_window())
+)
+assert_identical(split_apply$action, "apply", "derived R Split text did not apply")
+for (native_expression in c(
+  "toupper(.ow_characters[[1L]])",
+  ".ow_text_strip_characters",
+  "gregexpr(.ow_text_delimiter, .ow_utf8, fixed = TRUE)"
+)) {
+  if (!grepl(native_expression, split_apply$code, fixed = TRUE)) {
+    stop(sprintf("generated R text tools lost native expression: %s", native_expression), call. = FALSE)
+  }
+}
+assign("text_cleanup_frame", source_environment$text_cleanup_frame, envir = .GlobalEnv)
+eval(parse(text = split_apply$code), envir = .GlobalEnv)
+text_tools_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  text_tools_generated$`capitalized category`,
+  c("Small", NA_character_, "Mixed"),
+  "generated R Capitalize changed values"
+)
+assert_identical(text_tools_generated$`stripped text`, c("alpha", "béta", NA_character_), "generated R Strip text changed values")
+assert_identical(text_tools_generated$suffix, c("12", "34", NA_character_), "generated R Split text changed values")
+assert_identical(row.names(text_tools_generated), row.names(text_cleanup_before), "generated R text tools changed row names")
+assert_identical(
+  get("text_cleanup_frame", envir = .GlobalEnv, inherits = FALSE),
+  text_cleanup_before,
+  "generated R text tools mutated their source dataframe"
+)
+rm("text_cleanup_frame", "open_wrangler_result", envir = .GlobalEnv)
 assert_identical(source_environment$text_cleanup_frame, text_cleanup_before, "the R text-cleanup lifecycle mutated its source")
 text_cleanup_closed <- dispatch("closeSession", list(sessionId = text_cleanup_session_id))
 assert_identical(text_cleanup_closed$kind, "closed", "the R text-cleanup session did not close")
@@ -4547,6 +4711,9 @@ missing_package_contract <- list(
   text_length_column_at = function(...) stop("unexpected text length", call. = FALSE),
   lower_text_column_at = function(...) stop("unexpected lowercase", call. = FALSE),
   upper_text_column_at = function(...) stop("unexpected uppercase", call. = FALSE),
+  capitalize_text_column_at = function(...) stop("unexpected capitalize", call. = FALSE),
+  strip_text_column_at = function(...) stop("unexpected strip", call. = FALSE),
+  split_text_column_at = function(...) stop("unexpected split", call. = FALSE),
   find_replace_column_at = function(...) stop("unexpected find and replace", call. = FALSE),
   fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
@@ -4605,6 +4772,27 @@ if (
     !identical(conditionMessage(missing_upper_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without Uppercase support", call. = FALSE)
+}
+for (required_text_tool in c(
+  "capitalize_text_column_at",
+  "strip_text_column_at",
+  "split_text_column_at"
+)) {
+  incomplete_contract <- missing_package_contract
+  incomplete_contract[[required_text_tool]] <- NULL
+  incomplete_error <- tryCatch(
+    {
+      openwrangler_r_kernel_agent$new_agent(incomplete_contract, source_environment)
+      NULL
+    },
+    error = function(error) error
+  )
+  if (
+    is.null(incomplete_error) ||
+      !identical(conditionMessage(incomplete_error), "Open Wrangler received an invalid R frame contract.")
+  ) {
+    stop(sprintf("the R agent accepted a frame contract without %s support", required_text_tool), call. = FALSE)
+  }
 }
 missing_find_replace_contract <- missing_package_contract
 missing_find_replace_contract$find_replace_column_at <- NULL

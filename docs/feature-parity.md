@@ -79,9 +79,9 @@ tibble, and `data.table` variables through IRkernel. A trusted `.R`, `.Rmd`, or 
 Open Wrangler-owned R process, after which the user chooses one of the dataframes it created. R Markdown and Quarto
 use top-level lexical `{r}` cells rather than a document render. Pages, compound filters, ordered sorts,
 value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Editing mode
-currently supports exactly fourteen cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
+currently supports exactly seventeen cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
-Uppercase, and Find and replace. They follow the
+Uppercase, Find and replace, Capitalize, Strip text, and Split text. They follow the
 same draft, code preview, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. A
 viewing filter or sort can be copied into a cleaning draft. Filters preserve the typed distinction between `NA` and
 `NaN`; sorts keep their compound priority, and both keep stable source-row identities through history and diffs.
@@ -90,10 +90,12 @@ rows when any or all selected columns are missing. Drop Duplicates compares sele
 default, and can keep the first, last, or no row in each repeated group without changing source order. Select Columns
 keeps the user's chosen order, and Clone Column gives the copy its own stable identity. Text Length accepts character
 and factor input, keeps `NA`, and adds an integer column containing Unicode character counts under a stable derived
-identity. Lowercase accepts character and factor input, keeps `NA`, and can update the source column or append a
-character column with a stable derived identity. Uppercase follows the same column rules. Find and replace supports
-literal text and regular expressions. It can update the source or append a character column. Convert type replaces one column under the same identity and supports
-string, integer, float, boolean, date, and datetime targets. Failed parses become `NA`. It rejects active data-table
+identity. The text operations accept character and factor input, convert factors to character, and keep `NA`.
+Lowercase, Uppercase, Capitalize, Strip text, and Find and replace can update the source or append a character column.
+Find and replace supports literal text and regular expressions. Strip text removes a literal set of characters from
+both ends, or the default whitespace when no set is supplied. Split text uses a literal delimiter, adds a new column,
+and returns `NA` when the requested part is missing. Convert type replaces one column under the same identity and
+supports string, integer, float, boolean, date, and datetime targets. Failed parses become `NA`. It rejects active data-table
 keys and conversions that would lose units or `integer64` precision. Generated R can be copied, saved as a `.R`
 script, or inserted into the notebook or R document that opened the dataframe.
 
@@ -118,8 +120,8 @@ and replace form and applies Uppercase. Across the sequence it covers preview, a
 editing, and undo; Convert type is applied and undone. Drop Missing Rows and Drop
 Duplicates each cover preview, apply, returning from step inspection, and undo. The journey also opens editable
 tibbles and keyed `data.table` objects and previews and discards Rename and Drop Columns on each. Native R and
-cross-language tests cover all fourteen operations across the three dataframe flavors, including row identity,
-compound
+cross-language tests cover the full seventeen-operation catalog, plus class and key behavior for tibbles and data
+tables. They also cover row identity, compound
 sort priority, typed filtering, mixed plans, ordered selection, type conversion, Unicode character counts, native R
 text casing and replacement, `NA` preservation, stable retained and derived identities, duplicate names,
 non-syntactic names, and executable generated R.
@@ -145,8 +147,8 @@ operations and cleaned-data export are not available yet.
 | Owned `.R` source process                     | v2 branch     | Partial | Real process contracts and packaged VS Code/Cursor path           | Preview release                 |
 | Owned `.Rmd` and `.qmd` cell process          | v2 branch     | Partial | Parser and real-R process contracts                               | Packaged VS Code/Cursor journey |
 | Notebook workbench                            | v2 branch     | Partial | Packaged viewing/editing, screenshots, production axe             | Preview release                 |
-| R cleaning operations and generated code      | 14 operations | Partial | Native tests; 12-op VS Code/Cursor path; 14-op local VS Code path | Remaining operations            |
-| Copy or save generated R                      | 14 operations | Partial | Native generated-code tests and packaged R script path            | Preview release                 |
+| R cleaning operations and generated code      | 17 operations | Partial | Native tests; 12-op VS Code/Cursor path; 14-op local VS Code path | 17-op installed journey         |
+| Copy or save generated R                      | 17 operations | Partial | Native generated-code tests and packaged R script path            | Preview release                 |
 | Insert generated R into its IRkernel notebook | v2 branch     | Partial | Shared exact-document helper and packaged editor journey          | Preview release                 |
 | Insert generated R into its source `.R` file  | v2 branch     | Partial | Exact-document helper and packaged rerun                          | Preview release                 |
 | Insert generated R into `.Rmd` and `.qmd`     | v2 branch     | Partial | Exact-document and fenced-cell unit tests                         | Packaged VS Code/Cursor journey |
