@@ -10,11 +10,10 @@ Open Wrangler has three cooperating parts:
    Jupyter kernel. R notebooks use the bundled R reader inside the selected IRkernel. On macOS and Linux, a trusted
    `.R`, `.Rmd`, or `.qmd` document runs in its own Open Wrangler `Rscript` process.
 
-Most sections below describe the released Python runtime. The Open Wrangler 2 branch connects R notebook variables and
-dataframes created by trusted R documents to the same coordinator, grid, filters, sorts, profiles, draft review, and
-cleaning history. Its current R operations are Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
-Duplicates, Rename Column, Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length, Lowercase,
-Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling.
+Python and R sessions use the same coordinator, grid, filters, sorts, profiles, draft review, and cleaning history.
+R currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
+Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
+Capitalize, Strip text, Split text, Round, Floor, and Ceiling.
 The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
@@ -193,7 +192,8 @@ code. Native variable discovery requires `jsonlite` and `rlang` in the selected 
 commands enable native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Round, Floor, and Ceiling. Other cleaning operations are not supported yet.
+Capitalize, Strip text, Split text, Round, Floor, and Ceiling. Operations outside this 20-operation set are not
+supported in R yet.
 Generated R can be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session. Notebook
 insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the complete
 resulting document text; R Markdown and Quarto insert a new top-level `{r}` cell, and R Markdown rejects generated

@@ -4,129 +4,46 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.0] - 2026-08-07
+
 ### Added
 
-- Added **Fill missing values** for Pandas, Polars, and DuckDB. Numeric columns can use their median. Text,
-  categorical, and boolean columns can use the most common non-missing value. Supported scalar columns can also use a
-  specific value of the matching type. When a fill is needed, automatic methods ask for a specific value if the
-  column is empty or its most common values are tied. No-op fills keep categorical and enum types unchanged, and
-  generated code follows the same rules without converting the dataframe to another engine.
-- Added the first R notebook viewer for Open Wrangler 2. The notebook picker can open base `data.frame`, tibble, and
-  `data.table` objects directly from IRkernel, page across the complete frame, apply compound viewing filters and
-  ordered sorts, search and select column values, and calculate filter-aware column and dataset profiles. Profiles
-  include missing and distinct counts, common values, numeric statistics and histograms, text lengths, boolean
-  counts, and date ranges. Explicit R row names appear in the grid gutter and stay with their source rows after a
-  query.
-- Added the first native R cleaning operation for Open Wrangler 2. **Rename Column** uses the regular draft, code
-  preview, apply, discard, inspection, edit-latest, and undo workflow for base data frames, tibbles, and data tables.
-  It keeps the notebook object unchanged, generates executable R, and lets users copy that code or save it as a `.R`
-  script.
-- Added **Drop Columns** as the second native R cleaning operation. It binds selected columns by stable identity,
-  keeps duplicate and non-syntactic names unambiguous, preserves the dataframe class and data-table keys, and
-  generates executable R without changing the notebook object.
-- Added **Select Columns** for native R sessions. It keeps columns in the order chosen by the user, preserves stable
-  identities and compatible data-table keys, and uses the same preview, apply, inspection, edit, and undo flow as the
-  other operations.
-- Added **Clone Column** for native R sessions. The copied column gets its own stable identity, so later R steps can
-  target it without confusing it with the source. Base data frames, tibbles, and keyed data tables keep their class,
-  names, and key metadata.
-- Added **Text Length** as the fifth native R cleaning operation. It accepts character and factor columns, counts
-  Unicode characters, keeps `NA` values, and appends an integer column with its own stable identity. The generated R
-  follows the same rules.
-- Added **Lowercase** as the sixth native R cleaning operation. It accepts character and factor columns, keeps `NA`
-  values, and can replace the source column or append a character column with its own stable identity. Generated R
-  uses the same transformation without changing the notebook object.
-- Added **Convert type** for native R sessions. It converts a column in place to string, integer, floating-point,
-  boolean, date, or datetime values and keeps the column's stable identity. Values that cannot be converted become
-  `NA`. Source and target pairs that would lose units or `integer64` precision are rejected. Clone the column first
-  when the original also needs to be kept.
-- Added **Filter Rows** and **Sort Rows** for native R sessions. They can copy the current typed view rules into a
-  cleaning step, keep stable row identities through history and inspection, and generate concise executable R.
-  Compound sort priority, missing-value placement, `NA` versus `NaN`, duplicate names, and keyed data tables follow
-  the same rules as the live view without changing the notebook or source-file dataframe.
-- Added **Drop Missing Rows** and **Drop Duplicates** for native R sessions. Missing-row steps treat `NA` and `NaN` as
-  missing and can check any or all selected columns. Duplicate-row steps compare selected columns or the whole row
-  and can keep the first, last, or none of the repeated rows. Both preserve source order, row identity, dataframe
-  flavor, and compatible data-table keys.
-- Added **Fill Missing Values** for native R sessions. Numeric columns can use an exact median; character, factor,
-  and logical columns can use the most common non-missing value; supported columns can use a specific typed value.
-  Factors and `integer64` values stay native. Key columns are blocked because changing one could invalidate a
-  data-table key, and the form checks R's 8 KiB text limit before preview.
-- Added **Uppercase** and **Find and replace** for native R sessions. Both accept character and factor columns, keep
-  `NA`, and can update the source or create a character column. Find and replace supports literal text and regular
-  expressions. Active data-table key columns cannot be changed in place.
-- Added **Capitalize**, **Strip text**, and **Split text** for native R sessions. Factors become character columns and
-  `NA` stays missing. Strip text removes whitespace or selected characters from both ends, while Split text uses a
-  literal delimiter and returns `NA` when the requested part is missing. In-place changes reject active data-table key
-  columns. Generated R matches the workbench preview.
-- R notebook sessions can now insert generated cleaning code into the notebook that opened the dataframe. Open
-  Wrangler adds one `r` cell and confirms the exact edit before reporting success.
-- Trusted `.R` files can now run in an Open Wrangler-owned R process. The variable picker lists base data frames,
-  tibbles, and data tables created by that run, and the workbench can insert generated R back into the exact unsaved
-  source document. Relative file reads use the source directory, and closing the final view stops the process.
-- Trusted R Markdown and Quarto documents can run their top-level backtick-fenced `{r}` cells through the same owned
-  process on macOS and Linux. Cells share one R environment but are parsed separately before any cell runs. Generated
-  R is inserted as a new fenced cell. This command is for dataframe discovery and does not render the document or
-  attach to an existing R session; unsupported YAML, chunk-engine, and raw-container syntax is rejected.
-- Local R document sessions opened in Editing mode can export the cleaned result as CSV. R notebooks cannot export
-  cleaned data yet, and R Parquet export is not supported yet.
-- Default frames created with `collapse::qDF()`, `qTBL()`, or `qDT()` use the existing base-data-frame, tibble, or data-table
-  path. Open Wrangler does not add `collapse` as a runtime dependency. Grouped `GRP_df` and indexed
-  `indexed_frame` objects are not supported.
-- Direct R-document execution is available on macOS and Linux. R notebooks still work on Windows; direct document
-  execution stays disabled there until Open Wrangler can own and stop the complete R process tree.
-- Added Round, Floor, and Ceiling to native R editing. Ordinary integer and double inputs produce R doubles;
-  `integer64` inputs stay exact. The operations keep `NA`, `NaN`, `Inf`, and `-Inf`, and Round follows R's
-  ties-to-even rule. A keyed `data.table` column can be written to a new output column but cannot be changed in place.
+- Added native R support for base `data.frame`, tibble, and `data.table` variables in IRkernel notebooks. On
+  macOS and Linux, Open Wrangler can also run trusted `.R` files and supported R cells from `.Rmd` and `.qmd`
+  documents in its own R process.
+- Added 20 R cleaning operations with data and code previews, apply/discard, history, latest-step editing, and undo.
+  Generated R can be copied, saved, or inserted into the notebook or document that opened the dataframe.
+- Added CSV export for local R document sessions opened in Editing mode. R notebook export and R Parquet export are
+  not included in this preview.
+- Added support for ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` without making
+  `collapse` a runtime dependency.
+- Added type-aware missing-value replacement for Pandas, Polars, DuckDB, and R. Numeric columns can use their median,
+  text-like and boolean columns can use their most common value, and supported columns accept a typed value entered
+  by the user.
 
 ### Changed
 
-- README and gallery screenshots now use width-only display caps. Narrow Marketplace pages keep the PNG aspect ratio,
-  while wider Open VSX pages stop at 960 CSS pixels; the original high-resolution files are unchanged.
-- Applied R step inspection now fetches its code, input page, and output page separately. Large pages no longer fail
-  because two valid blocks were combined into one oversized kernel response.
-- Renamed **Export Python Script** to **Export Generated Script**. Python sessions keep the `.clean.py` default;
-  generated R code uses `.clean.R` and an R script filter.
-- The Open Wrangler 2 notebook gate now tests local R in VS Code and Cursor and a containerized R kernel in VS Code.
-  It covers filters, value selection, profiles, paging, sort order, kernel restart, source preservation, and cleanup
-  with fixed R and package versions.
-- Preview releases now run the R 4.5.2 contract tests and install the candidate VSIX in both VS Code and Cursor for
-  the R notebook and document tests before publishing.
-- Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
-  ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
-  to the notebook's source object.
-- Added a real VS Code screenshot of R editing. The installed extension exercises all twenty R operations
-  against IRkernel in both VS Code and Cursor. The run covers preview, apply, inspection, discard, latest-step editing,
-  and undo; Convert type is applied and undone. Drop Missing
-  Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The run also checks
-  generated R, copies and saves Rename code, and verifies that the notebook objects are unchanged. Separate tibble and
-  keyed-data-table sessions preview and discard Rename and Drop Columns. Round, Floor, and Ceiling are opened through
-  their real forms and checked with positive and negative fractional values. Direct R tests cover the same catalog,
-  plus class and key behavior for tibbles and data tables.
-- The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
-- Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
-  VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and
-  view-only; streaming DataFrames, files, cleaning, exports, saved output, remote or authenticated clusters, and Spark
-  setup are not supported.
-- PySpark column profiles now check and collect their ten displayed values in one Spark job. If the values are too
-  large, Spark returns only their byte counts. Ordinary profiles no longer run the same grouped query twice.
-- PySpark open errors now explain unsupported streaming or Variant data, conflicting or reserved column names, and
-  objects missing standard DataFrame operations, with a suggested fix where available.
-- PySpark sessions now label unsorted rows as **Source order** and explicitly sorted rows as **Sorted**. The ordering
-  badge explains Spark's behavior for unsorted rows and tells users to add a unique final sort key for repeatable
-  rows.
-- PySpark Classic now gives each Open Wrangler request its own Spark job group and restores the notebook's previous
-  job settings. Queued work is dropped when a view closes or changes; work already running is left alone so unrelated
-  notebook jobs are not cancelled.
-- Recreating a PySpark Classic variable after stopping its old Spark session now reopens the live notebook data
-  instead of failing while Open Wrangler reads request properties from the stopped Spark context.
-- Spark Connect now tells temporary endpoint failures apart from a server session or DataFrame that no longer exists.
-  Both leave the confirmed grid in place. Lost server state also drops runtime page blocks so stale data is not served;
-  Open Wrangler does not create a replacement Spark session or DataFrame. After rerunning the notebook cell, users can
-  choose **Reconnect** to bind the same variable again; ordinary page retry remains available only for temporary
-  endpoint failures.
-- Future stable and preview releases now ship from `main`. Releases through v1.2.2 can still be recovered from their
-  immutable tags, but the old v1 maintenance branch is no longer part of normal development or publishing.
+- PySpark opens its first page without counting or caching the whole DataFrame. Profiles use fewer Spark jobs, source
+  order is labelled clearly, and stopped or replaced sessions can reconnect without hiding the last confirmed grid.
+- README and gallery screenshots now keep their aspect ratio on the Visual Studio Marketplace and stop growing past
+  960 CSS pixels on Open VSX. The original high-resolution PNGs are unchanged.
+- Added a full-resolution R editing screenshot to the README and product gallery.
+- Renamed **Export Python Script** to **Export Generated Script**. Python uses the `.clean.py` default, while R uses
+  `.clean.R`.
+- Preview releases now run the R 4.5.2 contract tests and install the candidate VSIX in VS Code and Cursor for the R
+  notebook and document tests before publishing.
+
+### Fixed
+
+- Large R step inspections now fetch code and data blocks separately instead of combining two valid pages into one
+  oversized kernel response.
+- The grid now shows a final partial page when the browser has reached its maximum scroll position.
+- R process responses are read through validated file descriptors, so replacing a response path cannot change the
+  bytes Open Wrangler accepts.
+
+### Security
+
+- Updated the nested `js-yaml` copies used by development and packaging tools to 4.3.1.
 
 ## [1.2.2] - 2026-08-04
 

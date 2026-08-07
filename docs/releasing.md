@@ -279,29 +279,7 @@ Microsoft documents [branch and tag filters as an OR](https://learn.microsoft.co
 while path filters are defined in terms of changed files on an included branch. Keeping tags path-independent
 prevents a later release tag from being silently suppressed by an unrelated path decision.
 
-The protected branch subscriptions are only recovery signals. Before authentication, intake requires the checkout to equal
-the exact event commit and classifies its Git history. Only a single-parent commit that changes at least one of
-these reviewed pipeline, lockfile, metadata, archive, and verifier closure files may continue:
-
-- `azure-pipelines-marketplace.yml`
-- `package-lock.json`
-- `package.json`
-- `scripts/bounded-file-read.mjs`
-- `scripts/copy-extension-test-runtime-assets.mjs`
-- `scripts/cursor-acquisition.mjs`
-- `scripts/download-canonical-github-release.mjs`
-- `scripts/editor-acceptance-evidence.mjs`
-- `scripts/editor-acceptance.mjs`
-- `scripts/installed-performance-report.mjs`
-- `scripts/installed-performance-system.mjs`
-- `scripts/marketplace-identity-profile.mjs`
-- `scripts/marketplace-release-intake.mjs`
-- `scripts/packaged-editor-orchestration.mjs`
-- `scripts/prepare-xvfb.mjs`
-- `scripts/release-metadata.mjs`
-- `scripts/remote-workspace-acquisition.mjs`
-- `scripts/remote-workspace-contract.mjs`
-- `scripts/run-installed-performance.mjs`
-- `scripts/strict-json.mjs`
-- `scripts/verify-canonical-release-artifact.mjs`
-- `scripts/verify-marketplace-publication.mjs`
+The protected branch subscriptions are recovery signals only. Before authentication, intake requires the checkout to
+match the event commit. Automatic recovery continues only for a single-parent commit that changes a reviewed path.
+The canonical allowlist is `MARKETPLACE_RECOVERY_PATHS` in `scripts/marketplace-release-intake.mjs`; its unit test
+checks the complete list so this guide does not maintain a second copy.

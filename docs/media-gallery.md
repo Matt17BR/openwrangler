@@ -6,7 +6,7 @@ sizes in the images describe the example, not a row or column limit.
 [Workbench](#grid-and-sidebar) · [Files](#file-entry-points) ·
 [Explore](#filters-profiles-sorts-and-column-search) · [Clean](#cleaning-drafts-and-history) ·
 [Export](#export-code-and-cleaned-data) · [Notebooks](#notebook-dataframes) ·
-[R preview](#r-notebooks-open-wrangler-2) ·
+[R preview](#r-notebooks-and-documents-199-preview) ·
 [Editors](#editor-and-theme-support)
 
 ## Grid and sidebar
@@ -157,11 +157,11 @@ page loads without counting or caching the entire DataFrame, and the exact row t
 ordering badge distinguishes Spark source order from an explicit sort and explains why repeatable rows need a unique
 final sort key.
 
-## R notebooks (Open Wrangler 2)
+## R notebooks and documents (1.99 preview)
 
 <a href="images/editor-acceptance/vscode-notebook-r-picker-dark.png"><img alt="An R notebook variable picker listing a base data frame, data.table, and tibble" src="images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png" width="960"></a>
 
-Open Wrangler 2 development builds discover base `data.frame`, tibble, and `data.table` variables in the active
+Open Wrangler 1.99 previews discover base `data.frame`, tibble, and `data.table` variables in the active
 IRkernel. For a trusted `.R`, `.Rmd`, or `.qmd` document, choose **Run R Document in Open Wrangler…** from Explorer or
 the editor. Open Wrangler runs plain R or the top-level backtick-fenced `{r}` cells from its own directory and lists
 the dataframes it creates. Unsaved editor changes are included. R Markdown and Quarto use an isolated R process; this
@@ -181,8 +181,9 @@ convert factors to character and keep `NA`. Capitalize changes the first charact
 lowercase. Strip text removes whitespace or a literal set of edge characters. Split text uses a literal delimiter and
 returns `NA` when the selected part is missing. Find and replace accepts literal text or a regular expression. Convert
 type supports string, integer, float, boolean, date, and datetime targets. Values that cannot be converted become `NA`.
-Fill Missing Values can use the median for a numeric column, the most common non-missing value for a character, factor,
-or logical column, or a value entered by the user. It keeps factors, dates, datetimes, and `integer64` in their R types.
+Fill Missing Values can use the median of all non-missing numeric values, the most common non-missing character,
+factor, or logical value, or a value entered by the user. It keeps dates, datetimes, and `integer64` in their R types;
+a new factor value is added as a level.
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's
 ties-to-even rule. A keyed `data.table` column can be written to a new output column but cannot be changed in place.
@@ -193,9 +194,7 @@ cannot export cleaned data yet, and R Parquet export is not supported yet.
 
 <a href="images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
-The image shows Rename Column in VS Code. The packaged VS Code and Cursor runs exercise all twenty operations,
-including ordered row work, type-aware missing-value fills, column selection and conversion, the text tools, and the
-Round, Floor, and Ceiling forms.
+This Rename Column draft shows the changed schema and generated R before the step is applied.
 
 <a href="images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png"><img alt="Generated R cleaning code inserted as an R cell in the notebook that opened the dataframe" src="images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png" width="960"></a>
 
@@ -205,7 +204,7 @@ Convert type does not replace an active `data.table` key column. Clone that colu
 
 Default frames made with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing base-data-frame, tibble, and
 data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
-not supported. Other R cleaning operations are not supported yet.
+not supported. Operations outside the current 20-operation set are not supported in R yet.
 
 Direct R-document execution currently requires macOS or Linux. R notebooks remain available on Windows.
 

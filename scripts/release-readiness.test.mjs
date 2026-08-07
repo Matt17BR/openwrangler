@@ -823,16 +823,18 @@ test("points preview installs at the published prerelease channels", () => {
   assert.doesNotMatch(PREVIEW_README_RELEASE_SECTION, /clone|npm install|npm run package|python3 -m venv/iu);
 });
 
-test("uses linked live badges instead of a prose stable status", () => {
-  assert.doesNotMatch(STABLE_README_RELEASE_SECTION, /Release status/iu);
-  for (const expected of [
-    "https://img.shields.io/github/v/release/Matt17BR/openwrangler",
-    "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main",
-    "https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg",
-    "https://img.shields.io/open-vsx/v/Matt17BR/openwrangler",
-    "https://img.shields.io/github/license/Matt17BR/openwrangler"
-  ]) {
-    assert.ok(STABLE_README_RELEASE_SECTION.includes(expected));
+test("uses linked live badges instead of a prose release status", () => {
+  for (const section of [PREVIEW_README_RELEASE_SECTION, STABLE_README_RELEASE_SECTION]) {
+    assert.doesNotMatch(section, /Release status/iu);
+    for (const expected of [
+      "https://img.shields.io/github/v/release/Matt17BR/openwrangler",
+      "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main",
+      "https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg",
+      "https://img.shields.io/open-vsx/v/Matt17BR/openwrangler",
+      "https://img.shields.io/github/license/Matt17BR/openwrangler"
+    ]) {
+      assert.ok(section.includes(expected));
+    }
   }
 });
 
@@ -1209,7 +1211,13 @@ test("verify-vsix rejects each shipped-document source mismatch end to end", asy
 
   const sourcePackage = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8"));
   const baseEntries = releaseVsixEntries(sourcePackage);
-  baseEntries.set("extension.vsixmanifest", manifest({ version: sourcePackage.version }));
+  baseEntries.set(
+    "extension.vsixmanifest",
+    manifest({
+      version: sourcePackage.version,
+      properties: sourcePackage.preview ? '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />' : ""
+    })
+  );
   for (const [source, archive] of [
     ["README.md", "extension/readme.md"],
     ["CHANGELOG.md", "extension/changelog.md"],

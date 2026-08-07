@@ -67,8 +67,8 @@ const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"),
 describe("Marketplace and walkthrough copy", () => {
   it("states the engine, notebook, and R source boundaries directly", () => {
     expect(manifest.description).toBe(
-      "Explore files and live dataframes in VS Code and Cursor. " +
-        "Use Pandas, Polars, or DuckDB, view PySpark and R notebooks, and run R, R Markdown, or Quarto sources on macOS or Linux."
+      "Explore and clean dataframes in VS Code and Cursor with Pandas, Polars, DuckDB, or R. " +
+        "View local PySpark notebooks, and run R, R Markdown, or Quarto sources on macOS or Linux."
     );
 
     const walkthrough = manifest.contributes?.walkthroughs?.find((candidate) => candidate.id === "gettingStarted");

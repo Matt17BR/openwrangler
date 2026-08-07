@@ -481,6 +481,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "gallery/notebook-duckdb-detail.png",
     "gallery/notebook-pyspark.png",
     "gallery/notebook-pyspark-detail.png",
+    "gallery/notebook-r-editing.png",
     "gallery/export-script-detail.png",
     "gallery/export-data-detail.png"
   ]) {
@@ -521,25 +522,21 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /Local PySpark 4\.2\.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles/u
   );
-  assert.match(
-    readme,
-    /Open Wrangler 2 development builds can also open base R `data\.frame`, tibble, and `data\.table` variables from\s+IRkernel or a trusted R document on macOS or Linux/u
-  );
+  assert.match(readme, /Open Wrangler opens base R `data\.frame`, tibble, and `data\.table` variables from IRkernel/u);
   assert.match(readme, /\*\*Run R Document in Open Wrangler…\*\* from Explorer or the\s+editor/u);
-  assert.match(readme, /top-level\s+backtick-fenced `\{r\}` cells/u);
-  assert.match(readme, /does not render the document or attach to an existing Quarto, knitr, terminal, or R session/u);
-  assert.match(readme, /unsaved changes are included/u);
-  assert.match(readme, /The R workbench supports[\s\S]{0,180}twenty cleaning operations/u);
+  assert.match(readme, /supported top-level R cells in `\.Rmd` and `\.qmd` documents/u);
+  assert.match(readme, /do not render Quarto or R Markdown or attach to another\s+R session/u);
+  assert.match(readme, /including unsaved\s+editor changes/u);
+  assert.match(readme, /The R workbench supports[\s\S]{0,180}20 cleaning operations/u);
   assert.match(readme, /\*\*Split text\*\*, \*\*Round\*\*, \*\*Floor\*\*, and \*\*Ceiling\*\*/u);
-  assert.match(readme, /Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns/u);
-  assert.match(readme, /inserted into the notebook or R document that opened the dataframe/u);
-  assert.match(readme, /The default outputs from `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
-  assert.match(readme, /Grouped `GRP_df` and indexed `indexed_frame` objects are not\s+supported/u);
+  assert.match(readme, /inserted into the notebook or document that opened the dataframe/u);
+  assert.match(readme, /Ordinary frames created with `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
+  assert.match(readme, /Grouped `GRP_df` and indexed `indexed_frame` objects are\s+not\s+supported/u);
   assert.match(
     readme,
-    /R notebooks remain available on Windows; direct document execution is not yet\s+available there/u
+    /R notebooks remain available on Windows;\s+direct document execution is not yet\s+available there/u
   );
-  assert.match(readme, /\| R \(v2 development\)\s+\|/u);
+  assert.match(readme, /\| R \(1\.99 preview\)\s+\|/u);
   assert.match(
     readme,
     /alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows"/u
@@ -547,6 +544,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(
     readme,
     /alt="PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges"/u
+  );
+  assert.match(
+    readme,
+    /alt="An R Rename Column draft in Open Wrangler with cleaning history, Apply and Discard controls, and generated R"/u
   );
   assert.match(readme, /Larger datasets can work, but the\s+practical limit depends on the engine and machine/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
@@ -592,10 +593,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /\[full results\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
   );
-  assert.match(
-    readme,
-    /These are the current stable results\. We will rerun the comparison from the exact Open Wrangler 2 release candidate\s+before v2 ships\./u
-  );
+  assert.match(readme, /These results are from stable 1\.2\.1\. We will rerun the comparison before stable 2\.0\./u);
   for (const row of [
     /\| Pandas CSV\s+\| Show notebook preview \|\s+\*\*0\.34 s\*\* \|\s+1\.49 s \|/u,
     /\| Pandas CSV\s+\| Open workbench\s+\|\s+\*\*0\.60 s\*\* \|\s+1\.01 s \|/u,
@@ -619,20 +617,15 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(readme, /tracks a planned comparison with Microsoft Data Wrangler/u);
   assert.match(
     readme,
-    /\*\*v1:\*\* keep improving performance, DuckDB coverage, and support for other desktop VS Code forks/u
+    /\*\*1\.x:\*\* keep improving performance, DuckDB, the Python engines, and support for other desktop VS Code forks/u
   );
   assert.doesNotMatch(readme, /#36/u);
   assert.doesNotMatch(readme, /#263/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
-  const v2Roadmap = readme.slice(readme.indexOf("- **v2:**"), readme.indexOf("## Contributing and support"));
-  assert.match(
-    v2Roadmap,
-    /IRkernel notebooks and isolated `\.R`,\s+`\.Rmd`, and `\.qmd` document runs are available on the development branch/u
-  );
-  assert.match(
-    v2Roadmap,
-    /Filter Rows, Sort Rows, Drop Missing Rows[\s\S]{0,260}Split text, Round, Floor,\s+and Ceiling are available now/u
-  );
+  const v2Roadmap = readme.slice(readme.indexOf("- **1.99 previews:**"), readme.indexOf("## Contributing and support"));
+  assert.match(v2Roadmap, /test native R notebooks and documents/u);
+  assert.match(v2Roadmap, /current 20-operation R catalog/u);
+  assert.match(v2Roadmap, /ship stable R support after release testing and an updated performance comparison/u);
   assert.match(
     v2Roadmap,
     /\[R architecture decision\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/decisions\/0001-native-r-runtime\.md\)/u
@@ -692,10 +685,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /^## File entry points$/mu);
   assert.match(gallery, /^## Export code and cleaned data$/mu);
   assert.match(gallery, /^## Notebook dataframes$/mu);
-  assert.match(gallery, /^## R notebooks \(Open Wrangler 2\)$/mu);
+  assert.match(gallery, /^## R notebooks and documents \(1\.99 preview\)$/mu);
   assert.match(
     readme,
-    /\[current R notebook screenshots\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/v2\/docs\/media-gallery\.md#r-notebooks-open-wrangler-2\)/u
+    /\[R gallery\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/media-gallery\.md#r-notebooks-and-documents-199-preview\)/u
   );
   assert.match(
     gallery,
@@ -709,7 +702,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /Direct R-document execution currently requires macOS or Linux/u);
   assert.match(gallery, /Editing mode currently supports[\s\S]{0,420}Round, Floor, and Ceiling/u);
   assert.match(gallery, /All twenty operations use draft preview, generated R, apply, discard, inspection/u);
-  assert.match(gallery, /The packaged VS Code and Cursor runs/u);
+  assert.match(
+    gallery,
+    /This Rename Column draft shows the changed schema and generated R before the step is applied/u
+  );
   assert.match(
     gallery,
     /alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R"/u

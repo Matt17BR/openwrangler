@@ -536,7 +536,7 @@ containerized R kernel in VS Code. The journey checked typed value selection, a 
 Clear all, sort priority, restart and reopen, source preservation, and final cleanup. It does not cover cleaning,
 generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R` files.
 
-The current v2 test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
+The 1.99 preview test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase,
 Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling in
 Editing mode. They
@@ -768,8 +768,8 @@ The report includes all ten values, failures, minimum, maximum, median, and type
 regression blocks release; p95 is review context. Release evidence still requires ten successful samples in all eight
 sessions.
 
-The 1.2.1 results remain the published comparison while v2 is in development. Before 2.0 is released, rerun the full
-study with the VSIX that will be published, review the raw results, and update the README and a new versioned report.
+The 1.2.1 results remain the published comparison in 1.99.0. Before 2.0 is released, rerun the full study with the
+VSIX that will be published, review the raw results, and update the README and a new versioned report.
 
 Every session owns a mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
 extension directories are prepared once per arm to avoid repeated Marketplace downloads. One JSON result is written
