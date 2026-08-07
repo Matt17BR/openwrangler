@@ -41,8 +41,8 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
    controls show how users reach and understand data.
 3. **Clean:** `workflow.png` plus the edit/undo pair show draft, generated code, applied history, and precise
    recovery.
-4. **Notebooks:** the live-variable picker, generated-code insertion, and Pandas/Polars/DuckDB/PySpark matrix show
-   how each engine behaves.
+4. **Notebooks:** the live-variable picker, generated-code insertion, Pandas/Polars/DuckDB/PySpark matrix, and R
+   editing scene show how each engine behaves.
 5. **Export:** paired script and data outcomes show reproducible code and separate cleaned files.
 6. **Evidence and roadmap:** concise engine, format, compatibility, performance, and future-scope tables follow
    the visual proof.
@@ -85,6 +85,8 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
   focuses the Viewing / DuckDB badges, active filter, and editable two-key sort order.
 - `gallery/notebook-pyspark.png`: complete source; its 820 × 610 detail focuses the Source order / Viewing only /
   PySpark badges, representative native rows, exact statistics, and distribution.
+- `gallery/notebook-r-editing.png`: complete R notebook workbench with a Rename Column draft, generated R, and the
+  native cleaning history.
 
 These four README derivatives are exact source-pixel crops, not resized workbenches. Each keeps the distinguishing
 engine behavior legible at half width and links to its complete accepted source scene.

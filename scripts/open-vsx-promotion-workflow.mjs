@@ -11,16 +11,54 @@ const COMMIT_EXPRESSION = "${{ steps.release_source.outputs.release_commit }}";
 const PRERELEASE_EXPRESSION = "${{ steps.release_source.outputs.release_prerelease }}";
 const VERSION_EXPRESSION = "${{ steps.release_source.outputs.release_version }}";
 const AUTOMATION_EXPRESSION = "${{ steps.automation_source.outputs.automation_commit }}";
-const CALL_INPUT = Object.freeze({
-  description: "Canonical GitHub release tag to promote",
-  required: true,
-  type: "string"
-});
 const DISPATCH_INPUT = Object.freeze({
   description: "Existing canonical GitHub release tag to promote",
   required: true,
   type: "string"
 });
+export const OPEN_VSX_VERIFY_PAT_RUN = `if [ -z "\${OVSX_PAT:-}" ]; then
+echo "OVSX_PAT is unavailable in the publishing environment." >&2
+exit 1
+fi
+if output="$(npx --no-install ovsx verify-pat Matt17BR 2>&1)"; then
+:
+else
+status=$?
+printf '%s\\n' "$output"
+exit "$status"
+fi
+printf '%s\\n' "$output"
+if ! grep -Fq "PAT valid to publish at Matt17BR" <<< "$output"; then
+echo "ovsx did not confirm the Matt17BR publisher token." >&2
+exit 1
+fi
+`;
+export const OPEN_VSX_PUBLISH_RUN = `if [ -z "\${OVSX_PAT:-}" ]; then
+echo "OVSX_PAT is unavailable in the publishing environment." >&2
+exit 1
+fi
+case "$RELEASE_PRERELEASE" in
+true|false) ;;
+*) exit 1 ;;
+esac
+if output="$(npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix 2>&1)"; then
+:
+else
+status=$?
+printf '%s\\n' "$output"
+exit "$status"
+fi
+printf '%s\\n' "$output"
+published="Published Matt17BR.openwrangler v$RELEASE_VERSION"
+duplicate="Extension Matt17BR.openwrangler $RELEASE_VERSION is already published. Skipping publish."
+if ! grep -Fq "$published" <<< "$output" && ! grep -Fq "$duplicate" <<< "$output"; then
+echo "ovsx did not confirm publication or an exact duplicate." >&2
+exit 1
+fi
+`;
+export const PUBLIC_MEDIA_CONTRACT_RUN = `required="$(node --input-type=module -e 'import { publicMediaVerificationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaVerificationRequired(process.env.RELEASE_VERSION)));')"
+printf 'required=%s\\n' "$required" >> "$GITHUB_OUTPUT"
+`;
 
 const EXPECTED_RUNS = Object.freeze([
   "npm ci --ignore-scripts",
@@ -28,24 +66,15 @@ const EXPECTED_RUNS = Object.freeze([
   "node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source",
   "node scripts/download-canonical-github-release.mjs canonical-release",
   "node scripts/verify-registry-release-artifact.mjs canonical-release",
-  "npx --no-install ovsx verify-pat Matt17BR",
+  OPEN_VSX_VERIFY_PAT_RUN,
   "node scripts/verify-registry-release-artifact.mjs canonical-release",
   "node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight",
   "node scripts/registry-release-source.mjs release-source",
   "node scripts/verify-registry-release-artifact.mjs canonical-release",
-  `if [ "$RELEASE_PRERELEASE" = "true" ]; then
-npx --no-install ovsx publish --pre-release --skip-duplicate canonical-release/openwrangler.vsix
-elif [ "$RELEASE_PRERELEASE" = "false" ]; then
-npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
-else
-exit 1
-fi
-`,
+  OPEN_VSX_PUBLISH_RUN,
   "node scripts/verify-open-vsx-github-release.mjs canonical-release --verify",
   "node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source",
-  `required="$(node --input-type=module -e 'import { publicMediaVerificationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaVerificationRequired(process.env.RELEASE_VERSION)));')"
-printf 'required=%s\\n' "$required" >> "$GITHUB_OUTPUT"
-`,
+  PUBLIC_MEDIA_CONTRACT_RUN,
   "npx playwright-core install --with-deps chromium",
   'node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --wait-for-propagation'
 ]);
@@ -107,18 +136,13 @@ export function inspectOpenVsxPromotionWorkflow(source) {
   }
   const trigger = workflow?.on;
   if (
-    !exactKeys(trigger, ["release", "workflow_call", "workflow_dispatch"]) ||
+    !exactKeys(trigger, ["release", "workflow_dispatch"]) ||
     JSON.stringify(trigger.release) !== JSON.stringify({ types: ["published"] }) ||
-    !exactKeys(trigger.workflow_call, ["inputs"]) ||
-    !exactKeys(trigger.workflow_call.inputs, ["release_tag"]) ||
-    JSON.stringify(trigger.workflow_call.inputs.release_tag) !== JSON.stringify(CALL_INPUT) ||
     !exactKeys(trigger.workflow_dispatch, ["inputs"]) ||
     !exactKeys(trigger.workflow_dispatch.inputs, ["release_tag"]) ||
     JSON.stringify(trigger.workflow_dispatch.inputs.release_tag) !== JSON.stringify(DISPATCH_INPUT)
   ) {
-    problems.push(
-      "Open VSX promotion must accept direct release-workflow calls, published releases, and explicit recovery dispatches."
-    );
+    problems.push("Open VSX promotion must accept published releases and explicit recovery dispatches.");
   }
   if (
     !exactKeys(workflow.permissions, ["contents"]) ||
@@ -218,15 +242,18 @@ export function inspectOpenVsxPromotionWorkflow(source) {
     problems.push("Post-publication media verification must use the exact release source and version without secrets.");
   }
   const secretSteps = job.steps.filter((step) => step?.env?.OVSX_PAT !== undefined);
-  const tokenStep = secretSteps.find((step) => step?.run === "npx --no-install ovsx verify-pat Matt17BR");
+  const tokenStep = secretSteps.find(
+    (step) => typeof step?.run === "string" && step.run.includes("ovsx verify-pat Matt17BR")
+  );
   const publishStep = secretSteps.find((step) => typeof step?.run === "string" && step.run.includes("ovsx publish"));
   if (
     secretSteps.length !== 2 ||
     !exactKeys(tokenStep?.env, ["OVSX_PAT"]) ||
     tokenStep.env.OVSX_PAT !== "${{ secrets.OVSX_PAT }}" ||
-    !exactKeys(publishStep?.env, ["OVSX_PAT", "RELEASE_PRERELEASE"]) ||
+    !exactKeys(publishStep?.env, ["OVSX_PAT", "RELEASE_PRERELEASE", "RELEASE_VERSION"]) ||
     publishStep.env.OVSX_PAT !== "${{ secrets.OVSX_PAT }}" ||
-    publishStep.env.RELEASE_PRERELEASE !== PRERELEASE_EXPRESSION
+    publishStep.env.RELEASE_PRERELEASE !== PRERELEASE_EXPRESSION ||
+    publishStep.env.RELEASE_VERSION !== VERSION_EXPRESSION
   ) {
     problems.push("Only token verification and channel-bound publication may receive protected OVSX_PAT.");
   }

@@ -16,7 +16,7 @@ const MARKETPLACE_URL = "https://marketplace.visualstudio.com/items?itemName=Mat
 const OPEN_VSX_URL = "https://open-vsx.org/extension/Matt17BR/openwrangler";
 const CI_URL = "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml";
 const LICENSE_URL = "https://github.com/Matt17BR/openwrangler/blob/main/LICENSE";
-const STABLE_BADGES = `<p align="center">
+const README_BADGES = `<p align="center">
   <a href="${RELEASES_URL}"><img src="https://img.shields.io/github/v/release/Matt17BR/openwrangler?display_name=tag&amp;sort=semver" alt="Latest GitHub release"></a>
   <a href="${CI_URL}"><img src="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="${MARKETPLACE_URL}"><img src="https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg" alt="Visual Studio Marketplace version"></a>
@@ -31,10 +31,10 @@ const README_EDITOR_SUPPORT = `| Editor                      | Support        |
 | Browser-hosted \`vscode.dev\` | Unsupported    |`;
 const README_RUNTIME_REQUIREMENTS = `Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
 3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package
-is missing, Open Wrangler lists it and asks before installing anything. R notebooks use the selected IRkernel. On
-macOS and Linux, trusted \`.R\`, \`.Rmd\`, and \`.qmd\` documents use \`Rscript\` from \`openWrangler.rscriptPath\` or \`PATH\`
-and require \`jsonlite\` and \`rlang\`. R notebooks remain available on Windows; direct document execution is not yet
-available there.`;
+is missing, Open Wrangler lists it and asks before installing anything. R notebooks use the selected IRkernel and
+require \`jsonlite\` and \`rlang\`. On macOS and Linux, trusted \`.R\`, \`.Rmd\`, and \`.qmd\` documents use \`Rscript\`
+from \`openWrangler.rscriptPath\` or \`PATH\` and require the same packages. R notebooks remain available on Windows;
+direct document execution is not yet available there.`;
 const README_TRUST_REQUIREMENT =
   "Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.";
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
@@ -47,7 +47,9 @@ const FUTURE_EVIDENCE =
 
 export const PREVIEW_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
-> **Release status:** Preview. Interfaces and behavior may change between builds.
+${README_BADGES}
+
+> Open Wrangler 1.99 previews version 2. Features and behavior may still change.
 
 ## Install
 
@@ -70,7 +72,7 @@ ${README_RELEASE_SECTION_END}`;
 
 export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
-${STABLE_BADGES}
+${README_BADGES}
 
 ## Install
 

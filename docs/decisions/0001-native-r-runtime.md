@@ -17,7 +17,7 @@ editor extension.
 
 ## Decision
 
-Open Wrangler 2 will run R dataframes in R. It will not convert them through Python or use a Python compatibility
+Open Wrangler 2 runs R dataframes in R. It does not convert them through Python or use a Python compatibility
 layer.
 
 The host exposes a `RuntimeIdentity` derived from confirmed session metadata. The protocol keeps `backend` as its
@@ -152,7 +152,7 @@ Open Wrangler will not infer document ownership from the active terminal, global
 live-render attachment may use only a documented public broker API. It may not inspect private Quarto or vscode-R
 sockets, temporary state, extension storage, or process-discovery details.
 
-The first public R build will use the `1.99.x` preview channel. It may ship only after `data.frame`, tibble, and
+Public R builds use the `1.99.x` preview channel. A preview may ship only after `data.frame`, tibble, and
 `data.table` viewing plus the advertised editing workflow pass real IRkernel tests and packaged VS Code and Cursor
 acceptance. A stable 2.0 release must have native R transformation and generated-code coverage for every R surface it
 advertises. The `.R` path may be advertised after its owned-process journey passes in packaged VS Code and Cursor.
@@ -160,16 +160,15 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
 
 ## Consequences
 
-- The existing Python runtime and stable v1 release line remain independent of R development.
-- The grid and transformation model can be shared, but execution, object ownership, type handling, and generated code
-  stay native to the selected language and dataframe flavor.
+- The grid and transformation model are shared. Runtime processes, object ownership, type handling, and generated
+  code stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
   Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
   Strip text, Split text, Round, Floor, and Ceiling with generated R code. Generated R can be inserted into its
   originating IRkernel notebook or R document. A local R document session opened in Editing mode can export its committed result as CSV through a
   private R artifact and an extension-host atomic save. IRkernel sessions cannot export cleaned data yet. R Parquet
-  export and other cleaning operations are not supported yet.
+  export and operations outside the current 20-operation set are not supported yet.
 - Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
   data-table paths. Grouped `GRP_df` and indexed `indexed_frame` objects are outside the supported class contract.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not

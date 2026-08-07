@@ -21,6 +21,7 @@ import { ImportCancelledError, promptImportOptions } from "./files/importOptions
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const RENDERER_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
 const RENDERER_STARTUP_RECOVERY_TIMEOUT_MS = 5_000;
+const RENDERER_PUBLICATION_TIMEOUT_MS = 5_000;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
 export const SESSION_BOUND_EXPORT_DATA_COMMAND = "openWrangler.internal.exportSessionData";
 
@@ -44,6 +45,7 @@ export class OpenWranglerPanel {
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
   private rendererReady = false;
+  private rendererGeneration = 0;
   private rendererSynchronizationIdentity:
     | {
         syncId: string;
@@ -117,13 +119,13 @@ export class OpenWranglerPanel {
       undefined,
       this.disposables
     );
-    this.panel.webview.html = this.renderHtml();
+    this.replaceRendererHtml();
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
         if (webviewPanel.active) this.activate();
         else if (!webviewPanel.visible) this.deactivate();
-        else this.clearRendererStartupRecoveryTimer();
+        else this.scheduleRendererStartupRecovery();
       },
       undefined,
       this.disposables
@@ -142,7 +144,7 @@ export class OpenWranglerPanel {
     if (message.action === "openOperation" || message.action === "editLatest") {
       target.panel.reveal(target.panel.viewColumn, false);
     }
-    void target.panel.webview.postMessage({ kind: "editorAction", ...message });
+    void target.postRendererMessage({ kind: "editorAction", ...message });
     return true;
   }
 
@@ -173,11 +175,10 @@ export class OpenWranglerPanel {
     ) {
       return false;
     }
-    try {
-      return await target.panel.webview.postMessage({ kind: "editorAction", ...message });
-    } catch {
-      return false;
+    if (message.action === "openOperation" || message.action === "editLatest") {
+      target.panel.reveal(target.panel.viewColumn, false);
     }
+    return target.postRendererMessage({ kind: "editorAction", ...message });
   }
 
   private static visiblePanelForSession(sessionId: string): OpenWranglerPanel | undefined {
@@ -392,8 +393,9 @@ export class OpenWranglerPanel {
     if (decoded.kind === "ready") {
       this.clearRendererStartupRecoveryTimer();
       this.rendererReady = true;
-      await this.publishSessionOpenProgress();
       this.invalidateRendererSynchronization();
+      await this.publishSessionOpenProgress();
+      if (!this.rendererReady) return;
       await this.enqueueRendererSynchronization(true);
       return;
     }
@@ -401,8 +403,9 @@ export class OpenWranglerPanel {
     if (decoded.kind === "requestSessionSnapshot") {
       this.clearRendererStartupRecoveryTimer();
       this.rendererReady = true;
-      await this.publishSessionOpenProgress();
       this.invalidateRendererSynchronization();
+      await this.publishSessionOpenProgress();
+      if (!this.rendererReady) return;
       await this.enqueueRendererSynchronization(false);
       return;
     }
@@ -418,6 +421,7 @@ export class OpenWranglerPanel {
         this.rendererViewStateLocked = false;
         this.pendingPreReadyImportResponse = undefined;
         this.clearRendererStartupRecoveryTimer();
+        this.rendererStartupRecoveryAttempted = false;
         this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
         this.revealCodePreviewAfterRendererSynchronization(synchronization);
       }
@@ -639,7 +643,7 @@ export class OpenWranglerPanel {
       ) {
         return;
       }
-      await this.panel.webview.postMessage({ kind: "runtimeDependencyInstallState", busy: true });
+      await this.postRendererMessage({ kind: "runtimeDependencyInstallState", busy: true });
       try {
         const installed = await vscode.commands.executeCommand<boolean>("openWrangler.installRuntimeDependencies");
         if (!installed || this.disposed || this.sessionId) return;
@@ -656,7 +660,7 @@ export class OpenWranglerPanel {
         }
       } finally {
         if (!this.disposed) {
-          await this.panel.webview.postMessage({ kind: "runtimeDependencyInstallState", busy: false });
+          await this.postRendererMessage({ kind: "runtimeDependencyInstallState", busy: false });
         }
       }
     })();
@@ -689,7 +693,7 @@ export class OpenWranglerPanel {
     this.changingImportOptions = true;
     try {
       if (announceBusy) {
-        await this.panel.webview.postMessage({ kind: "importOptionsState", busy: true });
+        await this.postRendererMessage({ kind: "importOptionsState", busy: true });
       }
       const uri = fileSourceUri(this.source);
       if (!uri) {
@@ -810,7 +814,7 @@ export class OpenWranglerPanel {
       }
       if (!this.disposed && generation === this.openAttemptGeneration) {
         this.changingImportOptions = false;
-        await this.panel.webview.postMessage({ kind: "importOptionsState", busy: false });
+        await this.postRendererMessage({ kind: "importOptionsState", busy: false });
         if (this.rendererReady) await this.enqueueRendererSynchronization(false);
       }
     }
@@ -972,11 +976,14 @@ export class OpenWranglerPanel {
           metadata: { ...this.snapshot.metadata, stats: response.stats }
         };
       }
-      await this.postRuntimeResponse(request, response);
-      if (response.kind === "sessionOpened") await this.postSessionPresentation();
-      if (response.kind === "sessionOpened" || response.kind === "stepPreview" || response.kind === "planUpdated") {
-        await this.postViewState();
-        if (this.rendererReady) this.scheduleRendererSynchronization(false);
+      let published = await this.postRuntimeResponse(request, response);
+      if (response.kind === "sessionOpened" && published) published = await this.postSessionPresentation();
+      if (
+        published &&
+        (response.kind === "sessionOpened" || response.kind === "stepPreview" || response.kind === "planUpdated")
+      ) {
+        published = await this.postViewState();
+        if (published && this.rendererReady) this.scheduleRendererSynchronization(false);
       }
     } catch (error) {
       if (this.disposed) return;
@@ -1003,9 +1010,46 @@ export class OpenWranglerPanel {
     }
   }
 
-  private async post(response: OpenWranglerResponse): Promise<void> {
-    if (this.disposed) return;
-    await this.panel.webview.postMessage(response);
+  private post(response: OpenWranglerResponse): Promise<boolean> {
+    return this.postRendererMessage(response);
+  }
+
+  private async postRendererMessage(message: unknown): Promise<boolean> {
+    if (this.disposed) return false;
+    const generation = this.rendererGeneration;
+    const hydratedSyncIdAtPublication = this.hasHydratedRenderer() ? this.rendererHydratedSyncId : undefined;
+    let publication: Thenable<boolean>;
+    try {
+      publication = this.panel.webview.postMessage(message);
+    } catch {
+      this.handleRendererPublicationFailure(generation, hydratedSyncIdAtPublication);
+      return false;
+    }
+
+    const posted = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (delivered: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(delivered);
+      };
+      const timer = setTimeout(() => finish(false), RENDERER_PUBLICATION_TIMEOUT_MS);
+      void Promise.resolve(publication).then(
+        (delivered) => finish(delivered),
+        () => finish(false)
+      );
+    });
+    if (!posted) this.handleRendererPublicationFailure(generation, hydratedSyncIdAtPublication);
+    return posted && !this.disposed && generation === this.rendererGeneration;
+  }
+
+  private handleRendererPublicationFailure(generation: number, hydratedSyncIdAtPublication: string | undefined): void {
+    if (this.disposed || generation !== this.rendererGeneration) return;
+    if (this.hasHydratedRenderer() && this.rendererHydratedSyncId !== hydratedSyncIdAtPublication) return;
+    this.rendererReady = false;
+    this.invalidateRendererSynchronization();
+    if (!this.recoverRendererAfterStartupStall()) this.scheduleRendererStartupRecovery();
   }
 
   private updateSessionOpenProgress(generation: number, stage: SessionOpenProgressStage): void {
@@ -1040,7 +1084,7 @@ export class OpenWranglerPanel {
     this.sessionOpenProgressPublication = this.sessionOpenProgressPublication.then(async () => {
       if (this.disposed) return;
       try {
-        await this.panel.webview.postMessage({ kind: "sessionOpenProgress", stage });
+        await this.postRendererMessage({ kind: "sessionOpenProgress", stage });
       } catch {
         // A renderer may disappear between scheduling and delivery. Progress is
         // presentational and must never change the session-open outcome.
@@ -1127,26 +1171,38 @@ export class OpenWranglerPanel {
       this.rendererStartupRecoveryAttempted ||
       this.rendererStartupRecoveryTimer ||
       !this.openResponse ||
-      !this.panel.active
+      !this.panel.visible
     ) {
       return;
     }
     this.rendererStartupRecoveryTimer = setTimeout(() => {
       this.rendererStartupRecoveryTimer = undefined;
-      if (
-        this.disposed ||
-        this.rendererReady ||
-        this.rendererStartupRecoveryAttempted ||
-        !this.openResponse ||
-        !this.panel.active
-      ) {
-        return;
-      }
-      this.rendererStartupRecoveryAttempted = true;
-      this.invalidateRendererSynchronization();
-      this.panel.webview.html = this.renderHtml();
-      this.bridge.reportDiagnostic?.("Open Wrangler reloaded a renderer that did not complete its startup handshake.");
+      this.recoverRendererAfterStartupStall();
     }, RENDERER_STARTUP_RECOVERY_TIMEOUT_MS);
+  }
+
+  private recoverRendererAfterStartupStall(): boolean {
+    if (
+      this.disposed ||
+      this.hasHydratedRenderer() ||
+      this.rendererStartupRecoveryAttempted ||
+      !this.openResponse ||
+      !this.panel.visible
+    ) {
+      return false;
+    }
+    this.clearRendererStartupRecoveryTimer();
+    this.rendererStartupRecoveryAttempted = true;
+    this.replaceRendererHtml();
+    this.bridge.reportDiagnostic?.("Open Wrangler reloaded a renderer that did not complete its startup handshake.");
+    return true;
+  }
+
+  private replaceRendererHtml(): void {
+    this.rendererGeneration += 1;
+    this.rendererReady = false;
+    this.invalidateRendererSynchronization();
+    this.panel.webview.html = this.renderHtml();
   }
 
   private clearRendererStartupRecoveryTimer(): void {
@@ -1254,7 +1310,7 @@ export class OpenWranglerPanel {
   }
 
   private async synchronizeRenderer(clearInspection: boolean): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || !this.rendererReady) return;
     this.rendererViewStateLocked = true;
     if (clearInspection) {
       if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
@@ -1288,29 +1344,22 @@ export class OpenWranglerPanel {
       resolve: resolveAcknowledgement
     };
     if (this.snapshot) {
-      await this.post(this.snapshot);
-      await this.postSessionPresentation();
-      await this.postViewState();
+      if (!(await this.post(this.snapshot))) return;
+      if (!(await this.postSessionPresentation())) return;
+      if (!(await this.postViewState())) return;
       this.unpublishedAuthoritativeSnapshot = false;
     } else if (this.openResponse) {
-      await this.post(this.openResponse);
+      if (!(await this.post(this.openResponse))) return;
     }
     if (this.pendingPreReadyImportResponse) {
-      await this.post(this.pendingPreReadyImportResponse);
+      if (!(await this.post(this.pendingPreReadyImportResponse))) return;
     }
-    await this.panel.webview.postMessage({ kind: "importOptionsState", busy: this.changingImportOptions });
+    if (!(await this.postRendererMessage({ kind: "importOptionsState", busy: this.changingImportOptions }))) return;
     if (this.rendererSynchronizationIdentity !== synchronization) {
       this.rendererSynchronizationRequested = true;
       return;
     }
-    const posted = await this.panel.webview.postMessage({ kind: "rendererSynchronization", ...synchronization });
-    if (!posted && this.rendererSynchronizationIdentity === synchronization) {
-      // VS Code returns false when the renderer generation is no longer
-      // reachable. Do not keep treating that retired generation as ready.
-      this.rendererReady = false;
-      this.invalidateRendererSynchronization();
-      this.scheduleRendererStartupRecovery();
-    }
+    await this.postRendererMessage({ kind: "rendererSynchronization", ...synchronization });
   }
 
   private activate(): void {
@@ -1340,12 +1389,12 @@ export class OpenWranglerPanel {
 
   private async postStepInspectionCleared(resumeProfiling: boolean): Promise<void> {
     if (this.disposed) return;
-    await this.panel.webview.postMessage({ kind: "stepInspectionCleared", resumeProfiling });
+    await this.postRendererMessage({ kind: "stepInspectionCleared", resumeProfiling });
   }
 
-  private async postRuntimeResponse(request: OpenWranglerRequest, response: OpenWranglerResponse): Promise<void> {
+  private postRuntimeResponse(request: OpenWranglerRequest, response: OpenWranglerResponse): Promise<boolean> {
     if (request.kind === "inspectStep") {
-      await this.panel.webview.postMessage({
+      return this.postRendererMessage({
         kind: "stepInspectionResult",
         stepId: request.stepId,
         offset: request.offset,
@@ -1354,30 +1403,30 @@ export class OpenWranglerPanel {
         columnLimit: request.columnLimit,
         response
       });
-      return;
     }
-    await this.post(response);
+    return this.post(response);
   }
 
-  private async postViewState(): Promise<void> {
-    if (!this.sessionId) return;
+  private async postViewState(): Promise<boolean> {
+    if (!this.sessionId) return true;
     const state = this.bridge.getViewState?.(this.sessionId);
-    if (state) await this.panel.webview.postMessage({ kind: "viewState", state });
+    return state ? this.postRendererMessage({ kind: "viewState", state }) : true;
   }
 
-  private async postSessionPresentation(): Promise<void> {
-    if (!this.sessionId) return;
+  private async postSessionPresentation(): Promise<boolean> {
+    if (!this.sessionId) return true;
     const presentation = this.bridge.getSessionPresentation?.(this.sessionId);
     if (presentation && presentation.sessionId === this.sessionId && presentation.revision === this.sessionRevision) {
-      await this.panel.webview.postMessage({ kind: "sessionPresentation", presentation });
+      return this.postRendererMessage({ kind: "sessionPresentation", presentation });
     }
+    return true;
   }
 
   private async postUnpublishedAuthoritativeSnapshot(): Promise<void> {
     if (!this.unpublishedAuthoritativeSnapshot || !this.snapshot) return;
     this.unpublishedAuthoritativeSnapshot = false;
-    await this.post(this.snapshot);
-    await this.postSessionPresentation();
+    if (!(await this.post(this.snapshot))) return;
+    if (!(await this.postSessionPresentation())) return;
     await this.postViewState();
   }
 

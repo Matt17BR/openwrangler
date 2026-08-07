@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from math import isnan
 from numbers import Integral
+from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -15,6 +16,7 @@ import pytest
 
 from openwrangler_runtime.engines import DuckDBEngine, EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.engines.duckdb_engine import DuckDBSqlPlan
+from openwrangler_runtime.session import SessionManager
 
 
 def bound_ref(identifier: str, name: str, position: int) -> dict[str, str | int]:
@@ -125,6 +127,65 @@ def execute_generated(engine: Any, frame: Any, plan: list[dict[str, Any]]) -> An
     assert "openwrangler_runtime" not in code
     exec(compile(code, "<generated-fill-plan>", "exec"), namespace, namespace)
     return namespace["clean_data"](frame)
+
+
+def schema_column(metadata: dict[str, Any], name: str) -> dict[str, Any]:
+    return next(column for column in metadata["schema"] if column["name"] == name)
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_session_fill_metadata_stays_consistent_through_preview_apply_and_replay(
+    backend: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / f"fill-metadata-{backend}.csv"
+    path.write_text("label,position\nalpha,1\n,2\nalpha,3\n", encoding="utf-8")
+    if backend == "polars":
+        monkeypatch.setattr(
+            pl.DataFrame,
+            "to_pandas",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars must stay native")),
+            raising=False,
+        )
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    step = {
+        "id": "fill-label",
+        "kind": "fillMissingValues",
+        "params": {
+            "column": {"id": "c:source:0", "name": "label"},
+            "replacement": {"kind": "mostFrequent"},
+        },
+    }
+
+    try:
+        assert schema_column(opened["metadata"], "label")["nullable"] is True
+
+        preview = manager.preview_step(session_id, 0, step, 0, 10)
+        assert schema_column(preview["metadata"], "label")["nullable"] is False
+
+        discarded = manager.discard_draft(session_id, 1, 0, 10)
+        assert schema_column(discarded["metadata"], "label")["nullable"] is True
+
+        preview = manager.preview_step(session_id, 2, step, 0, 10)
+        applied = manager.apply_draft(session_id, 3, 0, 10)
+        assert schema_column(applied["metadata"], "label")["nullable"] is False
+
+        inspection = manager.inspect_step(session_id, 4, "fill-label", 0, 10)
+        assert schema_column({"schema": inspection["inputSchema"]}, "label")["nullable"] is True
+        assert schema_column({"schema": inspection["outputSchema"]}, "label")["nullable"] is False
+
+        undone = manager.undo_step(session_id, 4, 0, 10)
+        assert schema_column(undone["metadata"], "label")["nullable"] is True
+    finally:
+        manager.close_session(session_id, 5)
 
 
 def test_polars_generated_fill_plan_uses_python_310_grammar() -> None:
@@ -492,7 +553,7 @@ def test_pandas_fill_missing_keeps_duplicate_and_non_string_labels_positional() 
     engine = PandasEngine()
     source = pd.DataFrame(
         [[1.0, None, 10.0], [None, 3.0, None]],
-        columns=["duplicate", "duplicate", 7],
+        columns=pd.Index(["duplicate", "duplicate", 7], dtype="object"),
     )
     plan = [
         fill_step(

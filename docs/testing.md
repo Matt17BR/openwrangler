@@ -536,7 +536,7 @@ containerized R kernel in VS Code. The journey checked typed value selection, a 
 Clear all, sort priority, restart and reopen, source preservation, and final cleanup. It does not cover cleaning,
 generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R` files.
 
-The current v2 test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
+The 1.99 preview test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase,
 Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling in
 Editing mode. They
@@ -768,8 +768,8 @@ The report includes all ten values, failures, minimum, maximum, median, and type
 regression blocks release; p95 is review context. Release evidence still requires ten successful samples in all eight
 sessions.
 
-The 1.2.1 results remain the published comparison while v2 is in development. Before 2.0 is released, rerun the full
-study with the VSIX that will be published, review the raw results, and update the README and a new versioned report.
+The 1.2.1 results remain the published comparison in 1.99.0. Before 2.0 is released, rerun the full study with the
+VSIX that will be published, review the raw results, and update the README and a new versioned report.
 
 Every session owns a mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
 extension directories are prepared once per arm to avoid repeated Marketplace downloads. One JSON result is written
@@ -814,7 +814,7 @@ For the strict Polars report, the CSV/Parquet cold-source stdio first-grid limit
 
 The Playwright wide-grid acceptance independently measures rendered scrolling against the same 100ms cached and 500ms uncached p95 limits. Its generated host accepts only exact row-and-column-keyed fixture pages, checks ordered IDs and row cardinality before dispatch, and records the bounded response that supplies the final known column value. This is production webview-bundle evidence in the pinned browser, not VS Code/Cursor workbench paint timing. Repeated extension-host and installed-package runs verify process/session cleanup; a benchmark is not accepted if `SessionManager.sessions` retains an entry after close.
 
-The opt-in Linux installed-editor benchmark has a preview development path and a stable release path. Preview development may self-package with `npm run benchmark:installed -- --candidate-out tmp/openwrangler-candidate.vsix`; it requires a clean exact HEAD, runs the clean production/test build, and requires the checked-in preview channel. Stable release acceptance instead consumes the canonical VSIX/checksum/provenance triple produced by `.github/workflows/stable-release.yml` and never rebuilds the extension. The retired v1.0 evidence bridge is recorded below only as historical evidence.
+The opt-in Linux installed-editor benchmark has a local preview path and two release paths. Local preview development may self-package with `npm run benchmark:installed -- --candidate-out tmp/openwrangler-candidate.vsix`; it requires a clean exact HEAD, runs the clean production/test build, and requires the checked-in preview channel. Preview release acceptance uses `--preview-release` to consume the canonical VSIX/checksum/provenance triple from `.github/workflows/release.yml`. Stable release acceptance consumes the corresponding triple from `.github/workflows/stable-release.yml`. Neither release path rebuilds the extension. The retired v1.0 evidence bridge is recorded below only as historical evidence.
 
 The hosted job runs on `ubuntu-24.04`. It downloads the evidence set by exact run-scoped artifact ID, verifies the exact lowercase checksum and bounded provenance, and builds only `build:test-extension`; it never rebuilds the production VSIX. A bounded pre-compiler tree guard rejects a linked or noncanonical `dist-test` before TypeScript can write through it. Cross-platform guard fixtures first resolve their owned OS temporary directories to the same canonical spelling, while explicit alias/junction regressions still prove that production inputs fail closed. The build then stages the fixed, declaration-shadowed CommonJS runtime asset set byte-for-byte through no-follow descriptors. A bounded no-editor Node preflight stubs only `vscode`, loads the exact compiled installed-performance entrypoint, requires its `run` export, and descriptor-revalidates the entrypoint, its four compiled local helpers, and every runtime asset after the child exits. That initial preflight finishes before the run acquires official VS Code 1.130.0 Linux x64 (`356,926,919` bytes, SHA-256 `7d6ad3d3a78ac4551c14631f78d7e03c85282ab505c3ce8b1bc04e01fafe88ea`) and Cursor 3.13.10 Linux x64 (`209,277,476` bytes, SHA-256 `8a5b734be3bccc3de6daf96c536daa644c715e5fe3e5eaf21721538072ea104c`) into the run's mode-0700 private root; the same complete preflight then repeats immediately before every editor phase. Exact size and SHA-256 validation precedes extraction and launch. Cursor runs inside an isolated `dbus-run-session`; VS Code uses zero-window headless Ozone and Cursor uses the owned private-display path. The run may not reuse a preinstalled editor, moving download channel, caller session bus, normal profile, current desktop, or implicit local-display fallback. Downloaded packages and extracted editor trees are temporary test inputs only: they are deleted with the owned private root and are never bundled, cached as release outputs, uploaded, published, or redistributed.
 

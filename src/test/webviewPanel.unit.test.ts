@@ -193,6 +193,33 @@ describe("OpenWranglerPanel retained view state", () => {
     ).toBe(false);
   });
 
+  it("reveals an exact-session operation only after the renderer is hydrated", async () => {
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    harness.posted.length = 0;
+    harness.reveal.mockClear();
+
+    await expect(
+      OpenWranglerPanel.sendEditorActionForSession({
+        action: "openOperation",
+        expectedSessionId: openedResponse.metadata.sessionId,
+        expectedRevision: openedResponse.metadata.revision
+      })
+    ).resolves.toBe(true);
+
+    expect(harness.reveal).toHaveBeenCalledWith(expect.anything(), false);
+    expect(harness.posted).toEqual([
+      {
+        kind: "editorAction",
+        action: "openOperation",
+        expectedSessionId: openedResponse.metadata.sessionId,
+        expectedRevision: openedResponse.metadata.revision
+      }
+    ]);
+  });
+
   it("reports a failed exact-session editor-action delivery", async () => {
     const harness = createPanelHarness(
       { request: vi.fn(async () => openedResponse) },
@@ -213,6 +240,8 @@ describe("OpenWranglerPanel retained view state", () => {
         stepId: "clone-score"
       })
     ).resolves.toBe(false);
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+    expect(harness.htmlAssignmentCount).toBe(2);
   });
 
   it("loads the production webview as an ES module under a restrictive nonce CSP", async () => {
@@ -776,11 +805,43 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   });
 
-  it("defers startup recovery while the renderer panel is inactive", async () => {
+  it("recovers a visible renderer even while its panel is inactive", async () => {
     vi.useFakeTimers();
     try {
       const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) }, { active: false });
       await harness.open();
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(harness.htmlAssignmentCount).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.htmlAssignmentCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a pending startup recovery when an active renderer becomes visible but inactive", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      await harness.open();
+      await vi.advanceTimersByTimeAsync(4_999);
+
+      harness.deactivate();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(harness.htmlAssignmentCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers startup recovery while the renderer panel is hidden", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      await harness.open();
+      harness.hide();
 
       await vi.advanceTimersByTimeAsync(10_000);
       expect(harness.htmlAssignmentCount).toBe(1);
@@ -804,11 +865,11 @@ describe("OpenWranglerPanel retained view state", () => {
 
       const second = createPanelHarness({ request: vi.fn(async () => openedResponse) }, { active: false });
       second.activate();
-      first.deactivate();
+      first.hide();
       await vi.advanceTimersByTimeAsync(1);
       expect(first.htmlAssignmentCount).toBe(1);
 
-      second.deactivate();
+      second.hide();
       first.activate();
       await vi.advanceTimersByTimeAsync(4_999);
       expect(first.htmlAssignmentCount).toBe(1);
@@ -902,6 +963,101 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(true);
     await acknowledgeLatestRendererSynchronization(harness);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+  });
+
+  it("abandons a stalled initial publication and hydrates one recovered renderer generation", async () => {
+    vi.useFakeTimers();
+    try {
+      const initialPublication = deferred<void>();
+      let heldInitialPublication = false;
+      const request = vi.fn(async (): Promise<OpenWranglerResponse> => openedResponse);
+      const harness = createPanelHarness(
+        { request },
+        {
+          delegateOpen: true,
+          postMessage: async (message) => {
+            if (!heldInitialPublication && isSessionOpenedResponse(message)) {
+              heldInitialPublication = true;
+              await initialPublication.promise;
+            }
+            return true;
+          }
+        }
+      );
+
+      let openingSettled = false;
+      const opening = harness.open().then(() => {
+        openingSettled = true;
+      });
+      for (let attempt = 0; attempt < 10 && !heldInitialPublication; attempt += 1) await Promise.resolve();
+      expect(heldInitialPublication).toBe(true);
+      await harness.receive({ kind: "ready" });
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+      expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(openingSettled).toBe(false);
+      expect(harness.htmlAssignmentCount).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await opening;
+
+      expect(harness.htmlAssignmentCount).toBe(2);
+      expect(request).toHaveBeenCalledOnce();
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+
+      initialPublication.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+      expect(harness.htmlAssignmentCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retire a renderer that hydrated while an older publication was stalled", async () => {
+    vi.useFakeTimers();
+    try {
+      const initialPublication = deferred<void>();
+      let heldInitialPublication = false;
+      const harness = createPanelHarness(
+        { request: vi.fn(async (): Promise<OpenWranglerResponse> => openedResponse) },
+        {
+          delegateOpen: true,
+          postMessage: async (message) => {
+            if (!heldInitialPublication && isSessionOpenedResponse(message)) {
+              heldInitialPublication = true;
+              await initialPublication.promise;
+            }
+            return true;
+          }
+        }
+      );
+
+      const opening = harness.open();
+      for (let attempt = 0; attempt < 10 && !heldInitialPublication; attempt += 1) await Promise.resolve();
+      expect(heldInitialPublication).toBe(true);
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await opening;
+
+      expect(harness.htmlAssignmentCount).toBe(1);
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+
+      initialPublication.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(harness.htmlAssignmentCount).toBe(1);
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("replays attempt-scoped PySpark open progress to a late renderer and clears it at the terminal response", async () => {

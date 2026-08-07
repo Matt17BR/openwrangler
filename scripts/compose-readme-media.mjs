@@ -54,6 +54,7 @@ const assets = [
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
+  nativeAsset("gallery/notebook-r-editing.png", "vscode-notebook-r-editing-dark.png", 1_440, 900),
   nativeAsset("gallery/sidebar-overview.png", "vscode-sidebar-overview-dark.png", 1_440, 874),
   nativeAsset("gallery/operation-catalog.png", "vscode-operation-catalog-dark.png", 1_280, 874),
   nativeAsset("gallery/operation-configuration.png", "vscode-operation-configuration-dark.png", 1_280, 874),

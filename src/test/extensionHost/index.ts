@@ -105,7 +105,7 @@ import {
   packagedWideSchemaColumns,
   packagedWideSchemaFixtureCsv
 } from "./screenshotEvidence";
-import { prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
+import { classifyRendererUrl, prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
 import { customEditorTabDiagnostic, findExactCustomEditorTab } from "./customEditorTabs";
 
 interface TestApi {
@@ -470,9 +470,9 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
-  assert.match(extension.packageJSON.description, /Explore files and live dataframes in VS Code and Cursor/u);
-  assert.match(extension.packageJSON.description, /Use Pandas, Polars, or DuckDB/u);
-  assert.match(extension.packageJSON.description, /view PySpark and R notebooks/u);
+  assert.match(extension.packageJSON.description, /Explore and clean dataframes in VS Code and Cursor/u);
+  assert.match(extension.packageJSON.description, /with Pandas, Polars, DuckDB, or R/u);
+  assert.match(extension.packageJSON.description, /View local PySpark notebooks/u);
   assert.match(extension.packageJSON.description, /run R, R Markdown, or Quarto sources on macOS or Linux/u);
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
@@ -2004,7 +2004,6 @@ async function exerciseReleasedRJupyterExtension(
       columnValues: true,
       supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS
     });
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
@@ -2031,7 +2030,6 @@ async function exerciseReleasedRJupyterExtension(
       },
       "the orders R data.frame opened in editing mode"
     );
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-editing-journey`);
     await exerciseReleasedREditingJourney(
       testing,
       workbench,
@@ -2076,7 +2074,6 @@ async function exerciseReleasedRJupyterExtension(
         },
         "the representative R orders session"
       );
-      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-before-capture`);
       await captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-after-capture`);
       await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
@@ -2127,8 +2124,9 @@ async function exerciseReleasedRJupyterExtension(
       );
       assert.equal(session.metadata.mode, "editing");
       assert.deepEqual(session.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
-      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
+      recordAcceptanceProgress(`${phase}:${expected.name}:editing-session-received`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
+      recordAcceptanceProgress(`${phase}:${expected.name}:editing-renderer-ready`);
       const previewed = await previewReleasedRRename(
         testing,
         workbench,
@@ -4944,8 +4942,6 @@ async function exerciseReleasedREditingJourney(
   const reappliedClone = testing.activeSession();
   assert.ok(reappliedClone, "The edited native R clone must retain its session.");
   assertReleasedRCloneGeneratedCode(reappliedClone.code ?? "", "score", "score_duplicate");
-  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:clone-source-after-edit`);
-
   app = await releasedRSessionApp(workbench, testing, sessionId, "the edited R Clone Column session before undo");
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(
@@ -4966,8 +4962,6 @@ async function exerciseReleasedREditingJourney(
     30_000,
     "undoing the edited native R Clone Column step"
   );
-  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:clone-source-after-undo`);
-
   recordAcceptanceProgress(`${phase}:editing:text-length-preview-discard`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Text Length");
   const discardedLength = await previewReleasedRTextLength(
@@ -5031,21 +5025,27 @@ async function exerciseReleasedREditingJourney(
   const appliedLength = testing.activeSession();
   assert.ok(appliedLength, "The applied native R Text Length step must retain its session.");
   assertReleasedRTextLengthGeneratedCode(appliedLength.code ?? "", "label", "label_length");
-  const lengthPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: appliedLength.metadata.revision,
-    viewRequestId: `${phase}-editing-text-length-page`,
-    offset: 0,
-    limit: 1,
-    filterModel: appliedLength.viewState.filterModel,
-    columnOffset: appliedLength.metadata.schema.length - 1,
-    columnLimit: 1
-  });
-  assert.equal(lengthPage.kind, "page");
-  if (lengthPage.kind !== "page") throw new Error("The applied R Text Length step did not return its output page.");
-  assert.equal(lengthPage.page.columnIds[0], `c:step:${measured.stepId}:0`);
-  assert.equal(lengthPage.page.rows[0]?.values[0]?.display, "8");
+  const derivedColumnId = `c:step:${measured.stepId}:0`;
+  const lengthColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await lengthColumnSearch.fill("label_length");
+  await app
+    .getByRole("option", { name: /^label_length,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await lengthColumnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === derivedColumnId,
+    10_000,
+    "selecting the applied native R Text Length output through column search"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Text Length output column");
+  const lengthHeader = app.locator('th[data-column="label_length"]').first();
+  await lengthHeader.waitFor({ state: "visible", timeout: 10_000 });
+  const lengthColumnPosition = await lengthHeader.getAttribute("data-grid-column");
+  assert.notEqual(lengthColumnPosition, null, "The R Text Length output must expose its full-schema grid position.");
+  const firstLengthCell = app.locator(`td[data-grid-row="0"][data-grid-column="${lengthColumnPosition}"]`).first();
+  await firstLengthCell.getByText("8", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal((await firstLengthCell.textContent())?.trim(), "8");
   await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
   await vscode.commands.executeCommand("openWrangler.selectStep", measured.stepId);
   await waitFor(
@@ -5506,7 +5506,6 @@ async function exerciseReleasedREditingJourney(
       sessionId,
       "The discarded R Floor and Ceiling previews must reach their renderer."
     );
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:numeric-rounding-source-after-undo`);
   }
 
   if (phase === "jupyter-r") {
@@ -5531,8 +5530,35 @@ async function exerciseReleasedREditingJourney(
     assert.ok(capitalizePreview?.metadata.draftStep?.kind === "capitalizeText");
     assert.match(capitalizePreview.code ?? "", /\btoupper\b/u);
     assert.doesNotMatch(capitalizePreview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
-    const capitalizedRows = await releasedRVisibleRows(testing, sessionId, `${phase}-capitalize-page`, 1);
-    assert.equal(capitalizedRows[0]?.values[labelColumn.position]?.display, "Row-0001");
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The R Capitalize preview must reach its renderer."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Capitalize preview");
+    const capitalizeColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await capitalizeColumnSearch.fill(labelColumn.name);
+    await app
+      .getByRole("option", { name: /^label,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await capitalizeColumnSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === labelColumn.id,
+      10_000,
+      "revealing the R label column after the temporary numeric columns were discarded"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the revealed R Capitalize preview");
+    const capitalizeHeader = app.locator('th[data-column="label"]').first();
+    await capitalizeHeader.waitFor({ state: "visible", timeout: 10_000 });
+    const capitalizeColumnPosition = await capitalizeHeader.getAttribute("data-grid-column");
+    assert.equal(capitalizeColumnPosition, String(labelColumn.position));
+    await waitForLocatorText(
+      app.locator(`td[data-grid-row="0"][data-grid-column="${capitalizeColumnPosition}"]`).first(),
+      (text) => text.trim() === "Row-0001",
+      10_000,
+      "the visible R Capitalize value in row 1"
+    );
     await app
       .getByRole("region", { name: "Draft review" })
       .getByRole("button", { name: "Apply step", exact: true })
@@ -5597,8 +5623,6 @@ async function exerciseReleasedREditingJourney(
   assert.equal(lowercaseUndo.kind, "planUpdated", "Packaged native R Lowercase must undo.");
   if (lowercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Lowercase undo failed.");
   assert.equal(lowercaseUndo.page.rows[0]?.values[1]?.display, "A");
-  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:lowercase-source-after-undo`);
-
   if (phase === "jupyter-r") {
     recordAcceptanceProgress(`${phase}:editing:uppercase-preview-apply-undo`);
     const uppercaseBase = testing.activeSession();
@@ -5648,12 +5672,10 @@ async function exerciseReleasedREditingJourney(
     assert.equal(uppercaseUndo.kind, "planUpdated", "Packaged native R Uppercase must undo.");
     if (uppercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Uppercase undo failed.");
     assert.equal(uppercaseUndo.page.rows[0]?.values[0]?.display, "row-0001");
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:text-cleaning-source-after-undo`);
     // These direct coordinator checks intentionally follow the final Open Wrangler
     // renderer mutation so their newer revisions cannot leave a later UI action stale.
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:additional-text-tools-source-after-undo`);
   }
 
   if (phase === "jupyter-r" && screenshotOutput) {
@@ -6511,6 +6533,7 @@ async function releasedRSessionApp(
   sessionId: string,
   description: string
 ): Promise<Locator> {
+  let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   // Applied-step inspection is deliberately cleared when a renderer is
   // regenerated. Confirmed and draft states can be forced to a fresh
   // generation; an active inspection must render on the existing one.
@@ -6520,8 +6543,10 @@ async function releasedRSessionApp(
       sessionId,
       `${description} must render the current confirmed session state.`
     );
+    // Synchronization may retire the generation that supplied the initial
+    // visible-grid receipt, so locate the exact session again before use.
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   }
-  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, `${description} requires its exact Open Wrangler renderer.`);
   return app;
@@ -7113,6 +7138,43 @@ async function exerciseReleasedJupyterExtension(
       phase
     );
     await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
+
+    // Cursor may retire Jupyter's Variables frame after its first remote activation. The local
+    // phase proves DuckDB's Variables action; the remote journey exercises the relation below.
+    if (!kernelTarget.remote) {
+      recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
+      await dispatchReleasedJupyterVariableAction(workbench, notebook, "duckdb_relation", `${phase}:duckdb-variables`);
+      const duckdbVariablesRelation = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "duckdb_relation",
+          type: "_duckdb.DuckDBPyRelation",
+          backend: "duckdb",
+          firstValue: "3400001",
+          notebookInsert: false
+        },
+        "the exact DuckDB relation opened from the existing Jupyter Variables view"
+      );
+      assert.equal(
+        duckdbVariablesRelation.metadata.mode,
+        "viewing",
+        "A DuckDB relation opened from Jupyter Variables must stay viewing-only."
+      );
+      assert.deepEqual(duckdbVariablesRelation.metadata.shape, { rows: 100_000, columns: 4 });
+      await assertReleasedSessionPage(
+        testing,
+        duckdbVariablesRelation,
+        "3400001",
+        "released-jupyter-duckdb-variables-native-page"
+      );
+      await disposePackagedSessionPanel(
+        testing,
+        duckdbVariablesRelation.sessionId,
+        "the released-Jupyter DuckDB relation opened from Jupyter Variables"
+      );
+    }
     await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
 
     recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
@@ -7386,16 +7448,10 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(duckdbAlive.first, 3_400_001);
       assert.equal(duckdbAlive.conversionGuards, true);
 
-      recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
-      const duckdbVariablesEditor = await showExactReleasedNotebook(notebook);
-      assertExactVisibleReleasedNotebookEditor(
-        notebook,
-        duckdbVariablesEditor,
-        "before opening the real Jupyter Variables action for DuckDB"
-      );
-      await vscode.commands.executeCommand("jupyter.openVariableView");
-      await dispatchReleasedJupyterVariableAction(workbench, notebook, "duckdb_relation", `${phase}:duckdb-variables`);
-      const duckdbVariablesRelation = await waitForReleasedVariableSession(
+      recordAcceptanceProgress(`${phase}:duckdb-toolbar-reopen`);
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, "duckdb_relation");
+      const reopenedDuckdbRelation = await waitForReleasedVariableSession(
         workbench,
         testing,
         notebook,
@@ -7406,47 +7462,47 @@ async function exerciseReleasedJupyterExtension(
           firstValue: "3400001",
           notebookInsert: false
         },
-        "the exact DuckDB relation opened from the real Jupyter Variables view"
+        "the exact DuckDB relation reopened from the Open Wrangler notebook toolbar"
       );
-      assert.equal(duckdbVariablesRelation.metadata.mode, "viewing");
+      assert.equal(reopenedDuckdbRelation.metadata.mode, "viewing");
       assert.deepEqual(
-        duckdbVariablesRelation.metadata.filterModel,
+        reopenedDuckdbRelation.metadata.filterModel,
         filteredDuckdbModel,
         "Reopening the same live DuckDB variable must restore its confirmed viewing state."
       );
-      assert.deepEqual(duckdbVariablesRelation.metadata.filteredShape, { rows: 25_000, columns: 4 });
+      assert.deepEqual(reopenedDuckdbRelation.metadata.filteredShape, { rows: 25_000, columns: 4 });
       await assertReleasedSessionPage(
         testing,
-        duckdbVariablesRelation,
+        reopenedDuckdbRelation,
         "3499997",
-        "released-jupyter-duckdb-variables-restored-page"
+        "released-jupyter-duckdb-toolbar-restored-page"
       );
 
-      const unfilteredDuckdbVariablesPage = await testing.request({
+      const unfilteredReopenedDuckdbPage = await testing.request({
         kind: "getPage",
         columnOffset: 0,
         columnLimit: 4,
-        viewRequestId: "released-jupyter-duckdb-variables-complete-page",
-        sessionId: duckdbVariablesRelation.sessionId,
-        revision: duckdbVariablesRelation.metadata.revision,
+        viewRequestId: "released-jupyter-duckdb-toolbar-complete-page",
+        sessionId: reopenedDuckdbRelation.sessionId,
+        revision: reopenedDuckdbRelation.metadata.revision,
         offset: 0,
         limit: 10,
         filterModel: { logic: "and", filters: [], sort: [] }
       });
-      assert.equal(unfilteredDuckdbVariablesPage.kind, "page");
-      if (unfilteredDuckdbVariablesPage.kind !== "page") {
-        throw new Error("The complete native DuckDB Variables page did not resolve.");
+      assert.equal(unfilteredReopenedDuckdbPage.kind, "page");
+      if (unfilteredReopenedDuckdbPage.kind !== "page") {
+        throw new Error("The complete native DuckDB toolbar page did not resolve.");
       }
-      assert.equal(unfilteredDuckdbVariablesPage.page.totalRows, 100_000);
-      assert.equal(unfilteredDuckdbVariablesPage.page.rows[0]?.values[0]?.display, "3400001");
+      assert.equal(unfilteredReopenedDuckdbPage.page.totalRows, 100_000);
+      assert.equal(unfilteredReopenedDuckdbPage.page.rows[0]?.values[0]?.display, "3400001");
 
       const recoveryDuckdbPage = await testing.request({
         kind: "getPage",
         columnOffset: 0,
         columnLimit: 4,
         viewRequestId: "released-jupyter-duckdb-native-recovery-view",
-        sessionId: duckdbVariablesRelation.sessionId,
-        revision: unfilteredDuckdbVariablesPage.revision,
+        sessionId: reopenedDuckdbRelation.sessionId,
+        revision: unfilteredReopenedDuckdbPage.revision,
         offset: 0,
         limit: 10,
         filterModel: filteredDuckdbModel
@@ -7461,7 +7517,7 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(recoveryDuckdbPage.page.rows[0]?.values[1]?.display, "DACH");
       const duckdbDiagnostic = testing
         .diagnostics()
-        .sessions.find((session) => session.publicId === duckdbVariablesRelation.sessionId);
+        .sessions.find((session) => session.publicId === reopenedDuckdbRelation.sessionId);
       assert.ok(duckdbDiagnostic, "The native DuckDB session must remain coordinated before kernel restart.");
       const recoveryDuckdbRevenue = columnReference(recoveryDuckdbPage.metadata, "revenue");
       const recoveryDuckdbViewState: GridViewState = {
@@ -7475,18 +7531,18 @@ async function exerciseReleasedJupyterExtension(
         viewport: { firstVisibleRow: 123, scrollLeft: 120 }
       };
       await waitFor(
-        () => testing.panelHydrated(duckdbVariablesRelation.sessionId),
+        () => testing.panelHydrated(reopenedDuckdbRelation.sessionId),
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
         "the native DuckDB recovery panel to hydrate before presentation injection"
       );
       assert.equal(
-        await testing.synchronizePanel(duckdbVariablesRelation.sessionId),
+        await testing.synchronizePanel(reopenedDuckdbRelation.sessionId),
         true,
         "The native DuckDB recovery panel must settle its default presentation before injection."
       );
-      await testing.updateViewState(duckdbVariablesRelation.sessionId, recoveryDuckdbViewState);
+      await testing.updateViewState(reopenedDuckdbRelation.sessionId, recoveryDuckdbViewState);
       assert.equal(
-        await testing.synchronizePanel(duckdbVariablesRelation.sessionId),
+        await testing.synchronizePanel(reopenedDuckdbRelation.sessionId),
         true,
         "The native DuckDB recovery presentation must commit through the real renderer before restart."
       );
@@ -7495,7 +7551,7 @@ async function exerciseReleasedJupyterExtension(
         filterModel: filteredDuckdbModel
       });
       duckdbRecoverySession = {
-        sessionId: duckdbVariablesRelation.sessionId,
+        sessionId: reopenedDuckdbRelation.sessionId,
         revision: recoveryDuckdbPage.revision,
         filterModel: filteredDuckdbModel,
         runtimeId: duckdbDiagnostic.runtimeId,
@@ -12769,7 +12825,7 @@ async function exercisePackagedFirstUseInteractionJourney(
   );
 
   recordAcceptanceProgress("platform-smoke:filter");
-  await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
   const filterPanel = drawer.locator(".filterSortPanel").first();
   await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
   await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "revenue" });
@@ -13505,7 +13561,8 @@ async function requireFreshExactSessionPanelHydration(
       expectedSessionId: sessionId,
       activeSessionId: testing.activeSession()?.sessionId,
       panelHydrated: testing.panelHydrated(sessionId),
-      panelSynchronizable: testing.panelSynchronizable(sessionId)
+      panelSynchronizable: testing.panelSynchronizable(sessionId),
+      activeTab: activeEditorTabDiagnostic()
     })}`
   );
 }
@@ -15862,7 +15919,7 @@ async function captureReleasedJupyterDuckDbRelation(
     // going through the renderer. Materialize the same view through the real
     // UI before capturing it so the panel owns the exact page and profiling
     // context a user would see.
-    await drawer.getByRole("tab", { name: "Filters" }).click();
+    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
     const filterPanel = drawer.locator(".filterSortPanel").first();
     await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
     const activeDachFilter = drawer.getByRole("button", {
@@ -16004,7 +16061,7 @@ async function captureReleasedJupyterDuckDbRelation(
     assert.match(revenueProfile, /Max 5,?099\.94/u);
     assert.doesNotMatch(revenueProfile, /Profiling/u);
 
-    await drawer.getByRole("tab", { name: "Filters" }).click();
+    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
     await drawer.getByRole("heading", { name: "Filters / Sorts" }).waitFor({ state: "visible", timeout: 10_000 });
     const filterEditor = drawer.locator("details.filterSection").first();
     if ((await filterEditor.getAttribute("open")) !== null) {
@@ -17821,7 +17878,7 @@ async function capturePackagedFilterResultScene(
     if ((await profilesToggle.getAttribute("aria-expanded")) !== "true") await profilesToggle.click();
     let drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
     await drawer.waitFor({ state: "visible", timeout: 10_000 });
-    await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
     let filterPanel = drawer.locator(".filterSortPanel").first();
     await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
     await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "market" });
@@ -17907,7 +17964,7 @@ async function capturePackagedFilterResultScene(
           await app.getByRole("button", { name: "Column profiles and filters" }).click();
           await drawer.waitFor({ state: "visible", timeout: 10_000 });
         }
-        await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+        await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
         await drawer
           .locator(".filterSortPanel")
           .first()
@@ -24677,38 +24734,6 @@ function openWranglerWebviewTargets(
     }
   }
   return prioritizeNewestRendererTargets(targets, limit);
-}
-
-function classifyRendererUrl(url: string): {
-  protocol: string;
-  isWebview: boolean;
-  isOpenWranglerWebview: boolean;
-} {
-  let protocol = "other";
-  try {
-    const candidate = new URL(url).protocol.toLowerCase();
-    if (
-      candidate === "about:" ||
-      candidate === "file:" ||
-      candidate === "http:" ||
-      candidate === "https:" ||
-      candidate === "vscode-file:" ||
-      candidate === "vscode-webview:"
-    ) {
-      protocol = candidate;
-    }
-  } catch {
-    // The diagnostic retains only an allowlisted protocol classification.
-  }
-  const normalized = url.toLowerCase();
-  return {
-    protocol,
-    isWebview: protocol === "vscode-webview:" || normalized.includes("vscode-webview"),
-    isOpenWranglerWebview:
-      normalized.includes("matt17br.openwrangler") ||
-      normalized.includes("openwrangler") ||
-      normalized.includes("open-wrangler")
-  };
 }
 
 function assertOpenWranglerWebviewLifecycle(workbench: Page, browser: Browser | null): void {

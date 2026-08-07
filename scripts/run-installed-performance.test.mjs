@@ -28,6 +28,7 @@ import {
   installedPerformanceDisplayMode,
   installedPerformanceReportGateForOptions,
   CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
+  PREVIEW_RELEASE_ARTIFACT_KIND,
   PERFORMANCE_EVIDENCE_ARTIFACT_KIND,
   PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
   PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
@@ -583,7 +584,7 @@ test("installed performance arguments support explicit smoke editor sharding", (
   assert.throws(() => parseInstalledPerformanceArguments(["candidate.vsix"]), /requires named candidate options/u);
 });
 
-test("installed performance arguments make canonical candidate intake an exclusive stable mode", () => {
+test("installed performance arguments keep canonical release channels explicit", () => {
   const parsed = parseInstalledPerformanceArguments([
     "--pinned-editors",
     "--candidate-in",
@@ -615,10 +616,22 @@ test("installed performance arguments make canonical candidate intake an exclusi
     "release/openwrangler.vsix.provenance.json"
   ]);
   assert.equal(evidence.artifactKind, PERFORMANCE_EVIDENCE_ARTIFACT_KIND);
+  const preview = parseInstalledPerformanceArguments([
+    "--pinned-editors",
+    "--preview-release",
+    "--candidate-in",
+    "release/openwrangler.vsix",
+    "--candidate-checksum",
+    "release/openwrangler.vsix.sha256",
+    "--candidate-provenance",
+    "release/openwrangler.vsix.provenance.json"
+  ]);
+  assert.equal(preview.artifactKind, PREVIEW_RELEASE_ARTIFACT_KIND);
   const releaseGate = () => "release";
   const evidenceGate = () => "evidence";
   assert.equal(installedPerformanceReportGateForOptions(evidence, { releaseGate, evidenceGate }), evidenceGate);
   assert.equal(installedPerformanceReportGateForOptions(parsed, { releaseGate, evidenceGate }), releaseGate);
+  assert.equal(installedPerformanceReportGateForOptions(preview, { releaseGate, evidenceGate }), releaseGate);
   assert.throws(
     () => installedPerformanceReportGateForOptions({ artifactKind: "unknown" }, { releaseGate, evidenceGate }),
     /unknown artifact kind/u
@@ -644,11 +657,27 @@ test("installed performance arguments make canonical candidate intake an exclusi
     /provided only once/u
   );
   assert.throws(
+    () => parseInstalledPerformanceArguments(["--preview-release", "--preview-release"]),
+    /provided only once/u
+  );
+  assert.throws(
+    () => parseInstalledPerformanceArguments(["--preview-release", "--performance-evidence"]),
+    /cannot be combined/u
+  );
+  assert.throws(
+    () => parseInstalledPerformanceArguments(["--performance-evidence", "--preview-release"]),
+    /cannot be combined/u
+  );
+  assert.throws(
     () => parseInstalledPerformanceArguments(["--pinned-editors"]),
-    /reserved for canonical stable candidate consumption/u
+    /reserved for canonical candidate consumption/u
   );
   assert.throws(
     () => parseInstalledPerformanceArguments(["--performance-evidence"]),
+    /reserved for canonical candidate consumption/u
+  );
+  assert.throws(
+    () => parseInstalledPerformanceArguments(["--preview-release"]),
     /reserved for canonical candidate consumption/u
   );
   for (const incomplete of [
@@ -1819,6 +1848,96 @@ test("canonical candidate acceptance binds stable source, checksum, and canonica
   );
   assert.ok(events.filter((event) => event === "checksum").length >= 3);
   assert.ok(events.filter((event) => event === "provenance").length >= 3);
+});
+
+test("canonical preview acceptance binds preview provenance without requiring an unpublished tag", async () => {
+  const directory = await canonicalTemporaryDirectory("ow-installed-preview-");
+  try {
+    const commit = "a".repeat(40);
+    const candidatePath = join(directory, "openwrangler.vsix");
+    const checksumPath = join(directory, "openwrangler.vsix.sha256");
+    const provenancePath = join(directory, "openwrangler.vsix.provenance.json");
+    const privatePath = join(directory, "candidate.vsix");
+    const external = fakeVsixReceipt(candidatePath);
+    const staged = fakeVsixReceipt(privatePath);
+    const checksum = Object.freeze({
+      path: checksumPath,
+      candidatePath,
+      candidateSha256: external.sha256,
+      sha256: "c".repeat(64),
+      bytes: 86,
+      fileIdentity: Object.freeze({ ...fakeFileIdentity, size: 86n })
+    });
+    const provenanceValue = {
+      protocol: CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL,
+      extensionId: "Matt17BR.openwrangler",
+      extensionVersion: "1.99.0",
+      preview: true,
+      releaseTag: "v1.99.0",
+      sourceCommit: commit,
+      vsixSha256: external.sha256,
+      vsixBytes: external.bytes
+    };
+    await writeFile(provenancePath, `${JSON.stringify(provenanceValue)}\n`);
+
+    const accepted = await acceptInstalledPerformanceCandidate({
+      artifactKind: PREVIEW_RELEASE_ARTIFACT_KIND,
+      candidatePath,
+      checksumPath,
+      provenancePath,
+      privateDestination: privatePath,
+      expectedCommit: commit,
+      releaseTag: "v1.99.0",
+      readSource: () => ({ commit, trackedWorktreeDirty: false }),
+      readSourceManifest: () => previewSourceManifest({ version: "1.99.0", preview: true }),
+      readExternalCandidate: () => external,
+      readChecksum: () => checksum,
+      readReleaseTagCommit: () => assert.fail("preview validation must not require a tag created after acceptance"),
+      stageCandidate: () => staged,
+      verifyCandidate: () => {},
+      readCandidate(receipt) {
+        assert.equal(receipt.buildMethod, "canonical-preview-release-artifact-v1");
+        assert.equal(receipt.sourceManifest.channel, "preview");
+        return Object.freeze({
+          extensionId: "Matt17BR.openwrangler",
+          extensionVersion: "1.99.0",
+          preview: true,
+          channel: "preview",
+          buildMethod: receipt.buildMethod,
+          releaseTag: receipt.releaseTag,
+          provenanceSha256: receipt.provenanceSha256,
+          sourceCommit: commit,
+          vsixSha256: receipt.sha256,
+          vsixBytes: receipt.bytes
+        });
+      },
+      revalidateCandidate: () => {},
+      revalidateChecksum: () => {}
+    });
+
+    assert.equal(accepted.candidate.buildMethod, "canonical-preview-release-artifact-v1");
+    assert.equal(accepted.candidate.releaseTag, "v1.99.0");
+    assert.equal(accepted.candidate.provenanceSha256, accepted.publicProvenanceReceipt.sha256);
+    assert.equal(accepted.publicProvenanceReceipt.protocol, CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL);
+
+    await assert.rejects(
+      acceptInstalledPerformanceCandidate({
+        artifactKind: PREVIEW_RELEASE_ARTIFACT_KIND,
+        candidatePath,
+        checksumPath,
+        provenancePath,
+        privateDestination: privatePath,
+        expectedCommit: commit,
+        releaseTag: "v1.99.0",
+        readSource: () => ({ commit, trackedWorktreeDirty: false }),
+        readSourceManifest: () => previewSourceManifest({ version: "1.0.0", preview: false }),
+        readExternalCandidate: () => assert.fail("channel mismatch must fail before candidate input")
+      }),
+      /requires preview package metadata/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("performance-evidence intake stays distinct from an ordinary stable artifact", async () => {

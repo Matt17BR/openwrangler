@@ -190,7 +190,11 @@ export function assertInstalledPerformanceReleaseGate(
   return assertInstalledPerformanceGate(report, {
     protocol: INSTALLED_PERFORMANCE_REPORT_PROTOCOL,
     verdictKey: "releaseGate",
-    candidateBuildMethods: new Set(["guarded-clean-head-v1", "canonical-release-artifact-v1"]),
+    candidateBuildMethods: new Set([
+      "guarded-clean-head-v1",
+      "canonical-release-artifact-v1",
+      "canonical-preview-release-artifact-v1"
+    ]),
     requiredEditors,
     requireLinuxReference,
     gateLabel: "release"
@@ -438,9 +442,16 @@ function validateCandidate(candidate) {
   if (!candidate.preview && candidate.extensionVersion.startsWith("0.")) {
     throw new TypeError("A stable installed-performance candidate requires extension version 1.0.0 or newer.");
   }
-  if (classification.channel === "preview") {
-    assertEqual(candidate.buildMethod, "guarded-clean-head-v1", "candidate build method");
+  if (
+    classification.channel === "preview" &&
+    candidate.buildMethod !== "guarded-clean-head-v1" &&
+    candidate.buildMethod !== "canonical-preview-release-artifact-v1"
+  ) {
+    throw new TypeError(
+      'candidate build method must be "guarded-clean-head-v1" or "canonical-preview-release-artifact-v1".'
+    );
   } else if (
+    classification.channel === "stable" &&
     candidate.buildMethod !== "canonical-release-artifact-v1" &&
     candidate.buildMethod !== "performance-evidence-artifact-v1"
   ) {
@@ -448,9 +459,12 @@ function validateCandidate(candidate) {
       'candidate build method must be "canonical-release-artifact-v1" or "performance-evidence-artifact-v1".'
     );
   }
-  if (classification.channel === "preview") {
+  if (candidate.buildMethod === "guarded-clean-head-v1") {
     assertEqual(candidate.releaseTag, null, "preview candidate release tag");
     assertEqual(candidate.provenanceSha256, null, "preview candidate provenance SHA-256");
+  } else if (candidate.buildMethod === "canonical-preview-release-artifact-v1") {
+    assertEqual(candidate.releaseTag, `v${candidate.extensionVersion}`, "preview candidate release tag");
+    assertMatch(candidate.provenanceSha256, SHA256, "preview candidate provenance SHA-256");
   } else {
     assertEqual(candidate.releaseTag, `v${candidate.extensionVersion}`, "stable candidate release tag");
     assertMatch(candidate.provenanceSha256, SHA256, "stable candidate provenance SHA-256");

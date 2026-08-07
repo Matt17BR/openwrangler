@@ -823,16 +823,18 @@ test("points preview installs at the published prerelease channels", () => {
   assert.doesNotMatch(PREVIEW_README_RELEASE_SECTION, /clone|npm install|npm run package|python3 -m venv/iu);
 });
 
-test("uses linked live badges instead of a prose stable status", () => {
-  assert.doesNotMatch(STABLE_README_RELEASE_SECTION, /Release status/iu);
-  for (const expected of [
-    "https://img.shields.io/github/v/release/Matt17BR/openwrangler",
-    "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main",
-    "https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg",
-    "https://img.shields.io/open-vsx/v/Matt17BR/openwrangler",
-    "https://img.shields.io/github/license/Matt17BR/openwrangler"
-  ]) {
-    assert.ok(STABLE_README_RELEASE_SECTION.includes(expected));
+test("uses linked live badges instead of a prose release status", () => {
+  for (const section of [PREVIEW_README_RELEASE_SECTION, STABLE_README_RELEASE_SECTION]) {
+    assert.doesNotMatch(section, /Release status/iu);
+    for (const expected of [
+      "https://img.shields.io/github/v/release/Matt17BR/openwrangler",
+      "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main",
+      "https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg",
+      "https://img.shields.io/open-vsx/v/Matt17BR/openwrangler",
+      "https://img.shields.io/github/license/Matt17BR/openwrangler"
+    ]) {
+      assert.ok(section.includes(expected));
+    }
   }
 });
 
@@ -1209,7 +1211,13 @@ test("verify-vsix rejects each shipped-document source mismatch end to end", asy
 
   const sourcePackage = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8"));
   const baseEntries = releaseVsixEntries(sourcePackage);
-  baseEntries.set("extension.vsixmanifest", manifest({ version: sourcePackage.version }));
+  baseEntries.set(
+    "extension.vsixmanifest",
+    manifest({
+      version: sourcePackage.version,
+      properties: sourcePackage.preview ? '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />' : ""
+    })
+  );
   for (const [source, archive] of [
     ["README.md", "extension/readme.md"],
     ["CHANGELOG.md", "extension/changelog.md"],
@@ -1345,6 +1353,12 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       ).run = "echo skipped";
     },
     (workflow) => {
+      const step = workflow.jobs["installed-performance"].steps.find((candidate) =>
+        String(candidate.run ?? "").includes("benchmark:installed --")
+      );
+      step.run = String(step.run).replace("--preview-release", "");
+    },
+    (workflow) => {
       workflow.jobs["released-jupyter"].steps.find(
         (step) => step.id === "packaged_editor"
       ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "0";
@@ -1405,7 +1419,55 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       releaseSteps.push(tag);
     },
     (workflow) => {
-      workflow.jobs["promote-open-vsx"].uses = "./.github/workflows/unreviewed.yml";
+      workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx verify-pat")).run =
+        "npx --no-install ovsx verify-pat Matt17BR";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx verify-pat")).run =
+        "echo ovsx verify-pat Matt17BR";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx publish")).env.RELEASE_VERSION =
+        "1.99.0";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx publish")).run =
+        "echo ovsx publish --skip-duplicate canonical-release/openwrangler.vsix";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find(
+        (step) => step.name === "Reverify the preview before Open VSX publication"
+      ).name = "Reverify some preview artifact";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find(
+        (step) => step.run === "node scripts/verify-open-vsx-github-release.mjs canonical-release --verify"
+      ).run = "echo published";
+    },
+    (workflow) => {
+      const releaseSteps = workflow.jobs.release.steps;
+      releaseSteps.splice(
+        releaseSteps.findIndex((step) => step.id === "public_media_contract"),
+        1
+      );
+    },
+    (workflow) => {
+      const releaseSteps = workflow.jobs.release.steps;
+      const selectorIndex = releaseSteps.findIndex((step) => step.id === "public_media_contract");
+      const [selector] = releaseSteps.splice(selectorIndex, 1);
+      releaseSteps.push(selector);
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) =>
+        String(step.run ?? "").includes("verify-public-media-surfaces.mjs")
+      ).if = "always()";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.push({
+        name: "Unrelated Open VSX token consumer",
+        env: { OVSX_PAT: "${{ secrets.OVSX_PAT }}" },
+        run: "echo unrelated"
+      });
     },
     (workflow) => {
       workflow.jobs.package.environment = "publishing";

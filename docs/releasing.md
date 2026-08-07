@@ -111,7 +111,7 @@ The verifier requires the remote README at that exact commit to byte-match the r
 `package.json` version to match the supplied version. Before reading any PNG, it bounds the inventory's entry count,
 depth, relative-path bytes, individual file size, and cumulative size. Every declared file must then pass chunk CRC,
 IHDR/IDAT ordering, complete decode, reviewed natural dimensions, standard sRGB, and immutable-byte checks. The two
-registries must show the exact version, all three surfaces must render the expected README content, and all 18
+registries must show the exact version, all three surfaces must render the expected README content, and all 19
 displayed images must retain the reviewed raw URL and natural dimensions. Screenshot markup is width-only and capped
 at 960 CSS pixels; rendered images must stay inside that cap, their container, and the viewport, preserve their aspect ratio, and
 retain at least two natural pixels per CSS pixel. Three representative images are rechecked near 760px and 1400px
@@ -193,14 +193,11 @@ and registry promotion. The migration preserved publication throughout by mergin
 temporary false expectation, enabling the repository setting, and only then requiring true. Do not reverse that order
 when recreating this setup in another repository.
 
-After GitHub publication, both channels explicitly call the reusable Open VSX promotion workflow. It verifies
-`OVSX_PAT` against `Matt17BR`, derives stable versus preview from the public release source, fails closed unless an
-existing version is absent or byte-identical, and publishes only `canonical-release/openwrangler.vsix` with the
-lockfile-pinned `ovsx` CLI. It then polls for exact metadata, publisher identity, checksum, downloadable bytes, and
-the packaged gallery icon. Stable and preview publication plus this reusable promotion share the global
-`openwrangler-release-publication` queue with `queue: max` and cancellation disabled, so an older pending release is
-not displaced by a newer one. GitHub publication happens before Open VSX, so an Open VSX outage leaves an exact
-GitHub release that a later recovery dispatch can resume without rebuilding or replacing anything.
+After GitHub publication, the same protected release job verifies `OVSX_PAT` against `Matt17BR`, rejects a conflicting
+version, and sends the accepted VSIX to Open VSX with the lockfile-pinned `ovsx` CLI. It then checks the public
+metadata, publisher, checksum, download, and gallery icon. Stable and preview publication share the global
+`openwrangler-release-publication` queue, so releases are not displaced by newer runs. If Open VSX is unavailable,
+the exact GitHub release remains available for the recovery workflow; nothing is rebuilt or replaced.
 
 The real lightweight-tag push starts `azure-pipelines-marketplace.yml` before GitHub Release creation. The Azure pipeline waits for that release to become public, downloads the same three assets, and may publish only the accepted VSIX to Microsoft Marketplace. Creating only a GitHub Release through the API is not accepted as a substitute for this Git protocol event.
 
@@ -216,16 +213,24 @@ Preview candidates run macOS/Python 3.12 and Windows/Python 3.14 native acceptan
 
 ## Registry publication
 
-Both registries are final release steps and may run only after the `Matt17BR` publisher or namespace is owned and authorized. Publisher identity conflicts stop the release rather than changing the package identity. Verification badges are not a publication prerequisite. Never store tokens in repository files, workflow text, artifacts, or logs.
+Both registries are final release steps and may run only after the `Matt17BR` publisher or namespace is owned and
+authorized. Publisher identity conflicts stop the release rather than changing the package identity. Microsoft's
+optional domain badge is not required; Open VSX must report the publishing account verified for the `Matt17BR`
+namespace. Never store tokens in repository files, workflow text, artifacts, or logs.
 
-GitHub Releases remain the source-of-truth distribution channel. Both stable and preview release workflows explicitly call the protected reusable Open VSX promotion workflow immediately after their GitHub publication job. The reusable workflow also handles externally published release events and protected-main recovery for an existing canonical tag. Visual Studio Marketplace promotion remains a separate Azure Pipelines boundary because its secretless publisher identity lives in Azure DevOps. Neither registry workflow may rebuild the VSIX.
+GitHub Releases remain the source-of-truth distribution channel. Stable and preview release jobs publish the same
+accepted VSIX to Open VSX after creating the GitHub release. A separate workflow handles releases created outside
+these jobs and protected-main recovery for an existing tag. Visual Studio Marketplace promotion stays in Azure
+Pipelines because its publisher identity lives in Azure DevOps. Neither registry path may rebuild the VSIX.
 
 ### Current non-secret readiness
 
 The owner has confirmed the following setup without placing account identifiers or credentials in the repository:
 
 - The `Matt17BR` Visual Studio Marketplace publisher exists and the owner account has the **Owner** role.
-- The matching Open VSX account, agreement, namespace, and protected `OVSX_PAT` environment secret are in place. Stable `Matt17BR.openwrangler` publication is automated. Public Open VSX metadata now reports the `Matt17BR` publisher as verified and `unrelatedPublisher: false`; no namespace-claim warning or manual claim step remains.
+- The matching Open VSX account, agreement, namespace, and protected `OVSX_PAT` environment secret are in place.
+  Stable `Matt17BR.openwrangler` publication is automated, and Open VSX reports the publishing account verified for
+  the `Matt17BR` namespace without a warning.
 - The personal Azure subscription and `Matt17BR` Azure DevOps organization contain the private **Open Wrangler** publishing project.
 - A user-assigned `openwrangler-marketplace-publisher` identity has only the Azure **Reader** role on the dedicated `openwrangler-publishing` resource group. The Azure DevOps project has a workload-identity-federated Azure Resource Manager service connection for it, and its Marketplace-facing profile is a **Contributor** on the personal `Matt17BR` publisher.
 - The GitHub `publishing` environment accepts protected `main` and `v*` tag deployments.
@@ -236,17 +241,24 @@ The Microsoft pipeline, its fixed service connection, and its exclusive-lock env
 
 ### Automatic Open VSX promotion
 
-`.github/workflows/open-vsx-promotion.yml` accepts a canonical tag from a reusable-workflow call, a public `release: published` event, or an explicit protected-main recovery dispatch. It checks out reviewed `main` automation separately from the exact release tag, requires that public tag to remain at the bound commit, derives the stable or preview channel from the tag's tracked manifest, and downloads only that public GitHub Release's exact VSIX/checksum/provenance triple. Preview additionally requires matching preview provenance and the VSIX pre-release property.
+The stable and preview release jobs already run in the protected `publishing` environment, so they publish to Open
+VSX directly after GitHub. Only token verification and publication receive `OVSX_PAT`. Both commands require a
+non-empty token and explicit success output; the CLI's exit code alone is not accepted. The job rechecks the artifact,
+rejects a conflicting version, publishes with lockfile-pinned `ovsx --skip-duplicate`, and waits up to fifteen minutes
+for matching channel metadata, the verified `Matt17BR` namespace-publisher relationship, checksum, download, and
+packaged gallery icon.
 
-Both release workflows call this workflow directly after their GitHub release job. This direct call is required because [events created with the repository `GITHUB_TOKEN` do not start another workflow run, except for `workflow_dispatch` and `repository_dispatch`](https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-when-your-workflow-runs/triggering-a-workflow#triggering-a-workflow-from-a-workflow). The `release: published` trigger remains useful for a release created manually or by an external principal.
+`.github/workflows/open-vsx-promotion.yml` covers a public `release: published` event created by another principal and
+an explicit protected-main recovery dispatch. It checks out reviewed `main` separately from the release tag and
+downloads that GitHub Release's VSIX, checksum, and provenance. This separate route is needed because releases created
+with the repository `GITHUB_TOKEN` do not start another release workflow run. Preview packages must also carry the
+matching preview provenance and VSIX pre-release marker.
 
-The called promotion job declares `environment: publishing`; therefore its two secret-bearing steps receive that environment's `OVSX_PAT` without granting the caller blanket secret inheritance. This follows GitHub's [reusable-workflow environment-secret behavior](https://docs.github.com/en/actions/how-tos/sharing-automations/reusing-workflows#using-inputs-and-secrets-in-a-reusable-workflow). Only `ovsx verify-pat` and `ovsx publish` receive the token. The workflow revalidates the release before each publisher boundary, rejects a conflicting existing version, publishes the downloaded VSIX with lockfile-pinned `ovsx --skip-duplicate`, and then polls for up to fifteen minutes for Open VSX to expose matching channel metadata, `Matt17BR` publisher identity, checksum, downloadable bytes, and the exact packaged gallery icon.
-
-For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the reusable promotion job installs
-Chromium from the automation checkout's lockfile and runs the media verifier from the exact release tag. This keeps
-a v1 release tied to its own reviewed screenshot inventory when `main` has moved on. All declared
+For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the publishing path installs Chromium
+from the reviewed lockfile and runs the media verifier against the exact release source. This keeps a historical
+release tied to its own screenshot inventory when `main` has moved on. All declared
 PNGs must retain their reviewed natural dimensions, standard sRGB declaration, file and aggregate budgets, valid
-chunk/decode structure, and immutable remote bytes. Every one of the 18 README images must then render from its exact
+chunk/decode structure, and immutable remote bytes. Every one of the 19 README images must then render from its exact
 reviewed URL without upscaling, aspect distortion, container overflow, or viewport overflow on GitHub, Visual Studio Marketplace, and
 Open VSX; representative images are rechecked near 760px and 1400px viewport widths. Registry observations receive at most
 forty fresh browser contexts at thirty-second intervals inside one thirty-minute propagation deadline; network fetches
@@ -256,9 +268,8 @@ dimension, DPR, and other deterministic contract failures stop immediately. Only
 unavailable Marketplace/Open VSX observations retry. The media step receives only the source commit and version,
 never `OVSX_PAT`.
 
-The reusable workflow file referenced by a caller comes from that caller's branch. Future stable and preview
-callers both use `main`, so one reviewed contract covers both. A post-public check can fail workflow success, but it
-cannot retract a GitHub, Open VSX, or Marketplace write that already completed.
+A post-public check can fail workflow success, but it cannot retract a GitHub, Open VSX, or Marketplace write that
+already completed.
 
 To recover an existing exact GitHub Release, dispatch **Promote GitHub release to Open VSX** from protected `main`
 with `release_tag=v<version>`. Historical backfill is supported only when that release's canonical artifact and
@@ -279,29 +290,7 @@ Microsoft documents [branch and tag filters as an OR](https://learn.microsoft.co
 while path filters are defined in terms of changed files on an included branch. Keeping tags path-independent
 prevents a later release tag from being silently suppressed by an unrelated path decision.
 
-The protected branch subscriptions are only recovery signals. Before authentication, intake requires the checkout to equal
-the exact event commit and classifies its Git history. Only a single-parent commit that changes at least one of
-these reviewed pipeline, lockfile, metadata, archive, and verifier closure files may continue:
-
-- `azure-pipelines-marketplace.yml`
-- `package-lock.json`
-- `package.json`
-- `scripts/bounded-file-read.mjs`
-- `scripts/copy-extension-test-runtime-assets.mjs`
-- `scripts/cursor-acquisition.mjs`
-- `scripts/download-canonical-github-release.mjs`
-- `scripts/editor-acceptance-evidence.mjs`
-- `scripts/editor-acceptance.mjs`
-- `scripts/installed-performance-report.mjs`
-- `scripts/installed-performance-system.mjs`
-- `scripts/marketplace-identity-profile.mjs`
-- `scripts/marketplace-release-intake.mjs`
-- `scripts/packaged-editor-orchestration.mjs`
-- `scripts/prepare-xvfb.mjs`
-- `scripts/release-metadata.mjs`
-- `scripts/remote-workspace-acquisition.mjs`
-- `scripts/remote-workspace-contract.mjs`
-- `scripts/run-installed-performance.mjs`
-- `scripts/strict-json.mjs`
-- `scripts/verify-canonical-release-artifact.mjs`
-- `scripts/verify-marketplace-publication.mjs`
+The protected branch subscriptions are recovery signals only. Before authentication, intake requires the checkout to
+match the event commit. Automatic recovery continues only for a single-parent commit that changes a reviewed path.
+The canonical allowlist is `MARKETPLACE_RECOVERY_PATHS` in `scripts/marketplace-release-intake.mjs`; its unit test
+checks the complete list so this guide does not maintain a second copy.

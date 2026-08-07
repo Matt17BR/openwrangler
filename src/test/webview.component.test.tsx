@@ -3436,13 +3436,19 @@ describe("App file import options", () => {
     dispatchAppMessage({ kind: "editorAction", action: "openOperation", operationKind: "customCode" });
     expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
 
-    dispatchAppMessage({ kind: "editorAction", action: "openOperation", operationKind: "renameColumn" });
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "openOperation",
+      operationKind: "renameColumn",
+      expectedSessionId: limitedMetadata.sessionId,
+      expectedRevision: limitedMetadata.revision
+    });
     expect(await screen.findByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
     expect(screen.getByText("Rename column", { selector: "strong" })).toBeInTheDocument();
     expect(screen.queryByText("Custom code", { selector: "strong" })).toBeNull();
   });
 
-  it("holds an operation preview until the current grid request finishes", async () => {
+  it("queues a native operation intent until the current grid request finishes", async () => {
     const limitedMetadata: SessionMetadata = {
       ...metadata,
       capabilities: { ...metadata.capabilities, supportedOperations: ["renameColumn"] }
@@ -3464,10 +3470,14 @@ describe("App file import options", () => {
       .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage")?.request;
     expect(pageRequest?.viewRequestId).toEqual(expect.any(String));
 
-    dispatchAppMessage({ kind: "editorAction", action: "openOperation", operationKind: "renameColumn" });
-    const dialog = await screen.findByRole("dialog", { name: "Add cleaning step" });
-    const preview = within(dialog).getByRole("button", { name: "Preview changes" });
-    expect(preview).toBeDisabled();
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "openOperation",
+      operationKind: "renameColumn",
+      expectedSessionId: limitedMetadata.sessionId,
+      expectedRevision: limitedMetadata.revision
+    });
+    expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
 
     dispatchAppMessage({
       kind: "page",
@@ -3477,6 +3487,8 @@ describe("App file import options", () => {
       page,
       summaries: []
     });
+    const dialog = await screen.findByRole("dialog", { name: "Add cleaning step" });
+    const preview = within(dialog).getByRole("button", { name: "Preview changes" });
     expect(preview).toBeEnabled();
 
     fireEvent.change(within(dialog).getByLabelText("Column"), { target: { value: "c:0" } });
@@ -3494,6 +3506,161 @@ describe("App file import options", () => {
       }
     });
     expect(previewRequest).not.toHaveProperty("replaceStepId");
+  });
+
+  it("retains a toolbar operation intent accepted in the same turn as a grid request", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    const city = within(cityHeader);
+    const menu = city.getByLabelText("Column actions for city").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the city details menu.");
+    menu.open = true;
+    const sort = city.getByRole("button", { name: "Sort ascending" });
+    const addStep = screen.getByRole("button", { name: "Add step" });
+    webviewPostMessage.mockClear();
+
+    act(() => {
+      sort.click();
+      addStep.click();
+    });
+
+    const pageRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage")?.request;
+    expect(pageRequest?.viewRequestId).toEqual(expect.any(String));
+    expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
+
+    dispatchAppMessage({
+      kind: "page",
+      revision: metadata.revision,
+      viewRequestId: pageRequest.viewRequestId,
+      metadata: { ...metadata, filterModel: pageRequest.filterModel },
+      page,
+      summaries: []
+    });
+
+    expect(await screen.findByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Choose an operation" })).toBeInTheDocument();
+  });
+
+  it("keeps the operation picker open when Cursor repeats the renderer snapshot after undo", async () => {
+    const appliedStep: TransformStep = {
+      id: "text-length-city",
+      kind: "textLength",
+      params: { column: { id: "c:0", name: "city" }, newColumn: "city_length" }
+    };
+    const appliedMetadata: SessionMetadata = { ...metadata, revision: 4, steps: [appliedStep] };
+    const restoredMetadata: SessionMetadata = { ...metadata, revision: 5, steps: [] };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({ kind: "editorAction", action: "undoStep" });
+    expect(webviewPostMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "runtimeRequest",
+        request: expect.objectContaining({ kind: "undoStep" })
+      })
+    );
+
+    dispatchAppMessage({
+      kind: "planUpdated",
+      action: "undo",
+      revision: restoredMetadata.revision,
+      metadata: restoredMetadata,
+      page,
+      code: ""
+    });
+    const addStep = screen.getByRole("button", { name: "Add step" });
+    expect(addStep).toBeEnabled();
+    fireEvent.click(addStep);
+
+    expect(await screen.findByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Choose an operation" })).toBeInTheDocument();
+
+    dispatchAppMessage({ kind: "sessionOpened", metadata: { ...restoredMetadata }, page, summaries: [] });
+
+    expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Choose an operation" })).toBeInTheDocument();
+  });
+
+  it("drops a queued operation when its session revision is replaced", async () => {
+    const limitedMetadata: SessionMetadata = {
+      ...metadata,
+      capabilities: { ...metadata.capabilities, supportedOperations: ["renameColumn"] }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: limitedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    const city = within(cityHeader);
+    const menu = city.getByLabelText("Column actions for city").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the city details menu.");
+    menu.open = true;
+    webviewPostMessage.mockClear();
+    fireEvent.click(city.getByRole("button", { name: "Sort ascending" }));
+    const pageRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage")?.request;
+
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "openOperation",
+      operationKind: "renameColumn",
+      expectedSessionId: limitedMetadata.sessionId,
+      expectedRevision: limitedMetadata.revision
+    });
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...limitedMetadata, revision: 1 },
+      page,
+      summaries: []
+    });
+    dispatchAppMessage({
+      kind: "page",
+      revision: 0,
+      viewRequestId: pageRequest.viewRequestId,
+      metadata: limitedMetadata,
+      page,
+      summaries: []
+    });
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull());
+  });
+
+  it("preserves an open operation form across duplicate hydration but resets it for a new revision", async () => {
+    const limitedMetadata: SessionMetadata = {
+      ...metadata,
+      capabilities: { ...metadata.capabilities, supportedOperations: ["renameColumn"] }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: limitedMetadata, page, summaries: [] });
+    dispatchAppMessage({ kind: "editorAction", action: "openOperation", operationKind: "renameColumn" });
+
+    const dialog = await screen.findByRole("dialog", { name: "Add cleaning step" });
+    fireEvent.change(within(dialog).getByLabelText("Column"), { target: { value: "c:1" } });
+    fireEvent.change(within(dialog).getByLabelText("New name"), { target: { value: "net_sales" } });
+
+    dispatchAppMessage({ kind: "sessionOpened", metadata: { ...limitedMetadata }, page, summaries: [] });
+
+    const hydratedDialog = screen.getByRole("dialog", { name: "Add cleaning step" });
+    expect(within(hydratedDialog).getByLabelText("Column")).toHaveValue("c:1");
+    expect(within(hydratedDialog).getByLabelText("New name")).toHaveValue("net_sales");
+
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...limitedMetadata, revision: 1 },
+      page,
+      summaries: []
+    });
+    expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
   });
 
   it("restores an accepted mutation without ending the host-owned import transaction", async () => {

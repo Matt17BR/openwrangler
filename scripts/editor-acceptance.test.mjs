@@ -131,6 +131,39 @@ test("released-Jupyter Variables acceptance targets the canonical orders showcas
     source,
     /restoreCursorRemoteReleasedJupyterNotebook\(notebook, checkpoint\);\s*const viewerAction = await waitForReleasedJupyterVariableAction/u
   );
+
+  const journey = source.slice(
+    source.indexOf("async function exerciseReleasedJupyterExtension("),
+    source.indexOf("async function exerciseReleasedPySparkJupyterExtension(")
+  );
+  const pandasDisposed = journey.indexOf('"the released-Jupyter Pandas DataFrame session"');
+  const duckdbVariablesGuard = journey.indexOf("if (!kernelTarget.remote) {", pandasDisposed);
+  const duckdbVariables = journey.indexOf(
+    "recordAcceptanceProgress(`${phase}:duckdb-variables-action`)",
+    duckdbVariablesGuard
+  );
+  const polarsToolbar = journey.indexOf("recordAcceptanceProgress(`${phase}:polars-series-toolbar`)");
+  const duckdbInline = journey.indexOf("recordAcceptanceProgress(`${phase}:duckdb-inline`)");
+  const duckdbToolbarReopen = journey.indexOf("recordAcceptanceProgress(`${phase}:duckdb-toolbar-reopen`)");
+  const pandasSeries = journey.indexOf("recordAcceptanceProgress(`${phase}:pandas-series`)");
+  assert.ok(
+    pandasDisposed >= 0 &&
+      duckdbVariablesGuard > pandasDisposed &&
+      duckdbVariables > duckdbVariablesGuard &&
+      polarsToolbar > duckdbVariables
+  );
+  assert.ok(duckdbInline > polarsToolbar && duckdbToolbarReopen > duckdbInline && pandasSeries > duckdbToolbarReopen);
+
+  const earlyDuckdbVariables = journey.slice(duckdbVariablesGuard, polarsToolbar);
+  assert.match(
+    earlyDuckdbVariables,
+    /if \(!kernelTarget\.remote\) \{[\s\S]*?dispatchReleasedJupyterVariableAction\([\s\S]*?"duckdb_relation",[\s\S]*?`\$\{phase\}:duckdb-variables`[\s\S]*?\);/u
+  );
+  assert.doesNotMatch(earlyDuckdbVariables, /jupyter\.openVariableView/u);
+
+  const lateDuckdbReopen = journey.slice(duckdbToolbarReopen, pandasSeries);
+  assert.match(lateDuckdbReopen, /invokeReleasedNotebookToolbarVariable\(workbench, notebook, "duckdb_relation"\)/u);
+  assert.doesNotMatch(lateDuckdbReopen, /jupyter\.openVariableView|dispatchReleasedJupyterVariableAction/u);
 });
 
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
