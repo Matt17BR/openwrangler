@@ -5543,8 +5543,25 @@ async function exerciseReleasedREditingJourney(
       "The R Capitalize preview must reach its renderer."
     );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Capitalize preview");
+    const capitalizeColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await capitalizeColumnSearch.fill(labelColumn.name);
+    await app
+      .getByRole("option", { name: /^label,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await capitalizeColumnSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === labelColumn.id,
+      10_000,
+      "revealing the R label column after the temporary numeric columns were discarded"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the revealed R Capitalize preview");
+    const capitalizeHeader = app.locator('th[data-column="label"]').first();
+    await capitalizeHeader.waitFor({ state: "visible", timeout: 10_000 });
+    const capitalizeColumnPosition = await capitalizeHeader.getAttribute("data-grid-column");
+    assert.equal(capitalizeColumnPosition, String(labelColumn.position));
     await waitForLocatorText(
-      app.locator(`td[data-grid-row="0"][data-grid-column="${labelColumn.position}"]`),
+      app.locator(`td[data-grid-row="0"][data-grid-column="${capitalizeColumnPosition}"]`).first(),
       (text) => text.trim() === "Row-0001",
       10_000,
       "the visible R Capitalize value in row 1"
