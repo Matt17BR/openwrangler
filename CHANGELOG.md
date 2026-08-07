@@ -22,6 +22,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Cursor no longer reloads a new editor immediately when it rejects a message before the webview is ready. The
+  first webview gets the normal startup grace period instead of being replaced while it is still attaching.
 - A stalled editor now gets a second webview reload before giving up. The dataframe session stays open; the file is
   not reopened and the runtime is not restarted.
 - A renderer's initial `ready` message no longer disables recovery before the UI acknowledges the exact snapshot or

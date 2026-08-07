@@ -1020,12 +1020,13 @@ export class OpenWranglerPanel {
   private async postRendererMessage(message: unknown): Promise<boolean> {
     if (this.disposed) return false;
     const generation = this.rendererGeneration;
+    const rendererReadyAtPublication = this.rendererReady;
     const hydratedSyncIdAtPublication = this.hasHydratedRenderer() ? this.rendererHydratedSyncId : undefined;
     let publication: Thenable<boolean>;
     try {
       publication = this.panel.webview.postMessage(message);
     } catch {
-      this.handleRendererPublicationFailure(generation, hydratedSyncIdAtPublication);
+      this.handleRendererPublicationFailure(generation, rendererReadyAtPublication, hydratedSyncIdAtPublication);
       return false;
     }
 
@@ -1043,16 +1044,27 @@ export class OpenWranglerPanel {
         () => finish(false)
       );
     });
-    if (!posted) this.handleRendererPublicationFailure(generation, hydratedSyncIdAtPublication);
+    if (!posted) {
+      this.handleRendererPublicationFailure(generation, rendererReadyAtPublication, hydratedSyncIdAtPublication);
+    }
     return posted && !this.disposed && generation === this.rendererGeneration;
   }
 
-  private handleRendererPublicationFailure(generation: number, hydratedSyncIdAtPublication: string | undefined): void {
+  private handleRendererPublicationFailure(
+    generation: number,
+    rendererReadyAtPublication: boolean,
+    hydratedSyncIdAtPublication: string | undefined
+  ): void {
     if (this.disposed || generation !== this.rendererGeneration) return;
     if (this.hasHydratedRenderer() && this.rendererHydratedSyncId !== hydratedSyncIdAtPublication) return;
+    if (!rendererReadyAtPublication) {
+      this.scheduleRendererStartupRecovery();
+      return;
+    }
     this.rendererReady = false;
     this.invalidateRendererSynchronization();
-    if (!this.recoverRendererAfterStartupStall()) this.scheduleRendererStartupRecovery();
+    if (this.recoverRendererAfterStartupStall()) return;
+    this.scheduleRendererStartupRecovery();
   }
 
   private updateSessionOpenProgress(generation: number, stage: SessionOpenProgressStage): void {
