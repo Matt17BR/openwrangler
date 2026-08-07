@@ -32,8 +32,7 @@ function metadata(overrides = {}) {
     preview: false,
     publishedBy: { loginName: "Matt17BR" },
     targetPlatform: "universal",
-    unrelatedPublisher: true,
-    verified: false,
+    verified: true,
     version,
     ...overrides
   };
@@ -47,11 +46,12 @@ function exactFetch({
   galleryIcon = candidateIcon,
   manifest = metadata(),
   sha = candidateSha256,
+  shaHeaders,
   vsix = candidateBytes
 } = {}) {
   return async (url) => {
     if (url === api) return jsonResponse(manifest);
-    if (url === checksum) return new Response(sha);
+    if (url === checksum) return new Response(sha, { headers: shaHeaders });
     if (url === download) return new Response(vsix);
     if (url === icon) return new Response(galleryIcon);
     throw new Error(`Unexpected Open VSX URL: ${url}`);
@@ -73,9 +73,22 @@ test("verifies exact stable Open VSX metadata, checksum, publisher, and VSIX byt
   assert.deepEqual(await verify(exactFetch()), {
     publishedBy: "Matt17BR",
     status: "exact",
-    verifiedNamespace: false,
+    verifiedNamespace: true,
     version
   });
+});
+
+test("bounds the decoded checksum when the registry serves gzip", async () => {
+  assert.equal(
+    (
+      await verify(
+        exactFetch({
+          shaHeaders: { "content-encoding": "gzip", "content-length": "70" }
+        })
+      )
+    ).status,
+    "exact"
+  );
 });
 
 test("forwards the release's R inventory requirement to archive inspection", async () => {
@@ -114,6 +127,15 @@ test("verifies preview metadata only for an explicitly preview candidate", async
     "exact"
   );
   await assert.rejects(verify(exactFetch({ manifest: preview })), /metadata conflicts/u);
+});
+
+test("requires Open VSX to verify the exact publisher and namespace", async () => {
+  for (const verified of [false, undefined, null, "true"]) {
+    const manifest = metadata();
+    if (verified === undefined) delete manifest.verified;
+    else manifest.verified = verified;
+    await assert.rejects(verify(exactFetch({ manifest })), /verified publisher/u);
+  }
 });
 
 test("distinguishes an absent version from a transient registry response", async () => {
@@ -190,7 +212,21 @@ test("post-publish verification remains bounded and fails closed", async () => {
       root,
       version
     }),
-    /within the verification window/u
+    /accepted stable release within the verification window/u
+  );
+  await assert.rejects(
+    waitForOpenVsxRelease({
+      attempts: 1,
+      candidateBytes,
+      candidateSha256,
+      channel: "preview",
+      delay: async () => {},
+      fetchImpl: async () => jsonResponse({ error: "missing" }, 404),
+      inspectCandidate,
+      root,
+      version
+    }),
+    /accepted preview release within the verification window/u
   );
   await assert.rejects(
     waitForOpenVsxRelease({

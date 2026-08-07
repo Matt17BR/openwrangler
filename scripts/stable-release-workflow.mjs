@@ -2,6 +2,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { load as parseYaml } from "js-yaml";
+import {
+  OPEN_VSX_PUBLISH_RUN,
+  OPEN_VSX_VERIFY_PAT_RUN,
+  PUBLIC_MEDIA_CONTRACT_RUN
+} from "./open-vsx-promotion-workflow.mjs";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const EVENT_SHA = "${{ github.sha }}";
@@ -35,7 +40,7 @@ const PACKAGED_EDITOR_COMMAND =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
 const PREPARED_CURSOR_XVFB = "${{ steps.prepare_cursor_xvfb.outputs.executable }}";
 const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
-const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release", "promote-open-vsx"];
+const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release"];
 const REMOTE_SSH_SYSTEM_ANCESTOR_REPAIR = [
   "system_runtime_ancestors=(",
   "  /usr",
@@ -447,6 +452,12 @@ export function inspectStableReleaseWorkflow(source) {
           step.name === "Reject preview metadata" &&
           step.if === "${{ steps.release_metadata.outputs.prerelease != 'false' }}" &&
           command(step.run) === "exit 1"
+        ) &&
+        !(
+          jobName === "release" &&
+          step.if === "${{ steps.public_media_contract.outputs.required == 'true' }}" &&
+          (command(step.run) === "npx playwright-core install --with-deps chromium" ||
+            command(step.run).includes("verify-public-media-surfaces.mjs"))
         )
       ) {
         problems.push(`${jobName} must not conditionally skip a required release step.`);
@@ -486,8 +497,15 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("The producer must publish one ordinary canonical stable artifact set.");
   }
-  if (allRuns.some((run) => /(?:^|\s)(?:ovsx|vsce)\s+publish(?:\s|$)/u.test(run))) {
-    problems.push("Stable release must delegate registry promotion instead of publishing from its GitHub job.");
+  const registryPublishOwners = Object.entries(workflow.jobs)
+    .filter(([, job]) => steps(job).some((step) => command(step?.run).includes("ovsx publish --skip-duplicate")))
+    .map(([name]) => name);
+  if (
+    allRuns.some((run) => /(?:^|\s)vsce\s+publish(?:\s|$)/u.test(run)) ||
+    registryPublishOwners.length !== 1 ||
+    registryPublishOwners[0] !== "release"
+  ) {
+    problems.push("Only the protected release job may publish the accepted VSIX to Open VSX.");
   }
   if (allRuns.filter((run) => run === "node scripts/prepare-stable-candidate-tag.mjs --verify-remote").length !== 2) {
     problems.push("Stable packaging and final publication must both accept only an absent or exact remote tag.");
@@ -879,7 +897,7 @@ export function inspectStableReleaseWorkflow(source) {
   if (release.environment !== "publishing") {
     problems.push("release must use the existing protected publishing environment.");
   }
-  if (release["runs-on"] !== "ubuntu-24.04" || release["timeout-minutes"] !== 20) {
+  if (release["runs-on"] !== "ubuntu-24.04" || release["timeout-minutes"] !== 105) {
     problems.push("release must retain bounded Ubuntu publication time.");
   }
   if (
@@ -946,16 +964,91 @@ export function inspectStableReleaseWorkflow(source) {
     problems.push("GitHub release publication must immediately follow the exact lightweight tag push.");
   }
 
-  const openVsxPromotion = workflow.jobs["promote-open-vsx"];
+  const tokenStep = releaseJobSteps.find((step) => step?.name === "Verify the Open VSX publisher token");
+  const preflightStep = releaseJobSteps.find((step) => step?.name === "Reject a conflicting Open VSX stable release");
+  const artifactReverifyStep = releaseJobSteps.find(
+    (step) => step?.name === "Reverify the stable artifact before Open VSX publication"
+  );
+  const publishOpenVsxStep = releaseJobSteps.find((step) => step?.name === "Publish the exact stable VSIX to Open VSX");
+  const publicOpenVsxStep = releaseJobSteps.find(
+    (step) => step?.name === "Verify the exact public Open VSX stable release"
+  );
+  const immutableTagStep = releaseJobSteps.find((step) => step?.name === "Recheck the immutable public stable tag");
+  const publicMediaContractStep = releaseJobSteps.find((step) => step?.id === "public_media_contract");
+  const publicMediaInstall = releaseJobSteps.find(
+    (step) => step?.name === "Install the lockfile-pinned public-media browser"
+  );
+  const publicMediaStep = releaseJobSteps.find(
+    (step) => step?.name === "Verify public README media after registry propagation"
+  );
+  const openVsxSecretConsumers = Object.values(workflow.jobs)
+    .flatMap((job) => steps(job))
+    .filter((step) => step?.env?.OVSX_PAT !== undefined);
+  const requiredCondition = "${{ steps.public_media_contract.outputs.required == 'true' }}";
   if (
-    !exactKeys(openVsxPromotion, ["needs", "if", "uses", "with"]) ||
-    openVsxPromotion.needs !== "release" ||
-    openVsxPromotion.if !== "${{ inputs.publish == true && needs.release.result == 'success' }}" ||
-    openVsxPromotion.uses !== "./.github/workflows/open-vsx-promotion.yml" ||
-    !exactKeys(openVsxPromotion.with, ["release_tag"]) ||
-    openVsxPromotion.with.release_tag !== RELEASE_TAG
+    !exactKeys(tokenStep, ["name", "env", "run"]) ||
+    !exactKeys(tokenStep?.env, ["OVSX_PAT"]) ||
+    tokenStep.env.OVSX_PAT !== "${{ secrets.OVSX_PAT }}" ||
+    command(tokenStep.run) !== command(OPEN_VSX_VERIFY_PAT_RUN) ||
+    !exactKeys(preflightStep, ["name", "env", "run"]) ||
+    !exactKeys(preflightStep?.env, ["AUTOMATION_SHA", "EXPECTED_SHA", "RELEASE_PRERELEASE", "RELEASE_TAG"]) ||
+    preflightStep.env.AUTOMATION_SHA !== EVENT_SHA ||
+    preflightStep.env.EXPECTED_SHA !== EVENT_SHA ||
+    preflightStep.env.RELEASE_PRERELEASE !== "false" ||
+    preflightStep.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(preflightStep.run) !== "node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight" ||
+    !exactKeys(artifactReverifyStep, ["name", "env", "run"]) ||
+    !exactKeys(artifactReverifyStep?.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    artifactReverifyStep.env.EXPECTED_SHA !== EVENT_SHA ||
+    artifactReverifyStep.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(artifactReverifyStep.run) !== "node scripts/verify-canonical-release-artifact.mjs canonical-release" ||
+    !exactKeys(publishOpenVsxStep, ["name", "env", "run"]) ||
+    !exactKeys(publishOpenVsxStep?.env, ["OVSX_PAT", "RELEASE_PRERELEASE", "RELEASE_VERSION"]) ||
+    publishOpenVsxStep.env.OVSX_PAT !== "${{ secrets.OVSX_PAT }}" ||
+    publishOpenVsxStep.env.RELEASE_PRERELEASE !== "false" ||
+    publishOpenVsxStep.env.RELEASE_VERSION !== "${{ steps.canonical_release.outputs.extension_version }}" ||
+    command(publishOpenVsxStep.run) !== command(OPEN_VSX_PUBLISH_RUN) ||
+    openVsxSecretConsumers.length !== 2 ||
+    !openVsxSecretConsumers.includes(tokenStep) ||
+    !openVsxSecretConsumers.includes(publishOpenVsxStep) ||
+    !exactKeys(publicOpenVsxStep, ["name", "env", "run"]) ||
+    !exactKeys(publicOpenVsxStep?.env, ["AUTOMATION_SHA", "EXPECTED_SHA", "RELEASE_PRERELEASE", "RELEASE_TAG"]) ||
+    publicOpenVsxStep.env.AUTOMATION_SHA !== EVENT_SHA ||
+    publicOpenVsxStep.env.EXPECTED_SHA !== EVENT_SHA ||
+    publicOpenVsxStep.env.RELEASE_PRERELEASE !== "false" ||
+    publicOpenVsxStep.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(publicOpenVsxStep.run) !== "node scripts/verify-open-vsx-github-release.mjs canonical-release --verify" ||
+    !exactKeys(immutableTagStep, ["name", "env", "run"]) ||
+    !exactKeys(immutableTagStep?.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    immutableTagStep.env.EXPECTED_SHA !== EVENT_SHA ||
+    immutableTagStep.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(immutableTagStep.run) !== "node scripts/prepare-stable-candidate-tag.mjs --require-remote" ||
+    !exactKeys(publicMediaContractStep, ["id", "name", "env", "run"]) ||
+    publicMediaContractStep.name !== "Select the versioned public-media contract" ||
+    !exactKeys(publicMediaContractStep?.env, ["RELEASE_VERSION"]) ||
+    publicMediaContractStep.env.RELEASE_VERSION !== "${{ steps.canonical_release.outputs.extension_version }}" ||
+    command(publicMediaContractStep.run) !== command(PUBLIC_MEDIA_CONTRACT_RUN) ||
+    !exactKeys(publicMediaInstall, ["name", "if", "run"]) ||
+    publicMediaInstall?.if !== requiredCondition ||
+    command(publicMediaInstall.run) !== "npx playwright-core install --with-deps chromium" ||
+    !exactKeys(publicMediaStep, ["name", "if", "env", "run"]) ||
+    publicMediaStep?.if !== requiredCondition ||
+    !exactKeys(publicMediaStep?.env, ["RELEASE_SOURCE_SHA", "RELEASE_VERSION"]) ||
+    publicMediaStep.env.RELEASE_SOURCE_SHA !== EVENT_SHA ||
+    publicMediaStep.env.RELEASE_VERSION !== "${{ steps.canonical_release.outputs.extension_version }}" ||
+    command(publicMediaStep.run) !==
+      'node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --wait-for-propagation' ||
+    releaseJobSteps.indexOf(tokenStep) !== releaseJobSteps.indexOf(githubReleaseStep) + 1 ||
+    releaseJobSteps.indexOf(preflightStep) !== releaseJobSteps.indexOf(tokenStep) + 1 ||
+    releaseJobSteps.indexOf(artifactReverifyStep) !== releaseJobSteps.indexOf(preflightStep) + 1 ||
+    releaseJobSteps.indexOf(publishOpenVsxStep) !== releaseJobSteps.indexOf(artifactReverifyStep) + 1 ||
+    releaseJobSteps.indexOf(publicOpenVsxStep) !== releaseJobSteps.indexOf(publishOpenVsxStep) + 1 ||
+    releaseJobSteps.indexOf(immutableTagStep) !== releaseJobSteps.indexOf(publicOpenVsxStep) + 1 ||
+    releaseJobSteps.indexOf(publicMediaContractStep) !== releaseJobSteps.indexOf(immutableTagStep) + 1 ||
+    releaseJobSteps.indexOf(publicMediaInstall) !== releaseJobSteps.indexOf(publicMediaContractStep) + 1 ||
+    releaseJobSteps.indexOf(publicMediaStep) !== releaseJobSteps.indexOf(publicMediaInstall) + 1
   ) {
-    problems.push("Stable release must explicitly call the protected Open VSX promotion after GitHub publication.");
+    problems.push("Stable release must publish and verify the exact VSIX on Open VSX from the protected job.");
   }
 
   const writeJobs = Object.entries(workflow.jobs)

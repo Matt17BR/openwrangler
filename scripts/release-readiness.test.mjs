@@ -1419,7 +1419,55 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       releaseSteps.push(tag);
     },
     (workflow) => {
-      workflow.jobs["promote-open-vsx"].uses = "./.github/workflows/unreviewed.yml";
+      workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx verify-pat")).run =
+        "npx --no-install ovsx verify-pat Matt17BR";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx verify-pat")).run =
+        "echo ovsx verify-pat Matt17BR";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx publish")).env.RELEASE_VERSION =
+        "1.99.0";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx publish")).run =
+        "echo ovsx publish --skip-duplicate canonical-release/openwrangler.vsix";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find(
+        (step) => step.name === "Reverify the preview before Open VSX publication"
+      ).name = "Reverify some preview artifact";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find(
+        (step) => step.run === "node scripts/verify-open-vsx-github-release.mjs canonical-release --verify"
+      ).run = "echo published";
+    },
+    (workflow) => {
+      const releaseSteps = workflow.jobs.release.steps;
+      releaseSteps.splice(
+        releaseSteps.findIndex((step) => step.id === "public_media_contract"),
+        1
+      );
+    },
+    (workflow) => {
+      const releaseSteps = workflow.jobs.release.steps;
+      const selectorIndex = releaseSteps.findIndex((step) => step.id === "public_media_contract");
+      const [selector] = releaseSteps.splice(selectorIndex, 1);
+      releaseSteps.push(selector);
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) =>
+        String(step.run ?? "").includes("verify-public-media-surfaces.mjs")
+      ).if = "always()";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.push({
+        name: "Unrelated Open VSX token consumer",
+        env: { OVSX_PAT: "${{ secrets.OVSX_PAT }}" },
+        run: "echo unrelated"
+      });
     },
     (workflow) => {
       workflow.jobs.package.environment = "publishing";
