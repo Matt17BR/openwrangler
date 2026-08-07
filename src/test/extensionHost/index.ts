@@ -5026,6 +5026,24 @@ async function exerciseReleasedREditingJourney(
       "The applied R Find and replace result must reach its exact renderer before inspection."
     );
     app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Find and replace session");
+    const groupSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await groupSearch.fill(groupAfterReplace.name);
+    await app
+      .getByRole("option", { name: new RegExp(`^${groupAfterReplace.name},`, "u") })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await groupSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === groupAfterReplace.id,
+      10_000,
+      "revealing the replaced R column"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The replaced R column must be visible before its rendered value is checked."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Find and replace result");
     await app
       .locator(`td[data-grid-row="0"][data-grid-column="${groupAfterReplace.position}"]`)
       .getByText("Alpha", { exact: true })
