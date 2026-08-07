@@ -712,7 +712,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /The image shows Rename Column in VS Code\.[\s\S]{0,1100}The local VS Code journey also opens the real Find and replace form and applies\s+Uppercase\.[\s\S]{0,260}The recorded run covers the earlier fourteen-operation build,[\s\S]{0,160}screenshots were captured from that\s+build\.[\s\S]{0,220}not part of a recorded\s+installed-editor run yet/u
+    /The image shows Rename Column in VS Code\.[\s\S]{0,220}The packaged VS Code and Cursor journeys also exercise the other sixteen\s+operations,[\s\S]{0,220}the full\s+set of R text tools\./u
   );
   assert.match(
     gallery,
