@@ -35,6 +35,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Cursor now reloads an editor whose first session message stalls, without opening the dataframe or runtime session
+  a second time.
 - Large R step inspections now fetch code and data blocks separately instead of combining two valid pages into one
   oversized kernel response.
 - The grid now shows a final partial page when the browser has reached its maximum scroll position.
