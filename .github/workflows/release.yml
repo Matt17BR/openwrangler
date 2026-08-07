@@ -385,6 +385,7 @@ jobs:
         run: >-
           /usr/bin/dbus-run-session -- npm run benchmark:installed --
           --pinned-editors
+          --preview-release
           --candidate-in canonical-release/openwrangler.vsix
           --candidate-checksum canonical-release/openwrangler.vsix.sha256
           --candidate-provenance canonical-release/openwrangler.vsix.provenance.json

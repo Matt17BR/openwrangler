@@ -38,6 +38,7 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     source.replace('"pyspark[connect]==4.2.0"', '"pyspark[connect]==4.1.0"'),
     source.replace("      - name: Verify exact coverage runtimes", "      - name: Skip exact coverage runtimes"),
     source.replace("--out-dir canonical-release", "--out-dir canonical-release\n          --performance-evidence"),
+    source.replace("--pinned-editors", "--pinned-editors\n          --preview-release"),
     source.replace("artifact-ids: ${{ needs.package.outputs.artifact-id }}", "name: openwrangler-stable-release"),
     source.replace(
       "      - id: canonical\n        name: Verify the exact canonical stable artifact",

@@ -598,6 +598,22 @@ test("candidate provenance requires channel-specific release artifact attestatio
   assert.equal(previewReport.candidate.releaseTag, null);
   assert.equal(previewReport.candidate.provenanceSha256, null);
 
+  const canonicalPreviewCandidate = {
+    ...candidate(),
+    buildMethod: "canonical-preview-release-artifact-v1",
+    releaseTag: "v0.3.0",
+    provenanceSha256: sha("e")
+  };
+  const canonicalPreviewReport = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: canonicalPreviewCandidate,
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [editorRun("vscode")]
+  });
+  assert.equal(canonicalPreviewReport.candidate.releaseTag, "v0.3.0");
+  assert.equal(canonicalPreviewReport.candidate.provenanceSha256, sha("e"));
+
   const stableRun = editorRun("vscode");
   stableRun.provenance.runtime.openWranglerRuntimeVersion = "1.0.0";
   for (const phase of stableRun.phases) phase.runtime.openWranglerRuntimeVersion = "1.0.0";
@@ -629,6 +645,8 @@ test("candidate provenance requires channel-specific release artifact attestatio
     [missingProvenance, /candidate provenance has missing or unknown fields/u],
     [{ ...candidate(), releaseTag: "v0.3.0" }, /preview candidate release tag must be null/u],
     [{ ...candidate(), provenanceSha256: sha("f") }, /preview candidate provenance SHA-256 must be null/u],
+    [{ ...canonicalPreviewCandidate, releaseTag: null }, /preview candidate release tag must be "v0\.3\.0"/u],
+    [{ ...canonicalPreviewCandidate, provenanceSha256: null }, /preview candidate provenance SHA-256 is invalid/u],
     [{ ...stableCandidate, releaseTag: null }, /stable candidate release tag must be "v1\.0\.0"/u],
     [{ ...stableCandidate, provenanceSha256: null }, /stable candidate provenance SHA-256 is invalid/u],
     [{ ...stableCandidate, releaseTag: "v1.0.1" }, /stable candidate release tag must be "v1\.0\.0"/u],
@@ -659,8 +677,24 @@ test("candidate build provenance is bound to its release channel", () => {
         fixtureManifest: fixtureManifest(),
         editorRuns: [previewRun]
       }),
-    /candidate build method must be "guarded-clean-head-v1"/u
+    /candidate build method must be "guarded-clean-head-v1" or "canonical-preview-release-artifact-v1"/u
   );
+
+  const previewCursorRun = editorRun("cursor");
+  const canonicalPreviewReport = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: {
+      ...candidate(),
+      buildMethod: "canonical-preview-release-artifact-v1",
+      releaseTag: "v0.3.0",
+      provenanceSha256: sha("e")
+    },
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [previewRun, previewCursorRun]
+  });
+  assert.equal(canonicalPreviewReport.candidate.buildMethod, "canonical-preview-release-artifact-v1");
+  assert.equal(assertInstalledPerformanceReleaseGate(canonicalPreviewReport), canonicalPreviewReport);
 
   const stableRun = editorRun("vscode");
   stableRun.provenance.runtime.openWranglerRuntimeVersion = "1.0.0";
@@ -678,6 +712,17 @@ test("candidate build provenance is bound to its release channel", () => {
       buildInstalledPerformanceReport({
         generatedAtUtc: "2026-07-27T00:00:00.000Z",
         candidate: stableCandidate,
+        source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+        fixtureManifest: fixtureManifest(),
+        editorRuns: [stableRun]
+      }),
+    /candidate build method must be "canonical-release-artifact-v1"/u
+  );
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({
+        generatedAtUtc: "2026-07-27T00:00:00.000Z",
+        candidate: { ...stableCandidate, buildMethod: "canonical-preview-release-artifact-v1" },
         source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
         fixtureManifest: fixtureManifest(),
         editorRuns: [stableRun]

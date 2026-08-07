@@ -460,8 +460,11 @@ export function inspectPreviewReleaseWorkflow(source) {
   if (runs(workflow.jobs["cross-platform"]).some((run) => run.startsWith("python -m pytest"))) {
     problems.push("cross-platform must retain native smoke coverage without repeating the complete Python suite.");
   }
-  if (!runs(workflow.jobs["installed-performance"]).some((run) => run.includes("benchmark:installed --"))) {
-    problems.push("installed-performance must retain pinned-editor performance acceptance.");
+  const installedPerformanceRun = runs(workflow.jobs["installed-performance"]).find((run) =>
+    run.includes("benchmark:installed --")
+  );
+  if (!installedPerformanceRun?.includes("--preview-release")) {
+    problems.push("installed-performance must retain canonical preview performance acceptance.");
   }
   const jupyter = workflow.jobs["released-jupyter"];
   const jupyterRuns = runs(jupyter);
