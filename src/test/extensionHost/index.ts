@@ -7129,6 +7129,39 @@ async function exerciseReleasedJupyterExtension(
       phase
     );
     await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
+
+    recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
+    await dispatchReleasedJupyterVariableAction(workbench, notebook, "duckdb_relation", `${phase}:duckdb-variables`);
+    const duckdbVariablesRelation = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      {
+        name: "duckdb_relation",
+        type: "_duckdb.DuckDBPyRelation",
+        backend: "duckdb",
+        firstValue: "3400001",
+        notebookInsert: false
+      },
+      "the exact DuckDB relation opened from the existing Jupyter Variables view"
+    );
+    assert.equal(
+      duckdbVariablesRelation.metadata.mode,
+      "viewing",
+      "A DuckDB relation opened from Jupyter Variables must stay viewing-only."
+    );
+    assert.deepEqual(duckdbVariablesRelation.metadata.shape, { rows: 100_000, columns: 4 });
+    await assertReleasedSessionPage(
+      testing,
+      duckdbVariablesRelation,
+      "3400001",
+      "released-jupyter-duckdb-variables-native-page"
+    );
+    await disposePackagedSessionPanel(
+      testing,
+      duckdbVariablesRelation.sessionId,
+      "the released-Jupyter DuckDB relation opened from Jupyter Variables"
+    );
     await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
 
     recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
@@ -7402,16 +7435,10 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(duckdbAlive.first, 3_400_001);
       assert.equal(duckdbAlive.conversionGuards, true);
 
-      recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
-      const duckdbVariablesEditor = await showExactReleasedNotebook(notebook);
-      assertExactVisibleReleasedNotebookEditor(
-        notebook,
-        duckdbVariablesEditor,
-        "before opening the real Jupyter Variables action for DuckDB"
-      );
-      await vscode.commands.executeCommand("jupyter.openVariableView");
-      await dispatchReleasedJupyterVariableAction(workbench, notebook, "duckdb_relation", `${phase}:duckdb-variables`);
-      const duckdbVariablesRelation = await waitForReleasedVariableSession(
+      recordAcceptanceProgress(`${phase}:duckdb-toolbar-reopen`);
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, "duckdb_relation");
+      const reopenedDuckdbRelation = await waitForReleasedVariableSession(
         workbench,
         testing,
         notebook,
@@ -7422,47 +7449,47 @@ async function exerciseReleasedJupyterExtension(
           firstValue: "3400001",
           notebookInsert: false
         },
-        "the exact DuckDB relation opened from the real Jupyter Variables view"
+        "the exact DuckDB relation reopened from the Open Wrangler notebook toolbar"
       );
-      assert.equal(duckdbVariablesRelation.metadata.mode, "viewing");
+      assert.equal(reopenedDuckdbRelation.metadata.mode, "viewing");
       assert.deepEqual(
-        duckdbVariablesRelation.metadata.filterModel,
+        reopenedDuckdbRelation.metadata.filterModel,
         filteredDuckdbModel,
         "Reopening the same live DuckDB variable must restore its confirmed viewing state."
       );
-      assert.deepEqual(duckdbVariablesRelation.metadata.filteredShape, { rows: 25_000, columns: 4 });
+      assert.deepEqual(reopenedDuckdbRelation.metadata.filteredShape, { rows: 25_000, columns: 4 });
       await assertReleasedSessionPage(
         testing,
-        duckdbVariablesRelation,
+        reopenedDuckdbRelation,
         "3499997",
-        "released-jupyter-duckdb-variables-restored-page"
+        "released-jupyter-duckdb-toolbar-restored-page"
       );
 
-      const unfilteredDuckdbVariablesPage = await testing.request({
+      const unfilteredReopenedDuckdbPage = await testing.request({
         kind: "getPage",
         columnOffset: 0,
         columnLimit: 4,
-        viewRequestId: "released-jupyter-duckdb-variables-complete-page",
-        sessionId: duckdbVariablesRelation.sessionId,
-        revision: duckdbVariablesRelation.metadata.revision,
+        viewRequestId: "released-jupyter-duckdb-toolbar-complete-page",
+        sessionId: reopenedDuckdbRelation.sessionId,
+        revision: reopenedDuckdbRelation.metadata.revision,
         offset: 0,
         limit: 10,
         filterModel: { logic: "and", filters: [], sort: [] }
       });
-      assert.equal(unfilteredDuckdbVariablesPage.kind, "page");
-      if (unfilteredDuckdbVariablesPage.kind !== "page") {
-        throw new Error("The complete native DuckDB Variables page did not resolve.");
+      assert.equal(unfilteredReopenedDuckdbPage.kind, "page");
+      if (unfilteredReopenedDuckdbPage.kind !== "page") {
+        throw new Error("The complete native DuckDB toolbar page did not resolve.");
       }
-      assert.equal(unfilteredDuckdbVariablesPage.page.totalRows, 100_000);
-      assert.equal(unfilteredDuckdbVariablesPage.page.rows[0]?.values[0]?.display, "3400001");
+      assert.equal(unfilteredReopenedDuckdbPage.page.totalRows, 100_000);
+      assert.equal(unfilteredReopenedDuckdbPage.page.rows[0]?.values[0]?.display, "3400001");
 
       const recoveryDuckdbPage = await testing.request({
         kind: "getPage",
         columnOffset: 0,
         columnLimit: 4,
         viewRequestId: "released-jupyter-duckdb-native-recovery-view",
-        sessionId: duckdbVariablesRelation.sessionId,
-        revision: unfilteredDuckdbVariablesPage.revision,
+        sessionId: reopenedDuckdbRelation.sessionId,
+        revision: unfilteredReopenedDuckdbPage.revision,
         offset: 0,
         limit: 10,
         filterModel: filteredDuckdbModel
@@ -7477,7 +7504,7 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(recoveryDuckdbPage.page.rows[0]?.values[1]?.display, "DACH");
       const duckdbDiagnostic = testing
         .diagnostics()
-        .sessions.find((session) => session.publicId === duckdbVariablesRelation.sessionId);
+        .sessions.find((session) => session.publicId === reopenedDuckdbRelation.sessionId);
       assert.ok(duckdbDiagnostic, "The native DuckDB session must remain coordinated before kernel restart.");
       const recoveryDuckdbRevenue = columnReference(recoveryDuckdbPage.metadata, "revenue");
       const recoveryDuckdbViewState: GridViewState = {
@@ -7491,18 +7518,18 @@ async function exerciseReleasedJupyterExtension(
         viewport: { firstVisibleRow: 123, scrollLeft: 120 }
       };
       await waitFor(
-        () => testing.panelHydrated(duckdbVariablesRelation.sessionId),
+        () => testing.panelHydrated(reopenedDuckdbRelation.sessionId),
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
         "the native DuckDB recovery panel to hydrate before presentation injection"
       );
       assert.equal(
-        await testing.synchronizePanel(duckdbVariablesRelation.sessionId),
+        await testing.synchronizePanel(reopenedDuckdbRelation.sessionId),
         true,
         "The native DuckDB recovery panel must settle its default presentation before injection."
       );
-      await testing.updateViewState(duckdbVariablesRelation.sessionId, recoveryDuckdbViewState);
+      await testing.updateViewState(reopenedDuckdbRelation.sessionId, recoveryDuckdbViewState);
       assert.equal(
-        await testing.synchronizePanel(duckdbVariablesRelation.sessionId),
+        await testing.synchronizePanel(reopenedDuckdbRelation.sessionId),
         true,
         "The native DuckDB recovery presentation must commit through the real renderer before restart."
       );
@@ -7511,7 +7538,7 @@ async function exerciseReleasedJupyterExtension(
         filterModel: filteredDuckdbModel
       });
       duckdbRecoverySession = {
-        sessionId: duckdbVariablesRelation.sessionId,
+        sessionId: reopenedDuckdbRelation.sessionId,
         revision: recoveryDuckdbPage.revision,
         filterModel: filteredDuckdbModel,
         runtimeId: duckdbDiagnostic.runtimeId,
