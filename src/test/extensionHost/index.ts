@@ -11984,12 +11984,26 @@ async function exercisePackagedTrustedPickleConversion(
     assert.equal(createHash("sha256").update(readFileSync(sourcePath)).digest("hex"), sourceDigest);
 
     const openAction = completedNotice.getByRole("button", { name: "Open in Open Wrangler", exact: true });
+    assert.equal(await openAction.count(), 1, "The completed conversion notice must expose one Open action.");
     await openAction.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    await openAction.click({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS, noWaitAfter: true });
+    await workbench.bringToFront();
+    await openAction.focus({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+    const actionState = await openAction.evaluate((element) => ({
+      connected: element.isConnected,
+      focused: element.ownerDocument.activeElement === element
+    }));
+    assert.deepEqual(actionState, { connected: true, focused: true });
+    await openAction.press("Enter", { timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+    recordAcceptanceProgress("platform-smoke:trusted-pickle:open-action-dispatched");
     assert.equal(
-      await withBoundedAcceptancePromise(converted, SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS, "opening converted Parquet"),
+      await withBoundedAcceptancePromise(
+        converted,
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        "the trusted pickle completion action"
+      ),
       true
     );
+    recordAcceptanceProgress("platform-smoke:trusted-pickle:open");
     await waitFor(
       () => testing.activeSession()?.metadata.source.path === vscode.Uri.file(destinationPath).fsPath,
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,

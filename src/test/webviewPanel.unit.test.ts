@@ -740,7 +740,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
 
-  it("reloads an active renderer exactly once when its startup handshake never arrives", async () => {
+  it("gives an active renderer two bounded recovery reloads when its startup handshake never arrives", async () => {
     vi.useFakeTimers();
     try {
       const reportDiagnostic = vi.fn();
@@ -768,8 +768,14 @@ describe("OpenWranglerPanel retained view state", () => {
         "Open Wrangler reloaded a renderer that did not complete its startup handshake."
       );
 
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(4_999);
       expect(harness.htmlAssignmentCount).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.htmlAssignmentCount).toBe(3);
+      expect(reportDiagnostic).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(harness.htmlAssignmentCount).toBe(3);
 
       await harness.receive({ kind: "ready" });
       const recoveredMarker = latestRendererSynchronization(harness.posted);
@@ -780,7 +786,7 @@ describe("OpenWranglerPanel retained view state", () => {
         revision: recoveredMarker.revision
       });
       expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
-      expect(harness.htmlAssignmentCount).toBe(2);
+      expect(harness.htmlAssignmentCount).toBe(3);
       expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
       expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([openedResponse, openedResponse]);
     } finally {
@@ -908,8 +914,6 @@ describe("OpenWranglerPanel retained view state", () => {
       await harness.open();
       await harness.receive({ kind: "ready" });
       expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(false);
-
-      await vi.advanceTimersByTimeAsync(5_000);
       expect(harness.htmlAssignmentCount).toBe(2);
 
       rejectSynchronizationMarker = false;
@@ -963,6 +967,58 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(true);
     await acknowledgeLatestRendererSynchronization(harness);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+  });
+
+  it("does not publish from an old ready handler after startup recovery replaces its renderer", async () => {
+    vi.useFakeTimers();
+    const initialPublication = deferred<void>();
+    try {
+      const openResult = deferred<OpenWranglerResponse>();
+      let heldInitialPublication = false;
+      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (candidate.kind === "openSession") return openResult.promise;
+        if (candidate.kind === "closeSession") {
+          return { kind: "sessionClosed", sessionId: candidate.sessionId };
+        }
+        throw new Error("Unexpected panel request.");
+      });
+      const harness = createPanelHarness(
+        { request },
+        {
+          delegateOpen: true,
+          postMessage: async (message) => {
+            if (!heldInitialPublication && isSessionOpenedResponse(message)) {
+              heldInitialPublication = true;
+              await initialPublication.promise;
+            }
+            return true;
+          }
+        }
+      );
+
+      const opening = harness.open();
+      const firstReady = harness.receive({ kind: "ready" });
+      for (let attempt = 0; attempt < 20; attempt += 1) await Promise.resolve();
+      openResult.resolve(openedResponse);
+      for (let attempt = 0; attempt < 10 && !heldInitialPublication; attempt += 1) await Promise.resolve();
+      expect(heldInitialPublication).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await opening;
+      await firstReady;
+
+      expect(harness.htmlAssignmentCount).toBe(2);
+      expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([openedResponse]);
+      expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(false);
+
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+      expect(harness.posted.filter(isSessionOpenedResponse)).toEqual([openedResponse, openedResponse]);
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+    } finally {
+      initialPublication.resolve();
+      vi.useRealTimers();
+    }
   });
 
   it("abandons a stalled initial publication and hydrates one recovered renderer generation", async () => {
