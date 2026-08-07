@@ -2004,7 +2004,6 @@ async function exerciseReleasedRJupyterExtension(
       columnValues: true,
       supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS
     });
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
@@ -2031,7 +2030,6 @@ async function exerciseReleasedRJupyterExtension(
       },
       "the orders R data.frame opened in editing mode"
     );
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-editing-journey`);
     await exerciseReleasedREditingJourney(
       testing,
       workbench,
@@ -2076,7 +2074,6 @@ async function exerciseReleasedRJupyterExtension(
         },
         "the representative R orders session"
       );
-      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-before-capture`);
       await captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-after-capture`);
       await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
@@ -2127,8 +2124,9 @@ async function exerciseReleasedRJupyterExtension(
       );
       assert.equal(session.metadata.mode, "editing");
       assert.deepEqual(session.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
-      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
+      recordAcceptanceProgress(`${phase}:${expected.name}:editing-session-received`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
+      recordAcceptanceProgress(`${phase}:${expected.name}:editing-renderer-ready`);
       const previewed = await previewReleasedRRename(
         testing,
         workbench,
@@ -4944,8 +4942,6 @@ async function exerciseReleasedREditingJourney(
   const reappliedClone = testing.activeSession();
   assert.ok(reappliedClone, "The edited native R clone must retain its session.");
   assertReleasedRCloneGeneratedCode(reappliedClone.code ?? "", "score", "score_duplicate");
-  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:clone-source-after-edit`);
-
   app = await releasedRSessionApp(workbench, testing, sessionId, "the edited R Clone Column session before undo");
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(
@@ -4966,8 +4962,6 @@ async function exerciseReleasedREditingJourney(
     30_000,
     "undoing the edited native R Clone Column step"
   );
-  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:clone-source-after-undo`);
-
   recordAcceptanceProgress(`${phase}:editing:text-length-preview-discard`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Text Length");
   const discardedLength = await previewReleasedRTextLength(
@@ -5512,7 +5506,6 @@ async function exerciseReleasedREditingJourney(
       sessionId,
       "The discarded R Floor and Ceiling previews must reach their renderer."
     );
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:numeric-rounding-source-after-undo`);
   }
 
   if (phase === "jupyter-r") {
@@ -5630,8 +5623,6 @@ async function exerciseReleasedREditingJourney(
   assert.equal(lowercaseUndo.kind, "planUpdated", "Packaged native R Lowercase must undo.");
   if (lowercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Lowercase undo failed.");
   assert.equal(lowercaseUndo.page.rows[0]?.values[1]?.display, "A");
-  await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:lowercase-source-after-undo`);
-
   if (phase === "jupyter-r") {
     recordAcceptanceProgress(`${phase}:editing:uppercase-preview-apply-undo`);
     const uppercaseBase = testing.activeSession();
@@ -5681,12 +5672,10 @@ async function exerciseReleasedREditingJourney(
     assert.equal(uppercaseUndo.kind, "planUpdated", "Packaged native R Uppercase must undo.");
     if (uppercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Uppercase undo failed.");
     assert.equal(uppercaseUndo.page.rows[0]?.values[0]?.display, "row-0001");
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:text-cleaning-source-after-undo`);
     // These direct coordinator checks intentionally follow the final Open Wrangler
     // renderer mutation so their newer revisions cannot leave a later UI action stale.
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:additional-text-tools-source-after-undo`);
   }
 
   if (phase === "jupyter-r" && screenshotOutput) {
@@ -6544,6 +6533,7 @@ async function releasedRSessionApp(
   sessionId: string,
   description: string
 ): Promise<Locator> {
+  let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   // Applied-step inspection is deliberately cleared when a renderer is
   // regenerated. Confirmed and draft states can be forced to a fresh
   // generation; an active inspection must render on the existing one.
@@ -6553,8 +6543,10 @@ async function releasedRSessionApp(
       sessionId,
       `${description} must render the current confirmed session state.`
     );
+    // Synchronization may retire the generation that supplied the initial
+    // visible-grid receipt, so locate the exact session again before use.
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   }
-  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, `${description} requires its exact Open Wrangler renderer.`);
   return app;
@@ -13565,7 +13557,8 @@ async function requireFreshExactSessionPanelHydration(
       expectedSessionId: sessionId,
       activeSessionId: testing.activeSession()?.sessionId,
       panelHydrated: testing.panelHydrated(sessionId),
-      panelSynchronizable: testing.panelSynchronizable(sessionId)
+      panelSynchronizable: testing.panelSynchronizable(sessionId),
+      activeTab: activeEditorTabDiagnostic()
     })}`
   );
 }

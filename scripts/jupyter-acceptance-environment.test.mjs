@@ -467,6 +467,75 @@ test("R editing acceptance reveals the capitalized column after temporary derive
   );
 });
 
+test("R native-frame editing waits for its visible renderer before notebook probes", async () => {
+  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
+  const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
+  const journeyEnd = source.indexOf("\nasync function exerciseReleasedRDocumentJourney(", journeyStart);
+  assert.ok(journeyStart >= 0 && journeyEnd > journeyStart);
+  const journey = source.slice(journeyStart, journeyEnd);
+
+  const frames = journey.indexOf("const additionalRFrames = [");
+  const editingMode = journey.indexOf(
+    'await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);',
+    frames
+  );
+  const loop = journey.indexOf("for (const expected of additionalRFrames)", editingMode);
+  const sessionReceipt = journey.indexOf(":editing-session-received`);", loop);
+  const rendererReceipt = journey.indexOf("let app = await releasedRSessionApp(", sessionReceipt);
+  const rendererCheckpoint = journey.indexOf(":editing-renderer-ready`);", rendererReceipt);
+  const renamePreview = journey.indexOf("const previewed = await previewReleasedRRename(", rendererCheckpoint);
+  const sourceProbe = journey.indexOf(":after-rename-discard`);", renamePreview);
+  const loopEnd = journey.indexOf('await configuration.update("notebookStartMode", "viewing"', loop);
+
+  assert.ok(
+    frames >= 0 &&
+      editingMode > frames &&
+      loop > editingMode &&
+      sessionReceipt > loop &&
+      rendererReceipt > sessionReceipt &&
+      rendererCheckpoint > rendererReceipt &&
+      renamePreview > rendererCheckpoint &&
+      sourceProbe > renamePreview &&
+      loopEnd > sourceProbe,
+    "The native tibble/data.table editing loop must obtain a visible renderer before editing and probe the notebook only afterward."
+  );
+  assert.doesNotMatch(
+    journey.slice(loop, rendererReceipt),
+    /assertReleasedRRuntimeBinding\(/u,
+    "A notebook execution before the first renderer receipt can retire Cursor's new panel."
+  );
+  assert.doesNotMatch(
+    journey,
+    /source-before-(?:filter|editing)-journey|media-source-before-capture/u,
+    "The R journey must not execute notebook probes between opening a panel and completing its UI work."
+  );
+  assert.match(journey, /source-after-filter-journey/u);
+  assert.match(journey, /source-after-editing-journey/u);
+  assert.match(journey, /media-source-after-capture/u);
+  assert.match(journey, /:after-rename-discard/u);
+
+  const editingJourneyStart = source.indexOf("async function exerciseReleasedREditingJourney(");
+  const editingJourneyEnd = source.indexOf("\nasync function ", editingJourneyStart + 1);
+  assert.ok(editingJourneyStart >= 0 && editingJourneyEnd > editingJourneyStart);
+  assert.doesNotMatch(
+    source.slice(editingJourneyStart, editingJourneyEnd),
+    /assertReleasedRRuntimeBinding\(/u,
+    "Notebook binding probes belong after the complete editing journey, not between UI operations."
+  );
+
+  const helperStart = source.indexOf("async function releasedRSessionApp(");
+  const helperEnd = source.indexOf("\nasync function captureReleasedRJupyterWorkbench(", helperStart);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart);
+  const helper = source.slice(helperStart, helperEnd);
+  const visibleGrid = helper.indexOf("let target = await waitForOpenWranglerGridTarget(");
+  const synchronization = helper.indexOf("await requireFreshExactSessionPanelHydration(", visibleGrid);
+  const reacquiredGrid = helper.indexOf("target = await waitForOpenWranglerGridTarget(", synchronization);
+  assert.ok(
+    visibleGrid >= 0 && synchronization > visibleGrid && reacquiredGrid > synchronization,
+    "A released R panel must provide a visible-grid receipt before synchronization and be reacquired afterward."
+  );
+});
+
 test("remote Jupyter phases receive empty private client roots without a host kernelspec", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-remote-jupyter-environment-"));
   try {
