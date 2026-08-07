@@ -798,6 +798,57 @@ describe("OpenWranglerPanel retained view state", () => {
     }
   });
 
+  it("does not interrupt an initial renderer when its pre-ready session publication is rejected", async () => {
+    vi.useFakeTimers();
+    try {
+      const initialSessionPublication = deferred<boolean>();
+      let heldInitialSessionPublication = false;
+      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (candidate.kind === "closeSession") {
+          return { kind: "sessionClosed", sessionId: candidate.sessionId };
+        }
+        return openedResponse;
+      });
+      const harness = createPanelHarness(
+        { request },
+        {
+          delegateOpen: true,
+          postMessage: async (message) => {
+            if (!heldInitialSessionPublication && isSessionOpenedResponse(message)) {
+              heldInitialSessionPublication = true;
+              return initialSessionPublication.promise;
+            }
+            return true;
+          }
+        }
+      );
+
+      const opening = harness.open();
+      for (let attempt = 0; attempt < 10 && !heldInitialSessionPublication; attempt += 1) await Promise.resolve();
+      expect(heldInitialSessionPublication).toBe(true);
+
+      await harness.receive({ kind: "ready" });
+      const synchronization = latestRendererSynchronization(harness.posted);
+      initialSessionPublication.resolve(false);
+      await opening;
+
+      expect(harness.htmlAssignmentCount).toBe(1);
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: synchronization.syncId,
+        sessionId: synchronization.sessionId,
+        revision: synchronization.revision
+      });
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+      expect(harness.htmlAssignmentCount).toBe(1);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reloads an error renderer that starts but never acknowledges its synchronized UI", async () => {
     vi.useFakeTimers();
     try {
