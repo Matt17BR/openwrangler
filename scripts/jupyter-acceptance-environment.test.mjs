@@ -441,6 +441,32 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
+test("R editing acceptance reveals the capitalized column after temporary derived columns", async () => {
+  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
+  const start = source.indexOf("async function exerciseReleasedREditingJourney(");
+  const end = source.indexOf("\nasync function ", start + 1);
+  assert.ok(start >= 0 && end > start);
+  const journey = source.slice(start, end);
+
+  const ceilingReveal = journey.indexOf('await ceilingColumnSearch.fill("score_ceiling")');
+  const capitalizePreview = journey.indexOf('"The R Capitalize preview must reach its renderer."');
+  const labelReveal = journey.indexOf("await capitalizeColumnSearch.fill(labelColumn.name)");
+  const selectedReceipt = journey.indexOf(
+    "testing.activeSession()?.viewState.selectedColumnId === labelColumn.id",
+    labelReveal
+  );
+  const visibleValue = journey.indexOf('"the visible R Capitalize value in row 1"', selectedReceipt);
+
+  assert.ok(
+    ceilingReveal >= 0 &&
+      capitalizePreview > ceilingReveal &&
+      labelReveal > capitalizePreview &&
+      selectedReceipt > labelReveal &&
+      visibleValue > selectedReceipt,
+    "The R journey must reveal label through Column Search before reading its virtualized Capitalize cell."
+  );
+});
+
 test("remote Jupyter phases receive empty private client roots without a host kernelspec", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-remote-jupyter-environment-"));
   try {
