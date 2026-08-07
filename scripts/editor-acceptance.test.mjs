@@ -137,18 +137,27 @@ test("released-Jupyter Variables acceptance targets the canonical orders showcas
     source.indexOf("async function exerciseReleasedPySparkJupyterExtension(")
   );
   const pandasDisposed = journey.indexOf('"the released-Jupyter Pandas DataFrame session"');
-  const duckdbVariables = journey.indexOf("recordAcceptanceProgress(`${phase}:duckdb-variables-action`)");
+  const duckdbVariablesGuard = journey.indexOf("if (!kernelTarget.remote) {", pandasDisposed);
+  const duckdbVariables = journey.indexOf(
+    "recordAcceptanceProgress(`${phase}:duckdb-variables-action`)",
+    duckdbVariablesGuard
+  );
   const polarsToolbar = journey.indexOf("recordAcceptanceProgress(`${phase}:polars-series-toolbar`)");
   const duckdbInline = journey.indexOf("recordAcceptanceProgress(`${phase}:duckdb-inline`)");
   const duckdbToolbarReopen = journey.indexOf("recordAcceptanceProgress(`${phase}:duckdb-toolbar-reopen`)");
   const pandasSeries = journey.indexOf("recordAcceptanceProgress(`${phase}:pandas-series`)");
-  assert.ok(pandasDisposed >= 0 && duckdbVariables > pandasDisposed && polarsToolbar > duckdbVariables);
+  assert.ok(
+    pandasDisposed >= 0 &&
+      duckdbVariablesGuard > pandasDisposed &&
+      duckdbVariables > duckdbVariablesGuard &&
+      polarsToolbar > duckdbVariables
+  );
   assert.ok(duckdbInline > polarsToolbar && duckdbToolbarReopen > duckdbInline && pandasSeries > duckdbToolbarReopen);
 
-  const earlyDuckdbVariables = journey.slice(duckdbVariables, polarsToolbar);
+  const earlyDuckdbVariables = journey.slice(duckdbVariablesGuard, polarsToolbar);
   assert.match(
     earlyDuckdbVariables,
-    /dispatchReleasedJupyterVariableAction\(workbench, notebook, "duckdb_relation", `\$\{phase\}:duckdb-variables`\)/u
+    /if \(!kernelTarget\.remote\) \{[\s\S]*?dispatchReleasedJupyterVariableAction\([\s\S]*?"duckdb_relation",[\s\S]*?`\$\{phase\}:duckdb-variables`[\s\S]*?\);/u
   );
   assert.doesNotMatch(earlyDuckdbVariables, /jupyter\.openVariableView/u);
 
