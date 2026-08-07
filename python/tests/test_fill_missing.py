@@ -516,8 +516,8 @@ def test_pandas_fallback_columns_are_positional_with_duplicate_indexes_and_label
     engine = PandasEngine()
     source = pd.DataFrame(
         [[None, 10, 100], [2, 20, 200], [None, 30, 300]],
-        index=[0, 0, 1],
-        columns=["duplicate", "duplicate", 7],
+        index=pd.Index([0, 0, 1]),
+        columns=pd.Index(["duplicate", "duplicate", 7], dtype=object),
     ).astype({"duplicate": "Int64", 7: "Int64"})
     operation = fill_step(
         bound_ref("c:source:0", "duplicate", 0),

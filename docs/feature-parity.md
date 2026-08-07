@@ -108,10 +108,11 @@ outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `In
 ties-to-even rule. An active `data.table` key cannot be changed in place, but the result can be appended to a new
 column.
 
-Fill Missing Values offers the median of all non-missing numeric values, the most common non-missing character,
-factor, or logical value, a specific typed value, or ordered same-row fallback columns. Automatic fills ignore `NA`
-and `NaN`. Factor order and existing levels are kept; new labels used by a fill are appended as levels. Signed 64-bit
-integers, dates, and datetimes keep their R types. Active data-table key columns are blocked.
+Fill Missing Values offers the median of all non-missing numeric values, the mean of a double column, the most common
+non-missing character, factor, or logical value, a specific typed value, or ordered same-row fallback columns.
+Automatic fills ignore `NA` and `NaN`. Factor order and existing levels are kept; new labels used by a fill are
+appended as levels. Signed 64-bit integers, dates, and datetimes keep their R types. Active data-table key columns are
+blocked.
 
 The default `collapse::qDF()` output follows the base `data.frame` path. Default `collapse::qTBL()` and `qDT()` output
 follows the existing tibble and `data.table` paths. Open Wrangler does not require `collapse`, and grouped `GRP_df`

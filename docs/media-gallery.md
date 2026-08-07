@@ -181,16 +181,17 @@ convert factors to character and keep `NA`. Capitalize changes the first charact
 lowercase. Strip text removes whitespace or a literal set of edge characters. Split text uses a literal delimiter and
 returns `NA` when the selected part is missing. Find and replace accepts literal text or a regular expression. Convert
 type supports string, integer, float, boolean, date, and datetime targets. Values that cannot be converted become `NA`.
-Fill Missing Values can use the median of all non-missing numeric values, the most common non-missing character,
-factor, or logical value, or a value entered by the user. It keeps dates, datetimes, and `integer64` in their R types;
-a new factor value is added as a level.
+Fill Missing Values can use the median of all non-missing numeric values, the mean of a double column, the most
+common non-missing character, factor, or logical value, or a value entered by the user. It can also check an ordered
+list of same-type columns and use the first present value in each row. These methods ignore `NA` and `NaN`. Dates,
+datetimes, and `integer64` keep their R types; a new factor value is added as a level.
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's
 ties-to-even rule. A keyed `data.table` column can be written to a new output column but cannot be changed in place.
 All twenty operations use draft preview, generated R, apply, discard, inspection, latest-step editing, and undo.
 Generated R can be copied, saved as a `.R` script, or inserted into the notebook or R document that opened the
-dataframe. A local R document session opened in Editing mode can also export its cleaned result as CSV. R notebooks
-cannot export cleaned data yet, and R Parquet export is not supported yet.
+dataframe. R notebook and local R document sessions opened in Editing mode can export their cleaned result as CSV.
+R Parquet export is not supported yet.
 
 <a href="images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
