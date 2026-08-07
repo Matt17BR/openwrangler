@@ -7139,38 +7139,42 @@ async function exerciseReleasedJupyterExtension(
     );
     await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
 
-    recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
-    await dispatchReleasedJupyterVariableAction(workbench, notebook, "duckdb_relation", `${phase}:duckdb-variables`);
-    const duckdbVariablesRelation = await waitForReleasedVariableSession(
-      workbench,
-      testing,
-      notebook,
-      {
-        name: "duckdb_relation",
-        type: "_duckdb.DuckDBPyRelation",
-        backend: "duckdb",
-        firstValue: "3400001",
-        notebookInsert: false
-      },
-      "the exact DuckDB relation opened from the existing Jupyter Variables view"
-    );
-    assert.equal(
-      duckdbVariablesRelation.metadata.mode,
-      "viewing",
-      "A DuckDB relation opened from Jupyter Variables must stay viewing-only."
-    );
-    assert.deepEqual(duckdbVariablesRelation.metadata.shape, { rows: 100_000, columns: 4 });
-    await assertReleasedSessionPage(
-      testing,
-      duckdbVariablesRelation,
-      "3400001",
-      "released-jupyter-duckdb-variables-native-page"
-    );
-    await disposePackagedSessionPanel(
-      testing,
-      duckdbVariablesRelation.sessionId,
-      "the released-Jupyter DuckDB relation opened from Jupyter Variables"
-    );
+    // Cursor may retire Jupyter's Variables frame after its first remote activation. The local
+    // phase proves DuckDB's Variables action; the remote journey exercises the relation below.
+    if (!kernelTarget.remote) {
+      recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
+      await dispatchReleasedJupyterVariableAction(workbench, notebook, "duckdb_relation", `${phase}:duckdb-variables`);
+      const duckdbVariablesRelation = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "duckdb_relation",
+          type: "_duckdb.DuckDBPyRelation",
+          backend: "duckdb",
+          firstValue: "3400001",
+          notebookInsert: false
+        },
+        "the exact DuckDB relation opened from the existing Jupyter Variables view"
+      );
+      assert.equal(
+        duckdbVariablesRelation.metadata.mode,
+        "viewing",
+        "A DuckDB relation opened from Jupyter Variables must stay viewing-only."
+      );
+      assert.deepEqual(duckdbVariablesRelation.metadata.shape, { rows: 100_000, columns: 4 });
+      await assertReleasedSessionPage(
+        testing,
+        duckdbVariablesRelation,
+        "3400001",
+        "released-jupyter-duckdb-variables-native-page"
+      );
+      await disposePackagedSessionPanel(
+        testing,
+        duckdbVariablesRelation.sessionId,
+        "the released-Jupyter DuckDB relation opened from Jupyter Variables"
+      );
+    }
     await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
 
     recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
