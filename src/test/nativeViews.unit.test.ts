@@ -212,8 +212,12 @@ describe("native operation commands", () => {
 
     await command("openWrangler.startOperation")();
 
-    expect(nativeMocks.sendEditorAction).toHaveBeenCalledOnce();
-    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({ action: "openOperation" });
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledOnce();
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "openOperation",
+      expectedSessionId: "session",
+      expectedRevision: 0
+    });
   });
 
   it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
@@ -269,14 +273,29 @@ describe("native operation commands", () => {
     expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual(["Rename column"]);
 
     await command("openWrangler.startOperation")("customCode");
-    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
     expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith("Custom code is not available for this dataframe.");
 
     await command("openWrangler.startOperation")("renameColumn");
-    expect(nativeMocks.sendEditorAction).toHaveBeenCalledOnce();
-    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledOnce();
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
       action: "openOperation",
+      expectedSessionId: "session",
+      expectedRevision: 0,
       operationKind: "renameColumn"
+    });
+  });
+
+  it("pins editLatestStep to the active session revision", async () => {
+    register(noDraftSnapshot());
+
+    await command("openWrangler.editLatestStep")();
+
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledOnce();
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "editLatest",
+      expectedSessionId: "session",
+      expectedRevision: 0
     });
   });
 

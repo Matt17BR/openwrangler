@@ -193,6 +193,33 @@ describe("OpenWranglerPanel retained view state", () => {
     ).toBe(false);
   });
 
+  it("reveals an exact-session operation only after the renderer is hydrated", async () => {
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    harness.posted.length = 0;
+    harness.reveal.mockClear();
+
+    await expect(
+      OpenWranglerPanel.sendEditorActionForSession({
+        action: "openOperation",
+        expectedSessionId: openedResponse.metadata.sessionId,
+        expectedRevision: openedResponse.metadata.revision
+      })
+    ).resolves.toBe(true);
+
+    expect(harness.reveal).toHaveBeenCalledWith(expect.anything(), false);
+    expect(harness.posted).toEqual([
+      {
+        kind: "editorAction",
+        action: "openOperation",
+        expectedSessionId: openedResponse.metadata.sessionId,
+        expectedRevision: openedResponse.metadata.revision
+      }
+    ]);
+  });
+
   it("reports a failed exact-session editor-action delivery", async () => {
     const harness = createPanelHarness(
       { request: vi.fn(async () => openedResponse) },

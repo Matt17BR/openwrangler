@@ -84,6 +84,7 @@ export function App() {
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [queuedStepSelection, setQueuedStepSelection] = useState<QueuedStepSelection | undefined>();
+  const [queuedOperationIntent, setQueuedOperationIntent] = useState<QueuedOperationIntent | undefined>();
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
   const [liveSessionReconnectPending, setLiveSessionReconnectPending] = useState(false);
   const [sessionOpenProgress, setSessionOpenProgress] = useState<SessionOpenProgressStage | undefined>();
@@ -310,6 +311,7 @@ export function App() {
       importOptionsPendingRef.current = pending;
       setImportOptionsPending(pending);
       if (pending) {
+        setQueuedOperationIntent(undefined);
         setOperationOpen(false);
         setEditingStep(undefined);
         setOperationKind(undefined);
@@ -729,6 +731,58 @@ export function App() {
     [restartProfilingForConfirmedView, storePendingStepInspection, storeStepInspection, storeStepInspectionTarget]
   );
 
+  const requestOperationIntent = useCallback(
+    (intent: OperationIntent, expectedSessionId?: string, expectedRevision?: number) => {
+      const currentMetadata = metadataRef.current;
+      const canOpen =
+        intent.action === "open"
+          ? canStartOperation(currentMetadata, intent.operationKind)
+          : canEditLatestStep(currentMetadata);
+      if (
+        !currentMetadata ||
+        (expectedSessionId !== undefined && expectedSessionId !== currentMetadata.sessionId) ||
+        (expectedRevision !== undefined && expectedRevision !== currentMetadata.revision) ||
+        !canOpen
+      ) {
+        return;
+      }
+      if (importOptionsPendingRef.current) {
+        setForegroundError("Wait for the current import-options change to finish.");
+        return;
+      }
+      const pendingForeground = foregroundRequest.current;
+      if (pendingForeground === "mutation") {
+        setForegroundError(
+          intent.action === "open"
+            ? "Wait for the current cleaning operation to finish before adding another step."
+            : "Wait for the current cleaning operation to finish before editing a step."
+        );
+        return;
+      }
+      if (pendingForeground) {
+        const pendingPage = latestPageRequest.current;
+        if (!pendingPage || pendingPage.viewRequestId !== pendingForeground.viewRequestId) return;
+        setQueuedStepSelection(undefined);
+        setQueuedOperationIntent({
+          ...intent,
+          sessionId: currentMetadata.sessionId,
+          revision: currentMetadata.revision
+        });
+        return;
+      }
+      setQueuedStepSelection(undefined);
+      setQueuedOperationIntent(undefined);
+      if (stepInspectionTargetRef.current) clearStepInspection();
+      const latest = intent.action === "editLatest" ? currentMetadata.steps.at(-1) : undefined;
+      if (intent.action === "editLatest" && !latest) return;
+      rememberOperationReturnFocus();
+      setEditingStep(latest);
+      setOperationKind(intent.action === "open" ? intent.operationKind : latest?.kind);
+      setOperationOpen(true);
+    },
+    [clearStepInspection, rememberOperationReturnFocus]
+  );
+
   const requestStepInspection = useCallback(
     (
       stepId: string,
@@ -806,6 +860,7 @@ export function App() {
     clearStepInspection(false, false);
     flushGridViewState();
     mutationSnapshot.current = previous;
+    setQueuedOperationIntent(undefined);
     resetViewProfiling();
     storeMetadata(withoutDatasetStats(previous.metadata));
     foregroundRequest.current = "mutation";
@@ -1044,6 +1099,7 @@ export function App() {
             revision: currentMetadata.revision,
             ...(response.stepId ? { stepId: response.stepId } : {})
           };
+          setQueuedOperationIntent(undefined);
           if (importOptionsPendingRef.current || foregroundRequest.current) {
             setQueuedStepSelection(selection);
             return;
@@ -1058,33 +1114,16 @@ export function App() {
           return;
         }
         if (response.action === "openOperation") {
-          if (latestPageRequest.current?.reason === "projection") {
-            setForegroundError("Wait for the visible columns to finish loading before adding a cleaning step.");
-            return;
-          }
-          if (!canStartOperation(metadataRef.current, response.operationKind)) return;
-          if (stepInspectionTargetRef.current) clearStepInspection();
-          rememberOperationReturnFocus();
-          setEditingStep(undefined);
-          setOperationKind(response.operationKind);
-          setOperationOpen(true);
+          requestOperationIntent(
+            {
+              action: "open",
+              ...(response.operationKind === undefined ? {} : { operationKind: response.operationKind })
+            },
+            response.expectedSessionId,
+            response.expectedRevision
+          );
         } else if (response.action === "editLatest") {
-          if (latestPageRequest.current?.reason === "projection") {
-            setForegroundError("Wait for the visible columns to finish loading before editing a cleaning step.");
-            return;
-          }
-          if (!canEditLatestStep(metadataRef.current)) return;
-          if (stepInspectionTargetRef.current) clearStepInspection();
-          rememberOperationReturnFocus();
-          setMetadata((current) => {
-            const latest = current?.steps.at(-1);
-            if (latest) {
-              setEditingStep(latest);
-              setOperationKind(latest.kind);
-              setOperationOpen(true);
-            }
-            return current;
-          });
+          requestOperationIntent({ action: "editLatest" }, response.expectedSessionId, response.expectedRevision);
         } else if (response.action === "clearFilterColumn") {
           if (typeof response.column !== "string") return;
           clearFilterColumnActionRef.current(response.column);
@@ -1274,14 +1313,20 @@ export function App() {
         if (current?.sessionId === response.metadata.sessionId && response.metadata.revision < current.revision) {
           return;
         }
+        const preservesOpenOperation =
+          current?.sessionId === response.metadata.sessionId && current.revision === response.metadata.revision;
         undoPlanReturnFocus.current = null;
         pendingRendererSynchronizationRef.current = undefined;
         setPendingRendererSynchronization(undefined);
         acknowledgedRendererSynchronizationId.current = undefined;
         storeImportOptionsPending(false);
-        setOperationOpen(false);
-        setEditingStep(undefined);
-        setOperationKind(undefined);
+        if (!preservesOpenOperation) {
+          setQueuedOperationIntent(undefined);
+          setQueuedStepSelection(undefined);
+          setOperationOpen(false);
+          setEditingStep(undefined);
+          setOperationKind(undefined);
+        }
         latestPageRequest.current = undefined;
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
@@ -1542,6 +1587,7 @@ export function App() {
     pruneSummaryOwners,
     releaseBackgroundRequest,
     rememberOperationReturnFocus,
+    requestOperationIntent,
     requestImportOptionsChange,
     requestColumnReveal,
     requestStatsForConfirmedView,
@@ -1565,6 +1611,28 @@ export function App() {
     storeStepInspectionTarget,
     storeSummaries,
     updateImportOptionsPending
+  ]);
+
+  useEffect(() => {
+    if (
+      !queuedOperationIntent ||
+      loading ||
+      mutationPending ||
+      projectionLoading ||
+      importOptionsPending ||
+      foregroundRequest.current
+    ) {
+      return;
+    }
+    setQueuedOperationIntent(undefined);
+    requestOperationIntent(queuedOperationIntent, queuedOperationIntent.sessionId, queuedOperationIntent.revision);
+  }, [
+    importOptionsPending,
+    loading,
+    mutationPending,
+    projectionLoading,
+    queuedOperationIntent,
+    requestOperationIntent
   ]);
 
   useEffect(() => {
@@ -2037,46 +2105,6 @@ export function App() {
     });
   };
 
-  const openNewOperation = (kind?: OperationKind) => {
-    if (importOptionsPendingRef.current) {
-      setForegroundError("Wait for the current import-options change to finish.");
-      return;
-    }
-    if (foregroundRequest.current) {
-      if (latestPageRequest.current?.reason === "projection") {
-        setForegroundError("Wait for the visible columns to finish loading before adding a cleaning step.");
-      }
-      return;
-    }
-    if (!canStartOperation(metadataRef.current, kind)) return;
-    if (stepInspectionTargetRef.current) clearStepInspection();
-    rememberOperationReturnFocus();
-    setEditingStep(undefined);
-    setOperationKind(kind);
-    setOperationOpen(true);
-  };
-
-  const editLatestStep = () => {
-    if (importOptionsPendingRef.current) {
-      setForegroundError("Wait for the current import-options change to finish.");
-      return;
-    }
-    if (foregroundRequest.current) {
-      if (latestPageRequest.current?.reason === "projection") {
-        setForegroundError("Wait for the visible columns to finish loading before editing a cleaning step.");
-      }
-      return;
-    }
-    if (!canEditLatestStep(metadataRef.current)) return;
-    if (stepInspectionTargetRef.current) clearStepInspection();
-    const latest = metadata?.steps.at(-1);
-    if (!latest) return;
-    rememberOperationReturnFocus();
-    setEditingStep(latest);
-    setOperationKind(latest.kind);
-    setOperationOpen(true);
-  };
-
   const selectSummaryPanelView = (view: SummaryPanelView) => {
     const currentMetadata = metadataRef.current;
     if (!currentMetadata) return;
@@ -2161,7 +2189,7 @@ export function App() {
       }
     } else if (!editableTarget && modifier && event.shiftKey && !event.altKey && key === "e") {
       if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
-        editLatestStep();
+        requestOperationIntent({ action: "editLatest" });
         handled = true;
       }
     }
@@ -2302,7 +2330,7 @@ export function App() {
                     projectionActionTitle ??
                     (metadata.draftStep ? "Apply or discard the current draft before adding another step." : undefined)
                   }
-                  onClick={() => openNewOperation()}
+                  onClick={() => requestOperationIntent({ action: "open" })}
                 >
                   <span className="codicon codicon-add" aria-hidden="true" /> Add step
                 </button>
@@ -2322,7 +2350,7 @@ export function App() {
                     aria-describedby={projectionStatusId}
                     aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
                     title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
-                    onClick={editLatestStep}
+                    onClick={() => requestOperationIntent({ action: "editLatest" })}
                   >
                     Edit latest
                   </button>
@@ -2794,6 +2822,13 @@ interface QueuedStepSelection {
   revision: number;
   stepId?: string;
 }
+
+type OperationIntent = { action: "open"; operationKind?: OperationKind } | { action: "editLatest" };
+
+type QueuedOperationIntent = OperationIntent & {
+  sessionId: string;
+  revision: number;
+};
 
 interface RequestImportOptionsChangeMessage {
   kind: "requestImportOptionsChange";

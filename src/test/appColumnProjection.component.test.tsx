@@ -180,7 +180,7 @@ describe("App column projection", () => {
     expect(await screen.findByRole("cell", { name: "value-20-row-0" })).toBeVisible();
   });
 
-  it("exposes projection loading, queues inspection, and disables cleaning mutations", async () => {
+  it("lets the latest queued operation replace inspection while projection loading disables mutations", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
     await screen.findByRole("cell", { name: "value-0-row-0" });
@@ -210,17 +210,49 @@ describe("App column projection", () => {
 
     dispatch({ kind: "editorAction", action: "openOperation", operationKind: "castColumn" });
     expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Wait for the visible columns to finish loading before adding a cleaning step."
-    );
 
     dispatch(pageResponse(projectionRequest, metadata, projectedPage(0, 16)));
-    const inspectionRequest = await onlyRuntimeRequest("inspectStep");
-    expect(inspectionRequest).toMatchObject({
-      stepId: step.id,
-      columnOffset: 16,
-      columnLimit: 16
+    expect(await screen.findByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
+    expect(screen.getByText("Convert type", { selector: "strong" })).toBeInTheDocument();
+    expect(runtimeRequests("inspectStep")).toHaveLength(0);
+  });
+
+  it("queues Edit latest during projection and hydrates the exact applied step after the page settles", async () => {
+    const latestStep: TransformStep = {
+      id: "lower-column-20",
+      kind: "lowerText",
+      params: { column: { id: "c:20", name: "column-20" }, newColumn: "normalized" }
+    };
+    const editingMetadata: SessionMetadata = {
+      ...metadata,
+      steps: [latestStep],
+      latestStepInputSchema: schema
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: editingMetadata, page: projectedPage(0, 0), summaries: [] });
+    await screen.findByRole("cell", { name: "value-0-row-0" });
+
+    postMessage.mockClear();
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
+    scroller.scrollLeft = 20 * 190;
+    fireEvent.scroll(scroller);
+    const projectionRequest = await onlyRuntimeRequest("getPage");
+
+    dispatch({
+      kind: "editorAction",
+      action: "editLatest",
+      expectedSessionId: editingMetadata.sessionId,
+      expectedRevision: editingMetadata.revision
     });
+    expect(screen.queryByRole("dialog", { name: "Edit cleaning step" })).toBeNull();
+
+    dispatch(pageResponse(projectionRequest, editingMetadata, projectedPage(0, 16)));
+
+    const dialog = await screen.findByRole("dialog", { name: "Edit cleaning step" });
+    expect(within(dialog).getByText("Lowercase", { selector: "strong" })).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Text column")).toHaveValue("c:20");
+    expect(within(dialog).getByLabelText("Output column (blank replaces in place)")).toHaveValue("normalized");
   });
 
   it("reissues an added-column reveal after host view restoration wins the first render", async () => {
@@ -453,7 +485,13 @@ type HostMessage =
   | { kind: "rendererSynchronization"; syncId: string; sessionId: string; revision: number }
   | { kind: "editorAction"; action: "applyDraft" }
   | { kind: "editorAction"; action: "selectStep"; stepId: string }
-  | { kind: "editorAction"; action: "openOperation"; operationKind?: "castColumn" };
+  | {
+      kind: "editorAction";
+      action: "openOperation" | "editLatest";
+      operationKind?: "castColumn";
+      expectedSessionId?: string;
+      expectedRevision?: number;
+    };
 
 function dispatch(data: HostMessage): void {
   act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));

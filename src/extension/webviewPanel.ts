@@ -175,6 +175,9 @@ export class OpenWranglerPanel {
     ) {
       return false;
     }
+    if (message.action === "openOperation" || message.action === "editLatest") {
+      target.panel.reveal(target.panel.viewColumn, false);
+    }
     return target.postRendererMessage({ kind: "editorAction", ...message });
   }
 
