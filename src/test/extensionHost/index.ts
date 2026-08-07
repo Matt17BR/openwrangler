@@ -1562,6 +1562,13 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
   const bindingProbe = [
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_BINDING_RESULT)}, as.character(jsonlite::toJSON(list(`,
     `  runtimeBindingPresent = exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE),`,
+    `  exportArtifacts = if (exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE)) local({`,
+    `    runtime <- get(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE)`,
+    "    agent_environment <- environment(runtime$agent$dispatch_json)",
+    "    exports <- get('exports', envir = agent_environment, inherits = FALSE)",
+    "    export_root <- get('export_root', envir = agent_environment, inherits = FALSE)",
+    "    length(ls(envir = exports, all.names = TRUE)) + length(list.files(export_root, all.files = TRUE, no.. = TRUE))",
+    "  }) else 0L,",
     "  sourceUnchanged = isTRUE(identical(serialize(orders_frame, NULL, version = 3L), orders_frame_before)),",
     "  tibbleSourceUnchanged = isTRUE(identical(serialize(orders_tibble, NULL, version = 3L), orders_tibble_before)),",
     "  tableSourceUnchanged = isTRUE(identical(serialize(orders_table, NULL, version = 3L), orders_table_before)),",
@@ -1731,6 +1738,37 @@ function releasedRDocumentCleanedCsv(): Buffer {
   );
 }
 
+function releasedRNotebookCleanedCsvHeader(): string {
+  return [
+    "record_id",
+    "group",
+    "score",
+    "label",
+    "fractional_score",
+    ...Array.from({ length: 20 }, (_, index) => `extra_${String(index + 1).padStart(2, "0")}`)
+  ]
+    .map((name) => `"${name}"`)
+    .join(",");
+}
+
+function releasedRNotebookCleanedCsvRow(row: number): string {
+  assert.ok(Number.isSafeInteger(row) && row >= 1 && row <= 1_205);
+  const fractionalScore = row % 2 === 0 ? `-${row}.25` : `${row}.25`;
+  const values = [
+    String(row),
+    `"${row <= 602 ? "A" : "B"}"`,
+    String(row),
+    `"row-${String(row).padStart(4, "0")}"`,
+    fractionalScore,
+    ...Array.from({ length: 20 }, (_, index) => {
+      const column = index + 1;
+      if (row === 1 && column === 20) return "";
+      return `"value-${String(column).padStart(2, "0")}-${String(row).padStart(4, "0")}"`;
+    })
+  ];
+  return values.join(",");
+}
+
 function writeReleasedRLiterateDocumentFixture(
   directory: string,
   kind: "rmarkdown" | "quarto"
@@ -1882,6 +1920,7 @@ async function assertReleasedRRuntimeBinding(
     expectedBinding,
     `The R runtime binding must be ${expectedBinding ? "present" : "absent"} during ${checkpoint}.`
   );
+  assert.equal(result.exportArtifacts, 0, `The R kernel retained a private CSV export artifact during ${checkpoint}.`);
   assert.equal(result.sourceUnchanged, true, `The source data.frame changed during ${checkpoint}.`);
   assert.equal(result.tibbleSourceUnchanged, true, `The source tibble changed during ${checkpoint}.`);
   assert.equal(result.tableSourceUnchanged, true, `The source data.table changed during ${checkpoint}.`);
@@ -4098,7 +4137,11 @@ async function exerciseReleasedRFillMissingJourney(
     "mostFrequent",
     "A nullable R character column should initially offer its type-aware automatic fill."
   );
-  assert.deepEqual(await fillMode.locator("option").allTextContents(), ["Most common value", "Specific value"]);
+  assert.deepEqual(await fillMode.locator("option").allTextContents(), [
+    "Most common value",
+    "Other columns (first available)",
+    "Specific value"
+  ]);
   await fillMode.selectOption("value");
   const replacementInput = dialog.getByLabel("Replacement value", { exact: true });
   await replacementInput.waitFor({ state: "visible", timeout: 10_000 });
@@ -4345,7 +4388,7 @@ async function exerciseReleasedREditingJourney(
     editable: true,
     lazy: false,
     cancel: false,
-    exportCsv: false,
+    exportCsv: true,
     exportParquet: false,
     notebookInsert: true,
     filter: true,
@@ -4361,7 +4404,7 @@ async function exerciseReleasedREditingJourney(
   assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
   assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
   await app.getByRole("button", { name: "Add step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+  await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
 
   if (phase === "jupyter-r") {
     await exerciseReleasedRPersistentRowsJourney(testing, workbench, sessionId, phase);
@@ -4438,10 +4481,107 @@ async function exerciseReleasedREditingJourney(
   assert.ok(firstApplied, "The applied native R rename must retain its session.");
   assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
   assert.equal(firstApplied.metadata.capabilities.notebookInsert, true);
-  assert.equal(firstApplied.metadata.capabilities.exportCsv, false);
+  assert.equal(firstApplied.metadata.capabilities.exportCsv, true);
   assert.equal(firstApplied.metadata.capabilities.exportParquet, false);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
-  assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+  await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+  recordAcceptanceProgress(`${phase}:editing:export-cleaned-csv`);
+  const notebookVersionBeforeExport = notebook.version;
+  const notebookDirtyBeforeExport = notebook.isDirty;
+  const notebookSourcesBeforeExport = notebook.getCells().map((cell) => cell.document.getText());
+  const notebookBytesBeforeExport = readFileSync(notebookPath);
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  let exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
+  await exportDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  let exportFilterPanel = exportDrawer.locator(".filterSortPanel").first();
+  const exportAdvancedFilters = exportFilterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
+  if ((await exportAdvancedFilters.count()) > 0) await exportAdvancedFilters.click();
+  await exportFilterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+  await exportFilterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
+  await exportFilterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+  await exportFilterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.filteredShape.rows === 603 &&
+        current.viewState.filterModel.filters.length === 1 &&
+        current.viewState.filterModel.filters[0]?.column === "group"
+      );
+    },
+    30_000,
+    "the R notebook export viewing filter"
+  );
+  await exportDrawer.getByRole("button", { name: "Close panel" }).click();
+  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  const exportView = testing.activeSession();
+  assert.ok(exportView, "The filtered R notebook export requires its exact active session.");
+  assert.equal(exportView.sessionId, sessionId);
+  assert.equal(exportView.metadata.source.kind, "notebookVariable");
+  assert.equal(exportView.metadata.source.uri, notebook.uri.toString());
+  assert.equal(exportView.metadata.source.variableName, "orders_frame");
+  assert.equal(exportView.metadata.shape.rows, 1_205);
+  assert.equal(exportView.metadata.filteredShape.rows, 603);
+  const exportViewModel = JSON.parse(JSON.stringify(exportView.viewState.filterModel)) as FilterModel;
+
+  const exportPath = path.join(outputDirectory, `${phase}.orders.clean.csv`);
+  await exportCleanedDataThroughCommand(workbench, exportPath);
+  await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R notebook CSV export to appear");
+  const exportedLines = readFileSync(exportPath, "utf8").split("\n");
+  assert.equal(exportedLines.at(-1), "", "The native R CSV export must end with one newline.");
+  exportedLines.pop();
+  assert.equal(exportedLines.length, 1_206, "The native R CSV export must contain all source rows plus its header.");
+  assert.equal(exportedLines[0], releasedRNotebookCleanedCsvHeader());
+  assert.equal(exportedLines[1], releasedRNotebookCleanedCsvRow(1));
+  assert.equal(exportedLines[2], releasedRNotebookCleanedCsvRow(2));
+  assert.equal(exportedLines[1_205], releasedRNotebookCleanedCsvRow(1_205));
+  assert.deepEqual(
+    readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
+    [],
+    "The R notebook CSV export must not retain a sibling temporary file."
+  );
+  assert.deepEqual(
+    testing.activeSession()?.viewState.filterModel,
+    exportViewModel,
+    "Exporting all committed rows must not alter the active viewing filter or sort."
+  );
+  assert.equal(notebook.version, notebookVersionBeforeExport, "Export must not change the source notebook version.");
+  assert.equal(notebook.isDirty, notebookDirtyBeforeExport, "Export must not change the source notebook dirty state.");
+  assert.deepEqual(
+    notebook.getCells().map((cell) => cell.document.getText()),
+    notebookSourcesBeforeExport,
+    "Export must not edit any source notebook cell."
+  );
+  assertExactBytes(
+    readFileSync(notebookPath),
+    notebookBytesBeforeExport,
+    "Export must not change the notebook on disk."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after CSV export");
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
+  await exportDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  exportFilterPanel = exportDrawer.locator(".filterSortPanel").first();
+  await exportFilterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.filteredShape.rows === 1_205 &&
+        current.viewState.filterModel.filters.length === 0 &&
+        current.viewState.filterModel.sort.length === 0
+      );
+    },
+    30_000,
+    "clearing the R notebook export view"
+  );
+  await exportDrawer.getByRole("button", { name: "Close panel" }).click();
 
   recordAcceptanceProgress(`${phase}:editing:inspect`);
   await vscode.commands.executeCommand("openWrangler.selectStep", previewed.stepId);
@@ -13230,10 +13370,23 @@ async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, 
 async function exportCleanedDataThroughCommand(workbench: Page, destination: string): Promise<void> {
   const completion = vscode.commands.executeCommand<boolean>("openWrangler.exportData");
   await completeCleanedDataExportDialog(workbench, destination);
+  const outcome = await withBoundedAcceptancePromise(completion, 30_000, "the public cleaned-data export command");
+  const notifications =
+    outcome === true
+      ? []
+      : (
+          await workbench
+            .locator(
+              ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+            )
+            .allInnerTexts()
+        )
+          .slice(0, 10)
+          .map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 500));
   assert.equal(
-    await withBoundedAcceptancePromise(completion, 30_000, "the public cleaned-data export command"),
+    outcome,
     true,
-    "The zero-argument cleaned-data export command must report success."
+    `The zero-argument cleaned-data export command must report success. Notifications: ${JSON.stringify(notifications)}`
   );
 }
 

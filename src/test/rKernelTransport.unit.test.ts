@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import {
+  R_KERNEL_EXPORT_CHUNK_BYTES,
   R_KERNEL_TRANSPORT_VERSION,
   decodeRKernelResponseJson,
   encodeRKernelRequest,
@@ -32,6 +33,9 @@ const inspectRequestId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const inspectOutputRequestId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const inspectSecondPageRequestId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const exportRequestId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+const exportChunkRequestId = "12345678-1234-4234-8234-1234567890ab";
+const exportCloseRequestId = "23456789-2345-4345-8345-234567890abc";
+const exportSecondChunkRequestId = "34567890-3456-4456-8456-34567890abcd";
 const exportId = "01234567-89ab-4cde-8fab-0123456789ab";
 
 afterEach(() => {
@@ -53,6 +57,7 @@ describe("native R kernel runtime bundle", () => {
     expect(teardown).toContain(R_KERNEL_RUNTIME_BINDING);
     expect(teardown).toContain('exists("transport-owner-a", envir = .__ow_existing$transportOwners');
     expect(teardown).toContain("identical(.__ow_existing$bundleId");
+    expect(teardown).toContain(".__ow_existing$agent$dispose()");
     expect(teardown).toContain("remove(list = .__ow_binding");
   });
 
@@ -332,6 +337,82 @@ describe("native R kernel protocol", () => {
         exportRequestId
       )
     ).toThrow("supported range");
+
+    const chunkRequest: Extract<RKernelRequest, { kind: "readDataExport" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: exportChunkRequestId,
+      kind: "readDataExport",
+      payload: { sessionId, revision: 4, exportId, offset: 7, limit: 8 }
+    };
+    expect(JSON.parse(encodeRKernelRequest(chunkRequest))).toEqual(chunkRequest);
+    expect(
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: exportChunkRequestId,
+          kind: "dataExportChunk",
+          sessionId,
+          revision: 4,
+          exportId,
+          offset: 7,
+          bytes: 3,
+          data: Buffer.from("abc").toString("base64")
+        }),
+        exportChunkRequestId
+      )
+    ).toEqual({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: exportChunkRequestId,
+      kind: "dataExportChunk",
+      sessionId,
+      revision: 4,
+      exportId,
+      offset: 7,
+      bytes: 3,
+      data: Uint8Array.from(Buffer.from("abc"))
+    });
+    for (const [data, bytes] of [
+      ["not base64", 3],
+      [Buffer.from("abc").toString("base64"), 2]
+    ] as const) {
+      expect(() =>
+        decodeRKernelResponseJson(
+          JSON.stringify({
+            transportVersion: R_KERNEL_TRANSPORT_VERSION,
+            requestId: exportChunkRequestId,
+            kind: "dataExportChunk",
+            sessionId,
+            revision: 4,
+            exportId,
+            offset: 7,
+            bytes,
+            data
+          }),
+          exportChunkRequestId
+        )
+      ).toThrow();
+    }
+
+    const closeRequest: Extract<RKernelRequest, { kind: "closeDataExport" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: exportCloseRequestId,
+      kind: "closeDataExport",
+      payload: { sessionId, revision: 4, exportId }
+    };
+    expect(JSON.parse(encodeRKernelRequest(closeRequest))).toEqual(closeRequest);
+    expect(
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: exportCloseRequestId,
+          kind: "dataExportClosed",
+          sessionId,
+          revision: 4,
+          exportId
+        }),
+        exportCloseRequestId
+      )
+    ).toMatchObject({ kind: "dataExportClosed", sessionId, revision: 4, exportId });
   });
 
   it("validates page windows and repeated stable sort identities before dispatch", () => {
@@ -1893,6 +1974,290 @@ describe("exact IRkernel session transport", () => {
     });
   });
 
+  it("streams a bounded CSV from the exact IRkernel and closes its private artifact", async () => {
+    const requests: RKernelRequest[] = [];
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "exportData") {
+        return response(request, {
+          kind: "dataExported",
+          sessionId,
+          revision: request.payload.revision,
+          exportId: request.payload.exportId,
+          format: "csv",
+          rows: 1,
+          columns: 1,
+          bytes: R_KERNEL_EXPORT_CHUNK_BYTES + 3
+        });
+      }
+      if (request.kind === "readDataExport") {
+        const data =
+          request.payload.offset === 0 ? Buffer.alloc(R_KERNEL_EXPORT_CHUNK_BYTES, 0x61) : Buffer.from("end", "utf8");
+        return response(request, {
+          kind: "dataExportChunk",
+          sessionId,
+          revision: request.payload.revision,
+          exportId: request.payload.exportId,
+          offset: request.payload.offset,
+          bytes: data.byteLength,
+          data: data.toString("base64")
+        });
+      }
+      if (request.kind === "closeDataExport") {
+        return response(request, {
+          kind: "dataExportClosed",
+          sessionId,
+          revision: request.payload.revision,
+          exportId: request.payload.exportId
+        });
+      }
+      if (request.kind === "closeSession") {
+        return response(request, { kind: "closed", sessionId: request.payload.sessionId });
+      }
+      return response(request, {
+        kind: "page",
+        sessionId: request.payload.sessionId,
+        page: minimalFramePage()
+      });
+    });
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [
+      sessionId,
+      openRequestId,
+      exportId,
+      exportRequestId,
+      exportChunkRequestId,
+      exportSecondChunkRequestId,
+      exportCloseRequestId,
+      closeRequestId
+    ]);
+    const chunks: Uint8Array[] = [];
+
+    await transport.open("frame", pageWindow());
+    await expect(
+      transport.exportData(sessionId, 0, "csv", async (chunk) => {
+        chunks.push(chunk);
+      })
+    ).resolves.toEqual({ sessionId, revision: 0, format: "csv", rows: 1, columns: 1 });
+    await transport.close(sessionId);
+    await transport.dispose();
+
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]).toHaveLength(R_KERNEL_EXPORT_CHUNK_BYTES);
+    expect(Buffer.from(chunks[1]!).toString("utf8")).toBe("end");
+    expect(requests.map(({ kind }) => kind)).toEqual([
+      "openSession",
+      "exportData",
+      "readDataExport",
+      "readDataExport",
+      "closeDataExport",
+      "closeSession"
+    ]);
+    expect(requests[2]).toMatchObject({ payload: { offset: 0, limit: R_KERNEL_EXPORT_CHUNK_BYTES } });
+    expect(requests[3]).toMatchObject({ payload: { offset: R_KERNEL_EXPORT_CHUNK_BYTES, limit: 3 } });
+  });
+
+  it("closes a private IRkernel export after a timed-out begin request settles", async () => {
+    vi.useFakeTimers();
+    const beginStarted = deferred<void>();
+    const releaseBegin = deferred<void>();
+    const requests: RKernelRequest[] = [];
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "exportData") {
+        beginStarted.resolve();
+        await releaseBegin.promise;
+        return response(request, {
+          kind: "dataExported",
+          sessionId,
+          revision: request.payload.revision,
+          exportId: request.payload.exportId,
+          format: "csv",
+          rows: 0,
+          columns: 1,
+          bytes: 0
+        });
+      }
+      if (request.kind === "closeDataExport") {
+        return response(request, {
+          kind: "dataExportClosed",
+          sessionId,
+          revision: request.payload.revision,
+          exportId: request.payload.exportId
+        });
+      }
+      if (request.kind === "closeSession") {
+        return response(request, { kind: "closed", sessionId: request.payload.sessionId });
+      }
+      return response(request, {
+        kind: "page",
+        sessionId: request.payload.sessionId,
+        page: minimalFramePage()
+      });
+    });
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [
+      sessionId,
+      openRequestId,
+      exportId,
+      exportRequestId,
+      exportCloseRequestId,
+      closeRequestId
+    ]);
+
+    await transport.open("frame", pageWindow());
+    const exporting = transport
+      .exportData(sessionId, 0, "csv", async () => undefined, { timeoutMs: 30 })
+      .catch((error: unknown) => error);
+    await beginStarted.promise;
+    await vi.advanceTimersByTimeAsync(30);
+    const detached = await exporting;
+    expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+    expect(detached).toMatchObject({ reason: "timeout", dispatched: true });
+
+    releaseBegin.resolve();
+    vi.useRealTimers();
+    await (detached as DetachedBridgeRequestError).settlement;
+    expect(requests.map(({ kind }) => kind)).toEqual(["openSession", "exportData", "closeDataExport"]);
+    await transport.close(sessionId);
+    await transport.dispose();
+  });
+
+  it("cleans a detached export on its captured kernel after the public mapping is invalidated", async () => {
+    vi.useFakeTimers();
+    const beginStarted = deferred<void>();
+    const releaseBegin = deferred<void>();
+    const requests: RKernelRequest[] = [];
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "exportData") {
+        beginStarted.resolve();
+        await releaseBegin.promise;
+        invalidateCurrentKernel(transport);
+        return response(request, {
+          kind: "dataExported",
+          sessionId,
+          revision: request.payload.revision,
+          exportId: request.payload.exportId,
+          format: "csv",
+          rows: 0,
+          columns: 1,
+          bytes: 0
+        });
+      }
+      if (request.kind === "closeDataExport") {
+        return response(request, {
+          kind: "dataExportClosed",
+          sessionId,
+          revision: request.payload.revision,
+          exportId: request.payload.exportId
+        });
+      }
+      return response(request, {
+        kind: "page",
+        sessionId: request.payload.sessionId,
+        page: minimalFramePage()
+      });
+    });
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [
+      sessionId,
+      openRequestId,
+      exportId,
+      exportRequestId,
+      exportCloseRequestId
+    ]);
+
+    await transport.open("frame", pageWindow());
+    const exporting = transport
+      .exportData(sessionId, 0, "csv", async () => undefined, { timeoutMs: 30 })
+      .catch((error: unknown) => error);
+    await beginStarted.promise;
+    await vi.advanceTimersByTimeAsync(30);
+    const detached = await exporting;
+    expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+
+    releaseBegin.resolve();
+    vi.useRealTimers();
+    await (detached as DetachedBridgeRequestError).settlement;
+    expect(mappedSessions(transport).size).toBe(0);
+    expect(requests.map(({ kind }) => kind)).toEqual(["openSession", "exportData", "closeDataExport"]);
+    await transport.dispose();
+  });
+
+  it("terminally invalidates a session and reports an unrecovered detached export cleanup", async () => {
+    vi.useFakeTimers();
+    const beginStarted = deferred<void>();
+    const releaseBegin = deferred<void>();
+    const requests: RKernelRequest[] = [];
+    const controller = controlledRKernel(async (request) => {
+      requests.push(request);
+      if (request.kind === "exportData") {
+        beginStarted.resolve();
+        await releaseBegin.promise;
+        return response(request, {
+          kind: "dataExported",
+          sessionId,
+          revision: request.payload.revision,
+          exportId: request.payload.exportId,
+          format: "csv",
+          rows: 0,
+          columns: 1,
+          bytes: 0
+        });
+      }
+      if (request.kind === "closeDataExport" || request.kind === "closeSession") {
+        return response(request, {
+          kind: "error",
+          code: "runtime_error",
+          message: "injected cleanup failure",
+          recoverable: false
+        });
+      }
+      return response(request, {
+        kind: "page",
+        sessionId: request.payload.sessionId,
+        page: minimalFramePage()
+      });
+    });
+    mockKernel(controller.kernel);
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const transport = createTransport(document, [
+      sessionId,
+      openRequestId,
+      exportId,
+      exportRequestId,
+      exportCloseRequestId,
+      closeRequestId
+    ]);
+    const invalidated = vi.fn();
+    transport.onDidInvalidateKernel(invalidated);
+
+    await transport.open("frame", pageWindow());
+    const exporting = transport
+      .exportData(sessionId, 0, "csv", async () => undefined, { timeoutMs: 30 })
+      .catch((error: unknown) => error);
+    await beginStarted.promise;
+    await vi.advanceTimersByTimeAsync(30);
+    const detached = await exporting;
+    expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+
+    releaseBegin.resolve();
+    vi.useRealTimers();
+    await (detached as DetachedBridgeRequestError).settlement;
+    expect(invalidated).toHaveBeenCalledOnce();
+    expect(mappedSessions(transport).size).toBe(0);
+    expect(requests.map(({ kind }) => kind)).toEqual(["openSession", "exportData", "closeDataExport", "closeSession"]);
+    await expect(transport.dispose()).rejects.toThrow("could not close a private R notebook export");
+  });
+
   it("rejects a replacement document with the same URI before dispatch", async () => {
     const controller = controlledRKernel(async (request) =>
       response(request, { kind: "page", sessionId, page: minimalFramePage() })
@@ -2884,6 +3249,10 @@ function createTransport(
 
 function mappedSessions(transport: RKernelSessionTransport): ReadonlyMap<string, Kernel> {
   return (transport as unknown as { sessionKernels: ReadonlyMap<string, Kernel> }).sessionKernels;
+}
+
+function invalidateCurrentKernel(transport: RKernelSessionTransport): void {
+  (transport as unknown as { invalidateKernel(): void }).invalidateKernel();
 }
 
 function cleanupAttempts(

@@ -653,9 +653,18 @@ describe("canonical R kernel bridge", () => {
     expect(atomic.abandon).not.toHaveBeenCalled();
   });
 
-  it("advertises R CSV export only for editable filesystem document sessions", async () => {
+  it("advertises R CSV export only for eligible local notebook and document sessions", async () => {
     const contract = frameContract();
-    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>();
+    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
+      await args[3](new TextEncoder().encode("value\n12.5\n"));
+      return {
+        sessionId: args[0],
+        revision: args[1],
+        format: "csv",
+        rows: contract.shape.rows,
+        columns: contract.shape.columns
+      };
+    });
     const transport = { ...fakeTransport(contract), exportData };
     const beginTransaction = vi.fn(async () => fakeAtomicTransaction().transaction);
 
@@ -675,7 +684,7 @@ describe("canonical R kernel bridge", () => {
     const notebookTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
     const notebookBridge = createBridge(notebookTransport, undefined, undefined, undefined, { beginTransaction });
     const notebook = await notebookBridge.request(openRequest("editing"));
-    expect(notebook).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
+    expect(notebook).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: true } } });
     await expect(
       notebookBridge.request({
         kind: "exportData",
@@ -684,7 +693,7 @@ describe("canonical R kernel bridge", () => {
         path: "/workspace/out.csv",
         format: "csv"
       })
-    ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation" });
+    ).resolves.toMatchObject({ kind: "dataExported", path: "/workspace/out.csv", format: "csv" });
 
     const untitledTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
     const untitledBridge = createBridge(untitledTransport, undefined, undefined, undefined, { beginTransaction });
@@ -707,7 +716,11 @@ describe("canonical R kernel bridge", () => {
     );
     expect(remote).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
 
-    expect(beginTransaction).not.toHaveBeenCalled();
+    expect(beginTransaction).toHaveBeenCalledOnce();
+    expect(beginTransaction).toHaveBeenCalledWith({
+      destination: expect.objectContaining({ scheme: "file", fsPath: "/workspace/out.csv" }),
+      protectedSources: [expect.objectContaining({ scheme: "file", fsPath: "/workspace/orders.ipynb" })]
+    });
   });
 
   it("rolls back the host transaction immediately when the private R export detaches", async () => {

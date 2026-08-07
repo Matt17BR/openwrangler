@@ -201,8 +201,8 @@ It keeps `integer64`, date, and datetime types. A new factor value is added as a
 _R editing uses the same grid, draft review, cleaning history, and code preview as the Python engines._
 
 Generated R can be copied, saved as a script, or inserted into the notebook or document that opened the dataframe.
-Local R document sessions opened in Editing mode can export cleaned CSV files. R notebook export and R Parquet export
-are not available in this preview. Operations outside the current 20-operation set are not available in R yet.
+R notebook sessions and local R document sessions opened in Editing mode can export cleaned CSV files. R Parquet
+export is not available in this preview. Operations outside the current 20-operation set are not available in R yet.
 
 Ordinary frames created with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing dataframe, tibble, and
 data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
@@ -218,7 +218,7 @@ also shows the variable picker, profiles, and generated code inserted into a not
   </tr>
   <tr>
     <td>Copy generated code or save it as a Python or R script. Notebook and R-source sessions can also insert it into the document that opened the dataframe.</td>
-    <td>Pandas, Polars, and DuckDB editing sessions export cleaned CSV or Parquet files. Local R document sessions opened in Editing mode export cleaned CSV files.</td>
+    <td>Pandas, Polars, and DuckDB editing sessions export cleaned CSV or Parquet files. R notebook and local R document sessions opened in Editing mode export cleaned CSV files.</td>
   </tr>
 </table>
 
@@ -284,7 +284,7 @@ These results are from stable 1.2.1. We will rerun the comparison before stable 
 ## Roadmap
 
 - **1.x:** keep improving performance, DuckDB, the Python engines, and support for other desktop VS Code forks.
-- **1.99 previews:** test native R notebooks and documents, finish the remaining R export paths, and expand the
+- **1.99 previews:** test native R notebooks and documents, add R Parquet export, and expand the
   current 20-operation R catalog. Progress is tracked in [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 - **2.0:** ship stable R support after release testing and an updated performance comparison. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)

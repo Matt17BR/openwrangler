@@ -48,6 +48,9 @@ fill_session_id <- "30303030-3030-4030-8030-303030303030"
 fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
 most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
 fallback_fill_session_id <- "40404040-4040-4040-8040-404040404040"
+export_session_id <- "41414141-4141-4141-8141-414141414141"
+export_id <- "42424242-4242-4242-8242-424242424242"
+cleanup_export_id <- "43434343-4343-4343-8343-434343434343"
 text_cleanup_session_id <- "34343434-3434-4434-8434-343434343434"
 text_cleanup_table_session_id <- "35353535-3535-4535-8535-353535353535"
 text_failure_session_id <- "36363636-3636-4636-8636-363636363636"
@@ -103,7 +106,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 4L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 5L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -5389,6 +5392,178 @@ if (
 ) {
   stop("the R agent accepted a frame contract without Drop Duplicates support", call. = FALSE)
 }
+
+source_environment$export_frame <- data.frame(
+  "order id" = c(3L, 1L, 2L),
+  duplicate = factor(c("gamma", "alpha", "beta")),
+  duplicate = c("third", "first", "second"),
+  when = as.Date(c("2026-01-03", "2026-01-01", "2026-01-02")),
+  at = as.POSIXct(c("2026-01-03 12:00:00", "2026-01-01 10:00:00", "2026-01-02 11:00:00"), tz = "UTC"),
+  value = c(NA_real_, NaN, Inf),
+  check.names = FALSE
+)
+export_source_before <- unserialize(serialize(source_environment$export_frame, NULL, version = 3L))
+export_open <- dispatch(
+  "openSession",
+  list(sessionId = export_session_id, variableName = "export_frame", page = page_window())
+)
+assert_identical(export_open$kind, "page", "the R export session did not open")
+export_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = export_session_id,
+    revision = 0L,
+    step = list(
+      id = "export-rename",
+      kind = "renameColumn",
+      params = list(column = list(id = "r:c:0", name = "order id"), newName = "order_id")
+    ),
+    page = page_window()
+  )
+)
+export_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = export_session_id, revision = export_preview$revision, page = page_window())
+)
+export_pending <- dispatch(
+  "previewStep",
+  list(
+    sessionId = export_session_id,
+    revision = export_apply$revision,
+    step = list(
+      id = "pending-export-rename",
+      kind = "renameColumn",
+      params = list(column = list(id = "r:c:1", name = "duplicate"), newName = "pending")
+    ),
+    page = page_window()
+  )
+)
+blocked_export <- dispatch(
+  "exportData",
+  list(sessionId = export_session_id, revision = export_pending$revision, exportId = export_id, format = "csv")
+)
+assert_identical(blocked_export$kind, "error", "the R agent exported a pending draft")
+export_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = export_session_id, revision = export_pending$revision, page = page_window())
+)
+stale_export <- dispatch(
+  "exportData",
+  list(sessionId = export_session_id, revision = export_pending$revision, exportId = export_id, format = "csv")
+)
+assert_identical(stale_export$kind, "error", "the R agent accepted a stale export revision")
+assert_identical(stale_export$code, "stale_revision", "the stale export diagnostic changed")
+
+invisible(dispatch(
+  "getPage",
+  list(
+    sessionId = export_session_id,
+    page = page_window(
+      filters = list(list(
+        column = list(id = "r:c:0", name = "order_id"),
+        type = "integer",
+        predicates = I(list(list(kind = "predicate", operator = "gt", value = 2L)))
+      )),
+      sorts = list(list(
+        column = list(id = "r:c:0", name = "order_id"),
+        direction = "asc",
+        nulls = "last"
+      ))
+    )
+  )
+))
+export_ready <- dispatch(
+  "exportData",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id, format = "csv")
+)
+assert_identical(export_ready$kind, "dataExported", "the R agent did not prepare a CSV export")
+assert_identical(export_ready$rows, 3L, "viewing state changed the exported row count")
+assert_identical(export_ready$columns, 6L, "the R export returned the wrong width")
+
+first_chunk <- dispatch(
+  "readDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id, offset = 0L, limit = 11L)
+)
+repeated_first_chunk <- dispatch(
+  "readDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id, offset = 0L, limit = 11L)
+)
+assert_identical(first_chunk$data, repeated_first_chunk$data, "an offset-addressed export chunk was not idempotent")
+canonical_chunk <- dispatch(
+  "readDataExport",
+  list(
+    sessionId = export_session_id,
+    revision = export_discard$revision,
+    exportId = export_id,
+    offset = 0L,
+    limit = min(1024L, as.integer(export_ready$bytes))
+  )
+)
+decoded_canonical_chunk <- jsonlite::base64_dec(canonical_chunk$data)
+expected_canonical_chunk <- gsub(
+  "\r",
+  "",
+  gsub("\n", "", jsonlite::base64_enc(decoded_canonical_chunk), fixed = TRUE),
+  fixed = TRUE
+)
+assert_identical(grepl("[\r\n]", canonical_chunk$data), FALSE, "an R export chunk contained wrapped base64")
+assert_identical(nchar(canonical_chunk$data) %% 4L, 0L, "an R export chunk had an invalid base64 length")
+assert_identical(canonical_chunk$data, expected_canonical_chunk, "an R export chunk was not canonical base64")
+assert_identical(length(decoded_canonical_chunk), canonical_chunk$bytes, "the canonical R export chunk changed length")
+csv_bytes <- raw()
+offset <- 0L
+while (offset < export_ready$bytes) {
+  chunk <- dispatch(
+    "readDataExport",
+    list(
+      sessionId = export_session_id,
+      revision = export_discard$revision,
+      exportId = export_id,
+      offset = offset,
+      limit = 11L
+    )
+  )
+  assert_identical(chunk$offset, offset, "the R export chunk changed its requested offset")
+  decoded <- jsonlite::base64_dec(chunk$data)
+  assert_identical(length(decoded), chunk$bytes, "the R export chunk byte count changed")
+  csv_bytes <- c(csv_bytes, decoded)
+  offset <- offset + chunk$bytes
+}
+assert_identical(length(csv_bytes), export_ready$bytes, "the R export stream was truncated")
+csv_frame <- utils::read.csv(
+  text = rawToChar(csv_bytes),
+  check.names = FALSE,
+  stringsAsFactors = FALSE,
+  na.strings = ""
+)
+assert_identical(names(csv_frame), c("order_id", "duplicate", "duplicate", "when", "at", "value"), "CSV export changed column names")
+assert_identical(csv_frame[[1L]], c(3L, 1L, 2L), "viewing filters or sorts changed the committed CSV")
+assert_identical(csv_frame[[2L]], c("gamma", "alpha", "beta"), "CSV export changed factor labels")
+assert_identical(source_environment$export_frame, export_source_before, "CSV export mutated its R source")
+export_closed <- dispatch(
+  "closeDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id)
+)
+assert_identical(export_closed$kind, "dataExportClosed", "the R export artifact did not close")
+export_closed_again <- dispatch(
+  "closeDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id)
+)
+assert_identical(export_closed_again$kind, "dataExportClosed", "closing an R export was not idempotent")
+
+cleanup_ready <- dispatch(
+  "exportData",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = cleanup_export_id, format = "csv")
+)
+assert_identical(cleanup_ready$kind, "dataExported", "the cleanup export was not prepared")
+export_session_closed <- dispatch("closeSession", list(sessionId = export_session_id))
+assert_identical(export_session_closed$kind, "closed", "closing the R session with an export failed")
+cleanup_read <- dispatch(
+  "readDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = cleanup_export_id, offset = 0L, limit = 1L)
+)
+assert_identical(cleanup_read$kind, "error", "closing the R session retained its export artifact")
+
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(
   missing_package_agent,
@@ -5440,5 +5615,8 @@ assert_identical(removed_source$code, "runtime_error", "the removed-source diagn
 assert_identical(removed_source$recoverable, TRUE, "a removed source was not recoverable")
 removed_closed <- dispatch("closeSession", list(sessionId = second_session_id))
 assert_identical(removed_closed$kind, "closed", "a source-changed session did not close")
+
+agent$dispose()
+missing_package_agent$dispose()
 
 cat("Native R kernel agent tests passed.\n")
