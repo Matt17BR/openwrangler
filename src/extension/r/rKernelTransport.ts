@@ -16,9 +16,11 @@ import { isSoleOpenNotebookDocument } from "../notebooks/notebookProvenance";
 import {
   decodeRKernelResponseJson,
   encodeRKernelRequest,
+  R_KERNEL_EXPORT_CHUNK_BYTES,
   R_KERNEL_MAX_RESPONSE_BYTES,
   R_KERNEL_TRANSPORT_VERSION,
   type RKernelDatasetStatsResult,
+  type RKernelDataExportResult,
   type RKernelErrorResponse,
   type RKernelColumnReference,
   type RKernelPageWindow,
@@ -41,6 +43,7 @@ import type { RColumnSchema, RFramePageContract } from "./rFrameContract";
 import type { RNotebookKernelSelectionBinding } from "./rNotebookVariableDiscovery";
 
 const FAILED_OPEN_CLOSE_TIMEOUT_MS = 5_000;
+const DATA_EXPORT_CLEANUP_TIMEOUT_MS = 5_000;
 const MAX_RETIRED_SESSION_IDS = 1_024;
 const MAX_PENDING_CLEANUP_ATTEMPTS = 64;
 
@@ -80,6 +83,7 @@ export class RKernelSessionTransport {
   private readonly cleanupAttempts = new WeakMap<Kernel, Map<string, Promise<boolean>>>();
   private readonly bootstrapPromises = new WeakMap<Kernel, Promise<void>>();
   private readonly kernelSettlementBarriers = new WeakMap<Kernel, Promise<void>>();
+  private deferredExportCleanupFailure: unknown;
   private observation: KernelObservation | undefined;
   private disposed = false;
   private disposal: Promise<void> | undefined;
@@ -295,6 +299,103 @@ export class RKernelSessionTransport {
     return Object.freeze({ column: response.column, values: response.values, hasMore: response.hasMore });
   }
 
+  async exportData(
+    sessionId: string,
+    revision: number,
+    format: "csv",
+    writeChunk: (chunk: Uint8Array) => Promise<void>,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelDataExportResult> {
+    this.assertActive();
+    if (typeof writeChunk !== "function") throw new TypeError("The R export chunk writer must be a function.");
+    const kernel = this.requireMappedKernel(sessionId);
+    const exportId = this.createId();
+    const started = performance.now();
+    const timeoutMs = requestTimeout(options.timeoutMs);
+    const remainingOptions = (): RKernelRequestOptions => ({
+      ...options,
+      timeoutMs: Math.floor(remainingTimeout(timeoutMs, started))
+    });
+    let failure: unknown;
+    let result: RKernelDataExportResult | undefined;
+
+    try {
+      const begin = this.request("exportData", { sessionId, revision, exportId, format });
+      encodeRKernelRequest(begin);
+      const ready = await this.executeMappedRequest(sessionId, begin, remainingOptions());
+      if (ready.kind === "error") throw new RKernelDiagnosticError(ready);
+      if (
+        ready.kind !== "dataExported" ||
+        ready.sessionId !== sessionId ||
+        ready.revision !== revision ||
+        ready.exportId !== exportId ||
+        ready.format !== format
+      ) {
+        throw new Error("The R kernel returned a mismatched data export.");
+      }
+
+      let offset = 0;
+      while (offset < ready.bytes) {
+        const limit = Math.min(R_KERNEL_EXPORT_CHUNK_BYTES, ready.bytes - offset);
+        const request = this.request("readDataExport", { sessionId, revision, exportId, offset, limit });
+        encodeRKernelRequest(request);
+        const response = await this.executeMappedRequest(sessionId, request, remainingOptions());
+        if (response.kind === "error") throw new RKernelDiagnosticError(response);
+        if (
+          response.kind !== "dataExportChunk" ||
+          response.sessionId !== sessionId ||
+          response.revision !== revision ||
+          response.exportId !== exportId ||
+          response.offset !== offset ||
+          response.bytes < 1 ||
+          response.bytes > limit ||
+          response.data.byteLength !== response.bytes ||
+          offset + response.bytes > ready.bytes
+        ) {
+          throw new Error("The R kernel returned a mismatched data-export chunk.");
+        }
+        await writeChunk(response.data);
+        offset += response.bytes;
+      }
+      if (offset !== ready.bytes) throw new Error("The R kernel returned an incomplete data export.");
+      result = Object.freeze({
+        sessionId,
+        revision,
+        format,
+        rows: ready.rows,
+        columns: ready.columns
+      });
+    } catch (error) {
+      if (error instanceof DetachedBridgeRequestError && error.dispatched) {
+        const cleanup = error.settlement.then(async () => {
+          try {
+            await this.closeMappedDataExport(sessionId, revision, exportId, kernel, DATA_EXPORT_CLEANUP_TIMEOUT_MS);
+          } catch (cleanupError) {
+            await this.recoverFromExportCleanupFailure(sessionId, kernel, cleanupError);
+          }
+        });
+        throw new DetachedBridgeRequestError(error.message, error.reason, true, cleanup);
+      }
+      failure = error;
+    }
+
+    try {
+      await this.closeMappedDataExport(sessionId, revision, exportId, kernel, DATA_EXPORT_CLEANUP_TIMEOUT_MS);
+    } catch (cleanupError) {
+      await this.recoverFromExportCleanupFailure(sessionId, kernel, cleanupError);
+      if (failure !== undefined) {
+        throw new AggregateError(
+          [failure, cleanupError],
+          "R notebook export failed and its private kernel artifact could not be closed safely."
+        );
+      }
+      throw cleanupError;
+    }
+    if (failure !== undefined) throw failure;
+    if (!result) throw new Error("The R kernel did not return a completed data export.");
+    return result;
+  }
+
   async previewStep(
     sessionId: string,
     revision: number,
@@ -457,7 +558,9 @@ export class RKernelSessionTransport {
           | "discardDraft"
           | "undoStep"
           | "inspectStepInfo"
-          | "inspectStepPage";
+          | "inspectStepPage"
+          | "exportData"
+          | "readDataExport";
       }
     >,
     options: RKernelRequestOptions,
@@ -592,6 +695,117 @@ export class RKernelSessionTransport {
     }
   }
 
+  private async closeMappedDataExport(
+    sessionId: string,
+    revision: number,
+    exportId: string,
+    kernel: Kernel,
+    timeoutMs: number
+  ): Promise<void> {
+    const started = performance.now();
+    await this.waitForKernelSettlement(kernel, timeoutMs, started);
+    if (invalidatesKernel(kernel.status)) {
+      // A restarted or dead kernel has already discarded its process-local artifact.
+      this.bootstrappedKernels.delete(kernel);
+      return;
+    }
+    // Cleanup is bound to the exact kernel captured before export. A notebook
+    // selection change removes the public session mapping but does not make a
+    // still-running old kernel safe to ignore.
+    if (!this.bootstrappedKernels.has(kernel)) return;
+    assertDispatchAllowed(undefined, remainingTimeout(timeoutMs, started));
+    const request = this.request("closeDataExport", { sessionId, revision, exportId });
+    encodeRKernelRequest(request);
+    const completion = this.executeRequest(kernel, request);
+    void completion.catch(() => undefined);
+    let detachedReason: DetachedBridgeRequestReason | undefined;
+    let response: RKernelResponse;
+    try {
+      response = await withKernelTimeout(completion, remainingTimeout(timeoutMs, started), () => {
+        detachedReason = "timeout";
+      });
+    } catch (error) {
+      if (!detachedReason) throw error;
+      const settlement = observeSettlement(completion);
+      this.installKernelSettlementBarrier(kernel, settlement);
+      throw new DetachedBridgeRequestError(
+        detachedRequestMessage(detachedReason, timeoutMs),
+        detachedReason,
+        true,
+        settlement
+      );
+    }
+    if (response.kind === "error") {
+      if (response.code === "unknown_session") return;
+      throw new RKernelDiagnosticError(response);
+    }
+    if (
+      response.kind !== "dataExportClosed" ||
+      response.sessionId !== sessionId ||
+      response.revision !== revision ||
+      response.exportId !== exportId
+    ) {
+      throw new Error("The R kernel returned a mismatched data-export cleanup response.");
+    }
+  }
+
+  private async recoverFromExportCleanupFailure(
+    sessionId: string,
+    kernel: Kernel,
+    cleanupError: unknown
+  ): Promise<void> {
+    try {
+      await this.closeExactKernelSessionAfterExportFailure(sessionId, kernel, DATA_EXPORT_CLEANUP_TIMEOUT_MS);
+    } catch (terminalError) {
+      this.deferredExportCleanupFailure = new AggregateError(
+        [cleanupError, terminalError],
+        "Open Wrangler could not close a private R notebook export or its exact kernel session."
+      );
+      this.invalidateAfterExportCleanupFailure(kernel);
+    }
+  }
+
+  private async closeExactKernelSessionAfterExportFailure(
+    sessionId: string,
+    kernel: Kernel,
+    timeoutMs: number
+  ): Promise<void> {
+    if (invalidatesKernel(kernel.status)) {
+      this.bootstrappedKernels.delete(kernel);
+      return;
+    }
+    const started = performance.now();
+    await this.waitForKernelSettlement(kernel, timeoutMs, started);
+    if (invalidatesKernel(kernel.status) || !this.bootstrappedKernels.has(kernel)) return;
+    const completion = this.executeRequest(kernel, this.request("closeSession", { sessionId }));
+    void completion.catch(() => undefined);
+    let timedOut = false;
+    let response: RKernelResponse;
+    try {
+      response = await withKernelTimeout(completion, remainingTimeout(timeoutMs, started), () => {
+        timedOut = true;
+      });
+    } catch (error) {
+      if (!timedOut) throw error;
+      const settlement = observeSettlement(completion);
+      this.installKernelSettlementBarrier(kernel, settlement);
+      throw new DetachedBridgeRequestError(detachedRequestMessage("timeout", timeoutMs), "timeout", true, settlement);
+    }
+    if (!isCorrelatedClose(response, sessionId)) {
+      if (response.kind === "error") throw new RKernelDiagnosticError(response);
+      throw new Error("The R kernel returned a mismatched terminal export-cleanup response.");
+    }
+    this.retireSession(sessionId, kernel);
+    this.invalidateAfterExportCleanupFailure(kernel);
+  }
+
+  private invalidateAfterExportCleanupFailure(kernel: Kernel): void {
+    const observation = this.observation;
+    if (!observation || observation.kernel !== kernel) return;
+    this.invalidateKernel(observation);
+    this.kernelInvalidatedEmitter.fire();
+  }
+
   private async closeMappedSessions(): Promise<void> {
     const sessions = [...this.sessionKernels.keys()];
     const failures: unknown[] = [];
@@ -626,6 +840,7 @@ export class RKernelSessionTransport {
       } catch (error) {
         failures.push(error);
       }
+      if (this.deferredExportCleanupFailure !== undefined) failures.push(this.deferredExportCleanupFailure);
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) {
         throw new AggregateError(failures, "Open Wrangler could not finish R kernel cleanup.");
@@ -983,24 +1198,7 @@ export class RKernelSessionTransport {
   }
 }
 
-function isRMutationRequest(
-  request: Extract<
-    RKernelRequest,
-    {
-      kind:
-        | "getPage"
-        | "getSummary"
-        | "getDatasetStats"
-        | "getColumnValues"
-        | "previewStep"
-        | "applyDraft"
-        | "discardDraft"
-        | "undoStep"
-        | "inspectStepInfo"
-        | "inspectStepPage";
-    }
-  >
-): boolean {
+function isRMutationRequest(request: RKernelRequest): boolean {
   return (
     request.kind === "previewStep" ||
     request.kind === "applyDraft" ||

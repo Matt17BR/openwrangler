@@ -92,9 +92,15 @@ local({
       is.environment(.__ow_existing$transportOwners) &&
       exists("${ownerToken}", envir = .__ow_existing$transportOwners, inherits = FALSE)
     ) {
-      remove(list = "${ownerToken}", envir = .__ow_existing$transportOwners, inherits = FALSE)
-      if (length(ls(envir = .__ow_existing$transportOwners, all.names = TRUE)) == 0L) {
+      if (length(ls(envir = .__ow_existing$transportOwners, all.names = TRUE)) == 1L) {
+        if (!is.list(.__ow_existing$agent) || !is.function(.__ow_existing$agent$dispose)) {
+          stop("Restart the R kernel before removing this Open Wrangler runtime version.", call. = FALSE)
+        }
+        .__ow_existing$agent$dispose()
+        remove(list = "${ownerToken}", envir = .__ow_existing$transportOwners, inherits = FALSE)
         remove(list = .__ow_binding, envir = .GlobalEnv, inherits = FALSE)
+      } else {
+        remove(list = "${ownerToken}", envir = .__ow_existing$transportOwners, inherits = FALSE)
       }
     }
   }

@@ -1,11 +1,12 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 4L
+  transport_version <- 5L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
   maximum_error_bytes <- 4096L
   maximum_response_bytes <- 17L * 1024L * 1024L
   maximum_generated_code_bytes <- 4L * 1024L * 1024L
+  maximum_export_chunk_bytes <- 1L * 1024L * 1024L
   maximum_revision <- .Machine$integer.max
   default_strip_characters <- paste0(
     " \t\n\r\v\f",
@@ -3039,6 +3040,11 @@ openwrangler_r_kernel_agent <- local({
     invisible(NULL)
   }
 
+  canonical_base64 <- function(value) {
+    encoded <- jsonlite::base64_enc(value)
+    gsub("\r", "", gsub("\n", "", encoded, fixed = TRUE), fixed = TRUE)
+  }
+
   plan_response <- function(request_id, session_id, action, session, page, frame_contract) {
     list(
       transportVersion = transport_version,
@@ -3099,6 +3105,21 @@ openwrangler_r_kernel_agent <- local({
     if (!is.environment(source_environment)) {
       stop("Open Wrangler received an invalid R source environment.", call. = FALSE)
     }
+    owns_export_root <- is.null(export_root)
+    initialized_export_root <- FALSE
+    construction_complete <- FALSE
+    if (owns_export_root) {
+      export_root <- tempfile("openwrangler-r-kernel-", tmpdir = tempdir())
+      if (!dir.create(export_root, mode = "0700", showWarnings = FALSE)) {
+        stop("Open Wrangler could not create its private R kernel export directory.", call. = FALSE)
+      }
+      initialized_export_root <- TRUE
+    }
+    on.exit({
+      if (!construction_complete && owns_export_root && initialized_export_root && dir.exists(export_root)) {
+        try(unlink(export_root, recursive = TRUE, force = TRUE), silent = TRUE)
+      }
+    }, add = TRUE)
     if (!is.null(export_root)) {
       export_root <- bounded_text(export_root, "export_root", 32768L)
       if (
@@ -3127,6 +3148,42 @@ openwrangler_r_kernel_agent <- local({
     }
 
     sessions <- new.env(hash = TRUE, parent = emptyenv())
+    exports <- new.env(hash = TRUE, parent = emptyenv())
+
+    remove_export <- function(export_id) {
+      if (!exists(export_id, envir = exports, inherits = FALSE)) return(invisible(FALSE))
+      artifact <- get(export_id, envir = exports, inherits = FALSE)
+      if (is.list(artifact) && is.character(artifact$path) && length(artifact$path) == 1L) {
+        if (file.exists(artifact$path)) {
+          removed <- unlink(artifact$path, force = TRUE)
+          if (!identical(removed, 0L) || file.exists(artifact$path)) {
+            stop("Open Wrangler could not remove a private R kernel export.", call. = FALSE)
+          }
+        }
+      }
+      rm(list = export_id, envir = exports)
+      invisible(TRUE)
+    }
+
+    remove_session_exports <- function(session_id) {
+      for (export_id in ls(envir = exports, all.names = TRUE)) {
+        artifact <- get(export_id, envir = exports, inherits = FALSE)
+        if (is.list(artifact) && identical(artifact$sessionId, session_id)) remove_export(export_id)
+      }
+      invisible(NULL)
+    }
+
+    dispose <- function() {
+      for (export_id in ls(envir = exports, all.names = TRUE)) remove_export(export_id)
+      if (owns_export_root && dir.exists(export_root)) {
+        removed <- unlink(export_root, recursive = TRUE, force = TRUE)
+        if (!identical(removed, 0L) || dir.exists(export_root)) {
+          stop("Open Wrangler could not remove its private R kernel export directory.", call. = FALSE)
+        }
+      }
+      initialized_export_root <<- FALSE
+      invisible(NULL)
+    }
 
     dispatch <- function(request) {
       request <- exact_record(request, c("transportVersion", "requestId", "kind", "payload"), "request")
@@ -3545,10 +3602,10 @@ openwrangler_r_kernel_agent <- local({
         if (!is.null(session$draft)) {
           abort("invalid_request", "Apply or discard the current R draft before exporting data", TRUE)
         }
-        if (is.null(export_root)) {
-          abort("unsupported_operation", "This R session cannot export data through its kernel")
-        }
         export_id <- identifier(payload$exportId, "request.payload.exportId")
+        if (exists(export_id, envir = exports, inherits = FALSE)) {
+          abort("invalid_request", "The requested R export identity is already in use", TRUE)
+        }
         format <- bounded_text(payload$format, "request.payload.format", 16L)
         if (!identical(format, "csv")) {
           abort("invalid_request", "Native R data export currently supports CSV only", TRUE)
@@ -3557,10 +3614,12 @@ openwrangler_r_kernel_agent <- local({
         if (is.null(capture)) {
           abort("runtime_error", "The committed R dataframe is no longer available")
         }
-        exported <- frame_contract$write_csv(
-          capture,
-          file.path(export_root, paste0(export_id, ".csv"))
-        )
+        artifact_path <- file.path(export_root, paste0(export_id, ".csv"))
+        completed <- FALSE
+        on.exit({
+          if (!completed && file.exists(artifact_path)) try(unlink(artifact_path, force = TRUE), silent = TRUE)
+        }, add = TRUE)
+        exported <- frame_contract$write_csv(capture, artifact_path)
         response <- list(
           transportVersion = transport_version,
           requestId = request_id,
@@ -3574,7 +3633,115 @@ openwrangler_r_kernel_agent <- local({
           bytes = exported$bytes
         )
         preflight_response(response)
+        if (owns_export_root) {
+          assign(
+            export_id,
+            list(
+              sessionId = session_id,
+              revision = as.double(session$revision),
+              path = artifact_path,
+              bytes = exported$bytes
+            ),
+            envir = exports
+          )
+        }
+        completed <- TRUE
         return(response)
+      }
+
+      if (identical(kind, "readDataExport")) {
+        payload <- exact_record(
+          request$payload,
+          c("sessionId", "revision", "exportId", "offset", "limit"),
+          "request.payload"
+        )
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        assert_revision(session, payload$revision)
+        export_id <- identifier(payload$exportId, "request.payload.exportId")
+        if (!exists(export_id, envir = exports, inherits = FALSE)) {
+          abort("invalid_request", "The requested R export is no longer available", TRUE)
+        }
+        artifact <- get(export_id, envir = exports, inherits = FALSE)
+        if (
+          !identical(artifact$sessionId, session_id) ||
+            !identical(artifact$revision, as.double(session$revision))
+        ) {
+          abort("invalid_request", "The requested R export belongs to a different session revision", TRUE)
+        }
+        offset <- whole_number(payload$offset, "request.payload.offset", artifact$bytes)
+        limit <- whole_number(payload$limit, "request.payload.limit", maximum_export_chunk_bytes)
+        if (limit < 1L) abort("invalid_request", "request.payload.limit must be positive", TRUE)
+        details <- file.info(artifact$path)
+        if (
+          nrow(details) != 1L ||
+            is.na(details$size[[1L]]) ||
+            !identical(as.double(details$size[[1L]]), as.double(artifact$bytes)) ||
+            isTRUE(details$isdir[[1L]])
+        ) {
+          abort("runtime_error", "The private R export changed before it could be read")
+        }
+        connection <- NULL
+        on.exit({
+          if (!is.null(connection)) try(close(connection), silent = TRUE)
+        }, add = TRUE)
+        chunk <- tryCatch(
+          {
+            connection <- file(artifact$path, open = "rb")
+            seek(connection, where = offset, origin = "start", rw = "read")
+            value <- readBin(connection, what = "raw", n = min(limit, artifact$bytes - offset))
+            close(connection)
+            connection <- NULL
+            value
+          },
+          error = function(error) abort("runtime_error", "The private R export could not be read")
+        )
+        if (!is.null(connection)) close(connection)
+        if (offset < artifact$bytes && length(chunk) == 0L) {
+          abort("runtime_error", "The private R export ended before its recorded size")
+        }
+        response <- list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "dataExportChunk",
+          sessionId = session_id,
+          revision = session$revision,
+          exportId = export_id,
+          offset = offset,
+          bytes = length(chunk),
+          data = canonical_base64(chunk)
+        )
+        preflight_response(response)
+        return(response)
+      }
+
+      if (identical(kind, "closeDataExport")) {
+        payload <- exact_record(
+          request$payload,
+          c("sessionId", "revision", "exportId"),
+          "request.payload"
+        )
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        revision <- whole_number(payload$revision, "request.payload.revision", maximum_revision)
+        export_id <- identifier(payload$exportId, "request.payload.exportId")
+        if (exists(export_id, envir = exports, inherits = FALSE)) {
+          artifact <- get(export_id, envir = exports, inherits = FALSE)
+          if (!identical(artifact$sessionId, session_id) || !identical(artifact$revision, revision)) {
+            abort("invalid_request", "The requested R export belongs to a different session revision", TRUE)
+          }
+          remove_export(export_id)
+        }
+        return(list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "dataExportClosed",
+          sessionId = session_id,
+          revision = revision,
+          exportId = export_id
+        ))
       }
 
       if (identical(kind, "closeSession")) {
@@ -3590,6 +3757,7 @@ openwrangler_r_kernel_agent <- local({
           sessionId = session_id
         )
         preflight_response(response)
+        remove_session_exports(session_id)
         rm(list = session_id, envir = sessions)
         return(response)
       }
@@ -3649,7 +3817,8 @@ openwrangler_r_kernel_agent <- local({
     }
 
     environment(dispatch_json) <- environment()
-    list(dispatch_json = dispatch_json)
+    construction_complete <- TRUE
+    list(dispatch_json = dispatch_json, dispose = dispose)
   }
 
   list(new_agent = new_agent, transport_version = transport_version)

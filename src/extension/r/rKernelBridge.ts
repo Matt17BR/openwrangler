@@ -433,7 +433,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         request.source,
         request.mode ?? "viewing",
         result.page,
-        isExportableRDocumentSource(request.source) && this.transport.exportData !== undefined
+        isExportableRSource(request.source) && this.transport.exportData !== undefined
       );
       this.sessions.set(sessionId, session);
       return {
@@ -1177,7 +1177,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     if (!session.exportCsv || !writer || request.format !== "csv") {
       return errorResponse(
         "unsupported_operation",
-        "Cleaned-data export is available as CSV for local R document sessions opened in Editing mode.",
+        "Cleaned-data export is available as CSV for local R notebook and document sessions opened in Editing mode.",
         true,
         request.sessionId
       );
@@ -1218,7 +1218,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     try {
       transaction = await this.beginFileTransaction({
         destination: vscode.Uri.file(request.path),
-        protectedSources: [documentSourceUri(session.source)]
+        protectedSources: rExportProtectedSourceUris(session.source)
       });
       const output = transaction;
       if (this.disposed || this.sessions.get(request.sessionId) !== session) {
@@ -1848,25 +1848,27 @@ function rCapabilitiesForSource(source: SessionSource, exportCsv: boolean): Sour
   };
 }
 
-function documentSourceUri(source: SessionSource): vscode.Uri {
-  if (source.kind !== "documentVariable" || !source.uri) {
-    throw new TypeError("R CSV export requires an originating R document URI.");
+function rExportProtectedSourceUris(source: SessionSource): readonly vscode.Uri[] {
+  if ((source.kind !== "documentVariable" && source.kind !== "notebookVariable") || !source.uri) {
+    throw new TypeError("R CSV export requires an originating R notebook or document URI.");
   }
   const uri = vscode.Uri.parse(source.uri, true);
-  if (uri.scheme !== "file" || !uri.fsPath) {
-    throw new TypeError("R CSV export requires a local R document source.");
-  }
-  return uri;
+  if (uri.scheme === "file" && uri.fsPath) return [uri];
+  if (source.kind === "notebookVariable" && uri.scheme === "untitled") return [];
+  throw new TypeError("R CSV export requires a local R notebook or document source.");
 }
 
-function isExportableRDocumentSource(source: SessionSource): boolean {
-  if (source.kind !== "documentVariable" || !source.uri) return false;
+function isExportableRSource(source: SessionSource): boolean {
+  if ((source.kind !== "documentVariable" && source.kind !== "notebookVariable") || !source.uri) return false;
   try {
     const uri = vscode.Uri.parse(source.uri, true);
     // The public export request currently retains only a filesystem path, not
     // the Save-dialog URI authority. Do not advertise remote export until the
     // host can preserve and revalidate that authority end to end.
-    return uri.scheme === "file" && Boolean(uri.fsPath);
+    return (
+      (uri.scheme === "file" && Boolean(uri.fsPath)) ||
+      (source.kind === "notebookVariable" && uri.scheme === "untitled")
+    );
   } catch {
     return false;
   }

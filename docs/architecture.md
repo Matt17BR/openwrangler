@@ -163,7 +163,11 @@ finishes. Page and profile requests that time out or are cancelled still retain 
 promise. The transport waits for that promise before sending another request to the same IRkernel. Kernel restart
 ends the mappings. Close uses the mapped kernel and never looks one up by URI. Session IDs and pending cleanup records
 have fixed bounds, and repeated disposal joins the same cleanup operation. Once a mutation returns its correlated
-response, a later host cancellation cannot hide the new revision.
+response, a later host cancellation cannot hide the new revision. A CSV export is first written inside that same
+kernel. The host reads it by byte offset in chunks of at most 1 MiB. R sends each chunk as unwrapped canonical base64,
+and the host closes the kernel artifact after the transfer.
+A timed-out request must settle before cleanup is sent to the mapped kernel; cleanup never looks up a replacement
+notebook or kernel.
 
 `RProcessSessionTransport` provides the same request interface for trusted R documents. It starts one private
 `Rscript --vanilla` process and uses the document's directory for relative `read.csv()` and `source()` calls. Plain R
@@ -175,11 +179,12 @@ temporary directory, and responses are published by atomic rename. Requests are 
 different source sessions may run independently. Closing the panel closes its R session, stops the owned process, and
 removes its temporary directory.
 
-An editable local R document session can export its committed cleaning result as CSV. R writes only to an opaque file in
-that process's private temporary directory. The extension opens and verifies that regular file, streams it in bounded
-chunks into the existing atomic file transaction, rechecks the R artifact, and then publishes the user-selected
-destination. R never receives the destination path. Drafts, stale revisions, notebook kernels, and Parquet requests
-are rejected. Viewing filters and sorts are not part of the exported cleaning result.
+An editable R notebook or local R document session can export its committed cleaning result as CSV. A document process
+writes an opaque file in its private directory; the extension verifies and streams that file. IRkernel keeps its file
+inside the kernel and returns bounded, offset-addressed chunks. Both routes feed the existing atomic file transaction,
+and R never receives the destination path. Drafts, stale revisions, and Parquet requests are rejected. Viewing filters
+and sorts are not part of the exported cleaning result. Notebook export is offered only when the notebook belongs to
+the current local extension host; the public export request does not yet carry a VS Code remote authority.
 
 Direct R-document execution is currently disabled on Windows. Node's ordinary child-process API cannot prove that every
 process started by user R code has exited. The command can be enabled there only after the extension owns the R
