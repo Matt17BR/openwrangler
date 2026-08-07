@@ -1152,7 +1152,12 @@ function FillMissingFields({
       />
       <label className="formField">
         <span>Fill with</span>
-        <select name="fillMode" value={mode} onChange={(event) => setMode(event.target.value as FillMode)}>
+        <select
+          name="fillMode"
+          aria-label="Fill with"
+          value={mode}
+          onChange={(event) => setMode(event.target.value as FillMode)}
+        >
           {fillModes.includes("median") && <option value="median">Median</option>}
           {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
           <option value="value">Specific value</option>

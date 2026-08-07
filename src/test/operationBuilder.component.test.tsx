@@ -501,6 +501,7 @@ describe("OperationBuilder", () => {
     );
 
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "c:0" } });
+    expect(screen.getByLabelText("Fill with")).toHaveAccessibleName("Fill with");
     expect(screen.getByLabelText("Fill with")).toHaveValue("mostFrequent");
     expect(screen.getByRole("option", { name: "Most common value" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Median" })).toBeNull();

@@ -4139,6 +4139,26 @@ async function exerciseReleasedRFillMissingJourney(
     sessionId,
     "The undone R Fill missing values step must reach its exact renderer before the next operation."
   );
+  const returnColumn = original.metadata.schema.find((column) => column.name === "row_id");
+  assert.ok(returnColumn, "The packaged R fill journey must be able to return to the first editing column.");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after undoing Fill missing values");
+  const returnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await returnSearch.fill(returnColumn.name);
+  await app
+    .getByRole("option", { name: new RegExp(`^${returnColumn.name},`, "u") })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await returnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === returnColumn.id,
+    10_000,
+    "returning to the first R column after the fill journey"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The first R column must be visible before the unrelated rename journey starts."
+  );
 }
 
 async function releasedRVisibleRows(
