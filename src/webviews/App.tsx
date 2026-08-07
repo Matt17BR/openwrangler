@@ -83,6 +83,7 @@ export function App() {
   const [projectionLoading, setProjectionLoading] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
+  const [queuedStepSelection, setQueuedStepSelection] = useState<QueuedStepSelection | undefined>();
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
   const [liveSessionReconnectPending, setLiveSessionReconnectPending] = useState(false);
   const [sessionOpenProgress, setSessionOpenProgress] = useState<SessionOpenProgressStage | undefined>();
@@ -1028,6 +1029,30 @@ export function App() {
         return;
       }
       if (response.kind === "editorAction") {
+        if (response.action === "selectStep") {
+          const currentMetadata = metadataRef.current;
+          const expectedSessionId = response.expectedSessionId ?? currentMetadata?.sessionId;
+          if (
+            !currentMetadata ||
+            expectedSessionId !== currentMetadata.sessionId ||
+            (response.expectedRevision !== undefined && response.expectedRevision !== currentMetadata.revision)
+          ) {
+            return;
+          }
+          const selection: QueuedStepSelection = {
+            sessionId: currentMetadata.sessionId,
+            revision: currentMetadata.revision,
+            ...(response.stepId ? { stepId: response.stepId } : {})
+          };
+          if (importOptionsPendingRef.current || foregroundRequest.current) {
+            setQueuedStepSelection(selection);
+            return;
+          }
+          setQueuedStepSelection(undefined);
+          if (response.stepId) requestStepInspection(response.stepId);
+          else clearStepInspection();
+          return;
+        }
         if (importOptionsPendingRef.current) {
           setForegroundError("Wait for the current import-options change to finish.");
           return;
@@ -1060,9 +1085,6 @@ export function App() {
             }
             return current;
           });
-        } else if (response.action === "selectStep") {
-          if (response.stepId) requestStepInspection(response.stepId);
-          else clearStepInspection();
         } else if (response.action === "clearFilterColumn") {
           if (typeof response.column !== "string") return;
           clearFilterColumnActionRef.current(response.column);
@@ -1543,6 +1565,47 @@ export function App() {
     storeStepInspectionTarget,
     storeSummaries,
     updateImportOptionsPending
+  ]);
+
+  useEffect(() => {
+    if (
+      !queuedStepSelection ||
+      loading ||
+      mutationPending ||
+      projectionLoading ||
+      importOptionsPending ||
+      foregroundRequest.current
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (foregroundRequest.current || importOptionsPendingRef.current) return;
+      setQueuedStepSelection(undefined);
+      const currentMetadata = metadataRef.current;
+      if (
+        !currentMetadata ||
+        currentMetadata.sessionId !== queuedStepSelection.sessionId ||
+        currentMetadata.revision !== queuedStepSelection.revision
+      ) {
+        return;
+      }
+      if (queuedStepSelection.stepId) {
+        if (currentMetadata.steps.some((step) => step.id === queuedStepSelection.stepId)) {
+          requestStepInspection(queuedStepSelection.stepId);
+        }
+        return;
+      }
+      clearStepInspection();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    clearStepInspection,
+    importOptionsPending,
+    loading,
+    mutationPending,
+    projectionLoading,
+    queuedStepSelection,
+    requestStepInspection
   ]);
 
   useLayoutEffect(() => {
@@ -2711,6 +2774,8 @@ type EditorActionMessage =
   | {
       kind: "editorAction";
       action: NonSortEditorAction;
+      expectedSessionId?: string;
+      expectedRevision?: number;
       operationKind?: OperationKind;
       stepId?: string;
       column?: string;
@@ -2722,6 +2787,12 @@ interface ViewSortActionTarget {
   expectedSessionId: string;
   expectedSortModelSignature: string;
   expectedSortIndex: number;
+}
+
+interface QueuedStepSelection {
+  sessionId: string;
+  revision: number;
+  stepId?: string;
 }
 
 interface RequestImportOptionsChangeMessage {

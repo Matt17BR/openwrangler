@@ -118,6 +118,40 @@ function inspection(offset = 0): StepInspectionResponse {
 describe("App applied-step inspection", () => {
   beforeEach(() => postMessage.mockClear());
 
+  it("ignores an applied-step selection addressed to a different session", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
+    await screen.findByRole("cell", { name: "10.5" });
+    postMessage.mockClear();
+
+    dispatch({
+      kind: "editorAction",
+      action: "selectStep",
+      expectedSessionId: "stale-session",
+      expectedRevision: metadata.revision,
+      stepId: step.id
+    });
+    expect(runtimeRequests("inspectStep")).toHaveLength(0);
+
+    dispatch({
+      kind: "editorAction",
+      action: "selectStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision + 1,
+      stepId: step.id
+    });
+    expect(runtimeRequests("inspectStep")).toHaveLength(0);
+
+    dispatch({
+      kind: "editorAction",
+      action: "selectStep",
+      expectedSessionId: metadata.sessionId,
+      expectedRevision: metadata.revision,
+      stepId: step.id
+    });
+    expect(onlyRuntimeRequest("inspectStep")).toMatchObject({ stepId: step.id });
+  });
+
   it("keeps the confirmed view untouched while selecting, paging, and clearing an applied step", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page: confirmedPage, summaries: [] });
@@ -221,7 +255,13 @@ describe("App applied-step inspection", () => {
 
 type HostMessage =
   | OpenWranglerResponse
-  | { kind: "editorAction"; action: "selectStep"; stepId?: string }
+  | {
+      kind: "editorAction";
+      action: "selectStep";
+      expectedSessionId?: string;
+      expectedRevision?: number;
+      stepId?: string;
+    }
   | {
       kind: "editorAction";
       action: "changeViewSort";

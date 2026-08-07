@@ -142,6 +142,79 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.sendEditorAction({ action: "openFilters", column: "city" })).toBe(false);
   });
 
+  it("routes applied-step selections to the exact visible session without stealing sidebar focus", async () => {
+    const firstResponse: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: { ...openedResponse.metadata, sessionId: "session-one" }
+    };
+    const secondResponse: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: { ...openedResponse.metadata, sessionId: "session-two" }
+    };
+    const first = createPanelHarness({ request: vi.fn(async () => firstResponse) }, { openResponse: firstResponse });
+    const second = createPanelHarness({ request: vi.fn(async () => secondResponse) }, { openResponse: secondResponse });
+    await first.open();
+    await second.open();
+    await first.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(first);
+    await second.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(second);
+    first.posted.length = 0;
+    second.posted.length = 0;
+
+    expect(
+      await OpenWranglerPanel.sendEditorActionForSession({
+        action: "selectStep",
+        expectedSessionId: "session-one",
+        expectedRevision: 0,
+        stepId: "clone-score"
+      })
+    ).toBe(true);
+    expect(first.posted).toEqual([
+      {
+        kind: "editorAction",
+        action: "selectStep",
+        expectedSessionId: "session-one",
+        expectedRevision: 0,
+        stepId: "clone-score"
+      }
+    ]);
+    expect(second.posted).toEqual([]);
+    expect(first.reveal).not.toHaveBeenCalled();
+    expect(second.reveal).not.toHaveBeenCalled();
+
+    expect(
+      await OpenWranglerPanel.sendEditorActionForSession({
+        action: "selectStep",
+        expectedSessionId: "retired-session",
+        expectedRevision: 0,
+        stepId: "clone-score"
+      })
+    ).toBe(false);
+  });
+
+  it("reports a failed exact-session editor-action delivery", async () => {
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => openedResponse) },
+      {
+        postMessage: async (message) =>
+          !(message && typeof message === "object" && (message as { kind?: unknown }).kind === "editorAction")
+      }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+
+    await expect(
+      OpenWranglerPanel.sendEditorActionForSession({
+        action: "selectStep",
+        expectedSessionId: openedResponse.metadata.sessionId,
+        expectedRevision: openedResponse.metadata.revision,
+        stepId: "clone-score"
+      })
+    ).resolves.toBe(false);
+  });
+
   it("loads the production webview as an ES module under a restrictive nonce CSP", async () => {
     const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
     await harness.open();

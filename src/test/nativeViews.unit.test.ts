@@ -28,6 +28,7 @@ const nativeMocks = vi.hoisted(() => ({
   treeDataProviders: new Map<string, TestTreeProvider>(),
   webviewViewProviders: new Map<string, { resolveWebviewView(view: unknown): void }>(),
   sendEditorAction: vi.fn(() => true),
+  sendEditorActionForSession: vi.fn(async () => true),
   showInformationMessage: vi.fn(async () => undefined),
   showWarningMessage: vi.fn(async () => undefined),
   showErrorMessage: vi.fn(async () => undefined),
@@ -155,7 +156,10 @@ vi.mock("vscode", () => {
 
 vi.mock("../extension/webviewPanel", () => ({
   SESSION_BOUND_EXPORT_DATA_COMMAND: "openWrangler.internal.exportSessionData",
-  OpenWranglerPanel: { sendEditorAction: nativeMocks.sendEditorAction }
+  OpenWranglerPanel: {
+    sendEditorAction: nativeMocks.sendEditorAction,
+    sendEditorActionForSession: nativeMocks.sendEditorActionForSession
+  }
 }));
 vi.mock("../extension/notebooks/notebookInsertion", () => ({
   insertGeneratedNotebookCell: nativeMocks.insertGeneratedNotebookCell
@@ -183,6 +187,8 @@ describe("native operation commands", () => {
     nativeMocks.executeCommand.mockClear();
     nativeMocks.sendEditorAction.mockClear();
     nativeMocks.sendEditorAction.mockReturnValue(true);
+    nativeMocks.sendEditorActionForSession.mockClear();
+    nativeMocks.sendEditorActionForSession.mockResolvedValue(true);
     nativeMocks.showInformationMessage.mockClear();
     nativeMocks.showWarningMessage.mockClear();
     nativeMocks.showErrorMessage.mockClear();
@@ -208,6 +214,40 @@ describe("native operation commands", () => {
 
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledOnce();
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({ action: "openOperation" });
+  });
+
+  it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
+    const registered = register(noDraftSnapshot());
+
+    await command("openWrangler.selectStep")(appliedStep.id);
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "selectStep",
+      expectedSessionId: "session",
+      expectedRevision: 0,
+      stepId: appliedStep.id
+    });
+    expect(registered.clearActiveStepInspection).not.toHaveBeenCalled();
+
+    nativeMocks.sendEditorActionForSession.mockClear();
+    await command("openWrangler.selectStep")("retired-step");
+    expect(nativeMocks.sendEditorActionForSession).not.toHaveBeenCalled();
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "That cleaning step is no longer available in the active dataframe."
+    );
+
+    await command("openWrangler.selectStep")();
+    expect(registered.clearActiveStepInspection).toHaveBeenCalledOnce();
+    expect(nativeMocks.sendEditorActionForSession).toHaveBeenCalledWith({
+      action: "selectStep",
+      expectedSessionId: "session",
+      expectedRevision: 0
+    });
+
+    nativeMocks.sendEditorActionForSession.mockResolvedValueOnce(false);
+    await command("openWrangler.selectStep")(appliedStep.id);
+    expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith(
+      "Open the active dataframe editor before selecting a cleaning step."
+    );
   });
 
   it("shows and dispatches only operations advertised by the active dataframe", async () => {
@@ -1087,6 +1127,7 @@ function register(
   setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void;
   setSession(snapshot: ActiveSessionSnapshot): void;
   exportData: ReturnType<typeof vi.fn>;
+  clearActiveStepInspection: ReturnType<typeof vi.fn>;
   notebookInsertionStatus():
     | "applied"
     | "stale"
@@ -1121,12 +1162,14 @@ function register(
     })
   );
   const activeSessionListeners = new Set<(snapshot: ActiveSessionSnapshot | undefined) => unknown>();
+  const clearActiveStepInspection = vi.fn();
   const coordinator = {
     activeSession: () => activeSnapshot,
     sessionSnapshot: (sessionId: string) => sessions.get(sessionId),
     exportData,
     activeNotebookDocument: () => notebookDocument,
     activeTextDocumentOrigin: () => textDocumentOrigin,
+    clearActiveStepInspection,
     onDidChangeActiveSession: (listener: (snapshot: ActiveSessionSnapshot | undefined) => unknown) => {
       activeSessionListeners.add(listener);
       return { dispose: () => activeSessionListeners.delete(listener) };
@@ -1147,6 +1190,7 @@ function register(
       sessions.set(nextSnapshot.sessionId, nextSnapshot);
     },
     exportData,
+    clearActiveStepInspection,
     notebookInsertionStatus: () => nativeViews.notebookInsertionStatus(),
     viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus()
   };
@@ -1327,6 +1371,9 @@ function snapshot(
     sessionId: "session",
     code: "def clean_data(df):\n    return df\n",
     metadata: {
+      protocolVersion: 2,
+      sessionId: "session",
+      revision: 0,
       backend: "pandas",
       source: { kind: "file", label: "sample.csv", path: "/tmp/sample.csv" },
       ...plan

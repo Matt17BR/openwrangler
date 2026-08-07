@@ -180,7 +180,7 @@ describe("App column projection", () => {
     expect(await screen.findByRole("cell", { name: "value-20-row-0" })).toBeVisible();
   });
 
-  it("exposes projection loading and disables cleaning actions instead of silently dropping them", async () => {
+  it("exposes projection loading, queues inspection, and disables cleaning mutations", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
     await screen.findByRole("cell", { name: "value-0-row-0" });
@@ -190,7 +190,7 @@ describe("App column projection", () => {
     Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
     scroller.scrollLeft = 20 * 190;
     fireEvent.scroll(scroller);
-    await onlyRuntimeRequest("getPage");
+    const projectionRequest = await onlyRuntimeRequest("getPage");
 
     expect(await screen.findByRole("status", { name: "" })).toHaveTextContent(
       "Loading visible columns… Cleaning actions are temporarily unavailable."
@@ -206,9 +206,6 @@ describe("App column projection", () => {
     expect(runtimeRequests("applyDraft")).toHaveLength(0);
 
     dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Wait for the visible columns to finish loading before inspecting a cleaning step."
-    );
     expect(runtimeRequests("inspectStep")).toHaveLength(0);
 
     dispatch({ kind: "editorAction", action: "openOperation", operationKind: "castColumn" });
@@ -216,6 +213,14 @@ describe("App column projection", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Wait for the visible columns to finish loading before adding a cleaning step."
     );
+
+    dispatch(pageResponse(projectionRequest, metadata, projectedPage(0, 16)));
+    const inspectionRequest = await onlyRuntimeRequest("inspectStep");
+    expect(inspectionRequest).toMatchObject({
+      stepId: step.id,
+      columnOffset: 16,
+      columnLimit: 16
+    });
   });
 
   it("reissues an added-column reveal after host view restoration wins the first render", async () => {

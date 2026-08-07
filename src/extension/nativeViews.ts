@@ -511,7 +511,14 @@ export function registerNativeViews(
         return;
       }
       if (stepId === undefined) coordinator.clearActiveStepInspection();
-      if (!OpenWranglerPanel.sendEditorAction({ action: "selectStep", ...(stepId ? { stepId } : {}) })) {
+      if (
+        !(await OpenWranglerPanel.sendEditorActionForSession({
+          action: "selectStep",
+          expectedSessionId: snapshot.sessionId,
+          expectedRevision: snapshot.metadata.revision,
+          ...(stepId ? { stepId } : {})
+        }))
+      ) {
         void vscode.window.showInformationMessage("Open the active dataframe editor before selecting a cleaning step.");
       }
     }),

@@ -88,17 +88,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
   ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
   to the notebook's source object.
-- Added a real VS Code screenshot of R editing. The installed extension now exercises Filter Rows, Sort Rows, Drop
-  Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type, Text Length, and
-  Lowercase against IRkernel in both VS Code and Cursor. The local VS Code path also opens the real Find and replace
-  form and applies Uppercase, bringing that base-data-frame run to all fourteen operations. Across the sequence it
-  covers
+- Added a real VS Code screenshot of R editing. The installed extension now exercises all seventeen R operations
+  against IRkernel in both VS Code and Cursor. Across the sequence it covers
   preview, apply, inspection, discard, latest-step editing, and undo; Convert type is applied and undone. Drop Missing
   Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The journey also checks
   generated R, copies and saves Rename code, and verifies that the notebook objects are unchanged. Separate tibble and
-  keyed-data-table sessions preview and discard Rename and Drop Columns. That recorded installed-editor run covers
-  fourteen operations. Direct R tests cover the full seventeen-operation catalog, plus class and key behavior for
-  tibbles and data tables.
+  keyed-data-table sessions preview and discard Rename and Drop Columns. Direct R tests cover the same catalog, plus
+  class and key behavior for tibbles and data tables.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and

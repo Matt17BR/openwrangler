@@ -189,12 +189,9 @@ dataframe.
 
 <a href="images/editor-acceptance/vscode-notebook-r-editing-dark.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="960"></a>
 
-The image shows Rename Column in VS Code. The packaged VS Code and Cursor journeys also cover Filter Rows, Sort Rows,
-Drop Missing Rows, Fill Missing Values, Drop Duplicates, Drop Columns, ordered Select Columns, Clone Column, Convert
-type, Text Length, and Lowercase. The local VS Code journey also opens the real Find and replace form and applies
-Uppercase. The recorded run covers the earlier fourteen-operation build, and the screenshots were captured from that
-build. Capitalize, Strip text, and Split text are available on the development branch but are not part of a recorded
-installed-editor run yet.
+The image shows Rename Column in VS Code. The packaged VS Code and Cursor journeys also exercise the other sixteen
+operations, including ordered row work, type-aware missing-value fills, column selection and conversion, and the full
+set of R text tools.
 
 <a href="images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png"><img alt="Generated R cleaning code inserted as an R cell in the notebook that opened the dataframe" src="images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png" width="960"></a>
 

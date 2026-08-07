@@ -550,15 +550,13 @@ generated R, and exact typed diffs. Drop Missing Rows covers the Any and All mod
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites cover all seventeen operations. The packaged journey runs the twelve earlier operations in both editors. The
-local VS Code path also opens the real Find and replace form and applies Uppercase.
+suites cover all seventeen operations. The packaged journey runs all seventeen in both editors.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact
 code as one `r` cell in the originating notebook, leaves every existing cell unchanged, and checks the source objects
 again after editing. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns; the
 direct R suites cover the full seventeen-operation catalog, plus class and key behavior for tibbles and data tables.
-The three newer text tools are not part of the recorded installed-editor journey yet.
 
 On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start another VS Code or Cursor process.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public

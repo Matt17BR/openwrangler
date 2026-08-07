@@ -117,6 +117,7 @@ interface TestApi {
         metadata: SessionMetadata;
         code?: string;
         viewState: PersistedViewingState;
+        stepInspectionActive?: boolean;
         stepInspection?: StepInspectionResponse;
       }
     | undefined;
@@ -261,6 +262,25 @@ const RELEASED_JUPYTER_R_KERNEL_NAME = "openwrangler-r-acceptance";
 const RELEASED_JUPYTER_R_SETUP_RESULT = "__OW_RELEASED_R_SETUP__";
 const RELEASED_JUPYTER_R_BINDING_RESULT = "__OW_RELEASED_R_BINDING__";
 const RELEASED_JUPYTER_R_MEDIA_RESULT = "__OW_RELEASED_R_MEDIA__";
+const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
+  "sortRows",
+  "filterRows",
+  "dropMissingRows",
+  "fillMissingValues",
+  "dropDuplicates",
+  "selectColumns",
+  "dropColumns",
+  "renameColumn",
+  "cloneColumn",
+  "castColumn",
+  "textLength",
+  "findReplace",
+  "stripText",
+  "splitText",
+  "capitalizeText",
+  "lowerText",
+  "upperText"
+]);
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
 const RELEASED_JUPYTER_REMOTE_KERNEL_LABEL = "Open Wrangler Remote Acceptance";
@@ -1963,25 +1983,7 @@ async function exerciseReleasedRJupyterExtension(
       sort: true,
       profile: true,
       columnValues: true,
-      supportedOperations: [
-        "sortRows",
-        "filterRows",
-        "dropMissingRows",
-        "fillMissingValues",
-        "dropDuplicates",
-        "selectColumns",
-        "dropColumns",
-        "renameColumn",
-        "cloneColumn",
-        "castColumn",
-        "textLength",
-        "findReplace",
-        "lowerText",
-        "upperText",
-        "capitalizeText",
-        "stripText",
-        "splitText"
-      ]
+      supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS
     });
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-before-filter-journey`);
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
@@ -2105,25 +2107,7 @@ async function exerciseReleasedRJupyterExtension(
         `the editable native ${expected.rDataframeFlavor} session`
       );
       assert.equal(session.metadata.mode, "editing");
-      assert.deepEqual(session.metadata.capabilities.supportedOperations, [
-        "sortRows",
-        "filterRows",
-        "dropMissingRows",
-        "fillMissingValues",
-        "dropDuplicates",
-        "selectColumns",
-        "dropColumns",
-        "renameColumn",
-        "cloneColumn",
-        "castColumn",
-        "textLength",
-        "findReplace",
-        "lowerText",
-        "upperText",
-        "capitalizeText",
-        "stripText",
-        "splitText"
-      ]);
+      assert.deepEqual(session.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:before-rename`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
       const previewed = await previewReleasedRRename(
@@ -2366,25 +2350,7 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
       sort: true,
       profile: true,
       columnValues: true,
-      supportedOperations: [
-        "sortRows",
-        "filterRows",
-        "dropMissingRows",
-        "fillMissingValues",
-        "dropDuplicates",
-        "selectColumns",
-        "dropColumns",
-        "renameColumn",
-        "cloneColumn",
-        "castColumn",
-        "textLength",
-        "findReplace",
-        "lowerText",
-        "upperText",
-        "capitalizeText",
-        "stripText",
-        "splitText"
-      ],
+      supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS,
       notebookInsert: false,
       documentInsert: true
     });
@@ -4303,25 +4269,7 @@ async function exerciseReleasedREditingJourney(
     sort: true,
     profile: true,
     columnValues: true,
-    supportedOperations: [
-      "sortRows",
-      "filterRows",
-      "dropMissingRows",
-      "fillMissingValues",
-      "dropDuplicates",
-      "selectColumns",
-      "dropColumns",
-      "renameColumn",
-      "cloneColumn",
-      "castColumn",
-      "textLength",
-      "findReplace",
-      "lowerText",
-      "upperText",
-      "capitalizeText",
-      "stripText",
-      "splitText"
-    ]
+    supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS
   });
   assert.deepEqual(
     opened.metadata.schema.slice(0, 4).map((column) => column.name),
@@ -4818,11 +4766,35 @@ async function exerciseReleasedREditingJourney(
   const appliedClone = cleaningSteps.getByRole("treeitem", { name: /^1\. Clone column/u }).first();
   await appliedClone.waitFor({ state: "visible", timeout: 10_000 });
   await appliedClone.click();
-  await waitFor(
-    () => testing.activeSession()?.stepInspection?.stepId === cloned.stepId,
-    30_000,
-    "the applied native R Clone Column inspection"
-  );
+  try {
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return active?.stepInspectionActive || active?.stepInspection?.stepId === cloned.stepId;
+      },
+      10_000,
+      "dispatching the applied native R Clone Column inspection"
+    );
+    await waitFor(
+      () => testing.activeSession()?.stepInspection?.stepId === cloned.stepId,
+      30_000,
+      "the applied native R Clone Column inspection"
+    );
+  } catch (error) {
+    const active = testing.activeSession();
+    throw new Error(
+      `The Cleaning Steps selection did not complete for ${cloned.stepId}. State: ${JSON.stringify({
+        sessionId: active?.sessionId,
+        stepInspectionActive: active?.stepInspectionActive ?? false,
+        inspectedStepId: active?.stepInspection?.stepId,
+        appliedStepIds: active?.metadata.steps.map((step) => step.id),
+        scheduler: testing.sessionSchedulerState(sessionId),
+        panelHydrated: testing.panelHydrated(sessionId),
+        panelSynchronizable: testing.panelSynchronizable(sessionId)
+      })}`,
+      { cause: error }
+    );
+  }
   const cloneInspection = testing.activeSession()?.stepInspection;
   assert.ok(cloneInspection, "Selecting the applied R Clone Column step must publish its inspection.");
   assert.deepEqual(cloneInspection.diff, {
@@ -5252,6 +5224,45 @@ async function exerciseReleasedREditingJourney(
     isNaN: false
   });
 
+  if (phase === "jupyter-r") {
+    const capitalizeBase = testing.activeSession();
+    assert.ok(capitalizeBase, "The restored R session must remain available for Capitalize.");
+    const labelColumn = capitalizeBase.metadata.schema.find((column) => column.name === "label");
+    assert.ok(labelColumn, "The packaged R Capitalize journey requires the label column.");
+
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Capitalize");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const textDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await textDialog.getByPlaceholder("Search operations").fill("capitalize");
+    await textDialog.getByRole("button", { name: /^Capitalize/u }).click();
+    await textDialog.getByLabel("Text column", { exact: true }).selectOption(labelColumn.id);
+    await textDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.draftStep?.kind === "capitalizeText",
+      30_000,
+      "previewing native R Capitalize through its visible form"
+    );
+    const capitalizePreview = testing.activeSession();
+    assert.ok(capitalizePreview?.metadata.draftStep?.kind === "capitalizeText");
+    assert.match(capitalizePreview.code ?? "", /\btoupper\b/u);
+    assert.doesNotMatch(capitalizePreview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
+    const capitalizedRows = await releasedRVisibleRows(testing, sessionId, `${phase}-capitalize-page`, 1);
+    assert.equal(capitalizedRows[0]?.values[labelColumn.position]?.display, "Row-0001");
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.steps[0]?.kind === "capitalizeText",
+      30_000,
+      "applying native R Capitalize"
+    );
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "R Capitalize must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Capitalize session");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Capitalize");
+  }
+
   recordAcceptanceProgress(`${phase}:editing:lowercase-preview-apply-undo`);
   const lowercaseBase = testing.activeSession();
   assert.ok(lowercaseBase, "The restored R session must remain available for Lowercase.");
@@ -5353,39 +5364,8 @@ async function exerciseReleasedREditingJourney(
     if (uppercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Uppercase undo failed.");
     assert.equal(uppercaseUndo.page.rows[0]?.values[0]?.display, "row-0001");
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:text-cleaning-source-after-undo`);
-
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Capitalize");
-    await app.getByRole("button", { name: "Add step", exact: true }).click();
-    const textDialog = app.getByRole("dialog", { name: "Add cleaning step" });
-    await textDialog.getByPlaceholder("Search operations").fill("capitalize");
-    await textDialog.getByRole("button", { name: /^Capitalize/u }).click();
-    await textDialog.getByLabel("Text column", { exact: true }).selectOption(labelColumn.id);
-    await textDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
-    await waitFor(
-      () => testing.activeSession()?.metadata.draftStep?.kind === "capitalizeText",
-      30_000,
-      "previewing native R Capitalize through its visible form"
-    );
-    const capitalizePreview = testing.activeSession();
-    assert.ok(capitalizePreview?.metadata.draftStep?.kind === "capitalizeText");
-    assert.match(capitalizePreview.code ?? "", /\btoupper\b/u);
-    assert.doesNotMatch(capitalizePreview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
-    const capitalizedRows = await releasedRVisibleRows(testing, sessionId, `${phase}-capitalize-page`, 1);
-    assert.equal(capitalizedRows[0]?.values[labelColumn.position]?.display, "Row-0001");
-    await app
-      .getByRole("region", { name: "Draft review" })
-      .getByRole("button", { name: "Apply step", exact: true })
-      .click();
-    await waitFor(
-      () => testing.activeSession()?.metadata.steps[0]?.kind === "capitalizeText",
-      30_000,
-      "applying native R Capitalize"
-    );
-    await requireFreshExactSessionPanelHydration(testing, sessionId, "R Capitalize must reach its renderer.");
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Capitalize session");
-    await app.getByRole("button", { name: "Undo", exact: true }).click();
-    await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Capitalize");
-
+    // These direct coordinator checks intentionally follow the final Open Wrangler
+    // renderer mutation so their newer revisions cannot leave a later UI action stale.
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:additional-text-tools-source-after-undo`);
