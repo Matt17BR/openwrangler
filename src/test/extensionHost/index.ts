@@ -4042,18 +4042,18 @@ async function exerciseReleasedRFillMissingJourney(
   await dialog.waitFor({ state: "visible", timeout: 10_000 });
   await dialog.getByPlaceholder("Search operations").fill("fill missing");
   await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  const fillColumn = dialog.getByLabel("Column", { exact: true });
+  await fillColumn.waitFor({ state: "visible", timeout: 10_000 });
+  await fillColumn.selectOption(target.id);
   const fillMode = dialog.getByLabel("Fill with", { exact: true });
   await fillMode.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(
     await fillMode.inputValue(),
-    "median",
-    "The base Fill missing values form should initially offer the numeric median when numeric columns exist."
+    "mostFrequent",
+    "A nullable R character column should initially offer its type-aware automatic fill."
   );
-  assert.deepEqual(await fillMode.locator("option").allTextContents(), ["A value", "Column median"]);
+  assert.deepEqual(await fillMode.locator("option").allTextContents(), ["Most common value", "Specific value"]);
   await fillMode.selectOption("value");
-  const fillColumn = dialog.getByLabel("Column", { exact: true });
-  await fillColumn.waitFor({ state: "visible", timeout: 10_000 });
-  await fillColumn.selectOption(target.id);
   const replacementInput = dialog.getByLabel("Replacement value", { exact: true });
   await replacementInput.waitFor({ state: "visible", timeout: 10_000 });
   await replacementInput.fill(replacement);
