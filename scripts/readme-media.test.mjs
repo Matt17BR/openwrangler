@@ -528,10 +528,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /top-level\s+backtick-fenced `\{r\}` cells/u);
   assert.match(readme, /does not render the document or attach to an existing Quarto, knitr, terminal, or R session/u);
   assert.match(readme, /unsaved changes are included/u);
-  assert.match(
-    readme,
-    /The R workbench supports paging, filters, multi-column sorts, value search, profiles, and seventeen cleaning operations:\s+\*\*Filter Rows\*\*, \*\*Sort Rows\*\*, \*\*Drop Missing Rows\*\*, \*\*Fill Missing Values\*\*, \*\*Drop Duplicates\*\*, \*\*Rename Column\*\*,\s+\*\*Drop Columns\*\*, \*\*Select Columns\*\*, \*\*Clone Column\*\*, \*\*Convert type\*\*, \*\*Text Length\*\*, \*\*Lowercase\*\*, \*\*Uppercase\*\*,\s+\*\*Find and replace\*\*, \*\*Capitalize\*\*, \*\*Strip text\*\*, and \*\*Split text\*\*/u
-  );
+  assert.match(readme, /The R workbench supports[\s\S]{0,180}twenty cleaning operations/u);
+  assert.match(readme, /\*\*Split text\*\*, \*\*Round\*\*, \*\*Floor\*\*, and \*\*Ceiling\*\*/u);
+  assert.match(readme, /Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns/u);
   assert.match(readme, /inserted into the notebook or R document that opened the dataframe/u);
   assert.match(readme, /The default outputs from `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
   assert.match(readme, /Grouped `GRP_df` and indexed `indexed_frame` objects are not\s+supported/u);
@@ -631,7 +630,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     v2Roadmap,
-    /Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,\s+Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, and Split text are\s+available now/u
+    /Filter Rows, Sort Rows, Drop Missing Rows[\s\S]{0,260}Split text, Round, Floor,\s+and Ceiling are available now/u
   );
   assert.match(
     v2Roadmap,
@@ -706,14 +705,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(gallery, /Unsaved editor changes are included\./u);
   assert.match(gallery, /Direct R-document execution currently requires macOS or Linux/u);
-  assert.match(
-    gallery,
-    /Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates,\s+Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, and Find\s+and replace, Capitalize, Strip text, and Split text\.[\s\S]{0,1400}All seventeen operations use draft preview, generated R, apply, discard,\s+inspection, latest-step editing, and undo/u
-  );
-  assert.match(
-    gallery,
-    /The image shows Rename Column in VS Code\.[\s\S]{0,220}The packaged VS Code and Cursor journeys also exercise the other sixteen\s+operations,[\s\S]{0,220}the full\s+set of R text tools\./u
-  );
+  assert.match(gallery, /Editing mode currently supports[\s\S]{0,420}Round, Floor, and Ceiling/u);
+  assert.match(gallery, /All twenty operations use draft preview, generated R, apply, discard, inspection/u);
+  assert.match(gallery, /The packaged VS Code and Cursor runs/u);
   assert.match(
     gallery,
     /alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R"/u

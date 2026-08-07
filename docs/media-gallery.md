@@ -173,7 +173,7 @@ Each variable stays in R.
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
 Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates,
 Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, and Find
-and replace, Capitalize, Strip text, and Split text. A viewing filter or sort can be copied
+and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling. A viewing filter or sort can be copied
 into a cleaning draft. Drop Missing Rows can check any or all selected columns and treats `NA` and `NaN` as missing.
 Drop Duplicates can compare selected columns or the whole row and keep the first, last, or none of the repeated rows.
 Select keeps the order in which the columns were chosen. Text Length counts Unicode characters. The text operations
@@ -183,16 +183,19 @@ returns `NA` when the selected part is missing. Find and replace accepts literal
 type supports string, integer, float, boolean, date, and datetime targets. Values that cannot be converted become `NA`.
 Fill Missing Values can use the median for a numeric column, the most common non-missing value for a character, factor,
 or logical column, or a value entered by the user. It keeps factors, dates, datetimes, and `integer64` in their R types.
-All seventeen operations use draft preview, generated R, apply, discard, inspection, latest-step editing, and undo.
+Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
+outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's
+ties-to-even rule. A keyed `data.table` column can be written to a new output column but cannot be changed in place.
+All twenty operations use draft preview, generated R, apply, discard, inspection, latest-step editing, and undo.
 Generated R can be copied, saved as a `.R` script, or inserted into the notebook or R document that opened the
 dataframe. A local R document session opened in Editing mode can also export its cleaned result as CSV. R notebooks
 cannot export cleaned data yet, and R Parquet export is not supported yet.
 
 <a href="images/editor-acceptance/vscode-notebook-r-editing-dark.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="960"></a>
 
-The image shows Rename Column in VS Code. The packaged VS Code and Cursor journeys also exercise the other sixteen
-operations, including ordered row work, type-aware missing-value fills, column selection and conversion, and the full
-set of R text tools.
+The image shows Rename Column in VS Code. The packaged VS Code and Cursor runs exercise all twenty operations,
+including ordered row work, type-aware missing-value fills, column selection and conversion, the text tools, and the
+Round, Floor, and Ceiling forms.
 
 <a href="images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png"><img alt="Generated R cleaning code inserted as an R cell in the notebook that opened the dataframe" src="images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png" width="960"></a>
 

@@ -50,6 +50,9 @@ most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
 text_cleanup_session_id <- "34343434-3434-4434-8434-343434343434"
 text_cleanup_table_session_id <- "35353535-3535-4535-8535-353535353535"
 text_failure_session_id <- "36363636-3636-4636-8636-363636363636"
+numeric_session_id <- "37373737-3737-4737-8737-373737373737"
+numeric_table_session_id <- "38383838-3838-4838-8838-383838383838"
+numeric_integer64_session_id <- "39393939-3939-4939-8939-393939393939"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -99,7 +102,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 3L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 4L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -4680,6 +4683,289 @@ assert_identical(
 rm("row_reduction_table", "open_wrangler_result", envir = .GlobalEnv)
 invisible(dispatch("closeSession", list(sessionId = row_reduction_table_session_id)))
 
+numeric_step <- function(id, kind, position, name, decimals = NULL, new_column = NULL) {
+  params <- list(column = list(id = sprintf("r:c:%d", position - 1L), name = name))
+  if (!is.null(decimals)) params$decimals <- decimals
+  if (!is.null(new_column)) params$newColumn <- new_column
+  list(id = id, kind = kind, params = params)
+}
+source_environment$numeric_frame <- data.frame(
+  rounded = c(15, 25, -15, -25, NA_real_, NaN, Inf, -Inf),
+  floored = c(1.9, -1.1, NA_real_, NaN, Inf, -Inf, 2, -2),
+  ceiled = c(1.1, -1.9, NA_real_, NaN, Inf, -Inf, 2, -2),
+  integer_value = c(1L, -2L, NA_integer_, 3L, 4L, 5L, 6L, 7L),
+  text = rep("not numeric", 8L),
+  row.names = sprintf("numeric-%d", seq_len(8L)),
+  check.names = FALSE
+)
+numeric_before <- unserialize(serialize(source_environment$numeric_frame, NULL, version = 3L))
+numeric_open <- dispatch(
+  "openSession",
+  list(sessionId = numeric_session_id, variableName = "numeric_frame", page = page_window())
+)
+assert_identical(numeric_open$kind, "page", "the R numeric-transform session did not open")
+numeric_fractional_decimals <- dispatch(
+  "previewStep",
+  list(
+    sessionId = numeric_session_id,
+    revision = 0L,
+    step = numeric_step("fractional-round", "roundNumber", 1L, "rounded", 0.5),
+    page = page_window()
+  )
+)
+assert_identical(numeric_fractional_decimals$kind, "error", "R Round accepted fractional decimal places")
+assert_identical(numeric_fractional_decimals$code, "invalid_request", "the R Round precision diagnostic changed")
+numeric_text_error <- dispatch(
+  "previewStep",
+  list(
+    sessionId = numeric_session_id,
+    revision = 0L,
+    step = numeric_step("text-round", "roundNumber", 5L, "text", 0L),
+    page = page_window()
+  )
+)
+assert_identical(numeric_text_error$kind, "error", "R Round accepted a text column")
+assert_identical(numeric_text_error$code, "invalid_request", "the R Round type diagnostic changed")
+
+numeric_round_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = numeric_session_id,
+    revision = 0L,
+    step = numeric_step("round-ties", "roundNumber", 1L, "rounded", -1L),
+    page = page_window(column_offset = 0L, column_limit = 1L)
+  )
+)
+assert_identical(numeric_round_preview$kind, "stepPreview", "R Round did not preview")
+assert_identical(numeric_round_preview$page$page$columnIds, list("r:c:0"), "in-place R Round changed lineage")
+assert_identical(numeric_round_preview$diff$changedCells, 4L, "R Round returned an inexact cell diff")
+assert_identical(
+  vapply(numeric_round_preview$diff$cells, function(cell) as.character(cell$after$raw), character(1L)),
+  c("20", "20", "-20", "-20"),
+  "R Round did not use ties-to-even semantics"
+)
+numeric_round_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = numeric_session_id, revision = 1L, page = page_window())
+)
+assert_identical(numeric_round_apply$action, "apply", "R Round did not apply")
+
+numeric_floor_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = numeric_session_id,
+    revision = 2L,
+    step = numeric_step("floor-copy", "floorNumber", 2L, "floored", new_column = "floor result"),
+    page = page_window(column_offset = 5L, column_limit = 1L)
+  )
+)
+assert_identical(numeric_floor_preview$kind, "stepPreview", "derived R Floor did not preview")
+assert_identical(
+  numeric_floor_preview$page$page$columnIds,
+  list("c:step:floor-copy:0"),
+  "derived R Floor lost its stable output identity"
+)
+assert_identical(numeric_floor_preview$diff$addedColumns, list("floor result"), "derived R Floor lost its diff")
+numeric_floor_page <- dispatch(
+  "getPage",
+  list(sessionId = numeric_session_id, page = page_window(column_offset = 5L, column_limit = 1L))
+)
+assert_identical(numeric_floor_page$kind, "page", "the active R Floor draft could not page its derived column")
+assert_identical(
+  vapply(
+    numeric_floor_page$page$page$rows[seq_len(2L)],
+    function(row) as.character(row$values[[1L]]$raw),
+    character(1L),
+    USE.NAMES = FALSE
+  ),
+  c("1", "-2"),
+  "the active R Floor draft returned the wrong derived values"
+)
+numeric_floor_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = numeric_session_id, revision = 3L, page = page_window())
+)
+assert_identical(numeric_floor_apply$action, "apply", "derived R Floor did not apply")
+
+numeric_ceil_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = numeric_session_id,
+    revision = 4L,
+    step = numeric_step("ceil-in-place", "ceilNumber", 3L, "ceiled"),
+    page = page_window(column_offset = 2L, column_limit = 1L)
+  )
+)
+assert_identical(numeric_ceil_preview$kind, "stepPreview", "in-place R Ceiling did not preview")
+assert_identical(numeric_ceil_preview$diff$changedCells, 2L, "R Ceiling returned an inexact cell diff")
+numeric_ceil_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = numeric_session_id, revision = 5L, page = page_window())
+)
+assert_identical(numeric_ceil_apply$action, "apply", "in-place R Ceiling did not apply")
+
+numeric_integer_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = numeric_session_id,
+    revision = 6L,
+    step = numeric_step("floor-integer", "floorNumber", 4L, "integer_value", new_column = "integer floor"),
+    page = page_window(column_offset = 6L, column_limit = 1L)
+  )
+)
+assert_identical(numeric_integer_preview$kind, "stepPreview", "R Floor did not accept an integer column")
+assert_identical(
+  numeric_integer_preview$page$schema[[7L]]$rawType,
+  "double",
+  "R Floor did not expose the base-R numeric result type"
+)
+numeric_integer_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = numeric_session_id, revision = 7L, page = page_window())
+)
+assert_identical(numeric_integer_apply$action, "apply", "R integer Floor did not apply")
+if (
+  !grepl("base::round(.ow_numeric_source, digits = -1)", numeric_integer_apply$code, fixed = TRUE) ||
+    !grepl("base::floor(.ow_numeric_source)", numeric_integer_apply$code, fixed = TRUE) ||
+    !grepl("base::ceiling(.ow_numeric_source)", numeric_integer_apply$code, fixed = TRUE)
+) {
+  stop("generated R numeric code lost its native rounding expressions", call. = FALSE)
+}
+assign("numeric_frame", source_environment$numeric_frame, envir = .GlobalEnv)
+eval(parse(text = numeric_integer_apply$code), envir = .GlobalEnv)
+numeric_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(numeric_generated$rounded, c(20, 20, -20, -20, NA_real_, NaN, Inf, -Inf), "generated R Round changed values")
+assert_identical(numeric_generated$`floor result`, c(1, -2, NA_real_, NaN, Inf, -Inf, 2, -2), "generated R Floor changed values")
+assert_identical(numeric_generated$ceiled, c(2, -1, NA_real_, NaN, Inf, -Inf, 2, -2), "generated R Ceiling changed values")
+assert_identical(
+  numeric_generated$`integer floor`,
+  c(1, -2, NA_real_, 3, 4, 5, 6, 7),
+  "generated R Floor changed integer values"
+)
+assert_identical(row.names(numeric_generated), row.names(numeric_before), "generated R numeric tools changed row names")
+assert_identical(get("numeric_frame", envir = .GlobalEnv), numeric_before, "generated R numeric code mutated its source")
+assert_identical(source_environment$numeric_frame, numeric_before, "the R numeric lifecycle mutated its source")
+rm("numeric_frame", "open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = numeric_session_id)))
+
+source_environment$numeric_table <- data.table::data.table(
+  primary_key = c(1.5, 2.5),
+  payload = c(1.1, -1.1),
+  row_marker = c("first", "second")
+)
+data.table::setkey(source_environment$numeric_table, primary_key)
+numeric_table_before <- data.table::copy(source_environment$numeric_table)
+numeric_table_open <- dispatch(
+  "openSession",
+  list(sessionId = numeric_table_session_id, variableName = "numeric_table", page = page_window())
+)
+assert_identical(numeric_table_open$kind, "page", "the R numeric data.table session did not open")
+numeric_key_error <- dispatch(
+  "previewStep",
+  list(
+    sessionId = numeric_table_session_id,
+    revision = 0L,
+    step = numeric_step("round-key", "roundNumber", 1L, "primary_key", 0L),
+    page = page_window()
+  )
+)
+assert_identical(numeric_key_error$kind, "error", "R Round silently replaced a data.table key")
+assert_identical(numeric_key_error$code, "invalid_request", "the R numeric key diagnostic changed")
+numeric_key_copy <- dispatch(
+  "previewStep",
+  list(
+    sessionId = numeric_table_session_id,
+    revision = 0L,
+    step = numeric_step("round-key-copy", "roundNumber", 1L, "primary_key", 0L, "rounded key"),
+    page = page_window()
+  )
+)
+assert_identical(numeric_key_copy$kind, "stepPreview", "derived R Round could not read a data.table key")
+assert_identical(numeric_key_copy$page$frameSemantics$keyColumnIds, list("r:c:0"), "derived R Round lost the key")
+numeric_table_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = numeric_table_session_id, revision = 1L, page = page_window())
+)
+assign("numeric_table", source_environment$numeric_table, envir = .GlobalEnv)
+eval(parse(text = numeric_table_apply$code), envir = .GlobalEnv)
+numeric_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(data.table::key(numeric_table_generated), "primary_key", "generated R Round lost the data.table key")
+assert_identical(numeric_table_generated$`rounded key`, c(2, 2), "generated R Round changed key-copy values")
+assert_identical(numeric_table_generated$row_marker, numeric_table_before$row_marker, "generated R Round changed keyed row order")
+assert_identical(get("numeric_table", envir = .GlobalEnv), numeric_table_before, "generated R Round mutated its data.table source")
+rm("numeric_table", "open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = numeric_table_session_id)))
+
+if (requireNamespace("bit64", quietly = TRUE)) {
+  source_environment$numeric_integer64 <- data.frame(
+    big = bit64::as.integer64(c("9007199254740993", "15", "25", "-15", "-25", NA)),
+    extreme = bit64::as.integer64(c("9223372036854775807", "1", "2", "3", "4", NA)),
+    check.names = FALSE
+  )
+  numeric_integer64_before <- unserialize(serialize(source_environment$numeric_integer64, NULL, version = 3L))
+  numeric_integer64_open <- dispatch(
+    "openSession",
+    list(sessionId = numeric_integer64_session_id, variableName = "numeric_integer64", page = page_window())
+  )
+  assert_identical(numeric_integer64_open$kind, "page", "the R integer64 numeric session did not open")
+  numeric_integer64_overflow <- dispatch(
+    "previewStep",
+    list(
+      sessionId = numeric_integer64_session_id,
+      revision = 0L,
+      step = numeric_step("round-integer64-overflow", "roundNumber", 2L, "extreme", -1L),
+      page = page_window()
+    )
+  )
+  assert_identical(numeric_integer64_overflow$kind, "error", "R Round silently overflowed integer64")
+  assert_identical(numeric_integer64_overflow$code, "invalid_request", "the R integer64 overflow diagnostic changed")
+  numeric_integer64_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = numeric_integer64_session_id,
+      revision = 0L,
+      step = numeric_step("round-integer64", "roundNumber", 1L, "big", -1L),
+      page = page_window(column_offset = 0L, column_limit = 1L)
+    )
+  )
+  assert_identical(numeric_integer64_preview$kind, "stepPreview", "R Round did not preview integer64")
+  assert_identical(numeric_integer64_preview$page$schema[[1L]]$rawType, "integer64", "R Round narrowed integer64")
+  assert_identical(
+    vapply(
+      numeric_integer64_preview$page$page$rows[seq_len(5L)],
+      function(row) as.character(row$values[[1L]]$raw),
+      character(1L),
+      USE.NAMES = FALSE
+    ),
+    c("9007199254740990", "20", "20", "-20", "-20"),
+    "live R Round lost integer64 precision or ties-to-even semantics"
+  )
+  assert_identical(
+    numeric_integer64_preview$page$page$rows[[6L]]$values[[1L]]$kind,
+    "null",
+    "live R Round did not preserve integer64 NA"
+  )
+  numeric_integer64_apply <- dispatch(
+    "applyDraft",
+    list(sessionId = numeric_integer64_session_id, revision = 1L, page = page_window())
+  )
+  if (!grepl(".ow_round_integer64", numeric_integer64_apply$code, fixed = TRUE)) {
+    stop("generated R Round lost its exact integer64 helper", call. = FALSE)
+  }
+  assign("numeric_integer64", source_environment$numeric_integer64, envir = .GlobalEnv)
+  eval(parse(text = numeric_integer64_apply$code), envir = .GlobalEnv)
+  numeric_integer64_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_identical(
+    as.character(numeric_integer64_generated$big),
+    c("9007199254740990", "20", "20", "-20", "-20", NA_character_),
+    "generated R Round lost integer64 precision or ties-to-even semantics"
+  )
+  assert_identical(get("numeric_integer64", envir = .GlobalEnv), numeric_integer64_before, "generated R Round mutated its integer64 source")
+  assert_identical(source_environment$numeric_integer64, numeric_integer64_before, "R Round mutated its integer64 source")
+  rm("numeric_integer64", "open_wrangler_result", envir = .GlobalEnv)
+  invisible(dispatch("closeSession", list(sessionId = numeric_integer64_session_id)))
+}
+
 source_environment$wide <- as.data.frame(
   setNames(replicate(256L, seq_len(401L), simplify = FALSE), sprintf("column_%03d", seq_len(256L))),
   optional = TRUE
@@ -4715,6 +5001,9 @@ missing_package_contract <- list(
   strip_text_column_at = function(...) stop("unexpected strip", call. = FALSE),
   split_text_column_at = function(...) stop("unexpected split", call. = FALSE),
   find_replace_column_at = function(...) stop("unexpected find and replace", call. = FALSE),
+  round_number_column_at = function(...) stop("unexpected round", call. = FALSE),
+  floor_number_column_at = function(...) stop("unexpected floor", call. = FALSE),
+  ceil_number_column_at = function(...) stop("unexpected ceiling", call. = FALSE),
   fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
@@ -4824,6 +5113,27 @@ if (
     !identical(conditionMessage(missing_find_replace_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without Find and Replace support", call. = FALSE)
+}
+for (required_numeric_tool in c(
+  "round_number_column_at",
+  "floor_number_column_at",
+  "ceil_number_column_at"
+)) {
+  incomplete_contract <- missing_package_contract
+  incomplete_contract[[required_numeric_tool]] <- NULL
+  incomplete_error <- tryCatch(
+    {
+      openwrangler_r_kernel_agent$new_agent(incomplete_contract, source_environment)
+      NULL
+    },
+    error = function(error) error
+  )
+  if (
+    is.null(incomplete_error) ||
+      !identical(conditionMessage(incomplete_error), "Open Wrangler received an invalid R frame contract.")
+  ) {
+    stop(sprintf("the R agent accepted a frame contract without %s support", required_numeric_tool), call. = FALSE)
+  }
 }
 missing_fill_contract <- missing_package_contract
 missing_fill_contract$fill_missing_column_at <- NULL

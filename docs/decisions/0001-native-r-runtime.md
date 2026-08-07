@@ -75,8 +75,8 @@ user to reopen the frame.
 
 Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
 Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, and Split text. The first draft takes an isolated original: base data frames and tibbles use R
-serialization, while data tables use `data.table::copy()`. The runtime keeps committed and draft results separate,
+Capitalize, Strip text, Split text, Round, Floor, and Ceiling. The first draft takes an isolated original: base data
+frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps committed and draft results separate,
 resolves every target by stable ID and captured name, and advances the session revision for preview, apply, discard,
 latest-step replacement, and undo. Applied-step inspection replays only the selected plan prefix. The kernel returns
 its code, input page, and output page separately, so two large pages are never forced into one response. Page
@@ -118,6 +118,11 @@ double, logical, Date, and UTC POSIXct output. An `integer64` source stays `inte
 Factors convert through their labels, failed parses become `NA`, and conversions that would lose units or `integer64`
 precision are rejected. A keyed `data.table` column must be cloned before it can be converted. Generated R applies the
 same checks and conversion rules.
+
+Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
+outputs are R doubles, while `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and
+`-Inf`. Round follows R's ties-to-even rule. A keyed `data.table` column cannot be changed in place, but the result can
+be appended as a new column without changing the key.
 
 IRkernel sessions can insert generated R into the exact `NotebookDocument` captured when the dataframe session
 opened. The shared notebook helper creates one `r` cell and confirms that exact cell before reporting success. It does
@@ -161,10 +166,10 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
   Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
-  Strip text, and Split text with generated R code. Generated R can be inserted into its originating IRkernel notebook
-  or R document. A local R document session opened in Editing mode can export its committed result as CSV through a
+  Strip text, Split text, Round, Floor, and Ceiling with generated R code. Generated R can be inserted into its
+  originating IRkernel notebook or R document. A local R document session opened in Editing mode can export its committed result as CSV through a
   private R artifact and an extension-host atomic save. IRkernel sessions cannot export cleaned data yet. R Parquet
-  export and other cleaning operations remain unsupported.
+  export and other cleaning operations are not supported yet.
 - Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
   data-table paths. Grouped `GRP_df` and indexed `indexed_frame` objects are outside the supported class contract.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not

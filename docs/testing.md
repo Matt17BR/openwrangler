@@ -36,6 +36,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   label, failed parses as typed `NA`, integer truncation and range limits, UTC datetimes, stable in-place identity,
   unsupported or ambiguous source/target pairs, and keyed-data-table rejection. Lowercase and Uppercase tests cover
   in-place and derived output, factors, `NA`, invalid encodings, changed-cell diffs, source isolation, and keyed data-table guards.
+  Round, Floor, and Ceiling cases must cover ordinary integer and double inputs, exact `integer64`, `NA`, `NaN`,
+  `Inf`, `-Inf`, R's ties-to-even rounding, derived output, and keyed-data-table rejection for in-place changes.
   Find and replace tests cover literal and regular-expression matching, blank patterns, factors, Unicode text, and the
   same output and key rules. The kernel-agent cases cover preview, apply,
   discard, applied-step inspection, latest-step
@@ -55,8 +57,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix. It
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
-  Convert type, Text Length, Lowercase, Uppercase, and Find and replace lifecycles, variable replacement, malformed
-  requests, and close cases.
+  Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor,
+  and Ceiling lifecycles, variable replacement, malformed requests, and close cases.
   The R tests check the fixed diagnostics for unsupported frames,
   missing packages, oversized pages or profiles, and stale columns. Focused TypeScript tests cover the embedded
   remote-kernel bootstrap, response decoder, sole-open notebook checks, exact-kernel paging and profiling, restart
@@ -66,7 +68,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   and `data.table` class vectors, active and delayed bindings, missing `jsonlite` or `rlang`, malformed output, and
   notebook/kernel replacement. Host and webview tests cover the native picker, coordinator route, R runtime identity,
   Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type,
-  Text Length, Lowercase, Uppercase, and Find and replace capabilities, generated-code commands, bounded two-dimensional pages, and enabled viewing filters, sorts,
+  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling
+  capabilities, generated-code commands, bounded two-dimensional pages, and enabled viewing filters, sorts,
   profiles, and value selection. The
   production-browser accessibility journey covers explicit row labels,
   keyboard tab/menu use, and
@@ -531,9 +534,9 @@ containerized R kernel in VS Code. The journey checked typed value selection, a 
 Clear all, sort priority, restart and reopen, source preservation, and final cleanup. It does not cover cleaning,
 generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R` files.
 
-Focused R and TypeScript tests on the current v2 branch cover Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
+The current v2 test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase,
-Find and replace, Capitalize, Strip text, and Split text in
+Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling in
 Editing mode. They
 exercise draft preview, executable generated R, mixed plans, apply, discard, inspection, latest-step editing, undo,
 revision errors, exact-kernel correlation, stable retained-column identities, and source isolation for base data
@@ -545,18 +548,22 @@ Lowercase, Uppercase, and Capitalize cover factor-to-character conversion, nativ
 output, and key safety. Find and replace covers literal and regular-expression matching with the same output and key
 rules. Strip text covers the default whitespace and selected edge characters. Split text covers literal delimiters,
 empty parts, out-of-range `NA`, and required derived output.
+Tests cover double output for ordinary integer and double input, exact `integer64` output, `NA`, `NaN`, both
+infinities, R's ties-to-even rule, derived output, and the in-place keyed-data-table guard for Round, Floor, and
+Ceiling.
 Convert type covers all six target types, failed parses, factors, temporal values, `integer64`, key safety, executable
 generated R, and exact typed diffs. Drop Missing Rows covers the Any and All modes and treats both `NA` and `NaN` as
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites cover all seventeen operations. The packaged journey runs all seventeen in both editors.
+suites contain cases for all twenty operations. The packaged editor run covers all twenty in both editors. Round,
+Floor, and Ceiling use their visible forms and check derived values from positive and negative fractional inputs.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact
 code as one `r` cell in the originating notebook, leaves every existing cell unchanged, and checks the source objects
-again after editing. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns; the
-direct R suites cover the full seventeen-operation catalog, plus class and key behavior for tibbles and data tables.
+again after editing. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns; direct
+R tests also check class and key behavior for both dataframe types.
 
 On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start another VS Code or Cursor process.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public

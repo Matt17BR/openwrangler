@@ -3,13 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   CapitalizeTextTransformStep,
   CastColumnTransformStep,
+  CeilNumberTransformStep,
   CloneColumnTransformStep,
   ColumnSummary,
   DataDiff,
   DatasetStats,
   FillMissingValuesTransformStep,
+  FloorNumberTransformStep,
   OpenSessionRequest,
   OpenWranglerRequest,
+  RoundNumberTransformStep,
   SelectColumnsTransformStep,
   SourceCapabilities,
   SplitTextTransformStep,
@@ -1722,7 +1725,10 @@ describe("canonical R kernel bridge", () => {
             "splitText",
             "capitalizeText",
             "lowerText",
-            "upperText"
+            "upperText",
+            "roundNumber",
+            "floorNumber",
+            "ceilNumber"
           ]
         }
       }
@@ -3177,6 +3183,187 @@ describe("canonical R kernel bridge", () => {
       code: "invalid_request",
       message: expect.stringContaining("key column")
     });
+    expect(transport.previewStep).not.toHaveBeenCalled();
+  });
+
+  it("previews native R Round, Floor, and Ceiling in place or under stable appended identities", async () => {
+    const cases: ReadonlyArray<{
+      step: RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep;
+      source: RFramePageContract;
+      after: RFrameCell;
+      expectedRawType: "double" | "integer64";
+      expectedType: "float" | "integer";
+    }> = [
+      {
+        step: {
+          id: "r-round-in-place",
+          kind: "roundNumber",
+          params: { column: { id: "r:c:0", name: "value" }, decimals: 1 }
+        },
+        source: replaceContractCell(frameContract(), "r:c:0", rCell("number", "12.56", "12.56")),
+        after: rCell("number", "12.6", "12.6"),
+        expectedRawType: "double",
+        expectedType: "float"
+      },
+      {
+        step: {
+          id: "r-floor-appended-integer64",
+          kind: "floorNumber",
+          params: { column: { id: "r:c:1", name: "count" }, newColumn: "floored_count" }
+        },
+        source: dataTableContract(frameContract(), ["r:c:1"]),
+        after: rCell("integer", "9223372036854775807", "9223372036854775807"),
+        expectedRawType: "integer64",
+        expectedType: "integer"
+      },
+      {
+        step: {
+          id: "r-ceiling-in-place",
+          kind: "ceilNumber",
+          params: { column: { id: "r:c:0", name: "value" } }
+        },
+        source: replaceContractCell(frameContract(), "r:c:0", rCell("number", "-12.1", "-12.1")),
+        after: rCell("number", "-12", "-12"),
+        expectedRawType: "double",
+        expectedType: "float"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const transport = fakeTransport(testCase.source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      const inPlace = testCase.step.params.newColumn === undefined;
+      const output = inPlace
+        ? castContract(
+            testCase.source,
+            testCase.step.params.column.id,
+            testCase.expectedRawType,
+            testCase.expectedType,
+            testCase.after,
+            true
+          )
+        : cloneContract(
+            testCase.source,
+            testCase.step.params.column.id,
+            testCase.step.params.newColumn as string,
+            testCase.step.id
+          );
+      const outputId = inPlace ? testCase.step.params.column.id : `c:step:${testCase.step.id}:0`;
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: output,
+        diff: inPlace
+          ? numericRoundingDiff(
+              testCase.step.params.column.id,
+              testCase.step.params.column.name,
+              testCase.source.page.rows[0]?.values[
+                testCase.source.page.columnIds.indexOf(testCase.step.params.column.id)
+              ] as RFrameCell,
+              testCase.after
+            )
+          : cloneDiff(testCase.step.params.newColumn as string),
+        code: "open_wrangler_result <- orders"
+      });
+
+      const response = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: testCase.step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      });
+
+      expect(transport.previewStep).toHaveBeenCalledWith(
+        sessionId,
+        0,
+        testCase.step,
+        expect.any(Object),
+        expect.any(Array),
+        undefined,
+        expect.any(Object)
+      );
+      expect(response).toMatchObject({
+        kind: "stepPreview",
+        revision: 1,
+        metadata: {
+          shape: { columns: testCase.source.shape.columns + (inPlace ? 0 : 1) },
+          schema: expect.arrayContaining([
+            expect.objectContaining({
+              id: outputId,
+              name: inPlace ? testCase.step.params.column.name : testCase.step.params.newColumn,
+              rawType: testCase.expectedRawType,
+              type: testCase.expectedType
+            })
+          ]),
+          draftStep: testCase.step
+        },
+        diff: inPlace
+          ? { addedColumns: [], changedCells: 1, cells: [expect.objectContaining({ columnId: outputId })] }
+          : { addedColumns: [testCase.step.params.newColumn], changedCells: 0, cells: [] }
+      });
+    }
+  });
+
+  it("rejects invalid native R numeric rounding inputs before transport", async () => {
+    const source = dataTableContract(frameContract(), ["r:c:0"]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const invalidSteps = [
+      {
+        id: "stale-round",
+        kind: "roundNumber",
+        params: { column: { id: "r:c:0", name: "stale" }, decimals: 1 }
+      },
+      {
+        id: "date-floor",
+        kind: "floorNumber",
+        params: { column: { id: "r:c:2", name: "date" } }
+      },
+      {
+        id: "colliding-ceiling",
+        kind: "ceilNumber",
+        params: { column: { id: "r:c:0", name: "value" }, newColumn: "count" }
+      },
+      {
+        id: "private-floor",
+        kind: "floorNumber",
+        params: {
+          column: { id: "r:c:0", name: "value" },
+          newColumn: "__OPEN_WRANGLER_INTERNAL_ROW_ID_forged"
+        }
+      },
+      {
+        id: "wide-round",
+        kind: "roundNumber",
+        params: { column: { id: "r:c:0", name: "value" }, decimals: 2_147_483_648 }
+      },
+      {
+        id: "keyed-round",
+        kind: "roundNumber",
+        params: { column: { id: "r:c:0", name: "value" }, decimals: -2 }
+      }
+    ] satisfies Array<RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep>;
+    for (const step of invalidSteps) {
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+    }
     expect(transport.previewStep).not.toHaveBeenCalled();
   });
 
@@ -5303,6 +5490,10 @@ function castDiff(columnId: string, column: string, before: RFrameCell, after: R
   };
 }
 
+function numericRoundingDiff(columnId: string, column: string, before: RFrameCell, after: RFrameCell): DataDiff {
+  return castDiff(columnId, column, before, after);
+}
+
 function column(
   position: number,
   name: string,
@@ -5370,7 +5561,10 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "splitText",
       "capitalizeText",
       "lowerText",
-      "upperText"
+      "upperText",
+      "roundNumber",
+      "floorNumber",
+      "ceilNumber"
     ]
   };
 }

@@ -20,7 +20,7 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 3 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 4 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 
@@ -205,6 +205,34 @@ export interface RKernelFillMissingValuesStep {
   }>;
 }
 
+export interface RKernelRoundNumberStep {
+  readonly id: string;
+  readonly kind: "roundNumber";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    readonly decimals?: number;
+    readonly newColumn?: string;
+  }>;
+}
+
+export interface RKernelFloorNumberStep {
+  readonly id: string;
+  readonly kind: "floorNumber";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    readonly newColumn?: string;
+  }>;
+}
+
+export interface RKernelCeilNumberStep {
+  readonly id: string;
+  readonly kind: "ceilNumber";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    readonly newColumn?: string;
+  }>;
+}
+
 export interface RKernelDropColumnsStep {
   readonly id: string;
   readonly kind: "dropColumns";
@@ -271,6 +299,9 @@ export type RKernelTransformStep =
   | RKernelSplitTextStep
   | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
+  | RKernelRoundNumberStep
+  | RKernelFloorNumberStep
+  | RKernelCeilNumberStep
   | RKernelDropColumnsStep
   | RKernelSelectColumnsStep;
 
@@ -980,6 +1011,22 @@ function validateTransformStep(value: unknown): void {
     validateFillMissingReplacement(params.replacement);
     return;
   }
+  if (step.kind === "roundNumber" || step.kind === "floorNumber" || step.kind === "ceilNumber") {
+    const params = exactRecord(
+      step.params,
+      ["column"],
+      step.kind === "roundNumber" ? ["decimals", "newColumn"] : ["newColumn"],
+      "R kernel numeric-rounding parameters"
+    );
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    if (params.decimals !== undefined) {
+      boundedSignedInteger(params.decimals, "request.payload.step.params.decimals", 2_147_483_647);
+    }
+    if (params.newColumn !== undefined) {
+      boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    }
+    return;
+  }
   if (step.kind === "dropDuplicates") {
     const params = exactRecord(step.params, [], ["columns", "keep"], "R kernel drop-duplicates parameters");
     if (params.columns !== undefined) {
@@ -1679,6 +1726,13 @@ function hasUnpairedSurrogate(value: string): boolean {
 
 function boundedInteger(value: unknown, label: string, maximum: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > maximum) {
+    fail(`${label} is outside its supported range.`);
+  }
+  return value;
+}
+
+function boundedSignedInteger(value: unknown, label: string, maximumAbsolute: number): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || Math.abs(value) > maximumAbsolute) {
     fail(`${label} is outside its supported range.`);
   }
   return value;

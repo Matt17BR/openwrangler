@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 3L
+  transport_version <- 4L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
@@ -149,6 +149,20 @@ openwrangler_r_kernel_agent <- local({
         !is.finite(value) ||
         value < 0 ||
         value > maximum ||
+        value != floor(value)
+    ) {
+      abort("invalid_request", sprintf("%s is outside its supported range", label))
+    }
+    as.double(value)
+  }
+
+  signed_whole_number <- function(value, label, maximum) {
+    if (
+      length(value) != 1L ||
+        !is.numeric(value) ||
+        is.na(value) ||
+        !is.finite(value) ||
+        abs(value) > maximum ||
         value != floor(value)
     ) {
       abort("invalid_request", sprintf("%s is outside its supported range", label))
@@ -843,6 +857,59 @@ openwrangler_r_kernel_agent <- local({
         }
       ))
     }
+    if (kind %in% c("roundNumber", "floorNumber", "ceilNumber")) {
+      optional_fields <- if (identical(kind, "roundNumber")) {
+        c("decimals", "newColumn")
+      } else {
+        "newColumn"
+      }
+      params <- exact_record(
+        step$params,
+        "column",
+        "request.payload.step.params",
+        optional_fields = optional_fields
+      )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      decimals <- if (identical(kind, "roundNumber") && "decimals" %in% names(params)) {
+        signed_whole_number(
+          params$decimals,
+          "request.payload.step.params.decimals",
+          maximum_revision
+        )
+      } else {
+        0
+      }
+      new_column <- NULL
+      if ("newColumn" %in% names(params)) {
+        new_column <- bounded_text(
+          params$newColumn,
+          "request.payload.step.params.newColumn",
+          maximum_variable_name_bytes
+        )
+        if (identical(new_column, "")) {
+          abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+        }
+      }
+      in_place <- is.null(new_column) || identical(new_column, column$name)
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(column = column, decimals = decimals, newColumn = new_column),
+        outputId = if (in_place) {
+          column$id
+        } else {
+          bounded_text(
+            paste0("c:step:", step_id, ":0"),
+            sprintf("the derived R %s column identity", kind),
+            limits$columnIdBytes
+          )
+        }
+      ))
+    }
     if (identical(kind, "castColumn")) {
       params <- exact_record(step$params, c("column", "dtype"), "request.payload.step.params")
       column <- decode_column_reference(
@@ -897,6 +964,9 @@ openwrangler_r_kernel_agent <- local({
       "stripText",
       "splitText",
       "findReplace",
+      "roundNumber",
+      "floorNumber",
+      "ceilNumber",
       "fillMissingValues",
       "castColumn"
     )) {
@@ -991,6 +1061,43 @@ openwrangler_r_kernel_agent <- local({
       bound$index <- step$params$index
     }
     bound
+  }
+
+  bind_numeric_transform_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (
+      length(matches) != 1L ||
+        !identical(schema[[matches[[1L]]]]$name, step$params$column$name)
+    ) {
+      abort("stale_column", "The numeric column reference no longer matches the active R dataframe", TRUE)
+    }
+    position <- as.integer(matches[[1L]])
+    column <- schema[[position]]
+    if (!column$semantics$kind %in% c("integer", "double", "integer64")) {
+      abort("invalid_request", "The selected R column is not numeric", TRUE)
+    }
+    in_place <- is.null(step$params$newColumn) || identical(step$params$newColumn, step$params$column$name)
+    key_column_ids <- capture$descriptor$frameSemantics$keyColumnIds
+    if (is.null(key_column_ids)) key_column_ids <- character()
+    if (in_place && column$id %in% key_column_ids) {
+      abort(
+        "invalid_request",
+        sprintf("%s cannot replace a data.table key column; choose a new output column", step$kind),
+        TRUE
+      )
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      position = position,
+      oldName = step$params$column$name,
+      newName = if (in_place) step$params$column$name else step$params$newColumn,
+      inPlace = in_place,
+      outputId = step$outputId,
+      semanticKind = column$semantics$kind,
+      decimals = step$params$decimals
+    )
   }
 
   bind_fill_missing_step <- function(capture, step) {
@@ -1343,6 +1450,54 @@ openwrangler_r_kernel_agent <- local({
           source_positions = source_positions,
           output_ids = output_ids,
           text_transform_positions = transform_position
+        ),
+        bound = bound
+      ))
+    }
+    if (step$kind %in% c("roundNumber", "floorNumber", "ceilNumber")) {
+      bound <- bind_numeric_transform_step(capture, step)
+      new_name <- if (isTRUE(bound$inPlace)) NULL else bound$newName
+      result <- switch(
+        step$kind,
+        roundNumber = frame_contract$round_number_column_at(
+          source,
+          bound$position,
+          bound$oldName,
+          bound$decimals,
+          new_name
+        ),
+        floorNumber = frame_contract$floor_number_column_at(
+          source,
+          bound$position,
+          bound$oldName,
+          new_name
+        ),
+        ceilNumber = frame_contract$ceil_number_column_at(
+          source,
+          bound$position,
+          bound$oldName,
+          new_name
+        )
+      )
+      if (isTRUE(bound$inPlace)) {
+        source_positions <- seq_along(capture$descriptor$schema)
+        output_ids <- vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+        transform_position <- bound$position
+      } else {
+        source_positions <- c(seq_along(capture$descriptor$schema), bound$position)
+        output_ids <- c(
+          vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+          bound$outputId
+        )
+        transform_position <- length(output_ids)
+      }
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = source_positions,
+          output_ids = output_ids,
+          numeric_transform_positions = transform_position
         ),
         bound = bound
       ))
@@ -1775,6 +1930,42 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  round_integer64_code_helper_lines <- function() {
+    c(
+      "  .ow_round_integer64 <- function(.ow_values, .ow_digits) {",
+      "    if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required to round an integer64 column\", call. = FALSE)",
+      "    if (.ow_digits >= 0) return(.ow_values)",
+      "    .ow_places <- -.ow_digits",
+      "    .ow_present <- !is.na(.ow_values)",
+      "    if (!any(.ow_present)) return(.ow_values)",
+      "    .ow_zero <- bit64::as.integer64(0L)",
+      "    .ow_magnitude <- abs(.ow_values[.ow_present])",
+      "    if (.ow_places > 19) {",
+      "      .ow_rounded <- rep(.ow_zero, length(.ow_magnitude))",
+      "    } else if (.ow_places == 19) {",
+      "      .ow_half <- bit64::as.integer64(\"5000000000000000000\")",
+      "      if (any(.ow_magnitude > .ow_half)) stop(\"Open Wrangler Round would produce a value outside the integer64 range\", call. = FALSE)",
+      "      .ow_rounded <- rep(.ow_zero, length(.ow_magnitude))",
+      "    } else {",
+      "      .ow_unit <- bit64::as.integer64(paste0(\"1\", strrep(\"0\", as.integer(.ow_places))))",
+      "      .ow_quotient <- .ow_magnitude %/% .ow_unit",
+      "      .ow_remainder <- .ow_magnitude %% .ow_unit",
+      "      .ow_half <- .ow_unit %/% bit64::as.integer64(2L)",
+      "      .ow_round_up <- .ow_remainder > .ow_half | (.ow_remainder == .ow_half & .ow_quotient %% bit64::as.integer64(2L) == bit64::as.integer64(1L))",
+      "      .ow_maximum_quotient <- bit64::as.integer64(\"9223372036854775807\") %/% .ow_unit",
+      "      if (any(.ow_round_up & .ow_quotient >= .ow_maximum_quotient)) stop(\"Open Wrangler Round would produce a value outside the integer64 range\", call. = FALSE)",
+      "      .ow_quotient[.ow_round_up] <- .ow_quotient[.ow_round_up] + bit64::as.integer64(1L)",
+      "      .ow_rounded <- .ow_quotient * .ow_unit",
+      "    }",
+      "    .ow_rounded[.ow_values[.ow_present] < .ow_zero] <- -.ow_rounded[.ow_values[.ow_present] < .ow_zero]",
+      "    if (anyNA(.ow_rounded)) stop(\"Open Wrangler Round would produce a value outside the integer64 range\", call. = FALSE)",
+      "    .ow_result_values <- .ow_values",
+      "    .ow_result_values[.ow_present] <- .ow_rounded",
+      "    .ow_result_values",
+      "  }"
+    )
+  }
+
   cast_code_helper_lines <- function() {
     c(
       "  .ow_cast_kind <- function(.ow_value) {",
@@ -2048,6 +2239,13 @@ openwrangler_r_kernel_agent <- local({
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "fillMissingValues"), logical(1L)))) {
       lines <- c(lines, fill_missing_code_helper_lines())
+    }
+    if (any(vapply(
+      bound_plan,
+      function(step) identical(step$kind, "roundNumber") && identical(step$semanticKind, "integer64"),
+      logical(1L)
+    ))) {
+      lines <- c(lines, round_integer64_code_helper_lines())
     }
     for (step in bound_plan) {
       if (identical(step$kind, "sortRows")) {
@@ -2379,6 +2577,62 @@ openwrangler_r_kernel_agent <- local({
             "  }"
           )
         }
+      } else if (step$kind %in% c("roundNumber", "floorNumber", "ceilNumber")) {
+        operation_name <- switch(
+          step$kind,
+          roundNumber = "Round",
+          floorNumber = "Floor",
+          ceilNumber = "Ceiling"
+        )
+        lines <- c(
+          lines,
+          sprintf("  .ow_numeric_position <- %dL", step$position),
+          sprintf("  .ow_numeric_source_name <- %s", r_string(step$oldName)),
+          sprintf("  .ow_numeric_name <- %s", r_string(step$newName)),
+          "  if (ncol(.ow_result) < .ow_numeric_position || !identical(names(.ow_result)[[.ow_numeric_position]], .ow_numeric_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  .ow_numeric_source <- .ow_result[[.ow_numeric_position]]",
+          row_type_guard(".ow_numeric_source", list(semanticsKind = step$semanticKind))
+        )
+        numeric_expression <- if (identical(step$semanticKind, "integer64")) {
+          if (identical(step$kind, "roundNumber")) {
+            sprintf(".ow_round_integer64(.ow_numeric_source, %.0f)", step$decimals)
+          } else {
+            ".ow_numeric_source"
+          }
+        } else if (identical(step$kind, "roundNumber")) {
+          sprintf("base::round(.ow_numeric_source, digits = %.0f)", step$decimals)
+        } else if (identical(step$kind, "floorNumber")) {
+          "base::floor(.ow_numeric_source)"
+        } else {
+          "base::ceiling(.ow_numeric_source)"
+        }
+        lines <- c(lines, sprintf("  .ow_numeric_values <- %s", numeric_expression))
+        if (isTRUE(step$inPlace)) {
+          lines <- c(
+            lines,
+            sprintf(
+              "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_numeric_source_name %%in%% data.table::key(.ow_result)) stop(\"Open Wrangler %s cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
+              operation_name
+            ),
+            "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_numeric_position, value = .ow_numeric_values) else .ow_result[[.ow_numeric_position]] <- .ow_numeric_values"
+          )
+        } else {
+          lines <- c(
+            lines,
+            "  if (.ow_numeric_name == \"\" || any(names(.ow_result) == .ow_numeric_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+            sprintf(
+              "  if (ncol(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
+              maximum_columns
+            ),
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    data.table::set(.ow_result, j = .ow_numeric_name, value = .ow_numeric_values)",
+            "  } else {",
+            "    .ow_numeric_existing_names <- names(.ow_result)",
+            "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_numeric_values",
+            "    names(.ow_result) <- c(.ow_numeric_existing_names, .ow_numeric_name)",
+            "  }"
+          )
+        }
       } else if (identical(step$kind, "fillMissingValues")) {
         lines <- c(
           lines,
@@ -2474,7 +2728,10 @@ openwrangler_r_kernel_agent <- local({
             "capitalizeText",
             "stripText",
             "splitText",
-            "findReplace"
+            "findReplace",
+            "roundNumber",
+            "floorNumber",
+            "ceilNumber"
           ) &&
             !isTRUE(bound$inPlace)
         )
@@ -2522,6 +2779,9 @@ openwrangler_r_kernel_agent <- local({
         "stripText",
         "splitText",
         "findReplace",
+        "roundNumber",
+        "floorNumber",
+        "ceilNumber",
         "fillMissingValues",
         "castColumn"
       ) &&
@@ -2629,6 +2889,9 @@ openwrangler_r_kernel_agent <- local({
       "strip_text_column_at",
       "split_text_column_at",
       "find_replace_column_at",
+      "round_number_column_at",
+      "floor_number_column_at",
+      "ceil_number_column_at",
       "fill_missing_column_at",
       "cast_column_at",
       "drop_columns_at",

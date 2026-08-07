@@ -18,10 +18,12 @@ import {
   type DropMissingRowsTransformStep,
   type ErrorResponse,
   type ExportDataRequest,
+  type CeilNumberTransformStep,
   type FindReplaceTransformStep,
   type FillMissingValuesTransformStep,
   type FilterModel,
   type FilterRowsTransformStep,
+  type FloorNumberTransformStep,
   type GridPage,
   type InspectStepRequest,
   type LowerTextTransformStep,
@@ -33,6 +35,7 @@ import {
   type PreviewStepRequest,
   type RenameColumnTransformStep,
   type RetainedTransformStep,
+  type RoundNumberTransformStep,
   type SelectColumnsTransformStep,
   type SessionMetadata,
   type SessionMode,
@@ -103,7 +106,10 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "splitText",
   "capitalizeText",
   "lowerText",
-  "upperText"
+  "upperText",
+  "roundNumber",
+  "floorNumber",
+  "ceilNumber"
 ] as OperationKind[]) as OperationKind[];
 
 type RTransformStep =
@@ -122,6 +128,9 @@ type RTransformStep =
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
+  | RoundNumberTransformStep
+  | FloorNumberTransformStep
+  | CeilNumberTransformStep
   | DropColumnsTransformStep
   | SelectColumnsTransformStep;
 
@@ -683,6 +692,9 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "capitalizeText" &&
       request.step.kind !== "lowerText" &&
       request.step.kind !== "upperText" &&
+      request.step.kind !== "roundNumber" &&
+      request.step.kind !== "floorNumber" &&
+      request.step.kind !== "ceilNumber" &&
       request.step.kind !== "dropColumns" &&
       request.step.kind !== "selectColumns"
     ) {
@@ -2017,6 +2029,7 @@ function schemaAfterRStep(
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
   if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step, activeKeyColumnIds);
+  if (isRNumericRoundingStep(step)) return schemaAfterNumericRounding(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (
     step.kind === "findReplace" ||
@@ -2044,6 +2057,103 @@ function schemaAfterRStep(
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
   );
+}
+
+function schemaAfterNumericRounding(
+  inputSchema: readonly ColumnSchema[],
+  step: RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const label = numericRoundingLabel(step);
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError(`The ${label.toLowerCase()} column reference no longer matches the active R dataframe.`);
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (source.rawType !== "integer" && source.rawType !== "double" && source.rawType !== "integer64") {
+    throw new TypeError(`${label} requires an R integer, double, or integer64 column.`);
+  }
+  if (
+    step.kind === "roundNumber" &&
+    step.params.decimals !== undefined &&
+    (!Number.isSafeInteger(step.params.decimals) || Math.abs(step.params.decimals) > 2_147_483_647)
+  ) {
+    throw new TypeError("Round requires a decimal-place count within R's integer range.");
+  }
+
+  const outputName = step.params.newColumn;
+  if (outputName !== undefined && outputName.length === 0) {
+    throw new TypeError(`The ${label.toLowerCase()} R column name may not be empty.`);
+  }
+  const inPlace = outputName === undefined || outputName === source.name;
+  const targetType =
+    source.rawType === "integer64"
+      ? { rawType: "integer64", type: "integer" as const }
+      : { rawType: "double", type: "float" as const };
+  if (inPlace) {
+    if (activeKeyColumnIds.includes(source.id)) {
+      throw new TypeError(`${label} cannot replace a keyed data.table column in place. Choose a new output column.`);
+    }
+    return Object.freeze(
+      inputSchema.map((column) => Object.freeze(column.id === source.id ? { ...column, ...targetType } : { ...column }))
+    );
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError(`${label} exceeds the R frame contract column limit.`);
+  }
+  if (Buffer.byteLength(outputName, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError(`The ${label.toLowerCase()} R column name exceeds the frame contract limit.`);
+  }
+  if (outputName.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError(
+      `The ${label.toLowerCase()} R column name uses Open Wrangler's reserved private row-identity prefix.`
+    );
+  }
+  if (inputSchema.some((column) => column.name === outputName)) {
+    throw new TypeError(`The R column name ${JSON.stringify(outputName)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
+    throw new TypeError(`The ${label.toLowerCase()} R column identity exceeds the frame contract limit.`);
+  }
+  if (inputSchema.some((column) => column.id === id)) {
+    throw new TypeError(`The ${label.toLowerCase()} R column identity already exists in the active dataframe.`);
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: outputName,
+      position: inputSchema.length,
+      ...targetType,
+      nullable: source.nullable
+    })
+  ]);
+}
+
+function isRNumericRoundingStep(
+  step: RTransformStep
+): step is RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep {
+  return step.kind === "roundNumber" || step.kind === "floorNumber" || step.kind === "ceilNumber";
+}
+
+function isRNumericRoundingInPlace(
+  step: RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep
+): boolean {
+  return step.params.newColumn === undefined || step.params.newColumn === step.params.column.name;
+}
+
+function numericRoundingLabel(
+  step: RoundNumberTransformStep | FloorNumberTransformStep | CeilNumberTransformStep
+): "Round" | "Floor" | "Ceiling" {
+  if (step.kind === "roundNumber") return "Round";
+  if (step.kind === "floorNumber") return "Floor";
+  return "Ceiling";
 }
 
 function keyColumnsAfterRStep(
@@ -2674,6 +2784,19 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       })
     });
   }
+  if (isRNumericRoundingStep(step)) {
+    return Object.freeze({
+      id: step.id,
+      kind: step.kind,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.kind === "roundNumber" && step.params.decimals !== undefined
+          ? { decimals: step.params.decimals }
+          : {}),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
   return Object.freeze({
     id: step.id,
     kind: "renameColumn" as const,
@@ -2868,6 +2991,19 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (isRNumericRoundingStep(step)) {
+    return {
+      id: step.id,
+      kind: step.kind,
+      params: {
+        column: { ...step.params.column },
+        ...(step.kind === "roundNumber" && step.params.decimals !== undefined
+          ? { decimals: step.params.decimals }
+          : {}),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
   return {
     id: step.id,
     kind: "renameColumn",
@@ -2914,6 +3050,9 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "capitalizeText" &&
     step.kind !== "lowerText" &&
     step.kind !== "upperText" &&
+    step.kind !== "roundNumber" &&
+    step.kind !== "floorNumber" &&
+    step.kind !== "ceilNumber" &&
     step.kind !== "dropColumns" &&
     step.kind !== "selectColumns"
   ) {
@@ -2974,7 +3113,9 @@ function inspectionDiff(
   const addedColumns = outputSchema.filter((column) => !inputIds.has(column.id)).map((column) => column.name);
   const removedColumns = inputSchema.filter((column) => !outputIds.has(column.id)).map((column) => column.name);
   const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
-  const changedInPlace = step.kind === "castColumn" || step.kind === "fillMissingValues" || textTransformInPlace;
+  const numericRoundingInPlace = isRNumericRoundingStep(step) && isRNumericRoundingInPlace(step);
+  const changedInPlace =
+    step.kind === "castColumn" || step.kind === "fillMissingValues" || textTransformInPlace || numericRoundingInPlace;
   if (!changedInPlace) {
     return {
       addedRows: 0,
@@ -3073,7 +3214,9 @@ function assertMutationDiff(
   const inputIds = inputSchema.map((column) => column.id);
   const expectedRemoved = inputSchema.filter((column) => !outputIdSet.has(column.id)).map((column) => column.name);
   const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
-  const changedInPlace = textTransformInPlace || step.kind === "fillMissingValues" || step.kind === "castColumn";
+  const numericRoundingInPlace = isRNumericRoundingStep(step) && isRNumericRoundingInPlace(step);
+  const changedInPlace =
+    textTransformInPlace || numericRoundingInPlace || step.kind === "fillMissingValues" || step.kind === "castColumn";
   const expectedAdded =
     step.kind === "cloneColumn"
       ? [step.params.newName]
@@ -3081,7 +3224,9 @@ function assertMutationDiff(
         ? [step.params.newColumn]
         : isRTextTransformStep(step) && !textTransformInPlace
           ? [step.params.newColumn as string]
-          : [];
+          : isRNumericRoundingStep(step) && !numericRoundingInPlace
+            ? [step.params.newColumn as string]
+            : [];
   const stepMatches =
     step.kind === "selectColumns"
       ? isDeepStrictEqual(
@@ -3099,7 +3244,9 @@ function assertMutationDiff(
             ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
             : isRTextTransformStep(step) && !textTransformInPlace
               ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-              : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+              : isRNumericRoundingStep(step) && !numericRoundingInPlace
+                ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+                : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
   const projectedPosition = changedInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
   const changedInput = changedInPlace
     ? inputSchema.find((column) => column.id === step.params.column.id && column.name === step.params.column.name)

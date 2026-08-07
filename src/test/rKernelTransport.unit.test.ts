@@ -1194,6 +1194,72 @@ describe("native R kernel protocol", () => {
     expect(() => encodeRKernelRequest(extraParameter as RKernelRequest)).toThrow("invalid fields");
   });
 
+  it("strictly validates native R Round, Floor, and Ceiling payloads", () => {
+    const steps = [
+      {
+        id: "round-negative-digits",
+        kind: "roundNumber",
+        params: { column: { id: "r:c:0", name: "value" }, decimals: -3 }
+      },
+      {
+        id: "round-positive-digits",
+        kind: "roundNumber",
+        params: { column: { id: "r:c:0", name: "value" }, decimals: 4, newColumn: "rounded" }
+      },
+      {
+        id: "floor-step",
+        kind: "floorNumber",
+        params: { column: { id: "r:c:0", name: "value" } }
+      },
+      {
+        id: "ceiling-step",
+        kind: "ceilNumber",
+        params: { column: { id: "r:c:0", name: "value" }, newColumn: "ceiling_value" }
+      }
+    ] as const;
+    for (const step of steps) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step, page: pageWindow() }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const expectRejected = (step: unknown, message: string) => {
+      expect(() =>
+        encodeRKernelRequest({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: previewRequestId,
+          kind: "previewStep",
+          payload: { sessionId, revision: 0, step, page: pageWindow() }
+        } as RKernelRequest)
+      ).toThrow(message);
+    };
+    expectRejected(
+      { ...steps[0], params: { ...steps[0].params, decimals: 1.5 } },
+      "request.payload.step.params.decimals"
+    );
+    expectRejected(
+      { ...steps[0], params: { ...steps[0].params, decimals: 2_147_483_648 } },
+      "request.payload.step.params.decimals"
+    );
+    expectRejected(
+      { ...steps[0], params: { ...steps[0].params, decimals: -2_147_483_648 } },
+      "request.payload.step.params.decimals"
+    );
+    expectRejected({ ...steps[2], params: { ...steps[2].params, decimals: 0 } }, "invalid fields");
+    expectRejected(
+      { ...steps[3], params: { ...steps[3].params, newColumn: "" } },
+      "request.payload.step.params.newColumn"
+    );
+    expectRejected({ ...steps[1], params: { ...steps[1].params, unexpected: true } }, "invalid fields");
+    const missingColumn = structuredClone(steps[1]) as unknown as { params: Record<string, unknown> };
+    delete missingColumn.params.column;
+    expectRejected(missingColumn, "invalid fields");
+  });
+
   it("strictly validates native R Cast requests and type-changing cell diffs", () => {
     const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,

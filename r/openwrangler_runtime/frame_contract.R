@@ -224,6 +224,20 @@ openwrangler_r_frame_contract <- local({
     as.double(value)
   }
 
+  signed_whole_number <- function(value, label, maximum) {
+    if (
+      length(value) != 1L ||
+        !is.numeric(value) ||
+        is.na(value) ||
+        !is.finite(value) ||
+        abs(value) > maximum ||
+        value != floor(value)
+    ) {
+      abort("invalid-view-query", sprintf("%s is outside its supported range", label))
+    }
+    as.double(value)
+  }
+
   exact_double <- function(value) {
     sprintf("%.17g", as.double(value))
   }
@@ -1617,6 +1631,7 @@ openwrangler_r_frame_contract <- local({
     output_ids = NULL,
     text_length_positions = NULL,
     text_transform_positions = NULL,
+    numeric_transform_positions = NULL,
     fill_missing_positions = NULL,
     cast_positions = NULL,
     cast_dtypes = NULL
@@ -1633,6 +1648,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(output_ids) ||
             !is.null(text_length_positions) ||
             !is.null(text_transform_positions) ||
+            !is.null(numeric_transform_positions) ||
             !is.null(fill_missing_positions) ||
             !is.null(cast_positions) ||
             !is.null(cast_dtypes)
@@ -1648,6 +1664,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(text_transform_positions) && is.null(source_positions)) {
       abort("internal-error", "R text-transform outputs require explicit source mappings")
+    }
+    if (!is.null(numeric_transform_positions) && is.null(source_positions)) {
+      abort("internal-error", "R numeric-transform outputs require explicit source mappings")
     }
     if (!is.null(fill_missing_positions) && is.null(source_positions)) {
       abort("internal-error", "R fill-missing outputs require explicit source mappings")
@@ -1771,6 +1790,22 @@ openwrangler_r_frame_contract <- local({
         }
         text_transform_positions <- as.integer(text_transform_positions)
       }
+      if (is.null(numeric_transform_positions)) {
+        numeric_transform_positions <- integer()
+      } else {
+        if (
+          !is.numeric(numeric_transform_positions) ||
+            anyNA(numeric_transform_positions) ||
+            any(!is.finite(numeric_transform_positions)) ||
+            any(numeric_transform_positions != floor(numeric_transform_positions)) ||
+            any(numeric_transform_positions < 1L) ||
+            any(numeric_transform_positions > length(output_schema)) ||
+            anyDuplicated(numeric_transform_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid numeric-transform output positions")
+        }
+        numeric_transform_positions <- as.integer(numeric_transform_positions)
+      }
       if (is.null(cast_positions)) {
         cast_positions <- integer()
         cast_dtypes <- character()
@@ -1811,6 +1846,7 @@ openwrangler_r_frame_contract <- local({
       transformed_positions <- c(
         text_length_positions,
         text_transform_positions,
+        numeric_transform_positions,
         fill_missing_positions,
         cast_positions
       )
@@ -1887,6 +1923,18 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid text-transform output")
           }
+        } else if (index %in% numeric_transform_positions) {
+          expected_kind <- if (identical(source_column$semantics$kind, "integer64")) {
+            "integer64"
+          } else {
+            "double"
+          }
+          if (
+            !source_column$semantics$kind %in% c("integer", "double", "integer64") ||
+              !identical(output_column$semantics$kind, expected_kind)
+          ) {
+            abort("internal-error", "a derived R frame has an invalid numeric-transform output")
+          }
         } else if (index %in% cast_positions) {
           cast_index <- match(index, cast_positions)
           dtype <- cast_dtypes[[cast_index]]
@@ -1950,6 +1998,8 @@ openwrangler_r_frame_contract <- local({
         } else if (index %in% cast_positions) {
           isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
         } else if (index %in% text_transform_positions) {
+          isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
+        } else if (index %in% numeric_transform_positions) {
           isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
         } else {
           source_nullable[[index]]
@@ -2628,6 +2678,149 @@ openwrangler_r_frame_contract <- local({
       regex,
       new_name
     )
+  }
+
+  round_integer64_values <- function(values, digits) {
+    if (!requireNamespace("bit64", quietly = TRUE)) {
+      abort("missing-package", "bit64 is required to round an integer64 column")
+    }
+    if (digits >= 0) return(values)
+
+    places <- -digits
+    present <- !is.na(values)
+    if (!any(present)) return(values)
+    zero <- bit64::as.integer64(0L)
+    magnitude <- abs(values[present])
+    if (places > 19) {
+      rounded <- rep(zero, length(magnitude))
+    } else if (places == 19) {
+      half <- bit64::as.integer64("5000000000000000000")
+      if (any(magnitude > half)) {
+        abort("operation-output-too-large", "Round would produce a value outside the integer64 range")
+      }
+      rounded <- rep(zero, length(magnitude))
+    } else {
+      unit <- bit64::as.integer64(paste0("1", strrep("0", as.integer(places))))
+      quotient <- magnitude %/% unit
+      remainder <- magnitude %% unit
+      half <- unit %/% bit64::as.integer64(2L)
+      round_up <- remainder > half |
+        (remainder == half & quotient %% bit64::as.integer64(2L) == bit64::as.integer64(1L))
+      maximum_quotient <- bit64::as.integer64("9223372036854775807") %/% unit
+      if (any(round_up & quotient >= maximum_quotient)) {
+        abort("operation-output-too-large", "Round would produce a value outside the integer64 range")
+      }
+      quotient[round_up] <- quotient[round_up] + bit64::as.integer64(1L)
+      rounded <- quotient * unit
+    }
+    rounded[values[present] < zero] <- -rounded[values[present] < zero]
+    if (anyNA(rounded)) {
+      abort("operation-output-too-large", "Round would produce a value outside the integer64 range")
+    }
+    result <- values
+    result[present] <- rounded
+    result
+  }
+
+  transform_numeric_column_at <- function(
+    value,
+    position,
+    old_name,
+    operation,
+    digits = 0,
+    new_name = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the numeric column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    source_column <- inspected$descriptor$schema[[position]]
+    if (!identical(source_column$name, old_name)) {
+      abort("stale-column", "the numeric column name no longer matches the R dataframe")
+    }
+    if (!source_column$semantics$kind %in% c("integer", "double", "integer64")) {
+      abort("invalid-view-query", sprintf("%s requires a numeric R column", operation))
+    }
+    if (!operation %in% c("roundNumber", "floorNumber", "ceilNumber")) {
+      abort("internal-error", "the R numeric transform is unsupported")
+    }
+    digits <- signed_whole_number(digits, "digits", .Machine$integer.max)
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (!is.null(new_name)) {
+      new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+      if (identical(new_name, "")) abort("invalid-column-name", "new_name must not be empty")
+      if (is_private_column_name(new_name)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+    }
+    in_place <- is.null(new_name) || identical(new_name, old_name)
+    if (!in_place && any(names(value) == new_name)) {
+      abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
+    }
+    if (!in_place && column_count >= maximum_columns) {
+      abort("invalid-view-query", sprintf("%s exceeds the supported R column limit", operation))
+    }
+    source_key <- if (identical(inspected$flavor, "r.data.table")) {
+      data.table::key(value) %||% character()
+    } else {
+      character()
+    }
+    if (in_place && old_name %in% source_key) {
+      abort(
+        "invalid-view-query",
+        sprintf("%s cannot replace a data.table key column; choose a new output column", operation)
+      )
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    source_values <- result[[position]]
+    transformed <- if (identical(source_column$semantics$kind, "integer64")) {
+      if (identical(operation, "roundNumber")) round_integer64_values(source_values, digits) else source_values
+    } else {
+      switch(
+        operation,
+        roundNumber = base::round(source_values, digits = digits),
+        floorNumber = base::floor(source_values),
+        ceilNumber = base::ceiling(source_values)
+      )
+    }
+    if (in_place) {
+      if (identical(inspected$flavor, "r.data.table")) {
+        data.table::set(result, j = position, value = transformed)
+      } else {
+        result[[position]] <- transformed
+      }
+    } else if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = new_name, value = transformed)
+    } else {
+      original_names <- names(result)
+      result[[length(result) + 1L]] <- transformed
+      names(result) <- c(original_names, new_name)
+    }
+    result
+  }
+
+  round_number_column_at <- function(value, position, old_name, digits = 0, new_name = NULL) {
+    transform_numeric_column_at(value, position, old_name, "roundNumber", digits, new_name)
+  }
+
+  floor_number_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_numeric_column_at(value, position, old_name, "floorNumber", 0, new_name)
+  }
+
+  ceil_number_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_numeric_column_at(value, position, old_name, "ceilNumber", 0, new_name)
   }
 
   integer64_fill_value <- function(text, label) {
@@ -4011,6 +4204,9 @@ openwrangler_r_frame_contract <- local({
     split_text_column_at = split_text_column_at,
     find_replace_column = find_replace_column,
     find_replace_column_at = find_replace_column_at,
+    round_number_column_at = round_number_column_at,
+    floor_number_column_at = floor_number_column_at,
+    ceil_number_column_at = ceil_number_column_at,
     fill_missing_column = fill_missing_column,
     fill_missing_column_at = fill_missing_column_at,
     cast_column = cast_column,

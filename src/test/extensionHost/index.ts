@@ -279,7 +279,10 @@ const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
   "splitText",
   "capitalizeText",
   "lowerText",
-  "upperText"
+  "upperText",
+  "roundNumber",
+  "floorNumber",
+  "ceilNumber"
 ]);
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
@@ -1534,6 +1537,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "  group = c(rep('A', 602L), rep('B', row_count - 602L)),",
     "  score = as.numeric(seq_len(row_count)),",
     "  label = sprintf('row-%04d', seq_len(row_count)),",
+    "  fractional_score = ifelse(seq_len(row_count) %% 2L == 0L, -as.numeric(seq_len(row_count)) - 0.25, as.numeric(seq_len(row_count)) + 0.25),",
     "  check.names = FALSE,",
     "  stringsAsFactors = FALSE",
     ")",
@@ -1928,7 +1932,7 @@ async function exerciseReleasedRJupyterExtension(
     await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
     await executeReleasedNotebookCell(notebook, 0, RELEASED_JUPYTER_R_SETUP_RESULT, `${phase}:setup`, notebookEditor);
     const setup = releasedNotebookJsonResult(notebook.cellAt(0), RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
-    assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 24 });
+    assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
     assertReleasedRVersion(setup, kernelTarget, "R setup");
     assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
     if (kernelTarget.remote) {
@@ -3187,7 +3191,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     timeout: 30_000
   });
   await assertReleasedProfileStat(datasetProfile, "Rows", "1,205");
-  await assertReleasedProfileStat(datasetProfile, "Columns", "24");
+  await assertReleasedProfileStat(datasetProfile, "Columns", "25");
   await assertReleasedProfileStat(datasetProfile, "Missing cells", "1");
   await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "1");
   await assertReleasedProfileStat(datasetProfile, "Duplicate rows", "0");
@@ -3320,14 +3324,14 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     timeout: 30_000
   });
   await assertReleasedProfileStat(filteredDatasetProfile, "Rows", "1");
-  await assertReleasedProfileStat(filteredDatasetProfile, "Columns", "24");
+  await assertReleasedProfileStat(filteredDatasetProfile, "Columns", "25");
   await assertReleasedProfileStat(filteredDatasetProfile, "Rows before filters", "1,205");
   await assertReleasedProfileStat(filteredDatasetProfile, "Missing cells", "0");
   await assertReleasedProfileStat(filteredDatasetProfile, "Rows with missing values", "0");
   await assertReleasedProfileStat(filteredDatasetProfile, "Duplicate rows", "0");
   const filteredStats = testing.activeSession()?.metadata.stats;
   assert.ok(filteredStats, "The filtered R dataset profile must reach the confirmed host state.");
-  assert.equal(filteredStats.missingValuesByColumn.length, 24);
+  assert.equal(filteredStats.missingValuesByColumn.length, 25);
   assert.ok(
     filteredStats.missingValuesByColumn.every((item) => item.count === 0),
     "The one filtered R row must not contain a missing value."
@@ -3410,8 +3414,10 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   await columnSearch.press("Enter");
   const finalColumn = app.locator('th[data-column="extra_20"]');
   await finalColumn.waitFor({ state: "visible", timeout: 10_000 });
+  const finalColumnIndex = testing.activeSession()?.metadata.schema.findIndex((column) => column.name === "extra_20");
+  assert.ok(finalColumnIndex !== undefined && finalColumnIndex >= 0, "The complete R schema must retain extra_20.");
   await app
-    .locator('td[data-grid-row="1204"][data-grid-column="23"]')
+    .locator(`td[data-grid-row="1204"][data-grid-column="${finalColumnIndex}"]`)
     .filter({ hasText: "value-20-1205" })
     .waitFor({ state: "visible", timeout: 10_000 });
 
@@ -5302,6 +5308,206 @@ async function exerciseReleasedREditingJourney(
     isNull: false,
     isNaN: false
   });
+
+  if (phase === "jupyter-r") {
+    recordAcceptanceProgress(`${phase}:editing:numeric-rounding-preview-apply-undo`);
+    const roundingBase = testing.activeSession();
+    assert.ok(roundingBase, "The restored R session must remain available for numeric rounding.");
+    assert.deepEqual(roundingBase.viewState.filterModel.filters, []);
+    assert.deepEqual(roundingBase.viewState.filterModel.sort, []);
+    const roundingColumn = roundingBase.metadata.schema.find((column) => column.name === "fractional_score");
+    assert.ok(roundingColumn, "The packaged R numeric-rounding run requires the fractional score column.");
+
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Round");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const roundingDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await roundingDialog.getByPlaceholder("Search operations").fill("round");
+    await roundingDialog.getByRole("button", { name: /^Round\b/u }).click();
+    await roundingDialog.getByLabel("Numeric column", { exact: true }).selectOption(roundingColumn.id);
+    await roundingDialog.getByLabel("Decimal places", { exact: true }).fill("0");
+    await roundingDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const draft = active?.metadata.draftStep;
+        return (
+          active?.sessionId === sessionId &&
+          draft?.kind === "roundNumber" &&
+          draft.params.column.id === roundingColumn.id &&
+          draft.params.decimals === 0
+        );
+      },
+      30_000,
+      "previewing native R Round through its visible form"
+    );
+    const roundingPreview = testing.activeSession();
+    assert.ok(roundingPreview?.metadata.draftStep?.kind === "roundNumber");
+    assert.match(roundingPreview.code ?? "", /\bround\s*\(/u);
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Round preview must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Round preview");
+    const roundedCell = app.locator(`td[data-grid-row="0"][data-grid-column="${roundingColumn.position}"]`);
+    await roundedCell.waitFor({ state: "visible", timeout: 10_000 });
+    const roundedDisplay = Number((await roundedCell.innerText()).trim());
+    assert.equal(Number.isFinite(roundedDisplay), true, "The visible R Round preview must contain a number.");
+    assert.equal(Number.isInteger(roundedDisplay), true, "The visible R Round preview must use zero decimal places.");
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.steps[0]?.kind === "roundNumber",
+      30_000,
+      "applying native R Round"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R Round step must reach its renderer."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Round session");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Round");
+
+    recordAcceptanceProgress(`${phase}:editing:floor-picker-preview-discard`);
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Floor");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const floorDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await floorDialog.getByPlaceholder("Search operations").fill("floor");
+    await floorDialog.getByRole("button", { name: /^Floor\b/u }).click();
+    await floorDialog.getByLabel("Numeric column", { exact: true }).selectOption(roundingColumn.id);
+    await floorDialog.getByLabel("Output column (blank replaces in place)", { exact: true }).fill("score_floor");
+    await floorDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const draft = active?.metadata.draftStep;
+        return (
+          active?.sessionId === sessionId &&
+          draft?.kind === "floorNumber" &&
+          draft.params.column.id === roundingColumn.id &&
+          draft.params.newColumn === "score_floor" &&
+          active.metadata.schema.at(-1)?.id === `c:step:${draft.id}:0`
+        );
+      },
+      30_000,
+      "previewing native R Floor through its visible form"
+    );
+    const floorPreview = testing.activeSession();
+    assert.ok(floorPreview?.metadata.draftStep?.kind === "floorNumber");
+    assert.match(floorPreview.code ?? "", /\bfloor\s*\(/u);
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Floor preview must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Floor preview");
+    const floorColumn = testing.activeSession()?.metadata.schema.find((column) => column.name === "score_floor");
+    assert.ok(floorColumn, "The visible R Floor preview must retain its derived column.");
+    const floorColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await floorColumnSearch.fill("score_floor");
+    await app
+      .getByRole("option", { name: /^score_floor,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await floorColumnSearch.press("Enter");
+    for (const [row, expected] of [
+      [0, "1"],
+      [1, "-3"]
+    ] as const) {
+      await waitForLocatorText(
+        app.locator(`td[data-grid-row="${row}"][data-grid-column="${floorColumn.position}"]`),
+        (text) => text.trim() === expected,
+        10_000,
+        `the visible R Floor value in row ${row + 1}`
+      );
+    }
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Discard", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          !active.metadata.schema.some((column) => column.name === "score_floor")
+        );
+      },
+      30_000,
+      "discarding native R Floor"
+    );
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The discarded R Floor draft must settle.");
+
+    const ceilingBase = testing.activeSession();
+    assert.ok(ceilingBase, "The restored R session must remain available for Ceiling.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Ceiling");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const ceilingDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await ceilingDialog.getByPlaceholder("Search operations").fill("ceiling");
+    await ceilingDialog.getByRole("button", { name: /^Ceiling\b/u }).click();
+    await ceilingDialog.getByLabel("Numeric column", { exact: true }).selectOption(roundingColumn.id);
+    await ceilingDialog.getByLabel("Output column (blank replaces in place)", { exact: true }).fill("score_ceiling");
+    await ceilingDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const draft = active?.metadata.draftStep;
+        return (
+          active?.sessionId === sessionId &&
+          draft?.kind === "ceilNumber" &&
+          draft.params.column.id === roundingColumn.id &&
+          draft.params.newColumn === "score_ceiling"
+        );
+      },
+      30_000,
+      "previewing native R Ceiling through its visible form"
+    );
+    const ceilingPreview = testing.activeSession();
+    assert.ok(ceilingPreview?.metadata.draftStep?.kind === "ceilNumber");
+    assert.equal(ceilingPreview.metadata.schema.at(-1)?.id, `c:step:${ceilingPreview.metadata.draftStep.id}:0`);
+    assert.match(ceilingPreview.code ?? "", /\bceiling\s*\(/u);
+    await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Ceiling preview must reach its renderer.");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Ceiling preview");
+    const ceilingColumn = testing.activeSession()?.metadata.schema.find((column) => column.name === "score_ceiling");
+    assert.ok(ceilingColumn, "The visible R Ceiling preview must retain its derived column.");
+    const ceilingColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await ceilingColumnSearch.fill("score_ceiling");
+    await app
+      .getByRole("option", { name: /^score_ceiling,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await ceilingColumnSearch.press("Enter");
+    for (const [row, expected] of [
+      [0, "2"],
+      [1, "-2"]
+    ] as const) {
+      await waitForLocatorText(
+        app.locator(`td[data-grid-row="${row}"][data-grid-column="${ceilingColumn.position}"]`),
+        (text) => text.trim() === expected,
+        10_000,
+        `the visible R Ceiling value in row ${row + 1}`
+      );
+    }
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Discard", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          !active.metadata.schema.some((column) => column.name === "score_ceiling")
+        );
+      },
+      30_000,
+      "discarding native R Ceiling"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The discarded R Floor and Ceiling previews must reach their renderer."
+    );
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:editing:numeric-rounding-source-after-undo`);
+  }
 
   if (phase === "jupyter-r") {
     const capitalizeBase = testing.activeSession();

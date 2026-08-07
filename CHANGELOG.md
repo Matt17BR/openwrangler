@@ -75,6 +75,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   `indexed_frame` objects are not supported.
 - Direct R-document execution is available on macOS and Linux. R notebooks still work on Windows; direct document
   execution stays disabled there until Open Wrangler can own and stop the complete R process tree.
+- Added Round, Floor, and Ceiling to native R editing. Ordinary integer and double inputs produce R doubles;
+  `integer64` inputs stay exact. The operations keep `NA`, `NaN`, `Inf`, and `-Inf`, and Round follows R's
+  ties-to-even rule. A keyed `data.table` column can be written to a new output column but cannot be changed in place.
 
 ### Changed
 
@@ -90,13 +93,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
   ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
   to the notebook's source object.
-- Added a real VS Code screenshot of R editing. The installed extension now exercises all seventeen R operations
-  against IRkernel in both VS Code and Cursor. Across the sequence it covers
-  preview, apply, inspection, discard, latest-step editing, and undo; Convert type is applied and undone. Drop Missing
-  Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The journey also checks
+- Added a real VS Code screenshot of R editing. The installed extension exercises all twenty R operations
+  against IRkernel in both VS Code and Cursor. The run covers preview, apply, inspection, discard, latest-step editing,
+  and undo; Convert type is applied and undone. Drop Missing
+  Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The run also checks
   generated R, copies and saves Rename code, and verifies that the notebook objects are unchanged. Separate tibble and
-  keyed-data-table sessions preview and discard Rename and Drop Columns. Direct R tests cover the same catalog, plus
-  class and key behavior for tibbles and data tables.
+  keyed-data-table sessions preview and discard Rename and Drop Columns. Round, Floor, and Ceiling are opened through
+  their real forms and checked with positive and negative fractional values. Direct R tests cover the same catalog,
+  plus class and key behavior for tibbles and data tables.
 - The grid now shows a final partial page correctly when the browser has reached its maximum scroll position.
 - Open Wrangler now supports viewing local PySpark 4.2 Classic and Connect batch DataFrames from live notebooks in
   VS Code and Cursor. The Experimental badge has been removed for this scope. PySpark remains notebook-only and
