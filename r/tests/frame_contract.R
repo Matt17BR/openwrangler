@@ -1381,6 +1381,190 @@ assert_identical(
   "Fill Missing Values changed an empty compatible frame"
 )
 
+fallback_fill_frame <- data.frame(
+  target = ordered(c(NA, "high", NA, NA), levels = c("low", "high")),
+  first = factor(c("medium", "ignored", "low", NA), levels = c("medium", "ignored", "low")),
+  second = c("late", "ignored", "unused", NA),
+  check.names = FALSE,
+  row.names = paste0("fallback-", 1:4)
+)
+fallback_fill_before <- unserialize(serialize(fallback_fill_frame, NULL, version = 3L))
+fallback_fill_capture <- openwrangler_r_frame_contract$capture_frame(fallback_fill_frame)
+fallback_fill_result <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_fill_frame,
+  1L,
+  "target",
+  c(2L, 3L),
+  c("first", "second")
+)
+assert_identical(
+  fallback_fill_result$target,
+  ordered(c("medium", "high", "low", NA), levels = c("low", "high", "medium")),
+  "fallback columns lost their priority or changed ordered factor semantics"
+)
+assert_identical(
+  row.names(fallback_fill_result),
+  row.names(fallback_fill_frame),
+  "fallback columns changed explicit row names"
+)
+fallback_fill_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  fallback_fill_result,
+  nullability_source = fallback_fill_capture,
+  source_positions = seq_along(fallback_fill_capture$descriptor$schema),
+  fallback_fill_positions = 1L
+)
+assert_identical(
+  fallback_fill_result_capture$descriptor$schema[[1L]]$nullable,
+  TRUE,
+  "an unresolved fallback fill was published as non-nullable"
+)
+fallback_fill_complete <- fallback_fill_frame
+fallback_fill_complete$second[[4L]] <- "last"
+fallback_fill_complete_result <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_fill_complete,
+  1L,
+  "target",
+  c(2L, 3L),
+  c("first", "second")
+)
+fallback_fill_complete_capture <- openwrangler_r_frame_contract$capture_frame(
+  fallback_fill_complete_result,
+  nullability_source = openwrangler_r_frame_contract$capture_frame(fallback_fill_complete),
+  source_positions = 1:3,
+  fallback_fill_positions = 1L
+)
+assert_identical(
+  fallback_fill_complete_capture$descriptor$schema[[1L]]$nullable,
+  FALSE,
+  "a complete fallback fill stayed nullable"
+)
+assert_identical(
+  levels(fallback_fill_complete_result$target),
+  c("low", "high", "medium", "last"),
+  "fallback factor levels were not appended in first-use order"
+)
+assert_identical(fallback_fill_frame, fallback_fill_before, "fallback columns mutated their source data.frame")
+
+fallback_tibble <- tibble::tibble(target = c(NA_character_, "ready"), fallback = c("backup", "unused"))
+fallback_tibble_before <- unserialize(serialize(fallback_tibble, NULL, version = 3L))
+fallback_tibble_result <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_tibble,
+  1L,
+  "target",
+  2L,
+  "fallback"
+)
+assert_identical(
+  class(fallback_tibble_result),
+  c("tbl_df", "tbl", "data.frame"),
+  "fallback columns changed tibble class"
+)
+assert_identical(fallback_tibble_result$target, c("backup", "ready"), "fallback columns changed tibble values")
+assert_identical(fallback_tibble, fallback_tibble_before, "fallback columns mutated their source tibble")
+
+fallback_numeric <- data.frame(
+  integer = c(NA_integer_, 2L, NA_integer_),
+  wide = bit64::as.integer64(c("7", NA, "9")),
+  wide_source = bit64::as.integer64(c("4", "5", NA)),
+  integer_source = c(1L, 6L, 3L),
+  number = c(NaN, 2, NA_real_),
+  number_source = c(1, NaN, NA_real_)
+)
+fallback_integer <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_numeric,
+  1L,
+  "integer",
+  3L,
+  "wide_source"
+)
+assert_identical(fallback_integer$integer, c(4L, 2L, NA_integer_), "integer fallback conversion changed exact values")
+fallback_wide <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_numeric,
+  2L,
+  "wide",
+  4L,
+  "integer_source"
+)
+assert_identical(
+  fallback_wide$wide,
+  bit64::as.integer64(c("7", "6", "9")),
+  "integer64 fallback conversion lost exact values"
+)
+fallback_number <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_numeric,
+  5L,
+  "number",
+  6L,
+  "number_source"
+)
+assert_identical(
+  fallback_number$number,
+  c(1, 2, NA_real_),
+  "fallback columns did not treat NA and NaN as missing in priority order"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+    data.frame(target = NA_integer_, fallback = bit64::as.integer64("2147483648")),
+    1L,
+    "target",
+    2L,
+    "fallback"
+  ),
+  "outside the R integer range"
+)
+
+fallback_temporal <- data.frame(
+  date = as.Date(c(NA, "2026-01-02")),
+  date_source = as.Date(c("2026-01-01", "2026-01-03")),
+  instant = as.POSIXct(c(NA, "2026-01-02 12:00:00"), tz = "Europe/Berlin"),
+  instant_source = as.POSIXct(c("2026-01-01 11:00:00", "2026-01-03 11:00:00"), tz = "UTC")
+)
+fallback_temporal <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_temporal,
+  1L,
+  "date",
+  2L,
+  "date_source"
+)
+fallback_temporal <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_temporal,
+  3L,
+  "instant",
+  4L,
+  "instant_source"
+)
+assert_identical(fallback_temporal$date, as.Date(c("2026-01-01", "2026-01-02")), "date fallback changed class")
+assert_identical(attr(fallback_temporal$instant, "tzone"), "Europe/Berlin", "datetime fallback changed target timezone")
+assert_identical(
+  as.double(fallback_temporal$instant[[1L]]),
+  as.double(as.POSIXct("2026-01-01 11:00:00", tz = "UTC")),
+  "datetime fallback changed the represented instant"
+)
+
+fallback_table <- data.table::data.table(key_value = c("b", "a"), target = c(NA_character_, "ready"))
+data.table::setkey(fallback_table, key_value)
+fallback_table_before <- data.table::copy(fallback_table)
+fallback_table_result <- openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+  fallback_table,
+  2L,
+  "target",
+  1L,
+  "key_value"
+)
+assert_identical(data.table::key(fallback_table_result), "key_value", "fallback fill dropped a data.table key")
+assert_identical(fallback_table_result$target, c("ready", "b"), "a keyed fallback column was not usable")
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_from_fallback_columns_at(
+    fallback_table,
+    1L,
+    "key_value",
+    2L,
+    "target"
+  ),
+  "key column"
+)
+assert_identical(fallback_table, fallback_table_before, "fallback fill mutated its source data.table")
+
 cast_cases <- list(
   list(
     dtype = "string",
@@ -3524,5 +3708,90 @@ assert_error(
   openwrangler_r_frame_contract$materialize_page(html_escape_capture, row_limit = 1000L, column_limit = 1L),
   "payload-too-large"
 )
+
+mean_frame <- data.frame(
+  value = c(1, NA_real_, NaN, 5),
+  row.names = c("mean-a", "mean-b", "mean-c", "mean-d")
+)
+mean_before <- unserialize(serialize(mean_frame, NULL, version = 3L))
+mean_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  mean_frame,
+  1L,
+  "value",
+  list(kind = "mean")
+)
+assert_identical(mean_result$value, c(1, 3, 3, 5), "R mean fill did not ignore NA and NaN")
+assert_identical(class(mean_result), "data.frame", "R mean fill changed the data.frame class")
+assert_identical(row.names(mean_result), row.names(mean_before), "R mean fill changed row names")
+assert_identical(mean_frame, mean_before, "R mean fill mutated its source data.frame")
+
+mean_huge <- openwrangler_r_frame_contract$fill_missing_column_at(
+  data.frame(value = c(1e308, 1e308, NA_real_, NaN)),
+  1L,
+  "value",
+  list(kind = "mean")
+)
+assert_true(all(is.finite(mean_huge$value)), "R mean fill overflowed a finite mean")
+assert_true(all(mean_huge$value == 1e308), "R mean fill changed a finite large mean")
+
+mean_noop <- data.frame(value = c(Inf, -Inf))
+assert_identical(
+  openwrangler_r_frame_contract$fill_missing_column_at(mean_noop, 1L, "value", list(kind = "mean")),
+  mean_noop,
+  "R mean fill calculated an undefined mean for a complete column"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(NA_real_, NaN)),
+    1L,
+    "value",
+    list(kind = "mean")
+  ),
+  "no present values"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(Inf, -Inf, NA_real_)),
+    1L,
+    "value",
+    list(kind = "mean")
+  ),
+  "no usable numeric mean"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(1L, NA_integer_, 3L)),
+    1L,
+    "value",
+    list(kind = "mean")
+  ),
+  "incompatible"
+)
+
+mean_tibble <- tibble::tibble(value = c(1, NA_real_, 5))
+mean_tibble_before <- unserialize(serialize(mean_tibble, NULL, version = 3L))
+mean_tibble_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  mean_tibble,
+  1L,
+  "value",
+  list(kind = "mean")
+)
+assert_identical(class(mean_tibble_result), class(mean_tibble), "R mean fill changed the tibble class")
+assert_identical(mean_tibble_result$value, c(1, 3, 5), "R mean fill changed the tibble result")
+assert_identical(mean_tibble, mean_tibble_before, "R mean fill mutated its source tibble")
+
+mean_table <- data.table::data.table(id = 1:3, value = c(1, NA_real_, 5))
+data.table::setkey(mean_table, id)
+mean_table_before <- data.table::copy(mean_table)
+mean_table_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  mean_table,
+  2L,
+  "value",
+  list(kind = "mean")
+)
+assert_identical(class(mean_table_result), class(mean_table), "R mean fill changed the data.table class")
+assert_identical(data.table::key(mean_table_result), "id", "R mean fill changed the data.table key")
+assert_identical(mean_table_result$value, c(1, 3, 5), "R mean fill changed the data.table result")
+assert_identical(mean_table, mean_table_before, "R mean fill mutated its source data.table")
 
 message("R frame contract tests passed")

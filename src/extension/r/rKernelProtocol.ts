@@ -20,15 +20,17 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 4 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 6 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
+export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
 
 const identifierPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const maximumVariableNameBytes = 1_024;
 const maximumDiagnosticBytes = 4_096;
 const maximumGeneratedCodeBytes = 4 * 1_024 * 1_024;
 const maximumStepIdBytes = R_FRAME_CONTRACT_LIMITS.stepIdBytes;
+const maximumFillFallbackColumns = 64;
 
 export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "duplicate_session",
@@ -440,6 +442,28 @@ export type RKernelRequest =
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
       requestId: string;
+      kind: "readDataExport";
+      payload: Readonly<{
+        sessionId: string;
+        revision: number;
+        exportId: string;
+        offset: number;
+        limit: number;
+      }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "closeDataExport";
+      payload: Readonly<{
+        sessionId: string;
+        revision: number;
+        exportId: string;
+      }>;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
       kind: "closeSession";
       payload: Readonly<{ sessionId: string }>;
     }>;
@@ -534,6 +558,25 @@ export type RKernelResponse =
       rows: number;
       columns: number;
       bytes: number;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "dataExportChunk";
+      sessionId: string;
+      revision: number;
+      exportId: string;
+      offset: number;
+      bytes: number;
+      data: Uint8Array;
+    }>
+  | Readonly<{
+      transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
+      requestId: string;
+      kind: "dataExportClosed";
+      sessionId: string;
+      revision: number;
+      exportId: string;
     }>
   | RKernelErrorResponse;
 
@@ -831,6 +874,46 @@ export function decodeRKernelResponseJson(
       bytes: boundedInteger(record.bytes, "response.bytes", Number.MAX_SAFE_INTEGER)
     });
   }
+  if (kind === "dataExportChunk") {
+    const record = exactRecord(value, [
+      "transportVersion",
+      "requestId",
+      "kind",
+      "sessionId",
+      "revision",
+      "exportId",
+      "offset",
+      "bytes",
+      "data"
+    ]);
+    validateEnvelope(record, expected);
+    const bytes = boundedInteger(record.bytes, "response.bytes", R_KERNEL_EXPORT_CHUNK_BYTES);
+    const data = boundedBase64(record.data, "response.data", R_KERNEL_EXPORT_CHUNK_BYTES);
+    if (data.byteLength !== bytes) fail("R kernel data-export chunk length is inconsistent.");
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "dataExportChunk" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
+      exportId: identifier(record.exportId, "response.exportId"),
+      offset: boundedInteger(record.offset, "response.offset", Number.MAX_SAFE_INTEGER),
+      bytes,
+      data
+    });
+  }
+  if (kind === "dataExportClosed") {
+    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "revision", "exportId"]);
+    validateEnvelope(record, expected);
+    return Object.freeze({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: expected,
+      kind: "dataExportClosed" as const,
+      sessionId: identifier(record.sessionId, "response.sessionId"),
+      revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
+      exportId: identifier(record.exportId, "response.exportId")
+    });
+  }
   if (kind === "closed") {
     const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId"]);
     validateEnvelope(record, expected);
@@ -974,6 +1057,31 @@ function validateRequest(request: RKernelRequest): void {
     if (payload.format !== "csv") fail("request.payload.format must be csv.");
     return;
   }
+  if (record.kind === "readDataExport") {
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "revision", "exportId", "offset", "limit"],
+      "R kernel data-export chunk payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
+    identifier(payload.exportId, "request.payload.exportId");
+    boundedInteger(payload.offset, "request.payload.offset", Number.MAX_SAFE_INTEGER);
+    const limit = boundedInteger(payload.limit, "request.payload.limit", R_KERNEL_EXPORT_CHUNK_BYTES);
+    if (limit < 1) fail("request.payload.limit must be positive.");
+    return;
+  }
+  if (record.kind === "closeDataExport") {
+    const payload = exactRecord(
+      record.payload,
+      ["sessionId", "revision", "exportId"],
+      "R kernel data-export close payload"
+    );
+    identifier(payload.sessionId, "request.payload.sessionId");
+    boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
+    identifier(payload.exportId, "request.payload.exportId");
+    return;
+  }
   if (record.kind === "closeSession") {
     const payload = exactRecord(record.payload, ["sessionId"], "R kernel close payload");
     identifier(payload.sessionId, "request.payload.sessionId");
@@ -1007,8 +1115,8 @@ function validateTransformStep(value: unknown): void {
   }
   if (step.kind === "fillMissingValues") {
     const params = exactRecord(step.params, ["column", "replacement"], "R kernel fill-missing parameters");
-    validateColumnReference(params.column, "request.payload.step.params.column");
-    validateFillMissingReplacement(params.replacement);
+    const column = validateColumnReference(params.column, "request.payload.step.params.column");
+    validateFillMissingReplacement(params.replacement, column.id);
     return;
   }
   if (step.kind === "roundNumber" || step.kind === "floorNumber" || step.kind === "ceilNumber") {
@@ -1133,13 +1241,35 @@ function validateTransformStep(value: unknown): void {
   fail("R kernel transform step has an unsupported operation.");
 }
 
-function validateFillMissingReplacement(value: unknown): void {
-  const replacement = exactRecord(value, ["kind"], ["value"], "R kernel fill-missing replacement");
-  if (replacement.kind === "median" || replacement.kind === "mostFrequent") {
-    if (replacement.value !== undefined) fail("A calculated replacement may not contain a value.");
+function validateFillMissingReplacement(value: unknown, targetColumnId: string): void {
+  const replacement = exactRecord(value, ["kind"], ["value", "columns"], "R kernel fill-missing replacement");
+  if (replacement.kind === "mean" || replacement.kind === "median" || replacement.kind === "mostFrequent") {
+    if (replacement.value !== undefined || replacement.columns !== undefined) {
+      fail("A calculated replacement may not contain a value or fallback columns.");
+    }
     return;
   }
-  if (replacement.value === undefined) fail("A typed fill-missing replacement requires a value.");
+  if (replacement.kind === "fallbackColumns") {
+    if (replacement.value !== undefined) fail("A fallback-column replacement may not contain a value.");
+    if (
+      !Array.isArray(replacement.columns) ||
+      replacement.columns.length === 0 ||
+      replacement.columns.length > maximumFillFallbackColumns
+    ) {
+      fail("R kernel fallback columns must be a bounded non-empty array.");
+    }
+    const seen = new Set<string>();
+    for (const [index, candidate] of replacement.columns.entries()) {
+      const reference = validateColumnReference(candidate, `request.payload.step.params.replacement.columns[${index}]`);
+      if (reference.id === targetColumnId) fail("The fill target cannot also be a fallback column.");
+      if (seen.has(reference.id)) fail("R kernel fallback columns contain a repeated identity.");
+      seen.add(reference.id);
+    }
+    return;
+  }
+  if (replacement.value === undefined || replacement.columns !== undefined) {
+    fail("A typed fill-missing replacement requires a value and may not contain fallback columns.");
+  }
   if (replacement.kind === "boolean") {
     if (typeof replacement.value !== "boolean") fail("A boolean replacement must be true or false.");
     return;
@@ -1708,6 +1838,18 @@ function boundedText(value: unknown, label: string, maximumBytes: number, allowE
   }
   if (Buffer.byteLength(value, "utf8") > maximumBytes) fail(`${label} exceeds its UTF-8 byte limit.`);
   return value;
+}
+
+function boundedBase64(value: unknown, label: string, maximumBytes: number): Uint8Array {
+  const text = boundedText(value, label, Math.ceil(maximumBytes / 3) * 4, true);
+  if (text.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(text)) {
+    fail(`${label} must be canonical base64.`);
+  }
+  const decoded = Buffer.from(text, "base64");
+  if (decoded.byteLength > maximumBytes || decoded.toString("base64") !== text) {
+    fail(`${label} exceeds its decoded byte limit or is not canonical base64.`);
+  }
+  return Uint8Array.from(decoded);
 }
 
 function hasUnpairedSurrogate(value: string): boolean {

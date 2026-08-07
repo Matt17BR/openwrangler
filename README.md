@@ -105,9 +105,11 @@ changing the source._
 
 Choose from 28 operations, including filling missing values, custom Pandas or Polars code, and transformations inferred
 from examples. A draft stays separate until you apply it, and applied steps can be inspected, edited, or undone.
-Fill Missing Values offers a median for numeric columns, the most common value for text, categorical, and boolean
-columns, or a specific value of the right type. A specific value may convert a categorical column to text; the most
-common value keeps its category type.
+Fill Missing Values offers a median for numeric columns, a mean for floating-point columns, the most common value for
+text, categorical, and boolean columns, or a specific value of the right type. It can also check an ordered list of
+same-type columns and use the first present value from each row. Categorical columns keep their type when possible;
+the preview shows when a specific value or fallback requires ordinary text. The most common value always keeps its
+category type.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/workflow.png" width="960"></a>
 
@@ -191,17 +193,18 @@ The R workbench supports paging, filters, multi-column sorts, value search, prof
 **Find and replace**, **Capitalize**, **Strip text**, **Split text**, **Round**, **Floor**, and **Ceiling**. Every draft
 shows its data changes and generated R before it is applied. Applied steps can be inspected, edited, or undone.
 
-Fill Missing Values uses the median of all non-missing numeric values, the most common non-missing character, factor,
-or logical value, or a value entered by the user. It keeps `integer64`, date, and datetime types. A new factor value
-is added as a level when needed.
+Fill Missing Values uses the median of all non-missing numeric values, the mean of a floating-point column, the most
+common non-missing character, factor, or logical value, a value entered by the user, or the first present value from
+an ordered list of same-type columns. It keeps `integer64`, date, and datetime types. A new factor value is added as a
+level when needed.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Rename Column draft in Open Wrangler with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
 _R editing uses the same grid, draft review, cleaning history, and code preview as the Python engines._
 
 Generated R can be copied, saved as a script, or inserted into the notebook or document that opened the dataframe.
-Local R document sessions opened in Editing mode can export cleaned CSV files. R notebook export and R Parquet export
-are not available in this preview. Operations outside the current 20-operation set are not available in R yet.
+R notebook sessions and local R document sessions opened in Editing mode can export cleaned CSV files. R Parquet
+export is not available in this preview. Operations outside the current 20-operation set are not available in R yet.
 
 Ordinary frames created with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing dataframe, tibble, and
 data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
@@ -217,7 +220,7 @@ also shows the variable picker, profiles, and generated code inserted into a not
   </tr>
   <tr>
     <td>Copy generated code or save it as a Python or R script. Notebook and R-source sessions can also insert it into the document that opened the dataframe.</td>
-    <td>Pandas, Polars, and DuckDB editing sessions export cleaned CSV or Parquet files. Local R document sessions opened in Editing mode export cleaned CSV files.</td>
+    <td>Pandas, Polars, and DuckDB editing sessions export cleaned CSV or Parquet files. R notebook and local R document sessions opened in Editing mode export cleaned CSV files.</td>
   </tr>
 </table>
 
@@ -283,7 +286,7 @@ These results are from stable 1.2.1. We will rerun the comparison before stable 
 ## Roadmap
 
 - **1.x:** keep improving performance, DuckDB, the Python engines, and support for other desktop VS Code forks.
-- **1.99 previews:** test native R notebooks and documents, finish the remaining R export paths, and expand the
+- **1.99 previews:** test native R notebooks and documents, add R Parquet export, and expand the
   current 20-operation R catalog. Progress is tracked in [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 - **2.0:** ship stable R support after release testing and an updated performance comparison. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)

@@ -129,6 +129,27 @@ def execute_generated(engine: Any, frame: Any, plan: list[dict[str, Any]]) -> An
     return namespace["clean_data"](frame)
 
 
+def float_frame(engine: Any, values: list[float | None]) -> Any:
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame({"value": pd.Series(values, dtype="float64")})
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame({"value": pl.Series(values, dtype=pl.Float64)})
+
+    def literal(value: float | None) -> str:
+        if value is None:
+            return "NULL::DOUBLE"
+        if isnan(value):
+            return "'NaN'::DOUBLE"
+        if value == float("inf"):
+            return "'Infinity'::DOUBLE"
+        if value == float("-inf"):
+            return "'-Infinity'::DOUBLE"
+        return f"{value!r}::DOUBLE"
+
+    rows_sql = ", ".join(f"({literal(value)})" for value in values)
+    return duckdb.sql(f'SELECT * FROM (VALUES {rows_sql}) AS source("value")')
+
+
 def schema_column(metadata: dict[str, Any], name: str) -> dict[str, Any]:
     return next(column for column in metadata["schema"] if column["name"] == name)
 
@@ -188,6 +209,41 @@ def test_session_fill_metadata_stays_consistent_through_preview_apply_and_replay
         manager.close_session(session_id, 5)
 
 
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_session_fallback_fill_keeps_nullable_metadata_when_rows_remain_unresolved(
+    backend: str,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / f"fallback-nullability-{backend}.csv"
+    path.write_text("target,fallback\npresent,first\n,second\n,\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    operation = {
+        "id": "fill-from-fallback",
+        "kind": "fillMissingValues",
+        "params": {
+            "column": {"id": "c:source:0", "name": "target"},
+            "replacement": {
+                "kind": "fallbackColumns",
+                "columns": [{"id": "c:source:1", "name": "fallback"}],
+            },
+        },
+    }
+
+    try:
+        preview = manager.preview_step(session_id, 0, operation, 0, 10)
+        assert schema_column(preview["metadata"], "target")["nullable"] is True
+        applied = manager.apply_draft(session_id, 1, 0, 10)
+        assert schema_column(applied["metadata"], "target")["nullable"] is True
+    finally:
+        manager.close_session(session_id, 2)
+
+
 def test_polars_generated_fill_plan_uses_python_310_grammar() -> None:
     engine = PolarsEngine()
     operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "median"})
@@ -222,6 +278,733 @@ def test_fill_missing_median_and_typed_value_match_generated_code(engine_and_fra
     ]
     assert normalized_rows(live) == expected
     assert normalized_rows(generated) == expected
+
+
+def test_float_mean_fill_is_stable_for_huge_values_and_matches_generated_code(engine_and_frame) -> None:
+    engine, _source = engine_and_frame
+    source = float_frame(engine, [1e308, 1e308, None, float("nan")])
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    assert [value for (value,) in rows(live)] == pytest.approx([1e308] * 4)
+    assert [value for (value,) in rows(generated)] == pytest.approx([1e308] * 4)
+    assert first_column_type(live) == first_column_type(source)
+    assert first_column_type(generated) == first_column_type(source)
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ([None, float("nan")], "no present numeric values"),
+        ([float("inf"), float("-inf"), None], "positive and negative infinity"),
+    ],
+)
+def test_float_mean_fill_rejects_undefined_results_in_live_and_generated_code(
+    engine_and_frame,
+    values: list[float | None],
+    message: str,
+) -> None:
+    engine, _source = engine_and_frame
+    source = float_frame(engine, values)
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    with pytest.raises(EngineError, match=message):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match=message):
+        execute_generated(engine, source, [operation])
+
+
+def test_float_mean_fill_is_an_exact_noop_without_missing_values(engine_and_frame) -> None:
+    engine, _source = engine_and_frame
+    source = float_frame(engine, [float("inf"), float("-inf")])
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    assert rows(live) == rows(source)
+    assert rows(generated) == rows(source)
+    assert first_column_type(live) == first_column_type(source)
+    assert first_column_type(generated) == first_column_type(source)
+
+
+def test_mean_fill_rejects_non_float_columns_at_execution(engine_and_frame) -> None:
+    engine, _source = engine_and_frame
+    if isinstance(engine, PandasEngine):
+        source = pd.DataFrame({"value": pd.Series([1, None], dtype="Int64")})
+    elif isinstance(engine, PolarsEngine):
+        source = pl.DataFrame({"value": pl.Series([1, None], dtype=pl.Int64)})
+    else:
+        source = duckdb.sql('SELECT * FROM (VALUES (1::BIGINT), (NULL::BIGINT)) AS source("value")')
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    with pytest.raises(EngineError, match="floating-point column"):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match="floating-point column"):
+        execute_generated(engine, source, [operation])
+
+
+def test_pandas_mean_fill_rejects_object_values_outside_float_range() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame({"value": pd.Series([10**400, 1.0, None], dtype=object)})
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    assert schema_column({"schema": engine.schema(source)}, "value")["type"] == "float"
+    with pytest.raises(EngineError, match="cannot be represented as a floating-point number"):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match="cannot be represented as a floating-point number"):
+        execute_generated(engine, source, [operation])
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_fallback_columns_are_ordered_and_preserve_unresolved_null_and_nan(
+    backend: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame(
+            {
+                "target": pd.Series([10.0, None, float("nan"), None, float("nan")], dtype=object),
+                "first": pd.Series([100.0, 1.0, float("nan"), None, None], dtype=object),
+                "second": pd.Series([200.0, 2.0, 3.0, float("nan"), None], dtype=object),
+            }
+        )
+    elif backend == "polars":
+        monkeypatch.setattr(
+            pl.DataFrame,
+            "to_pandas",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars must stay native")),
+            raising=False,
+        )
+        engine = PolarsEngine()
+        source = pl.DataFrame(
+            {
+                "target": [10.0, None, float("nan"), None, float("nan")],
+                "first": [100.0, 1.0, float("nan"), None, None],
+                "second": [200.0, 2.0, 3.0, float("nan"), None],
+            }
+        )
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql(
+            """
+            SELECT * FROM (VALUES
+                (10.0::DOUBLE, 100.0::DOUBLE, 200.0::DOUBLE),
+                (NULL::DOUBLE, 1.0::DOUBLE, 2.0::DOUBLE),
+                ('NaN'::DOUBLE, 'NaN'::DOUBLE, 3.0::DOUBLE),
+                (NULL::DOUBLE, NULL::DOUBLE, 'NaN'::DOUBLE),
+                ('NaN'::DOUBLE, NULL::DOUBLE, NULL::DOUBLE)
+            ) AS source(target, first, second)
+            """
+        )
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [
+                bound_ref("c:source:1", "first", 1),
+                bound_ref("c:source:2", "second", 2),
+            ],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert normalized_rows(live) == [
+            (10.0, 100.0, 200.0),
+            (1.0, 1.0, 2.0),
+            (3.0, None, 3.0),
+            (None, None, None),
+            (None, None, None),
+        ]
+        assert normalized_rows(generated) == normalized_rows(live)
+        live_rows = rows(live)
+        generated_rows = rows(generated)
+        assert live_rows[3][0] is None
+        assert generated_rows[3][0] is None
+        assert isinstance(live_rows[4][0], float) and isnan(live_rows[4][0])
+        assert isinstance(generated_rows[4][0], float) and isnan(generated_rows[4][0])
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_fallback_columns_preserve_a_representable_narrow_integer_target(backend: str) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame(
+            {
+                "target": pd.Series([1, None], dtype="Int8"),
+                "fallback": pd.Series([1000, 2], dtype="Int64"),
+            }
+        )
+        expected_type = "Int8"
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame(
+            {
+                "target": pl.Series([1, None], dtype=pl.Int8),
+                "fallback": pl.Series([1000, 2], dtype=pl.Int64),
+            }
+        )
+        expected_type = "Int8"
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql(
+            "SELECT * FROM (VALUES (1::TINYINT, 1000::BIGINT), (NULL::TINYINT, 2::BIGINT)) AS source(target, fallback)"
+        )
+        expected_type = "TINYINT"
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert normalized_rows(live) == [(1, 1000), (2, 2)]
+        assert normalized_rows(generated) == normalized_rows(live)
+        assert first_column_type(live) == expected_type
+        assert first_column_type(generated) == expected_type
+    finally:
+        engine.close()
+
+
+def test_polars_fallback_columns_remain_lazy_and_native(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pl.DataFrame,
+        "to_pandas",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars must stay native")),
+        raising=False,
+    )
+    engine = PolarsEngine()
+    source = pl.LazyFrame(
+        {
+            "target": pl.Series([None, 2], dtype=pl.Int64),
+            "fallback": pl.Series([1, 3], dtype=pl.Int64),
+        }
+    )
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert isinstance(live, pl.LazyFrame)
+        assert isinstance(generated, pl.LazyFrame)
+        assert live.collect().rows() == [(1, 1), (2, 3)]
+        assert generated.collect().rows() == [(1, 1), (2, 3)]
+    finally:
+        engine.close()
+
+
+def test_pandas_fallback_columns_are_positional_with_duplicate_indexes_and_labels() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        [[None, 10, 100], [2, 20, 200], [None, 30, 300]],
+        index=[0, 0, 1],
+        columns=["duplicate", "duplicate", 7],
+    ).astype({"duplicate": "Int64", 7: "Int64"})
+    operation = fill_step(
+        bound_ref("c:source:0", "duplicate", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:2", "7", 2)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert normalized_rows(live) == [(100, 10, 100), (2, 20, 200), (300, 30, 300)]
+        assert normalized_rows(generated) == normalized_rows(live)
+        assert live.index.tolist() == [0, 0, 1]
+        assert generated.index.tolist() == [0, 0, 1]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("target_values", "fallback_values", "expected_values", "expected_type"),
+    [
+        (["a", None], ["outside", "b"], ["a", "b"], "category"),
+        (["a", None], ["outside", "outside"], ["a", "outside"], "string"),
+    ],
+)
+def test_pandas_fallback_columns_widen_a_category_only_for_a_selected_new_label(
+    target_values: list[str | None],
+    fallback_values: list[str],
+    expected_values: list[str],
+    expected_type: str,
+) -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "target": pd.Categorical(target_values, categories=["a", "b"]),
+            "fallback": pd.Series(fallback_values, dtype="string"),
+        }
+    )
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert live.iloc[:, 0].tolist() == expected_values
+        assert generated.iloc[:, 0].tolist() == expected_values
+        assert str(live.dtypes.iloc[0]) == expected_type
+        assert str(generated.dtypes.iloc[0]) == expected_type
+    finally:
+        engine.close()
+
+
+def test_pandas_fallback_columns_ignore_unused_labels_from_another_category_domain() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "target": pd.Categorical(["a", None], categories=["a", "b"]),
+            "fallback": pd.Categorical(["outside", "b"], categories=["outside", "b"]),
+        }
+    )
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert live.iloc[:, 0].tolist() == ["a", "b"]
+        assert generated.iloc[:, 0].tolist() == ["a", "b"]
+        assert str(live.dtypes.iloc[0]) == "category"
+        assert str(generated.dtypes.iloc[0]) == "category"
+    finally:
+        engine.close()
+
+
+def test_pandas_fallback_columns_reject_selected_decimal_scale_loss_in_live_and_generated_code() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "target": pd.Series(
+                [Decimal("1.00"), None],
+                dtype=pd.ArrowDtype(pa.decimal128(6, 2)),
+            ),
+            "fallback": pd.Series(
+                [Decimal("9.999"), Decimal("2.345")],
+                dtype=pd.ArrowDtype(pa.decimal128(7, 3)),
+            ),
+        }
+    )
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        with pytest.raises(EngineError, match="decimal scale 2"):
+            engine.apply_transform(source, operation)
+        with pytest.raises(ValueError, match="decimal scale 2"):
+            execute_generated(engine, source, [operation])
+    finally:
+        engine.close()
+
+
+def test_pandas_fallback_columns_validate_only_selected_decimal_values() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "target": pd.Series(
+                [Decimal("1.00"), None],
+                dtype=pd.ArrowDtype(pa.decimal128(6, 2)),
+            ),
+            "fallback": pd.Series(
+                [Decimal("9.999"), Decimal("2.000")],
+                dtype=pd.ArrowDtype(pa.decimal128(7, 3)),
+            ),
+        }
+    )
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert normalized_rows(live) == [
+            (Decimal("1.00"), Decimal("9.999")),
+            (Decimal("2.00"), Decimal("2.000")),
+        ]
+        assert normalized_rows(generated) == normalized_rows(live)
+        assert str(live.dtypes.iloc[0]) == "decimal128(6, 2)[pyarrow]"
+        assert str(generated.dtypes.iloc[0]) == "decimal128(6, 2)[pyarrow]"
+    finally:
+        engine.close()
+
+
+def test_pandas_fallback_columns_reject_selected_datetime_awareness_mismatch() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "target": pd.Series(
+                [datetime(2025, 1, 1, tzinfo=timezone.utc), pd.NaT],
+                dtype="datetime64[ns, UTC]",
+            ),
+            "fallback": pd.Series(
+                [datetime(2025, 2, 1, tzinfo=timezone.utc), datetime(2025, 2, 2)],
+                dtype=object,
+            ),
+        }
+    )
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        with pytest.raises(EngineError, match="timezone-aware"):
+            engine.apply_transform(source, operation)
+        with pytest.raises(ValueError, match="timezone-aware"):
+            execute_generated(engine, source, [operation])
+    finally:
+        engine.close()
+
+
+def test_pandas_fallback_columns_validate_only_selected_datetime_values() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "target": pd.Series(
+                [datetime(2025, 1, 1, tzinfo=timezone.utc), pd.NaT],
+                dtype="datetime64[ns, UTC]",
+            ),
+            "fallback": pd.Series(
+                [datetime(2025, 2, 1), datetime(2025, 2, 2, tzinfo=timezone.utc)],
+                dtype=object,
+            ),
+        }
+    )
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        expected_target = [
+            pd.Timestamp("2025-01-01T00:00:00Z"),
+            pd.Timestamp("2025-02-02T00:00:00Z"),
+        ]
+        assert live.iloc[:, 0].tolist() == expected_target
+        assert generated.iloc[:, 0].tolist() == expected_target
+        assert str(live.dtypes.iloc[0]) == "datetime64[ns, UTC]"
+        assert str(generated.dtypes.iloc[0]) == "datetime64[ns, UTC]"
+    finally:
+        engine.close()
+
+
+def test_polars_fallback_columns_widen_enum_for_a_public_string_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        pl.DataFrame,
+        "to_pandas",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars must stay native")),
+        raising=False,
+    )
+    engine = PolarsEngine()
+    enum = pl.Enum(["a", "b"])
+    source = pl.DataFrame(
+        {
+            "target": pl.Series(["a", None], dtype=enum),
+            "fallback": pl.Series(["ignored", "new"], dtype=pl.String),
+        }
+    ).lazy()
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert isinstance(live, pl.LazyFrame)
+        assert isinstance(generated, pl.LazyFrame)
+        assert live.collect_schema()["target"] == pl.String
+        assert generated.collect_schema()["target"] == pl.String
+        assert live.collect().rows() == [("a", "ignored"), ("new", "new")]
+        assert generated.collect().rows() == live.collect().rows()
+    finally:
+        engine.close()
+
+
+def test_polars_fallback_columns_preserve_an_exact_enum_domain() -> None:
+    engine = PolarsEngine()
+    enum = pl.Enum(["a", "b"])
+    source = pl.DataFrame(
+        {
+            "target": pl.Series(["a", None], dtype=enum),
+            "fallback": pl.Series(["b", "b"], dtype=enum),
+        }
+    ).lazy()
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert live.collect_schema()["target"] == enum
+        assert generated.collect_schema()["target"] == enum
+        assert live.collect().rows() == [("a", "b"), ("b", "b")]
+        assert generated.collect().rows() == live.collect().rows()
+    finally:
+        engine.close()
+
+
+def test_polars_fallback_columns_preserve_enum_for_selected_compatible_public_strings() -> None:
+    engine = PolarsEngine()
+    enum = pl.Enum(["a", "b"])
+    source = pl.DataFrame(
+        {
+            "target": pl.Series(["a", None], dtype=enum),
+            "fallback": pl.Series(["outside", "b"], dtype=pl.String),
+        }
+    ).lazy()
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert live.collect_schema()["target"] == enum
+        assert generated.collect_schema()["target"] == enum
+        assert live.collect().rows() == [("a", "outside"), ("b", "b")]
+        assert generated.collect().rows() == live.collect().rows()
+    finally:
+        engine.close()
+
+
+def test_polars_fallback_columns_do_not_widen_enum_when_target_has_no_missing_values() -> None:
+    engine = PolarsEngine()
+    enum = pl.Enum(["a", "b"])
+    source = pl.DataFrame(
+        {
+            "target": pl.Series(["a", "b"], dtype=enum),
+            "fallback": pl.Series(["new", "outside"], dtype=pl.String),
+        }
+    ).lazy()
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert live.collect_schema()["target"] == enum
+        assert generated.collect_schema()["target"] == enum
+        assert live.collect().rows() == [("a", "new"), ("b", "outside")]
+        assert generated.collect().rows() == live.collect().rows()
+    finally:
+        engine.close()
+
+
+def test_polars_fallback_columns_do_not_widen_enum_for_an_unused_later_domain() -> None:
+    engine = PolarsEngine()
+    enum = pl.Enum(["a", "b"])
+    source = pl.DataFrame(
+        {
+            "target": pl.Series(["a", None], dtype=enum),
+            "first": pl.Series(["b", "b"], dtype=enum),
+            "later": pl.Series(["new", "outside"], dtype=pl.String),
+        }
+    ).lazy()
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [
+                bound_ref("c:source:1", "first", 1),
+                bound_ref("c:source:2", "later", 2),
+            ],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert live.collect_schema()["target"] == enum
+        assert generated.collect_schema()["target"] == enum
+        assert live.collect().rows() == [("a", "b", "new"), ("b", "b", "outside")]
+        assert generated.collect().rows() == live.collect().rows()
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("source_sql", "fallbacks", "expected_rows", "widens"),
+    [
+        (
+            "SELECT * FROM (VALUES "
+            "('a'::ENUM('a', 'b'), 'ignored'::VARCHAR), "
+            "(NULL::ENUM('a', 'b'), 'new'::VARCHAR)) AS source(target, fallback)",
+            ["fallback"],
+            [("a", "ignored"), ("new", "new")],
+            True,
+        ),
+        (
+            "SELECT * FROM (VALUES "
+            "('a'::ENUM('a', 'b'), 'outside'::VARCHAR), "
+            "(NULL::ENUM('a', 'b'), 'b'::VARCHAR)) AS source(target, fallback)",
+            ["fallback"],
+            [("a", "outside"), ("b", "b")],
+            False,
+        ),
+        (
+            "SELECT * FROM (VALUES "
+            "('a'::ENUM('a', 'b'), 'new'::VARCHAR), "
+            "('b'::ENUM('a', 'b'), 'outside'::VARCHAR)) AS source(target, fallback)",
+            ["fallback"],
+            [("a", "new"), ("b", "outside")],
+            False,
+        ),
+        (
+            "SELECT * FROM (VALUES "
+            "('a'::ENUM('a', 'b'), 'b'::ENUM('a', 'b'), 'new'::VARCHAR), "
+            "(NULL::ENUM('a', 'b'), 'b'::ENUM('a', 'b'), 'outside'::VARCHAR)) "
+            "AS source(target, first, later)",
+            ["first", "later"],
+            [("a", "b", "new"), ("b", "b", "outside")],
+            False,
+        ),
+    ],
+)
+def test_duckdb_fallback_columns_widen_only_for_selected_values_outside_the_target_domain(
+    source_sql: str,
+    fallbacks: list[str],
+    expected_rows: list[tuple[str, ...]],
+    widens: bool,
+) -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(source_sql)
+    source_type = first_column_type(source)
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [
+                bound_ref(f"c:source:{position}", fallback, position)
+                for position, fallback in enumerate(fallbacks, start=1)
+            ],
+        },
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert normalized_rows(live) == expected_rows
+        assert normalized_rows(generated) == expected_rows
+        expected_type = "VARCHAR" if widens else source_type
+        assert first_column_type(live) == expected_type
+        assert first_column_type(generated) == expected_type
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_fallback_columns_reject_a_selected_integer_that_does_not_fit_the_target(backend: str) -> None:
+    if backend == "pandas":
+        engine = PandasEngine()
+        source = pd.DataFrame(
+            {
+                "target": pd.Series([None], dtype="Int8"),
+                "fallback": pd.Series([1000], dtype="Int64"),
+            }
+        )
+        live_error: type[BaseException] = EngineError
+        generated_error: type[BaseException] = ValueError
+    elif backend == "polars":
+        engine = PolarsEngine()
+        source = pl.DataFrame(
+            {
+                "target": pl.Series([None], dtype=pl.Int8),
+                "fallback": pl.Series([1000], dtype=pl.Int64),
+            }
+        )
+        live_error = pl.exceptions.InvalidOperationError
+        generated_error = pl.exceptions.InvalidOperationError
+    else:
+        engine = DuckDBEngine()
+        source = duckdb.sql('SELECT NULL::TINYINT AS "target", 1000::BIGINT AS "fallback"')
+        live_error = duckdb.ConversionException
+        generated_error = duckdb.ConversionException
+    operation = fill_step(
+        bound_ref("c:source:0", "target", 0),
+        {
+            "kind": "fallbackColumns",
+            "columns": [bound_ref("c:source:1", "fallback", 1)],
+        },
+    )
+
+    try:
+        with pytest.raises(live_error):
+            rows(engine.apply_transform(source, operation))
+        with pytest.raises(generated_error):
+            rows(execute_generated(engine, source, [operation]))
+    finally:
+        engine.close()
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])

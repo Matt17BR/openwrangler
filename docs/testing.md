@@ -23,8 +23,9 @@ matrix for release candidates or changes that cross all of its boundaries.
   whole-row comparison, source order, stable row identities, and R's treatment of `NA` and `NaN`. Both cover duplicate and
   non-syntactic names, base data frames, tibbles, keyed data tables, stale references, source isolation, and executable
   generated R. Fill Missing Values tests cover `NA` and `NaN`, typed replacements, exact integer and `integer64`
-  medians, factor levels and no-op levels, dates, DST gaps, current-source timezones, the 8 KiB R text limit, nullable
-  metadata, key safety, and executable generated R. Rename, Drop,
+  medians, scaled floating-point means, ordered same-row fallback priority, unresolved values, factor levels and no-op
+  levels, dates, DST gaps, current-source timezones, the 8 KiB R text limit, nullable metadata, key safety, and
+  executable generated R. Rename, Drop,
   Select, Clone, Convert type, Text Length, Lowercase, Uppercase, and Find and replace tests resolve duplicate and
   non-syntactic names by stable identity, preserve base, tibble, and keyed `data.table` semantics, and prove that
   drafts and generated R leave the source unchanged.
@@ -58,15 +59,20 @@ matrix for release candidates or changes that cross all of its boundaries.
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
   Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor,
-  and Ceiling lifecycles, variable replacement, malformed requests, and close cases.
+  and Ceiling lifecycles, variable replacement, native CSV export, malformed requests, and close cases. The export
+  checks a pending draft and stale revision, full committed rows despite an active view, duplicate names and R types,
+  repeated offset reads, explicit close, and session-close cleanup.
   The R tests check the fixed diagnostics for unsupported frames,
   missing packages, oversized pages or profiles, and stale columns. Focused TypeScript tests cover the embedded
   remote-kernel bootstrap, response decoder, sole-open notebook checks, exact-kernel paging and profiling, restart
   handling, late close completion, repeated disposal, and delayed
   candidate cleanup without interrupting Jupyter. They also cancel and time out page requests, then prove that the next
-  request waits for the original execution to finish. Variable-discovery tests cover exact base `data.frame`, tibble,
-  and `data.table` class vectors, active and delayed bindings, missing `jsonlite` or `rlang`, malformed output, and
-  notebook/kernel replacement. Host and webview tests cover the native picker, coordinator route, R runtime identity,
+  request waits for the original execution to finish. They also stream a multi-chunk CSV from the exact kernel and
+  close its private artifact after success or a detached request. The R contract requests enough bytes to trigger
+  jsonlite's normal line wrapping and checks that the wire value is still canonical base64. Variable-discovery tests
+  cover exact base `data.frame`, tibble, and `data.table` class vectors, active and delayed bindings, missing
+  `jsonlite` or `rlang`, malformed output, and notebook/kernel replacement. Host and webview tests cover the native
+  picker, coordinator route, R runtime identity,
   Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type,
   Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling
   capabilities, generated-code commands, bounded two-dimensional pages, and enabled viewing filters, sorts,
@@ -463,12 +469,13 @@ npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --ver
 The check rejects a mutable GitHub branch, source/version mismatch, undeclared media series, missing or orphaned
 inventory entries, stale registry versions or README content, and any displayed image whose rendered `src` or
 `currentSrc` is not the exact immutable raw URL in the reviewed README. Before reading a PNG, traversal caps the
-inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 45
+inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 46
 declared PNGs then require valid chunk CRCs, one ordered IHDR/sRGB/IDAT/IEND structure, a successful full decode,
-reviewed natural dimensions, sRGB, and immutable remote equality. All 18 README images are checked at DPR 2 on each
+reviewed natural dimensions, sRGB, and immutable remote equality. All 19 README images are checked at DPR 2 on each
 of the three public surfaces. They must stay within their declared width, rendered container, and viewport, preserve their
 natural aspect ratio within one CSS pixel of height rounding, and retain at least two natural pixels per rendered CSS
-pixel. The hero, histogram, and PySpark workbench repeat those checks near 760px and 1400px viewport widths.
+pixel. The hero, histogram, PySpark workbench, and R editing scene repeat those checks near 760px and 1400px viewport
+widths.
 
 The versioned gate begins with `1.2.1`; older recovery runs skip browser installation and public-media verification.
 For protected versions, the workflow runs the verifier from the exact release checkout with
@@ -567,6 +574,12 @@ code as one `r` cell in the originating notebook, leaves every existing cell unc
 again after editing. Separate tibble and keyed-data-table sessions preview and discard Rename and Drop Columns; direct
 R tests also check class and key behavior for both dataframe types.
 
+The notebook journey also applies Rename to a 1,205-row, 25-column frame, adds a viewing filter and two sort keys,
+and exports through the public command and real Save dialog. The saved CSV contains every committed row, not just the
+filtered view. The test checks the renamed header, representative values, unchanged notebook bytes and view state,
+and zero remaining host or kernel export artifacts. A local packaged run on 2026-08-07 passed this journey in VS Code
+1.132.0 and Cursor 3.14.7 on the pinned private Xvfb display.
+
 On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start another VS Code or Cursor process.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public
 **Run R Document in Open Wrangler…** command and real variable picker. The plain-R test checks an editing session, paging, an exact
@@ -575,8 +588,8 @@ active while inserting the generated code, proving that only the captured unsave
 on disk remain byte-for-byte unchanged. After applying Rename, the test also runs the public zero-argument data-export
 command, completes the real Save dialog, and compares the full 240-row CSV with the expected cleaned result. It checks
 that the open source stays clean, the process export directory is empty, and the private process root disappears when
-the session closes. R notebook sessions still advertise neither CSV nor Parquet export. The modified in-memory source
-is then run again and its generated result is opened before the final panel and R process are closed. The phase uses the
+the session closes. Neither R path advertises Parquet.
+The modified in-memory source is then run again and its generated result is opened before the final panel and R process are closed. The phase uses the
 exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite` and `rlang`.
 
 The R Markdown and Quarto fixtures each contain first-line YAML, prose, a non-R cell, a disabled R cell, and one

@@ -472,8 +472,11 @@ export async function run(): Promise<void> {
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
   assert.match(extension.packageJSON.description, /Explore and clean dataframes in VS Code and Cursor/u);
   assert.match(extension.packageJSON.description, /with Pandas, Polars, DuckDB, or R/u);
-  assert.match(extension.packageJSON.description, /View local PySpark notebooks/u);
-  assert.match(extension.packageJSON.description, /run R, R Markdown, or Quarto sources on macOS or Linux/u);
+  assert.match(extension.packageJSON.description, /View local PySpark DataFrames in notebooks/u);
+  assert.match(
+    extension.packageJSON.description,
+    /Run R files and supported R Markdown\/Quarto cells on macOS or Linux/u
+  );
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
@@ -1545,6 +1548,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "  orders_frame[[sprintf('extra_%02d', column_index)]] <- sprintf('value-%02d-%04d', column_index, seq_len(row_count))",
     "}",
     "orders_frame$extra_20[1L] <- NA_character_",
+    "orders_frame$fractional_score[603L] <- NA_real_",
     "row.names(orders_frame) <- sprintf('case-%04d', seq_len(row_count))",
     "orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = 'minimal')",
     "orders_table <- data.table::as.data.table(orders_frame)",
@@ -1562,6 +1566,13 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
   const bindingProbe = [
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_BINDING_RESULT)}, as.character(jsonlite::toJSON(list(`,
     `  runtimeBindingPresent = exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE),`,
+    `  exportArtifacts = if (exists(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE)) local({`,
+    `    runtime <- get(${JSON.stringify(R_KERNEL_RUNTIME_BINDING)}, envir = .GlobalEnv, inherits = FALSE)`,
+    "    agent_environment <- environment(runtime$agent$dispatch_json)",
+    "    exports <- get('exports', envir = agent_environment, inherits = FALSE)",
+    "    export_root <- get('export_root', envir = agent_environment, inherits = FALSE)",
+    "    length(ls(envir = exports, all.names = TRUE)) + length(list.files(export_root, all.files = TRUE, no.. = TRUE))",
+    "  }) else 0L,",
     "  sourceUnchanged = isTRUE(identical(serialize(orders_frame, NULL, version = 3L), orders_frame_before)),",
     "  tibbleSourceUnchanged = isTRUE(identical(serialize(orders_tibble, NULL, version = 3L), orders_tibble_before)),",
     "  tableSourceUnchanged = isTRUE(identical(serialize(orders_table, NULL, version = 3L), orders_table_before)),",
@@ -1731,6 +1742,37 @@ function releasedRDocumentCleanedCsv(): Buffer {
   );
 }
 
+function releasedRNotebookCleanedCsvHeader(): string {
+  return [
+    "record_id",
+    "group",
+    "score",
+    "label",
+    "fractional_score",
+    ...Array.from({ length: 20 }, (_, index) => `extra_${String(index + 1).padStart(2, "0")}`)
+  ]
+    .map((name) => `"${name}"`)
+    .join(",");
+}
+
+function releasedRNotebookCleanedCsvRow(row: number): string {
+  assert.ok(Number.isSafeInteger(row) && row >= 1 && row <= 1_205);
+  const fractionalScore = row % 2 === 0 ? `-${row}.25` : `${row}.25`;
+  const values = [
+    String(row),
+    `"${row <= 602 ? "A" : "B"}"`,
+    String(row),
+    `"row-${String(row).padStart(4, "0")}"`,
+    fractionalScore,
+    ...Array.from({ length: 20 }, (_, index) => {
+      const column = index + 1;
+      if (row === 1 && column === 20) return "";
+      return `"value-${String(column).padStart(2, "0")}-${String(row).padStart(4, "0")}"`;
+    })
+  ];
+  return values.join(",");
+}
+
 function writeReleasedRLiterateDocumentFixture(
   directory: string,
   kind: "rmarkdown" | "quarto"
@@ -1882,6 +1924,7 @@ async function assertReleasedRRuntimeBinding(
     expectedBinding,
     `The R runtime binding must be ${expectedBinding ? "present" : "absent"} during ${checkpoint}.`
   );
+  assert.equal(result.exportArtifacts, 0, `The R kernel retained a private CSV export artifact during ${checkpoint}.`);
   assert.equal(result.sourceUnchanged, true, `The source data.frame changed during ${checkpoint}.`);
   assert.equal(result.tibbleSourceUnchanged, true, `The source tibble changed during ${checkpoint}.`);
   assert.equal(result.tableSourceUnchanged, true, `The source data.table changed during ${checkpoint}.`);
@@ -3190,8 +3233,8 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   });
   await assertReleasedProfileStat(datasetProfile, "Rows", "1,205");
   await assertReleasedProfileStat(datasetProfile, "Columns", "25");
-  await assertReleasedProfileStat(datasetProfile, "Missing cells", "1");
-  await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "1");
+  await assertReleasedProfileStat(datasetProfile, "Missing cells", "2");
+  await assertReleasedProfileStat(datasetProfile, "Rows with missing values", "2");
   await assertReleasedProfileStat(datasetProfile, "Duplicate rows", "0");
 
   await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
@@ -3830,7 +3873,7 @@ async function exerciseReleasedRRowReductionJourney(
   assert.equal(active.metadata.draftStep.id, missingStepId);
   assert.equal(active.metadata.draftStep.params.columns, undefined);
   assert.equal(active.metadata.draftStep.params.how, "any");
-  assert.equal(active.metadata.shape.rows, 1_204);
+  assert.equal(active.metadata.shape.rows, 1_203);
   assert.equal(active.metadata.filteredShape.rows, 9);
   assertReleasedRRowReductionGeneratedCode(active.code ?? "", "dropMissingRows");
   let first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-drop-missing-draft`);
@@ -3853,7 +3896,7 @@ async function exerciseReleasedRRowReductionJourney(
         current.metadata.steps.length === 1 &&
         current.metadata.steps[0]?.kind === "dropMissingRows" &&
         current.metadata.steps[0].id === missingStepId &&
-        current.metadata.shape.rows === 1_204 &&
+        current.metadata.shape.rows === 1_203 &&
         current.metadata.filteredShape.rows === 9
       );
     },
@@ -3875,7 +3918,7 @@ async function exerciseReleasedRRowReductionJourney(
   assert.ok(inspection);
   assert.deepEqual(inspection.diff, {
     addedRows: 0,
-    removedRows: 1,
+    removedRows: 2,
     addedColumns: [],
     removedColumns: [],
     changedCells: 0,
@@ -4060,13 +4103,27 @@ async function exerciseReleasedRFillMissingJourney(
   assert.equal(original?.sessionId, sessionId, "The packaged R fill journey must retain its exact session.");
   assert.ok(original, "The packaged R fill journey requires one active session.");
   assert.equal(original.metadata.steps.length, 0, "The packaged R fill journey must start from the original frame.");
-  const target = original.metadata.schema.find((column) => column.name === "extra_20");
-  assert.ok(target, "The packaged R fill journey requires the nullable extra_20 column.");
-  assert.equal(target.type, "string");
-  assert.equal(target.rawType, "character");
+  const target = original.metadata.schema.find((column) => column.name === "fractional_score");
+  assert.ok(target, "The packaged R fill journey requires the nullable fractional_score column.");
+  assert.equal(target.type, "float");
+  assert.equal(target.rawType, "double");
   assert.equal(target.nullable, true);
+  const sourceGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: original.metadata.revision,
+    viewRequestId: `${phase}-fill-mean-source-gap`,
+    offset: 602,
+    limit: 1,
+    filterModel: original.viewState.filterModel,
+    columnOffset: target.position,
+    columnLimit: 1
+  });
+  assert.equal(sourceGap.kind, "page");
+  if (sourceGap.kind !== "page") throw new Error("The native R mean-fill source page did not resolve.");
+  assert.deepEqual(sourceGap.page.columnIds, [target.id]);
+  assert.equal(sourceGap.page.rows[0]?.values[0]?.isNull, true);
 
-  const replacement = "filled by Open Wrangler";
   const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill(target.name);
   await app
@@ -4091,18 +4148,17 @@ async function exerciseReleasedRFillMissingJourney(
   const fillColumn = dialog.getByLabel("Column", { exact: true });
   await fillColumn.waitFor({ state: "visible", timeout: 10_000 });
   await fillColumn.selectOption(target.id);
-  const fillMode = dialog.getByLabel("Fill with", { exact: true });
+  const fillMode = dialog.getByLabel("Method", { exact: true });
   await fillMode.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(
-    await fillMode.inputValue(),
-    "mostFrequent",
-    "A nullable R character column should initially offer its type-aware automatic fill."
-  );
-  assert.deepEqual(await fillMode.locator("option").allTextContents(), ["Most common value", "Specific value"]);
-  await fillMode.selectOption("value");
-  const replacementInput = dialog.getByLabel("Replacement value", { exact: true });
-  await replacementInput.waitFor({ state: "visible", timeout: 10_000 });
-  await replacementInput.fill(replacement);
+  await fillMode.locator('option[value="mean"]').waitFor({ state: "attached", timeout: 10_000 });
+  assert.equal(await fillMode.inputValue(), "median", "A floating-point R column should default to Median.");
+  assert.deepEqual(await fillMode.locator("option").allTextContents(), [
+    "Median",
+    "Mean",
+    "Other columns (first available)",
+    "Specific value"
+  ]);
+  await fillMode.selectOption("mean");
   await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
   await waitFor(
     () => {
@@ -4113,7 +4169,7 @@ async function exerciseReleasedRFillMissingJourney(
         draft?.kind === "fillMissingValues" &&
         draft.params.column.id === target.id &&
         draft.params.column.name === target.name &&
-        isDeepStrictEqual(draft.params.replacement, { kind: "string", value: replacement }) &&
+        isDeepStrictEqual(draft.params.replacement, { kind: "mean" }) &&
         active.metadata.schema.find((column) => column.id === target.id)?.nullable === false
       );
     },
@@ -4126,14 +4182,33 @@ async function exerciseReleasedRFillMissingJourney(
   assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
   const stepId = preview.metadata.draftStep.id;
   assert.match(preview.code ?? "", /\.ow_fill_values/u);
-  assert.match(preview.code ?? "", /filled by Open Wrangler/u);
+  assert.match(preview.code ?? "", /mean\(\.ow_present \/ \.ow_scale\)/u);
   assert.doesNotMatch(preview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
+  const previewGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: `${phase}-fill-mean-preview-gap`,
+    offset: 602,
+    limit: 1,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: target.position,
+    columnLimit: 1
+  });
+  assert.equal(previewGap.kind, "page");
+  if (previewGap.kind !== "page") throw new Error("The native R mean-fill preview page did not resolve.");
+  assert.deepEqual(previewGap.page.columnIds, [target.id]);
+  const previewValue = previewGap.page.rows[0]?.values[0];
+  assert.ok(previewValue?.kind === "number");
+  assert.equal(previewValue.isNull, false);
+  assert.equal(previewValue.isNaN, false);
+  assert.equal(Number.isFinite(previewValue.raw), true);
   const review = app.getByRole("region", { name: "Draft review" });
   await review.waitFor({ state: "visible", timeout: 10_000 });
   await review.getByText("Fill missing values", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await review
     .locator('[aria-label="Data diff summary"]')
-    .getByText(/^1 existing cell changed(?: in this block)?$/u)
+    .getByText("No value changes in this block", { exact: true })
     .waitFor({ state: "visible", timeout: 10_000 });
 
   await review.getByRole("button", { name: "Apply step", exact: true }).click();
@@ -4147,6 +4222,7 @@ async function exerciseReleasedRFillMissingJourney(
         active.metadata.steps.length === 1 &&
         step?.id === stepId &&
         step.kind === "fillMissingValues" &&
+        isDeepStrictEqual(step.params.replacement, { kind: "mean" }) &&
         active.metadata.schema.find((column) => column.id === target.id)?.nullable === false
       );
     },
@@ -4160,6 +4236,7 @@ async function exerciseReleasedRFillMissingJourney(
   const applied = testing.activeSession();
   assert.ok(applied, "The applied R Fill missing values step must retain its exact session.");
   assert.match(applied.code ?? "", /\.ow_fill_values/u);
+  assert.match(applied.code ?? "", /mean\(\.ow_present \/ \.ow_scale\)/u);
 
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   const undoState = (): Record<string, unknown> => {
@@ -4203,6 +4280,23 @@ async function exerciseReleasedRFillMissingJourney(
     "undoing native R Fill missing values through the editor",
     () => JSON.stringify(undoState())
   );
+  const restored = testing.activeSession();
+  assert.ok(restored, "The undone native R mean-fill session must remain active.");
+  const restoredGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: restored.metadata.revision,
+    viewRequestId: `${phase}-fill-mean-restored-gap`,
+    offset: 602,
+    limit: 1,
+    filterModel: restored.viewState.filterModel,
+    columnOffset: target.position,
+    columnLimit: 1
+  });
+  assert.equal(restoredGap.kind, "page");
+  if (restoredGap.kind !== "page") throw new Error("The undone native R mean-fill page did not resolve.");
+  assert.deepEqual(restoredGap.page.columnIds, [target.id]);
+  assert.equal(restoredGap.page.rows[0]?.values[0]?.isNull, true);
   const returnColumn = original.metadata.schema.find((column) => column.name === "row_id");
   assert.ok(returnColumn, "The packaged R fill journey must be able to return to the first editing column.");
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after undoing Fill missing values");
@@ -4345,7 +4439,7 @@ async function exerciseReleasedREditingJourney(
     editable: true,
     lazy: false,
     cancel: false,
-    exportCsv: false,
+    exportCsv: true,
     exportParquet: false,
     notebookInsert: true,
     filter: true,
@@ -4361,7 +4455,7 @@ async function exerciseReleasedREditingJourney(
   assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
   assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
   await app.getByRole("button", { name: "Add step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+  await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
 
   if (phase === "jupyter-r") {
     await exerciseReleasedRPersistentRowsJourney(testing, workbench, sessionId, phase);
@@ -4438,10 +4532,107 @@ async function exerciseReleasedREditingJourney(
   assert.ok(firstApplied, "The applied native R rename must retain its session.");
   assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
   assert.equal(firstApplied.metadata.capabilities.notebookInsert, true);
-  assert.equal(firstApplied.metadata.capabilities.exportCsv, false);
+  assert.equal(firstApplied.metadata.capabilities.exportCsv, true);
   assert.equal(firstApplied.metadata.capabilities.exportParquet, false);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
-  assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+  await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+  recordAcceptanceProgress(`${phase}:editing:export-cleaned-csv`);
+  const notebookVersionBeforeExport = notebook.version;
+  const notebookDirtyBeforeExport = notebook.isDirty;
+  const notebookSourcesBeforeExport = notebook.getCells().map((cell) => cell.document.getText());
+  const notebookBytesBeforeExport = readFileSync(notebookPath);
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  let exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
+  await exportDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  let exportFilterPanel = exportDrawer.locator(".filterSortPanel").first();
+  const exportAdvancedFilters = exportFilterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
+  if ((await exportAdvancedFilters.count()) > 0) await exportAdvancedFilters.click();
+  await exportFilterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
+  await exportFilterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
+  await exportFilterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+  await exportFilterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.filteredShape.rows === 603 &&
+        current.viewState.filterModel.filters.length === 1 &&
+        current.viewState.filterModel.filters[0]?.column === "group"
+      );
+    },
+    30_000,
+    "the R notebook export viewing filter"
+  );
+  await exportDrawer.getByRole("button", { name: "Close panel" }).click();
+  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  const exportView = testing.activeSession();
+  assert.ok(exportView, "The filtered R notebook export requires its exact active session.");
+  assert.equal(exportView.sessionId, sessionId);
+  assert.equal(exportView.metadata.source.kind, "notebookVariable");
+  assert.equal(exportView.metadata.source.uri, notebook.uri.toString());
+  assert.equal(exportView.metadata.source.variableName, "orders_frame");
+  assert.equal(exportView.metadata.shape.rows, 1_205);
+  assert.equal(exportView.metadata.filteredShape.rows, 603);
+  const exportViewModel = JSON.parse(JSON.stringify(exportView.viewState.filterModel)) as FilterModel;
+
+  const exportPath = path.join(outputDirectory, `${phase}.orders.clean.csv`);
+  await exportCleanedDataThroughCommand(workbench, exportPath);
+  await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R notebook CSV export to appear");
+  const exportedLines = readFileSync(exportPath, "utf8").split("\n");
+  assert.equal(exportedLines.at(-1), "", "The native R CSV export must end with one newline.");
+  exportedLines.pop();
+  assert.equal(exportedLines.length, 1_206, "The native R CSV export must contain all source rows plus its header.");
+  assert.equal(exportedLines[0], releasedRNotebookCleanedCsvHeader());
+  assert.equal(exportedLines[1], releasedRNotebookCleanedCsvRow(1));
+  assert.equal(exportedLines[2], releasedRNotebookCleanedCsvRow(2));
+  assert.equal(exportedLines[1_205], releasedRNotebookCleanedCsvRow(1_205));
+  assert.deepEqual(
+    readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
+    [],
+    "The R notebook CSV export must not retain a sibling temporary file."
+  );
+  assert.deepEqual(
+    testing.activeSession()?.viewState.filterModel,
+    exportViewModel,
+    "Exporting all committed rows must not alter the active viewing filter or sort."
+  );
+  assert.equal(notebook.version, notebookVersionBeforeExport, "Export must not change the source notebook version.");
+  assert.equal(notebook.isDirty, notebookDirtyBeforeExport, "Export must not change the source notebook dirty state.");
+  assert.deepEqual(
+    notebook.getCells().map((cell) => cell.document.getText()),
+    notebookSourcesBeforeExport,
+    "Export must not edit any source notebook cell."
+  );
+  assertExactBytes(
+    readFileSync(notebookPath),
+    notebookBytesBeforeExport,
+    "Export must not change the notebook on disk."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after CSV export");
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
+  await exportDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  exportFilterPanel = exportDrawer.locator(".filterSortPanel").first();
+  await exportFilterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.sessionId === sessionId &&
+        current.metadata.filteredShape.rows === 1_205 &&
+        current.viewState.filterModel.filters.length === 0 &&
+        current.viewState.filterModel.sort.length === 0
+      );
+    },
+    30_000,
+    "clearing the R notebook export view"
+  );
+  await exportDrawer.getByRole("button", { name: "Close panel" }).click();
 
   recordAcceptanceProgress(`${phase}:editing:inspect`);
   await vscode.commands.executeCommand("openWrangler.selectStep", previewed.stepId);
@@ -5789,7 +5980,7 @@ async function previewReleasedRDropMissingRows(testing: TestApi, app: Locator, s
         draft.params.columns === undefined &&
         draft.params.how === "any" &&
         active.metadata.steps.length === 0 &&
-        active.metadata.shape.rows === 1_204
+        active.metadata.shape.rows === 1_203
       );
     },
     30_000,
@@ -13127,7 +13318,7 @@ async function previewMostCommonAccountNote(app: Locator, testing: TestApi): Pro
   await dialog.getByPlaceholder("Search operations").fill("fill missing");
   await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
   await dialog.getByLabel("Column", { exact: true }).selectOption(accountNote.id);
-  const fillMode = dialog.getByLabel("Fill with", { exact: true });
+  const fillMode = dialog.getByLabel("Method", { exact: true });
   await fillMode.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(
     await fillMode.inputValue(),
@@ -13230,10 +13421,23 @@ async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, 
 async function exportCleanedDataThroughCommand(workbench: Page, destination: string): Promise<void> {
   const completion = vscode.commands.executeCommand<boolean>("openWrangler.exportData");
   await completeCleanedDataExportDialog(workbench, destination);
+  const outcome = await withBoundedAcceptancePromise(completion, 30_000, "the public cleaned-data export command");
+  const notifications =
+    outcome === true
+      ? []
+      : (
+          await workbench
+            .locator(
+              ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+            )
+            .allInnerTexts()
+        )
+          .slice(0, 10)
+          .map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 500));
   assert.equal(
-    await withBoundedAcceptancePromise(completion, 30_000, "the public cleaned-data export command"),
+    outcome,
     true,
-    "The zero-argument cleaned-data export command must report success."
+    `The zero-argument cleaned-data export command must report success. Notifications: ${JSON.stringify(notifications)}`
   );
 }
 

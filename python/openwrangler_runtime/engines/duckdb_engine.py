@@ -819,7 +819,10 @@ class DuckDBEngine(DataFrameEngine):
         if kind == "fillMissingValues":
             column = bound_column_name(params["column"], kind)
             replacement = params["replacement"]
-            if replacement.get("kind") in {"median", "mostFrequent"}:
+            if replacement.get("kind") == "fallbackColumns":
+                fallback_columns = [bound_column_name(fallback, kind) for fallback in replacement["columns"]]
+                return [(f"{prefix}df = _ow_fill_missing_from_columns(df, {column!r}, {fallback_columns!r})")]
+            if replacement.get("kind") in {"mean", "median", "mostFrequent"}:
                 return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, None)"]
             value = generated_fill_replacement_expression(replacement)
             return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, {value})"]
@@ -1031,12 +1034,66 @@ class DuckDBEngine(DataFrameEngine):
         return self._relation(frame, f"SELECT * FROM ow WHERE {operator.join(f'({item})' for item in valid)}")
 
     def _fill_missing(self, frame: Any, column: str, replacement: Mapping[str, Any]) -> Any:
+        if replacement.get("kind") == "fallbackColumns":
+            return self._fill_missing_from_columns(
+                frame,
+                column,
+                [bound_column_name(fallback, "fillMissingValues") for fallback in replacement["columns"]],
+            )
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         raw_type = types[column]
         semantic_type = _semantic_type(raw_type)
         identifier = _quote_ident(column)
         valid = _valid_predicate(identifier, raw_type)
         missing = f"NOT ({valid})"
+
+        if replacement.get("kind") == "mean":
+            if semantic_type != "float":
+                raise EngineError("Mean fill requires a floating-point column.")
+            missing_count = int(self._terminal_scalar(frame, f"SELECT count(*) FILTER (WHERE {missing}) FROM ow"))
+            if missing_count == 0:
+                return frame
+            positive_infinity = "CAST('Infinity' AS DOUBLE)"
+            negative_infinity = "CAST('-Infinity' AS DOUBLE)"
+            stats = self._terminal_rows(
+                frame,
+                (
+                    f"SELECT count(*) FILTER (WHERE {valid} AND {identifier} = {positive_infinity}), "
+                    f"count(*) FILTER (WHERE {valid} AND {identifier} = {negative_infinity}), "
+                    f"max(abs({identifier})) FILTER (WHERE {valid} AND isfinite({identifier})) FROM ow"
+                ),
+            )[0]
+            has_positive_infinity = int(stats[0]) > 0
+            has_negative_infinity = int(stats[1]) > 0
+            if has_positive_infinity and has_negative_infinity:
+                raise EngineError("Cannot fill with the mean because positive and negative infinity make it undefined.")
+            if has_positive_infinity:
+                mean = float("inf")
+            elif has_negative_infinity:
+                mean = float("-inf")
+            else:
+                scale = stats[2]
+                if scale is None:
+                    raise EngineError(
+                        "Cannot fill with the mean because the selected column has no present numeric values."
+                    )
+                scale = float(scale)
+                if scale == 0:
+                    mean = 0.0
+                else:
+                    scaled_mean = float(
+                        self._terminal_scalar(
+                            frame,
+                            (
+                                f"SELECT avg({identifier} / {_sql_literal(scale)}) "
+                                f"FILTER (WHERE {valid} AND isfinite({identifier})) FROM ow"
+                            ),
+                        )
+                    )
+                    mean = max(-1.0, min(1.0, scaled_mean)) * scale
+            replacement_sql = f"CAST({_sql_literal(mean)} AS {raw_type})"
+            expression = f"CASE WHEN {missing} THEN {replacement_sql} ELSE {identifier} END"
+            return self._assign(frame, column, expression)
 
         if replacement.get("kind") == "mostFrequent":
             missing_count = int(self._terminal_scalar(frame, f"SELECT count(*) FILTER (WHERE {missing}) FROM ow"))
@@ -1129,6 +1186,70 @@ class DuckDBEngine(DataFrameEngine):
         except EngineError as error:
             raise EngineError(
                 f"The replacement value is incompatible with the selected DuckDB column: {error}"
+            ) from error
+
+    def _fill_missing_from_columns(self, frame: Any, target: str, fallbacks: list[str]) -> Any:
+        types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
+        target_type = types[target]
+        target_semantic = _semantic_type(target_type)
+        output_type = target_type
+
+        fallback_types = [types[column] for column in fallbacks]
+        if target_semantic == "string" and any(raw_type != target_type for raw_type in fallback_types):
+            # Probe only values that can win the ordered chain. Compatible
+            # public strings can stay in a closed ENUM/UUID domain, while an
+            # unused later fallback must not widen an exact no-op.
+            probe_target = _quote_ident(target)
+            probe_remaining = f"NOT ({_valid_predicate(probe_target, target_type)})"
+            widening_predicates = []
+            for fallback, raw_type in zip(fallbacks, fallback_types, strict=True):
+                identifier = _quote_ident(fallback)
+                valid = _valid_predicate(identifier, raw_type)
+                if raw_type != target_type:
+                    widening_predicates.append(
+                        f"(({probe_remaining}) AND ({valid}) AND try_cast({identifier} AS {target_type}) IS NULL)"
+                    )
+                probe_remaining = f"({probe_remaining}) AND NOT ({valid})"
+            widening = " OR ".join(widening_predicates)
+            if widening and bool(self._terminal_scalar(frame, f"SELECT coalesce(bool_or({widening}), FALSE) FROM ow")):
+                # VARCHAR is the explicit, lossless DuckDB text widening and
+                # is visible in the draft schema before apply.
+                output_type = "VARCHAR"
+        if target_type.lower() in {"float", "real"} and any(
+            raw_type.lower() == "double" for raw_type in fallback_types
+        ):
+            raise EngineError(
+                "A DOUBLE fallback cannot be represented exactly in a FLOAT target. "
+                "Convert the target column to DOUBLE first."
+            )
+        if target_semantic in {"decimal", "datetime"} and any(raw_type != target_type for raw_type in fallback_types):
+            raise EngineError(
+                f"DuckDB {target_semantic} fallback columns must use the exact target type {target_type}. "
+                "Convert the columns to one exact type before filling."
+            )
+
+        target_identifier = _quote_ident(target)
+        target_missing = f"NOT ({_valid_predicate(target_identifier, target_type)})"
+        remaining = target_missing
+        fallback_expressions = []
+        for fallback, raw_type in zip(fallbacks, fallback_types, strict=True):
+            identifier = _quote_ident(fallback)
+            valid = _valid_predicate(identifier, raw_type)
+            fallback_expressions.append(
+                f"CASE WHEN ({remaining}) AND ({valid}) THEN CAST({identifier} AS {output_type}) "
+                f"ELSE NULL::{output_type} END"
+            )
+            remaining = f"({remaining}) AND NOT ({valid})"
+        fallback_value = f"coalesce({', '.join(fallback_expressions)})"
+        expression = (
+            f"CASE WHEN {target_missing} AND ({fallback_value}) IS NOT NULL THEN {fallback_value} "
+            f"ELSE CAST({target_identifier} AS {output_type}) END"
+        )
+        try:
+            return self._assign(frame, target, expression)
+        except EngineError as error:
+            raise EngineError(
+                f"A fallback column is incompatible with the selected DuckDB target column: {error}"
             ) from error
 
     def _drop_duplicates(self, frame: Any, columns: Any, keep: str) -> Any:
@@ -2188,6 +2309,66 @@ def _ow_drop_missing(df, columns, how):
     return _ow_query(df, "SELECT * FROM ow WHERE " + operator.join("(" + item + ")" for item in valid))
 
 
+def _ow_fill_missing_from_columns(df, target, fallbacks):
+    types = dict(zip(_ow_columns(df), map(str, df.types)))
+    target_type = types[target]
+    lowered_target = target_type.lower()
+    fallback_types = [types[column] for column in fallbacks]
+    is_string = any(token in lowered_target for token in ("varchar", "char", "enum", "uuid"))
+    output_type = target_type
+    if is_string and any(raw_type != target_type for raw_type in fallback_types):
+        probe_target = _ow_ident(target)
+        probe_remaining = "NOT (" + _ow_valid(probe_target, target_type) + ")"
+        widening_predicates = []
+        for fallback, raw_type in zip(fallbacks, fallback_types):
+            identifier = _ow_ident(fallback)
+            valid = _ow_valid(identifier, raw_type)
+            if raw_type != target_type:
+                widening_predicates.append(
+                    "((" + probe_remaining + ") AND (" + valid + ") AND try_cast("
+                    + identifier + " AS " + target_type + ") IS NULL)"
+                )
+            probe_remaining = "(" + probe_remaining + ") AND NOT (" + valid + ")"
+        widening = " OR ".join(widening_predicates)
+        if widening and bool(
+            _ow_query(df, "SELECT coalesce(bool_or(" + widening + "), FALSE) FROM ow").fetchone()[0]
+        ):
+            output_type = "VARCHAR"
+    if lowered_target in {"float", "real"} and any(
+        raw_type.lower() == "double" for raw_type in fallback_types
+    ):
+        raise ValueError(
+            "A DOUBLE fallback cannot be represented exactly in a FLOAT target. "
+            "Convert the target column to DOUBLE first."
+        )
+    if (lowered_target.startswith("decimal") or "timestamp" in lowered_target) and any(
+        raw_type != target_type for raw_type in fallback_types
+    ):
+        family = "decimal" if lowered_target.startswith("decimal") else "datetime"
+        raise ValueError(
+            "DuckDB " + family + " fallback columns must use the exact target type " + target_type
+            + ". Convert the columns to one exact type before filling."
+        )
+    target_identifier = _ow_ident(target)
+    target_missing = "NOT (" + _ow_valid(target_identifier, target_type) + ")"
+    remaining = target_missing
+    fallback_expressions = []
+    for fallback, raw_type in zip(fallbacks, fallback_types):
+        identifier = _ow_ident(fallback)
+        valid = _ow_valid(identifier, raw_type)
+        fallback_expressions.append(
+            "CASE WHEN (" + remaining + ") AND (" + valid + ") THEN CAST(" + identifier + " AS "
+            + output_type + ") ELSE NULL::" + output_type + " END"
+        )
+        remaining = "(" + remaining + ") AND NOT (" + valid + ")"
+    fallback_value = "coalesce(" + ", ".join(fallback_expressions) + ")"
+    expression = (
+        "CASE WHEN " + target_missing + " AND (" + fallback_value + ") IS NOT NULL THEN "
+        + fallback_value + " ELSE CAST(" + target_identifier + " AS " + output_type + ") END"
+    )
+    return _ow_assign(df, target, expression)
+
+
 def _ow_fill_missing(df, column, replacement_kind, value):
     types = dict(zip(_ow_columns(df), map(str, df.types)))
     raw_type = types[column]
@@ -2195,6 +2376,54 @@ def _ow_fill_missing(df, column, replacement_kind, value):
     identifier = _ow_ident(column)
     valid = _ow_valid(identifier, raw_type)
     missing = "NOT (" + valid + ")"
+    if replacement_kind == "mean":
+        if not _ow_is_float(raw_type):
+            raise ValueError("Mean fill requires a floating-point column.")
+        missing_count = int(
+            _ow_query(df, "SELECT count(*) FILTER (WHERE " + missing + ") FROM ow").fetchone()[0]
+        )
+        if missing_count == 0:
+            return df
+        positive_infinity = "CAST('Infinity' AS DOUBLE)"
+        negative_infinity = "CAST('-Infinity' AS DOUBLE)"
+        stats = _ow_query(
+            df,
+            "SELECT count(*) FILTER (WHERE " + valid + " AND " + identifier + " = "
+            + positive_infinity + "), count(*) FILTER (WHERE " + valid + " AND " + identifier
+            + " = " + negative_infinity + "), max(abs(" + identifier + ")) FILTER (WHERE "
+            + valid + " AND isfinite(" + identifier + ")) FROM ow",
+        ).fetchone()
+        has_positive_infinity = int(stats[0]) > 0
+        has_negative_infinity = int(stats[1]) > 0
+        if has_positive_infinity and has_negative_infinity:
+            raise ValueError(
+                "Cannot fill with the mean because positive and negative infinity make it undefined."
+            )
+        if has_positive_infinity:
+            mean = float("inf")
+        elif has_negative_infinity:
+            mean = float("-inf")
+        else:
+            scale = stats[2]
+            if scale is None:
+                raise ValueError(
+                    "Cannot fill with the mean because the selected column has no present numeric values."
+                )
+            scale = float(scale)
+            if scale == 0:
+                mean = 0.0
+            else:
+                scaled_mean = float(
+                    _ow_query(
+                        df,
+                        "SELECT avg(" + identifier + " / " + _ow_literal(scale) + ") FILTER (WHERE "
+                        + valid + " AND isfinite(" + identifier + ")) FROM ow",
+                    ).fetchone()[0]
+                )
+                mean = max(-1.0, min(1.0, scaled_mean)) * scale
+        replacement = "CAST(" + _ow_literal(mean) + " AS " + raw_type + ")"
+        expression = "CASE WHEN " + missing + " THEN " + replacement + " ELSE " + identifier + " END"
+        return _ow_assign(df, column, expression)
     if replacement_kind == "mostFrequent":
         missing_count = int(
             _ow_query(df, "SELECT count(*) FILTER (WHERE " + missing + ") FROM ow").fetchone()[0]

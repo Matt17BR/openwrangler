@@ -1,11 +1,12 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 4L
+  transport_version <- 6L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
   maximum_error_bytes <- 4096L
   maximum_response_bytes <- 17L * 1024L * 1024L
   maximum_generated_code_bytes <- 4L * 1024L * 1024L
+  maximum_export_chunk_bytes <- 1L * 1024L * 1024L
   maximum_revision <- .Machine$integer.max
   default_strip_characters <- paste0(
     " \t\n\r\v\f",
@@ -464,30 +465,71 @@ openwrangler_r_kernel_agent <- local({
     as.integer(session$revision + 1L)
   }
 
-  decode_fill_missing_replacement <- function(value) {
+  decode_fill_missing_replacement <- function(value, limits, target_column) {
     replacement <- exact_record(
       value,
       "kind",
       "request.payload.step.params.replacement",
-      optional_fields = "value"
+      optional_fields = c("value", "columns")
     )
     kind <- bounded_text(
       replacement$kind,
       "request.payload.step.params.replacement.kind",
       16L
     )
-    supported <- c("median", "mostFrequent", "string", "integer", "float", "decimal", "boolean", "date", "datetime")
+    supported <- c(
+      "mean",
+      "median",
+      "mostFrequent",
+      "fallbackColumns",
+      "string",
+      "integer",
+      "float",
+      "decimal",
+      "boolean",
+      "date",
+      "datetime"
+    )
     if (!kind %in% supported) {
       abort("invalid_request", "request.payload.step.params.replacement.kind is unsupported")
     }
-    if (kind %in% c("median", "mostFrequent")) {
-      if ("value" %in% names(replacement)) {
-        abort("invalid_request", "a calculated replacement may not contain a value")
+    if (kind %in% c("mean", "median", "mostFrequent")) {
+      if (!identical(names(replacement), "kind")) {
+        abort("invalid_request", "a calculated replacement may not contain a value or fallback columns")
       }
       return(list(kind = kind))
     }
+    if (identical(kind, "fallbackColumns")) {
+      if (!setequal(names(replacement), c("kind", "columns"))) {
+        abort("invalid_request", "a fallback-column replacement requires exactly kind and columns")
+      }
+      columns <- replacement$columns
+      if (
+        !is.list(columns) ||
+          is.object(columns) ||
+          !is.null(names(columns)) ||
+          length(columns) == 0L ||
+          length(columns) > limits$fillFallbackColumns
+      ) {
+        abort("invalid_request", "fallback columns must be a bounded non-empty array")
+      }
+      columns <- lapply(seq_along(columns), function(index) {
+        decode_column_reference(
+          columns[[index]],
+          sprintf("request.payload.step.params.replacement.columns[%d]", index),
+          limits$columnIdBytes
+        )
+      })
+      ids <- vapply(columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (anyDuplicated(ids)) abort("invalid_request", "fallback columns contain a repeated column identity")
+      if (target_column$id %in% ids) abort("invalid_request", "the fill target cannot also be a fallback column")
+      return(list(kind = kind, columns = columns))
+    }
     if (!"value" %in% names(replacement)) {
       abort("invalid_request", "a typed replacement requires a value")
+    }
+    if ("columns" %in% names(replacement)) {
+      abort("invalid_request", "a typed replacement may not contain fallback columns")
     }
     if (identical(kind, "boolean")) {
       if (!is.logical(replacement$value) || length(replacement$value) != 1L || is.na(replacement$value)) {
@@ -610,16 +652,17 @@ openwrangler_r_kernel_agent <- local({
         c("column", "replacement"),
         "request.payload.step.params"
       )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
       return(list(
         id = step_id,
         kind = kind,
         params = list(
-          column = decode_column_reference(
-            params$column,
-            "request.payload.step.params.column",
-            limits$columnIdBytes
-          ),
-          replacement = decode_fill_missing_replacement(params$replacement)
+          column = column,
+          replacement = decode_fill_missing_replacement(params$replacement, limits, column)
         )
       ))
     }
@@ -1113,18 +1156,22 @@ openwrangler_r_kernel_agent <- local({
     column <- schema[[position]]
     semantic_kind <- column$semantics$kind
     replacement_kind <- step$params$replacement$kind
-    compatible <- switch(
-      semantic_kind,
-      character = replacement_kind %in% c("mostFrequent", "string"),
-      factor = replacement_kind %in% c("mostFrequent", "string"),
-      integer = replacement_kind %in% c("median", "integer"),
-      integer64 = replacement_kind %in% c("median", "integer"),
-      double = replacement_kind %in% c("median", "integer", "float"),
-      logical = replacement_kind %in% c("mostFrequent", "boolean"),
-      date = identical(replacement_kind, "date"),
-      datetime = identical(replacement_kind, "datetime"),
-      FALSE
-    )
+    compatible <- if (identical(replacement_kind, "fallbackColumns")) {
+      semantic_kind %in% c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime")
+    } else {
+      switch(
+        semantic_kind,
+        character = replacement_kind %in% c("mostFrequent", "string"),
+        factor = replacement_kind %in% c("mostFrequent", "string"),
+        integer = replacement_kind %in% c("median", "integer"),
+        integer64 = replacement_kind %in% c("median", "integer"),
+        double = replacement_kind %in% c("mean", "median", "integer", "float"),
+        logical = replacement_kind %in% c("mostFrequent", "boolean"),
+        date = identical(replacement_kind, "date"),
+        datetime = identical(replacement_kind, "datetime"),
+        FALSE
+      )
+    }
     if (!compatible) {
       abort("invalid_request", "The replacement is incompatible with the selected R column", TRUE)
     }
@@ -1132,6 +1179,42 @@ openwrangler_r_kernel_agent <- local({
     if (is.null(key_column_ids)) key_column_ids <- character()
     if (column$id %in% key_column_ids) {
       abort("invalid_request", "Fill Missing Values cannot replace a data.table key column", TRUE)
+    }
+    fallback_columns <- list()
+    if (identical(replacement_kind, "fallbackColumns")) {
+      compatible_fallback_kind <- function(fallback_kind) {
+        if (semantic_kind %in% c("character", "factor")) return(fallback_kind %in% c("character", "factor"))
+        if (semantic_kind %in% c("integer", "integer64")) return(fallback_kind %in% c("integer", "integer64"))
+        identical(fallback_kind, semantic_kind)
+      }
+      fallback_columns <- lapply(seq_along(step$params$replacement$columns), function(index) {
+        reference <- step$params$replacement$columns[[index]]
+        fallback_matches <- which(vapply(schema, function(candidate) identical(candidate$id, reference$id), logical(1L)))
+        if (
+          length(fallback_matches) != 1L ||
+            !identical(schema[[fallback_matches[[1L]]]]$name, reference$name)
+        ) {
+          abort("stale_column", "A fallback column reference no longer matches the active R dataframe", TRUE)
+        }
+        fallback_position <- as.integer(fallback_matches[[1L]])
+        fallback <- schema[[fallback_position]]
+        if (identical(fallback$id, column$id)) {
+          abort("invalid_request", "The fill target cannot also be a fallback column", TRUE)
+        }
+        if (!compatible_fallback_kind(fallback$semantics$kind)) {
+          abort(
+            "invalid_request",
+            sprintf("Fallback column %s is incompatible with the selected R column", fallback$name),
+            TRUE
+          )
+        }
+        list(
+          id = fallback$id,
+          position = fallback_position,
+          oldName = fallback$name,
+          semanticKind = fallback$semantics$kind
+        )
+      })
     }
     list(
       id = step$id,
@@ -1145,7 +1228,8 @@ openwrangler_r_kernel_agent <- local({
       semanticKind = semantic_kind,
       ordered = isTRUE(column$semantics$ordered),
       levels = if (is.null(column$semantics$levels)) character() else column$semantics$levels,
-      replacement = step$params$replacement
+      replacement = step$params$replacement,
+      fallbackColumns = fallback_columns
     )
   }
 
@@ -1504,18 +1588,30 @@ openwrangler_r_kernel_agent <- local({
     }
     if (identical(step$kind, "fillMissingValues")) {
       bound <- bind_fill_missing_step(capture, step)
-      result <- frame_contract$fill_missing_column_at(
-        source,
-        bound$position,
-        bound$oldName,
-        bound$replacement
-      )
+      fallback_fill <- identical(bound$replacement$kind, "fallbackColumns")
+      result <- if (fallback_fill) {
+        frame_contract$fill_missing_from_fallback_columns_at(
+          source,
+          bound$position,
+          bound$oldName,
+          vapply(bound$fallbackColumns, `[[`, integer(1L), "position", USE.NAMES = FALSE),
+          vapply(bound$fallbackColumns, `[[`, character(1L), "oldName", USE.NAMES = FALSE)
+        )
+      } else {
+        frame_contract$fill_missing_column_at(
+          source,
+          bound$position,
+          bound$oldName,
+          bound$replacement
+        )
+      }
       return(list(
         capture = frame_contract$capture_frame(
           result,
           nullability_source = capture,
           source_positions = seq_along(capture$descriptor$schema),
-          fill_missing_positions = bound$position
+          fill_missing_positions = if (fallback_fill) NULL else bound$position,
+          fallback_fill_positions = if (fallback_fill) bound$position else NULL
         ),
         bound = bound
       ))
@@ -2093,7 +2189,10 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_fill_replacement <- function(replacement) {
-    if (replacement$kind %in% c("median", "mostFrequent")) {
+    if (identical(replacement$kind, "fallbackColumns")) {
+      abort("runtime_error", "Generated R code received fallback columns through the scalar fill path")
+    }
+    if (replacement$kind %in% c("mean", "median", "mostFrequent")) {
       return(sprintf("list(kind = %s)", r_string(replacement$kind)))
     }
     value <- if (identical(replacement$kind, "boolean")) {
@@ -2138,7 +2237,22 @@ openwrangler_r_kernel_agent <- local({
       "  .ow_fill_values <- function(.ow_values, .ow_semantic_kind, .ow_replacement, .ow_timezone) {",
       "    .ow_missing <- is.na(.ow_values)",
       "    .ow_replacement_kind <- .ow_replacement$kind",
-      "    if (.ow_replacement_kind == \"median\") {",
+      "    if (.ow_replacement_kind == \"mean\") {",
+      "      if (!any(.ow_missing)) return(.ow_values)",
+      "      .ow_present <- .ow_values[!.ow_missing]",
+      "      if (length(.ow_present) == 0L) stop(\"Open Wrangler cannot calculate a mean without present values\", call. = FALSE)",
+      "      .ow_positive_infinity <- any(is.infinite(.ow_present) & .ow_present > 0)",
+      "      .ow_negative_infinity <- any(is.infinite(.ow_present) & .ow_present < 0)",
+      "      if (.ow_positive_infinity && .ow_negative_infinity) stop(\"Open Wrangler could not calculate a usable numeric mean\", call. = FALSE)",
+      "      if (.ow_positive_infinity) {",
+      "        .ow_fill <- Inf",
+      "      } else if (.ow_negative_infinity) {",
+      "        .ow_fill <- -Inf",
+      "      } else {",
+      "        .ow_scale <- max(abs(.ow_present))",
+      "        .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, mean(.ow_present / .ow_scale))) * .ow_scale",
+      "      }",
+      "    } else if (.ow_replacement_kind == \"median\") {",
       "      if (!any(.ow_missing)) return(.ow_values)",
       "      .ow_present <- .ow_values[!.ow_missing]",
       "      if (length(.ow_present) == 0L) stop(\"Open Wrangler cannot calculate a median without present values\", call. = FALSE)",
@@ -2214,11 +2328,52 @@ openwrangler_r_kernel_agent <- local({
       "    } else stop(\"Open Wrangler cannot fill this R column type\", call. = FALSE)",
       "    .ow_values[.ow_missing] <- .ow_fill",
       "    .ow_values",
+      "  }",
+      "  .ow_fill_from_columns <- function(.ow_values, .ow_semantic_kind, .ow_fallbacks, .ow_fallback_kinds, .ow_factor_limit) {",
+      "    if (!is.list(.ow_fallbacks) || length(.ow_fallbacks) == 0L || length(.ow_fallbacks) != length(.ow_fallback_kinds)) stop(\"Open Wrangler received invalid fallback columns\", call. = FALSE)",
+      "    if (.ow_semantic_kind == \"factor\") {",
+      "      .ow_text <- as.character(.ow_values)",
+      "      .ow_levels <- levels(.ow_values)",
+      "      for (.ow_index in seq_along(.ow_fallbacks)) {",
+      "        .ow_fallback_text <- as.character(.ow_fallbacks[[.ow_index]])",
+      "        .ow_use <- is.na(.ow_text) & !is.na(.ow_fallback_text)",
+      "        if (!any(.ow_use)) next",
+      "        .ow_additions <- unique(.ow_fallback_text[.ow_use])",
+      "        .ow_additions <- .ow_additions[!.ow_additions %in% .ow_levels]",
+      "        if (length(.ow_levels) + length(.ow_additions) > .ow_factor_limit) stop(\"Open Wrangler factor level limit reached\", call. = FALSE)",
+      "        .ow_levels <- c(.ow_levels, .ow_additions)",
+      "        .ow_text[.ow_use] <- .ow_fallback_text[.ow_use]",
+      "      }",
+      "      return(factor(.ow_text, levels = .ow_levels, ordered = is.ordered(.ow_values)))",
+      "    }",
+      "    .ow_result_values <- .ow_values",
+      "    for (.ow_index in seq_along(.ow_fallbacks)) {",
+      "      .ow_fallback <- .ow_fallbacks[[.ow_index]]",
+      "      .ow_fallback_kind <- .ow_fallback_kinds[[.ow_index]]",
+      "      .ow_use <- is.na(.ow_result_values) & !is.na(.ow_fallback)",
+      "      if (!any(.ow_use)) next",
+      "      .ow_converted <- if (.ow_semantic_kind == \"character\") {",
+      "        as.character(.ow_fallback[.ow_use])",
+      "      } else if (.ow_semantic_kind == \"integer\" && .ow_fallback_kind == \"integer64\") {",
+      "        if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required to fill an integer column from integer64\", call. = FALSE)",
+      "        .ow_selected <- .ow_fallback[.ow_use]",
+      "        .ow_minimum <- bit64::as.integer64(\"-2147483647\"); .ow_maximum <- bit64::as.integer64(\"2147483647\")",
+      "        if (any(.ow_selected < .ow_minimum | .ow_selected > .ow_maximum)) stop(\"Open Wrangler fallback value is outside the R integer range\", call. = FALSE)",
+      "        as.integer(as.character(.ow_selected))",
+      "      } else if (.ow_semantic_kind == \"integer64\" && .ow_fallback_kind == \"integer\") {",
+      "        if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required to fill an integer64 column\", call. = FALSE)",
+      "        bit64::as.integer64(.ow_fallback[.ow_use])",
+      "      } else {",
+      "        .ow_fallback[.ow_use]",
+      "      }",
+      "      .ow_result_values[.ow_use] <- .ow_converted",
+      "    }",
+      "    .ow_result_values",
       "  }"
     )
   }
 
-  compile_plan <- function(variable_name, bound_plan, maximum_columns) {
+  compile_plan <- function(variable_name, bound_plan, maximum_columns, maximum_factor_levels) {
     if (length(bound_plan) == 0L) return("")
     lines <- c(
       "open_wrangler_result <- local({",
@@ -2634,6 +2789,7 @@ openwrangler_r_kernel_agent <- local({
           )
         }
       } else if (identical(step$kind, "fillMissingValues")) {
+        fallback_fill <- identical(step$replacement$kind, "fallbackColumns")
         lines <- c(
           lines,
           sprintf("  .ow_fill_position <- %dL", step$position),
@@ -2641,16 +2797,55 @@ openwrangler_r_kernel_agent <- local({
           "  if (ncol(.ow_result) < .ow_fill_position || !identical(names(.ow_result)[[.ow_fill_position]], .ow_fill_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
           "  .ow_fill_source <- .ow_result[[.ow_fill_position]]",
           row_type_guard(".ow_fill_source", list(semanticsKind = step$semanticKind)),
-          "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_fill_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Fill Missing Values cannot replace a data.table key column\", call. = FALSE)",
-          "  .ow_fill_timezone <- attr(.ow_fill_source, \"tzone\", exact = TRUE)",
-          "  if (is.null(.ow_fill_timezone) || identical(.ow_fill_timezone, \"\")) .ow_fill_timezone <- \"UTC\"",
-          "  if (!is.character(.ow_fill_timezone) || length(.ow_fill_timezone) != 1L || is.na(.ow_fill_timezone)) stop(\"Open Wrangler received an unsupported POSIXct timezone\", call. = FALSE)",
-          sprintf(
-            "  .ow_fill_result <- .ow_fill_values(.ow_fill_source, %s, %s, %s)",
-            r_string(step$semanticKind),
-            r_fill_replacement(step$replacement),
-            ".ow_fill_timezone"
-          ),
+          "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_fill_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Fill Missing Values cannot replace a data.table key column\", call. = FALSE)"
+        )
+        if (fallback_fill) {
+          fallback_variables <- character(length(step$fallbackColumns))
+          for (fallback_index in seq_along(step$fallbackColumns)) {
+            fallback <- step$fallbackColumns[[fallback_index]]
+            fallback_variable <- sprintf(".ow_fill_fallback_%d", fallback_index)
+            fallback_variables[[fallback_index]] <- fallback_variable
+            lines <- c(
+              lines,
+              sprintf("  if (ncol(.ow_result) < %dL || !identical(names(.ow_result)[[%dL]], %s)) stop(\"Open Wrangler fallback column reference is stale\", call. = FALSE)", fallback$position, fallback$position, r_string(fallback$oldName)),
+              sprintf("  %s <- .ow_result[[%dL]]", fallback_variable, fallback$position),
+              row_type_guard(fallback_variable, list(semanticsKind = fallback$semanticKind))
+            )
+          }
+          fallback_list <- sprintf("list(%s)", paste(fallback_variables, collapse = ", "))
+          fallback_kinds <- r_character_vector(vapply(
+            step$fallbackColumns,
+            `[[`,
+            character(1L),
+            "semanticKind",
+            USE.NAMES = FALSE
+          ))
+          lines <- c(
+            lines,
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_from_columns(.ow_fill_source, %s, %s, %s, %dL)",
+              r_string(step$semanticKind),
+              fallback_list,
+              fallback_kinds,
+              maximum_factor_levels
+            )
+          )
+        } else {
+          lines <- c(
+            lines,
+            "  .ow_fill_timezone <- attr(.ow_fill_source, \"tzone\", exact = TRUE)",
+            "  if (is.null(.ow_fill_timezone) || identical(.ow_fill_timezone, \"\")) .ow_fill_timezone <- \"UTC\"",
+            "  if (!is.character(.ow_fill_timezone) || length(.ow_fill_timezone) != 1L || is.na(.ow_fill_timezone)) stop(\"Open Wrangler received an unsupported POSIXct timezone\", call. = FALSE)",
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_values(.ow_fill_source, %s, %s, %s)",
+              r_string(step$semanticKind),
+              r_fill_replacement(step$replacement),
+              ".ow_fill_timezone"
+            )
+          )
+        }
+        lines <- c(
+          lines,
           "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_fill_position, value = .ow_fill_result) else .ow_result[[.ow_fill_position]] <- .ow_fill_result"
         )
       } else if (identical(step$kind, "castColumn")) {
@@ -2861,6 +3056,11 @@ openwrangler_r_kernel_agent <- local({
     invisible(NULL)
   }
 
+  canonical_base64 <- function(value) {
+    encoded <- jsonlite::base64_enc(value)
+    gsub("\r", "", gsub("\n", "", encoded, fixed = TRUE), fixed = TRUE)
+  }
+
   plan_response <- function(request_id, session_id, action, session, page, frame_contract) {
     list(
       transportVersion = transport_version,
@@ -2870,7 +3070,12 @@ openwrangler_r_kernel_agent <- local({
       action = action,
       revision = session$revision,
       page = materialize(frame_contract, active_capture(session), page),
-      code = compile_plan(session$variableName, session$boundPlan, frame_contract$limits$columns)
+      code = compile_plan(
+        session$variableName,
+        session$boundPlan,
+        frame_contract$limits$columns,
+        frame_contract$limits$factorLevels
+      )
     )
   }
 
@@ -2893,6 +3098,7 @@ openwrangler_r_kernel_agent <- local({
       "floor_number_column_at",
       "ceil_number_column_at",
       "fill_missing_column_at",
+      "fill_missing_from_fallback_columns_at",
       "cast_column_at",
       "drop_columns_at",
       "select_columns_at",
@@ -2915,6 +3121,21 @@ openwrangler_r_kernel_agent <- local({
     if (!is.environment(source_environment)) {
       stop("Open Wrangler received an invalid R source environment.", call. = FALSE)
     }
+    owns_export_root <- is.null(export_root)
+    initialized_export_root <- FALSE
+    construction_complete <- FALSE
+    if (owns_export_root) {
+      export_root <- tempfile("openwrangler-r-kernel-", tmpdir = tempdir())
+      if (!dir.create(export_root, mode = "0700", showWarnings = FALSE)) {
+        stop("Open Wrangler could not create its private R kernel export directory.", call. = FALSE)
+      }
+      initialized_export_root <- TRUE
+    }
+    on.exit({
+      if (!construction_complete && owns_export_root && initialized_export_root && dir.exists(export_root)) {
+        try(unlink(export_root, recursive = TRUE, force = TRUE), silent = TRUE)
+      }
+    }, add = TRUE)
     if (!is.null(export_root)) {
       export_root <- bounded_text(export_root, "export_root", 32768L)
       if (
@@ -2943,6 +3164,42 @@ openwrangler_r_kernel_agent <- local({
     }
 
     sessions <- new.env(hash = TRUE, parent = emptyenv())
+    exports <- new.env(hash = TRUE, parent = emptyenv())
+
+    remove_export <- function(export_id) {
+      if (!exists(export_id, envir = exports, inherits = FALSE)) return(invisible(FALSE))
+      artifact <- get(export_id, envir = exports, inherits = FALSE)
+      if (is.list(artifact) && is.character(artifact$path) && length(artifact$path) == 1L) {
+        if (file.exists(artifact$path)) {
+          removed <- unlink(artifact$path, force = TRUE)
+          if (!identical(removed, 0L) || file.exists(artifact$path)) {
+            stop("Open Wrangler could not remove a private R kernel export.", call. = FALSE)
+          }
+        }
+      }
+      rm(list = export_id, envir = exports)
+      invisible(TRUE)
+    }
+
+    remove_session_exports <- function(session_id) {
+      for (export_id in ls(envir = exports, all.names = TRUE)) {
+        artifact <- get(export_id, envir = exports, inherits = FALSE)
+        if (is.list(artifact) && identical(artifact$sessionId, session_id)) remove_export(export_id)
+      }
+      invisible(NULL)
+    }
+
+    dispose <- function() {
+      for (export_id in ls(envir = exports, all.names = TRUE)) remove_export(export_id)
+      if (owns_export_root && dir.exists(export_root)) {
+        removed <- unlink(export_root, recursive = TRUE, force = TRUE)
+        if (!identical(removed, 0L) || dir.exists(export_root)) {
+          stop("Open Wrangler could not remove its private R kernel export directory.", call. = FALSE)
+        }
+      }
+      initialized_export_root <<- FALSE
+      invisible(NULL)
+    }
 
     dispatch <- function(request) {
       request <- exact_record(request, c("transportVersion", "requestId", "kind", "payload"), "request")
@@ -3185,7 +3442,8 @@ openwrangler_r_kernel_agent <- local({
           code = compile_plan(
             candidate$variableName,
             candidate_bound_plan,
-            frame_contract$limits$columns
+            frame_contract$limits$columns,
+            frame_contract$limits$factorLevels
           )
         )
         preflight_response(response)
@@ -3228,7 +3486,8 @@ openwrangler_r_kernel_agent <- local({
             code = compile_plan(
               session$variableName,
               utils::head(session$boundPlan, step_index),
-              frame_contract$limits$columns
+              frame_contract$limits$columns,
+              frame_contract$limits$factorLevels
             )
           ))
         }
@@ -3359,10 +3618,10 @@ openwrangler_r_kernel_agent <- local({
         if (!is.null(session$draft)) {
           abort("invalid_request", "Apply or discard the current R draft before exporting data", TRUE)
         }
-        if (is.null(export_root)) {
-          abort("unsupported_operation", "This R session cannot export data through its kernel")
-        }
         export_id <- identifier(payload$exportId, "request.payload.exportId")
+        if (exists(export_id, envir = exports, inherits = FALSE)) {
+          abort("invalid_request", "The requested R export identity is already in use", TRUE)
+        }
         format <- bounded_text(payload$format, "request.payload.format", 16L)
         if (!identical(format, "csv")) {
           abort("invalid_request", "Native R data export currently supports CSV only", TRUE)
@@ -3371,10 +3630,12 @@ openwrangler_r_kernel_agent <- local({
         if (is.null(capture)) {
           abort("runtime_error", "The committed R dataframe is no longer available")
         }
-        exported <- frame_contract$write_csv(
-          capture,
-          file.path(export_root, paste0(export_id, ".csv"))
-        )
+        artifact_path <- file.path(export_root, paste0(export_id, ".csv"))
+        completed <- FALSE
+        on.exit({
+          if (!completed && file.exists(artifact_path)) try(unlink(artifact_path, force = TRUE), silent = TRUE)
+        }, add = TRUE)
+        exported <- frame_contract$write_csv(capture, artifact_path)
         response <- list(
           transportVersion = transport_version,
           requestId = request_id,
@@ -3388,7 +3649,115 @@ openwrangler_r_kernel_agent <- local({
           bytes = exported$bytes
         )
         preflight_response(response)
+        if (owns_export_root) {
+          assign(
+            export_id,
+            list(
+              sessionId = session_id,
+              revision = as.double(session$revision),
+              path = artifact_path,
+              bytes = exported$bytes
+            ),
+            envir = exports
+          )
+        }
+        completed <- TRUE
         return(response)
+      }
+
+      if (identical(kind, "readDataExport")) {
+        payload <- exact_record(
+          request$payload,
+          c("sessionId", "revision", "exportId", "offset", "limit"),
+          "request.payload"
+        )
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        assert_revision(session, payload$revision)
+        export_id <- identifier(payload$exportId, "request.payload.exportId")
+        if (!exists(export_id, envir = exports, inherits = FALSE)) {
+          abort("invalid_request", "The requested R export is no longer available", TRUE)
+        }
+        artifact <- get(export_id, envir = exports, inherits = FALSE)
+        if (
+          !identical(artifact$sessionId, session_id) ||
+            !identical(artifact$revision, as.double(session$revision))
+        ) {
+          abort("invalid_request", "The requested R export belongs to a different session revision", TRUE)
+        }
+        offset <- whole_number(payload$offset, "request.payload.offset", artifact$bytes)
+        limit <- whole_number(payload$limit, "request.payload.limit", maximum_export_chunk_bytes)
+        if (limit < 1L) abort("invalid_request", "request.payload.limit must be positive", TRUE)
+        details <- file.info(artifact$path)
+        if (
+          nrow(details) != 1L ||
+            is.na(details$size[[1L]]) ||
+            !identical(as.double(details$size[[1L]]), as.double(artifact$bytes)) ||
+            isTRUE(details$isdir[[1L]])
+        ) {
+          abort("runtime_error", "The private R export changed before it could be read")
+        }
+        connection <- NULL
+        on.exit({
+          if (!is.null(connection)) try(close(connection), silent = TRUE)
+        }, add = TRUE)
+        chunk <- tryCatch(
+          {
+            connection <- file(artifact$path, open = "rb")
+            seek(connection, where = offset, origin = "start", rw = "read")
+            value <- readBin(connection, what = "raw", n = min(limit, artifact$bytes - offset))
+            close(connection)
+            connection <- NULL
+            value
+          },
+          error = function(error) abort("runtime_error", "The private R export could not be read")
+        )
+        if (!is.null(connection)) close(connection)
+        if (offset < artifact$bytes && length(chunk) == 0L) {
+          abort("runtime_error", "The private R export ended before its recorded size")
+        }
+        response <- list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "dataExportChunk",
+          sessionId = session_id,
+          revision = session$revision,
+          exportId = export_id,
+          offset = offset,
+          bytes = length(chunk),
+          data = canonical_base64(chunk)
+        )
+        preflight_response(response)
+        return(response)
+      }
+
+      if (identical(kind, "closeDataExport")) {
+        payload <- exact_record(
+          request$payload,
+          c("sessionId", "revision", "exportId"),
+          "request.payload"
+        )
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        revision <- whole_number(payload$revision, "request.payload.revision", maximum_revision)
+        export_id <- identifier(payload$exportId, "request.payload.exportId")
+        if (exists(export_id, envir = exports, inherits = FALSE)) {
+          artifact <- get(export_id, envir = exports, inherits = FALSE)
+          if (!identical(artifact$sessionId, session_id) || !identical(artifact$revision, revision)) {
+            abort("invalid_request", "The requested R export belongs to a different session revision", TRUE)
+          }
+          remove_export(export_id)
+        }
+        return(list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "dataExportClosed",
+          sessionId = session_id,
+          revision = revision,
+          exportId = export_id
+        ))
       }
 
       if (identical(kind, "closeSession")) {
@@ -3404,6 +3773,7 @@ openwrangler_r_kernel_agent <- local({
           sessionId = session_id
         )
         preflight_response(response)
+        remove_session_exports(session_id)
         rm(list = session_id, envir = sessions)
         return(response)
       }
@@ -3463,7 +3833,8 @@ openwrangler_r_kernel_agent <- local({
     }
 
     environment(dispatch_json) <- environment()
-    list(dispatch_json = dispatch_json)
+    construction_complete <- TRUE
+    list(dispatch_json = dispatch_json, dispose = dispose)
   }
 
   list(new_agent = new_agent, transport_version = transport_version)

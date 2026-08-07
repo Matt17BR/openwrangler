@@ -45,8 +45,13 @@ row_reduction_tibble_session_id <- "27272727-2727-4727-8727-272727272727"
 row_reduction_table_session_id <- "28282828-2828-4828-8828-282828282828"
 row_reduction_view_session_id <- "29292929-2929-4929-8929-292929292929"
 fill_session_id <- "30303030-3030-4030-8030-303030303030"
+mean_fill_session_id <- "60606060-6060-4060-8060-606060606060"
 fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
 most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
+fallback_fill_session_id <- "40404040-4040-4040-8040-404040404040"
+export_session_id <- "41414141-4141-4141-8141-414141414141"
+export_id <- "42424242-4242-4242-8242-424242424242"
+cleanup_export_id <- "43434343-4343-4343-8343-434343434343"
 text_cleanup_session_id <- "34343434-3434-4434-8434-343434343434"
 text_cleanup_table_session_id <- "35353535-3535-4535-8535-353535353535"
 text_failure_session_id <- "36363636-3636-4636-8636-363636363636"
@@ -102,7 +107,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 4L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 6L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -3027,6 +3032,216 @@ assert_identical(source_environment$fill_frame, fill_source_before, "the R Fill 
 fill_closed <- dispatch("closeSession", list(sessionId = fill_session_id))
 assert_identical(fill_closed$kind, "closed", "the R Fill Missing Values session did not close")
 
+source_environment$mean_fill_frame <- data.frame(
+  value = c(1e308, NA_real_, NaN, 1e308),
+  row.names = c("mean-a", "mean-b", "mean-c", "mean-d")
+)
+mean_fill_before <- unserialize(serialize(source_environment$mean_fill_frame, NULL, version = 3L))
+mean_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = mean_fill_session_id, variableName = "mean_fill_frame", page = page_window())
+)
+assert_identical(mean_fill_open$kind, "page", "the R mean-fill session did not open")
+mean_fill_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = mean_fill_session_id,
+    revision = 0L,
+    step = fill_step("fill-mean", "r:c:0", "value", list(kind = "mean")),
+    page = page_window()
+  )
+)
+assert_identical(mean_fill_preview$kind, "stepPreview", "R mean fill did not preview")
+assert_identical(mean_fill_preview$diff$changedCells, 2L, "R mean fill returned an inexact diff")
+assert_identical(mean_fill_preview$page$schema[[1L]]$nullable, FALSE, "R mean fill stayed nullable")
+mean_fill_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = mean_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(mean_fill_apply$action, "apply", "R mean fill did not apply")
+if (!grepl("mean(.ow_present / .ow_scale)", mean_fill_apply$code, fixed = TRUE)) {
+  stop("generated R mean fill lost its native calculation", call. = FALSE)
+}
+assign("mean_fill_frame", source_environment$mean_fill_frame, envir = .GlobalEnv)
+eval(parse(text = mean_fill_apply$code), envir = .GlobalEnv)
+mean_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+if (!all(is.finite(mean_fill_generated$value))) {
+  stop("generated R mean fill overflowed a finite mean", call. = FALSE)
+}
+if (!all(mean_fill_generated$value == 1e308)) {
+  stop("generated R mean fill changed the result", call. = FALSE)
+}
+assert_identical(class(mean_fill_generated), "data.frame", "generated R mean fill changed the frame class")
+assert_identical(row.names(mean_fill_generated), row.names(mean_fill_before), "generated R mean fill changed row names")
+assert_identical(
+  get("mean_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  mean_fill_before,
+  "generated R mean fill mutated its source"
+)
+assert_identical(source_environment$mean_fill_frame, mean_fill_before, "the R mean-fill lifecycle mutated its source")
+rm("mean_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+mean_fill_closed <- dispatch("closeSession", list(sessionId = mean_fill_session_id))
+assert_identical(mean_fill_closed$kind, "closed", "the R mean-fill session did not close")
+
+source_environment$fallback_fill_frame <- data.frame(
+  target_partial = ordered(c(NA, "high", NA, NA), levels = c("low", "high")),
+  target_complete = ordered(c(NA, "high", NA, NA), levels = c("low", "high")),
+  first = factor(c("medium", "ignored", "low", NA), levels = c("medium", "ignored", "low")),
+  second = c("late", "ignored", "unused", "last"),
+  row.names = paste0("fallback-", 1:4)
+)
+fallback_fill_before <- unserialize(serialize(source_environment$fallback_fill_frame, NULL, version = 3L))
+fallback_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = fallback_fill_session_id, variableName = "fallback_fill_frame", page = page_window())
+)
+assert_identical(fallback_fill_open$kind, "page", "the R fallback-fill session did not open")
+
+fallback_fill_empty <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fallback_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "fallback-empty",
+      "r:c:0",
+      "target_partial",
+      list(kind = "fallbackColumns", columns = I(list()))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(fallback_fill_empty$kind, "error", "R fallback fill accepted an empty fallback list")
+assert_identical(fallback_fill_empty$code, "invalid_request", "the empty R fallback diagnostic changed")
+
+fallback_fill_partial <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fallback_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "fallback-partial",
+      "r:c:0",
+      "target_partial",
+      list(
+        kind = "fallbackColumns",
+        columns = I(list(list(id = "r:c:2", name = "first")))
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(fallback_fill_partial$kind, "stepPreview", "R fallback fill did not preview")
+assert_identical(
+  fallback_fill_partial$page$schema[[1L]]$nullable,
+  TRUE,
+  "an unresolved R fallback fill was published as non-nullable"
+)
+assert_identical(fallback_fill_partial$diff$changedCells, 2L, "R fallback priority returned an inexact diff")
+fallback_fill_partial_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = fallback_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(fallback_fill_partial_discard$action, "discard", "the partial R fallback draft did not discard")
+
+fallback_fill_complete_step <- fill_step(
+  "fallback-complete",
+  "r:c:1",
+  "target_complete",
+  list(
+    kind = "fallbackColumns",
+    columns = I(list(
+      list(id = "r:c:2", name = "first"),
+      list(id = "r:c:3", name = "second")
+    ))
+  )
+)
+fallback_fill_complete_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = fallback_fill_session_id,
+    revision = 2L,
+    step = fallback_fill_complete_step,
+    page = page_window()
+  )
+)
+assert_identical(fallback_fill_complete_preview$kind, "stepPreview", "complete R fallback fill did not preview")
+assert_identical(
+  fallback_fill_complete_preview$page$schema[[2L]]$nullable,
+  FALSE,
+  "a complete R fallback fill stayed nullable"
+)
+assert_identical(
+  unlist(fallback_fill_complete_preview$page$schema[[2L]]$semantics$levels, use.names = FALSE),
+  c("low", "high", "medium", "last"),
+  "R fallback fill changed factor-level order"
+)
+assert_identical(fallback_fill_complete_preview$diff$changedCells, 3L, "complete R fallback fill returned an inexact diff")
+fallback_fill_complete_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = fallback_fill_session_id, revision = 3L, page = page_window())
+)
+assert_identical(fallback_fill_complete_apply$action, "apply", "complete R fallback fill did not apply")
+if (!grepl(".ow_fill_from_columns", fallback_fill_complete_apply$code, fixed = TRUE)) {
+  stop("generated R fallback fill lost its native helper", call. = FALSE)
+}
+assign("fallback_fill_frame", source_environment$fallback_fill_frame, envir = .GlobalEnv)
+eval(parse(text = fallback_fill_complete_apply$code), envir = .GlobalEnv)
+fallback_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  fallback_fill_generated$target_complete,
+  ordered(c("medium", "high", "low", "last"), levels = c("low", "high", "medium", "last")),
+  "generated R fallback fill changed factor values, priority, or levels"
+)
+assert_identical(
+  get("fallback_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  fallback_fill_before,
+  "generated R fallback fill mutated its source"
+)
+rm("open_wrangler_result", envir = .GlobalEnv)
+stale_fallback_source <- fallback_fill_before
+stale_fallback_source$first <- as.character(stale_fallback_source$first)
+assign("fallback_fill_frame", stale_fallback_source, envir = .GlobalEnv)
+stale_fallback_error <- tryCatch(
+  {
+    eval(parse(text = fallback_fill_complete_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = identity
+)
+if (is.null(stale_fallback_error) || !grepl("column type is stale", conditionMessage(stale_fallback_error), fixed = TRUE)) {
+  stop("generated R fallback fill accepted a stale fallback type", call. = FALSE)
+}
+if (exists("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)) {
+  rm("open_wrangler_result", envir = .GlobalEnv)
+}
+rm("fallback_fill_frame", envir = .GlobalEnv)
+fallback_fill_inspection <- inspect_step(
+  fallback_fill_session_id,
+  4L,
+  "fallback-complete",
+  page_window()
+)
+assert_identical(fallback_fill_inspection$kind, "stepInspection", "applied R fallback fill was not inspectable")
+assert_identical(fallback_fill_inspection$diff$changedCells, 3L, "R fallback inspection lost its diff")
+fallback_fill_undo <- dispatch(
+  "undoStep",
+  list(sessionId = fallback_fill_session_id, revision = 4L, page = page_window())
+)
+assert_identical(fallback_fill_undo$action, "undo", "R fallback fill did not undo")
+assert_identical(
+  fallback_fill_undo$page$schema[[2L]]$nullable,
+  TRUE,
+  "undo did not restore R fallback target nullability"
+)
+assert_identical(
+  source_environment$fallback_fill_frame,
+  fallback_fill_before,
+  "the R fallback-fill lifecycle mutated its source"
+)
+fallback_fill_closed <- dispatch("closeSession", list(sessionId = fallback_fill_session_id))
+assert_identical(fallback_fill_closed$kind, "closed", "the R fallback-fill session did not close")
+
 source_environment$most_fill_frame <- data.frame(
   label = ordered(c("high", NA, "high", "low"), levels = c("low", "high")),
   row.names = c("most-a", "most-b", "most-c", "most-d")
@@ -5005,6 +5220,7 @@ missing_package_contract <- list(
   floor_number_column_at = function(...) stop("unexpected floor", call. = FALSE),
   ceil_number_column_at = function(...) stop("unexpected ceiling", call. = FALSE),
   fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
+  fill_missing_from_fallback_columns_at = function(...) stop("unexpected fallback fill", call. = FALSE),
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
@@ -5150,6 +5366,21 @@ if (
 ) {
   stop("the R agent accepted a frame contract without Fill Missing Values support", call. = FALSE)
 }
+missing_fallback_fill_contract <- missing_package_contract
+missing_fallback_fill_contract$fill_missing_from_fallback_columns_at <- NULL
+missing_fallback_fill_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_fallback_fill_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_fallback_fill_error) ||
+    !identical(conditionMessage(missing_fallback_fill_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without fallback-column fill support", call. = FALSE)
+}
 missing_cast_contract <- missing_package_contract
 missing_cast_contract$cast_column_at <- NULL
 missing_cast_error <- tryCatch(
@@ -5213,6 +5444,178 @@ if (
 ) {
   stop("the R agent accepted a frame contract without Drop Duplicates support", call. = FALSE)
 }
+
+source_environment$export_frame <- data.frame(
+  "order id" = c(3L, 1L, 2L),
+  duplicate = factor(c("gamma", "alpha", "beta")),
+  duplicate = c("third", "first", "second"),
+  when = as.Date(c("2026-01-03", "2026-01-01", "2026-01-02")),
+  at = as.POSIXct(c("2026-01-03 12:00:00", "2026-01-01 10:00:00", "2026-01-02 11:00:00"), tz = "UTC"),
+  value = c(NA_real_, NaN, Inf),
+  check.names = FALSE
+)
+export_source_before <- unserialize(serialize(source_environment$export_frame, NULL, version = 3L))
+export_open <- dispatch(
+  "openSession",
+  list(sessionId = export_session_id, variableName = "export_frame", page = page_window())
+)
+assert_identical(export_open$kind, "page", "the R export session did not open")
+export_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = export_session_id,
+    revision = 0L,
+    step = list(
+      id = "export-rename",
+      kind = "renameColumn",
+      params = list(column = list(id = "r:c:0", name = "order id"), newName = "order_id")
+    ),
+    page = page_window()
+  )
+)
+export_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = export_session_id, revision = export_preview$revision, page = page_window())
+)
+export_pending <- dispatch(
+  "previewStep",
+  list(
+    sessionId = export_session_id,
+    revision = export_apply$revision,
+    step = list(
+      id = "pending-export-rename",
+      kind = "renameColumn",
+      params = list(column = list(id = "r:c:1", name = "duplicate"), newName = "pending")
+    ),
+    page = page_window()
+  )
+)
+blocked_export <- dispatch(
+  "exportData",
+  list(sessionId = export_session_id, revision = export_pending$revision, exportId = export_id, format = "csv")
+)
+assert_identical(blocked_export$kind, "error", "the R agent exported a pending draft")
+export_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = export_session_id, revision = export_pending$revision, page = page_window())
+)
+stale_export <- dispatch(
+  "exportData",
+  list(sessionId = export_session_id, revision = export_pending$revision, exportId = export_id, format = "csv")
+)
+assert_identical(stale_export$kind, "error", "the R agent accepted a stale export revision")
+assert_identical(stale_export$code, "stale_revision", "the stale export diagnostic changed")
+
+invisible(dispatch(
+  "getPage",
+  list(
+    sessionId = export_session_id,
+    page = page_window(
+      filters = list(list(
+        column = list(id = "r:c:0", name = "order_id"),
+        type = "integer",
+        predicates = I(list(list(kind = "predicate", operator = "gt", value = 2L)))
+      )),
+      sorts = list(list(
+        column = list(id = "r:c:0", name = "order_id"),
+        direction = "asc",
+        nulls = "last"
+      ))
+    )
+  )
+))
+export_ready <- dispatch(
+  "exportData",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id, format = "csv")
+)
+assert_identical(export_ready$kind, "dataExported", "the R agent did not prepare a CSV export")
+assert_identical(export_ready$rows, 3L, "viewing state changed the exported row count")
+assert_identical(export_ready$columns, 6L, "the R export returned the wrong width")
+
+first_chunk <- dispatch(
+  "readDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id, offset = 0L, limit = 11L)
+)
+repeated_first_chunk <- dispatch(
+  "readDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id, offset = 0L, limit = 11L)
+)
+assert_identical(first_chunk$data, repeated_first_chunk$data, "an offset-addressed export chunk was not idempotent")
+canonical_chunk <- dispatch(
+  "readDataExport",
+  list(
+    sessionId = export_session_id,
+    revision = export_discard$revision,
+    exportId = export_id,
+    offset = 0L,
+    limit = min(1024L, as.integer(export_ready$bytes))
+  )
+)
+decoded_canonical_chunk <- jsonlite::base64_dec(canonical_chunk$data)
+expected_canonical_chunk <- gsub(
+  "\r",
+  "",
+  gsub("\n", "", jsonlite::base64_enc(decoded_canonical_chunk), fixed = TRUE),
+  fixed = TRUE
+)
+assert_identical(grepl("[\r\n]", canonical_chunk$data), FALSE, "an R export chunk contained wrapped base64")
+assert_identical(nchar(canonical_chunk$data) %% 4L, 0L, "an R export chunk had an invalid base64 length")
+assert_identical(canonical_chunk$data, expected_canonical_chunk, "an R export chunk was not canonical base64")
+assert_identical(length(decoded_canonical_chunk), canonical_chunk$bytes, "the canonical R export chunk changed length")
+csv_bytes <- raw()
+offset <- 0L
+while (offset < export_ready$bytes) {
+  chunk <- dispatch(
+    "readDataExport",
+    list(
+      sessionId = export_session_id,
+      revision = export_discard$revision,
+      exportId = export_id,
+      offset = offset,
+      limit = 11L
+    )
+  )
+  assert_identical(chunk$offset, offset, "the R export chunk changed its requested offset")
+  decoded <- jsonlite::base64_dec(chunk$data)
+  assert_identical(length(decoded), chunk$bytes, "the R export chunk byte count changed")
+  csv_bytes <- c(csv_bytes, decoded)
+  offset <- offset + chunk$bytes
+}
+assert_identical(length(csv_bytes), export_ready$bytes, "the R export stream was truncated")
+csv_frame <- utils::read.csv(
+  text = rawToChar(csv_bytes),
+  check.names = FALSE,
+  stringsAsFactors = FALSE,
+  na.strings = ""
+)
+assert_identical(names(csv_frame), c("order_id", "duplicate", "duplicate", "when", "at", "value"), "CSV export changed column names")
+assert_identical(csv_frame[[1L]], c(3L, 1L, 2L), "viewing filters or sorts changed the committed CSV")
+assert_identical(csv_frame[[2L]], c("gamma", "alpha", "beta"), "CSV export changed factor labels")
+assert_identical(source_environment$export_frame, export_source_before, "CSV export mutated its R source")
+export_closed <- dispatch(
+  "closeDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id)
+)
+assert_identical(export_closed$kind, "dataExportClosed", "the R export artifact did not close")
+export_closed_again <- dispatch(
+  "closeDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = export_id)
+)
+assert_identical(export_closed_again$kind, "dataExportClosed", "closing an R export was not idempotent")
+
+cleanup_ready <- dispatch(
+  "exportData",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = cleanup_export_id, format = "csv")
+)
+assert_identical(cleanup_ready$kind, "dataExported", "the cleanup export was not prepared")
+export_session_closed <- dispatch("closeSession", list(sessionId = export_session_id))
+assert_identical(export_session_closed$kind, "closed", "closing the R session with an export failed")
+cleanup_read <- dispatch(
+  "readDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = cleanup_export_id, offset = 0L, limit = 1L)
+)
+assert_identical(cleanup_read$kind, "error", "closing the R session retained its export artifact")
+
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(
   missing_package_agent,
@@ -5264,5 +5667,8 @@ assert_identical(removed_source$code, "runtime_error", "the removed-source diagn
 assert_identical(removed_source$recoverable, TRUE, "a removed source was not recoverable")
 removed_closed <- dispatch("closeSession", list(sessionId = second_session_id))
 assert_identical(removed_closed$kind, "closed", "a source-changed session did not close")
+
+agent$dispose()
+missing_package_agent$dispose()
 
 cat("Native R kernel agent tests passed.\n")

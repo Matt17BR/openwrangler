@@ -25,7 +25,7 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Sort/filter cleaning steps                           |    Yes |    Yes | Done   | Stable refs, native/code edges, packaged duplicates; record:docs/testing.md           |
 | Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done   | Reordered mixed-label preview/apply/replay green; record:docs/testing.md              |
 | Drop missing/duplicate rows                          |    Yes |    Yes | Done   | Stable refs, all row modes, code and packaged catalog; record:docs/testing.md         |
-| Fill missing values                                  |    Yes |    Yes | Done   | Typed/median packaged; most-common VS Code package green; record:docs/testing.md      |
+| Fill missing values                                  |    Yes |    Yes | Done   | Typed, calculated, and ordered fallback columns; record:docs/testing.md               |
 | One-hot and multi-label binarization                 |    Yes |    Yes | Done   | Null/blank/collision and generated-code parity; record:docs/testing.md                |
 | Find/replace/strip/split/case transforms             |    Yes |    Yes | Done   | Unicode/null plus packaged text preview/apply; record:docs/testing.md                 |
 | Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done   | Numeric edges plus packaged preview/apply; record:docs/testing.md                     |
@@ -46,15 +46,17 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 Post-1.0 viewing-filter hardening keeps the completed filter surface usable as well as semantically correct. Focused React coverage proves that removing a final selected value removes the column filter itself, changing per-column logic cannot create an empty filter, and **Filter rows** stays disabled for an effective-empty query. A two-column interaction keeps every active filter visible, removes one value or predicate without disturbing siblings, and preserves sorts on the same or another column. The native Filters tree exercises the same whole-column removal through the host/webview action boundary.
 
 **Fill missing values** works on one stable column at a time. Numeric columns can use the median of their present
-values. Text, categorical, and boolean columns can use the most common non-missing value. Supported scalar columns
-can use an explicit value of the matching type. Automatic methods ignore both null and NaN. When missing cells need
-filling, a tie or an all-missing column asks the user for a specific value instead. A no-op keeps the exact native
-column type. On Python engines, a specific value may widen a categorical or enum column to text; the most-common
-method uses an existing value and keeps its category type. Integer and decimal medians must fit that type exactly;
-decimal values must also fit its scale, and datetime values must match its timezone awareness. Applying the draft adds
-the step to Open Wrangler's cleaning plan. It never changes the original dataframe. Generated Pandas, Polars, and
-DuckDB code uses the same rules. Focused tests cover the dialog and the preview, apply, edit, discard, and undo
-lifecycle.
+values, and floating-point columns can use their mean. Text, categorical, and boolean columns can use the most common
+non-missing value. Supported scalar columns can use an explicit value of the matching type. They can also use an
+ordered list of same-type fallback columns: the first present value in each row wins, while a row with no present
+fallback stays missing. Automatic methods ignore both null and NaN. When missing cells need filling, a tie, an
+all-missing column, or an undefined mean asks the user for another method. A no-op keeps the exact native column type.
+On Python engines, a specific value or a fallback from a different categorical domain may widen the result to text;
+the preview shows that type change. The most-common method uses an existing value and keeps its category type. Integer
+and decimal medians must fit that type exactly; decimal values must also fit its scale, and datetime values must match
+its timezone awareness. Applying the draft adds the step to Open Wrangler's cleaning plan. It never changes the
+original dataframe. Generated Pandas, Polars, DuckDB, and R code uses the same rules. Focused tests cover the dialog
+and the preview, apply, edit, discard, and undo lifecycle.
 
 Cleaning-step preview, apply, latest-step edit, discard, and undo now preserve the independent viewing query instead of resetting it. Parameterized Pandas, Polars, and DuckDB runtime coverage keeps compatible selected values, searches, predicates, and ordered multi-sorts; prunes missing, ambiguous, or semantic-type-changed references; restores the exact pre-draft query on discard when the view was untouched; and keeps an explicit in-draft edit authoritative through Discard or Apply. Immediate undo restores the pre-first-apply query only when no later view edit occurred, including across latest-step replacement. Coordinator persistence restores the validated draft-base receipt before replaying a draft and then restores the independent current view; malformed or stale receipt/view sections fall back independently. React coverage verifies that confirmed Discard retains the runtime-published filters and sort priority.
 
@@ -97,19 +99,20 @@ both ends, or the default whitespace when no set is supplied. Split text uses a 
 and returns `NA` when the requested part is missing. Convert type replaces one column under the same identity and
 supports string, integer, float, boolean, date, and datetime targets. Failed parses become `NA`. It rejects active data-table
 keys and conversions that would lose units or `integer64` precision. Generated R can be copied, saved as a `.R`
-script, or inserted into the notebook or R document that opened the dataframe. Local R document sessions opened in
-Editing mode can export the committed cleaning result as CSV. IRkernel sessions cannot export cleaned data yet, and R
-Parquet export is not supported yet.
+script, or inserted into the notebook or R document that opened the dataframe. R notebook sessions and local R
+document sessions opened in Editing mode can export the committed cleaning result as CSV. R Parquet export is not
+supported yet.
 
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's
 ties-to-even rule. An active `data.table` key cannot be changed in place, but the result can be appended to a new
 column.
 
-Fill Missing Values offers the median of all non-missing numeric values, the most common non-missing character,
-factor, or logical value, or a specific typed value. Automatic fills ignore `NA` and `NaN`. Factor order and existing
-levels are kept; entering a new factor value appends one level. Signed 64-bit integers, dates, and datetimes keep
-their R types. Active data-table key columns are blocked.
+Fill Missing Values offers the median of all non-missing numeric values, the mean of a double column, the most common
+non-missing character, factor, or logical value, a specific typed value, or ordered same-row fallback columns.
+Automatic fills ignore `NA` and `NaN`. Factor order and existing levels are kept; new labels used by a fill are
+appended as levels. Signed 64-bit integers, dates, and datetimes keep their R types. Active data-table key columns are
+blocked.
 
 The default `collapse::qDF()` output follows the base `data.frame` path. Default `collapse::qTBL()` and `qDT()` output
 follows the existing tibble and `data.table` paths. Open Wrangler does not require `collapse`, and grouped `GRP_df`
@@ -140,8 +143,11 @@ text casing and replacement, `NA` preservation, stable retained and derived iden
 non-syntactic names, and executable generated R. The installed run opens the Round, Floor, and Ceiling forms and
 checks positive and negative fractional results in the visible grid.
 The packaged R run also inserts the current Rename code as one `r` cell without changing any existing cell. A
-second macOS/Linux run starts from a real `.R` file, opens a discovered dataframe, inserts generated code back into
-that exact unsaved document, and reruns the result without changing a decoy editor or either source file on disk.
+1,205-row notebook export applies that Rename, keeps an active filter and two sort keys, and saves all committed rows
+through the public command. The installed VS Code and Cursor journey checks the renamed CSV, unchanged notebook and
+view state, and cleanup of both host and IRkernel artifacts. A second macOS/Linux run starts from a real `.R` file,
+opens a discovered dataframe, inserts generated code back into that exact unsaved document, and reruns the result
+without changing a decoy editor or either source file on disk.
 The same acceptance phase now includes realistic `.Rmd` and `.qmd` fixtures with first-line YAML, ignored prose and
 non-R cells, a disabled R cell, a relative CSV read, native editing, and a generated fenced R cell. Focused tests prove
 that cells are parsed separately and unsupported document syntax fails before R starts. The installed VS Code and
@@ -149,25 +155,25 @@ Cursor runs cover all three document types, including cleaned CSV export from th
 document execution is disabled on Windows until the extension can own the complete spawned process tree. Operations
 outside the listed 20-operation set are not available in R yet.
 
-| Surface                                       | Availability       | Status  | Current checks                                           | Release check   |
-| --------------------------------------------- | ------------------ | ------- | -------------------------------------------------------- | --------------- |
-| Native R frame paging and typed cells         | 1.99 preview       | Partial | Projected pages, row labels, local/remote packaged tests | Preview release |
-| Native R compound viewing filters             | 1.99 preview       | Partial | R contracts and packaged value/predicate path            | Preview release |
-| Native R value search and selections          | 1.99 preview       | Partial | Typed selection contracts and packaged value path        | Preview release |
-| Native R ordered viewing sorts                | 1.99 preview       | Partial | Pure-R tests and local/remote packaged tests             | Preview release |
-| Native R column and dataset profiles          | 1.99 preview       | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts     | Preview release |
-| Base `data.frame`, tibble, and `data.table`   | 1.99 preview       | Partial | Native discovery, paging, queries, and profile tests     | Preview release |
-| Exact IRkernel session transport              | 1.99 preview       | Done    | Local VS Code/Cursor and remote VS Code restart test     | —               |
-| Owned `.R` source process                     | 1.99 preview       | Partial | Real process contracts and packaged VS Code/Cursor path  | Preview release |
-| Owned `.Rmd` and `.qmd` cell process          | 1.99 preview       | Partial | Parser, real R, and installed VS Code/Cursor run         | Preview release |
-| Notebook workbench                            | 1.99 preview       | Partial | Packaged viewing/editing, screenshots, production axe    | Preview release |
-| R cleaning operations and generated code      | 20 operations      | Partial | All 20 pass in installed VS Code and Cursor              | Preview release |
-| Copy or save generated R                      | 20 operations      | Partial | Rename uses packaged save; all 20 generate code          | Preview release |
-| Insert generated R into its IRkernel notebook | 1.99 preview       | Partial | Shared exact-document helper and packaged editor run     | Preview release |
-| Insert generated R into its source `.R` file  | 1.99 preview       | Partial | Exact-document helper and packaged rerun                 | Preview release |
-| Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview       | Partial | Exact-document tests and installed editor run            | Preview release |
-| Cleaned-data export                           | Local document CSV | Partial | Native writer, atomic save, installed editor run         | Preview release |
-| Quarto and R Markdown lexical R-cell run      | 1.99 preview       | Partial | Parser, owned process, and installed editor run          | Preview release |
+| Surface                                       | Availability            | Status  | Current checks                                                      | Release check   |
+| --------------------------------------------- | ----------------------- | ------- | ------------------------------------------------------------------- | --------------- |
+| Native R frame paging and typed cells         | 1.99 preview            | Partial | Projected pages, row labels, local/remote packaged tests            | Preview release |
+| Native R compound viewing filters             | 1.99 preview            | Partial | R contracts and packaged value/predicate path                       | Preview release |
+| Native R value search and selections          | 1.99 preview            | Partial | Typed selection contracts and packaged value path                   | Preview release |
+| Native R ordered viewing sorts                | 1.99 preview            | Partial | Pure-R tests and local/remote packaged tests                        | Preview release |
+| Native R column and dataset profiles          | 1.99 preview            | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts                | Preview release |
+| Base `data.frame`, tibble, and `data.table`   | 1.99 preview            | Partial | Native discovery, paging, queries, and profile tests                | Preview release |
+| Exact IRkernel session transport              | 1.99 preview            | Done    | Local VS Code/Cursor and remote VS Code restart test                | —               |
+| Owned `.R` source process                     | 1.99 preview            | Partial | Real process contracts and packaged VS Code/Cursor path             | Preview release |
+| Owned `.Rmd` and `.qmd` cell process          | 1.99 preview            | Partial | Parser, real R, and installed VS Code/Cursor run                    | Preview release |
+| Notebook workbench                            | 1.99 preview            | Partial | Packaged viewing/editing, screenshots, production axe               | Preview release |
+| R cleaning operations and generated code      | 20 operations           | Partial | All 20 pass in installed VS Code and Cursor                         | Preview release |
+| Copy or save generated R                      | 20 operations           | Partial | Rename uses packaged save; all 20 generate code                     | Preview release |
+| Insert generated R into its IRkernel notebook | 1.99 preview            | Partial | Shared exact-document helper and packaged editor run                | Preview release |
+| Insert generated R into its source `.R` file  | 1.99 preview            | Partial | Exact-document helper and packaged rerun                            | Preview release |
+| Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview            | Partial | Exact-document tests and installed editor run                       | Preview release |
+| Cleaned-data export                           | R notebook/document CSV | Partial | Native writers, bounded transfer, atomic save, installed editor run | Preview release |
+| Quarto and R Markdown lexical R-cell run      | 1.99 preview            | Partial | Parser, owned process, and installed editor run                     | Preview release |
 
 ## DuckDB file-backed preview matrix
 

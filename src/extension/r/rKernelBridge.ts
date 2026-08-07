@@ -20,6 +20,7 @@ import {
   type ExportDataRequest,
   type CeilNumberTransformStep,
   type FindReplaceTransformStep,
+  type FillMissingReplacement,
   type FillMissingValuesTransformStep,
   type FilterModel,
   type FilterRowsTransformStep,
@@ -432,7 +433,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         request.source,
         request.mode ?? "viewing",
         result.page,
-        isExportableRDocumentSource(request.source) && this.transport.exportData !== undefined
+        isExportableRSource(request.source) && this.transport.exportData !== undefined
       );
       this.sessions.set(sessionId, session);
       return {
@@ -787,10 +788,12 @@ export class RKernelBridge implements OpenWranglerBridge {
         targetKeyColumnIds,
         view,
         request.step.kind === "castColumn"
-          ? request.step.params.column.id
+          ? { columnId: request.step.params.column.id, mode: "mayAdd" }
           : request.step.kind === "splitText"
-            ? `c:step:${request.step.id}:0`
-            : undefined
+            ? { columnId: `c:step:${request.step.id}:0`, mode: "mayAdd" }
+            : request.step.kind === "fillMissingValues" && request.step.params.replacement.kind === "fallbackColumns"
+              ? { columnId: request.step.params.column.id, mode: "mayRemove" }
+              : undefined
       );
       assertMutationDiff(request.step, inputSchema, targetSchema, inputRows, targetRows, result.page, result.diff);
 
@@ -808,6 +811,10 @@ export class RKernelBridge implements OpenWranglerBridge {
       confirmed.draftInputKeyColumnIds = Object.freeze([...inputKeyColumnIds]);
       confirmed.draftBaseFilterModel = draftBaseFilterModel;
       confirmed.draftBaseViewChangeEpoch = draftBaseViewChangeEpoch;
+      const fallbackFillTargetId =
+        request.step.kind === "fillMissingValues" && request.step.params.replacement.kind === "fallbackColumns"
+          ? request.step.params.column.id
+          : undefined;
       return {
         kind: "stepPreview",
         revision: confirmed.revision,
@@ -815,7 +822,11 @@ export class RKernelBridge implements OpenWranglerBridge {
         page: gridPageFromContract(result.page),
         diff: copyDiff(result.diff),
         code: result.code,
-        warnings: []
+        warnings:
+          fallbackFillTargetId !== undefined &&
+          result.page.schema.find((column) => column.id === fallbackFillTargetId)?.nullable === true
+            ? ["Some values are still missing because every selected fallback column is missing in those rows."]
+            : []
       };
     } catch (error) {
       if (confirmed.invalidated) return kernelChangedError(request.sessionId);
@@ -1166,7 +1177,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     if (!session.exportCsv || !writer || request.format !== "csv") {
       return errorResponse(
         "unsupported_operation",
-        "Cleaned-data export is available as CSV for local R document sessions opened in Editing mode.",
+        "Cleaned-data export is available as CSV for local R notebook and document sessions opened in Editing mode.",
         true,
         request.sessionId
       );
@@ -1207,7 +1218,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     try {
       transaction = await this.beginFileTransaction({
         destination: vscode.Uri.file(request.path),
-        protectedSources: [documentSourceUri(session.source)]
+        protectedSources: rExportProtectedSourceUris(session.source)
       });
       const output = transaction;
       if (this.disposed || this.sessions.get(request.sessionId) !== session) {
@@ -1837,25 +1848,27 @@ function rCapabilitiesForSource(source: SessionSource, exportCsv: boolean): Sour
   };
 }
 
-function documentSourceUri(source: SessionSource): vscode.Uri {
-  if (source.kind !== "documentVariable" || !source.uri) {
-    throw new TypeError("R CSV export requires an originating R document URI.");
+function rExportProtectedSourceUris(source: SessionSource): readonly vscode.Uri[] {
+  if ((source.kind !== "documentVariable" && source.kind !== "notebookVariable") || !source.uri) {
+    throw new TypeError("R CSV export requires an originating R notebook or document URI.");
   }
   const uri = vscode.Uri.parse(source.uri, true);
-  if (uri.scheme !== "file" || !uri.fsPath) {
-    throw new TypeError("R CSV export requires a local R document source.");
-  }
-  return uri;
+  if (uri.scheme === "file" && uri.fsPath) return [uri];
+  if (source.kind === "notebookVariable" && uri.scheme === "untitled") return [];
+  throw new TypeError("R CSV export requires a local R notebook or document source.");
 }
 
-function isExportableRDocumentSource(source: SessionSource): boolean {
-  if (source.kind !== "documentVariable" || !source.uri) return false;
+function isExportableRSource(source: SessionSource): boolean {
+  if ((source.kind !== "documentVariable" && source.kind !== "notebookVariable") || !source.uri) return false;
   try {
     const uri = vscode.Uri.parse(source.uri, true);
     // The public export request currently retains only a filesystem path, not
     // the Save-dialog URI authority. Do not advertise remote export until the
     // host can preserve and revalidate that authority end to end.
-    return uri.scheme === "file" && Boolean(uri.fsPath);
+    return (
+      (uri.scheme === "file" && Boolean(uri.fsPath)) ||
+      (source.kind === "notebookVariable" && uri.scheme === "untitled")
+    );
   } catch {
     return false;
   }
@@ -1955,16 +1968,23 @@ function assertMutationContract(
   expectedRows: number,
   expectedKeyColumnIds: readonly string[],
   view: RKernelViewQuery,
-  dynamicNullableColumnId?: string
+  dynamicNullability?: Readonly<{ columnId: string; mode: "mayAdd" | "mayRemove" }>
 ): void {
-  if (dynamicNullableColumnId === undefined) {
+  if (dynamicNullability === undefined) {
     assertSessionContract(session, contract, request, expectedSchema, expectedRows, expectedKeyColumnIds, view);
     return;
   }
+  const dynamicNullableColumnId = dynamicNullability.columnId;
   const actualTarget = contract.schema.find((column) => column.id === dynamicNullableColumnId);
   const expectedTarget = expectedSchema.find((column) => column.id === dynamicNullableColumnId);
-  if (!actualTarget || !expectedTarget || (expectedTarget.nullable && !actualTarget.nullable)) {
-    throw new Error("The R dataframe contract returned invalid nullability for the converted column.");
+  const invalidTransition =
+    !actualTarget ||
+    !expectedTarget ||
+    (dynamicNullability.mode === "mayAdd"
+      ? expectedTarget.nullable && !actualTarget.nullable
+      : !expectedTarget.nullable && actualTarget.nullable);
+  if (invalidTransition) {
+    throw new Error("The R dataframe contract returned invalid nullability for the transformed column.");
   }
   const normalized = Object.freeze(
     expectedSchema.map((column) =>
@@ -2213,11 +2233,48 @@ function schemaAfterFillMissing(
     throw new TypeError("Fill Missing Values cannot replace a data.table key column. Clone the column first.");
   }
   const replacement = step.params.replacement;
+  if (replacement.kind === "fallbackColumns") {
+    if (replacement.columns.length === 0 || replacement.columns.length > 64) {
+      throw new TypeError("Fill Missing Values requires between 1 and 64 fallback columns.");
+    }
+    if (!["string", "integer", "float", "boolean", "date", "datetime"].includes(source.type)) {
+      throw new TypeError(`Fallback columns cannot fill R ${source.rawType}.`);
+    }
+    const seen = new Set<string>();
+    for (const reference of replacement.columns) {
+      if (reference.id === source.id) {
+        throw new TypeError("The fill target cannot also be a fallback column.");
+      }
+      if (seen.has(reference.id)) {
+        throw new TypeError("Fill Missing Values cannot use the same fallback column more than once.");
+      }
+      seen.add(reference.id);
+      const fallbackMatches = inputSchema.filter(
+        (column) => column.id === reference.id && column.name === reference.name
+      );
+      if (fallbackMatches.length !== 1) {
+        throw new TypeError("A fallback column reference no longer matches the active R dataframe.");
+      }
+      const fallback = fallbackMatches[0] as ColumnSchema;
+      if (fallback.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+        throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+      }
+      if (fallback.type !== source.type) {
+        throw new TypeError(
+          `Fallback column ${JSON.stringify(fallback.name)} is incompatible with R ${source.rawType}.`
+        );
+      }
+    }
+    return Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })));
+  }
   const compatible =
     (source.type === "string" && (replacement.kind === "mostFrequent" || replacement.kind === "string")) ||
     (source.type === "integer" && (replacement.kind === "median" || replacement.kind === "integer")) ||
     (source.type === "float" &&
-      (replacement.kind === "median" || replacement.kind === "integer" || replacement.kind === "float")) ||
+      (replacement.kind === "mean" ||
+        replacement.kind === "median" ||
+        replacement.kind === "integer" ||
+        replacement.kind === "float")) ||
     (source.type === "boolean" && (replacement.kind === "mostFrequent" || replacement.kind === "boolean")) ||
     (source.type === "date" && replacement.kind === "date") ||
     (source.type === "datetime" && replacement.kind === "datetime");
@@ -2621,6 +2678,26 @@ function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, Colum
   );
 }
 
+type FallbackFillMissingReplacement = Extract<FillMissingReplacement, { kind: "fallbackColumns" }>;
+
+function copyFillMissingReplacement(replacement: FillMissingReplacement): FillMissingReplacement {
+  if (replacement.kind !== "fallbackColumns") return { ...replacement };
+  const columns = replacement.columns.map((column) => ({ ...column }));
+  if (!columns[0]) throw new TypeError("Fill Missing Values requires at least one fallback column.");
+  return {
+    kind: "fallbackColumns",
+    columns: columns as FallbackFillMissingReplacement["columns"]
+  };
+}
+
+function freezeFillMissingReplacement(replacement: FillMissingReplacement): FillMissingReplacement {
+  const copied = copyFillMissingReplacement(replacement);
+  if (copied.kind !== "fallbackColumns") return Object.freeze(copied);
+  for (const column of copied.columns) Object.freeze(column);
+  Object.freeze(copied.columns);
+  return Object.freeze(copied);
+}
+
 function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema[]): RKernelTransformStep {
   if (step.kind === "sortRows") {
     const rules = resolveTransformSortRules(step.params.rules, inputSchema, "Sort rows");
@@ -2700,7 +2777,7 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       kind: "fillMissingValues" as const,
       params: Object.freeze({
         column: Object.freeze({ ...step.params.column }),
-        replacement: Object.freeze({ ...step.params.replacement })
+        replacement: freezeFillMissingReplacement(step.params.replacement)
       })
     });
   }
@@ -2908,7 +2985,7 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
     return {
       id: step.id,
       kind: "fillMissingValues",
-      params: { column: { ...step.params.column }, replacement: { ...step.params.replacement } }
+      params: { column: { ...step.params.column }, replacement: copyFillMissingReplacement(step.params.replacement) }
     };
   }
   if (step.kind === "castColumn") {

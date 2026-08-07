@@ -146,6 +146,7 @@ def test_row_order_operations_reject_name_only_transform_columns(operation) -> N
 @pytest.mark.parametrize(
     "replacement",
     [
+        {"kind": "mean"},
         {"kind": "median"},
         {"kind": "mostFrequent"},
         {"kind": "string", "value": ""},
@@ -168,9 +169,57 @@ def test_fill_missing_validation_accepts_exact_typed_replacements(replacement: d
     assert validated["params"]["replacement"] == replacement
 
 
+def test_fill_missing_validation_preserves_ordered_fallback_references() -> None:
+    replacement = {
+        "kind": "fallbackColumns",
+        "columns": [
+            public_ref("c:source:4", "secondary"),
+            public_ref("c:source:5", "last resort"),
+        ],
+    }
+
+    validated = step(
+        "fill-from-columns",
+        "fillMissingValues",
+        column=public_ref("c:source:3", "value"),
+        replacement=replacement,
+    )
+
+    assert validated["params"]["replacement"] == replacement
+
+
 @pytest.mark.parametrize(
     "replacement",
     [
+        {"kind": "fallbackColumns", "columns": []},
+        {
+            "kind": "fallbackColumns",
+            "columns": [public_ref("c:fallback", "fallback"), public_ref("c:fallback", "fallback")],
+        },
+        {
+            "kind": "fallbackColumns",
+            "columns": [public_ref(f"c:fallback:{index}", f"fallback_{index}") for index in range(65)],
+        },
+        {
+            "kind": "fallbackColumns",
+            "columns": [public_ref("c:source:3", "value")],
+        },
+    ],
+)
+def test_fill_missing_validation_rejects_invalid_fallback_references(replacement: dict[str, Any]) -> None:
+    with pytest.raises(OperationError):
+        step(
+            "bad-fallback-fill",
+            "fillMissingValues",
+            column=public_ref("c:source:3", "value"),
+            replacement=replacement,
+        )
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {"kind": "mean", "value": 1},
         {"kind": "median", "value": 1},
         {"kind": "mostFrequent", "value": "x"},
         {"kind": "integer", "value": "01"},

@@ -49,6 +49,7 @@ _FILL_VALUE_KINDS_BY_COLUMN = {
     "datetime": {"datetime"},
     "unknown": {"string", "integer", "float", "decimal", "boolean", "date", "datetime"},
 }
+_MAX_FILL_FALLBACK_COLUMNS = 64
 _BY_EXAMPLE_TEXT_KINDS = {
     "slice",
     "split",
@@ -210,12 +211,43 @@ class _BindingContext:
                     f"{label} cannot use a median fill for {column.semantic_type!r}; choose a numeric column."
                 )
             return
+        if kind == "mean":
+            if column.semantic_type != "float":
+                raise ColumnBindingError(
+                    f"{label} cannot use a mean fill for {column.semantic_type!r}; choose a floating-point column."
+                )
+            return
         if kind == "mostFrequent":
             if column.semantic_type not in {"string", "boolean"}:
                 raise ColumnBindingError(
                     f"{label} cannot use the most common value for {column.semantic_type!r}; "
                     "choose a text, categorical, or boolean column."
                 )
+            return
+        if kind == "fallbackColumns":
+            fallback_columns = replacement.get("columns")
+            if not isinstance(fallback_columns, list) or not fallback_columns:
+                raise ColumnBindingError("fillMissingValues.replacement.columns must be a non-empty array.")
+            if len(fallback_columns) > _MAX_FILL_FALLBACK_COLUMNS:
+                raise ColumnBindingError(
+                    f"fillMissingValues.replacement.columns may contain at most {_MAX_FILL_FALLBACK_COLUMNS} columns."
+                )
+            if column.semantic_type not in _FILL_VALUE_KINDS_BY_COLUMN or column.semantic_type == "unknown":
+                raise ColumnBindingError(
+                    f"{label} cannot use fallback columns for {column.semantic_type!r}; choose a scalar column."
+                )
+            for index, fallback_reference in enumerate(fallback_columns):
+                fallback = self._column_for(
+                    fallback_reference,
+                    f"fillMissingValues.replacement.columns[{index}]",
+                )
+                if fallback.identifier == column.identifier:
+                    raise ColumnBindingError("A fill target cannot also be one of its fallback columns.")
+                if fallback.semantic_type != column.semantic_type:
+                    raise ColumnBindingError(
+                        "Fallback columns must have the same data type as the fill target; "
+                        f"{fallback.name!r} is {fallback.semantic_type!r}, not {column.semantic_type!r}."
+                    )
             return
         allowed = _FILL_VALUE_KINDS_BY_COLUMN.get(column.semantic_type, set())
         if kind not in allowed:
@@ -398,6 +430,14 @@ def bind_step(
         params["column"] = context.bind(params.get("column"), f"{kind}.column")
 
     if kind == "fillMissingValues":
+        replacement = params.get("replacement")
+        if isinstance(replacement, Mapping) and replacement.get("kind") == "fallbackColumns":
+            replacement = dict(replacement)
+            replacement["columns"] = context.bind_many(
+                replacement.get("columns"),
+                "fillMissingValues.replacement.columns",
+            )
+            params["replacement"] = replacement
         context.require_fill_replacement(
             params["column"],
             params.get("replacement"),

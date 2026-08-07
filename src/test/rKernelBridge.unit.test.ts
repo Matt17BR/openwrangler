@@ -26,7 +26,7 @@ import {
   type RKernelBridgeFileOperations,
   type RKernelBridgeTransport
 } from "../extension/r/rKernelBridge";
-import type { RKernelStepPreviewResult } from "../extension/r/rKernelProtocol";
+import type { RKernelStepPreviewResult, RKernelTransformStep } from "../extension/r/rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
   type RColumnSchema,
@@ -653,9 +653,18 @@ describe("canonical R kernel bridge", () => {
     expect(atomic.abandon).not.toHaveBeenCalled();
   });
 
-  it("advertises R CSV export only for editable filesystem document sessions", async () => {
+  it("advertises R CSV export only for eligible local notebook and document sessions", async () => {
     const contract = frameContract();
-    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>();
+    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
+      await args[3](new TextEncoder().encode("value\n12.5\n"));
+      return {
+        sessionId: args[0],
+        revision: args[1],
+        format: "csv",
+        rows: contract.shape.rows,
+        columns: contract.shape.columns
+      };
+    });
     const transport = { ...fakeTransport(contract), exportData };
     const beginTransaction = vi.fn(async () => fakeAtomicTransaction().transaction);
 
@@ -675,7 +684,7 @@ describe("canonical R kernel bridge", () => {
     const notebookTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
     const notebookBridge = createBridge(notebookTransport, undefined, undefined, undefined, { beginTransaction });
     const notebook = await notebookBridge.request(openRequest("editing"));
-    expect(notebook).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
+    expect(notebook).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: true } } });
     await expect(
       notebookBridge.request({
         kind: "exportData",
@@ -684,7 +693,7 @@ describe("canonical R kernel bridge", () => {
         path: "/workspace/out.csv",
         format: "csv"
       })
-    ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation" });
+    ).resolves.toMatchObject({ kind: "dataExported", path: "/workspace/out.csv", format: "csv" });
 
     const untitledTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
     const untitledBridge = createBridge(untitledTransport, undefined, undefined, undefined, { beginTransaction });
@@ -707,7 +716,11 @@ describe("canonical R kernel bridge", () => {
     );
     expect(remote).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
 
-    expect(beginTransaction).not.toHaveBeenCalled();
+    expect(beginTransaction).toHaveBeenCalledOnce();
+    expect(beginTransaction).toHaveBeenCalledWith({
+      destination: expect.objectContaining({ scheme: "file", fsPath: "/workspace/out.csv" }),
+      protectedSources: [expect.objectContaining({ scheme: "file", fsPath: "/workspace/orders.ipynb" })]
+    });
   });
 
   it("rolls back the host transaction immediately when the private R export detaches", async () => {
@@ -3073,6 +3086,265 @@ describe("canonical R kernel bridge", () => {
         latestStepInputSchema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: true })])
       }
     });
+  });
+
+  it("previews a native R mean fill for a floating-point column", async () => {
+    const source = replaceContractCell(frameContract(), "r:c:0", {
+      kind: "null",
+      raw: null,
+      display: "NA",
+      isNull: true,
+      isNaN: false
+    });
+    const meanValue = rCell("number", "3", "3");
+    const output = fillMissingContract(source, "r:c:0", meanValue);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-mean",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:0", name: "value" },
+        replacement: { kind: "mean" }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: output,
+      diff: fillMissingDiff("r:c:0", "value", meanValue),
+      code: "open_wrangler_result <- orders"
+    });
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:0", type: "float", nullable: false })]),
+        draftStep: { params: { replacement: { kind: "mean" } } }
+      }
+    });
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      step,
+      expect.any(Object),
+      expect.any(Array),
+      undefined,
+      expect.any(Object)
+    );
+  });
+
+  it("fills native R values from ordered fallback columns with dynamic nullability and isolated drafts", async () => {
+    const fallbackValue: RFrameCell = {
+      kind: "string",
+      raw: "backup",
+      display: "backup",
+      isNull: false,
+      isNaN: false
+    };
+    const source = castContract(frameContract(), "r:c:7", "character", "string", fallbackValue, false);
+    const unresolved = withColumnNullable(source, "r:c:6", true);
+    const complete = fillMissingContract(source, "r:c:6", fallbackValue);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-fallback",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:6", name: "missing" },
+        replacement: {
+          kind: "fallbackColumns",
+          columns: [{ id: "r:c:7", name: "infinite" }]
+        }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: unresolved,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+    const partialPreview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(partialPreview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: true })]),
+        draftStep: {
+          params: {
+            replacement: {
+              kind: "fallbackColumns",
+              columns: [{ id: "r:c:7", name: "infinite" }]
+            }
+          }
+        }
+      },
+      warnings: [expect.stringContaining("still missing")]
+    });
+    const dispatched = transport.previewStep.mock.calls[0]?.[2] as RKernelTransformStep | undefined;
+    if (!dispatched || dispatched.kind !== "fillMissingValues") throw new Error("expected a dispatched fill step");
+    expect(Object.isFrozen(dispatched)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement)).toBe(true);
+    if (dispatched.params.replacement.kind !== "fallbackColumns") throw new Error("expected fallback columns");
+    expect(Object.isFrozen(dispatched.params.replacement.columns)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.columns[0])).toBe(true);
+
+    if (step.params.replacement.kind !== "fallbackColumns") throw new Error("expected fallback columns");
+    step.params.replacement.columns[0].name = "caller mutation";
+    expect(partialPreview).toMatchObject({
+      metadata: {
+        draftStep: {
+          params: { replacement: { columns: [{ id: "r:c:7", name: "infinite" }] } }
+        }
+      }
+    });
+
+    transport.discardDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "discard",
+      revision: 2,
+      page: source,
+      code: ""
+    });
+    await bridge.request(planRequest("discardDraft", 1));
+
+    transport.queuePreview({
+      sessionId,
+      revision: 3,
+      page: complete,
+      diff: fillMissingDiff("r:c:6", "missing", fallbackValue),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 2,
+        step: {
+          id: "r-fill-fallback-complete",
+          kind: "fillMissingValues",
+          params: {
+            column: { id: "r:c:6", name: "missing" },
+            replacement: {
+              kind: "fallbackColumns",
+              columns: [{ id: "r:c:7", name: "infinite" }]
+            }
+          }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: { schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: false })]) },
+      warnings: []
+    });
+  });
+
+  it("rejects invalid R fallback-column references before dispatch and accepts a keyed fallback", async () => {
+    const fallbackValue: RFrameCell = {
+      kind: "string",
+      raw: "backup",
+      display: "backup",
+      isNull: false,
+      isNaN: false
+    };
+    const source = castContract(frameContract(), "r:c:7", "character", "string", fallbackValue, false);
+    const invalidColumns = [
+      [{ id: "r:c:6", name: "missing" }],
+      [
+        { id: "r:c:7", name: "infinite" },
+        { id: "r:c:7", name: "infinite" }
+      ],
+      [{ id: "r:c:7", name: "stale" }],
+      [{ id: "r:c:0", name: "value" }]
+    ] as const;
+
+    for (const [index, columns] of invalidColumns.entries()) {
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step: {
+            id: `r-fill-invalid-fallback-${index}`,
+            kind: "fillMissingValues",
+            params: {
+              column: { id: "r:c:6", name: "missing" },
+              replacement: { kind: "fallbackColumns", columns: [...columns] }
+            }
+          },
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+    }
+
+    const keyedSource = dataTableContract(source, ["r:c:7"]);
+    const keyedTransport = fakeTransport(keyedSource);
+    const keyedBridge = createBridge(keyedTransport);
+    await keyedBridge.request(openRequest("editing"));
+    keyedTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: fillMissingContract(keyedSource, "r:c:6", fallbackValue),
+      diff: fillMissingDiff("r:c:6", "missing", fallbackValue),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      keyedBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-fill-keyed-fallback",
+          kind: "fillMissingValues",
+          params: {
+            column: { id: "r:c:6", name: "missing" },
+            replacement: {
+              kind: "fallbackColumns",
+              columns: [{ id: "r:c:7", name: "infinite" }]
+            }
+          }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({ kind: "stepPreview" });
+    expect(keyedTransport.previewStep).toHaveBeenCalledOnce();
   });
 
   it("accepts most common value for R text and boolean columns and rejects numeric columns", async () => {

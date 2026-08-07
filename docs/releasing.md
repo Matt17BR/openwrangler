@@ -114,7 +114,7 @@ IHDR/IDAT ordering, complete decode, reviewed natural dimensions, standard sRGB,
 registries must show the exact version, all three surfaces must render the expected README content, and all 19
 displayed images must retain the reviewed raw URL and natural dimensions. Screenshot markup is width-only and capped
 at 960 CSS pixels; rendered images must stay inside that cap, their container, and the viewport, preserve their aspect ratio, and
-retain at least two natural pixels per CSS pixel. Three representative images are rechecked near 760px and 1400px
+retain at least two natural pixels per CSS pixel. Four representative images are rechecked near 760px and 1400px
 viewport widths. Before publication, `npm run verify:readme-responsive-render` applies the same layout checks to the
 actual local README and gallery at both widths and rejects document-level horizontal overflow. A mutable
 default-branch GitHub page is never accepted. This versioned contract starts at `1.2.1`;

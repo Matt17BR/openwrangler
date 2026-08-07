@@ -1534,7 +1534,7 @@ describe("protocol-v2 request validation", () => {
     }
   );
 
-  it("validates median and typed fill-missing replacements", () => {
+  it("validates aggregate, same-row fallback, and typed fill-missing replacements", () => {
     const fillStep = (replacement: unknown) => ({
       id: "fill-value",
       kind: "fillMissingValues",
@@ -1557,7 +1557,12 @@ describe("protocol-v2 request validation", () => {
     });
     const validReplacements = [
       { kind: "median" },
+      { kind: "mean" },
       { kind: "mostFrequent" },
+      {
+        kind: "fallbackColumns",
+        columns: [otherReference, { id: "column:2", name: "third" }]
+      },
       { kind: "string", value: "" },
       { kind: "integer", value: "99999999999999999999999999999999999999" },
       { kind: "float", value: "-1.25e+3" },
@@ -1574,6 +1579,7 @@ describe("protocol-v2 request validation", () => {
 
     for (const replacement of [
       { kind: "median", value: 1 },
+      { kind: "mean", value: 1 },
       { kind: "mostFrequent", value: "x" },
       { kind: "integer", value: "01" },
       { kind: "integer", value: "100000000000000000000000000000000000000" },
@@ -1583,10 +1589,34 @@ describe("protocol-v2 request validation", () => {
       { kind: "date", value: "2023-02-29" },
       { kind: "datetime", value: "2026-08-05T25:00" },
       { kind: "future", value: "x" },
-      { kind: "string", value: "x", extra: true }
+      { kind: "string", value: "x", extra: true },
+      { kind: "fallbackColumns", columns: [] },
+      { kind: "fallbackColumns", columns: ["other"] },
+      { kind: "fallbackColumns", columns: [otherReference], extra: true }
     ]) {
       expect(isTransformStep(fillStep(replacement)), JSON.stringify(replacement)).toBe(false);
     }
+
+    const duplicateFallback = { kind: "fallbackColumns", columns: [otherReference, otherReference] };
+    expect(isTransformStep(fillStep(duplicateFallback))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(duplicateFallback))).toBe(false);
+
+    expect(
+      isTransformStep(
+        fillStep({
+          kind: "fallbackColumns",
+          columns: [otherReference, { id: otherReference.id, name: "renamed-other" }]
+        })
+      )
+    ).toBe(false);
+    expect(isTransformStep(fillStep({ kind: "fallbackColumns", columns: [valueReference] }))).toBe(false);
+
+    const tooManyFallbacks = {
+      kind: "fallbackColumns",
+      columns: Array.from({ length: 65 }, (_, index) => ({ id: `column:${index + 1}`, name: `fallback_${index}` }))
+    };
+    expect(isTransformStep(fillStep(tooManyFallbacks))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(tooManyFallbacks))).toBe(false);
 
     for (const replacement of [null, [], { kind: "string" }]) {
       expect(isTransformStep(fillStep(replacement))).toBe(false);

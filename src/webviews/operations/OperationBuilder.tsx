@@ -36,8 +36,11 @@ const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "
 const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
 const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
 const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
-type FillMode = "median" | "mostFrequent" | "value";
-type FillValueKind = Exclude<FillMissingReplacement, { kind: "median" } | { kind: "mostFrequent" }>["kind"];
+type FillMode = "median" | "mean" | "mostFrequent" | "fallbackColumns" | "value";
+type FillValueKind = Exclude<
+  FillMissingReplacement,
+  { kind: "median" } | { kind: "mean" } | { kind: "mostFrequent" } | { kind: "fallbackColumns" }
+>["kind"];
 const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
   "integer",
@@ -49,6 +52,11 @@ const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "unknown"
 ]);
 const mostFrequentColumnTypes: ReadonlySet<ColumnType> = new Set(["string", "boolean"]);
+const maxFillFallbackColumns = 64;
+interface FillFallbackRow {
+  readonly key: string;
+  readonly columnId: string;
+}
 const fillValueKindOptions: readonly [FillValueKind, string][] = [
   ["string", "Text"],
   ["integer", "Integer"],
@@ -231,12 +239,27 @@ function savedReferenceGroups(step: TransformStep): SavedReferenceGroup[] {
           rejectRepeatedIds: false
         }
       ];
+    case "fillMissingValues":
+      return [
+        {
+          label: "fill columns",
+          references: [
+            { label: "fill target", reference: step.params.column },
+            ...(step.params.replacement.kind === "fallbackColumns"
+              ? step.params.replacement.columns.map((reference, index) => ({
+                  label: `fallback column ${index + 1}`,
+                  reference
+                }))
+              : [])
+          ],
+          rejectRepeatedIds: true
+        }
+      ];
     case "renameColumn":
     case "cloneColumn":
     case "castColumn":
     case "textLength":
     case "multiLabelBinarize":
-    case "fillMissingValues":
     case "findReplace":
     case "stripText":
     case "splitText":
@@ -338,6 +361,16 @@ function savedStepEditError(step: TransformStep, inputSchema: ColumnSchema[] | u
         return `The saved ${group.label} repeats column ID “${check.reference.id}”. ${recovery}`;
       }
       seenIds.add(check.reference.id);
+    }
+  }
+  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "fallbackColumns") {
+    const target = columnsById.get(step.params.column.id);
+    if (!target) return `The saved fill target is absent from the recorded input schema. ${recovery}`;
+    const incompatible = step.params.replacement.columns.find(
+      (reference) => columnsById.get(reference.id)?.type !== target.type
+    );
+    if (incompatible) {
+      return `The saved fallback column “${incompatible.name}” is not compatible with the recorded ${target.type} target. ${recovery}`;
     }
   }
   if (step.kind === "byExample") {
@@ -1110,18 +1143,43 @@ function FillMissingFields({
       : (availableColumns.find((column) => column.nullable)?.id ?? availableColumns[0]?.id ?? "")
   );
   const selectedColumn = availableColumns.find((column) => column.id === selectedColumnId);
+  const savedFallbackColumnIds =
+    initialReplacement?.kind === "fallbackColumns" ? initialReplacement.columns.map((column) => column.id) : [];
+  const initialFallbackColumns = fallbackColumnsForTarget(selectedColumn, columns);
+  const initialFallbackIds = (() => {
+    const availableIds = new Set(initialFallbackColumns.map((column) => column.id));
+    const seen = new Set<string>();
+    const restored = savedFallbackColumnIds.filter((id) => {
+      if (!availableIds.has(id) || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (restored.length > 0) return restored.slice(0, maxFillFallbackColumns);
+    return initialFallbackColumns[0] ? [initialFallbackColumns[0].id] : [];
+  })();
+  const nextFallbackRowId = useRef(Math.max(1, initialFallbackIds.length));
+  const [fallbackRows, setFallbackRows] = useState<FillFallbackRow[]>(() =>
+    initialFallbackIds.map((columnId, index) => ({ key: `fill-fallback-${index}`, columnId }))
+  );
   const savedMode: FillMode | undefined = initialReplacement
-    ? initialReplacement.kind === "median" || initialReplacement.kind === "mostFrequent"
+    ? initialReplacement.kind === "median" ||
+      initialReplacement.kind === "mean" ||
+      initialReplacement.kind === "mostFrequent" ||
+      initialReplacement.kind === "fallbackColumns"
       ? initialReplacement.kind
       : "value"
     : undefined;
+  const fallbackColumns = fallbackColumnsForTarget(selectedColumn, columns);
   const [mode, setMode] = useState<FillMode>(() =>
-    savedMode && fillModesForColumn(selectedColumn).includes(savedMode)
+    savedMode && fillModesForColumn(selectedColumn, columns).includes(savedMode)
       ? savedMode
-      : defaultFillModeForColumn(selectedColumn)
+      : defaultFillModeForColumn(selectedColumn, columns)
   );
   const initialKind =
-    initialReplacement?.kind !== "median" && initialReplacement?.kind !== "mostFrequent"
+    initialReplacement?.kind !== "median" &&
+    initialReplacement?.kind !== "mean" &&
+    initialReplacement?.kind !== "mostFrequent" &&
+    initialReplacement?.kind !== "fallbackColumns"
       ? initialReplacement?.kind
       : undefined;
   const [unknownValueKind, setUnknownValueKind] = useState<FillValueKind>(initialKind ?? "string");
@@ -1129,16 +1187,39 @@ function FillMissingFields({
   const changeColumn = (id: string) => {
     setSelectedColumnId(id);
     const column = availableColumns.find((candidate) => candidate.id === id);
+    const nextFallbackColumns = fallbackColumnsForTarget(column, columns);
+    const nextFallbackIds = new Set(nextFallbackColumns.map((candidate) => candidate.id));
+    setFallbackRows((current) => {
+      const seen = new Set<string>();
+      const retained = current.filter((row) => {
+        if (!nextFallbackIds.has(row.columnId) || seen.has(row.columnId)) return false;
+        seen.add(row.columnId);
+        return true;
+      });
+      if (retained.length > 0) return retained.slice(0, maxFillFallbackColumns);
+      const first = nextFallbackColumns[0];
+      return first ? [{ key: `fill-fallback-${nextFallbackRowId.current++}`, columnId: first.id }] : [];
+    });
     setUnknownValueKind(column?.type === "unknown" ? "string" : fillValueKindForColumn(column?.type));
-    setMode((current) => (fillModesForColumn(column).includes(current) ? current : defaultFillModeForColumn(column)));
+    setMode((current) =>
+      fillModesForColumn(column, columns).includes(current) ? current : defaultFillModeForColumn(column, columns)
+    );
   };
   const valueKind =
     selectedColumn?.type === "unknown" ? unknownValueKind : fillValueKindForColumn(selectedColumn?.type);
   const savedValue =
-    initialReplacement?.kind !== "median" && initialReplacement?.kind !== "mostFrequent"
+    initialReplacement?.kind !== "median" &&
+    initialReplacement?.kind !== "mean" &&
+    initialReplacement?.kind !== "mostFrequent" &&
+    initialReplacement?.kind !== "fallbackColumns"
       ? String(initialReplacement?.value)
       : "";
-  const fillModes = fillModesForColumn(selectedColumn);
+  const fillModes = fillModesForColumn(selectedColumn, columns);
+  const selectedFallbackIds = new Set(fallbackRows.map((row) => row.columnId));
+  const nextUnusedFallback = fallbackColumns.find((column) => !selectedFallbackIds.has(column.id));
+  const incompatibleFallbackCount = selectedColumn
+    ? columns.filter((column) => column.id !== selectedColumn.id && column.type !== selectedColumn.type).length
+    : 0;
 
   return (
     <>
@@ -1151,15 +1232,19 @@ function FillMissingFields({
         emptyMessage="No supported columns are available."
       />
       <label className="formField">
-        <span>Fill with</span>
+        <span>Method</span>
         <select
           name="fillMode"
-          aria-label="Fill with"
+          aria-label="Method"
           value={mode}
           onChange={(event) => setMode(event.target.value as FillMode)}
         >
           {fillModes.includes("median") && <option value="median">Median</option>}
+          {fillModes.includes("mean") && <option value="mean">Mean</option>}
           {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
+          {fillModes.includes("fallbackColumns") && (
+            <option value="fallbackColumns">Other columns (first available)</option>
+          )}
           <option value="value">Specific value</option>
         </select>
       </label>
@@ -1168,12 +1253,78 @@ function FillMissingFields({
           The median ignores null and NaN cells and keeps the column type. Integer and decimal medians must fit that
           type exactly. If every cell is missing, choose a specific value.
         </p>
+      ) : mode === "mean" ? (
+        <p className="panelNote">
+          Uses the mean of all non-missing values after earlier cleaning steps. Filters in the current view do not
+          affect this calculation. If every cell is missing, choose a specific value.
+        </p>
       ) : mode === "mostFrequent" ? (
         <p className="panelNote">
           Uses the most common non-missing value in this column after earlier cleaning steps. Filters in the current
           view do not affect this calculation. If there is no non-missing value or several values tie, choose a specific
           value.
         </p>
+      ) : mode === "fallbackColumns" ? (
+        <>
+          <Fieldset legend="Fallback order">
+            {fallbackRows.map((row, index) => {
+              const rowColumns = fallbackColumns.filter(
+                (column) => column.id === row.columnId || !selectedFallbackIds.has(column.id)
+              );
+              return (
+                <div className="compoundRow fallbackColumnRow" key={row.key}>
+                  <ColumnReferenceSelect
+                    name="fallbackColumns"
+                    label={`Fallback ${index + 1}`}
+                    columns={rowColumns}
+                    value={row.columnId}
+                    onChange={(columnId) =>
+                      setFallbackRows((current) =>
+                        current.map((candidate) =>
+                          candidate.key === row.key &&
+                          !current.some((other) => other.key !== row.key && other.columnId === columnId)
+                            ? { ...candidate, columnId }
+                            : candidate
+                        )
+                      )
+                    }
+                  />
+                  <RowActions
+                    label={`fallback column ${index + 1}`}
+                    canRemove={fallbackRows.length > 1}
+                    canMoveUp={index > 0}
+                    canMoveDown={index < fallbackRows.length - 1}
+                    onRemove={() =>
+                      setFallbackRows((current) => current.filter((candidate) => candidate.key !== row.key))
+                    }
+                    onMoveUp={() => setFallbackRows((current) => moveItem(current, index, index - 1))}
+                    onMoveDown={() => setFallbackRows((current) => moveItem(current, index, index + 1))}
+                  />
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              className="secondaryButton"
+              disabled={!nextUnusedFallback || fallbackRows.length >= maxFillFallbackColumns}
+              onClick={() => {
+                if (!nextUnusedFallback || fallbackRows.length >= maxFillFallbackColumns) return;
+                setFallbackRows((current) => [
+                  ...current,
+                  { key: `fill-fallback-${nextFallbackRowId.current++}`, columnId: nextUnusedFallback.id }
+                ]);
+              }}
+            >
+              Add fallback column
+            </button>
+            <small>Fallback 1 is checked first. Move rows to change the priority; each column can appear once.</small>
+          </Fieldset>
+          <p className="panelNote">
+            For each missing cell, uses the first present value in the same row. Only columns with the same type are
+            available. Rows where every fallback is missing stay missing.
+            {incompatibleFallbackCount > 0 && " Convert another column's type first if you want to use it here."}
+          </p>
+        </>
       ) : (
         <>
           {selectedColumn?.type === "unknown" ? (
@@ -1207,14 +1358,22 @@ function FillMissingFields({
   );
 }
 
-function fillModesForColumn(column: ColumnSchema | undefined): FillMode[] {
-  if (column && numericColumnTypes.has(column.type)) return ["median", "value"];
-  if (column && mostFrequentColumnTypes.has(column.type)) return ["mostFrequent", "value"];
+function fillModesForColumn(column: ColumnSchema | undefined, columns: readonly ColumnSchema[]): FillMode[] {
+  const fallback = fallbackColumnsForTarget(column, columns).length > 0 ? (["fallbackColumns"] as const) : [];
+  if (column?.type === "float") return ["median", "mean", ...fallback, "value"];
+  if (column && numericColumnTypes.has(column.type)) return ["median", ...fallback, "value"];
+  if (column && mostFrequentColumnTypes.has(column.type)) return ["mostFrequent", ...fallback, "value"];
+  if (column && (column.type === "date" || column.type === "datetime")) return [...fallback, "value"];
   return ["value"];
 }
 
-function defaultFillModeForColumn(column: ColumnSchema | undefined): FillMode {
-  return fillModesForColumn(column)[0];
+function defaultFillModeForColumn(column: ColumnSchema | undefined, columns: readonly ColumnSchema[]): FillMode {
+  return fillModesForColumn(column, columns)[0];
+}
+
+function fallbackColumnsForTarget(target: ColumnSchema | undefined, columns: readonly ColumnSchema[]): ColumnSchema[] {
+  if (!target || target.type === "unknown") return [];
+  return columns.filter((column) => column.id !== target.id && column.type === target.type);
 }
 
 function fillValueKindForColumn(type: ColumnType | undefined): FillValueKind {
@@ -1338,8 +1497,22 @@ function buildParams(
   }
   if (kind === "fillMissingValues") {
     const fillMode = value("fillMode");
-    if (fillMode === "median" || fillMode === "mostFrequent") {
+    if (fillMode === "median" || fillMode === "mean" || fillMode === "mostFrequent") {
       return { column: columnReference("column"), replacement: { kind: fillMode } };
+    }
+    if (fillMode === "fallbackColumns") {
+      const column = columnReference("column");
+      const fallbacks = requiredColumnReferences("fallbackColumns", "Fallback-column fill");
+      if (fallbacks.some((fallback) => fallback.id === column.id)) {
+        throw new Error("A fill target cannot also be one of its fallback columns.");
+      }
+      return {
+        column,
+        replacement: {
+          kind: fillMode,
+          columns: fallbacks
+        }
+      };
     }
     const replacementKind = value("fillValueKind");
     const rawValue = value("fillValue");

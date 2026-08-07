@@ -476,7 +476,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(screen.getByLabelText("Fill with")).toHaveValue("median");
+    expect(screen.getByLabelText("Method")).toHaveValue("median");
     expect(screen.getByLabelText("Column")).toHaveValue("c:1");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
@@ -486,6 +486,72 @@ describe("OperationBuilder", () => {
         params: { column: { id: "c:1", name: "sales" }, replacement: { kind: "median" } }
       })
     );
+  });
+
+  it("offers mean only for float columns and serializes the selected method", () => {
+    const onPreview = vi.fn();
+    const columns = [
+      metadata.schema[0],
+      metadata.schema[1],
+      { id: "c:2", name: "units", position: 2, rawType: "Int64", type: "integer", nullable: true }
+    ] satisfies SessionMetadata["schema"];
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          shape: { rows: 2, columns: columns.length },
+          filteredShape: { rows: 2, columns: columns.length },
+          schema: columns
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const column = screen.getByLabelText("Column");
+    const method = screen.getByLabelText("Method");
+    expect(method).toHaveValue("median");
+    expect(within(method).getByRole("option", { name: "Mean" })).toBeInTheDocument();
+
+    fireEvent.change(method, { target: { value: "mean" } });
+    expect(screen.getByText(/Uses the mean of all non-missing values/u)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      column: { id: "c:1", name: "sales" },
+      replacement: { kind: "mean" }
+    });
+
+    fireEvent.change(column, { target: { value: "c:2" } });
+    expect(method).toHaveValue("median");
+    expect(within(method).queryByRole("option", { name: "Mean" })).toBeNull();
+  });
+
+  it("restores a saved mean fill without changing its column identity", () => {
+    const onPreview = vi.fn();
+    const initialStep: TransformStep = {
+      id: "fill-sales",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "c:1", name: "sales" },
+        replacement: { kind: "mean" }
+      }
+    };
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, latestStepInputSchema: metadata.schema, steps: [initialStep] }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Column")).toHaveValue("c:1");
+    expect(screen.getByLabelText("Method")).toHaveValue("mean");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
   });
 
   it("offers the most common value for text columns and uses their full-column method", () => {
@@ -501,8 +567,8 @@ describe("OperationBuilder", () => {
     );
 
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "c:0" } });
-    expect(screen.getByLabelText("Fill with")).toHaveAccessibleName("Fill with");
-    expect(screen.getByLabelText("Fill with")).toHaveValue("mostFrequent");
+    expect(screen.getByLabelText("Method")).toHaveAccessibleName("Method");
+    expect(screen.getByLabelText("Method")).toHaveValue("mostFrequent");
     expect(screen.getByRole("option", { name: "Most common value" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Median" })).toBeNull();
     expect(screen.getByText(/Filters in the current view do not affect/u)).toBeInTheDocument();
@@ -535,9 +601,111 @@ describe("OperationBuilder", () => {
     );
 
     expect(screen.getByLabelText("Column")).toHaveValue("c:0");
-    expect(screen.getByLabelText("Fill with")).toHaveValue("mostFrequent");
+    expect(screen.getByLabelText("Method")).toHaveValue("mostFrequent");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+  });
+
+  it("orders same-row fallback columns and serializes their stable references", () => {
+    const onPreview = vi.fn();
+    const columns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0, nullable: true },
+      { ...metadata.schema[0], id: "c:1", name: "backup", position: 1 },
+      { ...metadata.schema[0], id: "c:2", name: "backup", position: 2 },
+      { ...metadata.schema[1], id: "c:3", name: "amount", position: 3 }
+    ];
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          shape: { rows: 2, columns: columns.length },
+          filteredShape: { rows: 2, columns: columns.length },
+          schema: columns
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Method"), { target: { value: "fallbackColumns" } });
+    const first = screen.getByLabelText("Fallback 1");
+    expect(first).toHaveValue("c:1");
+    expect(within(first).queryByRole("option", { name: "value" })).toBeNull();
+    expect(within(first).queryByRole("option", { name: "amount" })).toBeNull();
+    expect(screen.getByText(/Only columns with the same type are available/u)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add fallback column" }));
+    expect(screen.getByLabelText("Fallback 2")).toHaveValue("c:2");
+    fireEvent.click(screen.getByRole("button", { name: "Move fallback column 2 up" }));
+    expect(screen.getByLabelText("Fallback 1")).toHaveValue("c:2");
+    expect(screen.getByLabelText("Fallback 2")).toHaveValue("c:1");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      column: { id: "c:0", name: "value" },
+      replacement: {
+        kind: "fallbackColumns",
+        columns: [
+          { id: "c:2", name: "backup" },
+          { id: "c:1", name: "backup" }
+        ]
+      }
+    });
+  });
+
+  it("restores fallback order when editing and prunes incompatible rows after a target change", () => {
+    const columns = [
+      { ...metadata.schema[0], id: "c:0", name: "value", position: 0, nullable: true },
+      { ...metadata.schema[0], id: "c:1", name: "backup_a", position: 1 },
+      { ...metadata.schema[0], id: "c:2", name: "backup_b", position: 2 },
+      { ...metadata.schema[1], id: "c:3", name: "amount", position: 3, nullable: true },
+      { ...metadata.schema[1], id: "c:4", name: "amount_backup", position: 4 }
+    ];
+    const initialStep = {
+      id: "fill-value",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "c:0", name: "value" },
+        replacement: {
+          kind: "fallbackColumns",
+          columns: [
+            { id: "c:2", name: "backup_b" },
+            { id: "c:1", name: "backup_a" }
+          ]
+        }
+      }
+    } satisfies TransformStep;
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          shape: { rows: 2, columns: columns.length },
+          filteredShape: { rows: 2, columns: columns.length },
+          schema: columns,
+          latestStepInputSchema: columns,
+          steps: [initialStep]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Method")).toHaveValue("fallbackColumns");
+    expect(screen.getByLabelText("Fallback 1")).toHaveValue("c:2");
+    expect(screen.getByLabelText("Fallback 2")).toHaveValue("c:1");
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "c:3" } });
+    expect(screen.getByLabelText("Method")).toHaveValue("fallbackColumns");
+    expect(screen.getByLabelText("Fallback 1")).toHaveValue("c:4");
+    expect(screen.queryByLabelText("Fallback 2")).toBeNull();
+    expect(within(screen.getByLabelText("Fallback 1")).queryByRole("option", { name: "backup_a" })).toBeNull();
   });
 
   it("shows only methods valid for the selected datatype", () => {
@@ -564,22 +732,22 @@ describe("OperationBuilder", () => {
     );
 
     const column = screen.getByLabelText("Column");
-    const fillWith = screen.getByLabelText("Fill with");
-    expect(column.compareDocumentPosition(fillWith) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const method = screen.getByLabelText("Method");
+    expect(column.compareDocumentPosition(method) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(column).toHaveValue("c:0");
-    expect(fillWith).toHaveValue("mostFrequent");
+    expect(method).toHaveValue("mostFrequent");
     expect(
       within(column)
         .getAllByRole("option")
         .map((option) => option.textContent)
     ).toEqual(["active", "joined", "mystery"]);
 
-    fireEvent.change(fillWith, { target: { value: "value" } });
+    fireEvent.change(method, { target: { value: "value" } });
     expect(column).toHaveValue("c:0");
     fireEvent.change(column, { target: { value: "c:1" } });
-    expect(fillWith).toHaveValue("value");
+    expect(method).toHaveValue("value");
     expect(
-      within(fillWith)
+      within(method)
         .getAllByRole("option")
         .map((option) => option.textContent)
     ).toEqual(["Specific value"]);
@@ -610,7 +778,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(screen.getByLabelText("Fill with")).toHaveValue("value");
+    expect(screen.getByLabelText("Method")).toHaveValue("value");
     expect(screen.getByLabelText("Column")).toHaveValue("c:0");
     expect(screen.getByLabelText("Replacement value")).toHaveValue("");
     expect(screen.getByText(/specific value may convert the column to text/u)).toBeInTheDocument();
@@ -672,7 +840,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    fireEvent.change(screen.getByLabelText("Fill with"), { target: { value: "value" } });
+    fireEvent.change(screen.getByLabelText("Method"), { target: { value: "value" } });
     const input = screen.getByLabelText("Replacement number");
     for (const [entered, normalized] of [
       [".5", "0.5"],
@@ -880,6 +1048,30 @@ describe("OperationBuilder", () => {
         }
       },
       message: "saved sort rules repeats column ID “c:1”"
+    },
+    {
+      caseName: "fill target repeated as a fallback",
+      step: {
+        id: "fill-self",
+        kind: "fillMissingValues",
+        params: {
+          column: { id: "c:0", name: "city" },
+          replacement: { kind: "fallbackColumns", columns: [{ id: "c:0", name: "city" }] }
+        }
+      },
+      message: "saved fill columns repeats column ID “c:0”"
+    },
+    {
+      caseName: "fill fallback with a different type",
+      step: {
+        id: "fill-wrong-type",
+        kind: "fillMissingValues",
+        params: {
+          column: { id: "c:0", name: "city" },
+          replacement: { kind: "fallbackColumns", columns: [{ id: "c:1", name: "sales" }] }
+        }
+      },
+      message: "saved fallback column “sales” is not compatible with the recorded string target"
     }
   ] satisfies { caseName: string; step: TransformStep; message: string }[])(
     "blocks editing for a $caseName",
