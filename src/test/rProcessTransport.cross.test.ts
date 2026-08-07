@@ -499,6 +499,29 @@ not_a_frame <- matrix(1:4, nrow = 2L)
       const applied = await transport.applyDraft(sessionId, 1, pageWindow());
       expect(applied).toMatchObject({ action: "apply", revision: 2 });
 
+      const lengthPreview = await transport.previewStep(
+        sessionId,
+        applied.revision,
+        {
+          id: "label-length",
+          kind: "textLength",
+          params: { column: { id: "r:c:1", name: "label" }, newColumn: "label_length" }
+        },
+        pageWindow(),
+        applied.page.schema
+      );
+      const lengthApplied = await transport.applyDraft(sessionId, lengthPreview.revision, pageWindow());
+      expect(lengthApplied).toMatchObject({ action: "apply", revision: 4 });
+      const derivedColumn = lengthApplied.page.schema.at(-1);
+      expect(derivedColumn).toMatchObject({ id: "c:step:label-length:0", name: "label_length", type: "integer" });
+      const lengthPage = await transport.getPage(sessionId, {
+        ...pageWindow(),
+        columnOffset: lengthApplied.page.schema.length - 1,
+        columnLimit: 1
+      });
+      expect(lengthPage.page.columnIds).toEqual(["c:step:label-length:0"]);
+      expect(lengthPage.page.rows.map((row) => row.values[0]?.display)).toEqual(["5", "4", "5"]);
+
       await transport.close(sessionId);
       expect(transport.isSessionMapped(sessionId)).toBe(false);
       expect(await readFile(markerPath, "utf8")).toBe("executed\n");
@@ -509,7 +532,7 @@ not_a_frame <- matrix(1:4, nrow = 2L)
         rscriptPath,
         temporaryParent,
         workingDirectory: temporaryParent,
-        documentText: `${documentText}\n${applied.code}\n`
+        documentText: `${documentText}\n${lengthApplied.code}\n`
       });
       try {
         const rerunDiscovery = await rerun.discoverVariables({ timeoutMs: 15_000 });
