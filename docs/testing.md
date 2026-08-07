@@ -599,9 +599,10 @@ Parser tests reject later metadata blocks, raw HTML/TeX containers, indented or 
 ambiguous options, cross-cell syntax joining, and R Markdown fence-length mismatches. These are lexical R-cell runs;
 the test does not claim knitr or Quarto rendering behavior.
 
-`collapse` is not a runtime or test dependency. A local check with collapse 2.1.7 confirmed that `qDF()`, `qTBL()`,
-and `qDT()` use the base-data-frame, tibble, and data-table paths covered above. Grouped `GRP_df` and indexed
-`indexed_frame` objects remain outside the accepted class contract.
+`collapse` is not a runtime dependency. Packaged R/Jupyter acceptance installs collapse 2.1.7 in its private test
+library. It creates real `qDF()`, `qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms
+that grouped `GRP_df` and indexed `indexed_frame` objects stay out of the picker. The direct R contract tests cover the
+same accepted and rejected classes.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
 viewing workbench, a separate 1,205-row Rename draft in Editing mode, and the generated R inserted into its notebook.

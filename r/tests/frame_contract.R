@@ -35,6 +35,7 @@ require_package("jsonlite")
 require_package("tibble")
 require_package("data.table")
 require_package("bit64")
+require_package("collapse")
 
 base_frame <- data.frame(
   duplicate = c(TRUE, NA, FALSE),
@@ -157,6 +158,30 @@ assert_identical(table_page$frameSemantics$keyColumnIds, I("r:c:0"), "data.table
 table_snapshot <- get("snapshot", envir = table_capture, inherits = FALSE)
 table_snapshot[, value := "changed"]
 assert_true(identical(table_frame, table_before), "data.table snapshot mutation reached the source frame")
+
+collapse_source <- data.frame(
+  row_id = 1:3,
+  group = c("a", "a", "b"),
+  value = c(3.5, 1.5, 2.5),
+  stringsAsFactors = FALSE
+)
+collapse_cases <- list(
+  list(frame = collapse::qDF(collapse_source), flavor = "r.data.frame", classes = "data.frame"),
+  list(frame = collapse::qTBL(collapse_source), flavor = "r.tibble", classes = c("tbl_df", "tbl", "data.frame")),
+  list(frame = collapse::qDT(collapse_source), flavor = "r.data.table", classes = c("data.table", "data.frame"))
+)
+for (case in collapse_cases) {
+  assert_identical(class(case$frame), case$classes, "collapse quick conversion returned unexpected classes")
+  capture <- openwrangler_r_frame_contract$capture_frame(case$frame)
+  page <- openwrangler_r_frame_contract$materialize_page(capture, row_limit = 3L, column_limit = 3L)
+  assert_identical(page$dataframeFlavor, case$flavor, "collapse quick conversion used the wrong dataframe flavor")
+  assert_identical(page$shape, list(rows = 3L, columns = 3L), "collapse quick conversion changed shape")
+  assert_identical(
+    vapply(page$schema, `[[`, character(1L), "name"),
+    c("row_id", "group", "value"),
+    "collapse quick conversion changed column names"
+  )
+}
 
 rename_frame <- data.frame(
   duplicate = c(1L, 2L),
@@ -3596,9 +3621,13 @@ grouped_tibble <- tibble::tibble(value = 1:2)
 class(grouped_tibble) <- c("grouped_df", class(grouped_tibble))
 assert_error(openwrangler_r_frame_contract$capture_frame(grouped_tibble), "unsupported-frame-class")
 
-collapse_grouped_frame <- data.frame(group = "a", value = 1L)
-class(collapse_grouped_frame) <- c("GRP_df", "grouped_df", "data.frame")
+collapse_grouped_frame <- collapse::fgroup_by(collapse_source, group)
+assert_true(inherits(collapse_grouped_frame, "GRP_df"), "collapse did not create a grouped GRP_df")
 assert_error(openwrangler_r_frame_contract$capture_frame(collapse_grouped_frame), "unsupported-frame-class")
+
+collapse_indexed_frame <- collapse::findex_by(collapse_source, group, row_id)
+assert_true(inherits(collapse_indexed_frame, "indexed_frame"), "collapse did not create an indexed_frame")
+assert_error(openwrangler_r_frame_contract$capture_frame(collapse_indexed_frame), "unsupported-frame-class")
 
 list_frame <- data.frame(value = I(list(1L, 2L)))
 assert_error(openwrangler_r_frame_contract$capture_frame(list_frame), "unsupported-column")

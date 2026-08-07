@@ -1553,12 +1553,18 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = 'minimal')",
     "orders_table <- data.table::as.data.table(orders_frame)",
     "data.table::setkey(orders_table, row_id)",
+    "collapse_frame <- collapse::qDF(orders_frame)",
+    "collapse_tibble <- collapse::qTBL(orders_frame)",
+    "collapse_table <- collapse::qDT(orders_frame)",
+    "collapse_grouped <- collapse::fgroup_by(collapse_frame, group)",
+    "collapse_indexed <- collapse::findex_by(collapse_frame, group, row_id)",
     "orders_frame_before <- serialize(orders_frame, NULL, version = 3L)",
     "orders_tibble_before <- serialize(orders_tibble, NULL, version = 3L)",
     "orders_table_before <- serialize(orders_table, NULL, version = 3L)",
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
     "  pid = Sys.getpid(), rows = nrow(orders_frame), columns = ncol(orders_frame),",
     "  rVersion = as.character(getRversion()),",
+    "  collapseVersion = as.character(utils::packageVersion('collapse')),",
     "  remoteRunId = Sys.getenv('OPEN_WRANGLER_REMOTE_RUN_ID', unset = ''),",
     "  hostname = unname(Sys.info()[['nodename']])",
     "), auto_unbox = TRUE)), '\\n', sep = '')"
@@ -1977,6 +1983,7 @@ async function exerciseReleasedRJupyterExtension(
     const setup = releasedNotebookJsonResult(notebook.cellAt(0), RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
     assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
     assertReleasedRVersion(setup, kernelTarget, "R setup");
+    assert.equal(setup.collapseVersion, "2.1.7");
     assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
     if (kernelTarget.remote) {
       assert.equal(setup.remoteRunId, kernelTarget.remote.runId);
@@ -2002,13 +2009,23 @@ async function exerciseReleasedRJupyterExtension(
       for (const [name, flavor] of [
         ["orders_frame", "data.frame"],
         ["orders_tibble", "tibble"],
-        ["orders_table", "data.table"]
+        ["orders_table", "data.table"],
+        ["collapse_frame", "data.frame"],
+        ["collapse_tibble", "tibble"],
+        ["collapse_table", "data.table"]
       ] as const) {
         const row = await releasedJupyterQuickPickRow(picker, name);
         assert.ok(row, `The real R variable picker must expose ${name}.`);
         assert.match(
           (await row.innerText()).replace(/\s+/gu, " "),
           new RegExp(`R · ${flavor}.*Live notebook session`, "u")
+        );
+      }
+      for (const name of ["collapse_grouped", "collapse_indexed"] as const) {
+        assert.equal(
+          await releasedJupyterQuickPickRow(picker, name),
+          undefined,
+          `The real R variable picker must omit unsupported ${name}.`
         );
       }
       if (screenshotOutput) await captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput);
@@ -2050,6 +2067,50 @@ async function exerciseReleasedRJupyterExtension(
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
+
+    const collapseFrames = [
+      {
+        name: "collapse_frame",
+        factory: "qDF",
+        type: "data.frame",
+        backend: "r" as const,
+        rDataframeFlavor: "r.data.frame" as const,
+        firstValue: "1",
+        notebookInsert: true
+      },
+      {
+        name: "collapse_tibble",
+        factory: "qTBL",
+        type: "tbl_df",
+        backend: "r" as const,
+        rDataframeFlavor: "r.tibble" as const,
+        firstValue: "1",
+        notebookInsert: true
+      },
+      {
+        name: "collapse_table",
+        factory: "qDT",
+        type: "data.table",
+        backend: "r" as const,
+        rDataframeFlavor: "r.data.table" as const,
+        firstValue: "1",
+        notebookInsert: true
+      }
+    ] as const;
+    for (const expected of collapseFrames) {
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+      const session = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        expected,
+        `the collapse::${expected.factory}() session`
+      );
+      assert.deepEqual(session.metadata.shape, { rows: 1_205, columns: 25 });
+      await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
+      await disposePackagedSessionPanel(testing, session.sessionId, `the collapse::${expected.factory}() session`);
+    }
 
     if (phase === "jupyter-r") {
       await exerciseReleasedRDocumentJourney(testing, workbench, directory);
@@ -2285,6 +2346,7 @@ async function exerciseReleasedRJupyterExtension(
     );
     assert.notEqual(Number(replacementSetup.pid), Number(setup.pid));
     assertReleasedRVersion(replacementSetup, kernelTarget, "replacement R setup");
+    assert.equal(replacementSetup.collapseVersion, "2.1.7");
     if (kernelTarget.remote) {
       assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
       assert.equal(replacementSetup.hostname, kernelTarget.remote.hostname);
