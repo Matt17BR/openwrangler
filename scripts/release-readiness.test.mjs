@@ -808,6 +808,21 @@ test("keeps the same compact editor support tiers in every README channel", () =
   assert.equal(stableLinks.get("checksummed GitHub Release"), "https://github.com/Matt17BR/openwrangler/releases");
 });
 
+test("points preview installs at the published prerelease channels", () => {
+  const previewLinks = new Map(
+    [...PREVIEW_README_RELEASE_SECTION.matchAll(/\[([^\]]+)\]\(([^)]+)\)/gu)].map((match) => [match[1], match[2]])
+  );
+  assert.equal(
+    previewLinks.get("Visual Studio Marketplace"),
+    "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"
+  );
+  assert.equal(previewLinks.get("Open VSX"), "https://open-vsx.org/extension/Matt17BR/openwrangler");
+  assert.equal(previewLinks.get("GitHub prerelease"), "https://github.com/Matt17BR/openwrangler/releases");
+  assert.match(PREVIEW_README_RELEASE_SECTION, /Install Pre-Release Version/u);
+  assert.match(PREVIEW_README_RELEASE_SECTION, /latest `1\.99\.x` version/u);
+  assert.doesNotMatch(PREVIEW_README_RELEASE_SECTION, /clone|npm install|npm run package|python3 -m venv/iu);
+});
+
 test("uses linked live badges instead of a prose stable status", () => {
   assert.doesNotMatch(STABLE_README_RELEASE_SECTION, /Release status/iu);
   for (const expected of [
@@ -1331,8 +1346,35 @@ test("structurally gates the candidate-first preview workflow and exact artifact
     },
     (workflow) => {
       workflow.jobs["released-jupyter"].steps.find(
-        (step) => step.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "1"
+        (step) => step.id === "packaged_editor"
       ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "0";
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find((step) =>
+        String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")
+      ).with["r-version"] = "4.5";
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find((step) => step.name === "Install R contract packages").run =
+        "echo skipped";
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find((step) => step.run === "npm run test:r-contract").env.RSCRIPT =
+        "Rscript";
+    },
+    (workflow) => {
+      const jupyterSteps = workflow.jobs["released-jupyter"].steps;
+      const runIndex = jupyterSteps.findIndex((step) => step.id === "packaged_editor_r");
+      jupyterSteps.splice(runIndex, 0, { run: "echo changed-after-verification" });
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find((step) => step.id === "packaged_editor_r").run =
+        "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
+    },
+    (workflow) => {
+      workflow.jobs["released-jupyter"].steps.find(
+        (step) => step.name === "Upload R-Jupyter failure diagnostics"
+      ).with.path = "tmp/**";
     },
     (workflow) => {
       workflow.jobs["remote-ssh"].steps.find((step) =>

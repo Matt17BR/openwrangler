@@ -9,6 +9,7 @@ const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
@@ -34,6 +35,24 @@ test "\${#EXPECTED_SHA}" -eq 40`;
 const EXACT_MAIN_SOURCE_RUN = `test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
 test -z "$(git status --porcelain --untracked-files=no)"
 test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"`;
+const LOCATE_RSCRIPT_RUN = `set -euo pipefail
+rscript="$(command -v Rscript)"
+if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
+  echo "Rscript did not resolve to an absolute executable." >&2
+  exit 1
+fi
+r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
+if [[ "$r_version" != "4.5.2" ]]; then
+  echo "Expected hosted R 4.5.2, got $r_version." >&2
+  exit 1
+fi
+printf 'executable=%s\\n' "$rscript" >> "$GITHUB_OUTPUT"
+printf 'version=%s\\n' "$r_version" >> "$GITHUB_OUTPUT"
+printf 'Hosted R: %s\\n' "$r_version"`;
+const INSTALL_R_CONTRACT_PACKAGES =
+  'Rscript --vanilla -e \'install.packages(c("jsonlite", "tibble", "data.table", "bit64"), repos = "https://cloud.r-project.org")\'';
+const R_JUPYTER_RUN =
+  "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}";
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -200,6 +219,109 @@ function inspectPinnedActions(workflow, problems) {
   }
 }
 
+function inspectPreviewRJupyter(job, problems) {
+  const jobSteps = steps(job);
+  const setupMatches = jobSteps.filter((step) => step?.uses === SETUP_R_ACTION);
+  const setup = setupMatches[0];
+  const locateMatches = jobSteps.filter((step) => step?.id === "rscript");
+  const locate = locateMatches[0];
+  const npmCi = findRun(job, "npm ci");
+  const installMatches = jobSteps.filter((step) => command(step?.run) === INSTALL_R_CONTRACT_PACKAGES);
+  const install = installMatches[0];
+  const contractMatches = jobSteps.filter((step) => command(step?.run) === "npm run test:r-contract");
+  const contract = contractMatches[0];
+
+  if (
+    setupMatches.length !== 1 ||
+    !exactKeys(setup, ["uses", "with"]) ||
+    !exactKeys(setup.with, ["r-version", "use-public-rspm"]) ||
+    setup.with["r-version"] !== "4.5.2" ||
+    setup.with["use-public-rspm"] !== true ||
+    locateMatches.length !== 1 ||
+    !exactKeys(locate, ["id", "name", "shell", "run"]) ||
+    locate.name !== "Locate hosted Rscript" ||
+    locate.shell !== "bash" ||
+    command(locate.run) !== command(LOCATE_RSCRIPT_RUN) ||
+    installMatches.length !== 1 ||
+    !exactKeys(install, ["name", "run"]) ||
+    install.name !== "Install R contract packages" ||
+    contractMatches.length !== 1 ||
+    !exactKeys(contract, ["run", "env"]) ||
+    !exactKeys(contract.env, ["RSCRIPT"]) ||
+    contract.env.RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
+    npmCi === undefined ||
+    !(jobSteps.indexOf(setup) < jobSteps.indexOf(locate)) ||
+    !(jobSteps.indexOf(locate) < jobSteps.indexOf(npmCi)) ||
+    !(jobSteps.indexOf(npmCi) < jobSteps.indexOf(install)) ||
+    !(jobSteps.indexOf(install) < jobSteps.indexOf(contract))
+  ) {
+    problems.push("released-jupyter must run the native R contract with exact hosted R 4.5.2.");
+  }
+
+  const verifierMatches = jobSteps.filter((step) => step?.id === "canonical_r_jupyter");
+  const verifier = verifierMatches[0];
+  const runnerMatches = jobSteps.filter((step) => step?.id === "packaged_editor_r");
+  const runner = runnerMatches[0];
+  const diagnosticsMatches = jobSteps.filter((step) => step?.name === "Upload R-Jupyter failure diagnostics");
+  const diagnostics = diagnosticsMatches[0];
+  if (
+    verifierMatches.length !== 1 ||
+    !exactKeys(verifier, ["id", "name", "env", "run"]) ||
+    verifier.name !== "Reverify the exact canonical preview artifact for R Jupyter" ||
+    !exactKeys(verifier.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    verifier.env.EXPECTED_SHA !== EVENT_SHA ||
+    verifier.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(verifier.run) !== "node scripts/verify-preview-release-artifact.mjs canonical-release" ||
+    runnerMatches.length !== 1 ||
+    !exactKeys(runner, ["id", "name", "run", "env"]) ||
+    runner.name !== "Test R Jupyter in the exact packaged VSIX" ||
+    command(runner.run) !== R_JUPYTER_RUN ||
+    !exactKeys(runner.env, [
+      "OPEN_WRANGLER_EDITOR_DISPLAY",
+      "OPEN_WRANGLER_PACKAGED_EDITORS",
+      "OPEN_WRANGLER_PACKAGED_MODE",
+      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
+      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
+      "OPEN_WRANGLER_TEST_RSCRIPT",
+      "OPEN_WRANGLER_XVFB_EXECUTABLE",
+      "VSCODE_TEST_VERSION"
+    ]) ||
+    runner.env.OPEN_WRANGLER_PACKAGED_MODE !== "r-jupyter" ||
+    runner.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode,cursor" ||
+    runner.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
+    runner.env.OPEN_WRANGLER_XVFB_EXECUTABLE !== "${{ steps.prepare_xvfb.outputs.executable }}" ||
+    runner.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
+    runner.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "1" ||
+    runner.env.OPEN_WRANGLER_TEST_RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
+    runner.env.VSCODE_TEST_VERSION !== "stable" ||
+    jobSteps.indexOf(runner) !== jobSteps.indexOf(verifier) + 1 ||
+    diagnosticsMatches.length !== 1 ||
+    !exactKeys(diagnostics, ["name", "if", "uses", "with"]) ||
+    diagnostics.if !==
+      "${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}" ||
+    diagnostics.uses !== UPLOAD_ACTION ||
+    !exactKeys(diagnostics.with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "retention-days",
+      "compression-level",
+      "include-hidden-files"
+    ]) ||
+    diagnostics.with.name !== "preview-release-r-jupyter-${{ runner.os }}-${{ github.run_attempt }}" ||
+    diagnostics.with.path !== "${{ steps.packaged_editor_r.outputs.evidence_path }}" ||
+    diagnostics.with["if-no-files-found"] !== "error" ||
+    diagnostics.with["retention-days"] !== 7 ||
+    diagnostics.with["compression-level"] !== 9 ||
+    diagnostics.with["include-hidden-files"] !== false ||
+    jobSteps.indexOf(diagnostics) !== jobSteps.indexOf(runner) + 1
+  ) {
+    problems.push(
+      "released-jupyter must reverify and test the exact preview VSIX through R Jupyter in VS Code and Cursor."
+    );
+  }
+}
+
 export function inspectPreviewReleaseWorkflow(source) {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_WORKFLOW_BYTES) {
     return ["release.yml must be bounded YAML text."];
@@ -341,16 +463,17 @@ export function inspectPreviewReleaseWorkflow(source) {
   if (!runs(workflow.jobs["installed-performance"]).some((run) => run.includes("benchmark:installed --"))) {
     problems.push("installed-performance must retain pinned-editor performance acceptance.");
   }
-  const jupyterRuns = runs(workflow.jobs["released-jupyter"]);
+  const jupyter = workflow.jobs["released-jupyter"];
+  const jupyterRuns = runs(jupyter);
+  const pythonJupyter = steps(jupyter).find((step) => step?.id === "packaged_editor");
   if (
     !jupyterRuns.includes("npm run audit:remote-jupyter") ||
-    !steps(workflow.jobs["released-jupyter"]).some(
-      (step) =>
-        step?.env?.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION === "1" && step.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "1"
-    )
+    pythonJupyter?.env?.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
+    pythonJupyter?.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "1"
   ) {
     problems.push("released-jupyter must retain released-extension and remote-kernel acceptance.");
   }
+  inspectPreviewRJupyter(jupyter, problems);
   if (!runs(workflow.jobs["remote-ssh"]).some((run) => run.includes("npm run test:remote-workspace --"))) {
     problems.push("remote-ssh must retain real packaged Remote SSH acceptance.");
   }

@@ -53,18 +53,14 @@ export const PREVIEW_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
 ${README_EDITOR_SUPPORT}
 
-Build the preview VSIX from a clone:
+- [Visual Studio Marketplace](${MARKETPLACE_URL})
+- [Open VSX](${OPEN_VSX_URL})
+- Manual or offline install from a [GitHub prerelease](${RELEASES_URL})
 
-\`\`\`bash
-npm install
-python3 -m venv .venv
-.venv/bin/python -m pip install -e "python[dev]"
-npm run package -- --pre-release --out openwrangler.vsix
-\`\`\`
+In VS Code or Cursor, open the extension page and choose **Install Pre-Release Version**. Other Open VSX clients
+may label this action differently; select the latest \`1.99.x\` version listed there.
 
-On Windows, use \`py -m venv .venv\` and \`.venv\\Scripts\\python.exe\` in the equivalent commands.
-
-In the Extensions view, choose **Views and More Actions → Install from VSIX…** and select \`openwrangler.vsix\`.
+For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
 
 ${README_RUNTIME_REQUIREMENTS}
 
