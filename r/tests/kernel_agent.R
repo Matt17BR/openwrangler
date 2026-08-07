@@ -99,7 +99,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 2L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 3L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -4726,8 +4726,24 @@ missing_package_contract <- list(
   materialize_summaries = function(...) stop("unexpected summary materialization", call. = FALSE),
   materialize_dataset_stats = function(...) stop("unexpected dataset profile", call. = FALSE),
   materialize_column_values = function(...) stop("unexpected column values", call. = FALSE),
+  write_csv = function(...) stop("unexpected CSV export", call. = FALSE),
   limits = openwrangler_r_frame_contract$limits
 )
+missing_write_csv_contract <- missing_package_contract
+missing_write_csv_contract$write_csv <- NULL
+missing_write_csv_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_write_csv_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_write_csv_error) ||
+    !identical(conditionMessage(missing_write_csv_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without CSV export support", call. = FALSE)
+}
 missing_text_length_contract <- missing_package_contract
 missing_text_length_contract$text_length_column_at <- NULL
 missing_text_length_error <- tryCatch(

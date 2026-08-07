@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 2L
+  transport_version <- 3L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
@@ -71,6 +71,8 @@ openwrangler_r_kernel_agent <- local({
     } else if (
       source_code %in% c(
         "column-name-collision",
+        "export-target-changed",
+        "invalid-export-target",
         "invalid-column-name",
         "invalid-view-query",
         "invalid-view-value",
@@ -79,6 +81,9 @@ openwrangler_r_kernel_agent <- local({
       )
     ) {
       code <- "invalid_request"
+      recoverable <- TRUE
+    } else if (identical(source_code, "export-write-failed")) {
+      code <- "runtime_error"
       recoverable <- TRUE
     } else {
       code <- "runtime_error"
@@ -2609,7 +2614,7 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
-  new_agent <- function(frame_contract, source_environment = .GlobalEnv) {
+  new_agent <- function(frame_contract, source_environment = .GlobalEnv, export_root = NULL) {
     required_functions <- c(
       "capture_frame",
       "capture_live_frame",
@@ -2634,7 +2639,8 @@ openwrangler_r_kernel_agent <- local({
       "materialize_view_page",
       "materialize_summaries",
       "materialize_dataset_stats",
-      "materialize_column_values"
+      "materialize_column_values",
+      "write_csv"
     )
     if (
       !is.list(frame_contract) ||
@@ -2645,6 +2651,32 @@ openwrangler_r_kernel_agent <- local({
     }
     if (!is.environment(source_environment)) {
       stop("Open Wrangler received an invalid R source environment.", call. = FALSE)
+    }
+    if (!is.null(export_root)) {
+      export_root <- bounded_text(export_root, "export_root", 32768L)
+      if (
+        identical(export_root, "") ||
+          !(
+            startsWith(export_root, "/") ||
+              startsWith(export_root, "\\\\") ||
+              grepl("^[A-Za-z]:[/\\\\]", export_root, perl = TRUE)
+          )
+      ) {
+        stop("Open Wrangler received an invalid private R export directory.", call. = FALSE)
+      }
+      export_root <- tryCatch(
+        normalizePath(export_root, winslash = "/", mustWork = TRUE),
+        error = function(error) ""
+      )
+      export_info <- if (identical(export_root, "")) NULL else file.info(export_root)
+      if (
+        identical(export_root, "") ||
+          is.null(export_info) ||
+          nrow(export_info) != 1L ||
+          !isTRUE(export_info$isdir[[1L]])
+      ) {
+        stop("Open Wrangler received an invalid private R export directory.", call. = FALSE)
+      }
     }
 
     sessions <- new.env(hash = TRUE, parent = emptyenv())
@@ -3046,6 +3078,53 @@ openwrangler_r_kernel_agent <- local({
         response <- plan_response(request_id, session_id, "undo", candidate, page, frame_contract)
         preflight_response(response)
         assign(session_id, candidate, envir = sessions)
+        return(response)
+      }
+
+      if (identical(kind, "exportData")) {
+        payload <- exact_record(
+          request$payload,
+          c("sessionId", "revision", "exportId", "format"),
+          "request.payload"
+        )
+        session_id <- identifier(payload$sessionId, "request.payload.sessionId")
+        if (!exists(session_id, envir = sessions, inherits = FALSE)) {
+          abort("unknown_session", "The requested R session is no longer available", TRUE)
+        }
+        session <- get(session_id, envir = sessions, inherits = FALSE)
+        assert_revision(session, payload$revision)
+        if (!is.null(session$draft)) {
+          abort("invalid_request", "Apply or discard the current R draft before exporting data", TRUE)
+        }
+        if (is.null(export_root)) {
+          abort("unsupported_operation", "This R session cannot export data through its kernel")
+        }
+        export_id <- identifier(payload$exportId, "request.payload.exportId")
+        format <- bounded_text(payload$format, "request.payload.format", 16L)
+        if (!identical(format, "csv")) {
+          abort("invalid_request", "Native R data export currently supports CSV only", TRUE)
+        }
+        capture <- if (isTRUE(session$editing)) session$committed else session$source
+        if (is.null(capture)) {
+          abort("runtime_error", "The committed R dataframe is no longer available")
+        }
+        exported <- frame_contract$write_csv(
+          capture,
+          file.path(export_root, paste0(export_id, ".csv"))
+        )
+        response <- list(
+          transportVersion = transport_version,
+          requestId = request_id,
+          kind = "dataExported",
+          sessionId = session_id,
+          revision = session$revision,
+          exportId = export_id,
+          format = "csv",
+          rows = exported$rows,
+          columns = exported$columns,
+          bytes = exported$bytes
+        )
+        preflight_response(response)
         return(response)
       }
 

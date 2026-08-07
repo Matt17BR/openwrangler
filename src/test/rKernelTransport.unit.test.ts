@@ -31,6 +31,8 @@ const undoRequestId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const inspectRequestId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const inspectOutputRequestId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const inspectSecondPageRequestId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const exportRequestId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+const exportId = "01234567-89ab-4cde-8fab-0123456789ab";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -268,6 +270,68 @@ describe("native R kernel protocol", () => {
         valuesRequestId
       )
     ).toThrow("typed selection");
+  });
+
+  it("validates private streamed CSV exports", () => {
+    const request: Extract<RKernelRequest, { kind: "exportData" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: exportRequestId,
+      kind: "exportData",
+      payload: { sessionId, revision: 4, exportId, format: "csv" }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    expect(
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: exportRequestId,
+          kind: "dataExported",
+          sessionId,
+          revision: 4,
+          exportId,
+          format: "csv",
+          rows: 3,
+          columns: 2,
+          bytes: 42
+        }),
+        exportRequestId
+      )
+    ).toEqual({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: exportRequestId,
+      kind: "dataExported",
+      sessionId,
+      revision: 4,
+      exportId,
+      format: "csv",
+      rows: 3,
+      columns: 2,
+      bytes: 42
+    });
+
+    expect(() =>
+      encodeRKernelRequest({
+        ...request,
+        payload: { ...request.payload, exportId: "../escape" }
+      } as RKernelRequest)
+    ).toThrow("canonical UUID");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: exportRequestId,
+          kind: "dataExported",
+          sessionId,
+          revision: 4,
+          exportId,
+          format: "csv",
+          rows: 3,
+          columns: 2,
+          bytes: -1
+        }),
+        exportRequestId
+      )
+    ).toThrow("supported range");
   });
 
   it("validates page windows and repeated stable sort identities before dispatch", () => {

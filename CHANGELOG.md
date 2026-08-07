@@ -68,6 +68,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   process on macOS and Linux. Cells share one R environment but are parsed separately before any cell runs. Generated
   R is inserted as a new fenced cell. This command is for dataframe discovery and does not render the document or
   attach to an existing R session; unsupported YAML, chunk-engine, and raw-container syntax is rejected.
+- Local R document sessions opened in Editing mode can export the cleaned result as CSV. R notebooks cannot export
+  cleaned data yet, and R Parquet export is not supported yet.
 - Default frames created with `collapse::qDF()`, `qTBL()`, or `qDT()` use the existing base-data-frame, tibble, or data-table
   path. Open Wrangler does not add `collapse` as a runtime dependency. Grouped `GRP_df` and indexed
   `indexed_frame` objects are not supported.

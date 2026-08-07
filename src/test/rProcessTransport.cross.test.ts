@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,272 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "/usr/bin/Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
+  it("streams committed CSV exports through bounded host chunks without changing the source frame", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-export-test-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: `
+plain_frame <- data.frame(
+  id = 1:3,
+  label = c(" ALPHA ", "BETA", NA_character_),
+  when = as.Date(c("2026-01-01", "2026-01-02", NA_character_)),
+  category = factor(c("one", "two", NA_character_)),
+  stringsAsFactors = FALSE
+)
+large_frame <- data.frame(
+  payload = rep(paste(rep("x", 8192L), collapse = ""), 150L),
+  stringsAsFactors = FALSE
+)
+complex_frame <- data.frame(
+  first = c('München "quoted"', "line\\nbreak", ""),
+  second = c("α", "", NA_character_),
+  when = as.POSIXct(c("2026-01-01 12:34:56", NA, "2026-01-03 00:00:00"), tz = "UTC"),
+  special = c(Inf, -Inf, NaN),
+  empty = c("", NA_character_, "x"),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+names(complex_frame)[1:2] <- c("odd name", "odd name")
+empty_frame <- data.frame(id = integer(), label = character(), check.names = FALSE)
+`
+    });
+    try {
+      const plainSession = randomUUID();
+      const opened = await transport.open("plain_frame", pageWindow(), { requestedSessionId: plainSession });
+      const preview = await transport.previewStep(
+        plainSession,
+        0,
+        {
+          id: "lower-label",
+          kind: "lowerText",
+          params: { column: { id: "r:c:1", name: "label" } }
+        },
+        pageWindow(),
+        opened.page.schema
+      );
+      const draftChunks: Uint8Array[] = [];
+      await expect(
+        transport.exportData(plainSession, preview.revision, "csv", async (chunk) => {
+          draftChunks.push(Uint8Array.from(chunk));
+        })
+      ).rejects.toThrow("Apply or discard");
+      expect(draftChunks).toEqual([]);
+
+      const applied = await transport.applyDraft(plainSession, preview.revision, pageWindow());
+      await expect(transport.exportData(plainSession, preview.revision, "csv", async () => undefined)).rejects.toThrow(
+        "revision"
+      );
+      await expect(
+        transport.exportData(plainSession, applied.revision, "csv", async () => {
+          throw new Error("host sink failed");
+        })
+      ).rejects.toThrow("host sink failed");
+
+      const csvChunks: Uint8Array[] = [];
+      const exported = await transport.exportData(plainSession, applied.revision, "csv", async (chunk) => {
+        csvChunks.push(Uint8Array.from(chunk));
+      });
+      expect(exported).toEqual({
+        sessionId: plainSession,
+        revision: applied.revision,
+        format: "csv",
+        rows: 3,
+        columns: 4
+      });
+      const csv = Buffer.concat(csvChunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+      expect(csv).toContain('"id","label","when","category"\n');
+      expect(csv).toContain('1," alpha ",2026-01-01,"one"\n');
+      expect(csv).toContain("3,,,\n");
+
+      const sourceSession = randomUUID();
+      const source = await transport.open("plain_frame", pageWindow(), { requestedSessionId: sourceSession });
+      expect(source.page.page.rows.map((row) => row.values[1]?.raw)).toEqual([" ALPHA ", "BETA", null]);
+
+      const largeSession = randomUUID();
+      await transport.open("large_frame", pageWindow(), { requestedSessionId: largeSession });
+      const largeChunkSizes: number[] = [];
+      const large = await transport.exportData(largeSession, 0, "csv", async (chunk) => {
+        largeChunkSizes.push(chunk.byteLength);
+      });
+      expect(large).toMatchObject({ rows: 150, columns: 1 });
+      expect(largeChunkSizes.length).toBeGreaterThan(1);
+      expect(Math.max(...largeChunkSizes)).toBeLessThanOrEqual(1_024 * 1_024);
+
+      const complexSession = randomUUID();
+      await transport.open("complex_frame", pageWindow(), { requestedSessionId: complexSession });
+      const complexChunks: Uint8Array[] = [];
+      const complex = await transport.exportData(complexSession, 0, "csv", async (chunk) => {
+        complexChunks.push(Uint8Array.from(chunk));
+      });
+      expect(complex).toMatchObject({ rows: 3, columns: 5 });
+      const complexCsv = Buffer.concat(complexChunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+      expect(complexCsv).toContain('"odd name","odd name","when","special","empty"\n');
+      expect(complexCsv).toContain('"München ""quoted"""');
+      expect(complexCsv).toContain('"line\nbreak"');
+      expect(complexCsv).toContain("2026-01-01 12:34:56");
+      expect(complexCsv).toContain("Inf");
+      expect(complexCsv).toContain("-Inf");
+
+      const emptySession = randomUUID();
+      await transport.open("empty_frame", pageWindow(), { requestedSessionId: emptySession });
+      const emptyChunks: Uint8Array[] = [];
+      const empty = await transport.exportData(emptySession, 0, "csv", async (chunk) => {
+        emptyChunks.push(Uint8Array.from(chunk));
+      });
+      expect(empty).toMatchObject({ rows: 0, columns: 2 });
+      expect(Buffer.concat(emptyChunks.map((chunk) => Buffer.from(chunk))).toString("utf8")).toBe('"id","label"\n');
+
+      await transport.close(plainSession);
+      await transport.close(sourceSession);
+      await transport.close(largeSession);
+      await transport.close(complexSession);
+      await transport.close(emptySession);
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("exports native tibble, keyed data.table, and integer64 frames without changing their R semantics", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-export-flavors-test-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: `
+tibble_frame <- tibble::tibble(id = c(1L, 2L), label = c("one", "two"))
+table_frame <- data.table::data.table(group = c("b", "a", "b"), id = c(2L, 1L, 1L))
+data.table::setkey(table_frame, group, id)
+integer64_frame <- data.frame(
+  exact = bit64::as.integer64(c("-9223372036854775807", "9007199254740993", "9223372036854775806", NA_character_)),
+  stringsAsFactors = FALSE
+)
+zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
+`
+    });
+    try {
+      const tibbleSession = randomUUID();
+      const tibble = await transport.open("tibble_frame", pageWindow(), { requestedSessionId: tibbleSession });
+      expect(tibble.page).toMatchObject({ dataframeFlavor: "r.tibble", shape: { rows: 2, columns: 2 } });
+      expect(await exportedCsv(transport, tibbleSession)).toBe('"id","label"\n1,"one"\n2,"two"\n');
+      const reopenedTibbleSession = randomUUID();
+      const reopenedTibble = await transport.open("tibble_frame", pageWindow(), {
+        requestedSessionId: reopenedTibbleSession
+      });
+      expect(reopenedTibble.page.dataframeFlavor).toBe("r.tibble");
+
+      const tableSession = randomUUID();
+      const table = await transport.open("table_frame", pageWindow(), { requestedSessionId: tableSession });
+      expect(table.page).toMatchObject({
+        dataframeFlavor: "r.data.table",
+        frameSemantics: { keyColumnIds: ["r:c:0", "r:c:1"] },
+        shape: { rows: 3, columns: 2 }
+      });
+      expect(await exportedCsv(transport, tableSession)).toBe('"group","id"\n"a",1\n"b",1\n"b",2\n');
+      const reopenedTableSession = randomUUID();
+      const reopenedTable = await transport.open("table_frame", pageWindow(), {
+        requestedSessionId: reopenedTableSession
+      });
+      expect(reopenedTable.page).toMatchObject({
+        dataframeFlavor: "r.data.table",
+        frameSemantics: { keyColumnIds: ["r:c:0", "r:c:1"] }
+      });
+      expect(reopenedTable.page.page.rows.map((row) => row.values.map((value) => value.raw))).toEqual([
+        ["a", "1"],
+        ["b", "1"],
+        ["b", "2"]
+      ]);
+
+      const integer64Session = randomUUID();
+      const integer64 = await transport.open("integer64_frame", pageWindow(), {
+        requestedSessionId: integer64Session
+      });
+      const exactValues = ["-9223372036854775807", "9007199254740993", "9223372036854775806", null];
+      expect(integer64.page.schema[0]).toMatchObject({ rawType: "integer64", type: "integer" });
+      expect(integer64.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(exactValues);
+      expect(await exportedCsv(transport, integer64Session)).toBe(
+        '"exact"\n-9223372036854775807\n9007199254740993\n9223372036854775806\n\n'
+      );
+      const reopenedInteger64Session = randomUUID();
+      const reopenedInteger64 = await transport.open("integer64_frame", pageWindow(), {
+        requestedSessionId: reopenedInteger64Session
+      });
+      expect(reopenedInteger64.page.schema[0]).toMatchObject({ rawType: "integer64", type: "integer" });
+      expect(reopenedInteger64.page.page.rows.map((row) => row.values[0]?.raw)).toEqual(exactValues);
+
+      const zeroColumnSession = randomUUID();
+      const zeroColumn = await transport.open("zero_column_frame", pageWindow(), {
+        requestedSessionId: zeroColumnSession
+      });
+      expect(zeroColumn.page.shape).toEqual({ rows: 3, columns: 0 });
+      const zeroColumnChunks: Uint8Array[] = [];
+      await expect(
+        transport.exportData(zeroColumnSession, 0, "csv", async (chunk) => {
+          zeroColumnChunks.push(Uint8Array.from(chunk));
+        })
+      ).rejects.toThrow("CSV export requires at least one column");
+      expect(zeroColumnChunks).toEqual([]);
+      expect((await transport.getPage(zeroColumnSession, pageWindow())).shape).toEqual({ rows: 3, columns: 0 });
+
+      for (const sessionId of [
+        tibbleSession,
+        reopenedTibbleSession,
+        tableSession,
+        reopenedTableSession,
+        integer64Session,
+        reopenedInteger64Session,
+        zeroColumnSession
+      ]) {
+        await transport.close(sessionId);
+      }
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("disposes its owned process when a private export artifact cannot be removed", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-export-cleanup-test-"));
+    const transport = new RProcessSessionTransport({
+      runtimeRoot,
+      rscriptPath,
+      temporaryParent,
+      workingDirectory: temporaryParent,
+      documentText: "frame <- data.frame(value = 1:3)"
+    });
+    let invalidations = 0;
+    const subscription = transport.onDidInvalidateKernel(() => {
+      invalidations += 1;
+    });
+    try {
+      const sessionId = randomUUID();
+      await transport.open("frame", pageWindow(), { requestedSessionId: sessionId });
+      await expect(
+        transport.exportData(sessionId, 0, "csv", async () => {
+          const [processRoot] = await readdir(temporaryParent);
+          const exportRoot = resolve(temporaryParent, processRoot!, "exports");
+          const [artifact] = await readdir(exportRoot);
+          const artifactPath = resolve(exportRoot, artifact!);
+          await unlink(artifactPath);
+          await mkdir(artifactPath);
+        })
+      ).rejects.toThrow();
+      expect(invalidations).toBe(1);
+      await expect(transport.discoverVariables()).rejects.toThrow("disposed");
+      expect(await readdir(temporaryParent)).toEqual([]);
+    } finally {
+      subscription.dispose();
+      await transport.dispose();
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("executes only runnable R cells from a real Quarto source capture", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-quarto-test-"));
     await writeFile(
@@ -491,6 +757,14 @@ function pageWindow(): RKernelPageWindow {
     columnLimit: 20,
     view: { filters: [], sorts: [] }
   };
+}
+
+async function exportedCsv(transport: RProcessSessionTransport, sessionId: string): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  await transport.exportData(sessionId, 0, "csv", async (chunk) => {
+    chunks.push(Uint8Array.from(chunk));
+  });
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 }
 
 function rString(value: string): string {

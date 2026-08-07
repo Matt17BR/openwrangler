@@ -161,9 +161,10 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
   Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
-  Strip text, and Split text with generated R code. Generated R can be inserted
-  into its originating IRkernel notebook or R document. Other cleaning operations and cleaned-data export remain
-  unsupported.
+  Strip text, and Split text with generated R code. Generated R can be inserted into its originating IRkernel notebook
+  or R document. A local R document session opened in Editing mode can export its committed result as CSV through a
+  private R artifact and an extension-host atomic save. IRkernel sessions cannot export cleaned data yet. R Parquet
+  export and other cleaning operations remain unsupported.
 - Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
   data-table paths. Grouped `GRP_df` and indexed `indexed_frame` objects are outside the supported class contract.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not

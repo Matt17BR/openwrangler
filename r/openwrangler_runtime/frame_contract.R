@@ -3408,6 +3408,82 @@ openwrangler_r_frame_contract <- local({
     value
   }
 
+  write_csv <- function(capture, target_path) {
+    validate_capture(capture)
+    if (capture$descriptor$shape$columns == 0L) {
+      abort(
+        "export-write-failed",
+        "CSV export requires at least one column because CSV cannot preserve a zero-column dataframe's row count"
+      )
+    }
+    target_path <- bounded_utf8(target_path, "target_path", 32768L)
+    if (
+      identical(target_path, "") ||
+        !(
+          startsWith(target_path, "/") ||
+            startsWith(target_path, "\\\\") ||
+            grepl("^[A-Za-z]:[/\\\\]", target_path, perl = TRUE)
+        )
+    ) {
+      abort("invalid-export-target", "target_path must be absolute")
+    }
+    if (file.exists(target_path)) {
+      abort("export-target-changed", "the private R export artifact already exists")
+    }
+
+    frame <- read_capture_frame(capture)
+    connection <- NULL
+    created <- FALSE
+    completed <- FALSE
+    on.exit({
+      if (!is.null(connection)) try(close(connection), silent = TRUE)
+      if (created && !completed && file.exists(target_path)) try(unlink(target_path, force = TRUE), silent = TRUE)
+    }, add = TRUE)
+    tryCatch(
+      {
+        connection <- file(target_path, open = "wx", encoding = "UTF-8")
+        created <- TRUE
+        utils::write.table(
+          frame,
+          file = connection,
+          sep = ",",
+          eol = "\n",
+          na = "",
+          dec = ".",
+          row.names = FALSE,
+          col.names = TRUE,
+          quote = TRUE,
+          qmethod = "double"
+        )
+        flush(connection)
+        close(connection)
+        connection <- NULL
+      },
+      openwrangler_r_frame_error = function(error) stop(error),
+      error = function(error) {
+        abort("export-write-failed", "the R dataframe could not be written as CSV")
+      }
+    )
+
+    invisible(read_capture_frame(capture))
+    details <- file.info(target_path)
+    if (
+      nrow(details) != 1L ||
+        is.na(details$size[[1L]]) ||
+        !is.finite(details$size[[1L]]) ||
+        details$size[[1L]] < 0 ||
+        isTRUE(details$isdir[[1L]])
+    ) {
+      abort("export-target-changed", "the private R export artifact could not be verified")
+    }
+    completed <- TRUE
+    list(
+      rows = capture$descriptor$shape$rows,
+      columns = capture$descriptor$shape$columns,
+      bytes = as.double(details$size[[1L]])
+    )
+  }
+
   resolve_page_window <- function(
     descriptor,
     row_offset,
@@ -3946,6 +4022,7 @@ openwrangler_r_frame_contract <- local({
     drop_missing_rows_at = drop_missing_rows_at,
     drop_duplicate_rows_at = drop_duplicate_rows_at,
     transform_rows = transform_rows,
+    write_csv = write_csv,
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,
     materialize_view_page = materialize_view_page,

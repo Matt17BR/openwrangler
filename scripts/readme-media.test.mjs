@@ -718,10 +718,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     gallery,
     /alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R"/u
   );
-  assert.match(
-    gallery,
-    /Default frames made with `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`[\s\S]{0,320}Grouped `GRP_df` and indexed `indexed_frame` objects are\s+not supported\.[\s\S]{0,160}Other R cleaning operations and cleaned-data export are not supported yet/u
-  );
   assert.match(gallery, /vscode-notebook-r-code-insertion-detail-dark\.png/u);
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
   assert.match(gallery, /^## Editor and theme support$/mu);

@@ -17,7 +17,12 @@ import type {
   TextLengthTransformStep
 } from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
-import { RKernelBridge, type RKernelBridgeTransport } from "../extension/r/rKernelBridge";
+import type { AtomicFileTransaction } from "../extension/files/safeFileExport";
+import {
+  RKernelBridge,
+  type RKernelBridgeFileOperations,
+  type RKernelBridgeTransport
+} from "../extension/r/rKernelBridge";
 import type { RKernelStepPreviewResult } from "../extension/r/rKernelProtocol";
 import {
   R_FRAME_CONTRACT_LIMITS,
@@ -586,6 +591,273 @@ describe("canonical R kernel bridge", () => {
     expect(transport.getSummary).not.toHaveBeenCalled();
     expect(transport.getDatasetStats).not.toHaveBeenCalled();
     expect(transport.open).toHaveBeenCalledTimes(1);
+  });
+
+  it("exports the committed result of an editing R document through an extension-owned atomic CSV transaction", async () => {
+    const contract = frameContract();
+    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
+      await args[3](new TextEncoder().encode("value,count\n"));
+      await args[3](new TextEncoder().encode("12.5,9223372036854775807\n"));
+      return {
+        sessionId: args[0],
+        revision: args[1],
+        format: "csv",
+        rows: contract.shape.rows,
+        columns: contract.shape.columns
+      };
+    });
+    const transport = { ...fakeTransport(contract), exportData };
+    const atomic = fakeAtomicTransaction();
+    const beginTransaction = vi.fn(async () => atomic.transaction);
+    const bridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
+
+    await expect(bridge.request(documentOpenRequest("editing"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { capabilities: { exportCsv: true, exportParquet: false } }
+    });
+    await expect(
+      bridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/orders.cleaned.csv",
+        format: "csv"
+      })
+    ).resolves.toEqual({
+      kind: "dataExported",
+      revision: 0,
+      path: "/workspace/orders.cleaned.csv",
+      format: "csv",
+      shape: { rows: 1, columns: 8 }
+    });
+
+    expect(beginTransaction).toHaveBeenCalledWith({
+      destination: expect.objectContaining({ scheme: "file", fsPath: "/workspace/orders.cleaned.csv" }),
+      protectedSources: [expect.objectContaining({ scheme: "file", fsPath: "/workspace/orders.R" })]
+    });
+    expect(exportData).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      "csv",
+      expect.any(Function),
+      expect.objectContaining({ timeoutMs: 30 * 60_000 })
+    );
+    expect(atomic.write).toHaveBeenNthCalledWith(1, new TextEncoder().encode("value,count\n"));
+    expect(atomic.write).toHaveBeenNthCalledWith(2, new TextEncoder().encode("12.5,9223372036854775807\n"));
+    expect(atomic.prepareExternalWriter).not.toHaveBeenCalled();
+    expect(atomic.commit).toHaveBeenCalledOnce();
+    expect(atomic.rollback).not.toHaveBeenCalled();
+    expect(atomic.abandon).not.toHaveBeenCalled();
+  });
+
+  it("advertises R CSV export only for editable filesystem document sessions", async () => {
+    const contract = frameContract();
+    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>();
+    const transport = { ...fakeTransport(contract), exportData };
+    const beginTransaction = vi.fn(async () => fakeAtomicTransaction().transaction);
+
+    const viewingBridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
+    const viewing = await viewingBridge.request(documentOpenRequest("viewing"));
+    expect(viewing).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
+    await expect(
+      viewingBridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/out.csv",
+        format: "csv"
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "unsupported_mode" });
+
+    const notebookTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
+    const notebookBridge = createBridge(notebookTransport, undefined, undefined, undefined, { beginTransaction });
+    const notebook = await notebookBridge.request(openRequest("editing"));
+    expect(notebook).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
+    await expect(
+      notebookBridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/out.csv",
+        format: "csv"
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation" });
+
+    const untitledTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
+    const untitledBridge = createBridge(untitledTransport, undefined, undefined, undefined, { beginTransaction });
+    const untitled = await untitledBridge.request(documentOpenRequest("editing", "untitled:orders.R"));
+    expect(untitled).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
+    await expect(
+      untitledBridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/out.csv",
+        format: "csv"
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "unsupported_operation" });
+
+    const remoteTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
+    const remoteBridge = createBridge(remoteTransport, undefined, undefined, undefined, { beginTransaction });
+    const remote = await remoteBridge.request(
+      documentOpenRequest("editing", "vscode-remote://ssh-remote+host/workspace/orders.R")
+    );
+    expect(remote).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: false } } });
+
+    expect(beginTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the host transaction immediately when the private R export detaches", async () => {
+    const contract = frameContract();
+    const lateWriter = deferred<void>();
+    const transport = {
+      ...fakeTransport(contract),
+      exportData: vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async () => {
+        throw new DetachedBridgeRequestError("R export is still settling.", "timeout", true, lateWriter.promise);
+      })
+    };
+    const atomic = fakeAtomicTransaction();
+    const diagnostics = vi.fn();
+    const bridge = createBridge(transport, undefined, diagnostics, undefined, {
+      beginTransaction: vi.fn(async () => atomic.transaction)
+    });
+    await bridge.request(documentOpenRequest("editing"));
+
+    const exportRequest = bridge.request({
+      kind: "exportData",
+      sessionId,
+      revision: 0,
+      path: "/workspace/out.csv",
+      format: "csv"
+    });
+    await expect(exportRequest).rejects.toBeInstanceOf(DetachedBridgeRequestError);
+    expect(atomic.rollback).toHaveBeenCalledOnce();
+    expect(atomic.abandon).not.toHaveBeenCalled();
+
+    lateWriter.resolve();
+    await Promise.resolve();
+    expect(atomic.rollback).toHaveBeenCalledOnce();
+    expect(diagnostics).not.toHaveBeenCalled();
+  });
+
+  it("rolls back instead of publishing when the R runtime generation changes during export", async () => {
+    const contract = frameContract();
+    const lateResult = deferred<{
+      sessionId: string;
+      revision: number;
+      format: "csv";
+      rows: number;
+      columns: number;
+    }>();
+    const transport = {
+      ...fakeTransport(contract),
+      exportData: vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async () => lateResult.promise)
+    };
+    const atomic = fakeAtomicTransaction();
+    const bridge = createBridge(transport, undefined, undefined, undefined, {
+      beginTransaction: vi.fn(async () => atomic.transaction)
+    });
+    await bridge.request(documentOpenRequest("editing"));
+
+    const pending = bridge.request({
+      kind: "exportData",
+      sessionId,
+      revision: 0,
+      path: "/workspace/out.csv",
+      format: "csv"
+    });
+    await vi.waitFor(() => expect(transport.exportData).toHaveBeenCalledOnce());
+    transport.invalidate();
+    lateResult.resolve({
+      sessionId,
+      revision: 0,
+      format: "csv",
+      rows: 1,
+      columns: 8
+    });
+
+    await expect(pending).resolves.toMatchObject({ kind: "error", code: "r_kernel_changed" });
+    expect(atomic.rollback).toHaveBeenCalledOnce();
+    expect(atomic.commit).not.toHaveBeenCalled();
+  });
+
+  it("rolls back an R export whose pinned revision changes before the writer returns", async () => {
+    const source = frameContract();
+    const renamed = renameContract(source, "r:c:0", "amount");
+    const lateResult = deferred<{
+      sessionId: string;
+      revision: number;
+      format: "csv";
+      rows: number;
+      columns: number;
+    }>();
+    const transport = {
+      ...fakeTransport(source),
+      exportData: vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async () => lateResult.promise)
+    };
+    const atomic = fakeAtomicTransaction();
+    const bridge = createBridge(transport, undefined, undefined, undefined, {
+      beginTransaction: vi.fn(async () => atomic.transaction)
+    });
+    await bridge.request(documentOpenRequest("editing"));
+
+    const pending = bridge.request({
+      kind: "exportData",
+      sessionId,
+      revision: 0,
+      path: "/workspace/out.csv",
+      format: "csv"
+    });
+    await vi.waitFor(() => expect(transport.exportData).toHaveBeenCalledOnce());
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: renamed,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(bridge.request(renamePreviewRequest(0))).resolves.toMatchObject({ kind: "stepPreview", revision: 1 });
+    lateResult.resolve({
+      sessionId,
+      revision: 0,
+      format: "csv",
+      rows: 1,
+      columns: 8
+    });
+
+    await expect(pending).resolves.toMatchObject({ kind: "error", code: "stale_response" });
+    expect(atomic.rollback).toHaveBeenCalledOnce();
+    expect(atomic.commit).not.toHaveBeenCalled();
+  });
+
+  it("does not reserve an R export file while a draft is open", async () => {
+    const source = frameContract();
+    const renamed = renameContract(source, "r:c:0", "amount");
+    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>();
+    const transport = { ...fakeTransport(source), exportData };
+    const beginTransaction = vi.fn(async () => fakeAtomicTransaction().transaction);
+    const bridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
+    await bridge.request(documentOpenRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: renamed,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+    await bridge.request(renamePreviewRequest(0));
+
+    await expect(
+      bridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 1,
+        path: "/workspace/out.csv",
+        format: "csv"
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+    expect(beginTransaction).not.toHaveBeenCalled();
+    expect(exportData).not.toHaveBeenCalled();
   });
 
   it("keeps stable R row identities through compound sort preview, apply, edit, discard, inspection, and undo", async () => {
@@ -4306,13 +4578,47 @@ function createBridge(
   transport: FakeRTransport,
   createSessionId?: () => string,
   diagnosticSink?: (message: string) => void,
-  verifiedVariable?: RNotebookVariableDescriptor
+  verifiedVariable?: RNotebookVariableDescriptor,
+  fileOperations?: RKernelBridgeFileOperations
 ): RKernelBridge {
   const context = {
     extension: { packageJSON: { version: "2.0.0-preview.1" } },
     subscriptions: []
   } as unknown as vscode.ExtensionContext;
-  return new RKernelBridge(context, transport, createSessionId, diagnosticSink, verifiedVariable);
+  return new RKernelBridge(context, transport, createSessionId, diagnosticSink, verifiedVariable, fileOperations);
+}
+
+function fakeAtomicTransaction(): {
+  transaction: AtomicFileTransaction;
+  write: ReturnType<typeof vi.fn>;
+  prepareExternalWriter: ReturnType<typeof vi.fn>;
+  commit: ReturnType<typeof vi.fn>;
+  rollback: ReturnType<typeof vi.fn>;
+  abandon: ReturnType<typeof vi.fn>;
+} {
+  const write = vi.fn(async (_contents: Uint8Array) => undefined);
+  const prepareExternalWriter = vi.fn(async () => ({
+    path: "/workspace/.openwrangler-export.tmp",
+    identity: { dev: 101n, ino: 202n }
+  }));
+  const commit = vi.fn(async () => undefined);
+  const rollback = vi.fn(async () => undefined);
+  const abandon = vi.fn(async () => undefined);
+  return {
+    transaction: {
+      temporaryPath: "/workspace/.openwrangler-export.tmp",
+      write,
+      prepareExternalWriter,
+      commit,
+      rollback,
+      abandon
+    },
+    write,
+    prepareExternalWriter,
+    commit,
+    rollback,
+    abandon
+  };
 }
 
 function openRequest(mode: OpenSessionRequest["mode"] = "viewing"): OpenSessionRequest {
@@ -4330,6 +4636,21 @@ function openRequest(mode: OpenSessionRequest["mode"] = "viewing"): OpenSessionR
     pageSize: 20,
     columnOffset: 0,
     columnLimit: 8
+  };
+}
+
+function documentOpenRequest(
+  mode: OpenSessionRequest["mode"] = "editing",
+  uri = "file:///workspace/orders.R"
+): OpenSessionRequest {
+  return {
+    ...openRequest(mode),
+    source: {
+      kind: "documentVariable",
+      label: "orders",
+      uri,
+      variableName: "orders"
+    }
   };
 }
 

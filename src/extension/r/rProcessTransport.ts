@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, mkdtemp, open, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -18,6 +18,7 @@ import {
   R_KERNEL_MAX_RESPONSE_BYTES,
   R_KERNEL_TRANSPORT_VERSION,
   type RKernelColumnReference,
+  type RKernelDataExportResult,
   type RKernelDatasetStatsResult,
   type RKernelPageWindow,
   type RKernelPlanUpdatedResult,
@@ -44,6 +45,7 @@ const TERMINATION_STOP_MS = 1_000;
 const FORCED_STOP_MS = 2_000;
 const PROCESS_GROUP_POLL_MS = 25;
 const MAX_RETIRED_SESSION_IDS = 1_024;
+const EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
 
 export interface RProcessVariableDescriptor {
   readonly name: string;
@@ -73,6 +75,7 @@ interface OwnedProcess {
   readonly child: ChildProcessWithoutNullStreams;
   readonly root: string;
   readonly responseRoot: string;
+  readonly exportRoot: string;
   readonly closed: Promise<ProcessClose>;
   closeState?: ProcessClose;
   spawnError?: Error;
@@ -278,6 +281,73 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       throw new Error("The R process returned mismatched column values.");
     }
     return Object.freeze({ column: response.column, values: response.values, hasMore: response.hasMore });
+  }
+
+  async exportData(
+    sessionId: string,
+    revision: number,
+    format: "csv",
+    writeChunk: (chunk: Uint8Array) => Promise<void>,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelDataExportResult> {
+    this.assertActive();
+    if (typeof writeChunk !== "function") throw new TypeError("The R export chunk writer must be a function.");
+    if (!this.mappedSessions.has(sessionId) || !this.owned) {
+      throw new Error(`Open Wrangler has no live R process session ${sessionId}.`);
+    }
+    const exportId = this.createId();
+    const artifactPath = path.join(this.owned.exportRoot, `${exportId}.csv`);
+    const request = this.request("exportData", { sessionId, revision, exportId, format });
+    encodeRKernelRequest(request);
+    let deferredCleanup = false;
+    try {
+      const response = await this.executeMapped(request, options);
+      if (response.kind === "error") throw new RKernelDiagnosticError(response);
+      if (
+        response.kind !== "dataExported" ||
+        response.sessionId !== sessionId ||
+        response.revision !== revision ||
+        response.exportId !== exportId ||
+        response.format !== format
+      ) {
+        throw new Error("The R process returned a mismatched data export.");
+      }
+      await streamPrivateExportArtifact(artifactPath, response.bytes, writeChunk);
+      return Object.freeze({
+        sessionId,
+        revision,
+        format: response.format,
+        rows: response.rows,
+        columns: response.columns
+      });
+    } catch (error) {
+      if (error instanceof DetachedBridgeRequestError && error.dispatched) {
+        deferredCleanup = true;
+        const cleanup = error.settlement.then(() => this.removePrivateExportArtifactOrDispose(artifactPath));
+        throw new DetachedBridgeRequestError(error.message, error.reason, true, cleanup);
+      }
+      throw error;
+    } finally {
+      if (!deferredCleanup) await this.removePrivateExportArtifactOrDispose(artifactPath);
+    }
+  }
+
+  private async removePrivateExportArtifactOrDispose(artifactPath: string): Promise<void> {
+    try {
+      await removePrivateExportArtifact(artifactPath);
+    } catch (error) {
+      const cleanupError = error instanceof Error ? error : new Error(String(error));
+      this.publishInvalidation(cleanupError);
+      try {
+        await this.dispose();
+      } catch (disposeError) {
+        throw new AggregateError(
+          [cleanupError, disposeError],
+          "Open Wrangler could not remove a private R export artifact or dispose its owning process."
+        );
+      }
+      throw cleanupError;
+    }
   }
 
   async previewStep(
@@ -563,6 +633,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     const root = await mkdtemp(path.join(parent, "openwrangler-r-"));
     const responseRoot = path.join(root, "responses");
     const documentRoot = path.join(root, "documents");
+    const exportRoot = path.join(root, "exports");
     let owned: OwnedProcess | undefined;
     try {
       await chmod(root, 0o700);
@@ -572,6 +643,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
         await writeFile(documentPath, this.documentTexts[index]!, { encoding: "utf8", flag: "wx", mode: 0o400 });
       }
       await mkdir(responseRoot, { mode: 0o700 });
+      await mkdir(exportRoot, { mode: 0o700 });
       this.assertActive();
 
       const child = spawn(this.options.rscriptPath, ["--vanilla", processAgent], {
@@ -583,13 +655,14 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
           ...process.env,
           OPEN_WRANGLER_R_RUNTIME_ROOT: runtimeRoot,
           OPEN_WRANGLER_R_DOCUMENT_ROOT: documentRoot,
-          OPEN_WRANGLER_R_RESPONSE_ROOT: responseRoot
+          OPEN_WRANGLER_R_RESPONSE_ROOT: responseRoot,
+          OPEN_WRANGLER_R_EXPORT_ROOT: exportRoot
         }
       });
       child.stdout.on("data", () => undefined);
       child.stderr.on("data", () => undefined);
 
-      owned = createOwnedProcess(child, root, responseRoot, (error) => {
+      owned = createOwnedProcess(child, root, responseRoot, exportRoot, (error) => {
         if (!this.stopping) {
           this.publishInvalidation(error);
           void stopOwnedProcess(owned as OwnedProcess).catch(() => undefined);
@@ -735,13 +808,14 @@ function createOwnedProcess(
   child: ChildProcessWithoutNullStreams,
   root: string,
   responseRoot: string,
+  exportRoot: string,
   onUnexpectedClose: (error: Error) => void
 ): OwnedProcess {
   let resolveClosed!: (value: ProcessClose) => void;
   const closed = new Promise<ProcessClose>((resolve) => {
     resolveClosed = resolve;
   });
-  const owned: OwnedProcess = { child, root, responseRoot, closed };
+  const owned: OwnedProcess = { child, root, responseRoot, exportRoot, closed };
   child.on("error", (error) => {
     owned.spawnError = error;
     if (child.pid === undefined && !owned.closeState) {
@@ -809,6 +883,66 @@ async function tryReadResponse(responsePath: string, maximumBytes: number): Prom
   }
   await unlink(responsePath);
   return bytes.toString("utf8");
+}
+
+async function streamPrivateExportArtifact(
+  artifactPath: string,
+  expectedBytes: number,
+  writeChunk: (chunk: Uint8Array) => Promise<void>
+): Promise<void> {
+  const expectedSize = BigInt(expectedBytes);
+  const entry = await lstat(artifactPath, { bigint: true });
+  if (entry.isSymbolicLink() || !entry.isFile() || entry.nlink !== 1n || entry.size !== expectedSize) {
+    throw new Error("Open Wrangler rejected an invalid private R export artifact.");
+  }
+  const noFollow = "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await open(artifactPath, fsConstants.O_RDONLY | noFollow);
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      opened.dev !== entry.dev ||
+      opened.ino !== entry.ino ||
+      opened.size !== expectedSize
+    ) {
+      throw new Error("Open Wrangler rejected a changing private R export artifact.");
+    }
+    let offset = 0;
+    while (offset < expectedBytes) {
+      const length = Math.min(EXPORT_CHUNK_BYTES, expectedBytes - offset);
+      const chunk = Buffer.allocUnsafe(length);
+      const { bytesRead } = await handle.read(chunk, 0, length, offset);
+      if (bytesRead <= 0) throw new Error("Open Wrangler received a truncated private R export artifact.");
+      await writeChunk(chunk.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    const afterRead = await handle.stat({ bigint: true });
+    const currentEntry = await lstat(artifactPath, { bigint: true });
+    if (
+      afterRead.dev !== opened.dev ||
+      afterRead.ino !== opened.ino ||
+      afterRead.size !== opened.size ||
+      currentEntry.isSymbolicLink() ||
+      !currentEntry.isFile() ||
+      currentEntry.nlink !== 1n ||
+      currentEntry.dev !== opened.dev ||
+      currentEntry.ino !== opened.ino ||
+      currentEntry.size !== opened.size
+    ) {
+      throw new Error("Open Wrangler rejected a changing private R export artifact.");
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function removePrivateExportArtifact(artifactPath: string): Promise<void> {
+  try {
+    await unlink(artifactPath);
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
 }
 
 function decodeReadyPayload(payload: string): RProcessVariableDiscovery {

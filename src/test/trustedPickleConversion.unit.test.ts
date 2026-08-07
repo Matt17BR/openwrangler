@@ -549,6 +549,7 @@ function atomicTransaction(): {
   rollback: ReturnType<typeof vi.fn>;
   abandon: ReturnType<typeof vi.fn>;
 } {
+  const write = vi.fn(async (_contents: Uint8Array) => undefined);
   const commit = vi.fn(async () => undefined);
   const prepareExternalWriter = vi.fn(async () => ({
     path: "/workspace/.openwrangler-temp.parquet",
@@ -559,6 +560,7 @@ function atomicTransaction(): {
   return {
     value: {
       temporaryPath: "/workspace/.openwrangler-temp.parquet",
+      write,
       prepareExternalWriter,
       commit,
       rollback,

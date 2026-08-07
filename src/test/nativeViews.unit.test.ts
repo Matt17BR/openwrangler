@@ -842,6 +842,32 @@ describe("native operation commands", () => {
     );
   });
 
+  it("offers only CSV when an editable R document session advertises native export", async () => {
+    const active = rDocumentSnapshot();
+    active.metadata.capabilities = {
+      ...active.metadata.capabilities,
+      exportCsv: true,
+      exportParquet: false
+    };
+    const registered = register(active);
+    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => (items as unknown[])[0]);
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+    expect(nativeMocks.showQuickPick).toHaveBeenCalledWith(
+      [{ label: "CSV", description: "Comma-separated values", format: "csv" }],
+      { title: "Export Cleaned Data", placeHolder: "Choose a file format" }
+    );
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith({
+      title: "Export Cleaned Data",
+      defaultUri: expect.objectContaining({ fsPath: "/workspace/orders.cleaned.csv" }),
+      filters: { CSV: ["csv"] },
+      saveLabel: "Export data"
+    });
+    expect(registered.exportData).toHaveBeenCalledWith("session", 0, "/workspace/orders.cleaned.csv", "csv");
+  });
+
   it("rejects a session-bound export when its originating revision advances during the Save dialog", async () => {
     const origin = exportableSnapshot("origin-session", "orders.csv", 3);
     const registered = register(origin);

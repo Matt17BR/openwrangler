@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import { supportsViewPredicate } from "../../shared/filterModel";
@@ -16,6 +17,7 @@ import {
   type DropDuplicatesTransformStep,
   type DropMissingRowsTransformStep,
   type ErrorResponse,
+  type ExportDataRequest,
   type FindReplaceTransformStep,
   type FillMissingValuesTransformStep,
   type FilterModel,
@@ -46,6 +48,7 @@ import {
   type ValuesRequest
 } from "../../shared/protocol";
 import { DetachedBridgeRequestError, type BridgeRequestOptions, type OpenWranglerBridge } from "../dataBridge";
+import { beginAtomicFileTransaction, type AtomicFileTransaction } from "../files/safeFileExport";
 import {
   RKernelDiagnosticError,
   RKernelSessionTransport,
@@ -55,6 +58,7 @@ import {
 import type {
   RKernelColumnFilter,
   RKernelColumnReference,
+  RKernelDataExportResult,
   RKernelDatasetStatsResult,
   RKernelPageWindow,
   RKernelPlanUpdatedResult,
@@ -80,6 +84,7 @@ import {
 } from "./rNotebookVariableDiscovery";
 
 const CLOSED_SESSION_LIMIT = 1_024;
+const R_DATA_EXPORT_TIMEOUT_MS = 30 * 60_000;
 const R_PRIVATE_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_";
 const R_SUPPORTED_OPERATIONS = Object.freeze([
   "sortRows",
@@ -138,6 +143,10 @@ const R_BRIDGE_CAPABILITIES: SourceCapabilities = Object.freeze({
   notebookInsert: true,
   documentInsert: true
 });
+
+export interface RKernelBridgeFileOperations {
+  readonly beginTransaction?: typeof beginAtomicFileTransaction;
+}
 
 /** Narrow transport surface used by the canonical bridge and its contract tests. */
 export interface RKernelBridgeTransport {
@@ -199,6 +208,13 @@ export interface RKernelBridgeTransport {
     outputSchema: readonly RColumnSchema[],
     options?: RKernelRequestOptions
   ): Promise<RKernelStepInspectionResult>;
+  exportData?(
+    sessionId: string,
+    revision: number,
+    format: "csv",
+    writeChunk: (chunk: Uint8Array) => Promise<void>,
+    options?: RKernelRequestOptions
+  ): Promise<RKernelDataExportResult>;
   close(sessionId: string, options?: RKernelRequestOptions): Promise<void>;
   isSessionMapped(sessionId: string): boolean;
   dispose(): Promise<void>;
@@ -213,6 +229,7 @@ interface RBridgeSession {
   readonly sourceSchema: readonly ColumnSchema[];
   readonly sourceRSchema: readonly RColumnSchema[];
   readonly sourceKeyColumnIds: readonly string[];
+  readonly exportCsv: boolean;
   readonly rowNames: RFramePageContract["frameSemantics"]["rowNames"];
   mode: SessionMode;
   revision: number;
@@ -261,6 +278,7 @@ export class RKernelBridge implements OpenWranglerBridge {
   private readonly closedSessionIds = new Set<string>();
   private readonly diagnosticSink: (message: string) => void;
   private readonly runtimeVersion: string;
+  private readonly beginFileTransaction: typeof beginAtomicFileTransaction;
   private kernelGeneration = 0;
   private idleRequested = false;
   private disposed = false;
@@ -287,12 +305,14 @@ export class RKernelBridge implements OpenWranglerBridge {
     transport: RKernelBridgeTransport,
     private readonly createSessionId: () => string = randomUUID,
     diagnosticSink?: (message: string) => void,
-    private readonly verifiedVariable?: RNotebookVariableDescriptor
+    private readonly verifiedVariable?: RNotebookVariableDescriptor,
+    fileOperations: RKernelBridgeFileOperations = {}
   ) {
     this.transport = transport;
     this.diagnosticSink = diagnosticSink ?? ((message) => appendRDiagnostic(context, message));
     const version = context.extension?.packageJSON?.version;
     this.runtimeVersion = typeof version === "string" && version.length > 0 ? version : "0.0.0";
+    this.beginFileTransaction = fileOperations.beginTransaction ?? beginAtomicFileTransaction;
     this.invalidationSubscription = transport.onDidInvalidateKernel(() => {
       this.kernelGeneration += 1;
       for (const session of this.sessions.values()) session.invalidated = true;
@@ -329,6 +349,8 @@ export class RKernelBridge implements OpenWranglerBridge {
         return this.updatePlan(request, options);
       case "inspectStep":
         return this.inspectStep(request, options);
+      case "exportData":
+        return this.exportData(request, options);
       case "closeSession":
         return this.closeSession(request.sessionId, options);
       default:
@@ -396,7 +418,13 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (this.verifiedVariable && result.page.dataframeFlavor !== this.verifiedVariable.dataframeFlavor) {
         throw new Error("The selected R dataframe changed before Open Wrangler opened it.");
       }
-      const session = sessionFromContract(sessionId, request.source, request.mode ?? "viewing", result.page);
+      const session = sessionFromContract(
+        sessionId,
+        request.source,
+        request.mode ?? "viewing",
+        result.page,
+        isExportableRDocumentSource(request.source) && this.transport.exportData !== undefined
+      );
       this.sessions.set(sessionId, session);
       return {
         kind: "sessionOpened",
@@ -1118,6 +1146,127 @@ export class RKernelBridge implements OpenWranglerBridge {
     }
   }
 
+  private async exportData(request: ExportDataRequest, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) return unknownSessionError(request.sessionId);
+    if (session.invalidated) return kernelChangedError(request.sessionId);
+    const writer = this.transport.exportData;
+    if (!session.exportCsv || !writer || request.format !== "csv") {
+      return errorResponse(
+        "unsupported_operation",
+        "Cleaned-data export is available as CSV for local R document sessions opened in Editing mode.",
+        true,
+        request.sessionId
+      );
+    }
+    if (session.mode !== "editing") {
+      return errorResponse(
+        "unsupported_mode",
+        "Change this R session to Editing mode before exporting cleaned data.",
+        true,
+        request.sessionId
+      );
+    }
+    const stale = staleRevisionError(session, request.revision);
+    if (stale) return stale;
+    if (session.draftStep) {
+      return errorResponse(
+        "invalid_request",
+        "Apply or discard the current R draft before exporting cleaned data.",
+        true,
+        request.sessionId
+      );
+    }
+    if (!path.isAbsolute(request.path)) {
+      return errorResponse(
+        "invalid_request",
+        "Choose an absolute file-system destination for the R export.",
+        true,
+        request.sessionId
+      );
+    }
+
+    const expectedGeneration = this.kernelGeneration;
+    const expectedRevision = session.revision;
+    const expectedRows = session.committedRows;
+    const expectedColumns = session.committedSchema.length;
+    let transaction: AtomicFileTransaction | undefined;
+    let settled = false;
+    try {
+      transaction = await this.beginFileTransaction({
+        destination: vscode.Uri.file(request.path),
+        protectedSources: [documentSourceUri(session.source)]
+      });
+      const output = transaction;
+      if (this.disposed || this.sessions.get(request.sessionId) !== session) {
+        await transaction.rollback();
+        settled = true;
+        return unknownSessionError(request.sessionId);
+      }
+      if (session.invalidated || expectedGeneration !== this.kernelGeneration) {
+        await transaction.rollback();
+        settled = true;
+        return kernelChangedError(request.sessionId);
+      }
+      if (session.revision !== expectedRevision) {
+        await transaction.rollback();
+        settled = true;
+        return staleResponseError(request.sessionId);
+      }
+      const result = await writer.call(
+        this.transport,
+        request.sessionId,
+        expectedRevision,
+        "csv",
+        (chunk) => output.write(chunk),
+        transportOptions({
+          ...options,
+          timeoutMs: options.timeoutMs ?? R_DATA_EXPORT_TIMEOUT_MS
+        })
+      );
+
+      if (this.disposed || this.sessions.get(request.sessionId) !== session) {
+        await transaction.rollback();
+        settled = true;
+        return unknownSessionError(request.sessionId);
+      }
+      if (session.invalidated || expectedGeneration !== this.kernelGeneration) {
+        await transaction.rollback();
+        settled = true;
+        return kernelChangedError(request.sessionId);
+      }
+      if (session.revision !== expectedRevision) {
+        await transaction.rollback();
+        settled = true;
+        return staleResponseError(request.sessionId);
+      }
+      assertRExportResult(result, request.sessionId, expectedRevision, expectedRows, expectedColumns);
+      await transaction.commit();
+      settled = true;
+      return {
+        kind: "dataExported",
+        revision: expectedRevision,
+        path: request.path,
+        format: "csv",
+        shape: { rows: result.rows, columns: result.columns }
+      };
+    } catch (error) {
+      if (transaction && !settled) {
+        try {
+          await transaction.rollback();
+          settled = true;
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            "R data export failed and its unpublished temporary file could not be settled safely."
+          );
+        }
+      }
+      if (error instanceof RKernelDiagnosticError) return diagnosticResponse(error, request.sessionId);
+      throw error;
+    }
+  }
+
   private async closeSession(sessionId: string, options: BridgeRequestOptions): Promise<OpenWranglerResponse> {
     const existingClose = this.closeOperations.get(sessionId);
     if (existingClose) return existingClose;
@@ -1609,7 +1758,8 @@ function sessionFromContract(
   sessionId: string,
   source: SessionSource,
   mode: SessionMode,
-  contract: RFramePageContract
+  contract: RFramePageContract,
+  exportCsv: boolean
 ): RBridgeSession {
   const schema = schemaFromContract(contract);
   return {
@@ -1620,6 +1770,7 @@ function sessionFromContract(
     sourceSchema: schema,
     sourceRSchema: contract.schema,
     sourceKeyColumnIds: Object.freeze([...contract.frameSemantics.keyColumnIds]),
+    exportCsv,
     committedSchema: schema,
     committedRSchema: contract.schema,
     committedRows: contract.page.totalRows,
@@ -1651,7 +1802,7 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.row
     rDataframeFlavor: session.dataframeFlavor,
     mode: session.mode,
     source: copySource(session.source),
-    capabilities: rCapabilitiesForSource(session.source),
+    capabilities: rCapabilitiesForSource(session.source, session.mode === "editing" && session.exportCsv),
     shape: { rows: session.rows, columns: session.schema.length },
     filteredShape: { rows: filteredRows, columns: session.schema.length },
     schema: copySchema(session.schema),
@@ -1665,12 +1816,59 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.row
   };
 }
 
-function rCapabilitiesForSource(source: SessionSource): SourceCapabilities {
+function rCapabilitiesForSource(source: SessionSource, exportCsv: boolean): SourceCapabilities {
   return {
     ...R_BASE_CAPABILITIES,
+    exportCsv,
     notebookInsert: source.kind === "notebookVariable",
     ...(source.kind === "documentVariable" ? { documentInsert: true } : {})
   };
+}
+
+function documentSourceUri(source: SessionSource): vscode.Uri {
+  if (source.kind !== "documentVariable" || !source.uri) {
+    throw new TypeError("R CSV export requires an originating R document URI.");
+  }
+  const uri = vscode.Uri.parse(source.uri, true);
+  if (uri.scheme !== "file" || !uri.fsPath) {
+    throw new TypeError("R CSV export requires a local R document source.");
+  }
+  return uri;
+}
+
+function isExportableRDocumentSource(source: SessionSource): boolean {
+  if (source.kind !== "documentVariable" || !source.uri) return false;
+  try {
+    const uri = vscode.Uri.parse(source.uri, true);
+    // The public export request currently retains only a filesystem path, not
+    // the Save-dialog URI authority. Do not advertise remote export until the
+    // host can preserve and revalidate that authority end to end.
+    return uri.scheme === "file" && Boolean(uri.fsPath);
+  } catch {
+    return false;
+  }
+}
+
+function assertRExportResult(
+  result: RKernelDataExportResult,
+  sessionId: string,
+  revision: number,
+  rows: number,
+  columns: number
+): void {
+  if (
+    result.sessionId !== sessionId ||
+    result.revision !== revision ||
+    result.format !== "csv" ||
+    !Number.isSafeInteger(result.rows) ||
+    result.rows < 0 ||
+    result.rows !== rows ||
+    !Number.isSafeInteger(result.columns) ||
+    result.columns < 0 ||
+    result.columns !== columns
+  ) {
+    throw new Error("The R runtime returned a mismatched cleaned-data export result.");
+  }
 }
 
 function gridPageFromContract(contract: RFramePageContract): GridPage {

@@ -7,7 +7,8 @@ if (length(args) != 0L) {
 startup_names <- c(
   "OPEN_WRANGLER_R_RUNTIME_ROOT",
   "OPEN_WRANGLER_R_DOCUMENT_ROOT",
-  "OPEN_WRANGLER_R_RESPONSE_ROOT"
+  "OPEN_WRANGLER_R_RESPONSE_ROOT",
+  "OPEN_WRANGLER_R_EXPORT_ROOT"
 )
 startup_values <- Sys.getenv(startup_names, unset = NA_character_)
 Sys.unsetenv(startup_names)
@@ -18,6 +19,7 @@ if (anyNA(startup_values) || any(!nzchar(startup_values))) {
 runtime_root <- normalizePath(startup_values[[1L]], winslash = "/", mustWork = TRUE)
 document_root <- normalizePath(startup_values[[2L]], winslash = "/", mustWork = TRUE)
 response_root <- normalizePath(startup_values[[3L]], winslash = "/", mustWork = TRUE)
+export_root <- normalizePath(startup_values[[4L]], winslash = "/", mustWork = TRUE)
 
 protocol_version <- 1L
 maximum_request_bytes <- 16L * 1024L * 1024L
@@ -163,7 +165,7 @@ initialize <- function() {
 
   frame_contract <- get("openwrangler_r_frame_contract", envir = runtime_environment, inherits = FALSE)
   kernel_agent <- get("openwrangler_r_kernel_agent", envir = runtime_environment, inherits = FALSE)
-  agent <- kernel_agent$new_agent(frame_contract, document_environment)
+  agent <- kernel_agent$new_agent(frame_contract, document_environment, export_root)
 
   names <- sort(ls(envir = document_environment, all.names = TRUE, sorted = FALSE), method = "radix")
   truncated <- length(names) > maximum_scanned_bindings

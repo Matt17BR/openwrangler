@@ -171,6 +171,12 @@ temporary directory, and responses are published by atomic rename. Requests are 
 different source sessions may run independently. Closing the panel closes its R session, stops the owned process, and
 removes its temporary directory.
 
+An editable local R document session can export its committed cleaning result as CSV. R writes only to an opaque file in
+that process's private temporary directory. The extension opens and verifies that regular file, streams it in bounded
+chunks into the existing atomic file transaction, rechecks the R artifact, and then publishes the user-selected
+destination. R never receives the destination path. Drafts, stale revisions, notebook kernels, and Parquet requests
+are rejected. Viewing filters and sorts are not part of the exported cleaning result.
+
 Direct R-document execution is currently disabled on Windows. Node's ordinary child-process API cannot prove that every
 process started by user R code has exited. The command can be enabled there only after the extension owns the R
 process tree with a Windows Job Object or an equivalent mechanism. IRkernel notebook sessions are unaffected.
@@ -182,8 +188,8 @@ code. Native variable discovery requires `jsonlite` and `rlang` in the selected 
 `data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. Notebook and R-document
 commands enable native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
-Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, and Find and replace. Other
-cleaning operations and cleaned-data export remain unsupported. Generated R can
+Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
+Capitalize, Strip text, and Split text. Other cleaning operations remain unsupported. Generated R can
 be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session. Notebook
 insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the complete
 resulting document text; R Markdown and Quarto insert a new top-level `{r}` cell, and R Markdown rejects generated

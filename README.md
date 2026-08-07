@@ -200,12 +200,14 @@ from both ends. Split text uses a literal delimiter, creates a new column, and r
 missing. Find and replace supports literal text and regular expressions. In-place text changes cannot target an active
 `data.table` key; choosing a new output column leaves the key unchanged.
 Generated R can be copied, saved as a script, or inserted into the notebook or R document that opened the dataframe.
+A local R document session opened in Editing mode can also export its cleaned result as CSV. R notebooks cannot export
+cleaned data yet, and R Parquet export is not supported yet.
 
 Convert type does not change an active `data.table` key column. Clone that column first, then convert the copy.
 
 The default outputs from `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and data-table
 paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are not
-supported. The remaining cleaning operations and cleaned-data export are not supported yet. The
+supported. The remaining cleaning operations are not supported yet. The
 [current R notebook screenshots](https://github.com/Matt17BR/openwrangler/blob/v2/docs/media-gallery.md#r-notebooks-open-wrangler-2)
 show the live variable picker, profiles, a Rename Column draft, and generated R inserted into its notebook.
 
@@ -218,7 +220,7 @@ show the live variable picker, profiles, a Rename Column draft, and generated R 
   </tr>
   <tr>
     <td>Copy generated code or save it as a Python or R script. Notebook and R-source sessions can also insert it into the document that opened the dataframe.</td>
-    <td>Editing sessions backed by Pandas, Polars, or DuckDB can export a cleaned CSV or Parquet file without overwriting the source.</td>
+    <td>Pandas, Polars, and DuckDB editing sessions export cleaned CSV or Parquet files. Local R document sessions opened in Editing mode export cleaned CSV files.</td>
   </tr>
 </table>
 
@@ -290,8 +292,9 @@ before v2 ships.
   `.Rmd`, and `.qmd` document runs are available on the development branch.
   Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
   Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, and Split text are
-  available now. Generated R can be inserted into its originating notebook or R document. The rest of the cleaning
-  catalog and data export are still planned. The
+  available now. Generated R can be inserted into its originating notebook or R document, and local R document sessions
+  opened in Editing mode can export cleaned CSV files. The rest of the cleaning catalog, cleaned-data export from R
+  notebooks, and R Parquet export are still planned. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   records the IRkernel-first plan and release boundary. Progress is tracked in
   [#87](https://github.com/Matt17BR/openwrangler/issues/87).

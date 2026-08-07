@@ -563,9 +563,12 @@ The fixture reads a relative CSV, creates a base data frame, tibble, and keyed d
 **Run R Document in Open Wrangler…** command and real variable picker. The plain-R test checks an editing session, paging, an exact
 numeric profile, a filter, two sort keys, Rename preview/apply/undo, and generated R. It keeps a different `.R` editor
 active while inserting the generated code, proving that only the captured unsaved source document changes. Both files
-on disk remain byte-for-byte unchanged. The modified in-memory source is then run again and its generated result is
-opened before the final panel and R process are closed. The phase uses the exact Rscript and temporary R library that
-already belong to the IRkernel test, including `jsonlite` and `rlang`.
+on disk remain byte-for-byte unchanged. After applying Rename, the test also runs the public zero-argument data-export
+command, completes the real Save dialog, and compares the full 240-row CSV with the expected cleaned result. It checks
+that the open source stays clean, the process export directory is empty, and the private process root disappears when
+the session closes. R notebook sessions still advertise neither CSV nor Parquet export. The modified in-memory source
+is then run again and its generated result is opened before the final panel and R process are closed. The phase uses the
+exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite` and `rlang`.
 
 The R Markdown and Quarto fixtures each contain first-line YAML, prose, a non-R cell, a disabled R cell, and one
 top-level backtick-fenced `{r}` cell that reads a relative CSV. The journey opens the dataframe, checks its full schema

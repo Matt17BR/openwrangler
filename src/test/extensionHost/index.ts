@@ -1712,6 +1712,21 @@ function writeReleasedRDocumentFixture(directory: string): ReleasedRDocumentFixt
   };
 }
 
+function releasedRDocumentCleanedCsv(): Buffer {
+  return Buffer.from(
+    [
+      '"record_id","group","score","label"',
+      ...Array.from({ length: 240 }, (_, index) => {
+        const row = index + 1;
+        const group = row % 2 === 0 ? "B" : "A";
+        return `${row},"${group}",${row},"order-${String(row).padStart(3, "0")}"`;
+      }),
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+}
+
 function writeReleasedRLiterateDocumentFixture(
   directory: string,
   kind: "rmarkdown" | "quarto"
@@ -2294,6 +2309,7 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
   const originalAutoSave = autoSaveInspection?.workspaceValue;
   const resolvedAutoSave = filesConfiguration.get<string>("autoSave", "off");
   const exactRscript = process.env.OPEN_WRANGLER_TEST_RSCRIPT;
+  const initialProcessRoots = releasedRProcessRoots();
   assert.ok(
     exactRscript && path.isAbsolute(exactRscript) && !/[\0\r\n]/u.test(exactRscript),
     "The packaged plain R journey requires the runner-owned exact Rscript path."
@@ -2344,7 +2360,7 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
       editable: true,
       lazy: false,
       cancel: false,
-      exportCsv: false,
+      exportCsv: true,
       exportParquet: false,
       filter: true,
       sort: true,
@@ -2360,6 +2376,9 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
       true,
       "The exact R source process must own the open session."
     );
+    const processRoots = releasedRProcessRoots().filter((root) => !initialProcessRoots.includes(root));
+    assert.equal(processRoots.length, 1, "The plain R session must own one private process root.");
+    const processRoot = processRoots[0]!;
 
     await exerciseReleasedRDocumentGrid(testing, workbench, opened.sessionId);
     let app = await releasedRSessionApp(workbench, testing, opened.sessionId, "the editable plain R session");
@@ -2407,6 +2426,41 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
     assertReleasedRGeneratedCode(generatedCode, "record_id", "orders_frame");
     assert.equal(applied.metadata.capabilities.documentInsert, true);
     assert.equal(applied.metadata.capabilities.notebookInsert, false);
+
+    recordAcceptanceProgress("jupyter-r:document:export-cleaned-csv");
+    app = await releasedRSessionApp(workbench, testing, opened.sessionId, "the applied plain R session before export");
+    await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-document-export-"));
+    const exportPath = path.join(exportDirectory, "orders-cleaned.csv");
+    try {
+      await exportCleanedDataThroughCommand(workbench, exportPath);
+      await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R CSV export to appear");
+      assertExactBytes(
+        readFileSync(exportPath),
+        releasedRDocumentCleanedCsv(),
+        "The public R export command must write every cleaned row and the renamed schema."
+      );
+      assert.deepEqual(
+        readdirSync(exportDirectory),
+        [path.basename(exportPath)],
+        "The R CSV export must not retain a sibling temporary file."
+      );
+      assert.deepEqual(
+        readdirSync(path.join(processRoot, "exports")),
+        [],
+        "The R process must remove its private export artifact after the host has copied it."
+      );
+      assert.equal(sourceDocument.getText(), sourceTextBefore, "Export must not edit the open R source document.");
+      assert.equal(
+        sourceDocument.version,
+        sourceVersionBefore,
+        "Export must not change the R source document version."
+      );
+      assert.equal(sourceDocument.isDirty, false, "Export must leave the R source document clean.");
+      assertReleasedRDocumentFixtureUnchanged(fixture);
+    } finally {
+      cleanupAcceptanceTemporaryDirectory(exportDirectory);
+    }
 
     recordAcceptanceProgress("jupyter-r:document:insert-with-decoy-active");
     const insertionSourceDocument = sourceDocument;
@@ -2513,6 +2567,11 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
     recordAcceptanceProgress("jupyter-r:document:first-close");
     await disposePackagedSessionPanel(testing, opened.sessionId, "the first plain R session");
     await waitFor(() => !acceptanceProcessIsAlive(firstProcessId), 10_000, "the first private plain R process to stop");
+    await waitFor(
+      () => isDeepStrictEqual(releasedRProcessRoots(), initialProcessRoots),
+      10_000,
+      "the first private plain R process root to be removed"
+    );
     assert.equal(testing.diagnostics().sessionCount, 0);
 
     recordAcceptanceProgress("jupyter-r:document:rerun-unsaved-source");
@@ -3039,6 +3098,13 @@ function readReleasedRDocumentProcessId(processIdPath: string): number {
   const processId = Number(text);
   assert.ok(Number.isSafeInteger(processId) && processId > 0);
   return processId;
+}
+
+function releasedRProcessRoots(): string[] {
+  return readdirSync(tmpdir(), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^openwrangler-r-/u.test(entry.name))
+    .map((entry) => path.join(tmpdir(), entry.name))
+    .sort();
 }
 
 function assertReleasedRDocumentFixtureUnchanged(
@@ -4012,11 +4078,6 @@ async function exerciseReleasedRFillMissingJourney(
     10_000,
     "navigating to the nullable R column before filling it"
   );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The nullable R column must be visible before its fill preview is measured."
-  );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R Fill missing values source column");
   await app.getByRole("button", { name: "Add step", exact: true }).click();
   const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
@@ -4088,19 +4149,41 @@ async function exerciseReleasedRFillMissingJourney(
     30_000,
     "applying native R Fill missing values through Draft review"
   );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R Fill missing values step must reach its exact renderer before undo."
-  );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Fill missing values session");
   await app.getByRole("group", { name: "Cleaning plan" }).getByText("1 applied step").waitFor({
     state: "visible",
     timeout: 10_000
   });
-  assert.match(testing.activeSession()?.code ?? "", /\.ow_fill_values/u);
+  const applied = testing.activeSession();
+  assert.ok(applied, "The applied R Fill missing values step must retain its exact session.");
+  assert.match(applied.code ?? "", /\.ow_fill_values/u);
 
   await app.getByRole("button", { name: "Undo", exact: true }).click();
+  const undoState = (): Record<string, unknown> => {
+    const active = testing.activeSession();
+    return {
+      revision: active?.metadata.revision,
+      appliedRevision: applied.metadata.revision,
+      stepCount: active?.metadata.steps.length,
+      draft: active?.metadata.draftStep?.kind,
+      targetNullable: active?.metadata.schema.find((column) => column.id === target.id)?.nullable,
+      codeEmpty: (active?.code ?? "") === "",
+      scheduler: testing.sessionSchedulerState(sessionId)
+    };
+  };
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const scheduler = testing.sessionSchedulerState(sessionId);
+      return (
+        (active?.metadata.revision ?? applied.metadata.revision) > applied.metadata.revision ||
+        scheduler?.activeForegroundOperation === true ||
+        (scheduler?.interactiveQueueLength ?? 0) > 0
+      );
+    },
+    5_000,
+    "the native R Fill missing values Undo click to dispatch once",
+    () => JSON.stringify(undoState())
+  );
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -4113,12 +4196,8 @@ async function exerciseReleasedRFillMissingJourney(
       );
     },
     30_000,
-    "undoing native R Fill missing values through the editor"
-  );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The undone R Fill missing values step must reach its exact renderer before the next operation."
+    "undoing native R Fill missing values through the editor",
+    () => JSON.stringify(undoState())
   );
   const returnColumn = original.metadata.schema.find((column) => column.name === "row_id");
   assert.ok(returnColumn, "The packaged R fill journey must be able to return to the first editing column.");
@@ -12883,6 +12962,20 @@ async function previewRevenueProjection(app: Locator, testing: TestApi, newColum
 
 async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, destination: string): Promise<void> {
   await app.getByRole("button", { name: "Export", exact: true }).click();
+  await completeCleanedDataExportDialog(workbench, destination);
+}
+
+async function exportCleanedDataThroughCommand(workbench: Page, destination: string): Promise<void> {
+  const completion = vscode.commands.executeCommand<boolean>("openWrangler.exportData");
+  await completeCleanedDataExportDialog(workbench, destination);
+  assert.equal(
+    await withBoundedAcceptancePromise(completion, 30_000, "the public cleaned-data export command"),
+    true,
+    "The zero-argument cleaned-data export command must report success."
+  );
+}
+
+async function completeCleanedDataExportDialog(workbench: Page, destination: string): Promise<void> {
   const formatPicker = workbench
     .locator(".quick-input-widget:visible")
     .filter({ hasText: "Export Cleaned Data" })

@@ -185,7 +185,8 @@ Fill Missing Values can use the median for a numeric column, the most common non
 or logical column, or a value entered by the user. It keeps factors, dates, datetimes, and `integer64` in their R types.
 All seventeen operations use draft preview, generated R, apply, discard, inspection, latest-step editing, and undo.
 Generated R can be copied, saved as a `.R` script, or inserted into the notebook or R document that opened the
-dataframe.
+dataframe. A local R document session opened in Editing mode can also export its cleaned result as CSV. R notebooks
+cannot export cleaned data yet, and R Parquet export is not supported yet.
 
 <a href="images/editor-acceptance/vscode-notebook-r-editing-dark.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/editor-acceptance/vscode-notebook-r-editing-dark.png" width="960"></a>
 
@@ -201,7 +202,7 @@ Convert type does not replace an active `data.table` key column. Clone that colu
 
 Default frames made with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing base-data-frame, tibble, and
 data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
-not supported. Other R cleaning operations and cleaned-data export are not supported yet.
+not supported. Other R cleaning operations are not supported yet.
 
 Direct R-document execution currently requires macOS or Linux. R notebooks remain available on Windows.
 
