@@ -90,6 +90,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - The Open Wrangler 2 notebook gate now tests local R in VS Code and Cursor and a containerized R kernel in VS Code.
   It covers filters, value selection, profiles, paging, sort order, kernel restart, source preservation, and cleanup
   with fixed R and package versions.
+- Preview releases now run the R 4.5.2 contract tests and install the candidate VSIX in both VS Code and Cursor for
+  the R notebook and document tests before publishing.
 - Added packaged-editor R screenshots for the IRkernel variable picker and a realistic orders dataframe with filters,
   ordered sorts, and an exact revenue profile. The capture rejects clipped columns, visible setup cells, and changes
   to the notebook's source object.

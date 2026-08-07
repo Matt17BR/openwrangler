@@ -433,7 +433,36 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: "4.5.2"
+          use-public-rspm: true
+      - id: rscript
+        name: Locate hosted Rscript
+        shell: bash
+        run: |
+          set -euo pipefail
+          rscript="$(command -v Rscript)"
+          if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
+            echo "Rscript did not resolve to an absolute executable." >&2
+            exit 1
+          fi
+          r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
+          if [[ "$r_version" != "4.5.2" ]]; then
+            echo "Expected hosted R 4.5.2, got $r_version." >&2
+            exit 1
+          fi
+          printf 'executable=%s\n' "$rscript" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$r_version" >> "$GITHUB_OUTPUT"
+          printf 'Hosted R: %s\n' "$r_version"
       - run: npm ci
+      - name: Install R contract packages
+        run: >-
+          Rscript --vanilla -e
+          'install.packages(c("jsonlite", "tibble", "data.table", "bit64"), repos = "https://cloud.r-project.org")'
+      - run: npm run test:r-contract
+        env:
+          RSCRIPT: ${{ steps.rscript.outputs.executable }}
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
@@ -499,6 +528,34 @@ jobs:
         with:
           name: preview-release-jupyter-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - id: canonical_r_jupyter
+        name: Reverify the exact canonical preview artifact for R Jupyter
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-preview-release-artifact.mjs canonical-release
+      - id: packaged_editor_r
+        name: Test R Jupyter in the exact packaged VSIX
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload R-Jupyter failure diagnostics
+        if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preview-release-r-jupyter-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
