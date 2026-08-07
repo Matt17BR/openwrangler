@@ -5031,21 +5031,27 @@ async function exerciseReleasedREditingJourney(
   const appliedLength = testing.activeSession();
   assert.ok(appliedLength, "The applied native R Text Length step must retain its session.");
   assertReleasedRTextLengthGeneratedCode(appliedLength.code ?? "", "label", "label_length");
-  const lengthPage = await testing.request({
-    kind: "getPage",
-    sessionId,
-    revision: appliedLength.metadata.revision,
-    viewRequestId: `${phase}-editing-text-length-page`,
-    offset: 0,
-    limit: 1,
-    filterModel: appliedLength.viewState.filterModel,
-    columnOffset: appliedLength.metadata.schema.length - 1,
-    columnLimit: 1
-  });
-  assert.equal(lengthPage.kind, "page");
-  if (lengthPage.kind !== "page") throw new Error("The applied R Text Length step did not return its output page.");
-  assert.equal(lengthPage.page.columnIds[0], `c:step:${measured.stepId}:0`);
-  assert.equal(lengthPage.page.rows[0]?.values[0]?.display, "8");
+  const derivedColumnId = `c:step:${measured.stepId}:0`;
+  const lengthColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await lengthColumnSearch.fill("label_length");
+  await app
+    .getByRole("option", { name: /^label_length,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await lengthColumnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === derivedColumnId,
+    10_000,
+    "selecting the applied native R Text Length output through column search"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Text Length output column");
+  const lengthHeader = app.locator('th[data-column="label_length"]').first();
+  await lengthHeader.waitFor({ state: "visible", timeout: 10_000 });
+  const lengthColumnPosition = await lengthHeader.getAttribute("data-grid-column");
+  assert.notEqual(lengthColumnPosition, null, "The R Text Length output must expose its full-schema grid position.");
+  const firstLengthCell = app.locator(`td[data-grid-row="0"][data-grid-column="${lengthColumnPosition}"]`).first();
+  await firstLengthCell.getByText("8", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal((await firstLengthCell.textContent())?.trim(), "8");
   await waitForOpenWranglerWebviewAction(workbench, "Add step", true);
   await vscode.commands.executeCommand("openWrangler.selectStep", measured.stepId);
   await waitFor(
