@@ -129,6 +129,27 @@ def execute_generated(engine: Any, frame: Any, plan: list[dict[str, Any]]) -> An
     return namespace["clean_data"](frame)
 
 
+def float_frame(engine: Any, values: list[float | None]) -> Any:
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame({"value": pd.Series(values, dtype="float64")})
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame({"value": pl.Series(values, dtype=pl.Float64)})
+
+    def literal(value: float | None) -> str:
+        if value is None:
+            return "NULL::DOUBLE"
+        if isnan(value):
+            return "'NaN'::DOUBLE"
+        if value == float("inf"):
+            return "'Infinity'::DOUBLE"
+        if value == float("-inf"):
+            return "'-Infinity'::DOUBLE"
+        return f"{value!r}::DOUBLE"
+
+    rows_sql = ", ".join(f"({literal(value)})" for value in values)
+    return duckdb.sql(f'SELECT * FROM (VALUES {rows_sql}) AS source("value")')
+
+
 def schema_column(metadata: dict[str, Any], name: str) -> dict[str, Any]:
     return next(column for column in metadata["schema"] if column["name"] == name)
 
@@ -257,6 +278,84 @@ def test_fill_missing_median_and_typed_value_match_generated_code(engine_and_fra
     ]
     assert normalized_rows(live) == expected
     assert normalized_rows(generated) == expected
+
+
+def test_float_mean_fill_is_stable_for_huge_values_and_matches_generated_code(engine_and_frame) -> None:
+    engine, _source = engine_and_frame
+    source = float_frame(engine, [1e308, 1e308, None, float("nan")])
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    assert [value for (value,) in rows(live)] == pytest.approx([1e308] * 4)
+    assert [value for (value,) in rows(generated)] == pytest.approx([1e308] * 4)
+    assert first_column_type(live) == first_column_type(source)
+    assert first_column_type(generated) == first_column_type(source)
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ([None, float("nan")], "no present numeric values"),
+        ([float("inf"), float("-inf"), None], "positive and negative infinity"),
+    ],
+)
+def test_float_mean_fill_rejects_undefined_results_in_live_and_generated_code(
+    engine_and_frame,
+    values: list[float | None],
+    message: str,
+) -> None:
+    engine, _source = engine_and_frame
+    source = float_frame(engine, values)
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    with pytest.raises(EngineError, match=message):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match=message):
+        execute_generated(engine, source, [operation])
+
+
+def test_float_mean_fill_is_an_exact_noop_without_missing_values(engine_and_frame) -> None:
+    engine, _source = engine_and_frame
+    source = float_frame(engine, [float("inf"), float("-inf")])
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    assert rows(live) == rows(source)
+    assert rows(generated) == rows(source)
+    assert first_column_type(live) == first_column_type(source)
+    assert first_column_type(generated) == first_column_type(source)
+
+
+def test_mean_fill_rejects_non_float_columns_at_execution(engine_and_frame) -> None:
+    engine, _source = engine_and_frame
+    if isinstance(engine, PandasEngine):
+        source = pd.DataFrame({"value": pd.Series([1, None], dtype="Int64")})
+    elif isinstance(engine, PolarsEngine):
+        source = pl.DataFrame({"value": pl.Series([1, None], dtype=pl.Int64)})
+    else:
+        source = duckdb.sql('SELECT * FROM (VALUES (1::BIGINT), (NULL::BIGINT)) AS source("value")')
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    with pytest.raises(EngineError, match="floating-point column"):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match="floating-point column"):
+        execute_generated(engine, source, [operation])
+
+
+def test_pandas_mean_fill_rejects_object_values_outside_float_range() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame({"value": pd.Series([10**400, 1.0, None], dtype=object)})
+    operation = fill_step(bound_ref("c:source:0", "value", 0), {"kind": "mean"})
+
+    assert schema_column({"schema": engine.schema(source)}, "value")["type"] == "float"
+    with pytest.raises(EngineError, match="cannot be represented as a floating-point number"):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match="cannot be represented as a floating-point number"):
+        execute_generated(engine, source, [operation])
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])

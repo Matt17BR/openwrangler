@@ -45,6 +45,7 @@ row_reduction_tibble_session_id <- "27272727-2727-4727-8727-272727272727"
 row_reduction_table_session_id <- "28282828-2828-4828-8828-282828282828"
 row_reduction_view_session_id <- "29292929-2929-4929-8929-292929292929"
 fill_session_id <- "30303030-3030-4030-8030-303030303030"
+mean_fill_session_id <- "60606060-6060-4060-8060-606060606060"
 fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
 most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
 fallback_fill_session_id <- "40404040-4040-4040-8040-404040404040"
@@ -106,7 +107,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 5L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 6L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -3030,6 +3031,57 @@ assert_identical(fill_undo$page$schema[[2L]]$nullable, TRUE, "undo did not resto
 assert_identical(source_environment$fill_frame, fill_source_before, "the R Fill Missing Values lifecycle mutated its source")
 fill_closed <- dispatch("closeSession", list(sessionId = fill_session_id))
 assert_identical(fill_closed$kind, "closed", "the R Fill Missing Values session did not close")
+
+source_environment$mean_fill_frame <- data.frame(
+  value = c(1e308, NA_real_, NaN, 1e308),
+  row.names = c("mean-a", "mean-b", "mean-c", "mean-d")
+)
+mean_fill_before <- unserialize(serialize(source_environment$mean_fill_frame, NULL, version = 3L))
+mean_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = mean_fill_session_id, variableName = "mean_fill_frame", page = page_window())
+)
+assert_identical(mean_fill_open$kind, "page", "the R mean-fill session did not open")
+mean_fill_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = mean_fill_session_id,
+    revision = 0L,
+    step = fill_step("fill-mean", "r:c:0", "value", list(kind = "mean")),
+    page = page_window()
+  )
+)
+assert_identical(mean_fill_preview$kind, "stepPreview", "R mean fill did not preview")
+assert_identical(mean_fill_preview$diff$changedCells, 2L, "R mean fill returned an inexact diff")
+assert_identical(mean_fill_preview$page$schema[[1L]]$nullable, FALSE, "R mean fill stayed nullable")
+mean_fill_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = mean_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(mean_fill_apply$action, "apply", "R mean fill did not apply")
+if (!grepl("mean(.ow_present / .ow_scale)", mean_fill_apply$code, fixed = TRUE)) {
+  stop("generated R mean fill lost its native calculation", call. = FALSE)
+}
+assign("mean_fill_frame", source_environment$mean_fill_frame, envir = .GlobalEnv)
+eval(parse(text = mean_fill_apply$code), envir = .GlobalEnv)
+mean_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+if (!all(is.finite(mean_fill_generated$value))) {
+  stop("generated R mean fill overflowed a finite mean", call. = FALSE)
+}
+if (!all(mean_fill_generated$value == 1e308)) {
+  stop("generated R mean fill changed the result", call. = FALSE)
+}
+assert_identical(class(mean_fill_generated), "data.frame", "generated R mean fill changed the frame class")
+assert_identical(row.names(mean_fill_generated), row.names(mean_fill_before), "generated R mean fill changed row names")
+assert_identical(
+  get("mean_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  mean_fill_before,
+  "generated R mean fill mutated its source"
+)
+assert_identical(source_environment$mean_fill_frame, mean_fill_before, "the R mean-fill lifecycle mutated its source")
+rm("mean_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+mean_fill_closed <- dispatch("closeSession", list(sessionId = mean_fill_session_id))
+assert_identical(mean_fill_closed$kind, "closed", "the R mean-fill session did not close")
 
 source_environment$fallback_fill_frame <- data.frame(
   target_partial = ordered(c(NA, "high", NA, NA), levels = c("low", "high")),

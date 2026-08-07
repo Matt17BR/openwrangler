@@ -223,6 +223,7 @@ def test_fill_missing_binding_rejects_target_cross_type_and_oversized_fallbacks(
 @pytest.mark.parametrize(
     ("column_type", "replacement"),
     [
+        ("float", {"kind": "mean"}),
         ("integer", {"kind": "median"}),
         ("string", {"kind": "mostFrequent"}),
         ("boolean", {"kind": "mostFrequent"}),
@@ -255,6 +256,9 @@ def test_fill_missing_binding_accepts_only_portable_type_matches(
 @pytest.mark.parametrize(
     ("column_type", "replacement"),
     [
+        ("integer", {"kind": "mean"}),
+        ("decimal", {"kind": "mean"}),
+        ("unknown", {"kind": "mean"}),
         ("string", {"kind": "median"}),
         ("integer", {"kind": "mostFrequent"}),
         ("integer", {"kind": "string", "value": "1"}),

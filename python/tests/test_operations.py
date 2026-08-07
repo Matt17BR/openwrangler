@@ -146,6 +146,7 @@ def test_row_order_operations_reject_name_only_transform_columns(operation) -> N
 @pytest.mark.parametrize(
     "replacement",
     [
+        {"kind": "mean"},
         {"kind": "median"},
         {"kind": "mostFrequent"},
         {"kind": "string", "value": ""},
@@ -218,6 +219,7 @@ def test_fill_missing_validation_rejects_invalid_fallback_references(replacement
 @pytest.mark.parametrize(
     "replacement",
     [
+        {"kind": "mean", "value": 1},
         {"kind": "median", "value": 1},
         {"kind": "mostFrequent", "value": "x"},
         {"kind": "integer", "value": "01"},

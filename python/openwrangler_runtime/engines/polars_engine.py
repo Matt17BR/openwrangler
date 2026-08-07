@@ -928,6 +928,14 @@ class PolarsEngine(DataFrameEngine):
             expression = pl.col(column)
             if dtype.is_float():
                 expression = expression.fill_nan(None)
+            if replacement.get("kind") == "mean":
+                if not dtype.is_float():
+                    raise EngineError("Mean fill requires a floating-point column.")
+                if not _polars_has_missing(df, expression):
+                    return df
+                fill_value = _polars_stable_float_mean(df, expression)
+                literal = pl.lit(fill_value).cast(dtype, strict=True)
+                return df.with_columns(expression.fill_null(literal).alias(column))
             if replacement.get("kind") == "mostFrequent":
                 if not _polars_has_missing(df, expression):
                     return df
@@ -1364,7 +1372,24 @@ class PolarsEngine(DataFrameEngine):
                 f"{prefix}if {schema}[{column!r}].is_float():",
                 f"{prefix}    {expression} = {expression}.fill_nan(None)",
             ]
-            if replacement.get("kind") == "mostFrequent":
+            if replacement.get("kind") == "mean":
+                lines.extend(
+                    [
+                        f"{prefix}if not {schema}[{column!r}].is_float():",
+                        f"{prefix}    raise ValueError('Mean fill requires a floating-point column.')",
+                        f"{prefix}if _ow_polars_has_missing(df, {expression}):",
+                        f"{prefix}    _fill_value_{index} = _ow_polars_stable_float_mean(df, {expression})",
+                        (
+                            f"{prefix}    _fill_literal_{index} = "
+                            f"pl.lit(_fill_value_{index}).cast({schema}[{column!r}], strict=True)"
+                        ),
+                        (
+                            f"{prefix}    df = df.with_columns({expression}.fill_null(_fill_literal_{index})"
+                            f".alias({column!r}))"
+                        ),
+                    ]
+                )
+            elif replacement.get("kind") == "mostFrequent":
                 lines.extend(
                     [
                         f"{prefix}if _ow_polars_has_missing(df, {expression}):",
@@ -1999,6 +2024,35 @@ def _polars_has_missing(frame: Any, expression: Any) -> bool:
     return bool(result.item())
 
 
+def _polars_stable_float_mean(frame: Any, expression: Any) -> float:
+    import polars as pl
+
+    stats_query = frame.select(
+        (expression == float("inf")).any().alias("__ow_fill_positive_infinity"),
+        (expression == float("-inf")).any().alias("__ow_fill_negative_infinity"),
+        expression.filter(expression.is_finite()).abs().max().alias("__ow_fill_scale"),
+    )
+    stats = stats_query.collect(engine="streaming") if isinstance(stats_query, pl.LazyFrame) else stats_query
+    has_positive_infinity = bool(stats["__ow_fill_positive_infinity"][0])
+    has_negative_infinity = bool(stats["__ow_fill_negative_infinity"][0])
+    if has_positive_infinity and has_negative_infinity:
+        raise EngineError("Cannot fill with the mean because positive and negative infinity make it undefined.")
+    if has_positive_infinity:
+        return float("inf")
+    if has_negative_infinity:
+        return float("-inf")
+    scale = stats["__ow_fill_scale"][0]
+    if scale is None:
+        raise EngineError("Cannot fill with the mean because the selected column has no present numeric values.")
+    scale = float(scale)
+    if scale == 0:
+        return 0.0
+    mean_query = frame.select((expression / pl.lit(scale)).mean().alias("__ow_fill_scaled_mean"))
+    mean_frame = mean_query.collect(engine="streaming") if isinstance(mean_query, pl.LazyFrame) else mean_query
+    scaled_mean = float(mean_frame.item())
+    return max(-1.0, min(1.0, scaled_mean)) * scale
+
+
 def _polars_most_frequent_value(frame: Any, column: str, expression: Any) -> Any:
     import polars as pl
 
@@ -2150,6 +2204,45 @@ def _generated_polars_fill_helpers() -> list[str]:
         "    query = frame.select(expression.is_null().any().alias('__ow_fill_has_missing'))",
         ("    result = query.collect(engine='streaming') if isinstance(query, pl.LazyFrame) else query"),
         "    return bool(result.item())",
+        "",
+        "",
+        "def _ow_polars_stable_float_mean(frame, expression):",
+        "    stats_query = frame.select(",
+        "        (expression == float('inf')).any().alias('__ow_fill_positive_infinity'),",
+        "        (expression == float('-inf')).any().alias('__ow_fill_negative_infinity'),",
+        "        expression.filter(expression.is_finite()).abs().max().alias('__ow_fill_scale'),",
+        "    )",
+        (
+            "    stats = stats_query.collect(engine='streaming') "
+            "if isinstance(stats_query, pl.LazyFrame) else stats_query"
+        ),
+        "    has_positive_infinity = bool(stats['__ow_fill_positive_infinity'][0])",
+        "    has_negative_infinity = bool(stats['__ow_fill_negative_infinity'][0])",
+        "    if has_positive_infinity and has_negative_infinity:",
+        (
+            "        raise ValueError('Cannot fill with the mean because positive and negative infinity "
+            "make it undefined.')"
+        ),
+        "    if has_positive_infinity:",
+        "        return float('inf')",
+        "    if has_negative_infinity:",
+        "        return float('-inf')",
+        "    scale = stats['__ow_fill_scale'][0]",
+        "    if scale is None:",
+        (
+            "        raise ValueError('Cannot fill with the mean because the selected column has no "
+            "present numeric values.')"
+        ),
+        "    scale = float(scale)",
+        "    if scale == 0:",
+        "        return 0.0",
+        "    mean_query = frame.select((expression / pl.lit(scale)).mean().alias('__ow_fill_scaled_mean'))",
+        (
+            "    mean_frame = mean_query.collect(engine='streaming') "
+            "if isinstance(mean_query, pl.LazyFrame) else mean_query"
+        ),
+        "    scaled_mean = float(mean_frame.item())",
+        "    return max(-1.0, min(1.0, scaled_mean)) * scale",
         "",
         "",
         "def _ow_polars_most_frequent(frame, column, expression):",

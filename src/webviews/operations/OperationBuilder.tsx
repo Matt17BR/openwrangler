@@ -36,10 +36,10 @@ const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "
 const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
 const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
 const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
-type FillMode = "median" | "mostFrequent" | "fallbackColumns" | "value";
+type FillMode = "median" | "mean" | "mostFrequent" | "fallbackColumns" | "value";
 type FillValueKind = Exclude<
   FillMissingReplacement,
-  { kind: "median" } | { kind: "mostFrequent" } | { kind: "fallbackColumns" }
+  { kind: "median" } | { kind: "mean" } | { kind: "mostFrequent" } | { kind: "fallbackColumns" }
 >["kind"];
 const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
@@ -1163,6 +1163,7 @@ function FillMissingFields({
   );
   const savedMode: FillMode | undefined = initialReplacement
     ? initialReplacement.kind === "median" ||
+      initialReplacement.kind === "mean" ||
       initialReplacement.kind === "mostFrequent" ||
       initialReplacement.kind === "fallbackColumns"
       ? initialReplacement.kind
@@ -1176,6 +1177,7 @@ function FillMissingFields({
   );
   const initialKind =
     initialReplacement?.kind !== "median" &&
+    initialReplacement?.kind !== "mean" &&
     initialReplacement?.kind !== "mostFrequent" &&
     initialReplacement?.kind !== "fallbackColumns"
       ? initialReplacement?.kind
@@ -1207,6 +1209,7 @@ function FillMissingFields({
     selectedColumn?.type === "unknown" ? unknownValueKind : fillValueKindForColumn(selectedColumn?.type);
   const savedValue =
     initialReplacement?.kind !== "median" &&
+    initialReplacement?.kind !== "mean" &&
     initialReplacement?.kind !== "mostFrequent" &&
     initialReplacement?.kind !== "fallbackColumns"
       ? String(initialReplacement?.value)
@@ -1229,14 +1232,15 @@ function FillMissingFields({
         emptyMessage="No supported columns are available."
       />
       <label className="formField">
-        <span>Fill with</span>
+        <span>Method</span>
         <select
           name="fillMode"
-          aria-label="Fill with"
+          aria-label="Method"
           value={mode}
           onChange={(event) => setMode(event.target.value as FillMode)}
         >
           {fillModes.includes("median") && <option value="median">Median</option>}
+          {fillModes.includes("mean") && <option value="mean">Mean</option>}
           {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
           {fillModes.includes("fallbackColumns") && (
             <option value="fallbackColumns">Other columns (first available)</option>
@@ -1248,6 +1252,11 @@ function FillMissingFields({
         <p className="panelNote">
           The median ignores null and NaN cells and keeps the column type. Integer and decimal medians must fit that
           type exactly. If every cell is missing, choose a specific value.
+        </p>
+      ) : mode === "mean" ? (
+        <p className="panelNote">
+          Uses the mean of all non-missing values after earlier cleaning steps. Filters in the current view do not
+          affect this calculation. If every cell is missing, choose a specific value.
         </p>
       ) : mode === "mostFrequent" ? (
         <p className="panelNote">
@@ -1351,6 +1360,7 @@ function FillMissingFields({
 
 function fillModesForColumn(column: ColumnSchema | undefined, columns: readonly ColumnSchema[]): FillMode[] {
   const fallback = fallbackColumnsForTarget(column, columns).length > 0 ? (["fallbackColumns"] as const) : [];
+  if (column?.type === "float") return ["median", "mean", ...fallback, "value"];
   if (column && numericColumnTypes.has(column.type)) return ["median", ...fallback, "value"];
   if (column && mostFrequentColumnTypes.has(column.type)) return ["mostFrequent", ...fallback, "value"];
   if (column && (column.type === "date" || column.type === "datetime")) return [...fallback, "value"];
@@ -1487,7 +1497,7 @@ function buildParams(
   }
   if (kind === "fillMissingValues") {
     const fillMode = value("fillMode");
-    if (fillMode === "median" || fillMode === "mostFrequent") {
+    if (fillMode === "median" || fillMode === "mean" || fillMode === "mostFrequent") {
       return { column: columnReference("column"), replacement: { kind: fillMode } };
     }
     if (fillMode === "fallbackColumns") {

@@ -211,6 +211,12 @@ class _BindingContext:
                     f"{label} cannot use a median fill for {column.semantic_type!r}; choose a numeric column."
                 )
             return
+        if kind == "mean":
+            if column.semantic_type != "float":
+                raise ColumnBindingError(
+                    f"{label} cannot use a mean fill for {column.semantic_type!r}; choose a floating-point column."
+                )
+            return
         if kind == "mostFrequent":
             if column.semantic_type not in {"string", "boolean"}:
                 raise ColumnBindingError(

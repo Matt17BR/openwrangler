@@ -3709,4 +3709,89 @@ assert_error(
   "payload-too-large"
 )
 
+mean_frame <- data.frame(
+  value = c(1, NA_real_, NaN, 5),
+  row.names = c("mean-a", "mean-b", "mean-c", "mean-d")
+)
+mean_before <- unserialize(serialize(mean_frame, NULL, version = 3L))
+mean_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  mean_frame,
+  1L,
+  "value",
+  list(kind = "mean")
+)
+assert_identical(mean_result$value, c(1, 3, 3, 5), "R mean fill did not ignore NA and NaN")
+assert_identical(class(mean_result), "data.frame", "R mean fill changed the data.frame class")
+assert_identical(row.names(mean_result), row.names(mean_before), "R mean fill changed row names")
+assert_identical(mean_frame, mean_before, "R mean fill mutated its source data.frame")
+
+mean_huge <- openwrangler_r_frame_contract$fill_missing_column_at(
+  data.frame(value = c(1e308, 1e308, NA_real_, NaN)),
+  1L,
+  "value",
+  list(kind = "mean")
+)
+assert_true(all(is.finite(mean_huge$value)), "R mean fill overflowed a finite mean")
+assert_true(all(mean_huge$value == 1e308), "R mean fill changed a finite large mean")
+
+mean_noop <- data.frame(value = c(Inf, -Inf))
+assert_identical(
+  openwrangler_r_frame_contract$fill_missing_column_at(mean_noop, 1L, "value", list(kind = "mean")),
+  mean_noop,
+  "R mean fill calculated an undefined mean for a complete column"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(NA_real_, NaN)),
+    1L,
+    "value",
+    list(kind = "mean")
+  ),
+  "no present values"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(Inf, -Inf, NA_real_)),
+    1L,
+    "value",
+    list(kind = "mean")
+  ),
+  "no usable numeric mean"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_column_at(
+    data.frame(value = c(1L, NA_integer_, 3L)),
+    1L,
+    "value",
+    list(kind = "mean")
+  ),
+  "incompatible"
+)
+
+mean_tibble <- tibble::tibble(value = c(1, NA_real_, 5))
+mean_tibble_before <- unserialize(serialize(mean_tibble, NULL, version = 3L))
+mean_tibble_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  mean_tibble,
+  1L,
+  "value",
+  list(kind = "mean")
+)
+assert_identical(class(mean_tibble_result), class(mean_tibble), "R mean fill changed the tibble class")
+assert_identical(mean_tibble_result$value, c(1, 3, 5), "R mean fill changed the tibble result")
+assert_identical(mean_tibble, mean_tibble_before, "R mean fill mutated its source tibble")
+
+mean_table <- data.table::data.table(id = 1:3, value = c(1, NA_real_, 5))
+data.table::setkey(mean_table, id)
+mean_table_before <- data.table::copy(mean_table)
+mean_table_result <- openwrangler_r_frame_contract$fill_missing_column_at(
+  mean_table,
+  2L,
+  "value",
+  list(kind = "mean")
+)
+assert_identical(class(mean_table_result), class(mean_table), "R mean fill changed the data.table class")
+assert_identical(data.table::key(mean_table_result), "id", "R mean fill changed the data.table key")
+assert_identical(mean_table_result$value, c(1, 3, 5), "R mean fill changed the data.table result")
+assert_identical(mean_table, mean_table_before, "R mean fill mutated its source data.table")
+
 message("R frame contract tests passed")

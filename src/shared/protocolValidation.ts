@@ -864,7 +864,7 @@ const MAX_FILL_FALLBACK_COLUMNS = 64;
 
 function isFillMissingReplacement(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  if (value.kind === "median" || value.kind === "mostFrequent") {
+  if (value.kind === "median" || value.kind === "mean" || value.kind === "mostFrequent") {
     return exactRecord(value, ["kind"]) !== undefined;
   }
   if (value.kind === "fallbackColumns") {

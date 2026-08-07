@@ -2271,7 +2271,10 @@ function schemaAfterFillMissing(
     (source.type === "string" && (replacement.kind === "mostFrequent" || replacement.kind === "string")) ||
     (source.type === "integer" && (replacement.kind === "median" || replacement.kind === "integer")) ||
     (source.type === "float" &&
-      (replacement.kind === "median" || replacement.kind === "integer" || replacement.kind === "float")) ||
+      (replacement.kind === "mean" ||
+        replacement.kind === "median" ||
+        replacement.kind === "integer" ||
+        replacement.kind === "float")) ||
     (source.type === "boolean" && (replacement.kind === "mostFrequent" || replacement.kind === "boolean")) ||
     (source.type === "date" && replacement.kind === "date") ||
     (source.type === "datetime" && replacement.kind === "datetime");
