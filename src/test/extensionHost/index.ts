@@ -3632,6 +3632,8 @@ async function exerciseReleasedRRowReductionJourney(
 
 async function exerciseReleasedRFillMissingJourney(
   testing: TestApi,
+  workbench: Page,
+  app: Locator,
   sessionId: string,
   phase: "jupyter-r"
 ): Promise<void> {
@@ -3646,101 +3648,129 @@ async function exerciseReleasedRFillMissingJourney(
   assert.equal(target.rawType, "character");
   assert.equal(target.nullable, true);
 
-  const stepId = "released-r-fill-extra-20";
   const replacement = "filled by Open Wrangler";
-  const preview = await testing.request({
-    kind: "previewStep",
-    sessionId,
-    revision: original.metadata.revision,
-    step: {
-      id: stepId,
-      kind: "fillMissingValues",
-      params: {
-        column: { id: target.id, name: target.name },
-        replacement: { kind: "string", value: replacement }
-      }
-    },
-    offset: 0,
-    limit: 1,
-    columnOffset: target.position,
-    columnLimit: 1
-  });
-  assert.equal(preview.kind, "stepPreview", "Packaged native R Fill missing values must preview.");
-  if (preview.kind !== "stepPreview") throw new Error("The packaged native R fill preview failed.");
-  assert.deepEqual(preview.metadata.draftStep, {
-    id: stepId,
-    kind: "fillMissingValues",
-    params: {
-      column: { id: target.id, name: target.name },
-      replacement: { kind: "string", value: replacement }
-    }
-  });
-  assert.equal(preview.metadata.schema.find((column) => column.id === target.id)?.nullable, false);
-  assert.deepEqual(preview.page.columnIds, [target.id]);
-  assert.deepEqual(preview.page.rows[0]?.values[0], {
-    kind: "string",
-    raw: replacement,
-    display: replacement,
-    isNull: false,
-    isNaN: false
-  });
-  assert.equal(preview.diff.changedCells, 1);
-  assert.match(preview.code, /\.ow_fill_values/u);
-  assert.match(preview.code, /filled by Open Wrangler/u);
-
-  const applied = await testing.request({
-    kind: "applyDraft",
-    sessionId,
-    revision: preview.revision,
-    offset: 0,
-    limit: 1,
-    columnOffset: target.position,
-    columnLimit: 1
-  });
-  assert.equal(applied.kind, "planUpdated", "Packaged native R Fill missing values must apply.");
-  if (applied.kind !== "planUpdated") throw new Error("The packaged native R fill apply failed.");
-  assert.equal(applied.action, "apply");
-  assert.equal(applied.metadata.draftStep, undefined);
-  assert.deepEqual(applied.metadata.steps, [preview.metadata.draftStep]);
-  assert.equal(applied.metadata.schema.find((column) => column.id === target.id)?.nullable, false);
-  assert.deepEqual(applied.page.columnIds, [target.id]);
-  assert.deepEqual(applied.page.rows[0]?.values[0], {
-    kind: "string",
-    raw: replacement,
-    display: replacement,
-    isNull: false,
-    isNaN: false
-  });
-  assert.match(applied.code, /\.ow_fill_values/u);
-
-  const undone = await testing.request({
-    kind: "undoStep",
-    sessionId,
-    revision: applied.revision,
-    offset: 0,
-    limit: 1,
-    columnOffset: target.position,
-    columnLimit: 1
-  });
-  assert.equal(undone.kind, "planUpdated", "Packaged native R Fill missing values must undo.");
-  if (undone.kind !== "planUpdated") throw new Error("The packaged native R fill undo failed.");
-  assert.equal(undone.action, "undo");
-  assert.equal(undone.metadata.steps.length, 0);
-  assert.equal(undone.metadata.draftStep, undefined);
-  assert.equal(undone.metadata.schema.find((column) => column.id === target.id)?.nullable, true);
-  assert.equal(undone.code, "");
-  assert.deepEqual(undone.page.columnIds, [target.id]);
-  assert.deepEqual(undone.page.rows[0]?.values[0], {
-    kind: "null",
-    raw: null,
-    display: "",
-    isNull: true,
-    isNaN: false
-  });
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill(target.name);
+  await app
+    .getByRole("option", { name: new RegExp(`^${target.name},`, "u") })
+    .first()
+    .waitFor({
+      state: "visible",
+      timeout: 10_000
+    });
+  await columnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === target.id,
+    10_000,
+    "navigating to the nullable R column before filling it"
+  );
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
-    "The direct R Fill missing values journey must resynchronize the editor before returning."
+    "The nullable R column must be visible before its fill preview is measured."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Fill missing values source column");
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("fill missing");
+  await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  const fillMode = dialog.getByLabel("Fill with", { exact: true });
+  await fillMode.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await fillMode.inputValue(),
+    "median",
+    "The base Fill missing values form should initially offer the numeric median when numeric columns exist."
+  );
+  assert.deepEqual(await fillMode.locator("option").allTextContents(), ["A value", "Column median"]);
+  await fillMode.selectOption("value");
+  const fillColumn = dialog.getByLabel("Column", { exact: true });
+  await fillColumn.waitFor({ state: "visible", timeout: 10_000 });
+  await fillColumn.selectOption(target.id);
+  const replacementInput = dialog.getByLabel("Replacement value", { exact: true });
+  await replacementInput.waitFor({ state: "visible", timeout: 10_000 });
+  await replacementInput.fill(replacement);
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "fillMissingValues" &&
+        draft.params.column.id === target.id &&
+        draft.params.column.name === target.name &&
+        isDeepStrictEqual(draft.params.replacement, { kind: "string", value: replacement }) &&
+        active.metadata.schema.find((column) => column.id === target.id)?.nullable === false
+      );
+    },
+    30_000,
+    "previewing native R Fill missing values through its operation form"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
+  const stepId = preview.metadata.draftStep.id;
+  assert.match(preview.code ?? "", /\.ow_fill_values/u);
+  assert.match(preview.code ?? "", /filled by Open Wrangler/u);
+  assert.doesNotMatch(preview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
+  const review = app.getByRole("region", { name: "Draft review" });
+  await review.waitFor({ state: "visible", timeout: 10_000 });
+  await review.getByText("Fill missing values", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await review
+    .locator('[aria-label="Data diff summary"]')
+    .getByText(/^1 existing cell changed(?: in this block)?$/u)
+    .waitFor({ state: "visible", timeout: 10_000 });
+
+  await review.getByRole("button", { name: "Apply step", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.id === stepId &&
+        step.kind === "fillMissingValues" &&
+        active.metadata.schema.find((column) => column.id === target.id)?.nullable === false
+      );
+    },
+    30_000,
+    "applying native R Fill missing values through Draft review"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Fill missing values step must reach its exact renderer before undo."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Fill missing values session");
+  await app.getByRole("group", { name: "Cleaning plan" }).getByText("1 applied step").waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  assert.match(testing.activeSession()?.code ?? "", /\.ow_fill_values/u);
+
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema.find((column) => column.id === target.id)?.nullable === true &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing native R Fill missing values through the editor"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The undone R Fill missing values step must reach its exact renderer before the next operation."
   );
 }
 
@@ -3856,7 +3886,7 @@ async function exerciseReleasedREditingJourney(
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after persistent row operations");
     await exerciseReleasedRRowReductionJourney(testing, workbench, sessionId, phase);
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after row reduction operations");
-    await exerciseReleasedRFillMissingJourney(testing, sessionId, phase);
+    await exerciseReleasedRFillMissingJourney(testing, workbench, app, sessionId, phase);
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after Fill missing values");
   }
 
