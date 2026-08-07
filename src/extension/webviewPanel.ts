@@ -398,6 +398,7 @@ export class OpenWranglerPanel {
       await this.publishSessionOpenProgress();
       if (!this.rendererReady) return;
       await this.enqueueRendererSynchronization(true);
+      this.scheduleRendererStartupRecovery();
       return;
     }
 
@@ -408,6 +409,7 @@ export class OpenWranglerPanel {
       await this.publishSessionOpenProgress();
       if (!this.rendererReady) return;
       await this.enqueueRendererSynchronization(false);
+      this.scheduleRendererStartupRecovery();
       return;
     }
 
@@ -1108,13 +1110,17 @@ export class OpenWranglerPanel {
   private hasHydratedRenderer(): boolean {
     const synchronization = this.rendererSynchronizationIdentity;
     return Boolean(
-      this.rendererReady &&
+      this.hasSynchronizedRenderer() &&
       this.snapshot &&
       synchronization &&
-      this.rendererHydratedSyncId === synchronization.syncId &&
       synchronization.sessionId === this.snapshot.metadata.sessionId &&
       synchronization.revision === this.snapshot.metadata.revision
     );
+  }
+
+  private hasSynchronizedRenderer(): boolean {
+    const synchronization = this.rendererSynchronizationIdentity;
+    return Boolean(this.rendererReady && synchronization && this.rendererHydratedSyncId === synchronization.syncId);
   }
 
   private isRendererSynchronizableForSession(sessionId: string): boolean {
@@ -1168,7 +1174,7 @@ export class OpenWranglerPanel {
   private scheduleRendererStartupRecovery(): void {
     if (
       this.disposed ||
-      this.rendererReady ||
+      this.hasSynchronizedRenderer() ||
       this.rendererStartupRecoveryAttempts >= MAX_RENDERER_STARTUP_RECOVERY_ATTEMPTS ||
       this.rendererStartupRecoveryTimer ||
       !this.openResponse ||
@@ -1185,7 +1191,7 @@ export class OpenWranglerPanel {
   private recoverRendererAfterStartupStall(): boolean {
     if (
       this.disposed ||
-      this.hasHydratedRenderer() ||
+      this.hasSynchronizedRenderer() ||
       this.rendererStartupRecoveryAttempts >= MAX_RENDERER_STARTUP_RECOVERY_ATTEMPTS ||
       !this.openResponse ||
       !this.panel.visible

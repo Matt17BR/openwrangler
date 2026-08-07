@@ -26473,6 +26473,7 @@ async function exercisePackagedExcelDependencyInstall(
     );
     assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, dependency.executable);
 
+    await workbench.bringToFront();
     recordAcceptanceProgress("excel-dependency-install:open");
     await vscode.commands.executeCommand("vscode.openWith", workbook, "openWrangler.viewer", vscode.ViewColumn.One);
     await waitFor(
