@@ -97,8 +97,10 @@ export const CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL = "openwrangler-canonic
 export const PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL = "openwrangler-performance-evidence-artifact-v1";
 export const PERFORMANCE_EVIDENCE_ARTIFACT_ROLE = "installed-performance-evidence-only";
 export const STABLE_RELEASE_ARTIFACT_KIND = "stable-release";
+export const PREVIEW_RELEASE_ARTIFACT_KIND = "preview-release";
 export const PERFORMANCE_EVIDENCE_ARTIFACT_KIND = "performance-evidence";
 const CANONICAL_RELEASE_BUILD_METHOD = "canonical-release-artifact-v1";
+const CANONICAL_PREVIEW_RELEASE_BUILD_METHOD = "canonical-preview-release-artifact-v1";
 const PERFORMANCE_EVIDENCE_BUILD_METHOD = "performance-evidence-artifact-v1";
 const OUTPUT_MAX_BYTES = 1024 * 1024;
 const INSTALLED_PHASE_FRAGMENT_MAX_BYTES = 16 * 1024;
@@ -145,7 +147,20 @@ export function parseInstalledPerformanceArguments(arguments_) {
       if (options.artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
         throw new Error("--performance-evidence may be provided only once.");
       }
+      if (options.artifactKind === PREVIEW_RELEASE_ARTIFACT_KIND) {
+        throw new Error("--performance-evidence cannot be combined with --preview-release.");
+      }
       options.artifactKind = PERFORMANCE_EVIDENCE_ARTIFACT_KIND;
+      continue;
+    }
+    if (argument === "--preview-release") {
+      if (options.artifactKind === PREVIEW_RELEASE_ARTIFACT_KIND) {
+        throw new Error("--preview-release may be provided only once.");
+      }
+      if (options.artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
+        throw new Error("--preview-release cannot be combined with --performance-evidence.");
+      }
+      options.artifactKind = PREVIEW_RELEASE_ARTIFACT_KIND;
       continue;
     }
     if (argument === "--editors") {
@@ -227,7 +242,7 @@ export function parseInstalledPerformanceArguments(arguments_) {
     );
   }
   if (consumesCandidate && options.smoke) {
-    throw new Error("Canonical candidate consumption is stable release evidence and cannot use --smoke.");
+    throw new Error("Canonical candidate consumption is release evidence and cannot use --smoke.");
   }
   if (consumesCandidate && editorsExplicit) {
     throw new Error("Canonical candidate consumption always runs both first-class editors and cannot use --editors.");
@@ -248,11 +263,11 @@ export function parseInstalledPerformanceArguments(arguments_) {
     options.candidateOutput = undefined;
     options.mode = "consume";
   } else {
-    if (options.artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
-      throw new Error("--performance-evidence is reserved for canonical candidate consumption.");
+    if (options.artifactKind !== STABLE_RELEASE_ARTIFACT_KIND) {
+      throw new Error("--preview-release and --performance-evidence are reserved for canonical candidate consumption.");
     }
     if (options.pinnedEditors) {
-      throw new Error("--pinned-editors is reserved for canonical stable candidate consumption.");
+      throw new Error("--pinned-editors is reserved for canonical candidate consumption.");
     }
     if (options.output === options.candidateOutput) {
       throw new Error("The preview candidate and installed-performance report must use different paths.");
@@ -267,7 +282,12 @@ export function installedPerformanceReportGateForOptions(
   { releaseGate = assertInstalledPerformanceReleaseGate, evidenceGate = assertInstalledPerformanceEvidenceGate } = {}
 ) {
   if (options?.artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND) return evidenceGate;
-  if (options?.artifactKind === STABLE_RELEASE_ARTIFACT_KIND) return releaseGate;
+  if (
+    options?.artifactKind === STABLE_RELEASE_ARTIFACT_KIND ||
+    options?.artifactKind === PREVIEW_RELEASE_ARTIFACT_KIND
+  ) {
+    return releaseGate;
+  }
   throw new TypeError("Installed performance options contain an unknown artifact kind.");
 }
 
@@ -667,7 +687,7 @@ export async function readInstalledPerformanceCandidate(receipt) {
   const allowedBuildMethods =
     packagedManifest.channel === "stable"
       ? new Set([CANONICAL_RELEASE_BUILD_METHOD, PERFORMANCE_EVIDENCE_BUILD_METHOD])
-      : new Set(["guarded-clean-head-v1"]);
+      : new Set(["guarded-clean-head-v1", CANONICAL_PREVIEW_RELEASE_BUILD_METHOD]);
   if (!allowedBuildMethods.has(receipt.buildMethod)) {
     throw new Error("The staged VSIX release channel does not match its guarded candidate provenance.");
   }
@@ -797,15 +817,31 @@ export async function acceptInstalledPerformanceCandidate({
   revalidateChecksum = revalidateInstalledPerformanceChecksum,
   revalidateProvenance
 }) {
-  if (artifactKind !== STABLE_RELEASE_ARTIFACT_KIND && artifactKind !== PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
-    throw new TypeError("Installed-performance artifact kind must be stable-release or performance-evidence.");
+  if (
+    artifactKind !== STABLE_RELEASE_ARTIFACT_KIND &&
+    artifactKind !== PREVIEW_RELEASE_ARTIFACT_KIND &&
+    artifactKind !== PERFORMANCE_EVIDENCE_ARTIFACT_KIND
+  ) {
+    throw new TypeError(
+      "Installed-performance artifact kind must be stable-release, preview-release, or performance-evidence."
+    );
   }
   const evidenceOnly = artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND;
+  const previewRelease = artifactKind === PREVIEW_RELEASE_ARTIFACT_KIND;
   const provenanceReader =
-    readProvenance ?? (evidenceOnly ? readPerformanceEvidenceProvenance : readInstalledPerformanceProvenance);
+    readProvenance ??
+    (evidenceOnly
+      ? readPerformanceEvidenceProvenance
+      : previewRelease
+        ? readPreviewReleaseProvenance
+        : readInstalledPerformanceProvenance);
   const provenanceRevalidator =
     revalidateProvenance ??
-    (evidenceOnly ? revalidatePerformanceEvidenceProvenance : revalidateInstalledPerformanceProvenance);
+    (evidenceOnly
+      ? revalidatePerformanceEvidenceProvenance
+      : previewRelease
+        ? revalidatePreviewReleaseProvenance
+        : revalidateInstalledPerformanceProvenance);
   if (
     typeof candidatePath !== "string" ||
     candidatePath.length === 0 ||
@@ -831,7 +867,7 @@ export async function acceptInstalledPerformanceCandidate({
     throw new Error("EXPECTED_SHA must be one full lowercase hexadecimal Git commit ID.");
   }
   if (typeof releaseTag !== "string" || !/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(releaseTag)) {
-    throw new Error("RELEASE_TAG must be one stable vmajor.minor.patch tag.");
+    throw new Error("RELEASE_TAG must be one vmajor.minor.patch tag.");
   }
 
   const sourceBefore = readSource();
@@ -840,13 +876,14 @@ export async function acceptInstalledPerformanceCandidate({
     throw new Error("Canonical installed performance must inspect the exact expected source commit.");
   }
   const sourceManifest = validateInstalledPerformanceSourceManifest(await readSourceManifest());
-  if (sourceManifest.channel !== "stable" || sourceManifest.preview !== false) {
-    throw new Error("Canonical candidate consumption requires stable package metadata.");
+  const expectedChannel = previewRelease ? "preview" : "stable";
+  if (sourceManifest.channel !== expectedChannel || sourceManifest.preview !== previewRelease) {
+    throw new Error(`Canonical ${expectedChannel} candidate consumption requires ${expectedChannel} package metadata.`);
   }
   if (releaseTag !== `v${sourceManifest.version}`) {
-    throw new Error("RELEASE_TAG must exactly match the stable source package version.");
+    throw new Error(`RELEASE_TAG must exactly match the ${expectedChannel} source package version.`);
   }
-  if ((await readReleaseTagCommit(releaseTag)) !== expectedCommit) {
+  if (!previewRelease && (await readReleaseTagCommit(releaseTag)) !== expectedCommit) {
     throw new Error("RELEASE_TAG must resolve to the exact expected source commit.");
   }
 
@@ -861,10 +898,12 @@ export async function acceptInstalledPerformanceCandidate({
   }
   const provenance = await provenanceReader(resolvedProvenance);
   requireAcceptedProvenanceReceipt(provenance);
-  if (
-    provenance.protocol !==
-    (evidenceOnly ? PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL : CANONICAL_RELEASE_ARTIFACT_PROTOCOL)
-  ) {
+  const expectedProvenanceProtocol = evidenceOnly
+    ? PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL
+    : previewRelease
+      ? CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL
+      : CANONICAL_RELEASE_ARTIFACT_PROTOCOL;
+  if (provenance.protocol !== expectedProvenanceProtocol) {
     throw new Error("The candidate provenance does not match its requested publication kind.");
   }
   if (
@@ -911,7 +950,11 @@ export async function acceptInstalledPerformanceCandidate({
     ...privateReceipt,
     source: Object.freeze({ ...sourceBefore }),
     sourceManifest,
-    buildMethod: evidenceOnly ? PERFORMANCE_EVIDENCE_BUILD_METHOD : CANONICAL_RELEASE_BUILD_METHOD,
+    buildMethod: evidenceOnly
+      ? PERFORMANCE_EVIDENCE_BUILD_METHOD
+      : previewRelease
+        ? CANONICAL_PREVIEW_RELEASE_BUILD_METHOD
+        : CANONICAL_RELEASE_BUILD_METHOD,
     releaseTag,
     provenanceSha256: provenance.sha256
   });
@@ -950,7 +993,11 @@ export async function prepareInstalledPerformanceCandidate({
     throw new TypeError("Installed performance candidate preparation requires options and one private root.");
   }
   const artifactKind = options.artifactKind ?? STABLE_RELEASE_ARTIFACT_KIND;
-  if (artifactKind !== STABLE_RELEASE_ARTIFACT_KIND && artifactKind !== PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
+  if (
+    artifactKind !== STABLE_RELEASE_ARTIFACT_KIND &&
+    artifactKind !== PREVIEW_RELEASE_ARTIFACT_KIND &&
+    artifactKind !== PERFORMANCE_EVIDENCE_ARTIFACT_KIND
+  ) {
     throw new Error("Installed performance candidate preparation received an inconsistent artifact kind.");
   }
   if (options.mode === "consume") {
@@ -1152,9 +1199,13 @@ export function revalidatePerformanceEvidenceProvenance(receipt) {
 }
 
 export function revalidateAcceptedPerformanceProvenance(receipt) {
-  return receipt?.protocol === PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL
-    ? revalidatePerformanceEvidenceProvenance(receipt)
-    : revalidateInstalledPerformanceProvenance(receipt);
+  if (receipt?.protocol === PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL) {
+    return revalidatePerformanceEvidenceProvenance(receipt);
+  }
+  if (receipt?.protocol === CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL) {
+    return revalidatePreviewReleaseProvenance(receipt);
+  }
+  return revalidateInstalledPerformanceProvenance(receipt);
 }
 
 function readInstalledPerformanceVsixSnapshot(receipt) {
@@ -1252,17 +1303,21 @@ export async function runInstalledPerformance(options, environment = process.env
     throw new Error("Strict installed performance evidence currently requires a Linux reference machine.");
   }
   if (options?.mode === "consume" && options.pinnedEditors !== true) {
-    throw new Error("Stable installed performance requires the exact pinned VS Code and Cursor artifacts.");
+    throw new Error("Canonical installed performance requires the exact pinned VS Code and Cursor artifacts.");
   }
   if (options?.mode !== "consume" && options?.pinnedEditors === true) {
-    throw new Error("Pinned editor acquisition is reserved for stable candidate consumption.");
+    throw new Error("Pinned editor acquisition is reserved for canonical candidate consumption.");
   }
   const artifactKind = options?.artifactKind ?? STABLE_RELEASE_ARTIFACT_KIND;
-  if (artifactKind !== STABLE_RELEASE_ARTIFACT_KIND && artifactKind !== PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
+  if (
+    artifactKind !== STABLE_RELEASE_ARTIFACT_KIND &&
+    artifactKind !== PREVIEW_RELEASE_ARTIFACT_KIND &&
+    artifactKind !== PERFORMANCE_EVIDENCE_ARTIFACT_KIND
+  ) {
     throw new Error("Installed performance received an invalid artifact kind.");
   }
-  if (artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND && options?.mode !== "consume") {
-    throw new Error("Performance-evidence provenance is valid only for canonical candidate consumption.");
+  if (artifactKind !== STABLE_RELEASE_ARTIFACT_KIND && options?.mode !== "consume") {
+    throw new Error("Preview-release and performance-evidence provenance are valid only for canonical consumption.");
   }
   assertInstalledPerformanceArtifactPathSeparation(options);
   const privateParent = resolve(root, "tmp", "ow");
@@ -2679,6 +2734,8 @@ function requirePerformanceEvidenceProvenanceReceipt(receipt) {
 function requireAcceptedProvenanceReceipt(receipt) {
   if (receipt?.protocol === PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL) {
     requirePerformanceEvidenceProvenanceReceipt(receipt);
+  } else if (receipt?.protocol === CANONICAL_PREVIEW_RELEASE_ARTIFACT_PROTOCOL) {
+    requirePreviewReleaseProvenanceReceipt(receipt);
   } else {
     requireProvenanceReceipt(receipt);
   }

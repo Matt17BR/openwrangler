@@ -711,6 +711,7 @@ export function inspectStableReleaseWorkflow(source) {
     performanceStep.env.EXPECTED_SHA !== EVENT_SHA ||
     performanceStep.env.RELEASE_TAG !== RELEASE_TAG ||
     performanceRun.includes("--performance-evidence") ||
+    performanceRun.includes("--preview-release") ||
     !performanceRun.includes("--pinned-editors") ||
     !performanceRun.includes("--candidate-in canonical-release/openwrangler.vsix") ||
     !performanceRun.includes("--candidate-checksum canonical-release/openwrangler.vsix.sha256") ||

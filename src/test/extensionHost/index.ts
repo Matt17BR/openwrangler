@@ -12769,7 +12769,7 @@ async function exercisePackagedFirstUseInteractionJourney(
   );
 
   recordAcceptanceProgress("platform-smoke:filter");
-  await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
   const filterPanel = drawer.locator(".filterSortPanel").first();
   await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
   await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "revenue" });
@@ -15862,7 +15862,7 @@ async function captureReleasedJupyterDuckDbRelation(
     // going through the renderer. Materialize the same view through the real
     // UI before capturing it so the panel owns the exact page and profiling
     // context a user would see.
-    await drawer.getByRole("tab", { name: "Filters" }).click();
+    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
     const filterPanel = drawer.locator(".filterSortPanel").first();
     await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
     const activeDachFilter = drawer.getByRole("button", {
@@ -16004,7 +16004,7 @@ async function captureReleasedJupyterDuckDbRelation(
     assert.match(revenueProfile, /Max 5,?099\.94/u);
     assert.doesNotMatch(revenueProfile, /Profiling/u);
 
-    await drawer.getByRole("tab", { name: "Filters" }).click();
+    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
     await drawer.getByRole("heading", { name: "Filters / Sorts" }).waitFor({ state: "visible", timeout: 10_000 });
     const filterEditor = drawer.locator("details.filterSection").first();
     if ((await filterEditor.getAttribute("open")) !== null) {
@@ -17821,7 +17821,7 @@ async function capturePackagedFilterResultScene(
     if ((await profilesToggle.getAttribute("aria-expanded")) !== "true") await profilesToggle.click();
     let drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
     await drawer.waitFor({ state: "visible", timeout: 10_000 });
-    await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
     let filterPanel = drawer.locator(".filterSortPanel").first();
     await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
     await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "market" });
@@ -17907,7 +17907,7 @@ async function capturePackagedFilterResultScene(
           await app.getByRole("button", { name: "Column profiles and filters" }).click();
           await drawer.waitFor({ state: "visible", timeout: 10_000 });
         }
-        await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+        await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
         await drawer
           .locator(".filterSortPanel")
           .first()

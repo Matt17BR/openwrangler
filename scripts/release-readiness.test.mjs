@@ -1353,6 +1353,12 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       ).run = "echo skipped";
     },
     (workflow) => {
+      const step = workflow.jobs["installed-performance"].steps.find((candidate) =>
+        String(candidate.run ?? "").includes("benchmark:installed --")
+      );
+      step.run = String(step.run).replace("--preview-release", "");
+    },
+    (workflow) => {
       workflow.jobs["released-jupyter"].steps.find(
         (step) => step.id === "packaged_editor"
       ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "0";

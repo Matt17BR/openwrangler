@@ -492,7 +492,7 @@ def test_pandas_fill_missing_keeps_duplicate_and_non_string_labels_positional() 
     engine = PandasEngine()
     source = pd.DataFrame(
         [[1.0, None, 10.0], [None, 3.0, None]],
-        columns=["duplicate", "duplicate", 7],
+        columns=pd.Index(["duplicate", "duplicate", 7], dtype="object"),
     )
     plan = [
         fill_step(
