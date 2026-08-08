@@ -2525,9 +2525,25 @@ export function App() {
               <span className="sessionBadge modeBadge" data-session-badge="mode">
                 {metadata.backend === "pyspark" ? "Viewing only" : metadata.mode}
               </span>
-              <span className="sessionBadge backendBadge" data-session-badge="backend">
-                {dataBackendLabel(metadata.backend)}
-              </span>
+              {metadata.source.kind === "file" && isSwitchableFileBackend(metadata.backend) ? (
+                <button
+                  type="button"
+                  className="sessionBadge backendBadge backendButton"
+                  data-session-badge="backend"
+                  disabled={importOptionsDisabled}
+                  aria-busy={importOptionsPending || undefined}
+                  aria-label={`Change dataframe engine. Current engine: ${dataBackendLabel(metadata.backend)}`}
+                  title="Change dataframe engine"
+                  onClick={() => vscode.postMessage({ kind: "changeBackend" })}
+                >
+                  <span>{dataBackendLabel(metadata.backend)}</span>
+                  <span className="codicon codicon-chevron-down" aria-hidden="true" />
+                </button>
+              ) : (
+                <span className="sessionBadge backendBadge" data-session-badge="backend">
+                  {dataBackendLabel(metadata.backend)}
+                </span>
+              )}
               {snapshotMode && (
                 <span className="sessionBadge modeBadge" data-session-badge="snapshot">
                   Snapshot
@@ -3130,6 +3146,10 @@ function filterModelForColumnValues(model: FilterModel, column: string): FilterM
     ...model,
     filters: model.filters.filter((filter) => filter.column !== column)
   };
+}
+
+function isSwitchableFileBackend(backend: SessionMetadata["backend"]): boolean {
+  return backend === "pandas" || backend === "polars" || backend === "duckdb";
 }
 
 function filterModelScope(model: FilterModel): string {

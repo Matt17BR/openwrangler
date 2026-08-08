@@ -2365,6 +2365,45 @@ describe("App toolbar", () => {
     expect(shape).toHaveAttribute("title", "10,000 rows × 417 columns");
     expect(shape).not.toHaveTextContent("rows");
   });
+
+  it("uses the file backend badge as an engine switch without styling notebook badges as controls", async () => {
+    const { rerender } = render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+
+    const backend = await screen.findByRole("button", {
+      name: "Change dataframe engine. Current engine: Polars"
+    });
+    expect(backend).toHaveTextContent("Polars");
+    expect(backend.querySelector(".codicon-chevron-down")).not.toBeNull();
+    fireEvent.click(backend);
+    expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "changeBackend" });
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    expect(backend).toBeDisabled();
+    expect(backend).toHaveAttribute("aria-busy", "true");
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+
+    rerender(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        source: {
+          kind: "notebookVariable",
+          label: "frame",
+          variableName: "frame",
+          uri: "file:///workspace/example.ipynb"
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /change dataframe engine/iu })).not.toBeInTheDocument()
+    );
+    expect(document.querySelector('[data-session-badge="backend"]')).toHaveTextContent("Polars");
+  });
 });
 
 describe("App file import options", () => {

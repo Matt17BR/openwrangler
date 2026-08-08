@@ -82,7 +82,9 @@ interface PromptPick {
 const panelPromptMocks = {
   showQuickPick:
     vi.fn<(items: readonly unknown[], options?: PromptOptions, token?: vscode.CancellationToken) => Promise<unknown>>(),
-  showInputBox: vi.fn<(options?: PromptOptions, token?: vscode.CancellationToken) => Promise<string | undefined>>()
+  showInputBox: vi.fn<(options?: PromptOptions, token?: vscode.CancellationToken) => Promise<string | undefined>>(),
+  showWarningMessage:
+    vi.fn<(message: string, options?: vscode.MessageOptions, ...items: string[]) => Promise<string | undefined>>()
 };
 
 describe("OpenWranglerPanel retained view state", () => {
@@ -92,6 +94,8 @@ describe("OpenWranglerPanel retained view state", () => {
     panelPromptMocks.showQuickPick.mockResolvedValue(undefined);
     panelPromptMocks.showInputBox.mockReset();
     panelPromptMocks.showInputBox.mockResolvedValue(undefined);
+    panelPromptMocks.showWarningMessage.mockReset();
+    panelPromptMocks.showWarningMessage.mockResolvedValue(undefined);
     Object.defineProperties(window, {
       showQuickPick: {
         configurable: true,
@@ -100,6 +104,10 @@ describe("OpenWranglerPanel retained view state", () => {
       showInputBox: {
         configurable: true,
         value: panelPromptMocks.showInputBox
+      },
+      showWarningMessage: {
+        configurable: true,
+        value: panelPromptMocks.showWarningMessage
       }
     });
   });
@@ -107,6 +115,7 @@ describe("OpenWranglerPanel retained view state", () => {
     while (liveHarnesses.length) liveHarnesses.pop()?.dispose();
     delete (window as unknown as { showQuickPick?: unknown }).showQuickPick;
     delete (window as unknown as { showInputBox?: unknown }).showInputBox;
+    delete (window as unknown as { showWarningMessage?: unknown }).showWarningMessage;
   });
 
   it("keeps native actions on the visible session after sidebar focus and clears them when hidden", async () => {
@@ -335,6 +344,138 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(reconfigureFileSession).not.toHaveBeenCalled();
     expect(bridge.setActiveSession).toHaveBeenLastCalledWith(undefined);
     expect(executeCommand).toHaveBeenLastCalledWith("setContext", "openWrangler.canChangeImportOptions", false);
+  });
+
+  it("switches a file session through the native engine picker and remembers the confirmed choice", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const opened = responseForSource(source);
+    const configured: SessionOpenedResponse = {
+      ...opened,
+      metadata: { ...opened.metadata, revision: 1, backend: "pandas" }
+    };
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
+    const workspaceState = {
+      get: vi.fn(() => undefined),
+      update: vi.fn(async () => undefined)
+    };
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => opened),
+        reconfigureFileSession
+      },
+      { source, openResponse: opened, backendPreference: "auto", workspaceState }
+    );
+    await harness.open();
+    workspaceState.update.mockClear();
+    panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
+      if (options?.title !== "Dataframe engine") return undefined;
+      return (items as Array<{ backend: DataBackend }>).find((item) => item.backend === "pandas");
+    });
+
+    await harness.receive({ kind: "changeBackend" });
+
+    expect(panelPromptMocks.showQuickPick).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "Polars", description: "Current", backend: "polars" }),
+        expect.objectContaining({ label: "DuckDB", backend: "duckdb" }),
+        expect.objectContaining({ label: "Pandas", backend: "pandas" })
+      ]),
+      expect.objectContaining({ title: "Dataframe engine", placeHolder: "Current engine: Polars" }),
+      expect.anything()
+    );
+    expect(reconfigureFileSession).toHaveBeenCalledWith("session", 0, source, {
+      cancellation: expect.anything(),
+      backendPreference: "pandas"
+    });
+    expect(workspaceState.update).toHaveBeenCalledWith(
+      CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY,
+      expect.objectContaining({
+        entries: [expect.objectContaining({ backend: "pandas", backendPreference: "pandas" })]
+      })
+    );
+    expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: true });
+    expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
+  });
+
+  it("offers only engines that support the current file format and import options", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.xlsx",
+      path: "/workspace/records.xlsx",
+      uri: "file:///workspace/records.xlsx",
+      importOptions: { sheetIndex: 0 }
+    };
+    const opened = responseForSource(source);
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => opened), reconfigureFileSession: vi.fn() },
+      { source, openResponse: opened, backendPreference: "auto" }
+    );
+    await harness.open();
+
+    await harness.receive({ kind: "changeBackend" });
+
+    const choices = panelPromptMocks.showQuickPick.mock.calls[0]?.[0] as Array<{
+      label: string;
+      backend: DataBackend;
+    }>;
+    expect(choices.map(({ backend }) => backend)).toEqual(["polars", "pandas"]);
+    expect(choices.map(({ label }) => label)).toEqual(["Polars", "Pandas"]);
+  });
+
+  it("requires explicit replay confirmation before switching a session with cleaning state", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const appliedStep = {
+      id: "lower-city",
+      kind: "lowerText" as const,
+      params: { column: { id: "c:0", name: "city" } }
+    };
+    const opened: SessionOpenedResponse = {
+      ...responseForSource(source),
+      metadata: { ...metadata, source, steps: [appliedStep], latestStepInputSchema: metadata.schema }
+    };
+    const configured: SessionOpenedResponse = {
+      ...opened,
+      metadata: { ...opened.metadata, revision: 1, backend: "pandas" }
+    };
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => opened), reconfigureFileSession },
+      { source, openResponse: opened, backendPreference: "auto" }
+    );
+    await harness.open();
+    panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
+      if (options?.title !== "Dataframe engine") return undefined;
+      return (items as Array<{ backend: DataBackend }>).find((item) => item.backend === "pandas");
+    });
+
+    await harness.receive({ kind: "changeBackend" });
+
+    expect(panelPromptMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Switch to Pandas?",
+      expect.objectContaining({
+        modal: true,
+        detail: expect.stringContaining("replay 1 applied step with Pandas")
+      }),
+      "Replay and switch"
+    );
+    expect(reconfigureFileSession).not.toHaveBeenCalled();
+
+    panelPromptMocks.showWarningMessage.mockResolvedValueOnce("Replay and switch");
+    await harness.receive({ kind: "changeBackend" });
+
+    expect(reconfigureFileSession).toHaveBeenCalledOnce();
   });
 
   it("coalesces native import commands and keeps them pending through the renderer-prepared transaction", async () => {
