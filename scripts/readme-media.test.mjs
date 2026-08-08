@@ -584,9 +584,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders"/u
   );
-  assert.match(readme, /published comparison covers Open Wrangler 1\.2\.1 and Microsoft Data Wrangler 1\.24\.2/u);
-  assert.match(readme, /Data Wrangler converted the dataframe to Pandas while Open Wrangler stayed in Polars/u);
-  assert.match(readme, /cannot say how much of the gap came from that difference/u);
+  assert.match(readme, /Data Wrangler converted Polars input to\s+Pandas/u);
+  assert.match(readme, /Open Wrangler kept it as Polars/u);
   assert.doesNotMatch(readme, /That explains part of the difference/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
@@ -626,13 +625,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   const performanceSection = readme.slice(readme.indexOf("## Performance"), readme.indexOf("## Roadmap"));
   assert.match(performanceSection, /Microsoft Data\s+Wrangler/u);
-  assert.match(performanceSection, /faster in\s+the notebook-preview and CSV-profiling runs/u);
-  assert.match(performanceSection, /For Parquet, workbench-open and profiling times were close/u);
-  assert.match(
-    performanceSection,
-    /Data Wrangler converted the dataframe to Pandas while Open Wrangler stayed in Polars/u
-  );
-  assert.match(performanceSection, /cannot say how much of the gap came from that difference/u);
+  assert.match(performanceSection, /faster at notebook previews and\s+profiling CSV columns/u);
+  assert.match(performanceSection, /Parquet workbench and profiling times were close/u);
+  assert.match(performanceSection, /Data Wrangler converted Polars input to\s+Pandas/u);
+  assert.match(performanceSection, /Open Wrangler kept it as Polars/u);
+  assert.match(performanceSection, /did not time the conversion separately/u);
   assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
   const reportLinks = [
     ...performanceSection.matchAll(
