@@ -2535,6 +2535,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
   recordAcceptanceProgress("jupyter-r:interactive:start");
   assert.equal(vscode.workspace.isTrusted, true, "Inspecting the active R session requires a trusted workspace.");
   assert.equal(testing.diagnostics().sessionCount, 0, "The active R journey must start without another session.");
+  await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "before starting the first active R terminal");
   const commands = new Set(await vscode.commands.getCommands(true));
   assert.ok(commands.has("r.createRTerm"), "The pinned official R extension must expose r.createRTerm.");
 
@@ -2551,6 +2552,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
 
     recordAcceptanceProgress("jupyter-r:interactive:first-terminal");
     sourceTerminal = await createReleasedOfficialRTerminal("the first active R session");
+    await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "after starting the first active R terminal");
     await seedReleasedRInteractiveFrames(sourceTerminal, directory, 2_400_001, "first");
     assert.equal(vscode.window.activeTerminal, sourceTerminal, "Refresh must target the exact active R terminal.");
     assert.equal(
@@ -2561,6 +2563,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
       ),
       true
     );
+    await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "after refreshing the first active R terminal");
 
     let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
     let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
@@ -2687,6 +2690,33 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     );
     cleanupAcceptanceTemporaryDirectory(directory);
   }
+}
+
+async function assertReleasedWorkbenchHasNoBlockingDialog(workbench: Page, checkpoint: string): Promise<void> {
+  const [dialogs, modalBlocks] = await withAcceptanceOperationDeadline(
+    Promise.all([
+      workbench.locator(".monaco-dialog-box:visible").evaluateAll((elements) =>
+        elements.slice(0, 4).map((element) => {
+          const normalize = (value: string | null | undefined): string =>
+            (value ?? "").replace(/\s+/gu, " ").trim().slice(0, 512);
+          return {
+            message: normalize(element.querySelector(".dialog-message-text")?.textContent),
+            detail: normalize(element.querySelector(".dialog-message-detail")?.textContent),
+            buttons: (Array.from(element.querySelectorAll("button")) as Array<{ textContent: string | null }>)
+              .slice(0, 8)
+              .map((button) => normalize(button.textContent))
+          };
+        })
+      ),
+      workbench.locator(".monaco-dialog-modal-block.dimmed:visible").count()
+    ]),
+    WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+    `blocking-dialog diagnostics ${checkpoint}`
+  );
+  if (dialogs.length === 0 && modalBlocks === 0) return;
+  throw new Error(
+    `The isolated workbench was blocked by a modal ${checkpoint}: ` + `${JSON.stringify({ dialogs, modalBlocks })}`
+  );
 }
 
 async function createReleasedOfficialRTerminal(description: string): Promise<vscode.Terminal> {
