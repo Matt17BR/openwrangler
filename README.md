@@ -235,8 +235,8 @@ The R workbench supports paging, filters, multi-column sorts, value search, prof
 columns, text, numbers, missing values, and grouped summaries. Missing values can use a typed value, median, mean,
 mode, a fallback column, ordered forward or backward fill, grouped statistics, or numeric interpolation when the
 column type supports it. Every draft shows the changed data and generated R before it is applied. Applied steps can
-be inspected, edited, or undone. The [generated reference](docs/reference.md#transformation-operations) lists the
-operation parameters; the workbench shows only the operations supported by the active dataframe.
+be inspected, edited, or undone. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
+lists the operation parameters; the workbench shows only the operations supported by the active dataframe.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
