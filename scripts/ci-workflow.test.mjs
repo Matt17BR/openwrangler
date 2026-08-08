@@ -539,6 +539,25 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
       ),
       true
     );
+    const releasedJupyter = workflow?.jobs?.["released-jupyter"];
+    const rSetup = releasedJupyter?.steps?.find((step) => step?.uses === SETUP_R_ACTION);
+    assert.deepEqual(rSetup?.with, { "r-version": "4.5.2", "use-public-rspm": true });
+    assert.equal(
+      releasedJupyter?.steps?.filter((step) => step?.run === "npm run test:r-contract").length,
+      1,
+      `${relativePath} must run the R contract exactly once.`
+    );
+    assert.equal(
+      releasedJupyter?.steps?.some(
+        (step) =>
+          step?.id === "packaged_editor_r" &&
+          step?.env?.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter" &&
+          step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode,cursor" &&
+          step?.env?.OPEN_WRANGLER_TEST_RSCRIPT === "${{ steps.rscript.outputs.executable }}"
+      ),
+      true,
+      `${relativePath} must run packaged R Jupyter acceptance in both editors.`
+    );
   }
 });
 
