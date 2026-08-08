@@ -37,7 +37,10 @@ The active-R path is separate from document execution. It activates the official
 or `R Interactive` terminal, and uses VS Code's public terminal API to load the bundled dispatcher into that session.
 The Operations view can then refresh and open supported dataframes from that terminal. A terminal switch or close
 invalidates the list and bridge; discovery, requests, cleanup, and reopening never retarget another terminal. The
-integration does not read vscode-R extension storage or private process details.
+integration does not read vscode-R extension storage or private process details. These variables follow the notebook
+start-mode setting, so they open in Viewing mode by default and can be reopened in Editing mode without changing the
+live R object. The session has no notebook or text-document origin. Its generated R can therefore be copied or saved,
+but the insertion commands are not offered.
 
 The notebook launch command uses the same **Open in Open Wrangler** primary and compact title. VS Code can render the compact title in its global notebook toolbar while Cursor renders the primary title for its pinned editor action; keeping the accessible names identical prevents host-specific command drift without adding aliases or editor-specific activation logic.
 
@@ -202,14 +205,15 @@ temporary directory, and responses are published by atomic rename. Requests are 
 different source sessions may run independently. Closing the panel closes its R session, stops the owned process, and
 removes its temporary directory.
 
-An editable R notebook or local R document session can export its committed cleaning result as CSV or Parquet. CSV is
-part of base R. Parquet requires `nanoparquet` 0.5.1 or newer in the exact R process that owns the session; the runtime
-checks this when the session opens and again when export starts. A document process writes an opaque file in its
-private directory; the extension verifies and streams that file. IRkernel keeps its file inside the kernel and returns
-bounded, offset-addressed chunks. Both routes feed the existing atomic file transaction, and R never receives the
-destination path. Drafts and stale revisions are rejected. Viewing filters and sorts are not part of the exported
-cleaning result. Notebook export is offered only when the notebook belongs to the current local extension host; the
-public export request does not yet carry a VS Code remote authority.
+An editable R notebook, active-terminal, or local R document session can export its committed cleaning result as CSV
+or Parquet. CSV is part of base R. Parquet requires `nanoparquet` 0.5.1 or newer in the exact R process that owns the
+session; the runtime checks this when the session opens and again when export starts. A document or active-terminal
+process writes an opaque file in its private directory; the extension verifies and streams that file. IRkernel keeps
+its file inside the kernel and returns bounded, offset-addressed chunks. Both routes feed the existing atomic file
+transaction, and R never receives the destination path. Drafts and stale revisions are rejected. Viewing filters and
+sorts are not part of the exported cleaning result. Notebook export is offered only when the notebook belongs to the
+current local extension host; the public export request does not yet carry a VS Code remote authority. The
+active-terminal export path is not counted as release evidence until its packaged VS Code and Cursor journey passes.
 
 Direct R-document execution is currently disabled on Windows. Node's ordinary child-process API cannot prove that every
 process started by user R code has exited. The command can be enabled there only after the extension owns the R
@@ -219,16 +223,19 @@ Errors raised by the R frame reader do not arrive as an undifferentiated runtime
 a fixed response-code list that includes `unsupported_frame`, `missing_package`, `page_too_large`, `stale_column`,
 `stale_revision`, and `unsupported_operation`. Messages are limited to 4 KiB, and TypeScript rejects any unrecognized
 code. Native variable discovery requires `jsonlite` and `rlang` in the selected R runtime. It recognizes exact base
-`data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. Notebook and R-document
-commands enable native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
+`data.frame`, tibble, and `data.table` class vectors without evaluating active or delayed bindings. The packages must
+be installed in the environment that owns the session: the selected IRkernel, the selected official R terminal, or
+the `Rscript` used for an Open Wrangler-managed document. Notebook, active-terminal, and R-document commands enable
+native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
 Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate. Other operations are not
 supported in R yet.
-Generated R can be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session. Notebook
-insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the complete
-resulting document text; R Markdown and Quarto insert a new top-level `{r}` cell, and R Markdown rejects generated
-code containing a standalone backtick fence that knitr would close early. A stale or ambiguous document is never retried. R sessions open with header profiles off so opening
+Generated R can be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session.
+Notebook insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the
+complete resulting document text; R Markdown and Quarto insert a new top-level `{r}` cell, and R Markdown rejects
+generated code containing a standalone backtick fence that knitr would close early. Active-terminal sessions have no
+insertion target. A stale or ambiguous document is never retried. R sessions open with header profiles off so opening
 a frame does not immediately scan every visible column. Users can enable header profiles,
 and the profile drawer still loads the selected column or dataset on request. The packaged VS Code/Cursor viewing run
 checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate

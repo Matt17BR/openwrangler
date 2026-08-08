@@ -554,6 +554,14 @@ through the visible **Switch to Editing** action, then continues through the cle
 They also check that header profiles start off; the journey does not turn them on. The temporary R
 library is deleted with the run.
 
+The active-terminal path has focused tests for selecting one exact official R terminal, discovering
+`data.frame`, tibble, and `data.table` objects, opening the selected object, request framing, cleanup, and
+invalidation when the user switches or closes the terminal. It is not yet recorded as packaged-editor evidence. That
+gate must run with the official R extension in isolated VS Code and Cursor profiles, use **Operations → Refresh R
+dataframes**, open and profile a real object, switch from Viewing to Editing, exercise generated code and export, and
+prove that terminal replacement leaves no active Open Wrangler bridge. Until that journey passes, release notes and
+the feature matrix must continue to say that packaged validation is pending.
+
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed from commit
 `67422557e2377f5fe806e3b4892b261dd48d9d6a` on 2026-08-06. It covered local R 4.5.2 in VS Code and Cursor, plus the
 containerized R kernel in VS Code. The journey checked typed value selection, a compound filter, filtered profiles,
@@ -629,6 +637,10 @@ only when the exact R process has nanoparquet 0.5.1 or newer.
 The modified in-memory source is then run again and its generated result is opened before the final panel and R process are closed. The phase uses the
 exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite`, `rlang`, and
 `nanoparquet`.
+
+Each journey installs packages into the environment that owns its dataframe. IRkernel uses its selected kernel
+library, the active-terminal journey uses the selected terminal's library, and document runs use the library visible
+to the resolved `Rscript`. A package found only in another R installation does not satisfy the check.
 
 The R Markdown and Quarto fixtures each contain first-line YAML, prose, and top-level backtick-fenced `{r}` cells that
 read a relative CSV. The R Markdown parser fixture also contains a non-R cell and a disabled R cell. The journey opens
