@@ -21,6 +21,7 @@ import { ImportCancelledError, promptImportOptions } from "./files/importOptions
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const RENDERER_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
 const RENDERER_STARTUP_RECOVERY_TIMEOUT_MS = 5_000;
+const MAX_RENDERER_STARTUP_RECOVERY_ATTEMPTS = 2;
 const RENDERER_PUBLICATION_TIMEOUT_MS = 5_000;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
 export const SESSION_BOUND_EXPORT_DATA_COMMAND = "openWrangler.internal.exportSessionData";
@@ -83,7 +84,7 @@ export class OpenWranglerPanel {
   private pendingPreReadyImportResponse: OpenWranglerResponse | undefined;
   private unpublishedAuthoritativeSnapshot = false;
   private rendererStartupRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
-  private rendererStartupRecoveryAttempted = false;
+  private rendererStartupRecoveryAttempts = 0;
   private openAttemptGeneration = 0;
   private activeSessionOpenProgressGeneration: number | undefined;
   private sessionOpenProgress:
@@ -397,6 +398,7 @@ export class OpenWranglerPanel {
       await this.publishSessionOpenProgress();
       if (!this.rendererReady) return;
       await this.enqueueRendererSynchronization(true);
+      this.scheduleRendererStartupRecovery();
       return;
     }
 
@@ -407,6 +409,7 @@ export class OpenWranglerPanel {
       await this.publishSessionOpenProgress();
       if (!this.rendererReady) return;
       await this.enqueueRendererSynchronization(false);
+      this.scheduleRendererStartupRecovery();
       return;
     }
 
@@ -421,7 +424,7 @@ export class OpenWranglerPanel {
         this.rendererViewStateLocked = false;
         this.pendingPreReadyImportResponse = undefined;
         this.clearRendererStartupRecoveryTimer();
-        this.rendererStartupRecoveryAttempted = false;
+        this.rendererStartupRecoveryAttempts = 0;
         this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
         this.revealCodePreviewAfterRendererSynchronization(synchronization);
       }
@@ -1017,12 +1020,13 @@ export class OpenWranglerPanel {
   private async postRendererMessage(message: unknown): Promise<boolean> {
     if (this.disposed) return false;
     const generation = this.rendererGeneration;
+    const rendererReadyAtPublication = this.rendererReady;
     const hydratedSyncIdAtPublication = this.hasHydratedRenderer() ? this.rendererHydratedSyncId : undefined;
     let publication: Thenable<boolean>;
     try {
       publication = this.panel.webview.postMessage(message);
     } catch {
-      this.handleRendererPublicationFailure(generation, hydratedSyncIdAtPublication);
+      this.handleRendererPublicationFailure(generation, rendererReadyAtPublication, hydratedSyncIdAtPublication);
       return false;
     }
 
@@ -1040,16 +1044,27 @@ export class OpenWranglerPanel {
         () => finish(false)
       );
     });
-    if (!posted) this.handleRendererPublicationFailure(generation, hydratedSyncIdAtPublication);
+    if (!posted) {
+      this.handleRendererPublicationFailure(generation, rendererReadyAtPublication, hydratedSyncIdAtPublication);
+    }
     return posted && !this.disposed && generation === this.rendererGeneration;
   }
 
-  private handleRendererPublicationFailure(generation: number, hydratedSyncIdAtPublication: string | undefined): void {
+  private handleRendererPublicationFailure(
+    generation: number,
+    rendererReadyAtPublication: boolean,
+    hydratedSyncIdAtPublication: string | undefined
+  ): void {
     if (this.disposed || generation !== this.rendererGeneration) return;
     if (this.hasHydratedRenderer() && this.rendererHydratedSyncId !== hydratedSyncIdAtPublication) return;
+    if (!rendererReadyAtPublication) {
+      this.scheduleRendererStartupRecovery();
+      return;
+    }
     this.rendererReady = false;
     this.invalidateRendererSynchronization();
-    if (!this.recoverRendererAfterStartupStall()) this.scheduleRendererStartupRecovery();
+    if (this.recoverRendererAfterStartupStall()) return;
+    this.scheduleRendererStartupRecovery();
   }
 
   private updateSessionOpenProgress(generation: number, stage: SessionOpenProgressStage): void {
@@ -1107,13 +1122,17 @@ export class OpenWranglerPanel {
   private hasHydratedRenderer(): boolean {
     const synchronization = this.rendererSynchronizationIdentity;
     return Boolean(
-      this.rendererReady &&
+      this.hasSynchronizedRenderer() &&
       this.snapshot &&
       synchronization &&
-      this.rendererHydratedSyncId === synchronization.syncId &&
       synchronization.sessionId === this.snapshot.metadata.sessionId &&
       synchronization.revision === this.snapshot.metadata.revision
     );
+  }
+
+  private hasSynchronizedRenderer(): boolean {
+    const synchronization = this.rendererSynchronizationIdentity;
+    return Boolean(this.rendererReady && synchronization && this.rendererHydratedSyncId === synchronization.syncId);
   }
 
   private isRendererSynchronizableForSession(sessionId: string): boolean {
@@ -1167,8 +1186,8 @@ export class OpenWranglerPanel {
   private scheduleRendererStartupRecovery(): void {
     if (
       this.disposed ||
-      this.rendererReady ||
-      this.rendererStartupRecoveryAttempted ||
+      this.hasSynchronizedRenderer() ||
+      this.rendererStartupRecoveryAttempts >= MAX_RENDERER_STARTUP_RECOVERY_ATTEMPTS ||
       this.rendererStartupRecoveryTimer ||
       !this.openResponse ||
       !this.panel.visible
@@ -1184,16 +1203,17 @@ export class OpenWranglerPanel {
   private recoverRendererAfterStartupStall(): boolean {
     if (
       this.disposed ||
-      this.hasHydratedRenderer() ||
-      this.rendererStartupRecoveryAttempted ||
+      this.hasSynchronizedRenderer() ||
+      this.rendererStartupRecoveryAttempts >= MAX_RENDERER_STARTUP_RECOVERY_ATTEMPTS ||
       !this.openResponse ||
       !this.panel.visible
     ) {
       return false;
     }
     this.clearRendererStartupRecoveryTimer();
-    this.rendererStartupRecoveryAttempted = true;
+    this.rendererStartupRecoveryAttempts += 1;
     this.replaceRendererHtml();
+    this.scheduleRendererStartupRecovery();
     this.bridge.reportDiagnostic?.("Open Wrangler reloaded a renderer that did not complete its startup handshake.");
     return true;
   }
@@ -1311,12 +1331,14 @@ export class OpenWranglerPanel {
 
   private async synchronizeRenderer(clearInspection: boolean): Promise<void> {
     if (this.disposed || !this.rendererReady) return;
+    const generation = this.rendererGeneration;
     this.rendererViewStateLocked = true;
     if (clearInspection) {
       if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
       await this.postStepInspectionCleared(false);
     }
     if (!this.snapshot && !this.openResponse) await this.open();
+    if (this.disposed || !this.rendererReady || generation !== this.rendererGeneration) return;
     const synchronization = this.snapshot
       ? {
           syncId: randomNonce(),

@@ -55,7 +55,7 @@ printf 'executable=%s\\n' "$rscript" >> "$GITHUB_OUTPUT"
 printf 'version=%s\\n' "$r_version" >> "$GITHUB_OUTPUT"
 printf 'Hosted R: %s\\n' "$r_version"`;
 const INSTALL_R_CONTRACT_PACKAGES =
-  'Rscript --vanilla -e \'install.packages(c("jsonlite", "tibble", "data.table", "bit64"), repos = "https://cloud.r-project.org")\'';
+  'Rscript --vanilla -e \'install.packages(c("jsonlite", "tibble", "data.table", "bit64", "collapse"), repos = "https://cloud.r-project.org")\'';
 const R_JUPYTER_RUN =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}";
 
@@ -529,6 +529,9 @@ export function inspectPreviewReleaseWorkflow(source) {
     problems.push("release must publish the tested candidate without rebuilding it.");
   }
   const tag = findRun(release, "node scripts/push-release-tag.mjs");
+  const localTagStep = steps(release).find(
+    (step) => step?.name === "Prepare the exact local release tag for registry verification"
+  );
   const github = findRun(release, "node scripts/publish-github-preview-release.mjs canonical-release");
   if (
     !exactKeys(tag, ["name", "env", "run"]) ||
@@ -537,6 +540,11 @@ export function inspectPreviewReleaseWorkflow(source) {
     tag.env.GITHUB_REPOSITORY !== "${{ github.repository }}" ||
     tag.env.GITHUB_TOKEN !== "${{ github.token }}" ||
     tag.env.RELEASE_TAG !== RELEASE_TAG ||
+    !exactKeys(localTagStep, ["name", "env", "run"]) ||
+    !exactKeys(localTagStep?.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    localTagStep.env.EXPECTED_SHA !== EVENT_SHA ||
+    localTagStep.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(localTagStep.run) !== "node scripts/prepare-stable-candidate-tag.mjs" ||
     !exactKeys(github, ["name", "env", "run"]) ||
     !exactKeys(github.env, [
       "EXPECTED_SHA",
@@ -546,9 +554,12 @@ export function inspectPreviewReleaseWorkflow(source) {
       "RELEASE_TAG"
     ]) ||
     github.env.GITHUB_IMMUTABLE_RELEASES_EXPECTED !== "true" ||
-    steps(release).indexOf(github) !== steps(release).indexOf(tag) + 1
+    steps(release).indexOf(localTagStep) !== steps(release).indexOf(tag) + 1 ||
+    steps(release).indexOf(github) !== steps(release).indexOf(localTagStep) + 1
   ) {
-    problems.push("release must push the exact tag then idempotently publish the draft-first GitHub preview.");
+    problems.push(
+      "release must push and materialize the exact tag before idempotently publishing the draft-first GitHub preview."
+    );
   }
 
   const releaseSteps = steps(release);

@@ -51,19 +51,9 @@ interface ReplaceableAcceptanceLocator {
   click(options: { readonly timeout: number }): Promise<void>;
 }
 
-interface AcceptancePointerTarget {
-  readonly pointer: AcceptancePointer;
-  boundingBox(): Promise<{
-    readonly x: number;
-    readonly y: number;
-    readonly width: number;
-    readonly height: number;
-  } | null>;
+interface ExactAcceptanceElement {
+  click(options: { readonly force: true; readonly timeout: number }): Promise<void>;
   evaluate<Result>(pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result>;
-}
-
-interface AcceptancePointer {
-  click(x: number, y: number): Promise<void>;
 }
 
 export class IndeterminateAcceptanceActionError extends Error {
@@ -119,35 +109,43 @@ export function activateReplaceableAcceptanceLocator(
   return locator.click({ timeout: timeoutMs });
 }
 
-export function activateAcceptancePointerTargetAtCurrentCenter(
-  target: AcceptancePointerTarget,
+export async function activateExactAcceptanceElementOnce(
+  target: ExactAcceptanceElement,
   timeoutMs: number,
-  immediatelyBeforePointerClick?: () => void
+  immediatelyBeforeClick?: () => void
 ): Promise<void> {
-  if (immediatelyBeforePointerClick !== undefined && typeof immediatelyBeforePointerClick !== "function") {
-    return Promise.reject(new TypeError("An acceptance pointer boundary callback must be a function."));
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error("Exact acceptance-element activation requires a positive safe-integer timeout.");
   }
-  return withAcceptanceOperationDeadline(
-    activateAcceptancePointerTargetAtCurrentCenterWithoutDeadline(target, immediatelyBeforePointerClick),
-    timeoutMs,
-    "the exact acceptance pointer target to receive one physical click"
-  );
-}
+  if (immediatelyBeforeClick !== undefined && typeof immediatelyBeforeClick !== "function") {
+    throw new TypeError("An acceptance click-boundary callback must be a function.");
+  }
+  const deadline = Date.now() + timeoutMs;
+  const remaining = (description: string): number => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs < 1) {
+      throw new Error(`Timed out waiting for ${description} after ${timeoutMs} ms.`);
+    }
+    return remainingMs;
+  };
 
-async function activateAcceptancePointerTargetAtCurrentCenterWithoutDeadline(
-  target: AcceptancePointerTarget,
-  immediatelyBeforePointerClick?: () => void
-): Promise<void> {
-  const [box, ownsCenter] = await Promise.all([
-    target.boundingBox(),
+  const readinessDescription = "the exact acceptance element readiness";
+  const readiness = await withAcceptanceOperationDeadline(
     target.evaluate((candidate) => {
-      type PointerElement = {
+      type ClickableElement = {
         readonly disabled?: boolean;
         readonly isConnected: boolean;
         readonly ownerDocument: {
-          elementFromPoint(x: number, y: number): PointerElement | null;
+          elementFromPoint(x: number, y: number): ClickableElement | null;
         };
-        contains(node: PointerElement | null): boolean;
+        dataset: Record<string, string | undefined>;
+        addEventListener(
+          type: "click",
+          listener: (event: { readonly isTrusted: boolean }) => void,
+          options: { once: boolean }
+        ): void;
+        contains(node: ClickableElement | null): boolean;
+        getAttribute(name: string): string | null;
         getBoundingClientRect(): {
           readonly left: number;
           readonly top: number;
@@ -155,21 +153,44 @@ async function activateAcceptancePointerTargetAtCurrentCenterWithoutDeadline(
           readonly height: number;
         };
       };
-      const element = candidate as PointerElement;
+      const element = candidate as ClickableElement;
+      if (!element.isConnected) return "disconnected";
+      if (element.disabled === true || element.getAttribute("aria-disabled") === "true") return "disabled";
       const rect = element.getBoundingClientRect();
-      if (!element.isConnected || element.disabled === true || rect.width <= 0 || rect.height <= 0) return false;
+      if (rect.width <= 0 || rect.height <= 0) return "geometry";
       const hit = element.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      return hit === element || element.contains(hit);
-    })
-  ]);
-  if (!box || box.width <= 0 || box.height <= 0) {
-    throw new Error("The exact acceptance pointer target has no clickable geometry.");
+      if (hit !== element && !element.contains(hit)) return "covered";
+      element.dataset.openWranglerAcceptanceActivation = "pending";
+      element.addEventListener(
+        "click",
+        (event) => {
+          if (event.isTrusted) element.dataset.openWranglerAcceptanceActivation = "seen";
+        },
+        { once: true }
+      );
+      return "ready";
+    }),
+    remaining(readinessDescription),
+    readinessDescription
+  );
+  if (readiness !== "ready") {
+    throw new Error(`The exact acceptance element is not ready for one click (${readiness}).`);
   }
-  if (!ownsCenter) {
-    throw new Error("The exact acceptance pointer target does not own its current center point.");
+
+  immediatelyBeforeClick?.();
+  await target.click({ force: true, timeout: remaining("the exact acceptance element trusted click") });
+  const receiptDescription = "the exact acceptance element trusted-click receipt";
+  const activation = await withAcceptanceOperationDeadline(
+    target.evaluate(
+      (element) =>
+        (element as { readonly dataset: Record<string, string | undefined> }).dataset.openWranglerAcceptanceActivation
+    ),
+    remaining(receiptDescription),
+    receiptDescription
+  );
+  if (activation !== "seen") {
+    throw new Error("The exact acceptance element did not receive one trusted click.");
   }
-  immediatelyBeforePointerClick?.();
-  await target.pointer.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 
 async function observeAcceptanceActionReceipt<T>(

@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "03850f86f4c587687c94fe7a60034742c1b6a840151f63ac277b3f54fe9ec28d";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "92b1bba5b16e7378e1db61c129fb102afbe10e860a2754e894654a667bd46fbf";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -13,6 +13,8 @@ const STABLE_PUBLISH_COMMAND =
   "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate";
 const PREVIEW_PUBLISH_COMMAND =
   "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate";
+const STABLE_PUBLISH_ATTEMPT = `${STABLE_PUBLISH_COMMAND} || publish_status=$?`;
+const PREVIEW_PUBLISH_ATTEMPT = `${PREVIEW_PUBLISH_COMMAND} || publish_status=$?`;
 const PROFILE_ID_COMMAND = "node scripts/marketplace-identity-profile.mjs";
 const VERIFY_IDENTITY_COMMAND = "npx --no-install vsce verify-pat Matt17BR --azure-credential";
 const VERIFY_ARTIFACT_COMMAND = "node scripts/verify-registry-release-artifact.mjs canonical-release";
@@ -246,12 +248,16 @@ export function inspectMarketplacePromotionPipeline(source) {
         PROFILE_ID_COMMAND,
         VERIFY_IDENTITY_COMMAND,
         VERIFY_ARTIFACT_COMMAND,
+        "publish_status=0",
         'if [ "$RELEASE_PRERELEASE" = "true" ]; then',
-        PREVIEW_PUBLISH_COMMAND,
+        PREVIEW_PUBLISH_ATTEMPT,
         'elif [ "$RELEASE_PRERELEASE" = "false" ]; then',
-        STABLE_PUBLISH_COMMAND,
+        STABLE_PUBLISH_ATTEMPT,
         "else",
         "exit 64",
+        "fi",
+        'if [ "$publish_status" -ne 0 ]; then',
+        'echo "vsce publish exited with status $publish_status; public verification will determine the result." >&2',
         "fi"
       ])
   ) {
@@ -263,8 +269,8 @@ export function inspectMarketplacePromotionPipeline(source) {
   ]);
   if (
     commands.filter((command) => command === "npm ci --ignore-scripts").length !== 1 ||
-    commands.filter((command) => command === STABLE_PUBLISH_COMMAND).length !== 1 ||
-    commands.filter((command) => command === PREVIEW_PUBLISH_COMMAND).length !== 1 ||
+    commands.filter((command) => command === STABLE_PUBLISH_ATTEMPT).length !== 1 ||
+    commands.filter((command) => command === PREVIEW_PUBLISH_ATTEMPT).length !== 1 ||
     commands.filter((command) => command === PROFILE_ID_COMMAND).length !== 1 ||
     commands.filter((command) => command === VERIFY_IDENTITY_COMMAND).length !== 1 ||
     commands.filter((command) => command === VERIFY_ARTIFACT_COMMAND).length !== 2 ||

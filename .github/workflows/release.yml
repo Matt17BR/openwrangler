@@ -460,7 +460,7 @@ jobs:
       - name: Install R contract packages
         run: >-
           Rscript --vanilla -e
-          'install.packages(c("jsonlite", "tibble", "data.table", "bit64"), repos = "https://cloud.r-project.org")'
+          'install.packages(c("jsonlite", "tibble", "data.table", "bit64", "collapse"), repos = "https://cloud.r-project.org")'
       - run: npm run test:r-contract
         env:
           RSCRIPT: ${{ steps.rscript.outputs.executable }}
@@ -761,6 +761,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/push-release-tag.mjs
+      - name: Prepare the exact local release tag for registry verification
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/prepare-stable-candidate-tag.mjs
       - name: Publish or verify the exact GitHub preview release
         env:
           EXPECTED_SHA: ${{ github.sha }}

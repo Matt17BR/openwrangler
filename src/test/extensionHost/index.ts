@@ -61,6 +61,7 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
   acquirePreparedAcceptanceAction,
+  activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
@@ -472,8 +473,11 @@ export async function run(): Promise<void> {
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
   assert.match(extension.packageJSON.description, /Explore and clean dataframes in VS Code and Cursor/u);
   assert.match(extension.packageJSON.description, /with Pandas, Polars, DuckDB, or R/u);
-  assert.match(extension.packageJSON.description, /View local PySpark notebooks/u);
-  assert.match(extension.packageJSON.description, /run R, R Markdown, or Quarto sources on macOS or Linux/u);
+  assert.match(extension.packageJSON.description, /View local PySpark DataFrames in notebooks/u);
+  assert.match(
+    extension.packageJSON.description,
+    /Run R files and supported R Markdown\/Quarto cells on macOS or Linux/u
+  );
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
@@ -1550,12 +1554,18 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = 'minimal')",
     "orders_table <- data.table::as.data.table(orders_frame)",
     "data.table::setkey(orders_table, row_id)",
+    "collapse_frame <- collapse::qDF(orders_frame)",
+    "collapse_tibble <- collapse::qTBL(orders_frame)",
+    "collapse_table <- collapse::qDT(orders_frame)",
+    "collapse_grouped <- collapse::fgroup_by(collapse_frame, group)",
+    "collapse_indexed <- collapse::findex_by(collapse_frame, group, row_id)",
     "orders_frame_before <- serialize(orders_frame, NULL, version = 3L)",
     "orders_tibble_before <- serialize(orders_tibble, NULL, version = 3L)",
     "orders_table_before <- serialize(orders_table, NULL, version = 3L)",
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
     "  pid = Sys.getpid(), rows = nrow(orders_frame), columns = ncol(orders_frame),",
     "  rVersion = as.character(getRversion()),",
+    "  collapseVersion = as.character(utils::packageVersion('collapse')),",
     "  remoteRunId = Sys.getenv('OPEN_WRANGLER_REMOTE_RUN_ID', unset = ''),",
     "  hostname = unname(Sys.info()[['nodename']])",
     "), auto_unbox = TRUE)), '\\n', sep = '')"
@@ -1974,6 +1984,7 @@ async function exerciseReleasedRJupyterExtension(
     const setup = releasedNotebookJsonResult(notebook.cellAt(0), RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
     assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
     assertReleasedRVersion(setup, kernelTarget, "R setup");
+    assert.equal(setup.collapseVersion, "2.1.7");
     assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
     if (kernelTarget.remote) {
       assert.equal(setup.remoteRunId, kernelTarget.remote.runId);
@@ -1999,13 +2010,23 @@ async function exerciseReleasedRJupyterExtension(
       for (const [name, flavor] of [
         ["orders_frame", "data.frame"],
         ["orders_tibble", "tibble"],
-        ["orders_table", "data.table"]
+        ["orders_table", "data.table"],
+        ["collapse_frame", "data.frame"],
+        ["collapse_tibble", "tibble"],
+        ["collapse_table", "data.table"]
       ] as const) {
         const row = await releasedJupyterQuickPickRow(picker, name);
         assert.ok(row, `The real R variable picker must expose ${name}.`);
         assert.match(
           (await row.innerText()).replace(/\s+/gu, " "),
           new RegExp(`R · ${flavor}.*Live notebook session`, "u")
+        );
+      }
+      for (const name of ["collapse_grouped", "collapse_indexed"] as const) {
+        assert.equal(
+          await releasedJupyterQuickPickRow(picker, name),
+          undefined,
+          `The real R variable picker must omit unsupported ${name}.`
         );
       }
       if (screenshotOutput) await captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput);
@@ -2047,6 +2068,50 @@ async function exerciseReleasedRJupyterExtension(
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
+
+    const collapseFrames = [
+      {
+        name: "collapse_frame",
+        factory: "qDF",
+        type: "data.frame",
+        backend: "r" as const,
+        rDataframeFlavor: "r.data.frame" as const,
+        firstValue: "1",
+        notebookInsert: true
+      },
+      {
+        name: "collapse_tibble",
+        factory: "qTBL",
+        type: "tbl_df",
+        backend: "r" as const,
+        rDataframeFlavor: "r.tibble" as const,
+        firstValue: "1",
+        notebookInsert: true
+      },
+      {
+        name: "collapse_table",
+        factory: "qDT",
+        type: "data.table",
+        backend: "r" as const,
+        rDataframeFlavor: "r.data.table" as const,
+        firstValue: "1",
+        notebookInsert: true
+      }
+    ] as const;
+    for (const expected of collapseFrames) {
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+      const session = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        expected,
+        `the collapse::${expected.factory}() session`
+      );
+      assert.deepEqual(session.metadata.shape, { rows: 1_205, columns: 25 });
+      await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
+      await disposePackagedSessionPanel(testing, session.sessionId, `the collapse::${expected.factory}() session`);
+    }
 
     if (phase === "jupyter-r") {
       await exerciseReleasedRDocumentJourney(testing, workbench, directory);
@@ -2282,6 +2347,7 @@ async function exerciseReleasedRJupyterExtension(
     );
     assert.notEqual(Number(replacementSetup.pid), Number(setup.pid));
     assertReleasedRVersion(replacementSetup, kernelTarget, "replacement R setup");
+    assert.equal(replacementSetup.collapseVersion, "2.1.7");
     if (kernelTarget.remote) {
       assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
       assert.equal(replacementSetup.hostname, kernelTarget.remote.hostname);
@@ -10194,48 +10260,7 @@ async function openReleasedRendererVariableSession(
     description,
     activate: async () => {
       recordAcceptanceProgress(`${checkpoint}:activate`);
-      assert.equal(
-        await action.evaluate((element) => {
-          type RendererActionElement = {
-            readonly isConnected: boolean;
-            readonly ownerDocument: { readonly activeElement: unknown };
-            dataset: Record<string, string | undefined>;
-            focus(): void;
-            addEventListener(
-              type: "click",
-              listener: (event: { readonly isTrusted: boolean }) => void,
-              options: { once: boolean }
-            ): void;
-          };
-          const candidate = element as RendererActionElement;
-          if (!candidate.isConnected) return false;
-          candidate.dataset.openWranglerAcceptanceActivation = "pending";
-          candidate.addEventListener(
-            "click",
-            (event) => {
-              if (event.isTrusted) candidate.dataset.openWranglerAcceptanceActivation = "seen";
-            },
-            { once: true }
-          );
-          candidate.focus();
-          return candidate.ownerDocument.activeElement === candidate;
-        }),
-        true,
-        "The exact notebook renderer action must remain connected and accept focus before activation."
-      );
-      await withAcceptanceOperationDeadline(
-        action.click(),
-        WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-        "the exact notebook renderer action to receive one Playwright click"
-      );
-      assert.equal(
-        await action.evaluate(
-          (element) =>
-            (element as { dataset: Record<string, string | undefined> }).dataset.openWranglerAcceptanceActivation
-        ),
-        "seen",
-        "The exact notebook renderer action must receive one trusted click."
-      );
+      await activateNotebookRendererButtonOnce(workbench, action);
     },
     receipt,
     authoritativeReceiptAfterActivationFailure: receipt
@@ -11981,12 +12006,26 @@ async function exercisePackagedTrustedPickleConversion(
     assert.equal(createHash("sha256").update(readFileSync(sourcePath)).digest("hex"), sourceDigest);
 
     const openAction = completedNotice.getByRole("button", { name: "Open in Open Wrangler", exact: true });
+    assert.equal(await openAction.count(), 1, "The completed conversion notice must expose one Open action.");
     await openAction.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    await openAction.click({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS, noWaitAfter: true });
+    await workbench.bringToFront();
+    await openAction.focus({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+    const actionState = await openAction.evaluate((element) => ({
+      connected: element.isConnected,
+      focused: element.ownerDocument.activeElement === element
+    }));
+    assert.deepEqual(actionState, { connected: true, focused: true });
+    await openAction.press("Enter", { timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+    recordAcceptanceProgress("platform-smoke:trusted-pickle:open-action-dispatched");
     assert.equal(
-      await withBoundedAcceptancePromise(converted, SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS, "opening converted Parquet"),
+      await withBoundedAcceptancePromise(
+        converted,
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        "the trusted pickle completion action"
+      ),
       true
     );
+    recordAcceptanceProgress("platform-smoke:trusted-pickle:open");
     await waitFor(
       () => testing.activeSession()?.metadata.source.path === vscode.Uri.file(destinationPath).fsPath,
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
@@ -22485,11 +22524,14 @@ async function exercisePackagedRendererProvenance(
       await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
         description: "notebook A's renderer action while notebook B is active",
         activate: () =>
-          withAcceptanceOperationDeadline(
-            originButton.click(),
-            WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-            "the exact notebook renderer action to receive one Playwright click"
-          ),
+          activateNotebookRendererButtonOnce(workbench, originButton, () => {
+            assert.equal(
+              vscode.window.activeNotebookEditor?.notebook,
+              openedSecondNotebook,
+              "Notebook B must still be active at notebook A's renderer-action boundary."
+            );
+            recordAcceptanceProgress("verify:notebook-renderer:click-boundary");
+          }),
         receipt: waitForOriginReceipt,
         authoritativeReceiptAfterActivationFailure: waitForOriginReceipt
       });
@@ -22673,10 +22715,7 @@ interface NotebookRendererLoadObserver {
 interface NotebookRendererButton {
   readonly page: Page;
   readonly frame: Frame;
-  readonly pointer: {
-    click(x: number, y: number): Promise<void>;
-  };
-  click(): Promise<void>;
+  click(options?: { readonly force?: boolean; readonly timeout?: number }): Promise<void>;
   boundingBox(): Promise<{
     readonly x: number;
     readonly y: number;
@@ -22685,6 +22724,24 @@ interface NotebookRendererButton {
   } | null>;
   evaluate<Result>(pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result>;
   dispose(): Promise<void>;
+}
+
+async function activateNotebookRendererButtonOnce(
+  workbench: Page,
+  button: NotebookRendererButton,
+  immediatelyBeforeClick?: () => void
+): Promise<void> {
+  const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
+  await withAcceptanceOperationDeadline(
+    workbench.bringToFront(),
+    WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+    "the private editor workbench to come to front"
+  );
+  const remainingMs = deadline - Date.now();
+  if (remainingMs < 1) {
+    throw new Error(`Timed out waiting for the notebook renderer action after ${WORKBENCH_PLAYWRIGHT_TIMEOUT_MS} ms.`);
+  }
+  await activateExactAcceptanceElementOnce(button, remainingMs, immediatelyBeforeClick);
 }
 
 function observeNotebookRendererLoad(workbench: Page): NotebookRendererLoadObserver {
@@ -22936,8 +22993,7 @@ async function resolveNestedNotebookRendererButton(
   return {
     page: frame.page(),
     frame,
-    pointer: frame.page().mouse,
-    click: () => element.click(),
+    click: (options) => element.click(options),
     boundingBox: () => element.boundingBox(),
     evaluate: <Result>(pageFunction: (candidate: unknown) => Result | Promise<Result>) =>
       element.evaluate(pageFunction),
@@ -26456,6 +26512,7 @@ async function exercisePackagedExcelDependencyInstall(
     );
     assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, dependency.executable);
 
+    await workbench.bringToFront();
     recordAcceptanceProgress("excel-dependency-install:open");
     await vscode.commands.executeCommand("vscode.openWith", workbook, "openWrangler.viewer", vscode.ViewColumn.One);
     await waitFor(

@@ -59,12 +59,14 @@ const REMOTE_JUPYTER_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a
 const REMOTE_JUPYTER_TOKEN = /^owr_[A-Za-z0-9_-]{39}$/u;
 const REMOTE_JUPYTER_DESCRIPTOR_MAX_BYTES = 2_048;
 export const R_ACCEPTANCE_REPOSITORY = "https://p3m.dev/cran/__linux__/noble/2026-03-10";
+export const R_ACCEPTANCE_COLLAPSE_REPOSITORY = "https://p3m.dev/cran/__linux__/noble/2026-06-01";
 export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   IRkernel: "1.3.2",
   jsonlite: "2.0.0",
   rlang: "1.1.7",
   tibble: "3.3.1",
-  "data.table": "1.18.2.1"
+  "data.table": "1.18.2.1",
+  collapse: "2.1.7"
 });
 const R_ACCEPTANCE_PACKAGES = Object.freeze(Object.keys(R_ACCEPTANCE_PACKAGE_VERSIONS));
 const R_ACCEPTANCE_PACKAGE_RECORD = Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)
@@ -97,11 +99,18 @@ const R_ACCEPTANCE_PROBE = [
 ].join("\n");
 const R_ACCEPTANCE_INSTALL = [
   `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
+  '.ow_core_packages <- setdiff(.ow_packages, "collapse")',
   '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
   "utils::install.packages(",
-  "  .ow_packages,",
+  "  .ow_core_packages,",
   "  lib = .ow_library,",
   `  repos = ${JSON.stringify(R_ACCEPTANCE_REPOSITORY)},`,
+  "  dependencies = NA",
+  ")",
+  "utils::install.packages(",
+  '  "collapse",',
+  "  lib = .ow_library,",
+  `  repos = ${JSON.stringify(R_ACCEPTANCE_COLLAPSE_REPOSITORY)},`,
   "  dependencies = NA",
   ")"
 ].join("\n");
@@ -424,6 +433,7 @@ export async function prepareJupyterAcceptanceREnvironment(
     packageVersions: R_ACCEPTANCE_PACKAGE_VERSIONS,
     packageRecord: R_ACCEPTANCE_PACKAGE_RECORD,
     repository: R_ACCEPTANCE_REPOSITORY,
+    collapseRepository: R_ACCEPTANCE_COLLAPSE_REPOSITORY,
     jupyterEnvironment: Object.freeze({
       dataDir,
       runtimeDir,
