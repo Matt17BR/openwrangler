@@ -1289,26 +1289,31 @@ th:hover .columnResizeHandle,
   pointer-events: none;
 }
 
-.numericHistogramBin:hover .numericHistogramBar,
-.numericHistogramBin:focus-within .numericHistogramBar {
+.numericHistogramBin.active .numericHistogramBar {
   fill: var(--vscode-charts-orange, var(--vscode-editorWarning-foreground, #cca700));
 }
 
-.miniChart .numericHistogramHitTarget {
-  cursor: crosshair;
-  fill: transparent;
-  pointer-events: all;
-  stroke: transparent;
+.numericHistogramChart {
+  display: block;
+  min-width: 0;
+  position: relative;
 }
 
-.numericHistogram.interactive .numericHistogramHitTarget {
+.numericHistogramHitTarget {
+  background: transparent;
+  border: 1px solid transparent;
+  bottom: 0;
   cursor: pointer;
+  left: 0;
+  padding: 0;
+  position: absolute;
+  right: 0;
+  top: 4px;
 }
 
-.miniChart .numericHistogramHitTarget:focus {
+.numericHistogramHitTarget:focus-visible {
   outline: none;
-  stroke: var(--vscode-focusBorder);
-  stroke-width: 2px;
+  border-color: var(--vscode-focusBorder);
 }
 
 .numericHistogram,
@@ -1390,6 +1395,10 @@ th:hover .columnResizeHandle,
   width: 100%;
 }
 
+.categoryMiniChart.interactive {
+  gap: 7px;
+}
+
 .categoryMiniRow {
   align-items: center;
   display: grid;
@@ -1403,6 +1412,7 @@ button.categoryMiniRow.interactive {
   border: 1px solid transparent;
   border-radius: 2px;
   color: inherit;
+  min-height: 24px;
   padding: 1px 2px;
   text-align: left;
   width: 100%;
@@ -2451,12 +2461,11 @@ dd {
     fill: CanvasText;
   }
 
-  .numericHistogramBin:hover .numericHistogramBar,
-  .numericHistogramBin:focus-within .numericHistogramBar {
+  .numericHistogramBin.active .numericHistogramBar {
     fill: Highlight;
   }
 
-  .miniChart .numericHistogramHitTarget:focus {
-    stroke: Highlight;
+  .numericHistogramHitTarget:focus-visible {
+    border-color: Highlight;
   }
 }

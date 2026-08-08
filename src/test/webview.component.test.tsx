@@ -695,21 +695,21 @@ describe("DataGrid", () => {
         name: "Sampled numeric distribution with 2 bins; range 1 to 4."
       })
     ).toBeVisible();
-    const bins = within(numericHeader).getAllByRole("graphics-symbol");
-    expect(bins).toHaveLength(2);
-    expect(bins[0]).toHaveAccessibleName("1-2.5: 100 rows (99%); lower bound included, upper bound excluded");
-    expect(bins[1]).toHaveAccessibleName("2.5-4: 1 row (1%); both bounds included");
-    expect(bins[1]).toHaveAttribute("tabindex", "0");
-    expect(bins[1]).toHaveAttribute("height", "36");
+    const distribution = within(numericHeader).getByRole("img", {
+      name: "Sampled numeric distribution with 2 bins; range 1 to 4."
+    });
+    expect(distribution.querySelectorAll(".numericHistogramBar")).toHaveLength(2);
+    expect(numericHeader.querySelector(".numericHistogramHitTarget")).toBeNull();
     expect(numericHeader.querySelectorAll(".numericHistogramBar")[1]).toHaveAttribute("height", "2");
-    fireEvent.focus(bins[0]!);
+    Object.defineProperty(distribution, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, right: 160, top: 0, bottom: 36, width: 160, height: 36, x: 0, y: 0 })
+    });
+    fireEvent.pointerMove(distribution, { clientX: 40 });
     expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("1-2.5: 100 rows");
-    expect(bins[0]).not.toHaveAttribute("aria-describedby");
-    fireEvent.pointerEnter(bins[1]!);
+    fireEvent.pointerMove(distribution, { clientX: 120 });
     expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("2.5-4: 1 row");
-    fireEvent.pointerLeave(bins[1]!);
-    expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("1-2.5: 100 rows");
-    fireEvent.blur(bins[0]!);
+    fireEvent.pointerLeave(distribution);
     expect(within(numericHeader).queryByRole("tooltip")).not.toBeInTheDocument();
     expect(screen.getByRole("img", { name: "boolean distribution: true 3, false 1." })).toHaveTextContent(
       "True 3False 1"

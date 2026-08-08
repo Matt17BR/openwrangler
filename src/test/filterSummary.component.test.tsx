@@ -1152,14 +1152,12 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Max").nextElementSibling).toHaveTextContent("12");
     expect(screen.getByText("Mean").nextElementSibling).toHaveTextContent("n/a");
     expect(screen.getByRole("heading", { name: "Distribution" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("img", { name: "Sampled numeric distribution with 2 bins; range 10 to 12." })
-    ).toBeVisible();
-    expect(screen.getAllByRole("graphics-symbol").map((bin) => bin.getAttribute("aria-label"))).toEqual([
-      "10-11: 1 row (33.3%); lower bound included, upper bound excluded",
-      "11-12: 2 rows (66.7%); both bounds included"
-    ]);
-    expect(screen.getAllByRole("graphics-symbol").map((bin) => bin.getAttribute("height"))).toEqual(["92", "92"]);
+    const distribution = screen.getByRole("img", {
+      name: "Sampled numeric distribution with 2 bins; range 10 to 12."
+    });
+    expect(distribution).toBeVisible();
+    expect(distribution.querySelectorAll(".numericHistogramBar")).toHaveLength(2);
+    expect(distribution.closest(".numericHistogram")?.querySelector(".numericHistogramHitTarget")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Top values" })).not.toBeInTheDocument();
   });
 
@@ -1411,10 +1409,17 @@ describe("SummaryPanel", () => {
     });
     expect(screen.getByText("Filter: 10–11")).toBeVisible();
 
-    const finalBin = screen.getByRole("button", {
-      name: "11-12: 2 rows (66.7%); both bounds included"
-    });
-    fireEvent.keyDown(finalBin, { key: "Enter" });
+    firstBin.focus();
+    fireEvent.keyDown(firstBin, { key: "End" });
+    expect(firstBin).toHaveAccessibleName("11-12: 2 rows (66.7%); both bounds included");
+    fireEvent.keyDown(firstBin, { key: "Home" });
+    expect(firstBin).toHaveAccessibleName("10-11: 1 row (33.3%); lower bound included, upper bound excluded");
+    fireEvent.keyDown(firstBin, { key: "ArrowRight" });
+    expect(firstBin).toHaveAccessibleName("11-12: 2 rows (66.7%); both bounds included");
+    fireEvent.keyDown(firstBin, { key: "ArrowLeft" });
+    expect(firstBin).toHaveAccessibleName("10-11: 1 row (33.3%); lower bound included, upper bound excluded");
+    fireEvent.keyDown(firstBin, { key: "ArrowRight" });
+    fireEvent.keyDown(firstBin, { key: "Enter" });
     expect(onApply).toHaveBeenLastCalledWith({
       filters: [
         {
@@ -1429,6 +1434,7 @@ describe("SummaryPanel", () => {
       ],
       sort: []
     });
+    expect(onApply).toHaveBeenCalledTimes(2);
   });
 
   it("renders all-null text metrics without inventing length bounds", () => {

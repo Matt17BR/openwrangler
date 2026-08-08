@@ -1947,7 +1947,7 @@ function MiniChart({
     ].join(", ");
     return (
       <span
-        className="categoryMiniChart"
+        className={`categoryMiniChart${onApplyFilter ? " interactive" : ""}`}
         role={onApplyFilter ? "group" : "img"}
         aria-label={`${visualization.sampled ? "Sampled " : ""}categorical distribution${categoryLabel ? `: ${categoryLabel}` : " with no values"}.`}
       >
