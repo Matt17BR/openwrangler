@@ -2078,7 +2078,7 @@ async function exerciseReleasedRJupyterExtension(
       await restorePickerWorkbench?.();
     }
 
-    const base = await waitForReleasedVariableSession(
+    let base = await waitForReleasedVariableSession(
       workbench,
       testing,
       notebook,
@@ -2106,6 +2106,60 @@ async function exerciseReleasedRJupyterExtension(
       columnValues: true,
       supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS
     });
+    if (screenshotOutput) {
+      await disposePackagedSessionPanel(testing, base.sessionId, "the initial R data.frame before media capture");
+      const mediaEditor = await showExactReleasedNotebook(notebook);
+      await executeReleasedNotebookCell(
+        notebook,
+        2,
+        RELEASED_JUPYTER_R_MEDIA_RESULT,
+        `${phase}:media-setup`,
+        mediaEditor
+      );
+      const mediaSetup = releasedNotebookJsonResult(
+        notebook.cellAt(2),
+        RELEASED_JUPYTER_R_MEDIA_RESULT,
+        "R media setup"
+      );
+      assert.deepEqual({ rows: mediaSetup.rows, columns: mediaSetup.columns }, { rows: 2_400, columns: 24 });
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, "regional_orders");
+      const mediaSession = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "regional_orders",
+          type: "data.frame",
+          backend: "r",
+          rDataframeFlavor: "r.data.frame",
+          firstValue: "2400001",
+          notebookInsert: true
+        },
+        "the representative R orders session"
+      );
+      await captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput);
+      await captureReleasedRNotebookGroupByDraft(workbench, testing, mediaSession.sessionId, screenshotOutput);
+      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-after-capture`);
+      await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
+
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
+      base = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "orders_frame",
+          type: "data.frame",
+          backend: "r",
+          rDataframeFlavor: "r.data.frame",
+          firstValue: "1",
+          notebookInsert: true
+        },
+        "the orders R data.frame reopened after media capture"
+      );
+      await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page-after-media`);
+    }
     await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     const viewingStateBeforeEditing = testing.activeSession()?.viewState;
@@ -2226,42 +2280,6 @@ async function exerciseReleasedRJupyterExtension(
     if (phase === "jupyter-r" && supportsRDocumentExecution(process.platform)) {
       await exerciseReleasedRDocumentJourney(testing, workbench, directory, screenshotOutput);
       assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
-    }
-
-    if (screenshotOutput) {
-      const mediaEditor = await showExactReleasedNotebook(notebook);
-      await executeReleasedNotebookCell(
-        notebook,
-        2,
-        RELEASED_JUPYTER_R_MEDIA_RESULT,
-        `${phase}:media-setup`,
-        mediaEditor
-      );
-      const mediaSetup = releasedNotebookJsonResult(
-        notebook.cellAt(2),
-        RELEASED_JUPYTER_R_MEDIA_RESULT,
-        "R media setup"
-      );
-      assert.deepEqual({ rows: mediaSetup.rows, columns: mediaSetup.columns }, { rows: 2_400, columns: 24 });
-      await invokeReleasedNotebookToolbarVariable(workbench, notebook, "regional_orders");
-      const mediaSession = await waitForReleasedVariableSession(
-        workbench,
-        testing,
-        notebook,
-        {
-          name: "regional_orders",
-          type: "data.frame",
-          backend: "r",
-          rDataframeFlavor: "r.data.frame",
-          firstValue: "2400001",
-          notebookInsert: true
-        },
-        "the representative R orders session"
-      );
-      await captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput);
-      await captureReleasedRNotebookGroupByDraft(workbench, testing, mediaSession.sessionId, screenshotOutput);
-      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-after-capture`);
-      await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
     }
 
     const additionalRFrames = [
