@@ -3630,23 +3630,64 @@ function releasedRenderedHtmlSnapshot(
   outputPath: string,
   requiredText: readonly string[]
 ): { readonly signature: string } | undefined {
-  if (!existsSync(outputPath)) return undefined;
-  const before = lstatSync(outputPath, { bigint: true });
-  if (before.isSymbolicLink() || !before.isFile() || before.size <= 0n || before.size > 5n * 1024n * 1024n) {
-    throw new Error("The native R document render did not produce one bounded regular HTML file.");
+  let descriptor: number;
+  try {
+    descriptor = openSync(outputPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
-  const output = readFileSync(outputPath, "utf8");
-  const after = lstatSync(outputPath, { bigint: true });
-  if (
-    before.dev !== after.dev ||
-    before.ino !== after.ino ||
-    before.size !== after.size ||
-    before.mtimeNs !== after.mtimeNs
-  ) {
-    return undefined;
+
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || opened.nlink !== 1n || opened.size <= 0n || opened.size > 5n * 1024n * 1024n) {
+      throw new Error("The native R document render did not produce one bounded regular HTML file.");
+    }
+
+    const bytes = Buffer.alloc(Number(opened.size));
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = readSync(descriptor, bytes, offset, bytes.byteLength - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    const completed = fstatSync(descriptor, { bigint: true });
+    if (
+      !completed.isFile() ||
+      completed.nlink !== 1n ||
+      completed.dev !== opened.dev ||
+      completed.ino !== opened.ino ||
+      completed.size !== opened.size ||
+      completed.size !== BigInt(offset) ||
+      completed.mtimeNs !== opened.mtimeNs ||
+      completed.ctimeNs !== opened.ctimeNs
+    ) {
+      return undefined;
+    }
+
+    let pathIdentity;
+    try {
+      pathIdentity = lstatSync(outputPath, { bigint: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    if (
+      pathIdentity.isSymbolicLink() ||
+      !pathIdentity.isFile() ||
+      pathIdentity.nlink !== 1n ||
+      pathIdentity.dev !== completed.dev ||
+      pathIdentity.ino !== completed.ino
+    ) {
+      return undefined;
+    }
+
+    const output = bytes.toString("utf8");
+    if (!/<\/html>\s*$/iu.test(output) || requiredText.some((text) => !output.includes(text))) return undefined;
+    return { signature: `${completed.dev}:${completed.ino}:${completed.size}:${completed.mtimeNs}` };
+  } finally {
+    closeSync(descriptor);
   }
-  if (!/<\/html>\s*$/iu.test(output) || requiredText.some((text) => !output.includes(text))) return undefined;
-  return { signature: `${after.dev}:${after.ino}:${after.size}:${after.mtimeNs}` };
 }
 
 async function releasedQuartoPreviewLocator(workbench: Page): Promise<Locator | undefined> {
