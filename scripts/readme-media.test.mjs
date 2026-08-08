@@ -534,29 +534,35 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /Open Wrangler opens base R `data\.frame`, tibble, and `data\.table` variables from IRkernel notebooks/u
+    /Open Wrangler handles base R `data\.frame`, tibble, and `data\.table` objects in the R process where they already live/u
   );
-  assert.match(readme, /already loaded in the official R extension[\s\S]{0,120}\*\*Refresh R\s+dataframes\*\*/u);
-  assert.match(readme, /Each item opens from that exact live R session/u);
-  assert.match(readme, /\*\*Run R Document in Open Wrangler…\*\* runs a trusted `\.R` file/u);
-  assert.match(readme, /supported\s+top-level R cells in an `\.Rmd` or `\.qmd` document/u);
   assert.match(
     readme,
-    /This command uses its own R process[\s\S]{0,80}does not replace Quarto or R Markdown rendering/u
+    /interactive session from the official R extension[\s\S]{0,140}\*\*Operations → Refresh R\s+dataframes\*\*/u
   );
+  assert.match(readme, /The list and every opened dataframe stay tied to that terminal/u);
+  assert.match(readme, /\*\*Run R Document in Open Wrangler…\*\* runs a trusted `\.R` file/u);
+  assert.match(readme, /supported\s+top-level R cells in an `\.Rmd` or `\.qmd` document/u);
+  assert.match(readme, /It uses its own R process[\s\S]{0,180}does not replace Quarto or R Markdown rendering/u);
   assert.match(readme, /including unsaved changes/u);
-  assert.match(readme, /To export Parquet, install `nanoparquet` 0\.5\.1 or newer[\s\S]{0,100}reopen the dataframe/u);
+  assert.match(
+    readme,
+    /export Parquet when\s+`nanoparquet` 0\.5\.1 or newer is installed[\s\S]{0,160}Reopen the dataframe/u
+  );
   assert.match(readme, /The R workbench supports[\s\S]{0,180}21 cleaning operations/u);
   assert.match(
     readme,
     /\*\*Split text\*\*, \*\*Round\*\*, \*\*Floor\*\*, \*\*Ceiling\*\*, and \*\*Group and\s+aggregate\*\*/u
   );
-  assert.match(readme, /inserted into the notebook or document that opened the dataframe/u);
+  assert.match(
+    readme,
+    /Insertion is available only when the session came from an\s+IRkernel notebook or an Open Wrangler-managed R document/u
+  );
   assert.match(readme, /Ordinary frames created with `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
   assert.match(readme, /Grouped `GRP_df` and indexed `indexed_frame` objects are\s+not\s+supported/u);
   assert.match(
     readme,
-    /R notebooks remain available on Windows;\s+direct document execution is not yet\s+available there/u
+    /R notebooks remain available on Windows,\s+but direct R-document execution is currently limited to macOS and Linux/u
   );
   assert.match(readme, /\| R \(1\.99 preview\)\s+\|/u);
   assert.match(
