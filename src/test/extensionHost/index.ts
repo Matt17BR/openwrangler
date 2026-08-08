@@ -7257,6 +7257,10 @@ async function captureReleasedRNotebookGroupByDraft(
       "discarding the representative R Group By draft after capture"
     );
   } finally {
+    await closeVisibleWorkbenchPart(workbench, ".part.panel", [
+      "workbench.action.closePanel",
+      "workbench.action.togglePanel"
+    ]);
     for (const { configuration, key, value } of previousSettings.reverse()) {
       await configuration.update(key, value, vscode.ConfigurationTarget.Global);
     }
