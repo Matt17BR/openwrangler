@@ -124,6 +124,7 @@ describe("file launch contributions", () => {
       "openWrangler.openFile",
       "openWrangler.changeImportOptions",
       "openWrangler.openNotebookVariable",
+      "openWrangler.runPythonCellAndOpenVariable",
       "openWrangler.runRDocument"
     ]);
     expect(manifest.contributes?.commands).toContainEqual({
@@ -305,6 +306,49 @@ describe("notebook launch contributions", () => {
       expect(entry?.when).not.toContain("jupyter.kernel.isjupyter");
       expect(entry?.when).not.toContain("notebookKernel");
     }
+  });
+
+  it("runs the current Python cell before opening a live dataframe and offers an explicit refresh", () => {
+    const pythonCellContext =
+      "editorFocus && editorLangId == python && jupyter.hascodecells && !notebookEditorFocused && isWorkspaceTrusted";
+    expect(manifest.activationEvents).toEqual(
+      expect.arrayContaining([
+        "onCommand:openWrangler.runPythonCellAndOpenVariable",
+        "onCommand:openWrangler.refreshNotebookVariables"
+      ])
+    );
+    expect(manifest.contributes?.commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          command: "openWrangler.runPythonCellAndOpenVariable",
+          title: "Open in Open Wrangler"
+        }),
+        expect.objectContaining({
+          command: "openWrangler.refreshNotebookVariables",
+          icon: "$(refresh)"
+        })
+      ])
+    );
+    for (const menu of ["editor/title", "editor/title/context"]) {
+      expect(manifest.contributes?.menus?.[menu]).toContainEqual(
+        expect.objectContaining({
+          command: "openWrangler.runPythonCellAndOpenVariable",
+          when: pythonCellContext
+        })
+      );
+      expect(manifest.contributes?.menus?.[menu]).not.toContainEqual(
+        expect.objectContaining({ command: "openWrangler.openPythonInteractiveVariable" })
+      );
+    }
+    expect(manifest.contributes?.menus?.["view/title"]).toContainEqual({
+      command: "openWrangler.refreshNotebookVariables",
+      when: "view == openWrangler.operations",
+      group: "navigation@1"
+    });
+    expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
+      command: "openWrangler.openCachedNotebookVariable",
+      when: "false"
+    });
   });
 
   it("selects exactly one notebook action surface for every supported toolbar state", () => {

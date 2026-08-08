@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { ExtensionContext } from "vscode";
 import type { SessionCoordinator, ActiveSessionSnapshot } from "../extension/sessionCoordinator";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
+import type { PythonLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 type NotebookInsertionStatus = "applied" | "stale" | "indeterminate" | "rejected";
@@ -218,6 +219,49 @@ describe("native operation commands", () => {
       expectedSessionId: "session",
       expectedRevision: 0
     });
+  });
+
+  it("offers a file entry point before a dataframe is open", () => {
+    const registered = register(noDraftSnapshot());
+    registered.setActiveSession(undefined);
+
+    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.command])).toEqual([
+      ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
+    ]);
+  });
+
+  it("shows cached variables from the exact active notebook in Operations", () => {
+    const variableProvider: PythonLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "ready",
+        notebookLabel: "analysis.ipynb",
+        message: "Live dataframes",
+        variables: [
+          {
+            handle: "live-frame-handle",
+            label: "orders",
+            description: "Polars · DataFrame",
+            detail: "Live in analysis.ipynb"
+          }
+        ]
+      }),
+      dispose: () => undefined
+    };
+    const registered = register(noDraftSnapshot(), undefined, undefined, variableProvider);
+    registered.setActiveSession(undefined);
+
+    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.command])).toEqual([
+      [
+        "orders",
+        expect.objectContaining({
+          command: "openWrangler.openCachedNotebookVariable",
+          arguments: ["live-frame-handle"]
+        })
+      ],
+      ["Refresh live dataframes", expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })],
+      ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
+    ]);
   });
 
   it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
@@ -1167,7 +1211,8 @@ describe("native operation commands", () => {
 function register(
   snapshot: ActiveSessionSnapshot,
   notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number },
-  textDocumentOrigin?: unknown
+  textDocumentOrigin?: unknown,
+  pythonVariables?: PythonLiveVariableProvider
 ): {
   setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void;
   setSession(snapshot: ActiveSessionSnapshot): void;
@@ -1224,7 +1269,7 @@ function register(
     extensionPath: "/tmp/openwrangler",
     subscriptions: []
   } as unknown as ExtensionContext;
-  const nativeViews = registerNativeViews(context, coordinator);
+  const nativeViews = registerNativeViews(context, coordinator, pythonVariables);
   return {
     setActiveSession(nextSnapshot) {
       activeSnapshot = nextSnapshot;

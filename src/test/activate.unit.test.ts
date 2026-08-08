@@ -42,6 +42,13 @@ vi.mock("../extension/files/trustedPickleWorker", () => ({
   })
 }));
 vi.mock("../extension/notebooks/jupyterBridge", () => ({ registerNotebookCommands: vi.fn() }));
+vi.mock("../extension/notebooks/pythonInteractiveCommands", () => ({
+  registerPythonInteractiveCommands: vi.fn(() => ({
+    onDidChangeVariables: () => ({ dispose: vi.fn() }),
+    snapshot: () => undefined,
+    dispose: vi.fn()
+  }))
+}));
 vi.mock("../extension/notebooks/rendererMessaging", () => ({ registerNotebookRendererMessaging: vi.fn() }));
 vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
   NotebookPreviewCoordinator: vi.fn(function MockNotebookPreviewCoordinator() {

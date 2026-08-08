@@ -145,6 +145,8 @@
     "onCommand:openWrangler.openPath",
     "onCommand:openWrangler.launchDataViewer",
     "onCommand:openWrangler.openNotebookVariable",
+    "onCommand:openWrangler.runPythonCellAndOpenVariable",
+    "onCommand:openWrangler.refreshNotebookVariables",
     "onCommand:openWrangler.runRDocument",
     "onCommand:openWrangler.chooseNotebookPreviewProvider",
     "onCommand:openWrangler.checkJupyterIntegration",
@@ -186,6 +188,7 @@
         "openWrangler.openFile",
         "openWrangler.changeImportOptions",
         "openWrangler.openNotebookVariable",
+        "openWrangler.runPythonCellAndOpenVariable",
         "openWrangler.runRDocument"
       ]
     },
@@ -226,6 +229,27 @@
           "light": "media/action-icon-light.svg",
           "dark": "media/action-icon-dark.svg"
         }
+      },
+      {
+        "command": "openWrangler.runPythonCellAndOpenVariable",
+        "title": "Open in Open Wrangler",
+        "shortTitle": "Open in Open Wrangler",
+        "category": "Open Wrangler",
+        "icon": {
+          "light": "media/action-icon-light.svg",
+          "dark": "media/action-icon-dark.svg"
+        }
+      },
+      {
+        "command": "openWrangler.refreshNotebookVariables",
+        "title": "Open Wrangler: Refresh Live Dataframes",
+        "shortTitle": "Refresh Live Dataframes",
+        "category": "Open Wrangler",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "openWrangler.openCachedNotebookVariable",
+        "title": "Open Wrangler: Open Live Dataframe"
       },
       {
         "command": "openWrangler.runRDocument",
@@ -542,6 +566,11 @@
       ],
       "editor/title": [
         {
+          "command": "openWrangler.runPythonCellAndOpenVariable",
+          "when": "editorFocus && editorLangId == python && jupyter.hascodecells && !notebookEditorFocused && isWorkspaceTrusted",
+          "group": "navigation@1"
+        },
+        {
           "command": "openWrangler.runRDocument",
           "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
           "group": "navigation@1"
@@ -563,6 +592,11 @@
         }
       ],
       "editor/title/context": [
+        {
+          "command": "openWrangler.runPythonCellAndOpenVariable",
+          "when": "editorFocus && editorLangId == python && jupyter.hascodecells && !notebookEditorFocused && isWorkspaceTrusted",
+          "group": "navigation@47"
+        },
         {
           "command": "openWrangler.runRDocument",
           "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
@@ -590,6 +624,10 @@
           "when": "false"
         },
         {
+          "command": "openWrangler.openCachedNotebookVariable",
+          "when": "false"
+        },
+        {
           "command": "openWrangler.moveViewSortUp",
           "when": "false"
         },
@@ -610,6 +648,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "openWrangler.refreshNotebookVariables",
+          "when": "view == openWrangler.operations",
+          "group": "navigation@1"
+        },
         {
           "command": "openWrangler.copyCode",
           "when": "view == openWrangler.codePreview",
