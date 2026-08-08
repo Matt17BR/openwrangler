@@ -26,6 +26,19 @@
           "variableName": { "type": "string", "minLength": 1 }
         }
       },
+      "else": {
+        "if": {
+          "required": ["kind"],
+          "properties": { "kind": { "const": "rInteractiveVariable" } }
+        },
+        "then": {
+          "required": ["variableName"],
+          "not": {
+            "anyOf": [{ "required": ["path"] }, { "required": ["uri"] }, { "required": ["importOptions"] }]
+          },
+          "properties": { "variableName": { "type": "string", "minLength": 1 } }
+        }
+      },
       "dependencies": {
         "importOptions": {
           "allOf": [
@@ -66,7 +79,7 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["file", "notebookVariable", "documentVariable", "notebookOutput"]
+          "enum": ["file", "notebookVariable", "documentVariable", "rInteractiveVariable", "notebookOutput"]
         },
         "label": { "type": "string", "minLength": 1 },
         "path": { "type": "string" },
@@ -1627,7 +1640,21 @@
               "backend": { "const": "r" },
               "source": {
                 "required": ["kind"],
-                "properties": { "kind": { "not": { "enum": ["notebookVariable", "documentVariable"] } } }
+                "properties": {
+                  "kind": {
+                    "not": { "enum": ["notebookVariable", "documentVariable", "rInteractiveVariable"] }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "required": ["backend", "source"],
+            "properties": {
+              "backend": { "not": { "const": "r" } },
+              "source": {
+                "required": ["kind"],
+                "properties": { "kind": { "const": "rInteractiveVariable" } }
               }
             }
           },
@@ -1741,6 +1768,20 @@
         ]
       },
       "dependencies": {
+        "source": {
+          "if": {
+            "properties": {
+              "source": {
+                "required": ["kind"],
+                "properties": { "kind": { "const": "rInteractiveVariable" } }
+              }
+            }
+          },
+          "then": {
+            "required": ["backend"],
+            "properties": { "backend": { "const": "r" } }
+          }
+        },
         "columnOffset": ["columnLimit"],
         "columnLimit": ["columnOffset"]
       },

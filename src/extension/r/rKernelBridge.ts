@@ -409,7 +409,7 @@ export class RKernelBridge implements OpenWranglerBridge {
     if (this.verifiedVariable && request.source.variableName !== this.verifiedVariable.name) {
       return errorResponse(
         "r_variable_changed",
-        "The R variable no longer matches the dataframe selected from the notebook picker.",
+        "The R variable no longer matches the selected dataframe.",
         true,
         sessionId
       );
@@ -1498,12 +1498,14 @@ function withHostSessionIdentity(request: OpenSessionRequest, createId: () => st
 function validateOpenRequest(request: OpenSessionRequest): ErrorResponse | undefined {
   const sessionId = request.requestedSessionId;
   if (
-    (request.source.kind !== "notebookVariable" && request.source.kind !== "documentVariable") ||
+    (request.source.kind !== "notebookVariable" &&
+      request.source.kind !== "documentVariable" &&
+      request.source.kind !== "rInteractiveVariable") ||
     !request.source.variableName
   ) {
     return errorResponse(
       "unsupported_source",
-      "R sessions open named variables from an R notebook or an Open Wrangler R source session.",
+      "R sessions open named variables from a notebook, an R document, or the active R session.",
       true,
       sessionId
     );
@@ -1954,6 +1956,7 @@ function rCapabilitiesForSource(source: SessionSource, exportCsv: boolean, expor
 }
 
 function rExportProtectedSourceUris(source: SessionSource): readonly vscode.Uri[] {
+  if (source.kind === "rInteractiveVariable") return [];
   if ((source.kind !== "documentVariable" && source.kind !== "notebookVariable") || !source.uri) {
     throw new TypeError("R data export requires an originating R notebook or document URI.");
   }
@@ -1964,6 +1967,7 @@ function rExportProtectedSourceUris(source: SessionSource): readonly vscode.Uri[
 }
 
 function isExportableRSource(source: SessionSource): boolean {
+  if (source.kind === "rInteractiveVariable") return true;
   if ((source.kind !== "documentVariable" && source.kind !== "notebookVariable") || !source.uri) return false;
   try {
     const uri = vscode.Uri.parse(source.uri, true);
