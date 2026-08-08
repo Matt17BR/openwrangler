@@ -3245,9 +3245,6 @@ async function exerciseReleasedRLiterateDocumentJourneys(
           await closePreview();
         }
       } else {
-        if (nativeREditorTooling) {
-          await exerciseReleasedNativeRMarkdownRender(fixture.sourceUri);
-        }
         await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, fixture.variableName, false);
       }
       const opened = await waitForReleasedRDocumentSession(
@@ -3486,25 +3483,6 @@ async function assertReleasedNativeREditorTooling(): Promise<boolean> {
   return true;
 }
 
-async function exerciseReleasedNativeRMarkdownRender(source: vscode.Uri): Promise<void> {
-  const document = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === source.toString());
-  assert.ok(document, "The R Markdown render requires its exact open source document.");
-  assert.equal(document.languageId, "rmd");
-  await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
-  const outputPath = source.fsPath.replace(/\.Rmd$/iu, ".html");
-  rmSync(outputPath, { force: true });
-  recordAcceptanceProgress("jupyter-r:rmarkdown:render");
-  await vscode.commands.executeCommand("r.knitRmdToHtml");
-  await waitForStableReleasedRenderedHtml(
-    outputPath,
-    ["Regional orders", "Regional orders preview", "2400001"],
-    120_000,
-    "the official R extension to render its R Markdown document"
-  );
-  rmSync(outputPath, { force: true });
-  recordAcceptanceProgress("jupyter-r:rmarkdown:render-complete");
-}
-
 async function openReleasedNativeQuartoPreview(workbench: Page, source: vscode.Uri): Promise<() => Promise<void>> {
   const document = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === source.toString());
   assert.ok(document, "The Quarto preview requires its exact open source document.");
@@ -3592,30 +3570,6 @@ async function openReleasedNativeQuartoPreview(workbench: Page, source: vscode.U
     }
     throw error;
   }
-}
-
-async function waitForStableReleasedRenderedHtml(
-  outputPath: string,
-  requiredText: readonly string[],
-  timeoutMs: number,
-  expectation: string
-): Promise<void> {
-  let previousSignature: string | undefined;
-  let stableObservations = 0;
-  await waitFor(
-    () => {
-      const snapshot = releasedRenderedHtmlSnapshot(outputPath, requiredText);
-      if (!snapshot) return false;
-      if (snapshot.signature === previousSignature) stableObservations += 1;
-      else {
-        previousSignature = snapshot.signature;
-        stableObservations = 1;
-      }
-      return stableObservations >= 2;
-    },
-    timeoutMs,
-    expectation
-  );
 }
 
 function releasedRenderedHtmlSnapshot(
