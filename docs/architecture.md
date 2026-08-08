@@ -25,6 +25,8 @@ Supported file resources share one `openWrangler.openFile` command across the Ex
 
 R documents use the separate `openWrangler.runRDocument` command on macOS and Linux extension hosts. It appears for trusted local and remote `.R`, `.Rmd`, and `.qmd` resources
 in Explorer, the editor title, and the tab menu, and is pinned alongside the file and notebook actions in Cursor. The
+title action always runs the current document, even when the official R extension has an active terminal. Dataframes
+from that terminal stay available in the Operations view and the editor-tab menu instead of replacing the document action. The
 command captures the exact open `TextDocument`, version, and in-memory text before R starts. It never substitutes a
 different active editor after an await. The document must remain the sole open object for its URI through variable
 discovery and selection. Plain `.R` text is one source unit. R Markdown and Quarto use only top-level

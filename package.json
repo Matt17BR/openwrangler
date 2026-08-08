@@ -605,12 +605,7 @@
         },
         {
           "command": "openWrangler.runRDocument",
-          "when": "isWorkspaceTrusted && !rSessionActive && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
-          "group": "navigation@1"
-        },
-        {
-          "command": "openWrangler.openRInteractiveVariable",
-          "when": "isWorkspaceTrusted && rSessionActive && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
           "group": "navigation@1"
         },
         {

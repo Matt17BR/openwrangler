@@ -216,7 +216,7 @@ describe("file launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.runRDocument",
-      when: rSourcePredicate.replace("isWorkspaceTrusted &&", "isWorkspaceTrusted && !rSessionActive &&"),
+      when: rSourcePredicate,
       group: "navigation@1"
     });
     expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
@@ -260,11 +260,9 @@ describe("file launch contributions", () => {
     expect(allMenuEntries.some((entry) => entry.when?.includes("view == workspaceViewer"))).toBe(false);
     const activeRSourcePredicate =
       "isWorkspaceTrusted && rSessionActive && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
-    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
-      command: "openWrangler.openRInteractiveVariable",
-      when: activeRSourcePredicate,
-      group: "navigation@1"
-    });
+    expect(manifest.contributes?.menus?.["editor/title"]).not.toContainEqual(
+      expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
+    );
     expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
       command: "openWrangler.openRInteractiveVariable",
       when: activeRSourcePredicate,
@@ -277,7 +275,7 @@ describe("file launch contributions", () => {
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.runRDocument",
       when:
-        "isWorkspaceTrusted && !rSessionActive && (resourceScheme == vscode-remote || isLinux || isMac) && " +
+        "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && " +
         "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
       group: "navigation@1"
     });

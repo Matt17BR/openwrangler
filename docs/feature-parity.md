@@ -104,7 +104,8 @@ Wrangler-managed R document; an active terminal has no source document to edit.
 
 A trusted local `.R`, `.Rmd`, or `.qmd` document on macOS or Linux can also run in an Open Wrangler-owned R process,
 after which the user chooses one of the dataframes it created. R Markdown and Quarto use supported top-level `{r}`
-cells rather than a document render. Pages, compound filters, ordered sorts,
+cells rather than a document render. The editor-title action always runs the current document; an active official R
+terminal does not replace it, and its loaded dataframes remain available in Operations and the tab menu. Pages, compound filters, ordered sorts,
 value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Editing mode
 currently supports twenty-one cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
