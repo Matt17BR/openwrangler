@@ -26,6 +26,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Floating-point columns can now interpolate missing runs along a numeric, date, or date-time coordinate. Leading and
   trailing gaps stay missing, and an optional run limit leaves longer gaps unchanged.
 
+### Changed
+
+- The Fill Missing Values method menu now groups column statistics, grouped statistics, ordered data, fallback
+  columns, and manual replacement. The menu also names the selected column type so it is clear why options appear or
+  disappear.
+
 ### Fixed
 
 - Preview and stable release jobs now create the exact local release tag before registry checks. Previously the tag
