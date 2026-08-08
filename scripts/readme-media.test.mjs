@@ -582,7 +582,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders"/u
   );
   assert.match(readme, /published comparison covers Open Wrangler 1\.2\.1 and Microsoft Data Wrangler 1\.24\.2/u);
-  assert.match(readme, /Data Wrangler converted the dataframe to Pandas while Open Wrangler used Polars directly/u);
+  assert.match(readme, /Data Wrangler converted the dataframe to Pandas while Open Wrangler stayed in Polars/u);
+  assert.match(readme, /cannot say how much of the gap came from that difference/u);
+  assert.doesNotMatch(readme, /That explains part of the difference/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.doesNotMatch(
@@ -625,9 +627,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(performanceSection, /closest Parquet workbench and profiling results were similar/u);
   assert.match(
     performanceSection,
-    /Data Wrangler converted the dataframe to Pandas while Open Wrangler used Polars directly/u
+    /Data Wrangler converted the dataframe to Pandas while Open Wrangler stayed in Polars/u
   );
-  assert.match(performanceSection, /conversion itself was not timed separately/u);
+  assert.match(performanceSection, /cannot say how much of the gap came from that difference/u);
   assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
   const reportLinks = [
     ...performanceSection.matchAll(
