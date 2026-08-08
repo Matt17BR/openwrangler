@@ -135,9 +135,7 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
   async runCellAndOpenVariable(): Promise<void> {
     const origin = capturePythonCellOrigin();
     if (!origin) {
-      void vscode.window.showInformationMessage(
-        "Place the cursor inside a Python # %% cell, then run this command again."
-      );
+      void vscode.window.showInformationMessage("Place the cursor in a Python code cell marked # %%, then try again.");
       return;
     }
 

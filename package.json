@@ -598,7 +598,7 @@
       "editor/title": [
         {
           "command": "openWrangler.runPythonCellAndOpenVariable",
-          "when": "editorFocus && editorLangId == python && jupyter.hascodecells && !notebookEditorFocused && isWorkspaceTrusted",
+          "when": "editorFocus && editorLangId == python && !notebookEditorFocused && isWorkspaceTrusted && resourceExtname =~ /\\.py$/i",
           "group": "navigation@1"
         },
         {
@@ -630,7 +630,7 @@
       "editor/title/context": [
         {
           "command": "openWrangler.runPythonCellAndOpenVariable",
-          "when": "editorFocus && editorLangId == python && jupyter.hascodecells && !notebookEditorFocused && isWorkspaceTrusted",
+          "when": "editorFocus && editorLangId == python && !notebookEditorFocused && isWorkspaceTrusted && resourceExtname =~ /\\.py$/i",
           "group": "navigation@47"
         },
         {
