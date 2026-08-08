@@ -2332,7 +2332,12 @@ function AggregationRow({
       />
       <label className="formField">
         <span>Calculation</span>
-        <select name="aggregationOperation" value={operation} onChange={(event) => changeOperation(event.target.value)}>
+        <select
+          name="aggregationOperation"
+          aria-label={`Calculation ${index + 1}`}
+          value={operation}
+          onChange={(event) => changeOperation(event.target.value)}
+        >
           {aggregationOperations.map((value) => (
             <option key={value} value={value}>
               {value}

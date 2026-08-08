@@ -6025,7 +6025,7 @@ async function exerciseReleasedREditingJourney(
       .getByRole("checkbox", { name: "group", exact: true })
       .check();
     await groupDialog.getByLabel("Value 1", { exact: true }).selectOption(groupedScoreColumn.id);
-    await groupDialog.getByLabel("Calculation", { exact: true }).selectOption("sum");
+    await groupDialog.getByLabel("Calculation 1", { exact: true }).selectOption("sum");
     await groupDialog.getByLabel("Output name", { exact: true }).fill("total_score");
     await groupDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
     await waitFor(

@@ -2218,8 +2218,7 @@ describe("OperationBuilder", () => {
     fireEvent.change(screen.getByLabelText("Value 2"), { target: { value: "c:3" } });
     const aliases = screen.getAllByLabelText("Output name") as HTMLInputElement[];
     fireEvent.change(aliases[1], { target: { value: "average" } });
-    const calculations = screen.getAllByLabelText("Calculation") as HTMLSelectElement[];
-    fireEvent.change(calculations[1], { target: { value: "mean" } });
+    fireEvent.change(screen.getByLabelText("Calculation 2"), { target: { value: "mean" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
     expect(onPreview.mock.calls[0][0].params).toEqual({
@@ -2271,7 +2270,7 @@ describe("OperationBuilder", () => {
     expect(
       Array.from((screen.getByLabelText("Value 1") as HTMLSelectElement).options, (option) => option.value)
     ).toEqual(["c:1"]);
-    fireEvent.change(screen.getByLabelText("Calculation"), { target: { value: "count" } });
+    fireEvent.change(screen.getByLabelText("Calculation 1"), { target: { value: "count" } });
     expect(
       Array.from((screen.getByLabelText("Value 1") as HTMLSelectElement).options, (option) => option.value)
     ).toEqual(["c:0", "c:1", "c:2"]);
