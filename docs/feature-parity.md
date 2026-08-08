@@ -25,7 +25,7 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Sort/filter cleaning steps                           |    Yes |    Yes | Done   | Stable refs, native/code edges, packaged duplicates; record:docs/testing.md           |
 | Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done   | Reordered mixed-label preview/apply/replay green; record:docs/testing.md              |
 | Drop missing/duplicate rows                          |    Yes |    Yes | Done   | Stable refs, all row modes, code and packaged catalog; record:docs/testing.md         |
-| Fill missing values                                  |    Yes |    Yes | Done   | Typed, calculated, and ordered fallback columns; record:docs/testing.md               |
+| Fill missing values                                  |    Yes |    Yes | Done   | Typed, grouped, ordered, and interpolated fills; record:docs/testing.md               |
 | One-hot and multi-label binarization                 |    Yes |    Yes | Done   | Null/blank/collision and generated-code parity; record:docs/testing.md                |
 | Find/replace/strip/split/case transforms             |    Yes |    Yes | Done   | Unicode/null plus packaged text preview/apply; record:docs/testing.md                 |
 | Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done   | Numeric edges plus packaged preview/apply; record:docs/testing.md                     |
@@ -56,8 +56,11 @@ gaps unresolved, while backward fill leaves trailing gaps unresolved. Numeric co
 selected groups, floating-point columns can calculate a grouped mean, and text, categorical, and boolean columns can
 use the most common value within each group. Null and NaN grouping keys share one group. If every target value in a
 group is missing, those cells stay missing; tied most-common values do too. Row order does not change. Automatic
-methods ignore both null and NaN. When a global fill needs a value, a tie, an all-missing column, or an undefined mean
-asks the user for another method. A no-op keeps the exact native column type.
+methods ignore both null and NaN. Floating-point columns can interpolate along one numeric, date, or date-time
+coordinate. The coordinate must be complete, finite, and unique. Only missing runs with finite values on both sides
+are filled; an optional limit leaves longer runs untouched. The calculation uses coordinate distance and returns rows
+to their original order. When a global fill needs a value, a tie, an all-missing column, or an undefined mean asks the
+user for another method. A no-op keeps the exact native column type.
 On Python engines, a specific value or a fallback from a different categorical domain may widen the result to text;
 the preview shows that type change. The most-common method uses an existing value and keeps its category type. Integer
 and decimal medians must fit that type exactly; decimal values must also fit its scale, and datetime values must match
@@ -120,8 +123,10 @@ non-missing character, factor, or logical value, a specific typed value, or orde
 also use the previous or next value in an explicit multi-column order, with an optional whole-run gap limit. The
 result returns to its earlier row order. Median, mean, and most common value can also be calculated within selected
 groups. All-missing groups and tied most-common values stay missing. Automatic fills ignore `NA` and `NaN`. Factor
-order and existing levels are kept; new labels used by a fill are appended as levels. Signed 64-bit integers, dates,
-and datetimes keep their R types. Active data-table key columns are blocked.
+order and existing levels are kept; new labels used by a fill are appended as levels. Double columns can interpolate
+missing runs along an ordinary numeric, `Date`, or `POSIXct` coordinate. Signed 64-bit integers are not accepted as
+interpolation coordinates. Signed 64-bit integers, dates, and datetimes keep their R types. Active data-table key
+columns are blocked.
 
 The default `collapse::qDF()` output follows the base `data.frame` path. Default `collapse::qTBL()` and `qDT()` output
 follows the existing tibble and `data.table` paths. Open Wrangler does not require `collapse`, and grouped `GRP_df`

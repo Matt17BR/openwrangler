@@ -1375,6 +1375,7 @@ class SessionManager:
             "fallbackColumns",
             "directional",
             "groupedStatistic",
+            "linearInterpolation",
         }:
             # These replacements may leave cells missing.
             # Keep the engine's observed nullability (or a lazy engine's

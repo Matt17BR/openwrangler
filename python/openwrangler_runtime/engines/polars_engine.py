@@ -945,6 +945,13 @@ class PolarsEngine(DataFrameEngine):
                     [bound_column_name(key, kind) for key in replacement["keys"]],
                     replacement["statistic"],
                 )
+            if replacement.get("kind") == "linearInterpolation":
+                return _polars_fill_missing_linear_interpolation(
+                    df,
+                    column,
+                    bound_column_name(replacement["coordinate"], kind),
+                    replacement.get("maxGap"),
+                )
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             dtype = schema[column]
             expression = pl.col(column)
@@ -1225,6 +1232,7 @@ class PolarsEngine(DataFrameEngine):
             lines.extend(generated_view_value_helper_lines())
         if needs_fill_helpers:
             lines.extend(_generated_polars_fill_helpers())
+            lines.extend(_generated_polars_linear_interpolation_helpers())
         if any(_polars_step_needs_checked_integer_helpers(step) for step in plan):
             lines.extend(
                 [
@@ -1407,6 +1415,14 @@ class PolarsEngine(DataFrameEngine):
                     (
                         f"{prefix}df = _ow_polars_fill_missing_grouped_statistic("
                         f"df, {column!r}, {keys!r}, {replacement['statistic']!r})"
+                    )
+                ]
+            if replacement.get("kind") == "linearInterpolation":
+                coordinate = bound_column_name(replacement["coordinate"], kind)
+                return [
+                    (
+                        f"{prefix}df = _ow_polars_fill_missing_linear_interpolation("
+                        f"df, {column!r}, {coordinate!r}, {replacement.get('maxGap')!r})"
                     )
                 ]
             schema = f"_fill_schema_{index}"
@@ -2126,6 +2142,223 @@ def _polars_fill_missing_directional(
     )
 
 
+def _polars_fill_missing_linear_interpolation(
+    frame: Any,
+    target: str,
+    coordinate: str,
+    max_gap: int | None,
+) -> Any:
+    """Interpolate bracketed float gaps while preserving a lazy input plan."""
+
+    import polars as pl
+
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    target_dtype = schema[target]
+    coordinate_dtype = schema[coordinate]
+    if not target_dtype.is_float():
+        raise EngineError("Linear interpolation requires a floating-point target column.")
+    coordinate_kind = _polars_interpolation_coordinate_kind(coordinate_dtype)
+    source_coordinate = pl.col(coordinate)
+    invalid_coordinate = source_coordinate.is_null()
+    if coordinate_dtype.is_float():
+        invalid_coordinate = invalid_coordinate | ~source_coordinate.is_finite()
+    reserved = set(schema.names())
+
+    def unique(base: str) -> str:
+        candidate = base
+        while candidate in reserved:
+            candidate += "_"
+        reserved.add(candidate)
+        return candidate
+
+    validation_minimum_name = unique("__ow_interpolation_validation_minimum")
+    validation_coordinate_name = unique("__ow_interpolation_validation_coordinate")
+    validation_frame = frame.with_columns(source_coordinate.min().alias(validation_minimum_name))
+    validation_coordinate = _polars_interpolation_coordinate_expression(
+        source_coordinate,
+        coordinate_dtype,
+        coordinate_kind,
+        pl.col(validation_minimum_name),
+    )
+    validation_roundtrip = _polars_interpolation_coordinate_roundtrip(
+        source_coordinate,
+        coordinate_dtype,
+        coordinate_kind,
+        pl.col(validation_minimum_name),
+    )
+    summary_query = validation_frame.with_columns(validation_coordinate.alias(validation_coordinate_name)).select(
+        pl.len().alias("__ow_count"),
+        invalid_coordinate.sum().alias("__ow_invalid"),
+        source_coordinate.n_unique().alias("__ow_unique"),
+        pl.col(validation_coordinate_name).n_unique().alias("__ow_projected_unique"),
+        pl.col(validation_coordinate_name).is_finite().all().alias("__ow_projected_finite"),
+        validation_roundtrip.all().alias("__ow_projected_exact"),
+        pl.col(validation_minimum_name).first().alias("__ow_minimum"),
+    )
+    try:
+        summary = (
+            summary_query.collect(engine="streaming") if isinstance(summary_query, pl.LazyFrame) else summary_query
+        )
+    except Exception as error:
+        raise EngineError("Linear interpolation cannot represent the selected coordinate distances exactly.") from error
+    count = int(summary["__ow_count"][0])
+    if int(summary["__ow_invalid"][0] or 0):
+        raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+    if int(summary["__ow_unique"][0]) != count:
+        raise EngineError("Linear interpolation requires unique coordinate values.")
+    if count and (
+        not bool(summary["__ow_projected_finite"][0])
+        or not bool(summary["__ow_projected_exact"][0])
+        or int(summary["__ow_projected_unique"][0]) != count
+    ):
+        raise EngineError(
+            "Linear interpolation cannot preserve the selected coordinate distances exactly enough; "
+            "choose a lower-precision coordinate column."
+        )
+    minimum = summary["__ow_minimum"][0] if count else None
+    numeric_coordinate = _polars_interpolation_coordinate_expression(
+        source_coordinate,
+        coordinate_dtype,
+        coordinate_kind,
+        minimum,
+    )
+    position_name = unique("__ow_interpolation_position")
+    missing_name = unique("__ow_interpolation_missing")
+    run_name = unique("__ow_interpolation_run")
+    gap_name = unique("__ow_interpolation_gap")
+    coordinate_name = unique("__ow_interpolation_coordinate")
+    left_value_name = unique("__ow_interpolation_left_value")
+    right_value_name = unique("__ow_interpolation_right_value")
+    left_coordinate_name = unique("__ow_interpolation_left_coordinate")
+    right_coordinate_name = unique("__ow_interpolation_right_coordinate")
+
+    target_value = pl.col(target)
+    missing = target_value.is_null() | target_value.is_nan()
+    present_target = pl.when(missing).then(None).otherwise(target_value)
+    present_coordinate = pl.when(missing).then(None).otherwise(pl.col(coordinate_name))
+    ordered = (
+        frame.with_row_index(position_name)
+        .sort(coordinate, maintain_order=True)
+        .with_columns(
+            missing.alias(missing_name),
+            numeric_coordinate.alias(coordinate_name),
+        )
+        .with_columns(
+            (pl.col(missing_name) != pl.col(missing_name).shift(1).fill_null(False)).cum_sum().alias(run_name),
+            present_target.shift(1).forward_fill().alias(left_value_name),
+            present_target.shift(-1).backward_fill().alias(right_value_name),
+            present_coordinate.shift(1).forward_fill().alias(left_coordinate_name),
+            present_coordinate.shift(-1).backward_fill().alias(right_coordinate_name),
+        )
+        .with_columns(pl.when(pl.col(missing_name)).then(pl.len().over(run_name)).otherwise(0).alias(gap_name))
+    )
+    left_coordinate = pl.col(left_coordinate_name)
+    right_coordinate = pl.col(right_coordinate_name)
+    current_coordinate = pl.col(coordinate_name)
+    coordinate_span = right_coordinate - left_coordinate
+    direct_weight = (current_coordinate - left_coordinate) / coordinate_span
+    scaled_weight = ((current_coordinate / 2.0) - (left_coordinate / 2.0)) / (
+        (right_coordinate / 2.0) - (left_coordinate / 2.0)
+    )
+    weight = pl.when(coordinate_span.is_finite()).then(direct_weight).otherwise(scaled_weight)
+    left_value = pl.col(left_value_name)
+    right_value = pl.col(right_value_name)
+    interpolated = ((pl.lit(1.0) - weight) * left_value + weight * right_value).cast(target_dtype)
+    eligible = (
+        pl.col(missing_name)
+        & left_value.is_finite()
+        & right_value.is_finite()
+        & weight.is_finite()
+        & weight.is_between(0.0, 1.0, closed="both")
+    )
+    if max_gap is not None:
+        eligible = eligible & (pl.col(gap_name) <= max_gap)
+    temporary_names = [
+        position_name,
+        missing_name,
+        run_name,
+        gap_name,
+        coordinate_name,
+        left_value_name,
+        right_value_name,
+        left_coordinate_name,
+        right_coordinate_name,
+    ]
+    return (
+        ordered.with_columns(pl.when(eligible).then(interpolated).otherwise(target_value).alias(target))
+        .sort(position_name)
+        .drop(*temporary_names)
+    )
+
+
+def _polars_interpolation_coordinate_kind(dtype: Any) -> str:
+    import polars as pl
+
+    if dtype in {pl.Int128, pl.UInt128}:
+        raise EngineError(
+            "Linear interpolation does not support 128-bit integer coordinates; "
+            "convert the coordinate to a narrower exact type first."
+        )
+    if dtype.is_integer():
+        return "integer"
+    if dtype.is_float():
+        return "float"
+    if dtype.base_type() == pl.Decimal:
+        return "decimal"
+    if dtype == pl.Date:
+        return "date"
+    if dtype.base_type() == pl.Datetime:
+        return "datetime"
+    raise EngineError("Linear interpolation coordinates must be numeric, dates, or datetimes.")
+
+
+def _polars_interpolation_coordinate_expression(
+    expression: Any,
+    dtype: Any,
+    kind: str,
+    minimum: Any,
+) -> Any:
+    import polars as pl
+
+    if kind == "float":
+        return expression.cast(pl.Float64)
+    minimum_expression = minimum if isinstance(minimum, pl.Expr) else pl.lit(minimum, dtype=dtype)
+    if kind in {"integer", "datetime"}:
+        raw = expression.cast(pl.Int128)
+        minimum_raw = minimum_expression.cast(pl.Int128)
+        return (raw - minimum_raw).cast(pl.Float64)
+    if kind == "date":
+        raw = expression.cast(pl.Int32).cast(pl.Int64)
+        minimum_raw = minimum_expression.cast(pl.Date).cast(pl.Int32).cast(pl.Int64)
+        return (raw - minimum_raw).cast(pl.Float64)
+    exact_dtype = pl.Decimal(38, dtype.scale)
+    return (expression.cast(exact_dtype) - minimum_expression.cast(exact_dtype)).cast(pl.Float64)
+
+
+def _polars_interpolation_coordinate_roundtrip(
+    expression: Any,
+    dtype: Any,
+    kind: str,
+    minimum: Any,
+) -> Any:
+    import polars as pl
+
+    if kind == "float":
+        return pl.lit(True)
+    minimum_expression = minimum if isinstance(minimum, pl.Expr) else pl.lit(minimum, dtype=dtype)
+    if kind in {"integer", "datetime"}:
+        exact = expression.cast(pl.Int128) - minimum_expression.cast(pl.Int128)
+        return exact.cast(pl.Float64).cast(pl.Int128) == exact
+    if kind == "date":
+        exact = expression.cast(pl.Int32).cast(pl.Int64) - minimum_expression.cast(pl.Date).cast(pl.Int32).cast(
+            pl.Int64
+        )
+        return exact.cast(pl.Float64).cast(pl.Int64) == exact
+    exact_dtype = pl.Decimal(38, dtype.scale)
+    exact = expression.cast(exact_dtype) - minimum_expression.cast(exact_dtype)
+    return exact.cast(pl.Float64).cast(exact_dtype) == exact
+
+
 def _polars_fill_missing_grouped_statistic(
     frame: Any,
     target: str,
@@ -2381,6 +2614,188 @@ def _polars_most_frequent_value(frame: Any, column: str, expression: Any) -> Any
             f"This column has no single most common value: {tie_count} values are tied. Choose a specific value."
         )
     return result[column][0]
+
+
+def _generated_polars_linear_interpolation_helpers() -> list[str]:
+    source: str = r"""
+
+def _ow_polars_interpolation_coordinate_kind(dtype):
+    if dtype in {pl.Int128, pl.UInt128}:
+        raise ValueError(
+            'Linear interpolation does not support 128-bit integer coordinates; '
+            'convert the coordinate to a narrower exact type first.'
+        )
+    if dtype.is_integer():
+        return 'integer'
+    if dtype.is_float():
+        return 'float'
+    if dtype.base_type() == pl.Decimal:
+        return 'decimal'
+    if dtype == pl.Date:
+        return 'date'
+    if dtype.base_type() == pl.Datetime:
+        return 'datetime'
+    raise ValueError('Linear interpolation coordinates must be numeric, dates, or datetimes.')
+
+
+def _ow_polars_interpolation_coordinate_expression(expression, dtype, kind, minimum):
+    if kind == 'float':
+        return expression.cast(pl.Float64)
+    minimum_expression = minimum if isinstance(minimum, pl.Expr) else pl.lit(minimum, dtype=dtype)
+    if kind in {'integer', 'datetime'}:
+        raw = expression.cast(pl.Int128)
+        minimum_raw = minimum_expression.cast(pl.Int128)
+        return (raw - minimum_raw).cast(pl.Float64)
+    if kind == 'date':
+        raw = expression.cast(pl.Int32).cast(pl.Int64)
+        minimum_raw = minimum_expression.cast(pl.Date).cast(pl.Int32).cast(pl.Int64)
+        return (raw - minimum_raw).cast(pl.Float64)
+    exact_dtype = pl.Decimal(38, dtype.scale)
+    return (expression.cast(exact_dtype) - minimum_expression.cast(exact_dtype)).cast(pl.Float64)
+
+
+def _ow_polars_interpolation_coordinate_roundtrip(expression, dtype, kind, minimum):
+    if kind == 'float':
+        return pl.lit(True)
+    minimum_expression = minimum if isinstance(minimum, pl.Expr) else pl.lit(minimum, dtype=dtype)
+    if kind in {'integer', 'datetime'}:
+        exact = expression.cast(pl.Int128) - minimum_expression.cast(pl.Int128)
+        return exact.cast(pl.Float64).cast(pl.Int128) == exact
+    if kind == 'date':
+        exact = (
+            expression.cast(pl.Int32).cast(pl.Int64)
+            - minimum_expression.cast(pl.Date).cast(pl.Int32).cast(pl.Int64)
+        )
+        return exact.cast(pl.Float64).cast(pl.Int64) == exact
+    exact_dtype = pl.Decimal(38, dtype.scale)
+    exact = expression.cast(exact_dtype) - minimum_expression.cast(exact_dtype)
+    return exact.cast(pl.Float64).cast(exact_dtype) == exact
+
+
+def _ow_polars_fill_missing_linear_interpolation(frame, target, coordinate, max_gap):
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    target_dtype = schema[target]
+    coordinate_dtype = schema[coordinate]
+    if not target_dtype.is_float():
+        raise ValueError('Linear interpolation requires a floating-point target column.')
+    coordinate_kind = _ow_polars_interpolation_coordinate_kind(coordinate_dtype)
+    source_coordinate = pl.col(coordinate)
+    invalid_coordinate = source_coordinate.is_null()
+    if coordinate_dtype.is_float():
+        invalid_coordinate = invalid_coordinate | ~source_coordinate.is_finite()
+    reserved = set(schema.names())
+    def unique(base):
+        candidate = base
+        while candidate in reserved:
+            candidate += '_'
+        reserved.add(candidate)
+        return candidate
+    validation_minimum_name = unique('__ow_interpolation_validation_minimum')
+    validation_coordinate_name = unique('__ow_interpolation_validation_coordinate')
+    validation_frame = frame.with_columns(source_coordinate.min().alias(validation_minimum_name))
+    validation_coordinate = _ow_polars_interpolation_coordinate_expression(
+        source_coordinate, coordinate_dtype, coordinate_kind, pl.col(validation_minimum_name)
+    )
+    validation_roundtrip = _ow_polars_interpolation_coordinate_roundtrip(
+        source_coordinate, coordinate_dtype, coordinate_kind, pl.col(validation_minimum_name)
+    )
+    summary_query = validation_frame.with_columns(validation_coordinate.alias(validation_coordinate_name)).select(
+        pl.len().alias('__ow_count'),
+        invalid_coordinate.sum().alias('__ow_invalid'),
+        source_coordinate.n_unique().alias('__ow_unique'),
+        pl.col(validation_coordinate_name).n_unique().alias('__ow_projected_unique'),
+        pl.col(validation_coordinate_name).is_finite().all().alias('__ow_projected_finite'),
+        validation_roundtrip.all().alias('__ow_projected_exact'),
+        pl.col(validation_minimum_name).first().alias('__ow_minimum'),
+    )
+    try:
+        summary = (
+            summary_query.collect(engine='streaming')
+            if isinstance(summary_query, pl.LazyFrame)
+            else summary_query
+        )
+    except Exception as error:
+        raise ValueError(
+            'Linear interpolation cannot represent the selected coordinate distances exactly.'
+        ) from error
+    count = int(summary['__ow_count'][0])
+    if int(summary['__ow_invalid'][0] or 0):
+        raise ValueError('Linear interpolation requires every coordinate value to be present and finite.')
+    if int(summary['__ow_unique'][0]) != count:
+        raise ValueError('Linear interpolation requires unique coordinate values.')
+    if count and (
+        not bool(summary['__ow_projected_finite'][0])
+        or not bool(summary['__ow_projected_exact'][0])
+        or int(summary['__ow_projected_unique'][0]) != count
+    ):
+        raise ValueError(
+            'Linear interpolation cannot preserve the selected coordinate distances exactly enough; '
+            'choose a lower-precision coordinate column.'
+        )
+    minimum = summary['__ow_minimum'][0] if count else None
+    numeric_coordinate = _ow_polars_interpolation_coordinate_expression(
+        source_coordinate, coordinate_dtype, coordinate_kind, minimum
+    )
+    position_name = unique('__ow_interpolation_position')
+    missing_name = unique('__ow_interpolation_missing')
+    run_name = unique('__ow_interpolation_run')
+    gap_name = unique('__ow_interpolation_gap')
+    coordinate_name = unique('__ow_interpolation_coordinate')
+    left_value_name = unique('__ow_interpolation_left_value')
+    right_value_name = unique('__ow_interpolation_right_value')
+    left_coordinate_name = unique('__ow_interpolation_left_coordinate')
+    right_coordinate_name = unique('__ow_interpolation_right_coordinate')
+    target_value = pl.col(target)
+    missing = target_value.is_null() | target_value.is_nan()
+    present_target = pl.when(missing).then(None).otherwise(target_value)
+    present_coordinate = pl.when(missing).then(None).otherwise(pl.col(coordinate_name))
+    ordered = (
+        frame.with_row_index(position_name)
+        .sort(coordinate, maintain_order=True)
+        .with_columns(missing.alias(missing_name), numeric_coordinate.alias(coordinate_name))
+        .with_columns(
+            (pl.col(missing_name) != pl.col(missing_name).shift(1).fill_null(False)).cum_sum().alias(run_name),
+            present_target.shift(1).forward_fill().alias(left_value_name),
+            present_target.shift(-1).backward_fill().alias(right_value_name),
+            present_coordinate.shift(1).forward_fill().alias(left_coordinate_name),
+            present_coordinate.shift(-1).backward_fill().alias(right_coordinate_name),
+        )
+        .with_columns(pl.when(pl.col(missing_name)).then(pl.len().over(run_name)).otherwise(0).alias(gap_name))
+    )
+    left_coordinate = pl.col(left_coordinate_name)
+    right_coordinate = pl.col(right_coordinate_name)
+    current_coordinate = pl.col(coordinate_name)
+    coordinate_span = right_coordinate - left_coordinate
+    direct_weight = (current_coordinate - left_coordinate) / coordinate_span
+    scaled_weight = ((current_coordinate / 2.0) - (left_coordinate / 2.0)) / (
+        (right_coordinate / 2.0) - (left_coordinate / 2.0)
+    )
+    weight = pl.when(coordinate_span.is_finite()).then(direct_weight).otherwise(scaled_weight)
+    left_value = pl.col(left_value_name)
+    right_value = pl.col(right_value_name)
+    interpolated = ((pl.lit(1.0) - weight) * left_value + weight * right_value).cast(target_dtype)
+    eligible = (
+        pl.col(missing_name)
+        & left_value.is_finite()
+        & right_value.is_finite()
+        & weight.is_finite()
+        & weight.is_between(0.0, 1.0, closed='both')
+    )
+    if max_gap is not None:
+        eligible = eligible & (pl.col(gap_name) <= max_gap)
+    temporary_names = [
+        position_name, missing_name, run_name, gap_name, coordinate_name,
+        left_value_name, right_value_name, left_coordinate_name, right_coordinate_name,
+    ]
+    return (
+        ordered.with_columns(pl.when(eligible).then(interpolated).otherwise(target_value).alias(target))
+        .sort(position_name)
+        .drop(*temporary_names)
+    )
+"""
+    lines: list[str] = []
+    lines.extend(source.strip("\n").splitlines())
+    return lines
 
 
 def _generated_polars_fill_helpers() -> list[str]:

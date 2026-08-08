@@ -93,7 +93,11 @@ their branches are integrated or abandoned.
 57. Fill Missing Values uses stable column references for fallback columns, directional order, and grouped statistics.
     Grouped targets and keys must be distinct and type-compatible. Grouped fills never read the current viewing query,
     treat null and NaN grouping keys as one missing group, leave tied or undefined groups unresolved, preserve row order,
-    and keep conservative nullable metadata.
+    and keep conservative nullable metadata. Linear interpolation accepts only a floating-point target and one distinct
+    numeric, date, or date-time coordinate. Coordinates must be complete, finite, unique, and precise enough to retain
+    their relative distance. It fills only bracketed runs between finite anchors, applies the optional whole-run limit,
+    restores source order, and never uses viewing filters or sorts. R `integer64` and native 128-bit integer coordinates
+    remain unsupported until their distances can be represented exactly.
 
 ## Public writing
 

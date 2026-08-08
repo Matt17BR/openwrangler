@@ -11,6 +11,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   does not reuse viewing sorts.
 - Missing numeric, text, categorical, and boolean values can now use a statistic calculated separately within one or
   more grouping columns. All-missing groups and tied most-common values stay missing.
+- Floating-point columns can now interpolate missing runs along a numeric, date, or date-time coordinate. Leading and
+  trailing gaps stay missing, and an optional run limit leaves longer gaps unchanged.
 
 ### Fixed
 

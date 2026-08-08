@@ -100,8 +100,10 @@ non-missing value for character, factor, and logical columns. It also accepts an
 columns and takes the first present value from each row. Directional fills use an explicit stable sort, restore the
 original row order, and optionally leave missing runs above a chosen length untouched. Median, mean, and most common
 value can also be calculated within selected groups. All-missing groups stay missing, as do groups where two or more
-values tie for most common. Automatic methods ignore `NA` and `NaN`. Factors, ordered factors, `integer64`, dates,
-and datetimes stay in their native R types.
+values tie for most common. Automatic methods ignore `NA` and `NaN`. Double columns can use linear interpolation
+along an ordinary numeric, `Date`, or `POSIXct` coordinate. The coordinate must be complete, finite, and unique;
+`integer64` coordinates are rejected. Factors, ordered factors, `integer64`, dates, and datetimes stay in their native
+R types.
 Active data-table key columns are rejected because changing a key value could invalidate the stored order.
 
 Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the

@@ -821,6 +821,16 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "coordinate"],
+          "properties": {
+            "kind": { "const": "linearInterpolation" },
+            "coordinate": { "$ref": "#/definitions/ColumnReference" },
+            "maxGap": { "type": "integer", "minimum": 1, "maximum": 1000000 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "value"],
           "properties": {
             "kind": { "const": "string" },

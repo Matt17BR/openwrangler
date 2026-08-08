@@ -154,6 +154,11 @@ export type FillMissingReplacement =
       keys: NonEmptyColumnReferenceArray;
     }
   | {
+      kind: "linearInterpolation";
+      coordinate: ColumnReference;
+      maxGap?: number;
+    }
+  | {
       kind: "string";
       value: string;
     }

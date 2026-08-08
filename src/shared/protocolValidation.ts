@@ -894,6 +894,14 @@ function isFillMissingReplacement(value: unknown): boolean {
       isUniqueColumnReferenceArray(decoded.keys, false)
     );
   }
+  if (value.kind === "linearInterpolation") {
+    const decoded = exactRecord(value, ["kind", "coordinate"], ["maxGap"]);
+    return (
+      decoded !== undefined &&
+      isColumnReference(decoded.coordinate) &&
+      optional(decoded, "maxGap", (maxGap) => isPositiveInteger(maxGap) && maxGap <= MAX_FILL_DIRECTIONAL_GAP)
+    );
+  }
   const decoded = exactRecord(value, ["kind", "value"]);
   if (decoded === undefined) return false;
   switch (decoded.kind) {
@@ -1026,6 +1034,13 @@ export function isTransformStep(value: unknown): value is TransformStep {
         decoded.replacement.kind === "groupedStatistic" &&
         Array.isArray(decoded.replacement.keys) &&
         decoded.replacement.keys.some((reference) => isRecord(reference) && reference.id === targetColumnId)
+      ) {
+        return false;
+      }
+      if (
+        decoded.replacement.kind === "linearInterpolation" &&
+        isRecord(decoded.replacement.coordinate) &&
+        decoded.replacement.coordinate.id === targetColumnId
       ) {
         return false;
       }

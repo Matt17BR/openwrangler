@@ -3397,6 +3397,141 @@ describe("canonical R kernel bridge", () => {
     }
   });
 
+  it("dispatches R linear interpolation with one stable coordinate and conservative nullability", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-linear",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:2", name: "date" },
+          maxGap: 3
+        }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: source,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:7", nullable: true })]),
+        draftStep: {
+          params: {
+            replacement: {
+              kind: "linearInterpolation",
+              coordinate: { id: "r:c:2", name: "date" },
+              maxGap: 3
+            }
+          }
+        }
+      }
+    });
+
+    const dispatched = transport.previewStep.mock.calls[0]?.[2] as RKernelTransformStep | undefined;
+    if (!dispatched || dispatched.kind !== "fillMissingValues") throw new Error("expected a dispatched fill step");
+    if (dispatched.params.replacement.kind !== "linearInterpolation") {
+      throw new Error("expected linear interpolation");
+    }
+    expect(Object.isFrozen(dispatched.params.replacement)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.coordinate)).toBe(true);
+
+    if (step.params.replacement.kind !== "linearInterpolation") throw new Error("expected linear interpolation");
+    step.params.replacement.coordinate.name = "caller mutation";
+    expect(preview).toMatchObject({
+      metadata: {
+        draftStep: {
+          params: { replacement: { coordinate: { id: "r:c:2", name: "date" } } }
+        }
+      }
+    });
+  });
+
+  it("rejects invalid R linear interpolation before dispatch", async () => {
+    const invalidSteps = [
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:7", name: "infinite" }
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:1", name: "count" }
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:2", name: "stale" }
+        }
+      },
+      {
+        column: { id: "r:c:6", name: "missing" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:2", name: "date" }
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:2", name: "date" },
+          maxGap: 0
+        }
+      }
+    ] as const;
+
+    for (const [index, params] of invalidSteps.entries()) {
+      const transport = fakeTransport(frameContract());
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step: {
+            id: `r-fill-invalid-linear-${index}`,
+            kind: "fillMissingValues",
+            params
+          } as unknown as FillMissingValuesTransformStep,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+    }
+  });
+
   it("dispatches grouped R fills with stable keys and conservative nullability", async () => {
     const source = frameContract();
     const transport = fakeTransport(source);

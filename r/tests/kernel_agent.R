@@ -50,6 +50,7 @@ fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
 most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
 fallback_fill_session_id <- "40404040-4040-4040-8040-404040404040"
 directional_fill_session_id <- "45454545-4545-4545-8545-454545454545"
+linear_fill_session_id <- "52525252-5252-4252-8252-525252525252"
 grouped_fill_session_id <- "46464646-4646-4646-8646-464646464646"
 grouped_wide_session_id <- "47474747-4747-4747-8747-474747474747"
 grouped_float_session_id <- "51515151-5151-4151-8151-515151515151"
@@ -3449,6 +3450,163 @@ rm("directional_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
 directional_fill_closed <- dispatch("closeSession", list(sessionId = directional_fill_session_id))
 assert_identical(directional_fill_closed$kind, "closed", "the R directional-fill session did not close")
 
+source_environment$linear_fill_frame <- data.frame(
+  coordinate = c(12, 0, 5, 20, 8, 30, 3),
+  target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_),
+  row.names = paste0("linear-", 1:7),
+  check.names = FALSE
+)
+linear_fill_before <- unserialize(serialize(source_environment$linear_fill_frame, NULL, version = 3L))
+linear_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = linear_fill_session_id, variableName = "linear_fill_frame", page = page_window())
+)
+assert_identical(linear_fill_open$kind, "page", "the R linear-interpolation session did not open")
+
+linear_target_coordinate <- dispatch(
+  "previewStep",
+  list(
+    sessionId = linear_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "linear-target-coordinate",
+      "r:c:1",
+      "target",
+      list(kind = "linearInterpolation", coordinate = list(id = "r:c:1", name = "target"))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(linear_target_coordinate$kind, "error", "R linear interpolation accepted its target as coordinate")
+assert_identical(linear_target_coordinate$code, "invalid_request", "the linear target-coordinate diagnostic changed")
+
+linear_limited_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = linear_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "linear-limited",
+      "r:c:1",
+      "target",
+      list(
+        kind = "linearInterpolation",
+        coordinate = list(id = "r:c:0", name = "coordinate"),
+        maxGap = 1L
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(linear_limited_preview$kind, "stepPreview", "bounded R linear interpolation did not preview")
+assert_identical(linear_limited_preview$diff$changedCells, 0L, "R maxGap partially interpolated an oversized run")
+assert_identical(
+  linear_limited_preview$page$schema[[2L]]$nullable,
+  TRUE,
+  "R linear interpolation published optimistic nullability"
+)
+linear_limited_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = linear_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(linear_limited_discard$action, "discard", "the bounded linear interpolation draft did not discard")
+
+linear_complete_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = linear_fill_session_id,
+    revision = 2L,
+    step = fill_step(
+      "linear-complete",
+      "r:c:1",
+      "target",
+      list(kind = "linearInterpolation", coordinate = list(id = "r:c:0", name = "coordinate"))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(linear_complete_preview$kind, "stepPreview", "R linear interpolation did not preview")
+assert_identical(linear_complete_preview$diff$changedCells, 2L, "R linear interpolation returned an inexact diff")
+linear_complete_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = linear_fill_session_id, revision = 3L, page = page_window())
+)
+assert_identical(linear_complete_apply$action, "apply", "R linear interpolation did not apply")
+if (!grepl(".ow_fill_linear", linear_complete_apply$code, fixed = TRUE)) {
+  stop("generated R linear interpolation lost its native helper", call. = FALSE)
+}
+linear_generated_flavors <- list(
+  data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_), check.names = FALSE),
+  tibble::tibble(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_)),
+  data.table::data.table(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_)),
+  collapse::qDF(data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_))),
+  collapse::qTBL(data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_))),
+  collapse::qDT(data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_)))
+)
+for (linear_source in linear_generated_flavors) {
+  if (inherits(linear_source, "data.table")) data.table::setkey(linear_source, coordinate)
+  linear_source_before <- if (inherits(linear_source, "data.table")) {
+    data.table::copy(linear_source)
+  } else {
+    unserialize(serialize(linear_source, NULL, version = 3L))
+  }
+  assign("linear_fill_frame", linear_source, envir = .GlobalEnv)
+  eval(parse(text = linear_complete_apply$code), envir = .GlobalEnv)
+  linear_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_identical(class(linear_generated), class(linear_source), "generated interpolation changed R dataframe flavor")
+  expected_linear_target <- unname(c(
+    `0` = 0,
+    `3` = 30,
+    `5` = 50,
+    `8` = 80,
+    `12` = NA_real_,
+    `20` = Inf,
+    `30` = NA_real_
+  )[as.character(linear_source$coordinate)])
+  assert_identical(
+    linear_generated$target,
+    expected_linear_target,
+    "generated R linear interpolation changed coordinate-distance behavior"
+  )
+  assert_identical(typeof(linear_generated$target), "double", "generated interpolation changed target storage")
+  if (inherits(linear_source, "data.table")) {
+    assert_identical(data.table::key(linear_generated), "coordinate", "generated interpolation dropped a data.table key")
+  }
+  assert_identical(
+    get("linear_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+    linear_source_before,
+    "generated R linear interpolation mutated its source"
+  )
+  rm("linear_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+}
+linear_huge_source <- data.frame(
+  coordinate = c(-.Machine$double.xmax, 0, .Machine$double.xmax),
+  target = c(.Machine$double.xmax, NA_real_, -.Machine$double.xmax)
+)
+linear_huge_before <- unserialize(serialize(linear_huge_source, NULL, version = 3L))
+assign("linear_fill_frame", linear_huge_source, envir = .GlobalEnv)
+eval(parse(text = linear_complete_apply$code), envir = .GlobalEnv)
+linear_huge_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  linear_huge_generated$target,
+  c(.Machine$double.xmax, 0, -.Machine$double.xmax),
+  "generated R interpolation overflowed finite opposite-sign endpoints"
+)
+assert_identical(typeof(linear_huge_generated$target), "double", "generated interpolation changed target storage")
+assert_identical(
+  get("linear_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  linear_huge_before,
+  "generated extreme interpolation mutated its source"
+)
+rm("linear_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+assert_identical(
+  source_environment$linear_fill_frame,
+  linear_fill_before,
+  "the R linear-interpolation lifecycle mutated its source"
+)
+linear_fill_closed <- dispatch("closeSession", list(sessionId = linear_fill_session_id))
+assert_identical(linear_fill_closed$kind, "closed", "the R linear-interpolation session did not close")
+
 source_environment$grouped_fill_frame <- data.frame(
   group = c(NA_real_, NaN, 1, 1, 2, 2, 3, 3, 3, 4, 4),
   wide = bit64::as.integer64(c(
@@ -5714,6 +5872,7 @@ missing_package_contract <- list(
   fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
   fill_missing_from_fallback_columns_at = function(...) stop("unexpected fallback fill", call. = FALSE),
   fill_missing_directional_at = function(...) stop("unexpected directional fill", call. = FALSE),
+  fill_missing_linear_interpolation_at = function(...) stop("unexpected linear interpolation", call. = FALSE),
   fill_missing_grouped_statistic_at = function(...) stop("unexpected grouped fill", call. = FALSE),
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
@@ -5889,6 +6048,21 @@ if (
     !identical(conditionMessage(missing_directional_fill_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without directional fill support", call. = FALSE)
+}
+missing_linear_fill_contract <- missing_package_contract
+missing_linear_fill_contract$fill_missing_linear_interpolation_at <- NULL
+missing_linear_fill_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_linear_fill_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_linear_fill_error) ||
+    !identical(conditionMessage(missing_linear_fill_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without linear interpolation support", call. = FALSE)
 }
 missing_grouped_fill_contract <- missing_package_contract
 missing_grouped_fill_contract$fill_missing_grouped_statistic_at <- NULL

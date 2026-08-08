@@ -1212,6 +1212,11 @@ describe("native R kernel protocol", () => {
         statistic: "mean",
         keys: [{ id: "r:c:1", name: "group" }]
       },
+      {
+        kind: "linearInterpolation",
+        coordinate: { id: "r:c:1", name: "coordinate" },
+        maxGap: 25
+      },
       { kind: "string", value: "unknown" },
       { kind: "integer", value: "-42" },
       { kind: "float", value: "1.25e+3" },
@@ -1381,6 +1386,38 @@ describe("native R kernel protocol", () => {
           statistic: "median",
           keys: [{ id: "r:c:1", name: "group" }],
           maxGap: 1
+        },
+        "may contain only"
+      ],
+      [
+        {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:0", name: "value" }
+        },
+        "cannot also be the interpolation coordinate"
+      ],
+      [{ kind: "linearInterpolation" }, "request.payload.step.params.replacement.coordinate"],
+      [
+        {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:1", name: "coordinate" },
+          maxGap: 0
+        },
+        "must be positive"
+      ],
+      [
+        {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:1", name: "coordinate" },
+          maxGap: 1_000_001
+        },
+        "outside its supported range"
+      ],
+      [
+        {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:1", name: "coordinate" },
+          keys: [{ id: "r:c:2", name: "extra" }]
         },
         "may contain only"
       ],

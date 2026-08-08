@@ -478,12 +478,12 @@ openwrangler_r_kernel_agent <- local({
       value,
       "kind",
       "request.payload.step.params.replacement",
-      optional_fields = c("value", "columns", "direction", "orderBy", "maxGap", "statistic", "keys")
+      optional_fields = c("value", "columns", "direction", "orderBy", "maxGap", "statistic", "keys", "coordinate")
     )
     kind <- bounded_text(
       replacement$kind,
       "request.payload.step.params.replacement.kind",
-      16L
+      24L
     )
     supported <- c(
       "mean",
@@ -492,6 +492,7 @@ openwrangler_r_kernel_agent <- local({
       "fallbackColumns",
       "directional",
       "groupedStatistic",
+      "linearInterpolation",
       "string",
       "integer",
       "float",
@@ -606,6 +607,36 @@ openwrangler_r_kernel_agent <- local({
       if (anyDuplicated(ids)) abort("invalid_request", "grouping columns contain a repeated column identity")
       if (target_column$id %in% ids) abort("invalid_request", "the fill target cannot also be a grouping column")
       return(list(kind = kind, statistic = statistic, keys = keys))
+    }
+    if (identical(kind, "linearInterpolation")) {
+      required <- c("kind", "coordinate")
+      optional <- "maxGap"
+      if (!all(required %in% names(replacement)) || any(!names(replacement) %in% c(required, optional))) {
+        abort("invalid_request", "linear interpolation requires kind and one coordinate column")
+      }
+      coordinate <- decode_column_reference(
+        replacement$coordinate,
+        "request.payload.step.params.replacement.coordinate",
+        limits$columnIdBytes
+      )
+      if (identical(coordinate$id, target_column$id)) {
+        abort("invalid_request", "the fill target cannot also be the interpolation coordinate")
+      }
+      max_gap <- NULL
+      if ("maxGap" %in% names(replacement)) {
+        max_gap <- whole_number(
+          replacement$maxGap,
+          "request.payload.step.params.replacement.maxGap",
+          maximum_fill_directional_gap
+        )
+        if (max_gap < 1) {
+          abort("invalid_request", "request.payload.step.params.replacement.maxGap must be positive")
+        }
+        max_gap <- as.integer(max_gap)
+      }
+      result <- list(kind = kind, coordinate = coordinate)
+      if (!is.null(max_gap)) result$maxGap <- max_gap
+      return(result)
     }
     if (!"value" %in% names(replacement)) {
       abort("invalid_request", "a typed replacement requires a value")
@@ -1238,7 +1269,9 @@ openwrangler_r_kernel_agent <- local({
     column <- schema[[position]]
     semantic_kind <- column$semantics$kind
     replacement_kind <- step$params$replacement$kind
-    compatible <- if (identical(replacement_kind, "groupedStatistic")) {
+    compatible <- if (identical(replacement_kind, "linearInterpolation")) {
+      identical(semantic_kind, "double")
+    } else if (identical(replacement_kind, "groupedStatistic")) {
       switch(
         step$params$replacement$statistic,
         mean = identical(semantic_kind, "double"),
@@ -1379,6 +1412,35 @@ openwrangler_r_kernel_agent <- local({
         abort("invalid_request", "Grouped fill requires unique grouping columns", TRUE)
       }
     }
+    interpolation_coordinate <- NULL
+    if (identical(replacement_kind, "linearInterpolation")) {
+      reference <- step$params$replacement$coordinate
+      coordinate_matches <- which(vapply(schema, function(candidate) identical(candidate$id, reference$id), logical(1L)))
+      if (
+        length(coordinate_matches) != 1L ||
+          !identical(schema[[coordinate_matches[[1L]]]]$name, reference$name)
+      ) {
+        abort("stale_column", "The interpolation coordinate no longer matches the active R dataframe", TRUE)
+      }
+      coordinate_position <- as.integer(coordinate_matches[[1L]])
+      coordinate_column <- schema[[coordinate_position]]
+      if (identical(coordinate_column$id, column$id)) {
+        abort("invalid_request", "The fill target cannot also be the interpolation coordinate", TRUE)
+      }
+      if (!coordinate_column$semantics$kind %in% c("integer", "double", "date", "datetime")) {
+        abort(
+          "invalid_request",
+          "Linear interpolation requires a numeric, Date, or POSIXct coordinate column",
+          TRUE
+        )
+      }
+      interpolation_coordinate <- list(
+        id = coordinate_column$id,
+        position = coordinate_position,
+        name = coordinate_column$name,
+        semanticsKind = coordinate_column$semantics$kind
+      )
+    }
     list(
       id = step$id,
       kind = step$kind,
@@ -1394,7 +1456,8 @@ openwrangler_r_kernel_agent <- local({
       replacement = step$params$replacement,
       fallbackColumns = fallback_columns,
       orderBy = order_by,
-      groupKeys = group_keys
+      groupKeys = group_keys,
+      interpolationCoordinate = interpolation_coordinate
     )
   }
 
@@ -1756,6 +1819,7 @@ openwrangler_r_kernel_agent <- local({
       fallback_fill <- identical(bound$replacement$kind, "fallbackColumns")
       directional_fill <- identical(bound$replacement$kind, "directional")
       grouped_fill <- identical(bound$replacement$kind, "groupedStatistic")
+      interpolation_fill <- identical(bound$replacement$kind, "linearInterpolation")
       result <- if (fallback_fill) {
         frame_contract$fill_missing_from_fallback_columns_at(
           source,
@@ -1785,6 +1849,15 @@ openwrangler_r_kernel_agent <- local({
           vapply(bound$groupKeys, `[[`, character(1L), "name", USE.NAMES = FALSE),
           bound$replacement$statistic
         )
+      } else if (interpolation_fill) {
+        frame_contract$fill_missing_linear_interpolation_at(
+          source,
+          bound$position,
+          bound$oldName,
+          bound$interpolationCoordinate$position,
+          bound$interpolationCoordinate$name,
+          bound$replacement$maxGap
+        )
       } else {
         frame_contract$fill_missing_column_at(
           source,
@@ -1798,7 +1871,7 @@ openwrangler_r_kernel_agent <- local({
           result,
           nullability_source = capture,
           source_positions = seq_along(capture$descriptor$schema),
-          fill_missing_positions = if (fallback_fill || directional_fill || grouped_fill) NULL else bound$position,
+          fill_missing_positions = if (fallback_fill || directional_fill || grouped_fill || interpolation_fill) NULL else bound$position,
           fallback_fill_positions = if (fallback_fill) bound$position else NULL
         ),
         bound = bound
@@ -2377,7 +2450,7 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_fill_replacement <- function(replacement) {
-    if (replacement$kind %in% c("fallbackColumns", "directional", "groupedStatistic")) {
+    if (replacement$kind %in% c("fallbackColumns", "directional", "groupedStatistic", "linearInterpolation")) {
       abort("runtime_error", "Generated R code received a non-scalar replacement through the scalar fill path")
     }
     if (replacement$kind %in% c("mean", "median", "mostFrequent")) {
@@ -2411,6 +2484,43 @@ openwrangler_r_kernel_agent <- local({
       "      .ow_donor_position <- .ow_rows[[.ow_donor]]",
       "      if (is.na(.ow_result_values[.ow_donor_position])) next",
       "      .ow_result_values[.ow_rows[.ow_start:.ow_end]] <- .ow_result_values[.ow_donor_position]",
+      "    }",
+      "    .ow_result_values",
+      "  }",
+      "  .ow_fill_linear <- function(.ow_values, .ow_coordinate, .ow_max_gap = NULL) {",
+      "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
+      "    .ow_coordinate_values <- as.double(.ow_coordinate)",
+      "    if (anyNA(.ow_coordinate_values) || any(!is.finite(.ow_coordinate_values))) stop(\"Every interpolation coordinate must be present and finite\", call. = FALSE)",
+      "    if (anyDuplicated(.ow_coordinate_values)) stop(\"Interpolation coordinates must be unique\", call. = FALSE)",
+      "    .ow_rows <- order(.ow_coordinate_values, method = \"radix\")",
+      "    .ow_result_values <- .ow_values",
+      "    .ow_ordered_values <- .ow_result_values[.ow_rows]",
+      "    .ow_missing <- is.na(.ow_ordered_values)",
+      "    if (length(.ow_missing) == 0L || !any(.ow_missing)) return(.ow_result_values)",
+      "    .ow_runs <- rle(.ow_missing)",
+      "    .ow_run_ends <- cumsum(.ow_runs$lengths)",
+      "    .ow_run_starts <- .ow_run_ends - .ow_runs$lengths + 1L",
+      "    for (.ow_run_index in which(.ow_runs$values)) {",
+      "      .ow_run_length <- .ow_runs$lengths[[.ow_run_index]]",
+      "      if (!is.null(.ow_max_gap) && .ow_run_length > .ow_max_gap) next",
+      "      .ow_start <- .ow_run_starts[[.ow_run_index]]; .ow_end <- .ow_run_ends[[.ow_run_index]]",
+      "      .ow_left <- .ow_start - 1L; .ow_right <- .ow_end + 1L",
+      "      if (.ow_left < 1L || .ow_right > length(.ow_rows)) next",
+      "      .ow_left_value <- .ow_ordered_values[[.ow_left]]; .ow_right_value <- .ow_ordered_values[[.ow_right]]",
+      "      if (!is.finite(.ow_left_value) || !is.finite(.ow_right_value)) next",
+      "      .ow_left_coordinate <- .ow_coordinate_values[[.ow_rows[[.ow_left]]]]; .ow_right_coordinate <- .ow_coordinate_values[[.ow_rows[[.ow_right]]]]",
+      "      .ow_coordinate_width <- .ow_right_coordinate - .ow_left_coordinate",
+      "      .ow_scaled <- !is.finite(.ow_coordinate_width)",
+      "      if (.ow_scaled) { .ow_coordinate_scale <- max(abs(.ow_left_coordinate), abs(.ow_right_coordinate)); .ow_scaled_left <- .ow_left_coordinate / .ow_coordinate_scale; .ow_coordinate_width <- .ow_right_coordinate / .ow_coordinate_scale - .ow_scaled_left }",
+      "      if (!is.finite(.ow_coordinate_width) || .ow_coordinate_width <= 0) stop(\"Interpolation coordinates cannot be represented safely\", call. = FALSE)",
+      "      for (.ow_index in .ow_start:.ow_end) {",
+      "        .ow_coordinate_value <- .ow_coordinate_values[[.ow_rows[[.ow_index]]]]",
+      "        .ow_weight <- if (.ow_scaled) (.ow_coordinate_value / .ow_coordinate_scale - .ow_scaled_left) / .ow_coordinate_width else (.ow_coordinate_value - .ow_left_coordinate) / .ow_coordinate_width",
+      "        if (!is.finite(.ow_weight) || .ow_weight <= 0 || .ow_weight >= 1) stop(\"Interpolation coordinates cannot be represented safely\", call. = FALSE)",
+      "        .ow_interpolated <- if (sign(.ow_left_value) == sign(.ow_right_value)) .ow_left_value + (.ow_right_value - .ow_left_value) * .ow_weight else .ow_left_value * (1 - .ow_weight) + .ow_right_value * .ow_weight",
+      "        if (!is.finite(.ow_interpolated)) stop(\"Linear interpolation produced a non-finite value\", call. = FALSE)",
+      "        .ow_result_values[[.ow_rows[[.ow_index]]]] <- .ow_interpolated",
+      "      }",
       "    }",
       "    .ow_result_values",
       "  }",
@@ -3078,6 +3188,7 @@ openwrangler_r_kernel_agent <- local({
         fallback_fill <- identical(step$replacement$kind, "fallbackColumns")
         directional_fill <- identical(step$replacement$kind, "directional")
         grouped_fill <- identical(step$replacement$kind, "groupedStatistic")
+        interpolation_fill <- identical(step$replacement$kind, "linearInterpolation")
         lines <- c(
           lines,
           sprintf("  .ow_fill_position <- %dL", step$position),
@@ -3087,7 +3198,19 @@ openwrangler_r_kernel_agent <- local({
           row_type_guard(".ow_fill_source", list(semanticsKind = step$semanticKind)),
           "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_fill_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Fill Missing Values cannot replace a data.table key column\", call. = FALSE)"
         )
-        if (fallback_fill) {
+        if (interpolation_fill) {
+          coordinate <- step$interpolationCoordinate
+          lines <- c(
+            lines,
+            sprintf("  if (ncol(.ow_result) < %dL || !identical(names(.ow_result)[[%dL]], %s)) stop(\"Open Wrangler interpolation coordinate is stale\", call. = FALSE)", coordinate$position, coordinate$position, r_string(coordinate$name)),
+            sprintf("  .ow_fill_coordinate <- .ow_result[[%dL]]", coordinate$position),
+            row_type_guard(".ow_fill_coordinate", coordinate),
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_linear(.ow_fill_source, .ow_fill_coordinate, %s)",
+              if (is.null(step$replacement$maxGap)) "NULL" else sprintf("%dL", step$replacement$maxGap)
+            )
+          )
+        } else if (fallback_fill) {
           fallback_variables <- character(length(step$fallbackColumns))
           for (fallback_index in seq_along(step$fallbackColumns)) {
             fallback <- step$fallbackColumns[[fallback_index]]
@@ -3440,6 +3563,7 @@ openwrangler_r_kernel_agent <- local({
       "fill_missing_column_at",
       "fill_missing_from_fallback_columns_at",
       "fill_missing_directional_at",
+      "fill_missing_linear_interpolation_at",
       "fill_missing_grouped_statistic_at",
       "cast_column_at",
       "drop_columns_at",

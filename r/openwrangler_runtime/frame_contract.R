@@ -3374,6 +3374,138 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
+  fill_missing_linear_interpolation_at <- function(
+    value,
+    position,
+    old_name,
+    coordinate_position,
+    coordinate_name,
+    max_gap = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    coordinate_position <- whole_number(coordinate_position, "coordinate column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the fill-missing column position no longer matches the R dataframe")
+    }
+    if (coordinate_position < 1L || coordinate_position > column_count) {
+      abort("stale-column", "the interpolation coordinate position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    coordinate_position <- as.integer(coordinate_position)
+    if (identical(position, coordinate_position)) {
+      abort("invalid-view-query", "the fill target cannot also be the interpolation coordinate")
+    }
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    coordinate_name <- bounded_utf8(coordinate_name, "coordinate_name", maximum_name_bytes)
+    target_descriptor <- inspected$descriptor$schema[[position]]
+    coordinate_descriptor <- inspected$descriptor$schema[[coordinate_position]]
+    if (!identical(target_descriptor$name, old_name)) {
+      abort("stale-column", "the fill-missing column name no longer matches the R dataframe")
+    }
+    if (!identical(coordinate_descriptor$name, coordinate_name)) {
+      abort("stale-column", "the interpolation coordinate name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name) || is_private_column_name(coordinate_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
+    }
+    if (!identical(target_descriptor$semantics$kind, "double")) {
+      abort("invalid-view-query", "linear interpolation requires a floating-point R target column")
+    }
+    coordinate_kind <- coordinate_descriptor$semantics$kind
+    if (!coordinate_kind %in% c("integer", "double", "date", "datetime")) {
+      abort("invalid-view-query", "linear interpolation requires a numeric, Date, or POSIXct coordinate column")
+    }
+    if (!is.null(max_gap)) {
+      max_gap <- whole_number(max_gap, "max_gap", maximum_fill_directional_gap)
+      if (max_gap < 1L) abort("invalid-range", "max_gap must be positive")
+      max_gap <- as.integer(max_gap)
+    }
+
+    coordinate_values <- as.double(value[[coordinate_position]])
+    if (anyNA(coordinate_values) || any(!is.finite(coordinate_values))) {
+      abort("invalid-view-value", "every interpolation coordinate must be present and finite")
+    }
+    if (anyDuplicated(coordinate_values)) {
+      abort("invalid-view-value", "interpolation coordinates must be unique")
+    }
+    row_positions <- order(coordinate_values, method = "radix")
+    result_values <- value[[position]]
+    ordered_values <- result_values[row_positions]
+    ordered_missing <- is.na(ordered_values)
+    if (length(ordered_missing) > 0L && any(ordered_missing)) {
+      runs <- rle(ordered_missing)
+      run_ends <- cumsum(runs$lengths)
+      run_starts <- run_ends - runs$lengths + 1L
+      for (run_index in which(runs$values)) {
+        run_length <- runs$lengths[[run_index]]
+        if (!is.null(max_gap) && run_length > max_gap) next
+        start <- run_starts[[run_index]]
+        end <- run_ends[[run_index]]
+        left <- start - 1L
+        right <- end + 1L
+        if (left < 1L || right > length(row_positions)) next
+        left_value <- ordered_values[[left]]
+        right_value <- ordered_values[[right]]
+        if (!is.finite(left_value) || !is.finite(right_value)) next
+
+        left_coordinate <- coordinate_values[[row_positions[[left]]]]
+        right_coordinate <- coordinate_values[[row_positions[[right]]]]
+        coordinate_width <- right_coordinate - left_coordinate
+        scaled <- !is.finite(coordinate_width)
+        if (scaled) {
+          coordinate_scale <- max(abs(left_coordinate), abs(right_coordinate))
+          scaled_left <- left_coordinate / coordinate_scale
+          scaled_right <- right_coordinate / coordinate_scale
+          coordinate_width <- scaled_right - scaled_left
+        }
+        if (!is.finite(coordinate_width) || coordinate_width <= 0) {
+          abort("invalid-view-value", "interpolation coordinates cannot be represented safely")
+        }
+        for (ordered_index in start:end) {
+          coordinate <- coordinate_values[[row_positions[[ordered_index]]]]
+          weight <- if (scaled) {
+            (coordinate / coordinate_scale - scaled_left) / coordinate_width
+          } else {
+            (coordinate - left_coordinate) / coordinate_width
+          }
+          if (!is.finite(weight) || weight <= 0 || weight >= 1) {
+            abort("invalid-view-value", "interpolation coordinates cannot be represented safely")
+          }
+          interpolated <- if (sign(left_value) == sign(right_value)) {
+            left_value + (right_value - left_value) * weight
+          } else {
+            left_value * (1 - weight) + right_value * weight
+          }
+          if (!is.finite(interpolated)) {
+            abort("invalid-view-value", "linear interpolation produced a non-finite value")
+          }
+          result_values[[row_positions[[ordered_index]]]] <- interpolated
+        }
+      }
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = result_values)
+    } else {
+      result[[position]] <- result_values
+    }
+    result
+  }
+
   fill_missing_grouped_statistic_at <- function(
     value,
     position,
@@ -4719,6 +4851,7 @@ openwrangler_r_frame_contract <- local({
     fill_missing_column_at = fill_missing_column_at,
     fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,
     fill_missing_directional_at = fill_missing_directional_at,
+    fill_missing_linear_interpolation_at = fill_missing_linear_interpolation_at,
     fill_missing_grouped_statistic_at = fill_missing_grouped_statistic_at,
     cast_column = cast_column,
     cast_column_at = cast_column_at,
