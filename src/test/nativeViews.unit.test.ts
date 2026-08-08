@@ -343,9 +343,40 @@ describe("native operation commands", () => {
     expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
       [
         [
-          "Show R dataframes",
+          "Show R dataframes…",
           "Reads the selected R session. Wait for the R prompt first.",
-          expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
+          expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
+        ],
+        [
+          "Open a data file",
+          "Choose CSV, Parquet, Excel, or JSONL",
+          expect.objectContaining({ command: "openWrangler.openPath" })
+        ]
+      ]
+    );
+  });
+
+  it("offers one action that starts R after the previous terminal closed", () => {
+    const variableProvider: RLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "idle",
+        terminalLabel: "R session",
+        message: "The R terminal closed. Start or select another R session.",
+        variables: []
+      }),
+      shutdown: async () => undefined,
+      dispose: () => undefined
+    };
+    const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
+    registered.setActiveSession(undefined);
+
+    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
+      [
+        [
+          "Start R and show dataframes…",
+          "The R terminal closed. Start or select another R session.",
+          expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
         ],
         [
           "Open a data file",

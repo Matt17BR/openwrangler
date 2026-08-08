@@ -14,8 +14,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Live notebook variables that open in Viewing mode now have a **Switch to Editing** button in the dataframe toolbar.
   The session keeps its filters, sorts, column widths, selection, and scroll position when the editing runtime opens.
 - Open Wrangler can now list and open dataframes from the selected terminal created by the official VS Code R
-  extension. **Show R dataframes** and **Refresh R dataframes** stay at the top of Operations so the active session is
-  easy to find without interrupting code that is still running.
+  extension. **Show R dataframes** and **Refresh R dataframes** stay at the top of Operations. If that terminal closes,
+  **Start R and show dataframes…** opens a replacement session in one step.
 - Stable release candidates now run the R 4.5.2 contract and the packaged R notebook journey in VS Code and Cursor
   before publication. Preview candidates already used this gate.
 - Preview and stable release candidates now run the packaged local R notebook journey in VS Code on macOS and
