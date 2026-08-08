@@ -1506,6 +1506,13 @@ test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
 
   const setup = job?.steps?.find((step) => step?.uses === SETUP_R_ACTION);
   assert.deepEqual(setup?.with, { "r-version": "${{ matrix.r }}", "use-public-rspm": true });
+  const install = job?.steps?.filter((step) => step?.name === "Install R contract packages");
+  assert.equal(install?.length, 1, "The focused R matrix must install its contract packages once.");
+  assert.match(
+    install?.[0]?.run ?? "",
+    /install\.packages\(c\("jsonlite", "tibble", "readr", "data\.table", "bit64", "collapse", "nanoparquet"\)/u,
+    "The focused R matrix must install every package exercised by the contract."
+  );
   assert.equal(
     job?.steps?.filter((step) => step?.run === "npm run test:r-contract").length,
     1,

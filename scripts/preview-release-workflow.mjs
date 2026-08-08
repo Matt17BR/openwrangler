@@ -55,7 +55,7 @@ printf 'executable=%s\\n' "$rscript" >> "$GITHUB_OUTPUT"
 printf 'version=%s\\n' "$r_version" >> "$GITHUB_OUTPUT"
 printf 'Hosted R: %s\\n' "$r_version"`;
 const INSTALL_R_CONTRACT_PACKAGES =
-  'Rscript --vanilla -e \'install.packages(c("jsonlite", "tibble", "data.table", "bit64", "collapse", "nanoparquet"), repos = "https://cloud.r-project.org")\'';
+  'Rscript --vanilla -e \'install.packages(c("jsonlite", "tibble", "readr", "data.table", "bit64", "collapse", "nanoparquet"), repos = "https://cloud.r-project.org")\'';
 const R_JUPYTER_RUN =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}";
 const CROSS_PLATFORM_R_JUPYTER_RUN =
