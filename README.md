@@ -297,10 +297,10 @@ Open Wrangler fetches the grid blocks you can see instead of loading the whole d
 Polars sessions use lazy scans and push filtering, sorting, and column selection into the source when the format
 supports it. Pandas and DuckDB also stay in their native engines.
 
-The published comparison covers Open Wrangler 1.2.1 and Microsoft Data Wrangler 1.24.2. Open Wrangler was faster in
-the notebook-preview and CSV-profiling runs. For Parquet, workbench-open and profiling times were close. For the
-Polars runs, Data Wrangler converted the dataframe to Pandas while Open Wrangler stayed in Polars. The benchmark did
-not time the conversion by itself, so it cannot say how much of the gap came from that difference.
+In the 1.2.1 comparison with Microsoft Data Wrangler 1.24.2, Open Wrangler was faster at notebook previews and
+profiling CSV columns. Parquet workbench and profiling times were close. Data Wrangler converted Polars input to
+Pandas for these runs; Open Wrangler kept it as Polars. We did not time the conversion separately, so the report does
+not assign the gap to one cause.
 
 The [1.2.1 report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
 includes the fixtures, median and p95 timings, memory use, versions, and method. We will replace it with a fresh run
