@@ -282,24 +282,20 @@ Open Wrangler never overwrites the pickle.
 See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md)
 for the complete surface.
 
-## Performance and scale
+## Performance
 
 Open Wrangler fetches the grid blocks you can see instead of loading the whole dataset into the webview. File-backed
 Polars sessions use lazy scans and push filtering, sorting, and column selection into the source when the format
 supports it. Pandas and DuckDB also stay in their native engines.
 
-In the latest reviewed comparison, Open Wrangler showed notebook previews 4.4–7.3× faster and profiled every column
-in the CSV fixtures about 3.4× faster than Microsoft Data Wrangler 1.24.2. The closest Parquet workbench and profiling
-results were similar. Data Wrangler handled the Polars cases through Pandas, while Open Wrangler ran them in Polars;
-that native path avoids conversion and lets Polars do more of the work, although the study did not time conversion
-separately.
+The published comparison covers Open Wrangler 1.2.1 and Microsoft Data Wrangler 1.24.2. Open Wrangler was faster in
+the notebook-preview and CSV-profiling runs; the closest Parquet workbench and profiling results were similar. For the
+Polars runs, Data Wrangler converted the dataframe to Pandas while Open Wrangler used Polars directly. That explains
+part of the difference, although the conversion itself was not timed separately.
 
-The [dated report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
-has the fixtures, median and p95 timings, memory measurements, exact versions, and test method. Results vary with the
-engine, file shape, storage, and machine. Separate
-[installed-editor checks](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md#performance-fixtures)
-cover first-grid and scrolling performance in VS Code and Cursor. The Data Wrangler comparison will be rerun with the
-stable 2.0 candidate.
+The [1.2.1 report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
+includes the fixtures, median and p95 timings, memory use, versions, and method. We will replace it with a fresh run
+before the stable 2.0 release.
 
 ## Roadmap
 
