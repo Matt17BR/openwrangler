@@ -34,6 +34,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Editing the latest R Group and aggregate step now keeps filters and sorts on its aggregation results. Applying the
+  replacement and then undoing it also clears view rules that no longer exist in the restored source schema.
 - Preview and stable release jobs now create the exact local release tag before registry checks. Previously the tag
   was pushed to GitHub but remained absent from the runner, which stopped Open VSX publication after the GitHub
   release had already succeeded.

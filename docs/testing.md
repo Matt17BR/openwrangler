@@ -586,11 +586,14 @@ unchanged inputs, cleared result keys, and key restoration after undo.
 The R tests cover exact integer64 cancellation, odd-count medians, and same-sign boundary pairs for live and generated
 mean and median. Sum tests retain ordinary integer and integer64 output and reject overflow before publication because
 base R and `bit64` have no exact 38-digit integer type. The bridge tests also cover explicit row names becoming
-positional after grouping and returning after discard or undo, plus latest-step replacement while the active view
-targets an aggregation output. The kernel-agent suite exports a committed grouped result through native R Parquet.
-The packaged Group and aggregate journey selects a key, sums a numeric column, checks the two exact grouped totals
-and generated R, applies the draft, and undoes it back to the source schema. Round, Floor, and Ceiling use their
-visible forms and check derived values from positive and negative fractional inputs.
+positional after grouping and returning after discard or undo. Filter-only and sort-only views containing an
+aggregation result plus a group key survive latest-step replacement and apply. Undo retains the group-key rule and
+drops the aggregation-output rule by stable ID, even when its alias matches a source column name and type. The
+kernel-agent test checks that replacement-diff truncation does not materialize the pre-group frame and exports a
+committed grouped result through native R Parquet. The packaged Group and aggregate journey selects a key, sums a
+numeric column, checks the two exact grouped totals and generated R, applies the draft, and undoes it back to the
+source schema. Round, Floor, and Ceiling use their visible forms and check derived values from positive and negative
+fractional inputs.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact

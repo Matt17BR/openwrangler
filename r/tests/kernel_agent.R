@@ -90,9 +90,11 @@ source_before <- unserialize(serialize(source_environment$frame, NULL, version =
 
 isolated_capture_count <- 0L
 full_capture_count <- 0L
+group_by_source_materializations <- 0L
 instrumented_frame_contract <- openwrangler_r_frame_contract
 real_capture_frame <- instrumented_frame_contract$capture_frame
 real_isolate_capture <- instrumented_frame_contract$isolate_capture
+real_materialize_view_page <- instrumented_frame_contract$materialize_view_page
 instrumented_frame_contract$capture_frame <- function(value, ...) {
   full_capture_count <<- full_capture_count + 1L
   real_capture_frame(value, ...)
@@ -100,6 +102,13 @@ instrumented_frame_contract$capture_frame <- function(value, ...) {
 instrumented_frame_contract$isolate_capture <- function(capture) {
   isolated_capture_count <<- isolated_capture_count + 1L
   real_isolate_capture(capture)
+}
+instrumented_frame_contract$materialize_view_page <- function(capture, ...) {
+  schema_names <- vapply(capture$descriptor$schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+  if (identical(schema_names, c("group", "number", "label", "ordered_label", "when", "flag"))) {
+    group_by_source_materializations <<- group_by_source_materializations + 1L
+  }
+  real_materialize_view_page(capture, ...)
 }
 agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, source_environment)
 
@@ -6505,44 +6514,119 @@ assert_identical(
 )
 rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
 
-group_output_view <- page_window(
-  sorts = list(list(
-    column = list(id = "c:step:group-by-step:1", name = "number_mean"),
-    direction = "desc",
-    nulls = "last"
-  )),
+group_by_filter_view <- page_window(
   filters = list(list(
     column = list(id = "c:step:group-by-step:1", name = "number_mean"),
     type = "float",
-    predicates = I(list(list(kind = "predicate", operator = "gt", value = 2L)))
+    predicates = I(list(list(kind = "predicate", operator = "gt", value = 3L)))
   ))
 )
-group_by_edit_preview <- dispatch(
+group_by_filtered_step <- unserialize(serialize(group_by_step, NULL, version = 3L))
+group_by_filtered_step$params$aggregations[[2L]]$operation <- "max"
+source_materializations_before_edit <- group_by_source_materializations
+group_by_filter_edit_preview <- dispatch(
   "previewStep",
   list(
     sessionId = group_by_session_id,
     revision = group_by_apply$revision,
-    step = group_by_step,
+    step = group_by_filtered_step,
     replaceStepId = "group-by-step",
-    page = group_output_view
+    page = group_by_filter_view
   )
 )
 assert_identical(
-  group_by_edit_preview$kind,
+  group_by_filter_edit_preview$kind,
   "stepPreview",
-  "editing R Group By applied an output-only view to its source input"
+  "editing R Group By applied an aggregation-output filter to its source input"
 )
-assert_identical(group_by_edit_preview$page$page$totalRows, 1L, "the edited R Group By lost its retained output view")
-assert_identical(group_by_edit_preview$diff$truncated, TRUE, "a filtered R Group By replacement diff was complete")
+assert_identical(
+  group_by_source_materializations,
+  source_materializations_before_edit,
+  "editing R Group By materialized the source just to determine diff truncation"
+)
+assert_identical(
+  group_by_filter_edit_preview$page$page$totalRows,
+  1L,
+  "the edited R Group By lost its aggregation-output filter"
+)
+assert_identical(
+  group_by_filter_edit_preview$diff$truncated,
+  TRUE,
+  "a filtered R Group By replacement diff was complete"
+)
+assign("group_by_frame", source_environment$group_by_frame, envir = .GlobalEnv)
+eval(parse(text = group_by_filter_edit_preview$code), envir = .GlobalEnv)
+group_by_filtered_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  group_by_filtered_generated$number_mean,
+  c(3L, 4L, NA_integer_),
+  "generated R Group By did not match the filtered live replacement"
+)
+rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
+group_by_filter_edit_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_filter_edit_preview$revision,
+    page = group_by_filter_view
+  )
+)
+assert_identical(group_by_filter_edit_apply$action, "apply", "the filtered R Group By replacement did not apply")
+
+group_by_sort_view <- page_window(
+  sorts = list(list(
+    column = list(id = "c:step:group-by-step:1", name = "number_mean"),
+    direction = "desc",
+    nulls = "last"
+  ))
+)
+group_by_sorted_step <- unserialize(serialize(group_by_filtered_step, NULL, version = 3L))
+group_by_sorted_step$params$aggregations[[2L]]$operation <- "min"
+source_materializations_before_edit <- group_by_source_materializations
+group_by_sort_edit_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_filter_edit_apply$revision,
+    step = group_by_sorted_step,
+    replaceStepId = "group-by-step",
+    page = group_by_sort_view
+  )
+)
+assert_identical(group_by_sort_edit_preview$kind, "stepPreview", "editing R Group By lost its output sort")
+assert_identical(
+  group_by_source_materializations,
+  source_materializations_before_edit,
+  "sorting an edited R Group By materialized its source for the replacement diff"
+)
+assert_identical(group_by_sort_edit_preview$diff$truncated, FALSE, "a complete sorted replacement diff was truncated")
+assert_identical(
+  vapply(
+    group_by_sort_edit_preview$page$page$rows[1:2],
+    function(row) as.double(row$values[[1L]]$raw),
+    double(1L)
+  ),
+  c(1, 2),
+  "the edited R Group By did not sort its aggregation output"
+)
+assign("group_by_frame", source_environment$group_by_frame, envir = .GlobalEnv)
+eval(parse(text = group_by_sort_edit_preview$code), envir = .GlobalEnv)
+group_by_sorted_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  group_by_sorted_generated$number_mean,
+  c(1L, 2L, NA_integer_),
+  "generated R Group By did not match the sorted live replacement"
+)
+rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
 group_by_edit_apply <- dispatch(
   "applyDraft",
   list(
     sessionId = group_by_session_id,
-    revision = group_by_edit_preview$revision,
-    page = group_output_view
+    revision = group_by_sort_edit_preview$revision,
+    page = group_by_sort_view
   )
 )
-assert_identical(group_by_edit_apply$action, "apply", "the edited R Group By draft did not apply")
+assert_identical(group_by_edit_apply$action, "apply", "the sorted R Group By replacement did not apply")
 
 group_by_parquet_ready <- dispatch(
   "exportData",
@@ -6584,7 +6668,7 @@ assert_identical(
   c("group", vapply(group_by_aggregations, `[[`, character(1L), "alias")),
   "grouped Parquet export changed aliases"
 )
-assert_identical(group_by_parquet_frame$number_mean, c(2, 3, NA_real_), "grouped Parquet export changed means")
+assert_identical(group_by_parquet_frame$number_mean, c(1L, 2L, NA_integer_), "grouped Parquet export changed minima")
 assert_identical(source_environment$group_by_frame, group_by_source_before, "grouped Parquet export mutated its source")
 invisible(dispatch(
   "closeDataExport",

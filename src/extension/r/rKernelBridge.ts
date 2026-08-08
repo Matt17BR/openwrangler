@@ -955,12 +955,18 @@ export class RKernelBridge implements OpenWranglerBridge {
       targetRowNames = rowNamesAfterPlan(confirmed.sourceRowNames, confirmed.steps.slice(0, -1));
       const latest = confirmed.steps.at(-1) as RetainedTransformStep;
       const restore = confirmed.lastAppliedViewRestore;
-      nextFilterModel =
+      if (
         restore?.stepId === latest.id &&
         restore.viewChangeEpoch === confirmed.viewChangeEpoch &&
         isDeepStrictEqual(restore.after, confirmed.filterModel)
-          ? copyFilterModel(restore.before)
-          : reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
+      ) {
+        const restored = copyFilterModel(restore.before);
+        nextFilterModel = filterModelTargetsSchema(restored, targetSchema)
+          ? restored
+          : reconcileFilterModelById(restored, confirmed.schema, targetSchema);
+      } else {
+        nextFilterModel = reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
+      }
     }
 
     let view: RKernelViewQuery;
@@ -2982,6 +2988,15 @@ function reconcileFilterModelById(
     filters,
     sort
   };
+}
+
+function filterModelTargetsSchema(model: FilterModel, schema: readonly ColumnSchema[]): boolean {
+  try {
+    resolveViewQuery(model, schema);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, ColumnSchema> {

@@ -2074,125 +2074,184 @@ describe("canonical R kernel bridge", () => {
     });
   });
 
-  it("retains an aggregation-output view while editing the latest R Group By", async () => {
-    const source = frameContract({ totalRows: 2 });
-    const step: GroupByTransformStep = {
-      id: "r-group-retained-view",
-      kind: "groupBy",
-      params: {
-        keys: [{ id: "r:c:5", name: "flag" }],
-        aggregations: [
-          { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
-          { column: { id: "r:c:0", name: "value" }, operation: "mean", alias: "average_value" },
-          { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
-        ]
-      }
-    };
-    const grouped = groupContract(source, step, 2);
-    const filteredGrouped = {
-      ...grouped,
-      page: { ...grouped.page, totalRows: 1, rows: grouped.page.rows.slice(0, 1) }
-    } satisfies RFramePageContract;
-    const transport = fakeTransport(source);
-    const bridge = createBridge(transport);
-    await bridge.request(openRequest("editing"));
-
-    transport.queuePreview({
-      sessionId,
-      revision: 1,
-      page: grouped,
-      diff: groupDiff(source, grouped, step),
-      code: "open_wrangler_result <- grouped_orders"
-    });
-    await bridge.request({
-      kind: "previewStep",
-      sessionId,
-      revision: 0,
-      step,
-      offset: 0,
-      limit: 20,
-      columnOffset: 0,
-      columnLimit: 8
-    });
-    transport.applyDraft.mockResolvedValueOnce({
-      sessionId,
-      action: "apply",
-      revision: 2,
-      page: grouped,
-      code: "open_wrangler_result <- grouped_orders"
-    });
-    await bridge.request(planRequest("applyDraft", 1));
-
-    transport.getPage.mockResolvedValueOnce(filteredGrouped);
-    const filterModel = {
-      filters: [
-        {
-          column: "average_value",
-          type: "float" as const,
-          predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 2 }]
+  it.each(["filter", "sort"] as const)(
+    "retains an aggregation-output %s while replacing and undoing the latest R Group By",
+    async (viewKind) => {
+      const source = frameContract({ totalRows: 2 });
+      const step: GroupByTransformStep = {
+        id: "r-group-retained-view",
+        kind: "groupBy",
+        params: {
+          keys: [{ id: "r:c:5", name: "flag" }],
+          aggregations: [
+            { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
+            { column: { id: "r:c:0", name: "value" }, operation: "mean", alias: "average_value" },
+            { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
+          ]
         }
-      ],
-      sort: [{ column: "average_value", direction: "desc" as const, nulls: "last" as const }]
-    };
-    await bridge.request({
-      kind: "getPage",
-      sessionId,
-      revision: 2,
-      viewRequestId: "group-output-view",
-      offset: 0,
-      limit: 20,
-      columnOffset: 0,
-      columnLimit: 8,
-      filterModel
-    });
+      };
+      const replacement: GroupByTransformStep = {
+        id: step.id,
+        kind: "groupBy",
+        params: {
+          keys: [{ id: "r:c:5", name: "flag" }],
+          aggregations: [
+            { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
+            { column: { id: "r:c:0", name: "value" }, operation: "max", alias: "average_value" },
+            { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
+          ]
+        }
+      };
+      const grouped = groupContract(source, step, 2);
+      const viewedGrouped =
+        viewKind === "filter"
+          ? ({
+              ...grouped,
+              page: { ...grouped.page, totalRows: 1, rows: grouped.page.rows.slice(0, 1) }
+            } satisfies RFramePageContract)
+          : grouped;
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
 
-    transport.queuePreview({
-      sessionId,
-      revision: 3,
-      page: filteredGrouped,
-      diff: { ...groupDiff(source, grouped, step), truncated: true },
-      code: "open_wrangler_result <- grouped_orders"
-    });
-    await expect(
-      bridge.request({
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: grouped,
+        diff: groupDiff(source, grouped, step),
+        code: "open_wrangler_result <- grouped_orders"
+      });
+      await bridge.request({
         kind: "previewStep",
         sessionId,
-        revision: 2,
-        replaceStepId: step.id,
+        revision: 0,
         step,
         offset: 0,
         limit: 20,
         columnOffset: 0,
         columnLimit: 8
-      })
-    ).resolves.toMatchObject({
-      kind: "stepPreview",
-      metadata: { filterModel },
-      page: { totalRows: 1 }
-    });
-    expect(transport.previewStep).toHaveBeenLastCalledWith(
-      sessionId,
-      2,
-      expect.objectContaining({ id: step.id, kind: "groupBy" }),
-      expect.objectContaining({
-        view: {
-          filters: [
-            expect.objectContaining({
-              column: { id: `c:step:${step.id}:1`, name: "average_value" }
-            })
-          ],
-          sorts: [
-            expect.objectContaining({
-              column: { id: `c:step:${step.id}:1`, name: "average_value" }
-            })
+      });
+      transport.applyDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "apply",
+        revision: 2,
+        page: grouped,
+        code: "open_wrangler_result <- grouped_orders"
+      });
+      await bridge.request(planRequest("applyDraft", 1));
+
+      transport.getPage.mockResolvedValueOnce(viewedGrouped);
+      const filterModel =
+        viewKind === "filter"
+          ? {
+              filters: [
+                {
+                  column: "average_value",
+                  type: "float" as const,
+                  predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 2 }]
+                }
+              ],
+              sort: []
+            }
+          : {
+              filters: [],
+              sort: [{ column: "average_value", direction: "desc" as const, nulls: "last" as const }]
+            };
+      await bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 2,
+        viewRequestId: "group-output-view",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel
+      });
+
+      transport.queuePreview({
+        sessionId,
+        revision: 3,
+        page: viewedGrouped,
+        diff: { ...groupDiff(source, grouped, replacement), truncated: viewKind === "filter" },
+        code: "open_wrangler_result <- grouped_orders_with_max"
+      });
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 2,
+          replaceStepId: step.id,
+          step: replacement,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({
+        kind: "stepPreview",
+        metadata: { filterModel },
+        page: { totalRows: viewKind === "filter" ? 1 : 2 }
+      });
+      expect(transport.previewStep).toHaveBeenLastCalledWith(
+        sessionId,
+        2,
+        expect.objectContaining({ id: step.id, kind: "groupBy" }),
+        expect.objectContaining({
+          view: {
+            filters:
+              viewKind === "filter"
+                ? [expect.objectContaining({ column: { id: `c:step:${step.id}:1`, name: "average_value" } })]
+                : [],
+            sorts:
+              viewKind === "sort"
+                ? [expect.objectContaining({ column: { id: `c:step:${step.id}:1`, name: "average_value" } })]
+                : []
+          }
+        }),
+        expect.any(Array),
+        step.id,
+        expect.any(Object)
+      );
+
+      transport.applyDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "apply",
+        revision: 4,
+        page: viewedGrouped,
+        code: "open_wrangler_result <- grouped_orders_with_max"
+      });
+      await expect(bridge.request(planRequest("applyDraft", 3))).resolves.toMatchObject({
+        kind: "planUpdated",
+        action: "apply",
+        metadata: {
+          filterModel,
+          steps: [
+            {
+              id: step.id,
+              kind: "groupBy",
+              params: {
+                aggregations: expect.arrayContaining([expect.objectContaining({ operation: "max" })])
+              }
+            }
           ]
         }
-      }),
-      expect.any(Array),
-      step.id,
-      expect.any(Object)
-    );
-  });
+      });
+
+      transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 5, page: source, code: "" });
+      await expect(bridge.request(planRequest("undoStep", 4))).resolves.toMatchObject({
+        kind: "planUpdated",
+        action: "undo",
+        metadata: { filterModel: { filters: [], sort: [] }, steps: [] }
+      });
+      expect(transport.undoStep).toHaveBeenLastCalledWith(
+        sessionId,
+        4,
+        expect.objectContaining({ view: { filters: [], sorts: [] } }),
+        expect.any(Object)
+      );
+    }
+  );
 
   it("publishes one native R rename draft, applied plan, inspection, and undo atomically", async () => {
     const source = frameContract();
