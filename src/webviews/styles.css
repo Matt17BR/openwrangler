@@ -2082,6 +2082,18 @@ dd {
   }
 }
 
+@media (max-width: 860px) {
+  .toolbarWithSessionModeAction {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .toolbarWithSessionModeAction .toolbarActions {
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 620px) {
   .toolbar {
     align-items: stretch;

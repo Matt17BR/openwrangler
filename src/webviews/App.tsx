@@ -2346,7 +2346,11 @@ export function App() {
         inert={operationOpen || sessionModeChangePending}
         aria-hidden={operationOpen ? true : undefined}
       >
-        <header className="toolbar">
+        <header
+          className={
+            metadata && canSwitchNotebookSessionToEditing(metadata) ? "toolbar toolbarWithSessionModeAction" : "toolbar"
+          }
+        >
           <div className="toolbarIdentity">
             <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
             <span aria-label={visibleShapeLabel} title={visibleShapeTitle}>
