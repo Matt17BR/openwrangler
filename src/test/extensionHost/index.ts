@@ -7575,8 +7575,8 @@ async function applyReleasedRQuickSort(
   assert.ok(sessionId, "The R quick sort requires one active session.");
   const columnId = testing.activeSession()?.metadata.schema.find((candidate) => candidate.name === column)?.id;
   assert.ok(columnId, `The R quick sort requires the ${column} column.`);
-  let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-  let currentApp = await exactSessionApp(target.frame, sessionId);
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const currentApp = await exactSessionApp(target.frame, sessionId);
   assert.ok(currentApp, `The R ${column} quick sort requires its exact renderer.`);
   const columnSearch = currentApp.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill(column);
