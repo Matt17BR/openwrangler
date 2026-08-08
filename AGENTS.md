@@ -24,6 +24,13 @@ Track only the extension, runtime, product assets and documentation, and ordinar
 and release tooling. Keep agent housekeeping outside the repository. Remove temporary development checkouts when
 their branches are integrated or abandoned.
 
+## Commit history
+
+Keep independently reviewable changes as separate commits. A release branch may collect several already-reviewed
+commits, but it must not squash unrelated product, test, media, documentation, and release work into one large commit.
+Use a merge strategy that preserves those commits when a pull request contains more than one coherent slice. The
+final release commit is limited to the version, changelog, release notes, and other release metadata.
+
 ## Non-negotiable invariants
 
 1. Pandas, Polars, DuckDB, and PySpark paths remain engine-native. Polars code must never call `to_pandas()`; DuckDB code must never convert through Pandas, Polars, or Arrow. PySpark is a live-notebook, viewing-only backend: it must never call `toPandas()`, `toArrow()`, convert through a local dataframe engine, or perform an unbounded `collect()`/iterator. Projection, filtering, sorting, counting, and aggregation stay in Spark. Container profiles use canonical orderable native keys. A page must pass its Spark-side transport-byte preflight before value collection and then remain within its cell, strict-protocol-byte, complex-node, and nesting-depth limits; only that bounded page/value sample or a fixed-size aggregate result may cross into the kernel process.

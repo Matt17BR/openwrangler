@@ -26,11 +26,15 @@ editorial read; do not rely on an AI detector or a word list.
 - Target `main` for 1.x work and `v2` for native R work. Both branches require pull requests and the same protected
   checks. Publication stays on `main` until the first Open Wrangler 2 preview is ready.
 - Keep a pull request limited to one documented milestone or issue.
+- Keep independently reviewable changes in separate commits. Do not squash a pull request that contains more than
+  one coherent product, test, media, or documentation slice; preserve those commits when merging.
 - Add or update tests with every behavior change.
 - Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable generated-code coverage for every editing-capable engine.
 - Update the documentation listed in the `AGENTS.md` matrix.
 - Review user-facing text and pull request summaries against `docs/writing-style.md`.
 - Add and review `docs/release-notes/<version>.md` in every release pull request; the publisher does not generate it.
+- Keep the final release commit limited to version and release metadata. Feature work must already exist in its own
+  reviewed commits.
 - Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
 - Push independently green branch commits before opening a pull request when early review is not needed. A draft pull request runs bounded feedback and remains non-mergeable until marking it ready reruns the required evidence at the same commit.

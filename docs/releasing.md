@@ -147,6 +147,11 @@ extension-host, platform, and security checks. The slower native editor, Jupyter
 installed-performance checks run against the exact release candidate before publication. Pushes to `main` repeat
 fast feedback only; publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
 
+Do not turn a release pull request into one oversized squash commit. Keep each independently reviewable product,
+runtime, test, media, and documentation slice in its own commit. If a pull request contains several such commits,
+merge it without squashing so the boundaries remain visible on `main`. The final release commit changes only the
+version, changelog, release notes, and required release metadata.
+
 For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR artifact and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. A failed candidate is recorded and is not automatically retried.
 
 `npm run docs:check` semantically parses `.github/workflows/release.yml`. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Cross-platform native smoke, complete Linux acceptance, installed performance, released and remote Jupyter, and Remote SSH consume only that artifact ID in parallel. Linux is the sole owner of the complete source/full-suite commands; specialized lanes retain their distinct real-editor evidence without repeating the full Python or TypeScript corpus. An `always()` fan-in requires every result to equal `success`. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate. The inspector enforces these behavior invariants rather than mirroring every YAML line or a workflow-file hash.
