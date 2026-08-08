@@ -89,12 +89,12 @@ describe("FilterPanel", () => {
     );
 
     expect(screen.getByRole("textbox", { name: "Search values for city" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Search values/iu })).toBeDisabled();
     expect(screen.getByText("Value lists are unavailable. Use a predicate instead.")).toBeVisible();
     expect(screen.getByText("Sorting is unavailable for this dataframe.")).toBeVisible();
     expect(screen.queryByRole("combobox", { name: "Sort column" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
     expect(onRequestValues).not.toHaveBeenCalled();
   });
 
@@ -136,7 +136,7 @@ describe("FilterPanel", () => {
     fireEvent.change(screen.getByPlaceholderText("Search values"), { target: { value: "mil" } });
     fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
     expect(onRequestValues).toHaveBeenCalledWith("city", "mil");
-    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
     expect(screen.getByText(/More values available/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("checkbox", { name: /Berlin/ }));
@@ -853,7 +853,7 @@ describe("FilterPanel", () => {
       expect(select).toBeEnabled();
     }
     expect(screen.getByPlaceholderText("Search values")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Search values/iu })).toBeDisabled();
     expect(screen.queryByRole("checkbox", { name: /100/u })).toBeNull();
     expect(screen.getByLabelText("Condition combination")).toBeDisabled();
     expect(screen.getByLabelText("Predicate operator")).toBeDisabled();
@@ -864,7 +864,7 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
 
     fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
-    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
     fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
     expect(onApply).not.toHaveBeenCalled();
@@ -889,7 +889,7 @@ describe("FilterPanel", () => {
     );
 
     expect(screen.getByPlaceholderText("Search values")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Search values/iu })).toBeDisabled();
     expect(screen.getByLabelText("Condition combination")).toBeDisabled();
     expect(screen.getByLabelText("Predicate operator")).toBeDisabled();
     expect(screen.queryByPlaceholderText("Value")).toBeNull();
@@ -905,7 +905,7 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("button", { name: "Add to sort" })).toBeDisabled();
 
     fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
-    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
     fireEvent.change(screen.getByLabelText("Condition combination"), { target: { value: "or" } });
     fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
@@ -933,7 +933,7 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("button", { name: "Use basic filters" })).toBeDisabled();
     expect(screen.getByLabelText("Across columns")).toBeDisabled();
     expect(screen.getByPlaceholderText("Search values")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Search values/iu })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: /Berlin/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Clear column" })).toBeDisabled();
@@ -996,7 +996,7 @@ describe("FilterPanel", () => {
     });
     expect(sortDisclosure).toHaveAttribute("open");
 
-    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
     expect(onRequestValues).toHaveBeenLastCalledWith("revenue", "");
     fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
     fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));

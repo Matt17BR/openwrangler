@@ -391,12 +391,15 @@ export function FilterPanel({
           />
           <button
             type="button"
+            className="searchValuesButton"
+            aria-label={`Search values in ${activeColumn || "selected column"}`}
             disabled={valueControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onClick={() => {
               if (activeColumn) onRequestValues(activeColumn, search);
             }}
           >
-            Values
+            <span className="codicon codicon-search" aria-hidden="true" />
+            Search
           </button>
         </div>
 

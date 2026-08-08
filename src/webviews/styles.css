@@ -54,7 +54,16 @@ button {
   padding: 4px 8px;
 }
 
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:not(:disabled):hover {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+}
+
 button:disabled {
+  cursor: default;
   opacity: 0.45;
 }
 
@@ -260,9 +269,16 @@ textarea {
 }
 
 .toolbarButton {
+  align-items: center;
   color: var(--vscode-foreground);
   background: transparent;
   border: 1px solid var(--vscode-panel-border);
+  display: inline-flex;
+  gap: 5px;
+}
+
+.toolbarButton:not(:disabled):hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
 }
 
 .toolbarPlan {
@@ -613,6 +629,16 @@ textarea {
 .filterSortPanel .row > select {
   flex: 1 1 130px;
   min-width: 0;
+}
+
+.filterSortPanel .row > input {
+  flex: 1 1 150px;
+}
+
+.searchValuesButton {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
 }
 
 .filterSection {
