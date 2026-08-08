@@ -87,6 +87,17 @@ export const PERFORMANCE_EVIDENCE_VERSION = "1.0.0";
 const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
   PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => [surface, "Partial"])
 );
+const V1_PERFORMANCE_EVIDENCE_PATH = "docs/performance/data-wrangler-1.2.1";
+
+function inspectStablePerformanceEvidence(readme, label, version) {
+  const major = /^(?<major>0|[1-9]\d*)\./u.exec(version ?? "")?.groups?.major;
+  if (major === undefined || BigInt(major) < 2n || !readme.includes(V1_PERFORMANCE_EVIDENCE_PATH)) {
+    return [];
+  }
+  return [
+    `${label} still presents the Open Wrangler 1.2.1 Data Wrangler comparison as current performance evidence for ${version}.`
+  ];
+}
 
 function parseJsonObject(contents, label, problems) {
   let value;
@@ -263,6 +274,10 @@ function inspectReleaseReadiness(
   );
   problems.push(...inspectReadme(readme, "README.md"));
   problems.push(...inspectReadme(packagedReadme, "Packaged README"));
+  if (inspectReadme === inspectStableReadme && sourceVersion !== undefined) {
+    problems.push(...inspectStablePerformanceEvidence(readme, "README.md", sourceVersion));
+    problems.push(...inspectStablePerformanceEvidence(packagedReadme, "Packaged README", sourceVersion));
+  }
 
   if (packagedManifest?.preview !== false) {
     problems.push("Packaged package.json preview must be false for a stable release.");

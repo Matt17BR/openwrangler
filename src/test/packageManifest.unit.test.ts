@@ -23,6 +23,7 @@ interface WalkthroughStep {
 
 interface PackageManifest {
   description?: string;
+  keywords?: string[];
   activationEvents?: string[];
   contributes?: {
     configuration?: {
@@ -67,8 +68,28 @@ const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"),
 describe("Marketplace and walkthrough copy", () => {
   it("states the engine, notebook, and R source boundaries directly", () => {
     expect(manifest.description).toBe(
-      "Explore and clean dataframes in VS Code and Cursor with Pandas, Polars, DuckDB, or R. " +
-        "View local PySpark DataFrames in notebooks. Run R files and supported R Markdown/Quarto cells on macOS or Linux."
+      "Open source dataframe wrangler and previewer for VS Code and its forks with native support for Python " +
+        "(Polars, Pandas, etc.) and R (tidyverse, data.table, etc.)"
+    );
+    expect(manifest.keywords).toEqual(
+      expect.arrayContaining([
+        "dataframe",
+        "data preview",
+        "data wrangling",
+        "python",
+        "pyspark",
+        "polars",
+        "pandas",
+        "duckdb",
+        "r",
+        "rstats",
+        "tidyverse",
+        "data.table",
+        "quarto",
+        "rmarkdown",
+        "vscode",
+        "cursor"
+      ])
     );
 
     const walkthrough = manifest.contributes?.walkthroughs?.find((candidate) => candidate.id === "gettingStarted");

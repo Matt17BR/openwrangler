@@ -208,6 +208,62 @@ test("accepts one internally consistent stable release candidate", () => {
   assert.deepEqual(inspectStableReleaseReadiness(ready()), []);
 });
 
+test("requires refreshed Data Wrangler evidence for stable 2.x releases", () => {
+  const version = "2.0.0";
+  const staleReport =
+    "https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md";
+  const currentReport =
+    "https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-2.0.0/review.md";
+  const candidate = (report, overrides = {}) =>
+    ready({
+      releaseTag: `v${version}`,
+      sourcePackageJson: JSON.stringify({ ...stablePackage, version }),
+      pythonVersionFile: `__version__ = "${version}"\n`,
+      changelog: `# Changelog\n\n## [${version}] - 2026-08-08\n\n### Added\n\n- Published R support.\n`,
+      readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n[dated report](${report})\n`,
+      packagedPackageJson: JSON.stringify({ ...stablePackage, version }),
+      packagedPythonVersionFile: `__version__ = "${version}"\n`,
+      packagedReadme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n[dated report](${report})\n`,
+      vsixManifest: manifest({ version }),
+      ...overrides
+    });
+
+  assert.deepEqual(inspectStableReleaseReadiness(candidate(currentReport)), []);
+
+  const sourceProblems = inspectStableReleaseReadiness(
+    candidate(currentReport, {
+      readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n[dated report](${staleReport})\n`
+    })
+  );
+  assert.ok(
+    sourceProblems.includes(
+      "README.md still presents the Open Wrangler 1.2.1 Data Wrangler comparison as current performance evidence for 2.0.0."
+    )
+  );
+
+  const packagedProblems = inspectStableReleaseReadiness(
+    candidate(currentReport, {
+      packagedReadme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n[dated report](${staleReport})\n`
+    })
+  );
+  assert.ok(
+    packagedProblems.includes(
+      "Packaged README still presents the Open Wrangler 1.2.1 Data Wrangler comparison as current performance evidence for 2.0.0."
+    )
+  );
+
+  const v1Candidate = candidate(staleReport, {
+    releaseTag: "v1.2.2",
+    sourcePackageJson: JSON.stringify({ ...stablePackage, version: "1.2.2" }),
+    pythonVersionFile: '__version__ = "1.2.2"\n',
+    changelog: "# Changelog\n\n## [1.2.2] - 2026-08-08\n\n### Fixed\n\n- Updated the extension.\n",
+    packagedPackageJson: JSON.stringify({ ...stablePackage, version: "1.2.2" }),
+    packagedPythonVersionFile: '__version__ = "1.2.2"\n',
+    vsixManifest: manifest({ version: "1.2.2" })
+  });
+  assert.deepEqual(inspectStableReleaseReadiness(v1Candidate), []);
+});
+
 test("performance-evidence readiness permits only the two exact performance rows to remain Partial", () => {
   const performanceRows = new Set(PERFORMANCE_EVIDENCE_PARTIAL_ROWS);
   const featureParity = parity((surface) => (performanceRows.has(surface) ? "Partial" : "Done"));

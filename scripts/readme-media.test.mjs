@@ -604,28 +604,42 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Streaming DataFrames and remote or authenticated clusters are not\s+supported/u);
   assert.match(readme, /Closing the view leaves Spark work that has already started alone/u);
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
-  assert.match(readme, /Microsoft Data\s+Wrangler 1\.24\.2/u);
-  assert.match(readme, /notebook previews 4\.4–7\.3× faster/u);
-  assert.match(readme, /CSV fixtures about 3\.4× faster/u);
-  assert.match(readme, /Data Wrangler handled the Polars cases through Pandas/u);
-  assert.match(readme, /Open Wrangler ran them in Polars/u);
-  assert.match(readme, /did not time conversion\s+separately/u);
-  assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
-  assert.match(
-    readme,
-    /\[dated report\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
-  );
-  assert.match(readme, /comparison will be rerun with the\s+stable 2\.0 candidate/u);
   const performanceSection = readme.slice(readme.indexOf("## Performance and scale"), readme.indexOf("## Roadmap"));
+  assert.match(performanceSection, /Microsoft Data\s+Wrangler/u);
+  assert.match(performanceSection, /notebook previews[^.]*faster/u);
+  assert.match(performanceSection, /profiled every column[^.]*faster/u);
+  assert.match(performanceSection, /Data Wrangler handled the Polars cases through Pandas/u);
+  assert.match(performanceSection, /Open Wrangler ran them in Polars/u);
+  assert.match(performanceSection, /did not time conversion\s+separately/u);
+  assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
+  const reportLinks = [
+    ...performanceSection.matchAll(
+      /\[[^\]\r\n]+\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/(?<directory>data-wrangler-(?<openWranglerVersion>\d+\.\d+\.\d+))\/review\.md\)/gu
+    )
+  ];
+  assert.equal(reportLinks.length, 1, "The performance summary must link one dated, versioned report.");
   assert.doesNotMatch(
     performanceSection,
     /^\|/mu,
     "The README performance summary must not duplicate a release-specific results table."
   );
-  const comparisonReview = readFileSync(resolve(root, "docs/performance/data-wrangler-1.2.1/review.md"), "utf8");
-  assert.match(comparisonReview, /Open Wrangler completed 40\/40\. Data Wrangler\s+completed 37\/40/u);
-  assert.match(comparisonReview, /e45eb499fed50febb61fb0d32cfa9a20800d59b04c67edd20d2568e39aa34ff3/u);
-  assert.match(comparisonReview, /56b933c6db09255d3f3b8338830613950e604094fefc1d3a1db691017f1f7b4b/u);
+  const reportDirectory = reportLinks[0]?.groups?.directory;
+  const openWranglerVersion = reportLinks[0]?.groups?.openWranglerVersion;
+  assert.ok(reportDirectory && openWranglerVersion);
+  const comparisonReview = readFileSync(resolve(root, "docs", "performance", reportDirectory, "review.md"), "utf8");
+  const dataWranglerVersion = /^# Data Wrangler (?<version>\d+\.\d+\.\d+) comparison review$/mu.exec(comparisonReview)
+    ?.groups?.version;
+  assert.ok(dataWranglerVersion, "The linked report must name the compared Data Wrangler version.");
+  assert.match(
+    performanceSection,
+    new RegExp(`Microsoft Data Wrangler ${dataWranglerVersion.replaceAll(".", "\\.")}`, "u")
+  );
+  assert.match(comparisonReview, new RegExp(`Open Wrangler ${openWranglerVersion.replaceAll(".", "\\.")} VSIX`, "u"));
+  assert.match(comparisonReview, /^## Method$/mu);
+  assert.match(comparisonReview, /^## Results$/mu);
+  assert.match(comparisonReview, /median \/ p95/u);
+  assert.match(comparisonReview, /Observed PSS/u);
+  assert.match(comparisonReview, /Primary report SHA-256:/u);
   assert.doesNotMatch(readme, /tracks a planned comparison with Microsoft Data Wrangler/u);
   assert.match(
     readme,

@@ -827,8 +827,8 @@ The report includes all ten values, failures, minimum, maximum, median, and type
 regression blocks release; p95 is review context. Release evidence still requires ten successful samples in all eight
 sessions.
 
-The 1.2.1 results remain the published comparison in 1.99.0. Before 2.0 is released, rerun the full study with the
-VSIX that will be published, review the raw results, and update the README and a new versioned report.
+The 1.2.1 results remain the published comparison during the 1.99 preview series. Before 2.0 is released, rerun the
+full study with the candidate VSIX, review the raw results, and update the README and a new dated report.
 
 Every session owns a mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
 extension directories are prepared once per arm to avoid repeated Marketplace downloads. One JSON result is written
