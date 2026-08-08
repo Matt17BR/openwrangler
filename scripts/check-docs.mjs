@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { inspectPreviewReadme } from "./release-documents.mjs";
+import { inspectPreviewReadme, inspectStablePublicCopy } from "./release-documents.mjs";
 import { inspectStableSourceReadiness } from "./release-readiness.mjs";
 import { inspectPreviewReleaseWorkflow as inspectReleaseWorkflow } from "./preview-release-workflow.mjs";
 import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
@@ -42,6 +42,7 @@ if (repositoryMetadataProblems.length > 0) {
   throw new Error(`Public repository metadata is stale:\n- ${repositoryMetadataProblems.join("\n- ")}`);
 }
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
+const mediaGallery = readFileSync(resolve(root, "docs/media-gallery.md"), "utf8");
 const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
 const publicWritingProblems = inspectPublicWriting({
   agentGuide: readFileSync(resolve(root, "AGENTS.md"), "utf8"),
@@ -71,6 +72,12 @@ const readmeProblems = packageJson.preview
     });
 if (readmeProblems.length > 0) {
   throw new Error(`README release/install region is stale:\n- ${readmeProblems.join("\n- ")}`);
+}
+if (!packageJson.preview) {
+  const galleryProblems = inspectStablePublicCopy(mediaGallery, "docs/media-gallery.md");
+  if (galleryProblems.length > 0) {
+    throw new Error(`Public gallery copy is stale:\n- ${galleryProblems.join("\n- ")}`);
+  }
 }
 const releaseWorkflowProblems = inspectReleaseWorkflow(
   readFileSync(resolve(root, ".github/workflows/release.yml"), "utf8")
