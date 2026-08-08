@@ -19763,6 +19763,11 @@ async function capturePackagedOperationDialogScenes(
       .waitFor({ state: "visible" });
     await dialog.getByRole("heading", { name: "Fill missing values", exact: true }).waitFor({ state: "visible" });
     await dialog.getByRole("button", { name: "Preview changes", exact: true }).waitFor({ state: "visible" });
+    await dialog.locator(".operationForm").evaluate((element) => {
+      const form = element as unknown as { clientHeight: number; scrollHeight: number; scrollTop: number };
+      form.scrollTop = Math.min(48, Math.max(0, form.scrollHeight - form.clientHeight));
+    });
+    await workbench.waitForTimeout(100);
     await assertPackagedOperationDialogGeometry(dialog, "configuration");
     await clearPackagedProductSceneTransientUi(workbench);
     await captureWorkbenchScreenshot(
