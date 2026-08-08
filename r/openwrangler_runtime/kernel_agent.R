@@ -3916,20 +3916,14 @@ openwrangler_r_kernel_agent <- local({
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R Group By diff is missing its bounded page context")
       }
-      if (is.null(before_page)) {
-        before_page_request <- page
-        before_page_request$view <- list(logic = "and", filters = list(), sorts = list())
-        before_page <- materialize(frame_contract, before, before_page_request)
-      }
       if (is.null(after_page)) after_page <- materialize(frame_contract, after, page)
       before_rows <- before$descriptor$shape$rows
       after_rows <- after$descriptor$shape$rows
       added_rows <- as.integer(after_rows)
       removed_rows <- as.integer(before_rows)
       before_complete <-
-        before_page$page$offset == 0 &&
-          before_page$page$totalRows == before_rows &&
-          length(before_page$page$rows) == before_rows
+        page$row_offset == 0 &&
+          page$row_limit >= before_rows
       after_complete <-
         after_page$page$offset == 0 &&
           after_page$page$totalRows == after_rows &&

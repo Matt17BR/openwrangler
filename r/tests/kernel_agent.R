@@ -90,9 +90,11 @@ source_before <- unserialize(serialize(source_environment$frame, NULL, version =
 
 isolated_capture_count <- 0L
 full_capture_count <- 0L
+group_by_source_materializations <- 0L
 instrumented_frame_contract <- openwrangler_r_frame_contract
 real_capture_frame <- instrumented_frame_contract$capture_frame
 real_isolate_capture <- instrumented_frame_contract$isolate_capture
+real_materialize_view_page <- instrumented_frame_contract$materialize_view_page
 instrumented_frame_contract$capture_frame <- function(value, ...) {
   full_capture_count <<- full_capture_count + 1L
   real_capture_frame(value, ...)
@@ -100,6 +102,13 @@ instrumented_frame_contract$capture_frame <- function(value, ...) {
 instrumented_frame_contract$isolate_capture <- function(capture) {
   isolated_capture_count <<- isolated_capture_count + 1L
   real_isolate_capture(capture)
+}
+instrumented_frame_contract$materialize_view_page <- function(capture, ...) {
+  schema_names <- vapply(capture$descriptor$schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+  if (identical(schema_names, c("group", "number", "label", "ordered_label", "when", "flag"))) {
+    group_by_source_materializations <<- group_by_source_materializations + 1L
+  }
+  real_materialize_view_page(capture, ...)
 }
 agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, source_environment)
 
@@ -6361,14 +6370,17 @@ assert_group_by_flavor_case(
 )
 
 source_environment$group_by_frame <- data.frame(
-  group = c(2, 1, 2, NA_real_, NaN, 1),
-  number = c(1L, 2L, 3L, NA_integer_, NA_integer_, 4L),
-  label = factor(c("z", "b", NA, "c", "a", "a"), levels = c("z", "a", "b", "c")),
-  ordered_label = ordered(c("medium", "low", "high", NA, "medium", "high"), levels = c("low", "medium", "high")),
-  when = as.Date("2026-01-01") + c(0, 1, 2, NA, 4, 5),
-  flag = c(TRUE, NA, FALSE, FALSE, NA, TRUE),
+  group = c(2, 1, 2, NA_real_, NaN, 1, 2),
+  number = c(1L, 2L, 4L, NA_integer_, NA_integer_, 4L, 10L),
+  label = factor(c("z", "b", NA, "c", "a", "a", NA), levels = c("z", "a", "b", "c")),
+  ordered_label = ordered(
+    c("medium", "low", "high", NA, "medium", "high", NA),
+    levels = c("low", "medium", "high")
+  ),
+  when = as.Date("2026-01-01") + c(0, 1, 2, NA, 4, 5, NA),
+  flag = c(TRUE, NA, FALSE, FALSE, NA, TRUE, NA),
   check.names = FALSE,
-  row.names = paste0("source-row-", seq_len(6L))
+  row.names = paste0("source-row-", seq_len(7L))
 )
 group_by_source_before <- unserialize(serialize(source_environment$group_by_frame, NULL, version = 3L))
 group_by_open <- dispatch(
@@ -6423,10 +6435,10 @@ assert_identical(
   TRUE,
   "R Group By retained source row labels"
 )
-assert_identical(group_by_preview$page$shape$rows, 9L, "R Group By returned the wrong row-identity domain")
+assert_identical(group_by_preview$page$shape$rows, 10L, "R Group By returned the wrong row-identity domain")
 assert_identical(group_by_preview$page$page$totalRows, 3L, "R Group By returned the wrong group count")
 assert_identical(group_by_preview$diff$addedRows, 3L, "R Group By did not report its replacement rows")
-assert_identical(group_by_preview$diff$removedRows, 6L, "R Group By did not report all replaced source rows")
+assert_identical(group_by_preview$diff$removedRows, 7L, "R Group By did not report all replaced source rows")
 assert_identical(
   unlist(group_by_preview$diff$addedColumns, use.names = FALSE),
   vapply(group_by_aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE),
@@ -6479,15 +6491,15 @@ eval(parse(text = group_by_apply$code), envir = .GlobalEnv)
 group_by_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
 assert_identical(group_by_generated$group[1:2], c(2, 1), "generated R Group By changed group order")
 assert_identical(is.na(group_by_generated$group[[3L]]), TRUE, "generated R Group By split the missing group")
-assert_identical(group_by_generated$number_sum, c(4L, 6L, 0L), "generated R Group By changed integer sums")
-assert_identical(group_by_generated$number_mean, c(2, 3, NA_real_), "generated R Group By changed means")
-assert_identical(group_by_generated$number_median, c(2, 3, NA_real_), "generated R Group By changed medians")
+assert_identical(group_by_generated$number_sum, c(15L, 6L, 0L), "generated R Group By changed integer sums")
+assert_identical(group_by_generated$number_mean, c(5, 3, NA_real_), "generated R Group By changed means")
+assert_identical(group_by_generated$number_median, c(4, 3, NA_real_), "generated R Group By changed medians")
 assert_identical(group_by_generated$number_min, c(1L, 2L, NA_integer_), "generated R Group By changed minima")
-assert_identical(group_by_generated$number_max, c(3L, 4L, NA_integer_), "generated R Group By changed maxima")
-assert_identical(group_by_generated$number_count, c(2L, 2L, 0L), "generated R Group By changed counts")
-assert_identical(group_by_generated$number_unique, c(2L, 2L, 0L), "generated R Group By changed distinct counts")
+assert_identical(group_by_generated$number_max, c(10L, 4L, NA_integer_), "generated R Group By changed maxima")
+assert_identical(group_by_generated$number_count, c(3L, 2L, 0L), "generated R Group By changed counts")
+assert_identical(group_by_generated$number_unique, c(3L, 2L, 0L), "generated R Group By changed distinct counts")
 assert_identical(group_by_generated$number_first, c(1L, 2L, NA_integer_), "generated R Group By changed first values")
-assert_identical(group_by_generated$number_last, c(3L, 4L, NA_integer_), "generated R Group By changed last values")
+assert_identical(group_by_generated$number_last, c(10L, 4L, NA_integer_), "generated R Group By changed last values")
 assert_identical(group_by_generated$label_min, c("z", "a", "a"), "generated R Group By changed factor minima")
 assert_identical(group_by_generated$label_max, c("z", "b", "c"), "generated R Group By changed factor maxima")
 assert_identical(is.ordered(group_by_generated$ordered_min), TRUE, "generated R Group By lost ordered factors")
@@ -6505,44 +6517,124 @@ assert_identical(
 )
 rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
 
-group_output_view <- page_window(
-  sorts = list(list(
-    column = list(id = "c:step:group-by-step:1", name = "number_mean"),
-    direction = "desc",
-    nulls = "last"
-  )),
+group_by_filter_view <- page_window(
   filters = list(list(
     column = list(id = "c:step:group-by-step:1", name = "number_mean"),
     type = "float",
-    predicates = I(list(list(kind = "predicate", operator = "gt", value = 2L)))
+    predicates = I(list(list(kind = "predicate", operator = "gt", value = 3L)))
   ))
 )
-group_by_edit_preview <- dispatch(
+group_by_filtered_step <- unserialize(serialize(group_by_step, NULL, version = 3L))
+group_by_filtered_step$params$aggregations[[2L]]$operation <- "median"
+source_materializations_before_edit <- group_by_source_materializations
+group_by_filter_edit_preview <- dispatch(
   "previewStep",
   list(
     sessionId = group_by_session_id,
     revision = group_by_apply$revision,
-    step = group_by_step,
+    step = group_by_filtered_step,
     replaceStepId = "group-by-step",
-    page = group_output_view
+    page = group_by_filter_view
   )
 )
 assert_identical(
-  group_by_edit_preview$kind,
+  group_by_filter_edit_preview$kind,
   "stepPreview",
-  "editing R Group By applied an output-only view to its source input"
+  "editing R Group By applied an aggregation-output filter to its source input"
 )
-assert_identical(group_by_edit_preview$page$page$totalRows, 1L, "the edited R Group By lost its retained output view")
-assert_identical(group_by_edit_preview$diff$truncated, TRUE, "a filtered R Group By replacement diff was complete")
+assert_identical(
+  group_by_source_materializations,
+  source_materializations_before_edit,
+  "editing R Group By materialized the source just to determine diff truncation"
+)
+assert_identical(
+  group_by_filter_edit_preview$page$page$totalRows,
+  1L,
+  "the edited R Group By lost its aggregation-output filter"
+)
+assert_identical(
+  as.double(group_by_filter_edit_preview$page$page$rows[[1L]]$values[[3L]]$raw),
+  4,
+  "the edited R Group By did not execute the replacement median"
+)
+assert_identical(
+  group_by_filter_edit_preview$diff$truncated,
+  TRUE,
+  "a filtered R Group By replacement diff was complete"
+)
+assign("group_by_frame", source_environment$group_by_frame, envir = .GlobalEnv)
+eval(parse(text = group_by_filter_edit_preview$code), envir = .GlobalEnv)
+group_by_filtered_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  group_by_filtered_generated$number_mean,
+  c(4, 3, NA_real_),
+  "generated R Group By did not match the filtered live replacement"
+)
+rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
+group_by_filter_edit_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_filter_edit_preview$revision,
+    page = group_by_filter_view
+  )
+)
+assert_identical(group_by_filter_edit_apply$action, "apply", "the filtered R Group By replacement did not apply")
+
+group_by_sort_view <- page_window(
+  sorts = list(list(
+    column = list(id = "c:step:group-by-step:1", name = "number_mean"),
+    direction = "desc",
+    nulls = "last"
+  ))
+)
+group_by_sorted_step <- unserialize(serialize(group_by_filtered_step, NULL, version = 3L))
+group_by_sorted_step$params$aggregations[[2L]]$operation <- "mean"
+source_materializations_before_edit <- group_by_source_materializations
+group_by_sort_edit_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_filter_edit_apply$revision,
+    step = group_by_sorted_step,
+    replaceStepId = "group-by-step",
+    page = group_by_sort_view
+  )
+)
+assert_identical(group_by_sort_edit_preview$kind, "stepPreview", "editing R Group By lost its output sort")
+assert_identical(
+  group_by_source_materializations,
+  source_materializations_before_edit,
+  "sorting an edited R Group By materialized its source for the replacement diff"
+)
+assert_identical(group_by_sort_edit_preview$diff$truncated, FALSE, "a complete sorted replacement diff was truncated")
+assert_identical(
+  vapply(
+    group_by_sort_edit_preview$page$page$rows[1:2],
+    function(row) as.double(row$values[[1L]]$raw),
+    double(1L)
+  ),
+  c(2, 1),
+  "the edited R Group By did not sort its aggregation output"
+)
+assign("group_by_frame", source_environment$group_by_frame, envir = .GlobalEnv)
+eval(parse(text = group_by_sort_edit_preview$code), envir = .GlobalEnv)
+group_by_sorted_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  group_by_sorted_generated$number_mean,
+  c(5, 3, NA_real_),
+  "generated R Group By did not match the sorted live replacement"
+)
+rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
 group_by_edit_apply <- dispatch(
   "applyDraft",
   list(
     sessionId = group_by_session_id,
-    revision = group_by_edit_preview$revision,
-    page = group_output_view
+    revision = group_by_sort_edit_preview$revision,
+    page = group_by_sort_view
   )
 )
-assert_identical(group_by_edit_apply$action, "apply", "the edited R Group By draft did not apply")
+assert_identical(group_by_edit_apply$action, "apply", "the sorted R Group By replacement did not apply")
 
 group_by_parquet_ready <- dispatch(
   "exportData",
@@ -6584,7 +6676,7 @@ assert_identical(
   c("group", vapply(group_by_aggregations, `[[`, character(1L), "alias")),
   "grouped Parquet export changed aliases"
 )
-assert_identical(group_by_parquet_frame$number_mean, c(2, 3, NA_real_), "grouped Parquet export changed means")
+assert_identical(group_by_parquet_frame$number_mean, c(5, 3, NA_real_), "grouped Parquet export changed means")
 assert_identical(source_environment$group_by_frame, group_by_source_before, "grouped Parquet export mutated its source")
 invisible(dispatch(
   "closeDataExport",
@@ -6600,7 +6692,7 @@ group_by_inspection <- inspect_step(
   group_by_edit_apply$revision,
   "group-by-step",
   page_window(),
-  input_row_count = 6L,
+  input_row_count = 7L,
   output_row_count = 3L
 )
 assert_schema_less_inspection(group_by_inspection, "R Group By inspection")
@@ -6610,7 +6702,7 @@ group_by_undo <- dispatch(
   list(sessionId = group_by_session_id, revision = group_by_edit_apply$revision, page = page_window())
 )
 assert_identical(group_by_undo$action, "undo", "R Group By did not undo")
-assert_identical(group_by_undo$page$shape$rows, 6L, "undoing R Group By did not restore the source rows")
+assert_identical(group_by_undo$page$shape$rows, 7L, "undoing R Group By did not restore the source rows")
 assert_identical(
   group_by_undo$page$frameSemantics$rowNames,
   "explicit",

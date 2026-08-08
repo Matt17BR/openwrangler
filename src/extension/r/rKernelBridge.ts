@@ -1047,19 +1047,23 @@ export class RKernelBridge implements OpenWranglerBridge {
         confirmed.committedRows = targetRows;
         confirmed.committedIdentityRows = targetIdentityRows;
         confirmed.committedKeyColumnIds = Object.freeze([...targetKeyColumnIds]);
-        if (confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel) {
-          let before = copyFilterModel(confirmed.draftBaseFilterModel);
-          if (
-            confirmed.draftReplacesStepId === draftStep.id &&
-            priorRestore?.stepId === draftStep.id &&
-            priorRestore.viewChangeEpoch === confirmed.viewChangeEpoch &&
-            isDeepStrictEqual(priorRestore.after, confirmed.draftBaseFilterModel)
-          ) {
-            before = copyFilterModel(priorRestore.before);
-          }
+        const chainedRestore =
+          confirmed.draftReplacesStepId === draftStep.id &&
+          priorRestore?.stepId === draftStep.id &&
+          priorRestore.viewChangeEpoch === confirmed.viewChangeEpoch &&
+          isDeepStrictEqual(priorRestore.after, confirmed.draftBaseFilterModel)
+            ? priorRestore
+            : undefined;
+        const replacementLostOriginalView =
+          confirmed.draftReplacesStepId === draftStep.id && chainedRestore === undefined;
+        if (
+          confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch &&
+          confirmed.draftBaseFilterModel &&
+          !replacementLostOriginalView
+        ) {
           confirmed.lastAppliedViewRestore = {
             stepId: draftStep.id,
-            before,
+            before: copyFilterModel(chainedRestore?.before ?? confirmed.draftBaseFilterModel),
             after: copyFilterModel(nextFilterModel),
             viewChangeEpoch: confirmed.viewChangeEpoch
           };
