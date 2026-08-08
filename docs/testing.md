@@ -838,7 +838,7 @@ Guarded installed-performance packaging tests require every VSCE source to be tr
 
 ## Data Wrangler comparison
 
-The v1.2.1 method is in [`docs/performance-comparison.md`](performance-comparison.md). Its commands are:
+The comparison method is in [`docs/performance-comparison.md`](performance-comparison.md). Its commands are:
 
 - `npm run comparison:smoke` for both products on one Pandas/CSV workload;
 - `npm run comparison:study` for the eight-session benchmark; and
