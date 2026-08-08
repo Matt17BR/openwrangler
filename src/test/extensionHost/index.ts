@@ -1819,8 +1819,8 @@ function writeReleasedRLiterateDocumentFixture(
   const processIdPath = path.join(fixtureDirectory, "open-wrangler-r.pid");
   const variableName = kind === "quarto" ? "regional_orders" : "literate_orders";
   const loadCell = [
-    "```{r load-orders, echo=FALSE}",
-    ...(kind === "quarto" ? ["#| label: load-regional-orders"] : []),
+    kind === "quarto" ? "```{r}" : "```{r load-orders, echo=FALSE}",
+    ...(kind === "quarto" ? ["#| label: load-regional-orders", "#| echo: false"] : []),
     `${variableName} <- utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE)`,
     `${variableName}$order_date <- as.Date(${variableName}$order_date)`,
     `${variableName}$score[2L] <- NA_real_`,
@@ -2001,6 +2001,7 @@ async function exerciseReleasedRJupyterExtension(
     phase === "jupyter-r" && process.platform === "linux"
       ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
       : undefined;
+  let ranRDocumentJourney = false;
   writeReleasedRNotebook(notebookPath, phase);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
@@ -2142,6 +2143,12 @@ async function exerciseReleasedRJupyterExtension(
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-after-capture`);
       await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
 
+      if (supportsRDocumentExecution(process.platform)) {
+        await exerciseReleasedRDocumentJourney(testing, workbench, directory, screenshotOutput);
+        ranRDocumentJourney = true;
+        assert.equal(testing.diagnostics().sessionCount, 0, "The R document journey must release its processes.");
+      }
+
       await showExactReleasedNotebook(notebook);
       await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
       base = await waitForReleasedVariableSession(
@@ -2277,7 +2284,7 @@ async function exerciseReleasedRJupyterExtension(
       await disposePackagedSessionPanel(testing, session.sessionId, `the collapse::${expected.factory}() session`);
     }
 
-    if (phase === "jupyter-r" && supportsRDocumentExecution(process.platform)) {
+    if (phase === "jupyter-r" && supportsRDocumentExecution(process.platform) && !ranRDocumentJourney) {
       await exerciseReleasedRDocumentJourney(testing, workbench, directory, screenshotOutput);
       assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
     }
@@ -3467,8 +3474,8 @@ async function exerciseReleasedRDocumentGrid(testing: TestApi, workbench: Page, 
     "the plain R group filter"
   );
   await drawer.getByRole("button", { name: "Close panel" }).click();
-  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
-  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
   const active = testing.activeSession();
   assert.ok(active, "The sorted plain R session must remain active.");
   const first = await testing.request({
@@ -3816,8 +3823,8 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     .filter({ hasText: "value-20-1205" })
     .waitFor({ state: "visible", timeout: 10_000 });
 
-  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
-  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
   const scoreFirst = await testing.request({
     kind: "getPage",
     ...GRID_COLUMN_WINDOW,
@@ -4000,8 +4007,8 @@ async function exerciseReleasedRPersistentRowsJourney(
     "the R group viewing filter"
   );
   await drawer.getByRole("button", { name: "Close panel" }).click();
-  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
-  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
   active = testing.activeSession();
   assert.ok(active, "The R persistent-filter journey requires its active view.");
   assert.equal(active.metadata.shape.rows, 1_205);
@@ -4922,8 +4929,8 @@ async function exerciseReleasedREditingJourney(
     "the R notebook export viewing filter"
   );
   await exportDrawer.getByRole("button", { name: "Close panel" }).click();
-  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
-  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
   const exportView = testing.activeSession();
   assert.ok(exportView, "The filtered R notebook export requires its exact active session.");
   assert.equal(exportView.sessionId, sessionId);
@@ -7392,8 +7399,8 @@ async function captureReleasedRJupyterWorkbench(
       "the R screenshot renderer to complete its host handshake"
     );
     const revenue = columnReference(active.metadata, "revenue");
-    await applyReleasedRQuickSort(readyApp, testing, "revenue", "descending", ["revenue"]);
-    await applyReleasedRQuickSort(readyApp, testing, "priority", "ascending", ["priority", "revenue"]);
+    await applyReleasedRQuickSort(workbench, testing, "revenue", "descending", ["revenue"]);
+    await applyReleasedRQuickSort(workbench, testing, "priority", "ascending", ["priority", "revenue"]);
 
     let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
     let app = await exactSessionApp(target.frame, sessionId);
@@ -7558,15 +7565,22 @@ async function assertReleasedProfileStat(panel: Locator, label: string, expected
 }
 
 async function applyReleasedRQuickSort(
-  app: Locator,
+  workbench: Page,
   testing: TestApi,
   column: string,
   direction: "ascending" | "descending",
   expectedPriority: readonly string[]
 ): Promise<void> {
-  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  const sessionId = testing.activeSession()?.sessionId;
+  assert.ok(sessionId, "The R quick sort requires one active session.");
+  const columnId = testing.activeSession()?.metadata.schema.find((candidate) => candidate.name === column)?.id;
+  assert.ok(columnId, `The R quick sort requires the ${column} column.`);
+  let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  let currentApp = await exactSessionApp(target.frame, sessionId);
+  assert.ok(currentApp, `The R ${column} quick sort requires its exact renderer.`);
+  const columnSearch = currentApp.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill(column);
-  await app
+  await currentApp
     .getByRole("option", { name: new RegExp(`^${column},`, "u") })
     .first()
     .waitFor({
@@ -7574,11 +7588,17 @@ async function applyReleasedRQuickSort(
       timeout: 10_000
     });
   await columnSearch.press("Enter");
-  const header = app.locator(`th[data-column=${JSON.stringify(column)}]`).first();
-  const menu = header.locator("details.columnMenu").first();
-  await menu.getByLabel(`Column actions for ${column}`).click();
-  await menu.getByRole("button", { name: `Sort ${direction}`, exact: true }).click();
-  assert.equal(await menu.evaluate((element) => element.hasAttribute("open")), false);
+  await waitFor(
+    () =>
+      testing.activeSession()?.sessionId === sessionId &&
+      testing.activeSession()?.viewState.selectedColumnId === columnId,
+    10_000,
+    `selecting the R ${column} column before sorting`
+  );
+  const menu = await waitForReleasedRColumnMenu(workbench, sessionId, column);
+  await menu.summary.click();
+  await menu.menu.getByRole("button", { name: `Sort ${direction}`, exact: true }).click();
+  assert.equal(await menu.menu.evaluate((element) => element.hasAttribute("open")), false);
   await waitFor(
     () =>
       testing
@@ -7587,6 +7607,61 @@ async function applyReleasedRQuickSort(
         .join(",") === expectedPriority.join(","),
     10_000,
     `${column} to join the native R compound sort`
+  );
+}
+
+interface ReleasedRColumnMenu {
+  menu: Locator;
+  summary: Locator;
+}
+
+async function waitForReleasedRColumnMenu(
+  workbench: Page,
+  sessionId: string,
+  column: string
+): Promise<ReleasedRColumnMenu> {
+  const browser = workbench.context().browser();
+  const trialTimeoutMs = 250;
+  const prepared = await acquirePreparedAcceptanceAction({
+    timeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS,
+    intervalMs: 50,
+    acquire: async () => {
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
+        if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+        try {
+          const app = await exactSessionApp(target.frame, sessionId);
+          if (!app) continue;
+          const menu = app.locator(`th[data-column=${JSON.stringify(column)}] details.columnMenu`).first();
+          const summary = menu.getByLabel(`Column actions for ${column}`, { exact: true });
+          if ((await summary.count()) !== 1 || !(await summary.isVisible())) continue;
+          try {
+            await summary.click({ trial: true, timeout: trialTimeoutMs });
+          } catch (error) {
+            if (isReleasedRColumnMenuPreparationError(error)) continue;
+            throw error;
+          }
+          return { menu, summary };
+        } catch (error) {
+          ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+        }
+      }
+      return undefined;
+    },
+    prepare: ({ summary }) => summary.click({ trial: true, timeout: trialTimeoutMs }),
+    dispose: async () => undefined,
+    isRetryablePreparationError: isReleasedRColumnMenuPreparationError,
+    wait: (durationMs) => workbench.waitForTimeout(durationMs)
+  });
+  assert.ok(prepared, `The R ${column} menu must become pointer-ready in the exact session renderer.`);
+  return prepared;
+}
+
+function isReleasedRColumnMenuPreparationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    (error as { name?: unknown } | undefined)?.name === "TimeoutError" ||
+    /(?:element|node).*(?:detached|not attached|not connected)/iu.test(message)
   );
 }
 
