@@ -546,7 +546,8 @@ The local kernel installs missing packages into a temporary library. Linux uses
 `https://p3m.dev/cran/__linux__/noble/2026-03-10`; macOS and Windows use
 `https://p3m.dev/cran/2026-03-10`. The test records and checks these versions: IRkernel 1.3.2, jsonlite 2.0.0, rlang
 1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Collapse 2.1.7 and nanoparquet 0.5.1 come from the matching reviewed
-`2026-06-01` snapshot. Tests cover projected paging, row labels,
+`2026-06-01` snapshot. The Linux document journey also installs languageserver 0.3.17, rmarkdown 2.30, and knitr 1.51
+in that private library. Tests cover projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
 and cleanup. The base dataframe starts in Viewing mode, keeps its exact notebook, public session, and compound sort
 through the visible **Switch to Editing** action, then continues through the cleaning journey on that same session.
@@ -629,13 +630,29 @@ The modified in-memory source is then run again and its generated result is open
 exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite`, `rlang`, and
 `nanoparquet`.
 
-The R Markdown and Quarto fixtures each contain first-line YAML, prose, and one top-level backtick-fenced `{r}` cell
-that reads a relative CSV. The R Markdown parser fixture also contains a non-R cell and a disabled R cell. The journey
-opens the dataframe, checks its full schema and page, applies Rename, inserts generated R as a new fenced cell, and
-proves the source file on disk is unchanged.
+The R Markdown and Quarto fixtures each contain first-line YAML, prose, and top-level backtick-fenced `{r}` cells that
+read a relative CSV. The R Markdown parser fixture also contains a non-R cell and a disabled R cell. The journey opens
+the dataframe, checks its full schema and page, applies Rename, inserts generated R as a new fenced cell, and proves
+the source file on disk is unchanged.
 Parser tests reject later metadata blocks, raw HTML/TeX containers, indented or tilde R fences, alternate engines,
-ambiguous options, cross-cell syntax joining, and R Markdown fence-length mismatches. These are lexical R-cell runs;
-the test does not claim knitr or Quarto rendering behavior.
+ambiguous options, cross-cell syntax joining, and R Markdown fence-length mismatches. Open Wrangler still evaluates
+these cells in its own managed R process; Quarto rendering is a separate editor action.
+
+On Linux x64, the same isolated editor profile installs exact official releases of R Syntax 0.1.4, R 2.8.8, and
+Quarto 1.135.0. The runner downloads each VSIX from the Visual Studio Marketplace and Quarto CLI 1.10.18 from its
+official GitHub release, then verifies the pinned byte count and SHA-256 before installation. The profile points the
+R extension at the test R executable and private package library. R Markdown uses the Pandoc bundled with that Quarto
+CLI, and the Quarto extension uses the same private installation. No extension or package is installed into the
+user's editor profile or R library.
+
+The packaged journey activates all three extensions, checks their exact versions and public commands, and confirms
+that `.Rmd` and `.qmd` have the expected editor language modes. It asks the Quarto extension to render the real `.qmd`
+fixture, opens Quarto's internal HTML preview, and verifies the rendered table before invoking **Run R Document in
+Open Wrangler…**. Open Wrangler then runs the supported R cells in its own process and presents the dataframe picker.
+This proves that the two extensions work together without claiming that they share an R session. Offline runs may
+supply the same verified artifacts through `OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSIX`,
+`OPEN_WRANGLER_R_EXTENSION_VSIX`, `OPEN_WRANGLER_QUARTO_EXTENSION_VSIX`, and
+`OPEN_WRANGLER_QUARTO_CLI_ARCHIVE`.
 
 `collapse` is not a runtime dependency. Packaged R/Jupyter acceptance installs collapse 2.1.7 in its private test
 library. It creates real `qDF()`, `qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms
@@ -644,7 +661,7 @@ same accepted and rejected classes.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
 viewing workbench, a Group and aggregate draft after switching that same session to Editing mode, the generated R
-inserted into its notebook, and the dataframe picker opened from a real Quarto document.
+inserted into its notebook, and the dataframe picker over a real Quarto document beside its rendered HTML preview.
 The viewing image shows two filters, two
 ordered sorts, and exact revenue statistics. The editing image groups the orders by market and channel and shows the
 native R code preview beside the draft, cleaning history, and Apply/Discard controls.
