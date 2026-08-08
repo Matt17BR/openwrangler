@@ -14271,10 +14271,17 @@ async function completeCleanedDataExportDialog(
   await saveInput.fill(path.resolve(destination));
   await saveInput.press("Enter");
   await saveDialog.waitFor({ state: "hidden", timeout: 30_000 });
-  await workbench
+  const exportProgress = workbench
     .locator(".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible")
-    .filter({ hasText: "Exporting cleaned data…" })
-    .waitFor({ state: "hidden", timeout: 30_000 });
+    .filter({ hasText: "Exporting cleaned data…" });
+  assert.equal(
+    await pollAcceptanceCondition(async () => (await exportProgress.count()) === 0, {
+      timeoutMs: 30_000,
+      intervalMs: 50
+    }),
+    true,
+    "The cleaned-data export progress notification must close."
+  );
 }
 
 async function exercisePackagedReopenAndUndoJourney(
