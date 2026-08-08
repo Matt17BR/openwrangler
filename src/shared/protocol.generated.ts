@@ -1232,6 +1232,7 @@ export interface StepPreviewResponse {
   page: GridPage;
   diff: DataDiff;
   code: string;
+  remainingMissingCells?: number;
   warnings?: string[];
 }
 export interface DataDiff {

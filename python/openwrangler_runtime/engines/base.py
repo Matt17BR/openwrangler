@@ -819,6 +819,26 @@ class DataFrameEngine(ABC):
     ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def missing_count(self, frame: Any, column_position: int) -> int:
+        """Return the exact null-plus-NaN count for one visible column."""
+
+        summaries = self.summaries(frame, [(column_position, "c:remaining-missing")])
+        if len(summaries) != 1:
+            raise EngineError("The selected column is unavailable for missing-value counting.")
+        summary = summaries[0]
+        null_count = summary.get("nullCount")
+        nan_count = summary.get("nanCount")
+        if (
+            not isinstance(null_count, int)
+            or isinstance(null_count, bool)
+            or null_count < 0
+            or not isinstance(nan_count, int)
+            or isinstance(nan_count, bool)
+            or nan_count < 0
+        ):
+            raise EngineError("The dataframe engine returned an invalid missing-value count.")
+        return null_count + nan_count
+
     @abstractmethod
     def header_stats(self, frame: Any) -> dict[str, Any]:
         raise NotImplementedError

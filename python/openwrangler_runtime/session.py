@@ -685,6 +685,16 @@ class SessionManager:
                     before_page=before_page,
                     after_page=preview_page,
                 ),
+                **(
+                    {
+                        "remainingMissingCells": session.engine.missing_count(
+                            draft,
+                            int(bound_step["params"]["column"]["position"]),
+                        )
+                    }
+                    if normalized["kind"] == "fillMissingValues"
+                    else {}
+                ),
                 "code": session.engine.compile_plan(candidate_bound_plan),
                 "warnings": list(normalized["params"].get("warnings", [])),
             }

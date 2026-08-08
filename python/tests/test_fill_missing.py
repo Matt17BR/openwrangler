@@ -1039,6 +1039,7 @@ def test_session_directional_fill_keeps_nullable_metadata(
 
     try:
         preview = manager.preview_step(session_id, 0, operation, 0, 10)
+        assert preview["remainingMissingCells"] == 1
         assert schema_column(preview["metadata"], "target")["nullable"] is True
         applied = manager.apply_draft(session_id, 1, 0, 10)
         assert schema_column(applied["metadata"], "target")["nullable"] is True
@@ -1082,12 +1083,14 @@ def test_session_fill_metadata_stays_consistent_through_preview_apply_and_replay
         assert schema_column(opened["metadata"], "label")["nullable"] is True
 
         preview = manager.preview_step(session_id, 0, step, 0, 10)
+        assert preview["remainingMissingCells"] == 0
         assert schema_column(preview["metadata"], "label")["nullable"] is False
 
         discarded = manager.discard_draft(session_id, 1, 0, 10)
         assert schema_column(discarded["metadata"], "label")["nullable"] is True
 
         preview = manager.preview_step(session_id, 2, step, 0, 10)
+        assert preview["remainingMissingCells"] == 0
         applied = manager.apply_draft(session_id, 3, 0, 10)
         assert schema_column(applied["metadata"], "label")["nullable"] is False
 
@@ -1129,6 +1132,7 @@ def test_session_fallback_fill_keeps_nullable_metadata_when_rows_remain_unresolv
 
     try:
         preview = manager.preview_step(session_id, 0, operation, 0, 10)
+        assert preview["remainingMissingCells"] == 1
         assert schema_column(preview["metadata"], "target")["nullable"] is True
         applied = manager.apply_draft(session_id, 1, 0, 10)
         assert schema_column(applied["metadata"], "target")["nullable"] is True

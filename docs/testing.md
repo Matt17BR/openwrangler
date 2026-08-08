@@ -26,8 +26,10 @@ matrix for release candidates or changes that cross all of its boundaries.
   medians, scaled floating-point means, ordered same-row fallback priority, stable previous/next fills, whole-run gap
   limits, grouped median/mean/mode fills, missing grouping keys, linear interpolation by numeric, Date, and POSIXct
   coordinates, restored row order, unresolved boundary and over-limit runs, factor levels and no-op levels, dates,
-  DST gaps, current-source timezones, the 8 KiB R text limit, nullable metadata, key safety, and executable generated
-  R. Rename, Drop,
+  DST gaps, current-source timezones, the 8 KiB R text limit, exact remaining-missing counts, nullable metadata, key
+  safety, and executable generated R. The shared protocol and webview tests require the count only on fill previews,
+  reject impossible values, announce it to assistive technology, restore it with a draft, and clear it after the draft
+  ends. Rename, Drop,
   Select, Clone, Convert type, Text Length, Lowercase, Uppercase, and Find and replace tests resolve duplicate and
   non-syntactic names by stable identity, preserve base, tibble, and keyed `data.table` semantics, and prove that
   drafts and generated R leave the source unchanged.

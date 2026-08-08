@@ -1245,6 +1245,33 @@ describe("native R kernel protocol", () => {
       expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
     }
 
+    const previewResponse = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalFramePage(),
+      diff: minimalRenameDiff(),
+      code: "open_wrangler_result <- frame\n",
+      remainingMissingCells: 1
+    };
+    expect(
+      decodeRKernelResponseJson(JSON.stringify(previewResponse), previewRequestId, {
+        inputSchema: minimalFramePage().schema
+      })
+    ).toMatchObject({ kind: "stepPreview", remainingMissingCells: 1 });
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...previewResponse,
+          remainingMissingCells: minimalFramePage().shape.rows + 1
+        }),
+        previewRequestId,
+        { inputSchema: minimalFramePage().schema }
+      )
+    ).toThrow("response.remainingMissingCells");
+
     const fallbackRequest = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: previewRequestId,

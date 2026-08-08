@@ -69,6 +69,7 @@ export interface SessionPresentation {
   code: string;
   draft?: {
     diff: DataDiff;
+    remainingMissingCells?: number;
     warnings: string[];
     beforeSchema: ColumnSchema[];
   };

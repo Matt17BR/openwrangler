@@ -699,6 +699,26 @@ class PolarsEngine(DataFrameEngine):
         except Exception as error:
             raise EngineError(f"Polars could not compute exact summary counts for {column}: {error}") from error
 
+    def missing_count(self, frame: Any, column_position: int) -> int:
+        import polars as pl
+
+        columns = self._visible_columns(frame)
+        if (
+            not isinstance(column_position, int)
+            or isinstance(column_position, bool)
+            or column_position < 0
+            or column_position >= len(columns)
+        ):
+            raise EngineError("The selected column is unavailable for missing-value counting.")
+        column = columns[column_position]
+        schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+        missing = pl.col(column).is_null()
+        if infer_semantic_type(str(schema[column])) == "float":
+            missing = missing | pl.col(column).is_nan()
+        query = frame.select(missing.sum().alias("__open_wrangler_missing_count"))
+        result = query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query
+        return int(result.item(0, 0) or 0)
+
     def header_stats(self, frame: Any) -> dict[str, Any]:
         import polars as pl
 

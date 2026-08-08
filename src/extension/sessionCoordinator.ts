@@ -1585,6 +1585,9 @@ export class SessionCoordinator implements vscode.Disposable {
         response.kind === "stepPreview"
           ? {
               diff: response.diff,
+              ...(response.remainingMissingCells === undefined
+                ? {}
+                : { remainingMissingCells: response.remainingMissingCells }),
               warnings: [...(response.warnings ?? [])],
               beforeSchema:
                 response.metadata.draftReplacesStepId === undefined
@@ -2031,6 +2034,9 @@ export class SessionCoordinator implements vscode.Disposable {
       session.draftBaseFilterModel = confirmedDraftBaseFilterModel;
       session.draftPresentation = {
         diff: preview.diff,
+        ...(preview.remainingMissingCells === undefined
+          ? {}
+          : { remainingMissingCells: preview.remainingMissingCells }),
         warnings: [...(preview.warnings ?? [])],
         beforeSchema:
           preview.metadata.draftReplacesStepId === undefined

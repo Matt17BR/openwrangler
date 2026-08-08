@@ -2065,6 +2065,7 @@
         "page": { "$ref": "#/definitions/GridPage" },
         "diff": { "$ref": "#/definitions/DataDiff" },
         "code": { "type": "string" },
+        "remainingMissingCells": { "type": "integer", "minimum": 0 },
         "warnings": { "type": "array", "items": { "type": "string" } }
       }
     },

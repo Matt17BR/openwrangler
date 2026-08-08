@@ -321,6 +321,20 @@ class PandasEngine(DataFrameEngine):
             summaries.append(summary)
         return summaries
 
+    def missing_count(self, frame: Any, column_position: int) -> int:
+        df = self.normalize(frame)
+        visible_positions = self._visible_positions(df)
+        if (
+            not isinstance(column_position, int)
+            or isinstance(column_position, bool)
+            or column_position < 0
+            or column_position >= len(visible_positions)
+        ):
+            raise EngineError("The selected column is unavailable for missing-value counting.")
+        series = df.iloc[:, visible_positions[column_position]]
+        null_count, nan_count = _missing_value_counts(series, str(series.dtype))
+        return null_count + nan_count
+
     def header_stats(self, frame: Any) -> dict[str, Any]:
         df = self._visible_frame(self.normalize(frame))
         missing_by_column = []

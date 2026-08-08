@@ -112,7 +112,8 @@ value** fill in a chosen sort order, with an optional maximum missing-run length
 can also be calculated separately within one or more groups. Floating-point columns can use **Linear interpolation**
 with a numeric, date, or date-time coordinate. Only gaps with a finite value on both sides are filled, and an optional
 limit can leave long gaps untouched. Categorical columns keep their type when possible; the preview shows when a
-specific value or fallback requires ordinary text. The most common value always keeps its category type.
+specific value or fallback requires ordinary text. The most common value always keeps its category type. Each
+preview reports how many values in the target column are still missing.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/workflow.png" width="960"></a>
 

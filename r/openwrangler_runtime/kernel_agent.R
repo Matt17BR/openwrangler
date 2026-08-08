@@ -3912,6 +3912,13 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$factorLevels
           )
         )
+        if (identical(applied$bound$kind, "fillMissingValues")) {
+          response$remainingMissingCells <- frame_contract$count_missing_at(
+            candidate$draft,
+            applied$bound$position,
+            applied$bound$oldName
+          )
+        }
         preflight_response(response)
         assign(session_id, candidate, envir = sessions)
         return(response)

@@ -2928,7 +2928,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: firstOutput,
       diff: fillMissingDiff("r:c:6", "missing", firstValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
     const preview = await bridge.request({
       kind: "previewStep",
@@ -2973,7 +2974,8 @@ describe("canonical R kernel bridge", () => {
             after: expect.objectContaining({ kind: "string", raw: "unknown" })
           })
         ]
-      }
+      },
+      remainingMissingCells: 0
     });
 
     if (step.params.replacement.kind !== "string") throw new Error("expected a string replacement");
@@ -3057,7 +3059,8 @@ describe("canonical R kernel bridge", () => {
       revision: 3,
       page: fillMissingContract(source, "r:c:6", editedValue),
       diff: fillMissingDiff("r:c:6", "missing", editedValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
     const edited = await bridge.request({
       kind: "previewStep",
@@ -3088,6 +3091,49 @@ describe("canonical R kernel bridge", () => {
     });
   });
 
+  it("rejects an impossible missing-value count from the R runtime", async () => {
+    const source = frameContract();
+    const firstValue: RFrameCell = {
+      kind: "string",
+      raw: "unknown",
+      display: "unknown",
+      isNull: false,
+      isNaN: false
+    };
+    const output = fillMissingContract(source, "r:c:6", firstValue);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: output,
+      diff: fillMissingDiff("r:c:6", "missing", firstValue),
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: output.shape.rows + 1
+    });
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-fill-invalid-count",
+          kind: "fillMissingValues",
+          params: {
+            column: { id: "r:c:6", name: "missing" },
+            replacement: { kind: "string", value: "unknown" }
+          }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).rejects.toThrow("more missing values than rows");
+  });
+
   it("previews a native R mean fill for a floating-point column", async () => {
     const source = replaceContractCell(frameContract(), "r:c:0", {
       kind: "null",
@@ -3114,7 +3160,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: output,
       diff: fillMissingDiff("r:c:0", "value", meanValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
 
     await expect(
@@ -3177,7 +3224,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: unresolved,
       diff: renameDiff(),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 1
     });
     const partialPreview = await bridge.request({
       kind: "previewStep",
@@ -3236,7 +3284,8 @@ describe("canonical R kernel bridge", () => {
       revision: 3,
       page: complete,
       diff: fillMissingDiff("r:c:6", "missing", fallbackValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
     await expect(
       bridge.request({
@@ -3296,7 +3345,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: source,
       diff: renameDiff(),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 1
     });
 
     const preview = await bridge.request({
@@ -3420,7 +3470,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: source,
       diff: renameDiff(),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
 
     const preview = await bridge.request({
@@ -3558,7 +3609,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: source,
       diff: renameDiff(),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
 
     const preview = await bridge.request({
@@ -3732,7 +3784,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: fillMissingContract(keyedSource, "r:c:6", fallbackValue),
       diff: fillMissingDiff("r:c:6", "missing", fallbackValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
     await expect(
       keyedBridge.request({
@@ -3781,7 +3834,8 @@ describe("canonical R kernel bridge", () => {
         revision: 1,
         page: fillMissingContract(source, testCase.column.id, testCase.value),
         diff: fillMissingDiff(testCase.column.id, testCase.column.name, testCase.value),
-        code: "open_wrangler_result <- orders"
+        code: "open_wrangler_result <- orders",
+        remainingMissingCells: 0
       });
 
       await expect(

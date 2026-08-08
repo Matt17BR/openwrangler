@@ -343,6 +343,7 @@ export interface RKernelStepPreviewResult {
   readonly page: RFramePageContract;
   readonly diff: DataDiff;
   readonly code: string;
+  readonly remainingMissingCells?: number;
 }
 
 export interface RKernelPlanUpdatedResult {
@@ -545,6 +546,7 @@ export type RKernelResponse =
       page: RFramePageContract;
       diff: DataDiff;
       code: string;
+      remainingMissingCells?: number;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -767,16 +769,11 @@ export function decodeRKernelResponseJson(
     });
   }
   if (kind === "stepPreview") {
-    const record = exactRecord(value, [
-      "transportVersion",
-      "requestId",
-      "kind",
-      "sessionId",
-      "revision",
-      "page",
-      "diff",
-      "code"
-    ]);
+    const record = exactRecord(
+      value,
+      ["transportVersion", "requestId", "kind", "sessionId", "revision", "page", "diff", "code"],
+      ["remainingMissingCells"]
+    );
     validateEnvelope(record, expected);
     const page = decodeRFramePage(record.page);
     const inputSchema = expectedMutationInputSchema(context, "step preview");
@@ -788,7 +785,16 @@ export function decodeRKernelResponseJson(
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
       page,
       diff: validateMutationDiff(record.diff, page, inputSchema),
-      code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
+      code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false),
+      ...(record.remainingMissingCells === undefined
+        ? {}
+        : {
+            remainingMissingCells: boundedInteger(
+              record.remainingMissingCells,
+              "response.remainingMissingCells",
+              page.shape.rows
+            )
+          })
     });
   }
   if (kind === "planUpdated") {

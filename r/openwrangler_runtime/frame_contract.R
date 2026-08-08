@@ -4579,6 +4579,22 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
+  count_missing_at <- function(capture, position, expected_name) {
+    validate_capture(capture)
+    column_count <- capture$descriptor$shape$columns
+    position <- whole_number(position, "missing-count column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the missing-count column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    expected_name <- bounded_utf8(expected_name, "missing-count column name", maximum_name_bytes)
+    if (!identical(capture$descriptor$schema[[position]]$name, expected_name)) {
+      abort("stale-column", "the missing-count column name no longer matches the R dataframe")
+    }
+    frame <- read_capture_frame(capture)
+    as.integer(sum(is.na(frame[[position]])))
+  }
+
   materialize_summaries <- function(
     capture,
     column_references,
@@ -4866,6 +4882,7 @@ openwrangler_r_frame_contract <- local({
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,
     materialize_view_page = materialize_view_page,
+    count_missing_at = count_missing_at,
     materialize_summaries = materialize_summaries,
     materialize_dataset_stats = materialize_dataset_stats,
     materialize_column_values = materialize_column_values,

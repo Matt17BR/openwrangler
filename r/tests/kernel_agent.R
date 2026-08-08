@@ -3141,6 +3141,11 @@ fallback_fill_partial <- dispatch(
 )
 assert_identical(fallback_fill_partial$kind, "stepPreview", "R fallback fill did not preview")
 assert_identical(
+  fallback_fill_partial$remainingMissingCells,
+  1L,
+  "R fallback fill returned the wrong remaining missing-value count"
+)
+assert_identical(
   fallback_fill_partial$page$schema[[1L]]$nullable,
   TRUE,
   "an unresolved R fallback fill was published as non-nullable"
@@ -3174,6 +3179,11 @@ fallback_fill_complete_preview <- dispatch(
   )
 )
 assert_identical(fallback_fill_complete_preview$kind, "stepPreview", "complete R fallback fill did not preview")
+assert_identical(
+  fallback_fill_complete_preview$remainingMissingCells,
+  0L,
+  "complete R fallback fill retained a missing target value"
+)
 assert_identical(
   fallback_fill_complete_preview$page$schema[[2L]]$nullable,
   FALSE,
