@@ -98,6 +98,9 @@ Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, C
 same draft, code preview, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. A
 viewing filter or sort can be copied into a cleaning draft. Filters keep the typed distinction between `NA` and
 `NaN`; sorts keep their compound priority, and both keep stable source-row identities through history and diffs.
+Notebook variables open in Viewing mode by default. **Switch to Editing** in the dataframe toolbar atomically opens
+the same live variable through its captured notebook and keeps the confirmed filters, sorts, widths, selection, and
+grid position. A closed or replaced notebook fails the mode change without replacing the working Viewing session.
 Drop Missing Rows treats `NA` and `NaN` as missing and can drop
 rows when any or all selected columns are missing. Drop Duplicates compares selected columns, or all columns by
 default, and can keep the first, last, or no row in each repeated group without changing source order. Select Columns

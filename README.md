@@ -192,6 +192,9 @@ also run a trusted `.R` file or the supported top-level R cells in `.Rmd` and `.
 editor changes. Document runs use a separate R process; they do not render Quarto or R Markdown or attach to another
 R session. Choose **Run R Document in Open Wrangler…** from Explorer or the editor.
 
+Notebook variables open in Viewing mode by default. Use **Switch to Editing** in the dataframe toolbar when you want
+to clean the live variable; the current filters, sorts, column widths, and grid position carry over.
+
 The R workbench supports paging, filters, multi-column sorts, value search, profiles, and 21 cleaning operations:
 **Filter Rows**, **Sort Rows**, **Drop Missing Rows**, **Fill Missing Values**, **Drop Duplicates**, **Rename Column**,
 **Drop Columns**, **Select Columns**, **Clone Column**, **Convert type**, **Text Length**, **Lowercase**, **Uppercase**,

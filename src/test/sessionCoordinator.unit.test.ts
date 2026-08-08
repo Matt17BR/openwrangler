@@ -1408,6 +1408,263 @@ describe("SessionCoordinator", () => {
     setOpenNotebookDocuments();
   });
 
+  it("atomically reopens the exact live notebook variable in Editing mode and retains its view", async () => {
+    const notebook = {
+      uri: vscode.Uri.parse("file:///workspace/r-editing.ipynb"),
+      isClosed: false
+    } as NotebookDocument;
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "orders_frame",
+      variableName: "orders_frame",
+      uri: notebook.uri.toString()
+    };
+    const runtimeRequests: OpenWranglerRequest[] = [];
+    const runtimeOptions: Array<BridgeRequestOptions | undefined> = [];
+    const openedFor = (
+      request: Extract<OpenWranglerRequest, { kind: "openSession" }>,
+      runtimeId: string
+    ): ExactSessionOpenedResponse => {
+      const opened = openedResponse(runtimeId, "r");
+      return {
+        ...opened,
+        page: { ...opened.page, totalRows: 10, columnIds: ["c:value"] },
+        metadata: {
+          ...opened.metadata,
+          sessionId: runtimeId,
+          backend: "r",
+          rDataframeFlavor: "r.data.frame",
+          mode: request.mode ?? "viewing",
+          source,
+          shape: { rows: 10, columns: 1 },
+          filteredShape: { rows: 10, columns: 1 },
+          schema: [
+            {
+              id: "c:value",
+              name: "value",
+              position: 0,
+              rawType: "double",
+              type: "float",
+              nullable: false
+            }
+          ],
+          capabilities: {
+            editable: true,
+            lazy: false,
+            cancel: false,
+            exportCsv: request.mode === "editing",
+            exportParquet: false,
+            notebookInsert: true,
+            filter: true,
+            sort: true,
+            profile: true,
+            columnValues: true,
+            supportedOperations: ["sortRows"]
+          }
+        }
+      };
+    };
+    const metadataByRuntime = new Map<string, SessionMetadata>();
+    let openCount = 0;
+    const delegateRequest = vi.fn(
+      async (request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+        runtimeRequests.push(request);
+        runtimeOptions.push(options);
+        if (request.kind === "openSession") {
+          openCount += 1;
+          const runtimeId = request.requestedSessionId ?? `r-runtime-${openCount}`;
+          const opened = openedFor(request, runtimeId);
+          metadataByRuntime.set(runtimeId, opened.metadata);
+          return opened;
+        }
+        if (request.kind === "getPage") {
+          const metadata = metadataByRuntime.get(request.sessionId);
+          if (!metadata) throw new Error(`Unknown test runtime ${request.sessionId}`);
+          return pageResponseForMetadata(request, metadata);
+        }
+        if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+        throw new Error(`Unexpected R mode-change request: ${request.kind}`);
+      }
+    );
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest }, notebook);
+    setOpenNotebookDocuments(notebook);
+
+    try {
+      const opened = await bridge.request({ ...openRequest, source, backend: "r", mode: "viewing" });
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the R notebook session to open.");
+      const publicId = opened.metadata.sessionId;
+      await bridge.updateViewState?.(publicId, {
+        selectedColumnId: undefined,
+        columnWidths: {},
+        viewport: { firstVisibleRow: 0, scrollLeft: 37 }
+      });
+      const sorted = await bridge.request({
+        kind: "getPage",
+        sessionId: publicId,
+        revision: opened.metadata.revision,
+        viewRequestId: "r-viewing-sort",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: { filters: [], sort: [{ column: "value", direction: "desc", nulls: "last" }] }
+      });
+      if (sorted.kind !== "page") throw new Error("Expected the R viewing sort to resolve.");
+
+      const currentViewState: GridViewState = {
+        selectedColumnId: "c:value",
+        columnWidths: { "c:value": 240 },
+        viewport: { firstVisibleRow: 0, scrollLeft: 81 }
+      };
+      const editing = await bridge.reconfigureNotebookSessionForEditing?.(publicId, sorted.revision, currentViewState);
+
+      expect(editing).toMatchObject({
+        kind: "sessionOpened",
+        metadata: {
+          sessionId: publicId,
+          revision: sorted.revision + 1,
+          backend: "r",
+          mode: "editing",
+          source
+        }
+      });
+      expect(coordinator.activeSession()).toMatchObject({
+        sessionId: publicId,
+        metadata: { mode: "editing", filterModel: sorted.metadata.filterModel },
+        viewState: {
+          selectedColumnId: "c:value",
+          columnWidths: { "c:value": 240 },
+          viewport: { firstVisibleRow: 0, scrollLeft: 81 },
+          filterModel: sorted.metadata.filterModel
+        }
+      });
+      const opens = runtimeRequests.filter(
+        (request): request is Extract<OpenWranglerRequest, { kind: "openSession" }> => request.kind === "openSession"
+      );
+      expect(opens).toHaveLength(2);
+      expect(opens[1]).toMatchObject({ source, backend: "r", mode: "editing" });
+      expect(opens[1]?.requestedSessionId).toBeTruthy();
+      const replacementOpenIndex = runtimeRequests.indexOf(opens[1]!);
+      expect(runtimeOptions[replacementOpenIndex]?.requiredKernelSessionId).toBe("r-runtime-1");
+      const restoredPageIndex = runtimeRequests.findIndex(
+        (request) => request.kind === "getPage" && request.sessionId === opens[1]?.requestedSessionId
+      );
+      expect(restoredPageIndex).toBeGreaterThan(-1);
+      expect(runtimeOptions[restoredPageIndex]?.requiredKernelSessionId).toBeUndefined();
+      expect(runtimeRequests).toContainEqual(
+        expect.objectContaining({
+          kind: "getPage",
+          sessionId: opens[1]?.requestedSessionId,
+          filterModel: sorted.metadata.filterModel
+        })
+      );
+      await vi.waitFor(() =>
+        expect(runtimeRequests).toContainEqual(
+          expect.objectContaining({ kind: "closeSession", sessionId: "r-runtime-1" })
+        )
+      );
+    } finally {
+      setOpenNotebookDocuments();
+      await coordinator.shutdown();
+    }
+  });
+
+  it("keeps the confirmed Viewing session when its exact notebook is replaced while Editing opens", async () => {
+    const notebook = {
+      uri: vscode.Uri.parse("file:///workspace/r-replaced.ipynb"),
+      isClosed: false
+    } as NotebookDocument;
+    const replacement = {
+      uri: notebook.uri,
+      isClosed: false
+    } as NotebookDocument;
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "orders_frame",
+      variableName: "orders_frame",
+      uri: notebook.uri.toString()
+    };
+    const candidateOpen = deferred<OpenWranglerResponse>();
+    const closedRuntimeIds: string[] = [];
+    let candidateSessionId: string | undefined;
+    let openCount = 0;
+    const openedFor = (
+      request: Extract<OpenWranglerRequest, { kind: "openSession" }>,
+      runtimeId: string
+    ): ExactSessionOpenedResponse => {
+      const opened = openedResponse(runtimeId, "r");
+      return {
+        ...opened,
+        metadata: {
+          ...opened.metadata,
+          sessionId: runtimeId,
+          backend: "r",
+          rDataframeFlavor: "r.data.frame",
+          mode: request.mode ?? "viewing",
+          source,
+          capabilities: {
+            ...opened.metadata.capabilities,
+            editable: true,
+            notebookInsert: true,
+            supportedOperations: ["sortRows"]
+          }
+        }
+      };
+    };
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        if (openCount === 1) return openedFor(request, "r-viewing-runtime");
+        candidateSessionId = request.requestedSessionId;
+        return candidateOpen.promise;
+      }
+      if (request.kind === "closeSession") {
+        closedRuntimeIds.push(request.sessionId);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected replaced-notebook request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest }, notebook);
+    setOpenNotebookDocuments(notebook);
+
+    try {
+      const opened = await bridge.request({ ...openRequest, source, backend: "r", mode: "viewing" });
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the R notebook session to open.");
+
+      const switching = bridge.reconfigureNotebookSessionForEditing?.(
+        opened.metadata.sessionId,
+        opened.metadata.revision,
+        { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 44 } }
+      );
+      await vi.waitFor(() => expect(candidateSessionId).toBeTruthy());
+      setOpenNotebookDocuments(replacement);
+      candidateOpen.resolve(
+        openedFor(
+          {
+            ...openRequest,
+            source,
+            backend: "r",
+            mode: "editing",
+            requestedSessionId: candidateSessionId
+          },
+          candidateSessionId as string
+        )
+      );
+
+      await expect(switching).resolves.toMatchObject({ kind: "error", code: "invalid_source_origin" });
+      expect(coordinator.activeSession()).toMatchObject({
+        sessionId: opened.metadata.sessionId,
+        metadata: { mode: "viewing", revision: opened.metadata.revision },
+        viewState: { viewport: { firstVisibleRow: 0, scrollLeft: 44 } }
+      });
+      expect(closedRuntimeIds).toEqual([candidateSessionId]);
+    } finally {
+      setOpenNotebookDocuments();
+      await coordinator.shutdown();
+    }
+  });
+
   it("rejects mismatched notebook provenance before opening a runtime session", async () => {
     const notebook = {
       uri: vscode.Uri.parse("file:///workspace/origin.ipynb"),
