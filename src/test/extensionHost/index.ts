@@ -507,6 +507,7 @@ export async function run(): Promise<void> {
     "openWrangler.changeImportOptions",
     "openWrangler.launchDataViewer",
     "openWrangler.openNotebookVariable",
+    "openWrangler.runPythonCellAndOpenVariable",
     "openWrangler.refreshRInteractiveVariables",
     "openWrangler.runRDocument",
     "openWrangler.chooseNotebookPreviewProvider",
@@ -587,6 +588,7 @@ export async function run(): Promise<void> {
     "openWrangler.openFile",
     "openWrangler.changeImportOptions",
     "openWrangler.openNotebookVariable",
+    "openWrangler.runPythonCellAndOpenVariable",
     "openWrangler.runRDocument"
   ]);
   assert.deepEqual(
