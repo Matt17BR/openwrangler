@@ -77,6 +77,8 @@
     "format:check": "prettier --check .",
     "format:write": "prettier --write .",
     "docs:check": "node scripts/check-docs.mjs",
+    "repository:check": "node scripts/public-repository-metadata.mjs --local",
+    "repository:check-live": "node scripts/public-repository-metadata.mjs --live",
     "generate:reference": "node scripts/generate-reference.mjs",
     "reference:check": "node scripts/generate-reference.mjs --check",
     "generate:protocol": "node scripts/generate-protocol.mjs",

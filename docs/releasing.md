@@ -22,6 +22,11 @@ Update `package.json`,
 `python/openwrangler_runtime/version.py`, `CHANGELOG.md`, and parity evidence in the release pull request. Do not put
 the release channel in a hyphenated manifest version.
 
+The GitHub About description, homepage, and topics live in `.github/repository-metadata.json`. The package description
+must match it. Run `npm run repository:check` after editing either file, apply the reviewed metadata to GitHub, then
+run `npm run repository:check-live` before publishing. The live check also belongs in the release checklist whenever
+public metadata changes.
+
 ## Package gate
 
 ```bash

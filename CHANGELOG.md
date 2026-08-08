@@ -41,6 +41,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Generated R now lays out Group and aggregate calls across several lines so the selected keys and output names are
   readable in Code Preview.
 - Updated the R gallery with a Quarto dataframe picker and a grouped revenue example.
+- The GitHub About description, Marketplace link, and topics now follow checked-in repository metadata with a live
+  release check.
 
 ### Fixed
 
