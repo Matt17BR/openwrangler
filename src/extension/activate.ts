@@ -5,6 +5,7 @@ import { TrustedPickleWorkerLifecycle } from "./files/trustedPickleWorker";
 import { registerNotebookCommands } from "./notebooks/jupyterBridge";
 import { registerNotebookRendererMessaging } from "./notebooks/rendererMessaging";
 import { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinator";
+import { registerPythonInteractiveCommands } from "./notebooks/pythonInteractiveCommands";
 import { PythonBridge } from "./pythonBridge";
 import { registerRDocumentCommands } from "./r/rDocumentCommands";
 import { SessionCoordinator } from "./sessionCoordinator";
@@ -79,7 +80,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
 
   registerFileCommands(context, coordinatedBridge);
   registerTrustedPickleConversion(context, bridge, { runWorker: (options) => pickleWorkers.run(options) });
-  const nativeViews = registerNativeViews(context, coordinator);
+  const pythonInteractive = registerPythonInteractiveCommands(context, coordinator);
+  const nativeViews = registerNativeViews(context, coordinator, pythonInteractive);
   registerRuntimeCommands(context, bridge);
   registerRDocumentCommands(context, coordinator);
   registerNotebookCommands(context, coordinator);

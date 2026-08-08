@@ -264,6 +264,26 @@ async function openLiveNotebookVariable(
   }
 }
 
+/**
+ * Opens one descriptor returned by {@link discoverNotebookVariables} against
+ * the exact notebook object that was used for discovery. Python Interactive
+ * Window entry points use this instead of re-resolving a notebook from the
+ * currently focused editor after an await.
+ */
+export async function openDiscoveredPythonNotebookVariable(
+  context: vscode.ExtensionContext,
+  coordinator: SessionCoordinator,
+  notebook: vscode.NotebookDocument,
+  variable: NotebookVariableDescriptor
+): Promise<void> {
+  const presentation = notebookVariablePresentation(variable.type);
+  if (presentation.backend !== variable.backend) {
+    vscode.window.showWarningMessage("Open Wrangler could not confirm the selected dataframe type.");
+    return;
+  }
+  await openLiveNotebookVariable(context, coordinator, variable.name, notebook, variable.backend);
+}
+
 async function discoverVariablesForSelectedKernel(
   notebook: vscode.NotebookDocument
 ): Promise<NotebookVariableDiscovery> {

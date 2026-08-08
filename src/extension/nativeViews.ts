@@ -19,6 +19,7 @@ import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewP
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
 import { exportFileSafely } from "./files/safeFileExport";
 import { insertGeneratedRDocumentCode } from "./r/rDocumentInsertion";
+import type { PythonLiveVariableProvider, PythonLiveVariableSnapshot } from "./notebooks/pythonInteractiveCommands";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 type ViewSortAction = "moveUp" | "moveDown" | "remove";
@@ -55,7 +56,8 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
 
   constructor(
     private readonly kind: ViewKind,
-    coordinator: SessionCoordinator
+    coordinator: SessionCoordinator,
+    private readonly pythonVariables?: PythonLiveVariableProvider
   ) {
     this.snapshot = coordinator.activeSession();
     this.sortRegistryContext = viewSortRegistryContext(this.snapshot);
@@ -70,14 +72,21 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
       }
       this.changeEmitter.fire(undefined);
     });
+    if (this.kind === "operations" && this.pythonVariables) {
+      this.pythonVariableSubscription = this.pythonVariables.onDidChangeVariables(() =>
+        this.changeEmitter.fire(undefined)
+      );
+    }
   }
+
+  private pythonVariableSubscription: vscode.Disposable | undefined;
 
   getTreeItem(element: ViewNode): vscode.TreeItem {
     return element;
   }
 
   getChildren(): ViewNode[] {
-    if (this.kind === "operations") return operationNodes(this.snapshot?.metadata);
+    if (this.kind === "operations") return operationNodes(this.snapshot?.metadata, this.pythonVariables?.snapshot());
     if (!this.snapshot) return [new ViewNode("No active dataframe", "Open a data file or notebook variable", "info")];
     if (this.kind === "summary") return summaryNodes(this.snapshot);
     if (this.kind === "filters") {
@@ -97,6 +106,7 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     this.sortTargets.clear();
     this.sortTokens.clear();
     this.subscription.dispose();
+    this.pythonVariableSubscription?.dispose();
     this.changeEmitter.dispose();
   }
 
@@ -300,7 +310,8 @@ export interface NativeViewsTestController {
 
 export function registerNativeViews(
   context: vscode.ExtensionContext,
-  coordinator: SessionCoordinator
+  coordinator: SessionCoordinator,
+  pythonVariables?: PythonLiveVariableProvider
 ): NativeViewsTestController {
   const updatePlanContexts = (snapshot: ActiveSessionSnapshot | undefined) => {
     const hasDraft = Boolean(snapshot?.metadata.draftStep);
@@ -322,7 +333,7 @@ export function registerNativeViews(
   const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
   const filterProvider = new OpenWranglerTreeProvider("filters", coordinator);
   const providers = {
-    "openWrangler.operations": new OpenWranglerTreeProvider("operations", coordinator),
+    "openWrangler.operations": new OpenWranglerTreeProvider("operations", coordinator, pythonVariables),
     "openWrangler.summary": new OpenWranglerTreeProvider("summary", coordinator),
     "openWrangler.filters": filterProvider,
     "openWrangler.cleaningSteps": new OpenWranglerTreeProvider("steps", coordinator)
@@ -777,31 +788,71 @@ export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefin
   return source.path ? vscode.Uri.file(source.path) : undefined;
 }
 
-function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
-  if (!metadata) return [new ViewNode("Open a dataframe", "Operations appear here", "wand")];
+function operationNodes(
+  metadata: SessionMetadata | undefined,
+  pythonVariables: PythonLiveVariableSnapshot | undefined
+): ViewNode[] {
+  const liveVariables = pythonLiveVariableNodes(pythonVariables);
+  if (!metadata) {
+    return [
+      ...liveVariables,
+      new ViewNode("Open a data file", "Choose CSV, Parquet, Excel, or JSONL", "folder-opened", {
+        command: "openWrangler.openPath",
+        title: "Open a data file"
+      })
+    ];
+  }
   const editable = metadata.mode === "editing";
   const canStart = canStartOperation(metadata);
-  return supportedOperationCatalog(metadata.capabilities).map(
-    (operation) =>
-      new ViewNode(
-        operation.title,
-        operation.group,
-        operation.icon,
-        canStart
-          ? {
-              command: "openWrangler.startOperation",
-              title: `Start ${operation.title}`,
-              arguments: [operation.kind]
-            }
-          : undefined,
-        undefined,
-        !editable
-          ? "Available in editing mode"
-          : metadata.draftStep
-            ? "Apply or discard the current draft first"
-            : undefined
-      )
-  );
+  return [
+    ...liveVariables,
+    ...supportedOperationCatalog(metadata.capabilities).map(
+      (operation) =>
+        new ViewNode(
+          operation.title,
+          operation.group,
+          operation.icon,
+          canStart
+            ? {
+                command: "openWrangler.startOperation",
+                title: `Start ${operation.title}`,
+                arguments: [operation.kind]
+              }
+            : undefined,
+          undefined,
+          !editable
+            ? "Available in editing mode"
+            : metadata.draftStep
+              ? "Apply or discard the current draft first"
+              : undefined
+        )
+    )
+  ];
+}
+
+function pythonLiveVariableNodes(snapshot: PythonLiveVariableSnapshot | undefined): ViewNode[] {
+  if (!snapshot) return [];
+  const refresh = new ViewNode("Refresh live dataframes", snapshot.notebookLabel, "refresh", {
+    command: "openWrangler.refreshNotebookVariables",
+    title: "Refresh live dataframes"
+  });
+  if (snapshot.state !== "ready") {
+    return [
+      new ViewNode(snapshot.message, snapshot.notebookLabel, snapshot.state === "error" ? "warning" : "info"),
+      refresh
+    ];
+  }
+  return [
+    ...snapshot.variables.map(
+      (variable) =>
+        new ViewNode(variable.label, variable.description, "symbol-variable", {
+          command: "openWrangler.openCachedNotebookVariable",
+          title: `Open ${variable.label}`,
+          arguments: [variable.handle]
+        })
+    ),
+    refresh
+  ];
 }
 
 function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
