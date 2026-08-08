@@ -2540,8 +2540,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-interactive-"));
   const initialMailboxes = releasedRInteractiveMailboxRoots();
   const configuration = vscode.workspace.getConfiguration("openWrangler");
-  const originalNotebookStartMode = configuration.inspect<"viewing" | "editing">("notebookStartMode")
-    ?.workspaceValue;
+  const originalNotebookStartMode = configuration.inspect<"viewing" | "editing">("notebookStartMode")?.workspaceValue;
   let sourceTerminal: vscode.Terminal | undefined;
   let replacementTerminal: vscode.Terminal | undefined;
   let sessionId: string | undefined;
@@ -2771,7 +2770,10 @@ async function assertReleasedRInteractiveProfileAndEditing(
   assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
   const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill("revenue");
-  await app.getByRole("option", { name: /^revenue,/u }).first().waitFor({ state: "visible", timeout: 10_000 });
+  await app
+    .getByRole("option", { name: /^revenue,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
   await columnSearch.press("Enter");
   await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
   const drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
@@ -2789,7 +2791,11 @@ async function assertReleasedRInteractiveProfileAndEditing(
   await waitFor(
     () => {
       const active = testing.activeSession();
-      return active?.sessionId === sessionId && active.metadata.mode === "editing" && active.metadata.revision > beforeRevision;
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.mode === "editing" &&
+        active.metadata.revision > beforeRevision
+      );
     },
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the active R terminal dataframe to switch to Editing mode"
