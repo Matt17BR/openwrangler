@@ -484,12 +484,10 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
-  assert.match(extension.packageJSON.description, /Explore and clean dataframes in VS Code and Cursor/u);
-  assert.match(extension.packageJSON.description, /with Pandas, Polars, DuckDB, or R/u);
-  assert.match(extension.packageJSON.description, /View local PySpark DataFrames in notebooks/u);
-  assert.match(
+  assert.equal(
     extension.packageJSON.description,
-    /Run R files and supported R Markdown\/Quarto cells on macOS or Linux/u
+    "Open source dataframe wrangler and previewer for VS Code and its forks with native support for Python " +
+      "(Polars, Pandas, etc.) and R (tidyverse, data.table, etc.)"
   );
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
