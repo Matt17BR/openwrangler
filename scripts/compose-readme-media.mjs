@@ -203,10 +203,41 @@ const assets = [
   })
 ];
 
+const editorDetailCrops = [
+  nativeCrop("vscode-notebook-r-picker-detail-dark.png", "vscode-notebook-r-picker-dark.png", 1_440, 900, {
+    x: 0,
+    y: 0,
+    width: 1_040,
+    height: 380
+  }),
+  nativeCrop(
+    "vscode-notebook-r-code-insertion-detail-dark.png",
+    "vscode-notebook-r-code-insertion-dark.png",
+    1_440,
+    900,
+    {
+      x: 0,
+      y: 0,
+      width: 1_440,
+      height: 430
+    }
+  )
+];
+
 assertDeclaredInventory(assets);
 
 let totalBytes = 0;
 for (const asset of assets) {
+  totalBytes += materializeAsset(asset, readmeImages);
+}
+for (const asset of editorDetailCrops) {
+  materializeAsset(asset, editorImages);
+}
+if (totalBytes > PUBLIC_MEDIA_MAX_TOTAL_BYTES) {
+  throw new Error("The complete lossless public-media inventory exceeds its bounded size budget.");
+}
+
+function materializeAsset(asset, destinationRoot) {
   const source = readFileSync(asset.source);
   assertPng(
     source,
@@ -220,8 +251,7 @@ for (const asset of assets) {
   if (portable.byteLength > PUBLIC_MEDIA_MAX_FILE_BYTES) {
     throw new Error(`${asset.destination} exceeds the lossless public-media file budget.`);
   }
-  totalBytes += portable.byteLength;
-  const destination = resolve(readmeImages, asset.destination);
+  const destination = resolve(destinationRoot, asset.destination);
   mkdirSync(dirname(destination), { recursive: true });
   if (verify) {
     const expected = readFileSync(destination);
@@ -236,9 +266,7 @@ for (const asset of assets) {
     writeFileSync(destination, portable);
   }
   console.log(`${verify ? "Verified" : "Copied"} ${destination}`);
-}
-if (totalBytes > PUBLIC_MEDIA_MAX_TOTAL_BYTES) {
-  throw new Error("The complete lossless public-media inventory exceeds its bounded size budget.");
+  return portable.byteLength;
 }
 
 function nativeAsset(destination, sourceName, width, height) {

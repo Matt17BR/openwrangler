@@ -689,7 +689,8 @@ accepted files are
 `docs/images/editor-acceptance/vscode-r-quarto-variable-picker-dark.png`; the gallery uses lossless crops at
 `docs/images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png` and
 `docs/images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png`, while the README Quarto crop is
-composed from the accepted full source.
+composed from the accepted full source. `npm run compose:readme-media` refreshes all three derived R crops after a
+new accepted capture.
 
 ```bash
 npm run build:test-extension &&

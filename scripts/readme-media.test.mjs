@@ -346,6 +346,14 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   for (const asset of nativeAssets) {
     assert.ok(compositor.includes(`${asset.factory}("${asset.destination}", "${asset.source}"`));
   }
+  assert.match(
+    compositor,
+    /nativeCrop\("vscode-notebook-r-picker-detail-dark\.png", "vscode-notebook-r-picker-dark\.png", 1_440, 900/u
+  );
+  assert.match(
+    compositor,
+    /"vscode-notebook-r-code-insertion-detail-dark\.png",\s*"vscode-notebook-r-code-insertion-dark\.png"/u
+  );
   assert.match(compositor, /function cropPng\(/u);
   assert.match(compositor, /source\.data\.copy\(result\.data/u);
   const productMediaReferences = readme
