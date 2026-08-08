@@ -629,9 +629,10 @@ The modified in-memory source is then run again and its generated result is open
 exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite`, `rlang`, and
 `nanoparquet`.
 
-The R Markdown and Quarto fixtures each contain first-line YAML, prose, a non-R cell, a disabled R cell, and one
-top-level backtick-fenced `{r}` cell that reads a relative CSV. The journey opens the dataframe, checks its full schema
-and page, applies Rename, inserts generated R as a new fenced cell, and proves the source file on disk is unchanged.
+The R Markdown and Quarto fixtures each contain first-line YAML, prose, and one top-level backtick-fenced `{r}` cell
+that reads a relative CSV. The R Markdown parser fixture also contains a non-R cell and a disabled R cell. The journey
+opens the dataframe, checks its full schema and page, applies Rename, inserts generated R as a new fenced cell, and
+proves the source file on disk is unchanged.
 Parser tests reject later metadata blocks, raw HTML/TeX containers, indented or tilde R fences, alternate engines,
 ambiguous options, cross-cell syntax joining, and R Markdown fence-length mismatches. These are lexical R-cell runs;
 the test does not claim knitr or Quarto rendering behavior.

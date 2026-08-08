@@ -17995,7 +17995,7 @@ async function ensureCodePreviewHeight(workbench: Page, minimumHeight: number): 
   await panel.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
   const commands = new Set(await vscode.commands.getCommands(true));
   assert.ok(
-    commands.has("workbench.action.focusPanel") && commands.has("workbench.action.increaseViewHeight"),
+    commands.has("workbench.action.focusPanel") && commands.has("workbench.action.increaseViewSize"),
     "The workbench must expose its native Code Preview focus and resize commands."
   );
   await vscode.commands.executeCommand("openWrangler.codePreview.focus");
@@ -18004,7 +18004,7 @@ async function ensureCodePreviewHeight(workbench: Page, minimumHeight: number): 
     const bounds = await panel.boundingBox();
     assert.ok(bounds, "The Code Preview panel must have measurable geometry.");
     if (bounds.height >= minimumHeight) return;
-    await vscode.commands.executeCommand("workbench.action.increaseViewHeight");
+    await vscode.commands.executeCommand("workbench.action.increaseViewSize");
     await workbench.waitForTimeout(50);
   }
   const bounds = await panel.boundingBox();
