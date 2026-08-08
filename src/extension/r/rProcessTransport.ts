@@ -20,6 +20,7 @@ import {
   type RKernelColumnReference,
   type RKernelDataExportResult,
   type RKernelDatasetStatsResult,
+  type RKernelExportFormat,
   type RKernelPageWindow,
   type RKernelPlanUpdatedResult,
   type RKernelRequest,
@@ -198,7 +199,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
     encodeRKernelRequest(request);
     this.openingSessions.add(sessionId);
 
-    const scheduled = this.schedule(request);
+    const scheduled = this.schedule(request, { expectExportFormats: true });
     const tracked: ScheduledRequest = {
       state: scheduled.state,
       completion: scheduled.completion.then((response) => {
@@ -213,7 +214,10 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       if (response.kind !== "page" || response.sessionId !== sessionId) {
         throw new Error("The R process returned a mismatched session identity.");
       }
-      return Object.freeze({ sessionId, page: response.page });
+      if (!response.exportFormats) {
+        throw new Error("The R process did not report its data-export capabilities.");
+      }
+      return Object.freeze({ sessionId, exportFormats: response.exportFormats, page: response.page });
     } catch (error) {
       if (error instanceof DetachedBridgeRequestError && error.dispatched) {
         this.abandonedOpenSessions.add(sessionId);
@@ -290,7 +294,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
   async exportData(
     sessionId: string,
     revision: number,
-    format: "csv",
+    format: RKernelExportFormat,
     writeChunk: (chunk: Uint8Array) => Promise<void>,
     options: RKernelRequestOptions = {}
   ): Promise<RKernelDataExportResult> {
@@ -300,7 +304,7 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       throw new Error(`Open Wrangler has no live R process session ${sessionId}.`);
     }
     const exportId = this.createId();
-    const artifactPath = path.join(this.owned.exportRoot, `${exportId}.csv`);
+    const artifactPath = path.join(this.owned.exportRoot, `${exportId}.${format}`);
     const request = this.request("exportData", { sessionId, revision, exportId, format });
     encodeRKernelRequest(request);
     let deferredCleanup = false;
@@ -383,7 +387,8 @@ export class RProcessSessionTransport implements RKernelBridgeTransport {
       revision: response.revision,
       page: response.page,
       diff: response.diff,
-      code: response.code
+      code: response.code,
+      ...(response.remainingMissingCells === undefined ? {} : { remainingMissingCells: response.remainingMissingCells })
     });
   }
 

@@ -554,8 +554,8 @@ function resolveSourcePython(environment) {
 function stageTestModuleTree(destination) {
   const bounds = {
     label: "Remote SSH test module",
-    maximumFiles: 100,
-    maximumBytes: 4 * 1024 * 1024,
+    maximumFiles: 256,
+    maximumBytes: 8 * 1024 * 1024,
     maximumFileBytes: 2 * 1024 * 1024
   };
   const stagedRoot = join(destination, "dist-test");

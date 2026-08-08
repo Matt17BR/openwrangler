@@ -110,6 +110,7 @@ type DetachedRuntimeRole =
   | "retired runtime"
   | "saved-plan fallback runtime"
   | "failed saved-state runtime"
+  | "editing candidate"
   | "invalid open runtime"
   | "late-open runtime"
   | "terminal runtime";
@@ -183,6 +184,8 @@ export class SessionCoordinator implements vscode.Disposable {
         this.listExcelSheets(delegate, sessionId, source, backend, options),
       reconfigureFileSession: (sessionId, revision, source, options) =>
         this.reconfigureFileSession(delegate, sessionId, revision, source, options),
+      reconfigureNotebookSessionForEditing: (sessionId, revision, viewState, options) =>
+        this.reconfigureNotebookSessionForEditing(delegate, sessionId, revision, viewState, options),
       reconnectLiveSession: (sessionId, revision, options) =>
         this.reconnectLiveSession(delegate, sessionId, revision, options),
       cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
@@ -529,7 +532,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (request.kind !== "closeSession" && session.reconfiguring) {
       return protocolError(
         "session_reconfiguring",
-        `Open Wrangler session ${session.publicId} is changing its import options.`,
+        `Open Wrangler session ${session.publicId} is changing its runtime configuration.`,
         true,
         session.publicId,
         requestViewId(request)
@@ -865,6 +868,295 @@ export class SessionCoordinator implements vscode.Disposable {
       this.resolvePendingOpenWaitersIfIdle();
       this.releaseDelegateIfIdle(delegate);
     }
+  }
+
+  private async reconfigureNotebookSessionForEditing(
+    delegate: OpenWranglerBridge,
+    sessionId: string,
+    revision: number,
+    viewState: GridViewState,
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    if (this.disposed) {
+      return protocolError(
+        "coordinator_disposed",
+        "The Open Wrangler session coordinator has been disposed.",
+        false,
+        sessionId
+      );
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session || session.delegate !== delegate) {
+      return protocolError("unknown_session", `Unknown Open Wrangler session: ${sessionId}`, true);
+    }
+    if (revision !== session.publicRevision) {
+      return protocolError(
+        "stale_request",
+        `Editing mode was not opened because the session advanced to revision ${session.publicRevision}.`,
+        true,
+        session.publicId
+      );
+    }
+    if (session.closing) {
+      return protocolError(
+        "session_closing",
+        `Open Wrangler session ${session.publicId} is already closing.`,
+        true,
+        session.publicId
+      );
+    }
+    if (session.reconfiguring) {
+      return protocolError(
+        "session_reconfiguring",
+        `Open Wrangler session ${session.publicId} is already changing its runtime configuration.`,
+        true,
+        session.publicId
+      );
+    }
+    if (
+      session.openRequest.source.kind !== "notebookVariable" ||
+      session.origin?.kind !== "notebook" ||
+      session.metadata.mode !== "viewing" ||
+      !session.metadata.capabilities.notebookInsert ||
+      session.metadata.backend === "pyspark"
+    ) {
+      return protocolError(
+        "editing_mode_unavailable",
+        "This session cannot be reopened in Editing mode.",
+        true,
+        session.publicId
+      );
+    }
+    const staleOrigin = sessionOriginMismatch(session.openRequest, session.origin);
+    if (staleOrigin) return protocolError("invalid_source_origin", staleOrigin, true, session.publicId);
+
+    const nextViewState = reconcileViewingState(
+      { ...viewState, filterModel: session.metadata.filterModel },
+      session.metadata
+    );
+    const selectedColumnChanged = nextViewState.selectedColumnId !== session.viewState.selectedColumnId;
+    const viewStateChanged = !isDeepStrictEqual(nextViewState, session.viewState);
+    session.viewState = nextViewState;
+    session.reconfiguring = true;
+    this.cancelQueuedBackgroundOperations(session);
+    this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
+    let replacementPublished = false;
+    try {
+      if (viewStateChanged) await this.persistSession(session);
+      await this.waitForSessionIdle(session);
+      if (!this.isLiveSession(session) || session.closing) {
+        return protocolError(
+          this.disposed ? "coordinator_disposed" : "session_closing",
+          this.disposed
+            ? "The Open Wrangler session coordinator was disposed while Editing mode was opening."
+            : `Open Wrangler session ${session.publicId} closed while Editing mode was opening.`,
+          false,
+          session.publicId
+        );
+      }
+      if (revision !== session.publicRevision) {
+        return protocolError(
+          "stale_request",
+          `Editing mode was not opened because the session advanced to revision ${session.publicRevision}.`,
+          true,
+          session.publicId
+        );
+      }
+      const originMismatch = sessionOriginMismatch(session.openRequest, session.origin);
+      if (originMismatch) return protocolError("invalid_source_origin", originMismatch, true, session.publicId);
+      const response = await this.serializeSessionEstablishment(delegate, () =>
+        this.reconfigureNotebookSessionForEditingExclusive(session, options)
+      );
+      replacementPublished = response.kind === "sessionOpened";
+      return response;
+    } finally {
+      session.reconfiguring = false;
+      if (
+        (replacementPublished || (viewStateChanged && selectedColumnChanged)) &&
+        this.isLiveSession(session) &&
+        !session.closing &&
+        this.activeSessionId === session.publicId
+      ) {
+        this.activeSessionEmitter.fire(activeSnapshot(session));
+      }
+      const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
+      if (remaining > 0) this.pendingOpens.set(delegate, remaining);
+      else this.pendingOpens.delete(delegate);
+      this.resolvePendingOpenWaitersIfIdle();
+      this.releaseDelegateIfIdle(delegate);
+    }
+  }
+
+  private async reconfigureNotebookSessionForEditingExclusive(
+    session: CoordinatedSession,
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    if (!this.isLiveSession(session) || session.closing) {
+      return protocolError(
+        this.disposed ? "coordinator_disposed" : "session_closing",
+        "The notebook session closed before Editing mode could open.",
+        false,
+        session.publicId
+      );
+    }
+    const originMismatch = sessionOriginMismatch(session.openRequest, session.origin);
+    if (originMismatch) return protocolError("invalid_source_origin", originMismatch, true, session.publicId);
+
+    const previous: RuntimeSessionState = {
+      publicId: session.publicId,
+      runtimeId: session.runtimeId,
+      runtimeRevision: session.runtimeRevision,
+      delegate: session.delegate,
+      metadata: session.metadata,
+      code: session.code,
+      draftBaseFilterModel: session.draftBaseFilterModel,
+      viewState: session.viewState
+    };
+    const candidateSessionId = randomUUID();
+    const candidateRequest: OpenSessionRequest = {
+      ...session.openRequest,
+      backend: session.metadata.backend,
+      mode: "editing",
+      requestedSessionId: candidateSessionId
+    };
+    let candidate: RuntimeSessionState | undefined;
+    let candidateCleanupAttempted = false;
+    const cleanupCandidate = async (): Promise<void> => {
+      if (candidateCleanupAttempted) return;
+      candidateCleanupAttempted = true;
+      await this.closeRuntimeState(
+        candidate ?? {
+          publicId: session.publicId,
+          runtimeId: candidateSessionId,
+          runtimeRevision: 0,
+          delegate: session.delegate,
+          metadata: session.metadata,
+          code: "",
+          viewState: session.viewState
+        },
+        "editing candidate",
+        runtimeCleanupOptions(),
+        true
+      );
+    };
+
+    let response: OpenWranglerResponse;
+    try {
+      response = await session.delegate.request(candidateRequest, {
+        ...options,
+        requiredKernelSessionId: previous.runtimeId
+      });
+    } catch (error) {
+      await cleanupCandidate();
+      return protocolError(
+        "editing_mode_open_failed",
+        `Open Wrangler could not confirm the Editing session: ${error instanceof Error ? error.message : String(error)}`,
+        true,
+        session.publicId
+      );
+    }
+    if (response.kind === "error") {
+      await cleanupCandidate();
+      if (response.sessionId && response.sessionId !== candidateSessionId) {
+        return protocolError(
+          "invalid_runtime_response",
+          `Ignored an Editing-mode error correlated to runtime session ${response.sessionId} instead of ${candidateSessionId}.`,
+          true,
+          session.publicId
+        );
+      }
+      return response.sessionId ? { ...response, sessionId: session.publicId } : response;
+    }
+    if (response.kind === "cancelled") {
+      await cleanupCandidate();
+      return response;
+    }
+    if (response.kind !== "sessionOpened") {
+      await cleanupCandidate();
+      return protocolError(
+        "invalid_runtime_response",
+        `The runtime returned ${response.kind} while opening Editing mode.`,
+        true,
+        session.publicId
+      );
+    }
+
+    candidate = {
+      publicId: session.publicId,
+      runtimeId: candidateSessionId,
+      runtimeRevision: response.metadata.revision,
+      delegate: session.delegate,
+      metadata: response.metadata,
+      code: "",
+      viewState: initialViewingState(response.metadata)
+    };
+    const openedMismatch = sessionOpenedResponseMismatch(candidateRequest, response, true);
+    if (openedMismatch) {
+      await cleanupCandidate();
+      return protocolError(
+        "invalid_runtime_response",
+        `Ignored an invalid Editing openSession response: ${openedMismatch}`,
+        true,
+        session.publicId
+      );
+    }
+    const assertCandidateCurrent = (): void => {
+      if (!this.isLiveSession(session) || session.closing) throw new ReconfigurationSupersededError();
+      if (sessionOriginMismatch(candidateRequest, session.origin)) throw new ReconfigurationSupersededError();
+    };
+    let page: PageResponse;
+    try {
+      assertCandidateCurrent();
+      page = await this.restoreOneViewingState(
+        candidate,
+        session.viewState,
+        candidateRequest.pageSize,
+        candidateRequest.columnOffset,
+        candidateRequest.columnLimit,
+        "saved",
+        recoveryFollowupOptions(options),
+        assertCandidateCurrent
+      );
+      assertCandidateCurrent();
+    } catch (error) {
+      await cleanupCandidate();
+      return protocolError(
+        error instanceof ReconfigurationSupersededError ? "invalid_source_origin" : "editing_mode_view_restore_failed",
+        error instanceof ReconfigurationSupersededError
+          ? "The originating notebook changed while Editing mode was opening."
+          : `Open Wrangler could not restore the current view in Editing mode: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+        true,
+        session.publicId
+      );
+    }
+
+    const publicRevision = session.publicRevision + 1;
+    session.runtimeId = candidate.runtimeId;
+    session.runtimeRevision = candidate.runtimeRevision;
+    session.publicRevision = publicRevision;
+    session.openRequest = confirmedReplayOpenRequest(candidateRequest, candidate.metadata);
+    session.metadata = candidate.metadata;
+    session.code = candidate.code;
+    session.draftPresentation = undefined;
+    session.draftBaseFilterModel = undefined;
+    session.viewState = candidate.viewState;
+    session.recoveryRequired = false;
+    session.activeViewContextId = undefined;
+    session.latestRequestedViewContextId = undefined;
+    session.latestRequestedPageRequestId = undefined;
+    this.invalidateStepInspection(session);
+    candidateCleanupAttempted = true;
+    candidate = undefined;
+    this.trackDetachedCleanup(previous, "retired runtime");
+    await this.persistSession(session);
+    return publicOpenedResponse(
+      { kind: "sessionOpened", metadata: session.metadata, page: page.page, summaries: [] },
+      session.publicId,
+      publicRevision,
+      session.openRequest.source
+    );
   }
 
   private async reconfigureFileSessionExclusive(
@@ -1585,6 +1877,9 @@ export class SessionCoordinator implements vscode.Disposable {
         response.kind === "stepPreview"
           ? {
               diff: response.diff,
+              ...(response.remainingMissingCells === undefined
+                ? {}
+                : { remainingMissingCells: response.remainingMissingCells }),
               warnings: [...(response.warnings ?? [])],
               beforeSchema:
                 response.metadata.draftReplacesStepId === undefined
@@ -2031,6 +2326,9 @@ export class SessionCoordinator implements vscode.Disposable {
       session.draftBaseFilterModel = confirmedDraftBaseFilterModel;
       session.draftPresentation = {
         diff: preview.diff,
+        ...(preview.remainingMissingCells === undefined
+          ? {}
+          : { remainingMissingCells: preview.remainingMissingCells }),
         warnings: [...(preview.warnings ?? [])],
         beforeSchema:
           preview.metadata.draftReplacesStepId === undefined

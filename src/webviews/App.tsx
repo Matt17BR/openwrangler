@@ -86,6 +86,7 @@ export function App() {
   const [queuedStepSelection, setQueuedStepSelection] = useState<QueuedStepSelection | undefined>();
   const [queuedOperationIntent, setQueuedOperationIntent] = useState<QueuedOperationIntent | undefined>();
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
+  const [sessionModeChangePending, setSessionModeChangePending] = useState(false);
   const [liveSessionReconnectPending, setLiveSessionReconnectPending] = useState(false);
   const [sessionOpenProgress, setSessionOpenProgress] = useState<SessionOpenProgressStage | undefined>();
   const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
@@ -98,6 +99,7 @@ export function App() {
   const [operationKind, setOperationKind] = useState<OperationKind | undefined>();
   const [editingStep, setEditingStep] = useState<TransformStep | undefined>();
   const [diff, setDiff] = useState<DataDiff | undefined>();
+  const [remainingMissingCells, setRemainingMissingCells] = useState<number | undefined>();
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
   const [stepInspection, setStepInspection] = useState<StepInspectionResponse | undefined>();
   const [pendingStepInspection, setPendingStepInspection] = useState<PendingStepInspection | undefined>();
@@ -150,6 +152,8 @@ export function App() {
   const importOptionsReturnFocus = useRef<HTMLButtonElement | null>(null);
   const importOptionsFocusFrame = useRef<number | undefined>(undefined);
   const importOptionsDispatchFrame = useRef<number | undefined>(undefined);
+  const sessionModeChangeReturnFocus = useRef<HTMLButtonElement | null>(null);
+  const sessionModeChangeFocusFrame = useRef<number | undefined>(undefined);
   const operationWasOpen = useRef(false);
   const gridViewStateRef = useRef<GridViewState>(emptyGridViewState());
   const pendingGridViewState = useRef<GridViewState | undefined>(undefined);
@@ -346,6 +350,37 @@ export function App() {
     [flushGridViewState, storeGridViewState]
   );
 
+  const requestSessionModeChange = useCallback((trigger: HTMLButtonElement) => {
+    if (gridViewStateTimer.current !== undefined) {
+      window.clearTimeout(gridViewStateTimer.current);
+      gridViewStateTimer.current = undefined;
+    }
+    pendingGridViewState.current = undefined;
+    sessionModeChangeReturnFocus.current = document.hasFocus() && document.activeElement === trigger ? trigger : null;
+    vscode.postMessage({ kind: "switchSessionToEditing", state: gridViewStateRef.current });
+  }, []);
+
+  const restoreSessionModeChangeFocus = useCallback(() => {
+    if (sessionModeChangeFocusFrame.current !== undefined) {
+      window.cancelAnimationFrame(sessionModeChangeFocusFrame.current);
+    }
+    const returnTarget = sessionModeChangeReturnFocus.current;
+    sessionModeChangeReturnFocus.current = null;
+    sessionModeChangeFocusFrame.current = scheduleWebviewFocusRestoration(() => {
+      sessionModeChangeFocusFrame.current = undefined;
+      if (metadataRef.current?.mode === "editing") {
+        const primaryAction = document.querySelector<HTMLElement>("[data-operation-focus-fallback]:not(:disabled)");
+        (primaryAction ?? document.querySelector<HTMLElement>("main.app"))?.focus();
+        return;
+      }
+      if (canRestoreFocusTo(returnTarget)) {
+        returnTarget.focus();
+        return;
+      }
+      document.querySelector<HTMLButtonElement>("[data-session-mode-action]:not(:disabled)")?.focus();
+    });
+  }, []);
+
   useEffect(() => {
     const flushPendingGridViewState = () => flushGridViewState();
     window.addEventListener("pagehide", flushPendingGridViewState);
@@ -354,6 +389,10 @@ export function App() {
       window.removeEventListener("pagehide", flushPendingGridViewState);
       window.removeEventListener("beforeunload", flushPendingGridViewState);
       flushGridViewState();
+      if (sessionModeChangeFocusFrame.current !== undefined) {
+        window.cancelAnimationFrame(sessionModeChangeFocusFrame.current);
+      }
+      sessionModeChangeReturnFocus.current = null;
     };
   }, [flushGridViewState]);
 
@@ -949,6 +988,7 @@ export function App() {
         | RendererSynchronizationMessage
         | ImportOptionsStateMessage
         | RuntimeDependencyInstallStateMessage
+        | SessionModeChangeStateMessage
         | SessionOpenProgressMessage
         | SessionPresentationMessage
         | ViewStateMessage
@@ -1008,6 +1048,11 @@ export function App() {
         setRuntimeDependencyInstallPending(response.busy);
         return;
       }
+      if (response.kind === "sessionModeChangeState") {
+        setSessionModeChangePending(response.busy);
+        if (!response.busy) restoreSessionModeChangeFocus();
+        return;
+      }
       if (response.kind === "sessionPresentation") {
         const current = metadataRef.current;
         if (
@@ -1018,6 +1063,7 @@ export function App() {
           return;
         }
         setDiff(response.presentation.draft?.diff);
+        setRemainingMissingCells(response.presentation.draft?.remainingMissingCells);
         setDraftBefore(response.presentation.draft ? { schema: response.presentation.draft.beforeSchema } : undefined);
         setDraftWarnings(response.presentation.draft?.warnings ?? []);
         return;
@@ -1345,6 +1391,7 @@ export function App() {
         setStepInspectionError(undefined);
         setDraftBefore(undefined);
         setDiff(undefined);
+        setRemainingMissingCells(undefined);
         setDraftWarnings([]);
         resetViewProfiling();
         summaryOwnersByColumnId.current.clear();
@@ -1468,6 +1515,7 @@ export function App() {
           storeGoToColumnRequest(undefined);
         }
         setDiff(response.kind === "stepPreview" ? response.diff : undefined);
+        setRemainingMissingCells(response.kind === "stepPreview" ? response.remainingMissingCells : undefined);
         setDraftBefore(
           response.kind === "stepPreview" && previous
             ? {
@@ -1592,6 +1640,7 @@ export function App() {
     requestColumnReveal,
     requestStatsForConfirmedView,
     requestStepInspection,
+    restoreSessionModeChangeFocus,
     restartProfilingForConfirmedView,
     restoreConfirmedViewState,
     restoreViewAfterPageFailure,
@@ -2294,10 +2343,14 @@ export function App() {
       <div
         className="appWorkspace"
         data-testid="app-workspace"
-        inert={operationOpen}
+        inert={operationOpen || sessionModeChangePending}
         aria-hidden={operationOpen ? true : undefined}
       >
-        <header className="toolbar">
+        <header
+          className={
+            metadata && canSwitchNotebookSessionToEditing(metadata) ? "toolbar toolbarWithSessionModeAction" : "toolbar"
+          }
+        >
           <div className="toolbarIdentity">
             <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
             <span aria-label={visibleShapeLabel} title={visibleShapeTitle}>
@@ -2436,6 +2489,19 @@ export function App() {
                 selectedColumnId={gridViewState.selectedColumnId}
                 onSelect={requestColumnReveal}
               />
+              {canSwitchNotebookSessionToEditing(metadata) && (
+                <button
+                  type="button"
+                  className="toolbarButton"
+                  data-session-mode-action
+                  disabled={sessionModeChangePending}
+                  aria-busy={sessionModeChangePending || undefined}
+                  title="Reopen this live notebook variable in Editing mode"
+                  onClick={(event) => requestSessionModeChange(event.currentTarget)}
+                >
+                  <span className="codicon codicon-edit" aria-hidden="true" /> Switch to Editing
+                </button>
+              )}
               {metadata.backend === "pyspark" && (
                 <details className="orderingHelp">
                   <summary
@@ -2485,6 +2551,11 @@ export function App() {
                 {draftDiffLabels(diff, displayPage?.rows.length ?? 0).map((label) => (
                   <span key={label}>{label}</span>
                 ))}
+                {remainingMissingCells !== undefined && (
+                  <span role="status" aria-live="polite" aria-atomic="true">
+                    {fillMissingResultLabel(remainingMissingCells, metadata.draftStep)}
+                  </span>
+                )}
               </div>
             )}
             {draftWarnings.length > 0 && (
@@ -2761,6 +2832,11 @@ export function App() {
           )}
         </section>
       </div>
+      {sessionModeChangePending && (
+        <span className="sessionModeChangeStatus" role="status" aria-live="polite" aria-atomic="true">
+          Opening Editing mode…
+        </span>
+      )}
       {metadata && operationOpen && (
         <OperationBuilder
           key={`${operationKind ?? "none"}:${editingStep?.id ?? "new"}`}
@@ -2853,6 +2929,11 @@ interface RuntimeDependencyInstallStateMessage {
   busy: boolean;
 }
 
+interface SessionModeChangeStateMessage {
+  kind: "sessionModeChangeState";
+  busy: boolean;
+}
+
 interface SessionOpenProgressMessage {
   kind: "sessionOpenProgress";
   stage: unknown;
@@ -2866,6 +2947,7 @@ interface SessionPresentationMessage {
     code: string;
     draft?: {
       diff: DataDiff;
+      remainingMissingCells?: number;
       warnings: string[];
       beforeSchema: ColumnSchema[];
     };
@@ -3001,6 +3083,15 @@ function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
   return rest;
 }
 
+function canSwitchNotebookSessionToEditing(metadata: SessionMetadata): boolean {
+  return (
+    metadata.mode === "viewing" &&
+    metadata.source.kind === "notebookVariable" &&
+    metadata.backend !== "pyspark" &&
+    metadata.capabilities.notebookInsert
+  );
+}
+
 function isEditableKeyboardTarget(target: EventTarget): boolean {
   return (
     target instanceof HTMLElement &&
@@ -3095,6 +3186,16 @@ function draftDiffLabels(diff: DataDiff, displayedRowCount: number): string[] {
 
 function pluralize(value: number, singular: string): string {
   return value === 1 ? singular : `${singular}s`;
+}
+
+function fillMissingResultLabel(remaining: number, step: TransformStep): string {
+  if (step.kind !== "fillMissingValues") return "";
+  const column = step.params.column.name;
+  return remaining === 0
+    ? `No missing values remain in ${column}`
+    : `${remaining.toLocaleString()} missing ${pluralize(remaining, "value")} ${
+        remaining === 1 ? "remains" : "remain"
+      } in ${column}`;
 }
 
 function sessionOpenProgressHeading(stage: SessionOpenProgressStage): string {

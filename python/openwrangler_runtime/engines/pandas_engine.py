@@ -321,6 +321,20 @@ class PandasEngine(DataFrameEngine):
             summaries.append(summary)
         return summaries
 
+    def missing_count(self, frame: Any, column_position: int) -> int:
+        df = self.normalize(frame)
+        visible_positions = self._visible_positions(df)
+        if (
+            not isinstance(column_position, int)
+            or isinstance(column_position, bool)
+            or column_position < 0
+            or column_position >= len(visible_positions)
+        ):
+            raise EngineError("The selected column is unavailable for missing-value counting.")
+        series = df.iloc[:, visible_positions[column_position]]
+        null_count, nan_count = _missing_value_counts(series, str(series.dtype))
+        return null_count + nan_count
+
     def header_stats(self, frame: Any) -> dict[str, Any]:
         df = self._visible_frame(self.normalize(frame))
         missing_by_column = []
@@ -425,6 +439,47 @@ class PandasEngine(DataFrameEngine):
                     _pandas_fill_missing_from_columns(
                         df.iloc[:, position],
                         [df.iloc[:, fallback_position] for fallback_position in fallback_positions],
+                    ),
+                )
+            elif replacement.get("kind") == "directional":
+                order_rules = [
+                    (
+                        self._bound_frame_position(df, rule["column"], kind),
+                        rule["direction"] == "asc",
+                        rule["nulls"],
+                    )
+                    for rule in replacement["orderBy"]
+                ]
+                df.isetitem(
+                    position,
+                    _pandas_fill_missing_directional(
+                        df,
+                        position,
+                        order_rules,
+                        replacement["direction"],
+                        replacement.get("maxGap"),
+                    ),
+                )
+            elif replacement.get("kind") == "groupedStatistic":
+                key_positions = [self._bound_frame_position(df, key, kind) for key in replacement["keys"]]
+                df.isetitem(
+                    position,
+                    _pandas_fill_missing_grouped_statistic(
+                        df,
+                        position,
+                        key_positions,
+                        replacement["statistic"],
+                    ),
+                )
+            elif replacement.get("kind") == "linearInterpolation":
+                coordinate_position = self._bound_frame_position(df, replacement["coordinate"], kind)
+                df.isetitem(
+                    position,
+                    _pandas_fill_missing_linear_interpolation(
+                        df,
+                        position,
+                        coordinate_position,
+                        replacement.get("maxGap"),
                     ),
                 )
             else:
@@ -755,7 +810,13 @@ class PandasEngine(DataFrameEngine):
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
         needs_counter = any(
             step["kind"] in {"oneHotEncode", "multiLabelBinarize"}
-            or (step["kind"] == "fillMissingValues" and step["params"]["replacement"].get("kind") == "mostFrequent")
+            or (
+                step["kind"] == "fillMissingValues"
+                and (
+                    step["params"]["replacement"].get("kind") == "mostFrequent"
+                    or step["params"]["replacement"].get("statistic") == "mostFrequent"
+                )
+            )
             for step in plan
         )
         lines = ["from collections import Counter"] if needs_counter else []
@@ -1101,6 +1162,38 @@ class PandasEngine(DataFrameEngine):
                         f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_from_columns("
                         f"{series}, [df.iloc[:, position] for position in {fallback_positions!r}]))"
                     ),
+                ]
+            if replacement.get("kind") == "directional":
+                order_rules = [
+                    (
+                        bound_column_position(rule["column"], kind),
+                        rule["direction"] == "asc",
+                        rule["nulls"],
+                    )
+                    for rule in replacement["orderBy"]
+                ]
+                return [
+                    (
+                        f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_directional("
+                        f"df, {position}, {order_rules!r}, {replacement['direction']!r}, "
+                        f"{replacement.get('maxGap')!r}))"
+                    )
+                ]
+            if replacement.get("kind") == "groupedStatistic":
+                key_positions = [bound_column_position(key, kind) for key in replacement["keys"]]
+                return [
+                    (
+                        f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_grouped_statistic("
+                        f"df, {position}, {key_positions!r}, {replacement['statistic']!r}))"
+                    )
+                ]
+            if replacement.get("kind") == "linearInterpolation":
+                coordinate_position = bound_column_position(replacement["coordinate"], kind)
+                return [
+                    (
+                        f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_linear_interpolation("
+                        f"df, {position}, {coordinate_position}, {replacement.get('maxGap')!r}))"
+                    )
                 ]
             lines = [
                 f"{prefix}{series} = df.iloc[:, {position}]",
@@ -2425,6 +2518,344 @@ def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> 
     return result
 
 
+def _pandas_fill_missing_directional(
+    frame: Any,
+    target_position: int,
+    order_rules: Sequence[tuple[int, bool, str]],
+    direction: str,
+    max_gap: int | None,
+) -> Any:
+    """Fill complete missing runs in calculation order, then restore source order."""
+
+    import numpy as np
+
+    series = frame.iloc[:, target_position]
+    missing = _null_mask(series) | _nan_mask(series)
+    if not bool(missing.any()):
+        return series.copy()
+
+    order = np.arange(len(frame), dtype=np.int64)
+    for position, ascending, nulls in reversed(order_rules):
+        relative_order = (
+            frame.iloc[order, position]
+            .reset_index(drop=True)
+            .sort_values(ascending=ascending, na_position=nulls, kind="stable")
+            .index.to_numpy(dtype=np.int64)
+        )
+        order = order[relative_order]
+
+    ordered = series.iloc[order].reset_index(drop=True)
+    ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
+    result = ordered.copy()
+    cursor = 0
+    while cursor < len(result):
+        if not ordered_missing[cursor]:
+            cursor += 1
+            continue
+        start = cursor
+        while cursor < len(result) and ordered_missing[cursor]:
+            cursor += 1
+        end = cursor
+        gap_size = end - start
+        anchor = start - 1 if direction == "forward" else end
+        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):
+            try:
+                result.iloc[start:end] = ordered.iloc[anchor]
+            except (TypeError, ValueError, OverflowError) as error:
+                raise EngineError(
+                    f"Directional fill is incompatible with the selected Pandas column: {error}"
+                ) from error
+
+    inverse = np.empty(len(order), dtype=np.int64)
+    inverse[order] = np.arange(len(order), dtype=np.int64)
+    restored = result.iloc[inverse].copy()
+    restored.index = series.index
+    restored.name = series.name
+    return restored
+
+
+def _pandas_fill_missing_linear_interpolation(
+    frame: Any,
+    target_position: int,
+    coordinate_position: int,
+    max_gap: int | None,
+) -> Any:
+    """Interpolate bracketed missing runs by coordinate distance and restore row order."""
+
+    import numpy as np
+
+    series = frame.iloc[:, target_position]
+    if _pandas_semantic_type(series) != "float":
+        raise EngineError("Linear interpolation requires a floating-point target column.")
+    coordinates = _pandas_linear_coordinate_values(frame.iloc[:, coordinate_position])
+    if len(set(coordinates)) != len(coordinates):
+        raise EngineError("Linear interpolation requires unique coordinate values.")
+    try:
+        order = np.asarray(sorted(range(len(coordinates)), key=coordinates.__getitem__), dtype=np.int64)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise EngineError(f"Linear interpolation coordinates cannot be ordered: {error}") from error
+
+    ordered = series.iloc[order].reset_index(drop=True)
+    ordered_coordinates = [coordinates[int(position)] for position in order]
+    ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
+    result = ordered.copy()
+    cursor = 0
+    while cursor < len(result):
+        if not ordered_missing[cursor]:
+            cursor += 1
+            continue
+        start = cursor
+        while cursor < len(result) and ordered_missing[cursor]:
+            cursor += 1
+        end = cursor
+        if start == 0 or end == len(result) or (max_gap is not None and end - start > max_gap):
+            continue
+        left_value = ordered.iloc[start - 1]
+        right_value = ordered.iloc[end]
+        if not _pandas_finite_interpolation_anchor(left_value) or not _pandas_finite_interpolation_anchor(right_value):
+            continue
+        left_coordinate = ordered_coordinates[start - 1]
+        right_coordinate = ordered_coordinates[end]
+        try:
+            for position in range(start, end):
+                weight = _pandas_linear_interpolation_weight(
+                    ordered_coordinates[position],
+                    left_coordinate,
+                    right_coordinate,
+                )
+                if not isfinite(weight) or not 0.0 <= weight <= 1.0:
+                    raise ValueError("coordinate distance produced a non-finite interpolation weight")
+                # This convex form avoids overflowing ``right - left`` for
+                # finite endpoints with opposite signs.
+                result.iloc[position] = (1.0 - weight) * float(left_value) + weight * float(right_value)
+        except (ArithmeticError, TypeError, ValueError, OverflowError) as error:
+            raise EngineError(f"Linear interpolation failed for the selected coordinates: {error}") from error
+
+    try:
+        result = result.astype(series.dtype)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise EngineError(f"Linear interpolation cannot preserve the Pandas target type: {error}") from error
+    inverse = np.empty(len(order), dtype=np.int64)
+    inverse[order] = np.arange(len(order), dtype=np.int64)
+    restored = result.iloc[inverse].copy()
+    restored.index = series.index
+    restored.name = series.name
+    return restored
+
+
+def _pandas_linear_interpolation_weight(current: Any, left: Any, right: Any) -> float:
+    if any(isinstance(value, Decimal) for value in (current, left, right)) or all(
+        isinstance(value, Integral) for value in (current, left, right)
+    ):
+        with localcontext() as context:
+            context.prec = 80
+            return float((Decimal(current) - Decimal(left)) / (Decimal(right) - Decimal(left)))
+    current_float = float(current)
+    left_float = float(left)
+    right_float = float(right)
+    denominator = right_float - left_float
+    if isfinite(denominator):
+        return (current_float - left_float) / denominator
+    return ((current_float / 2.0) - (left_float / 2.0)) / ((right_float / 2.0) - (left_float / 2.0))
+
+
+def _pandas_linear_coordinate_values(series: Any) -> list[Any]:
+    import numpy as np
+    import pandas as pd
+
+    result = []
+    for value in series.array:
+        if _is_null_value(value) or _is_nan_value(value):
+            raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+        if isinstance(value, (pd.Timestamp, datetime, np.datetime64)):
+            try:
+                timestamp = pd.Timestamp(value)
+                if pd.isna(timestamp):
+                    raise ValueError("missing datetime")
+                result.append(int(timestamp.value))
+            except (TypeError, ValueError, OverflowError) as error:
+                raise EngineError(f"Linear interpolation has an invalid datetime coordinate: {error}") from error
+            continue
+        if isinstance(value, date):
+            result.append(value.toordinal())
+            continue
+        if isinstance(value, Decimal):
+            if not value.is_finite():
+                raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+            result.append(value)
+            continue
+        if isinstance(value, Integral) and not isinstance(value, (bool, np.bool_)):
+            result.append(int(value))
+            continue
+        if isinstance(value, Real) and not isinstance(value, (bool, np.bool_)):
+            numeric = float(value)
+            if not isfinite(numeric):
+                raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+            result.append(numeric)
+            continue
+        raise EngineError("Linear interpolation coordinates must contain only numeric, date, or datetime values.")
+    return result
+
+
+def _pandas_finite_interpolation_anchor(value: Any) -> bool:
+    if _is_null_value(value) or _is_nan_value(value):
+        return False
+    try:
+        return isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _pandas_fill_missing_grouped_statistic(
+    frame: Any,
+    target_position: int,
+    key_positions: Sequence[int],
+    statistic: str,
+) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    series = frame.iloc[:, target_position]
+    missing = (_null_mask(series) | _nan_mask(series)).to_numpy(dtype=bool)
+    if not missing.any():
+        return series.copy()
+
+    prepared_keys = []
+    for position in key_positions:
+        key_series = frame.iloc[:, position].reset_index(drop=True)
+        if isinstance(key_series.dtype, pd.CategoricalDtype):
+            # Pandas omits the missing group for an observed categorical even
+            # with dropna=False.  Group the values as objects so null category
+            # rows participate in the same missing-key group as every other
+            # nullable key dtype.
+            key_series = key_series.astype(object)
+        if _pandas_grouped_identity_required(key_series):
+            key_series = pd.Series(
+                [
+                    pd.NA if _is_null_value(value) or _is_nan_value(value) else _pandas_grouped_scalar_identity(value)
+                    for value in key_series.array
+                ],
+                dtype=object,
+            )
+        prepared_keys.append(key_series)
+    key_frame = pd.concat(prepared_keys, axis=1, ignore_index=True)
+    groups = key_frame.groupby(list(key_frame.columns), dropna=False, sort=False, observed=True).indices.values()
+
+    semantic_type = _pandas_semantic_type(series)
+    identity_mode = statistic == "mostFrequent" and _pandas_grouped_identity_required(series)
+
+    unresolved = object()
+
+    def calculate(values: list[Any]) -> Any:
+        if not values:
+            return unresolved
+        if statistic == "mostFrequent":
+            from collections import Counter
+
+            try:
+                if identity_mode:
+                    identities = [_pandas_grouped_scalar_identity(value) for value in values]
+                    counts = Counter(identities)
+                    originals = dict(zip(identities, values, strict=True))
+                else:
+                    counts = Counter(values)
+                    originals = {value: value for value in values}
+            except TypeError as error:
+                raise EngineError(
+                    "Grouped most-common fill is unavailable for values that cannot be compared exactly."
+                ) from error
+            highest = max(counts.values())
+            winners = [value for value, count in counts.items() if count == highest]
+            return originals[winners[0]] if len(winners) == 1 else unresolved
+        ordered = sorted(values)
+        if statistic == "median":
+            lower = ordered[(len(ordered) - 1) // 2]
+            upper = ordered[len(ordered) // 2]
+            if semantic_type == "integer":
+                return exact_integer_median(lower, upper)
+            if semantic_type == "decimal":
+                return exact_decimal_median(lower, upper, *_pandas_decimal_spec(series, values))
+            try:
+                result = safe_float_midpoint(lower, upper)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise EngineError(f"Cannot calculate a grouped numeric median: {error}") from error
+            return unresolved if isnan(result) else result
+
+        values_array = np.asarray(values, dtype=np.float64)
+        has_positive_infinity = bool(np.isposinf(values_array).any())
+        has_negative_infinity = bool(np.isneginf(values_array).any())
+        if has_positive_infinity and has_negative_infinity:
+            return unresolved
+        if has_positive_infinity:
+            return float("inf")
+        if has_negative_infinity:
+            return float("-inf")
+        scale = float(np.max(np.abs(values_array)))
+        if scale == 0:
+            return 0.0
+        scaled_mean = float(np.mean(values_array / scale))
+        return max(-1.0, min(1.0, scaled_mean)) * scale
+
+    result = series.copy()
+    try:
+        source = series.reset_index(drop=True)
+        for positions in groups:
+            missing_positions = positions[missing[positions]]
+            if not len(missing_positions):
+                continue
+            present_positions = positions[~missing[positions]]
+            fill_value = calculate(list(source.iloc[present_positions].array))
+            if fill_value is unresolved:
+                continue
+            result.iloc[missing_positions] = fill_value
+    except (TypeError, ValueError, OverflowError) as error:
+        raise EngineError(f"A grouped fill value is incompatible with the selected Pandas column: {error}") from error
+    return result
+
+
+def _pandas_grouped_identity_required(series: Any) -> bool:
+    import pandas as pd
+
+    if not pd.api.types.is_object_dtype(series.dtype):
+        return False
+    semantic_type = _pandas_semantic_type(series)
+    if semantic_type in {"list", "struct"}:
+        return True
+    return semantic_type == "string" and pd.api.types.infer_dtype(series, skipna=True) not in {
+        "string",
+        "unicode",
+        "empty",
+    }
+
+
+def _pandas_grouped_scalar_identity(value: Any) -> tuple[Any, ...]:
+    """Return exact, hashable identity for a public scalar stored in an object column."""
+
+    if isinstance(value, bool):
+        return ("boolean", bool(value))
+    if isinstance(value, Integral):
+        return ("integer", int(value))
+    if isinstance(value, Decimal):
+        return ("decimal", value)
+    if isinstance(value, Real):
+        return ("float", float(value))
+    if isinstance(value, str):
+        return ("string", value)
+    if isinstance(value, datetime):
+        return ("datetime", value)
+    if isinstance(value, date):
+        return ("date", value)
+    if isinstance(value, timedelta):
+        return ("duration", value)
+    if isinstance(value, bytes):
+        return ("binary", value)
+    try:
+        hash(value)
+    except TypeError as error:
+        raise EngineError("Grouped fills require scalar Pandas group keys and most-common values.") from error
+    return (type(value).__module__, type(value).__qualname__, value)
+
+
 def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     import pandas as pd
 
@@ -2760,6 +3191,352 @@ def _generated_pandas_fill_helpers() -> list[str]:
         ),
         "        result = updated",
         "    return result",
+        "",
+        "",
+        "def _open_wrangler_fill_missing_directional(df, target_position, order_rules, direction, max_gap):",
+        "    series = df.iloc[:, target_position]",
+        (
+            "    missing = _open_wrangler_mask(series, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(series, _open_wrangler_is_nan)"
+        ),
+        "    if not missing.any():",
+        "        return series.copy()",
+        "    order = np.arange(len(df), dtype=np.int64)",
+        "    for position, ascending, nulls in reversed(order_rules):",
+        "        relative_order = (",
+        "            df.iloc[order, position]",
+        "            .reset_index(drop=True)",
+        "            .sort_values(ascending=ascending, na_position=nulls, kind='stable')",
+        "            .index.to_numpy(dtype=np.int64)",
+        "        )",
+        "        order = order[relative_order]",
+        "    ordered = series.iloc[order].reset_index(drop=True)",
+        (
+            "    ordered_missing = (_open_wrangler_mask(ordered, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
+        ),
+        "    result = ordered.copy()",
+        "    cursor = 0",
+        "    while cursor < len(result):",
+        "        if not ordered_missing[cursor]:",
+        "            cursor += 1",
+        "            continue",
+        "        start = cursor",
+        "        while cursor < len(result) and ordered_missing[cursor]:",
+        "            cursor += 1",
+        "        end = cursor",
+        "        gap_size = end - start",
+        "        anchor = start - 1 if direction == 'forward' else end",
+        "        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):",
+        "            try:",
+        "                result.iloc[start:end] = ordered.iloc[anchor]",
+        "            except (TypeError, ValueError, OverflowError) as error:",
+        (
+            "                raise ValueError('Directional fill is incompatible with the selected Pandas column: ' "
+            "+ str(error)) from error"
+        ),
+        "    inverse = np.empty(len(order), dtype=np.int64)",
+        "    inverse[order] = np.arange(len(order), dtype=np.int64)",
+        "    restored = result.iloc[inverse].copy()",
+        "    restored.index = series.index",
+        "    restored.name = series.name",
+        "    return restored",
+        "",
+        "",
+        "def _open_wrangler_linear_interpolation_weight(current, left, right):",
+        "    if any(isinstance(value, Decimal) for value in (current, left, right)) or all(",
+        "        isinstance(value, Integral) for value in (current, left, right)",
+        "    ):",
+        "        with localcontext() as context:",
+        "            context.prec = 80",
+        ("            return float((Decimal(current) - Decimal(left)) / (Decimal(right) - Decimal(left)))"),
+        "    current_float = float(current)",
+        "    left_float = float(left)",
+        "    right_float = float(right)",
+        "    denominator = right_float - left_float",
+        "    if np.isfinite(denominator):",
+        "        return (current_float - left_float) / denominator",
+        "    return ((current_float / 2.0) - (left_float / 2.0)) / (",
+        "        (right_float / 2.0) - (left_float / 2.0)",
+        "    )",
+        "",
+        "",
+        "def _open_wrangler_linear_coordinate_values(series):",
+        "    result = []",
+        "    for value in series.array:",
+        ("        if _open_wrangler_is_null(value) or _open_wrangler_is_nan(value):"),
+        (
+            "            raise ValueError('Linear interpolation requires every coordinate value to be "
+            "present and finite.')"
+        ),
+        "        if isinstance(value, (pd.Timestamp, datetime, np.datetime64)):",
+        "            try:",
+        "                timestamp = pd.Timestamp(value)",
+        "                if pd.isna(timestamp):",
+        "                    raise ValueError('missing datetime')",
+        "                result.append(int(timestamp.value))",
+        "            except (TypeError, ValueError, OverflowError) as error:",
+        (
+            "                raise ValueError('Linear interpolation has an invalid datetime coordinate: ' "
+            "+ str(error)) from error"
+        ),
+        "            continue",
+        "        if isinstance(value, date):",
+        "            result.append(value.toordinal())",
+        "            continue",
+        "        if isinstance(value, Decimal):",
+        "            if not value.is_finite():",
+        (
+            "                raise ValueError('Linear interpolation requires every coordinate value to be "
+            "present and finite.')"
+        ),
+        "            result.append(value)",
+        "            continue",
+        "        if isinstance(value, Integral) and not isinstance(value, (bool, np.bool_)):",
+        "            result.append(int(value))",
+        "            continue",
+        "        if isinstance(value, Real) and not isinstance(value, (bool, np.bool_)):",
+        "            numeric = float(value)",
+        "            if not np.isfinite(numeric):",
+        (
+            "                raise ValueError('Linear interpolation requires every coordinate value to be "
+            "present and finite.')"
+        ),
+        "            result.append(numeric)",
+        "            continue",
+        (
+            "        raise ValueError('Linear interpolation coordinates must contain only numeric, date, "
+            "or datetime values.')"
+        ),
+        "    return result",
+        "",
+        "",
+        "def _open_wrangler_finite_interpolation_anchor(value):",
+        "    if _open_wrangler_is_null(value) or _open_wrangler_is_nan(value):",
+        "        return False",
+        "    try:",
+        "        return bool(np.isfinite(float(value)))",
+        "    except (TypeError, ValueError, OverflowError):",
+        "        return False",
+        "",
+        "",
+        "def _open_wrangler_fill_missing_linear_interpolation(df, target_position, coordinate_position, max_gap):",
+        "    series = df.iloc[:, target_position]",
+        "    if _open_wrangler_fill_semantic_type(series) != 'float':",
+        "        raise ValueError('Linear interpolation requires a floating-point target column.')",
+        "    coordinates = _open_wrangler_linear_coordinate_values(df.iloc[:, coordinate_position])",
+        "    if len(set(coordinates)) != len(coordinates):",
+        "        raise ValueError('Linear interpolation requires unique coordinate values.')",
+        "    try:",
+        "        order = np.asarray(sorted(range(len(coordinates)), key=coordinates.__getitem__), dtype=np.int64)",
+        "    except (TypeError, ValueError, OverflowError) as error:",
+        ("        raise ValueError('Linear interpolation coordinates cannot be ordered: ' + str(error)) from error"),
+        "    ordered = series.iloc[order].reset_index(drop=True)",
+        "    ordered_coordinates = [coordinates[int(position)] for position in order]",
+        (
+            "    ordered_missing = (_open_wrangler_mask(ordered, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
+        ),
+        "    result = ordered.copy()",
+        "    cursor = 0",
+        "    while cursor < len(result):",
+        "        if not ordered_missing[cursor]:",
+        "            cursor += 1",
+        "            continue",
+        "        start = cursor",
+        "        while cursor < len(result) and ordered_missing[cursor]:",
+        "            cursor += 1",
+        "        end = cursor",
+        ("        if start == 0 or end == len(result) or (max_gap is not None and end - start > max_gap):"),
+        "            continue",
+        "        left_value = ordered.iloc[start - 1]",
+        "        right_value = ordered.iloc[end]",
+        (
+            "        if not _open_wrangler_finite_interpolation_anchor(left_value) or not "
+            "_open_wrangler_finite_interpolation_anchor(right_value):"
+        ),
+        "            continue",
+        "        left_coordinate = ordered_coordinates[start - 1]",
+        "        right_coordinate = ordered_coordinates[end]",
+        "        try:",
+        "            for position in range(start, end):",
+        "                weight = _open_wrangler_linear_interpolation_weight(",
+        "                    ordered_coordinates[position], left_coordinate, right_coordinate",
+        "                )",
+        "                if not np.isfinite(weight) or not 0.0 <= weight <= 1.0:",
+        ("                    raise ValueError('coordinate distance produced a non-finite interpolation weight')"),
+        ("                result.iloc[position] = (1.0 - weight) * float(left_value) + weight * float(right_value)"),
+        "        except (ArithmeticError, TypeError, ValueError, OverflowError) as error:",
+        (
+            "            raise ValueError('Linear interpolation failed for the selected coordinates: ' "
+            "+ str(error)) from error"
+        ),
+        "    try:",
+        "        result = result.astype(series.dtype)",
+        "    except (TypeError, ValueError, OverflowError) as error:",
+        (
+            "        raise ValueError('Linear interpolation cannot preserve the Pandas target type: ' "
+            "+ str(error)) from error"
+        ),
+        "    inverse = np.empty(len(order), dtype=np.int64)",
+        "    inverse[order] = np.arange(len(order), dtype=np.int64)",
+        "    restored = result.iloc[inverse].copy()",
+        "    restored.index = series.index",
+        "    restored.name = series.name",
+        "    return restored",
+        "",
+        "",
+        "def _open_wrangler_fill_missing_grouped_statistic(df, target_position, key_positions, statistic):",
+        "    series = df.iloc[:, target_position]",
+        (
+            "    missing = (_open_wrangler_mask(series, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(series, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
+        ),
+        "    if not missing.any():",
+        "        return series.copy()",
+        "    prepared_keys = []",
+        "    for position in key_positions:",
+        "        key_series = df.iloc[:, position].reset_index(drop=True)",
+        "        if isinstance(key_series.dtype, pd.CategoricalDtype):",
+        "            key_series = key_series.astype(object)",
+        "        if _open_wrangler_grouped_identity_required(key_series):",
+        "            key_series = pd.Series([",
+        "                pd.NA if (_open_wrangler_is_null(value) or _open_wrangler_is_nan(value))",
+        "                else _open_wrangler_grouped_scalar_identity(value)",
+        "                for value in key_series.array",
+        "            ], dtype=object)",
+        "        prepared_keys.append(key_series)",
+        "    key_frame = pd.concat(prepared_keys, axis=1, ignore_index=True)",
+        (
+            "    groups = key_frame.groupby(list(key_frame.columns), dropna=False, sort=False, "
+            "observed=True).indices.values()"
+        ),
+        "    semantic_type = _open_wrangler_fill_semantic_type(series)",
+        ("    identity_mode = statistic == 'mostFrequent' and _open_wrangler_grouped_identity_required(series)"),
+        "    unresolved = object()",
+        "    def calculate(values):",
+        "        if not values:",
+        "            return unresolved",
+        "        if statistic == 'mostFrequent':",
+        "            try:",
+        "                if identity_mode:",
+        "                    identities = [_open_wrangler_grouped_scalar_identity(value) for value in values]",
+        "                    counts = Counter(identities)",
+        "                    originals = dict(zip(identities, values))",
+        "                else:",
+        "                    counts = Counter(values)",
+        "                    originals = {value: value for value in values}",
+        "            except TypeError as error:",
+        (
+            "                raise ValueError('Grouped most-common fill is unavailable for values that cannot "
+            "be compared exactly.') from error"
+        ),
+        "            highest = max(counts.values())",
+        "            winners = [value for value, count in counts.items() if count == highest]",
+        "            return originals[winners[0]] if len(winners) == 1 else unresolved",
+        "        ordered = sorted(values)",
+        "        if statistic == 'median':",
+        "            lower = ordered[(len(ordered) - 1) // 2]",
+        "            upper = ordered[len(ordered) // 2]",
+        "            if semantic_type == 'integer':",
+        "                total = int(lower) + int(upper)",
+        "                if total % 2:",
+        (
+            "                    raise ValueError('The integer median is fractional. Cast the column to float "
+            "or decimal before filling missing values.')"
+        ),
+        "                return total // 2",
+        "            if semantic_type == 'decimal':",
+        "                precision, scale = _open_wrangler_decimal_spec(series, values)",
+        "                with localcontext() as context:",
+        (
+            "                    context.prec = max(80, precision + scale + 4, "
+            "len(lower.as_tuple().digits) + len(upper.as_tuple().digits) + scale + 4)"
+        ),
+        "                    value = (lower + upper) / Decimal(2)",
+        "                return _open_wrangler_decimal_at_scale(value, precision, scale)",
+        "            value = _open_wrangler_float_midpoint(lower, upper)",
+        "            return unresolved if np.isnan(value) else value",
+        "        values_array = np.asarray(values, dtype=np.float64)",
+        "        has_positive = bool(np.isposinf(values_array).any())",
+        "        has_negative = bool(np.isneginf(values_array).any())",
+        "        if has_positive and has_negative:",
+        "            return unresolved",
+        "        if has_positive:",
+        "            return float('inf')",
+        "        if has_negative:",
+        "            return float('-inf')",
+        "        scale = float(np.max(np.abs(values_array)))",
+        "        if scale == 0:",
+        "            return 0.0",
+        "        scaled_mean = float(np.mean(values_array / scale))",
+        "        return max(-1.0, min(1.0, scaled_mean)) * scale",
+        "    result = series.copy()",
+        "    source = series.reset_index(drop=True)",
+        "    for positions in groups:",
+        "        missing_positions = positions[missing[positions]]",
+        "        if not len(missing_positions):",
+        "            continue",
+        "        present_positions = positions[~missing[positions]]",
+        "        fill_value = calculate(list(source.iloc[present_positions].array))",
+        "        if fill_value is unresolved:",
+        "            continue",
+        "        result.iloc[missing_positions] = fill_value",
+        "    return result",
+        "",
+        "",
+        "def _open_wrangler_grouped_identity_required(series):",
+        "    if not pd.api.types.is_object_dtype(series.dtype):",
+        "        return False",
+        "    inferred = pd.api.types.infer_dtype(series, skipna=True)",
+        "    if inferred in {'string', 'unicode', 'empty'}:",
+        "        return False",
+        "    if inferred not in {'mixed', 'mixed-integer', 'date'}:",
+        "        return False",
+        "    present = [",
+        "        value for value in series.array",
+        "        if not (_open_wrangler_is_null(value) or _open_wrangler_is_nan(value))",
+        "    ]",
+        "    homogeneous_scalar = (",
+        "        all(isinstance(value, bool) for value in present)",
+        ("        or all(isinstance(value, Integral) and not isinstance(value, bool) for value in present)"),
+        "        or all(isinstance(value, Real) and not isinstance(value, bool) for value in present)",
+        "        or all(isinstance(value, Decimal) for value in present)",
+        "        or all(isinstance(value, datetime) for value in present)",
+        "        or all(isinstance(value, date) for value in present)",
+        "        or all(isinstance(value, timedelta) for value in present)",
+        "        or all(isinstance(value, bytes) for value in present)",
+        "    )",
+        "    return bool(present) and not homogeneous_scalar",
+        "",
+        "",
+        "def _open_wrangler_grouped_scalar_identity(value):",
+        "    if isinstance(value, bool):",
+        "        return ('boolean', bool(value))",
+        "    if isinstance(value, Integral):",
+        "        return ('integer', int(value))",
+        "    if isinstance(value, Decimal):",
+        "        return ('decimal', value)",
+        "    if isinstance(value, Real):",
+        "        return ('float', float(value))",
+        "    if isinstance(value, str):",
+        "        return ('string', value)",
+        "    if isinstance(value, datetime):",
+        "        return ('datetime', value)",
+        "    if isinstance(value, date):",
+        "        return ('date', value)",
+        "    if isinstance(value, timedelta):",
+        "        return ('duration', value)",
+        "    if isinstance(value, bytes):",
+        "        return ('binary', value)",
+        "    try:",
+        "        hash(value)",
+        "    except TypeError as error:",
+        (
+            "        raise ValueError('Grouped fills require scalar Pandas group keys and "
+            "most-common values.') from error"
+        ),
+        "    return (type(value).__module__, type(value).__qualname__, value)",
         "",
         "",
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",

@@ -188,6 +188,201 @@ def test_fill_missing_validation_preserves_ordered_fallback_references() -> None
     assert validated["params"]["replacement"] == replacement
 
 
+def test_fill_missing_validation_preserves_directional_order_and_gap_limit() -> None:
+    replacement = {
+        "kind": "directional",
+        "direction": "forward",
+        "orderBy": [
+            {
+                "column": public_ref("c:source:0", "group"),
+                "direction": "asc",
+                "nulls": "last",
+            },
+            {
+                "column": public_ref("c:source:1", "sequence"),
+                "direction": "desc",
+                "nulls": "first",
+            },
+        ],
+        "maxGap": 2,
+    }
+
+    validated = step(
+        "directional-fill",
+        "fillMissingValues",
+        column=public_ref("c:source:3", "value"),
+        replacement=replacement,
+    )
+
+    assert validated["params"]["replacement"] == replacement
+
+
+def test_fill_missing_validation_preserves_grouped_statistic_keys() -> None:
+    replacement = {
+        "kind": "groupedStatistic",
+        "statistic": "median",
+        "keys": [
+            public_ref("c:source:0", "region"),
+            public_ref("c:source:1", "date"),
+        ],
+    }
+
+    validated = step(
+        "grouped-fill",
+        "fillMissingValues",
+        column=public_ref("c:source:3", "value"),
+        replacement=replacement,
+    )
+
+    assert validated["params"]["replacement"] == replacement
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {"kind": "groupedStatistic", "statistic": "median", "keys": []},
+        {
+            "kind": "groupedStatistic",
+            "statistic": "future",
+            "keys": [public_ref("c:source:0", "region")],
+        },
+        {
+            "kind": "groupedStatistic",
+            "statistic": "median",
+            "keys": [public_ref("c:source:0", "region"), public_ref("c:source:0", "region")],
+        },
+        {
+            "kind": "groupedStatistic",
+            "statistic": "median",
+            "keys": [public_ref("c:source:3", "value")],
+        },
+        {
+            "kind": "groupedStatistic",
+            "statistic": "median",
+            "keys": [public_ref("c:source:0", "region")],
+            "extra": True,
+        },
+    ],
+)
+def test_fill_missing_validation_rejects_invalid_grouped_statistics(replacement: dict[str, Any]) -> None:
+    with pytest.raises(OperationError):
+        step(
+            "bad-grouped-fill",
+            "fillMissingValues",
+            column=public_ref("c:source:3", "value"),
+            replacement=replacement,
+        )
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {"kind": "directional", "direction": "forward", "orderBy": []},
+        {
+            "kind": "directional",
+            "direction": "sideways",
+            "orderBy": [
+                {
+                    "column": public_ref("c:source:0", "group"),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": public_ref("c:source:0", "group"),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+            "maxGap": True,
+        },
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": public_ref("c:source:0", "group"),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+            "maxGap": 0,
+        },
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": public_ref("c:source:0", "group"),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+            "maxGap": 1_000_001,
+        },
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": public_ref("c:source:0", "group"),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+            "extra": True,
+        },
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": public_ref("c:source:0", "group"),
+                    "direction": "asc",
+                    "nulls": "last",
+                },
+                {
+                    "column": public_ref("c:source:0", "group"),
+                    "direction": "desc",
+                    "nulls": "first",
+                },
+            ],
+        },
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": public_ref("c:source:3", "value"),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [{"column": "group", "direction": "asc", "nulls": "last"}],
+        },
+    ],
+)
+def test_fill_missing_validation_rejects_invalid_directional_replacements(
+    replacement: dict[str, Any],
+) -> None:
+    with pytest.raises(OperationError):
+        step(
+            "bad-directional-fill",
+            "fillMissingValues",
+            column=public_ref("c:source:3", "value"),
+            replacement=replacement,
+        )
+
+
 @pytest.mark.parametrize(
     "replacement",
     [
@@ -360,6 +555,23 @@ def test_optional_row_column_lists_have_strict_empty_semantics() -> None:
             {"column": public_ref("c:source:0", "value"), "newName": PRIVATE_COLUMN},
         ),
         ("castColumn", {"column": public_ref("private", PRIVATE_COLUMN), "dtype": "float"}),
+        (
+            "fillMissingValues",
+            {
+                "column": public_ref("c:source:3", "value"),
+                "replacement": {
+                    "kind": "directional",
+                    "direction": "forward",
+                    "orderBy": [
+                        {
+                            "column": public_ref("private", PRIVATE_COLUMN),
+                            "direction": "asc",
+                            "nulls": "last",
+                        }
+                    ],
+                },
+            },
+        ),
         (
             "formula",
             {

@@ -127,6 +127,8 @@ _FILL_INTEGER_TEXT = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 _FILL_NUMBER_TEXT = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$")
 _FILL_REPLACEMENT_KINDS = {"string", "integer", "float", "decimal", "boolean", "date", "datetime"}
 _MAX_FILL_FALLBACK_COLUMNS = 64
+_MAX_DIRECTIONAL_FILL_GAP = 1_000_000
+_MAX_LINEAR_INTERPOLATION_GAP = 1_000_000
 _PORTABLE_FILL_INTEGER_LIMIT = 10**38 - 1
 _COLUMN_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "renameColumn": ("column",),
@@ -239,10 +241,23 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
         raise OperationError("dropMissingRows.how must be any or all.")
     elif kind == "fillMissingValues":
         params["replacement"] = _normalize_fill_missing_replacement(params["replacement"])
-        if params["replacement"].get("kind") == "fallbackColumns" and any(
-            reference["id"] == params["column"]["id"] for reference in params["replacement"]["columns"]
+        replacement_kind = params["replacement"].get("kind")
+        if replacement_kind == "fallbackColumns":
+            if any(reference["id"] == params["column"]["id"] for reference in params["replacement"]["columns"]):
+                raise OperationError("A fill target cannot also be one of its fallback columns.")
+        elif replacement_kind == "directional" and any(
+            rule["column"]["id"] == params["column"]["id"] for rule in params["replacement"]["orderBy"]
         ):
-            raise OperationError("A fill target cannot also be one of its fallback columns.")
+            raise OperationError("A directional fill target cannot also be one of its ordering columns.")
+        elif replacement_kind == "groupedStatistic" and any(
+            key["id"] == params["column"]["id"] for key in params["replacement"]["keys"]
+        ):
+            raise OperationError("A grouped fill target cannot also be one of its group keys.")
+        elif (
+            replacement_kind == "linearInterpolation"
+            and params["replacement"]["coordinate"]["id"] == params["column"]["id"]
+        ):
+            raise OperationError("A linear interpolation target cannot also be its coordinate column.")
     elif kind == "dropDuplicates" and params.get("keep", "first") not in {"first", "last", "none"}:
         raise OperationError("dropDuplicates.keep must be first, last, or none.")
     elif kind == "castColumn" and params["dtype"] not in CAST_DTYPES:
@@ -350,6 +365,83 @@ def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
             "kind": kind,
             "columns": columns,
         }
+    if kind == "directional":
+        fields = set(value)
+        missing = {"kind", "direction", "orderBy"} - fields
+        if missing:
+            raise OperationError(
+                "A directional fill replacement is missing required fields: " + ", ".join(sorted(missing)) + "."
+            )
+        unexpected = fields - {"kind", "direction", "orderBy", "maxGap"}
+        if unexpected:
+            raise OperationError(
+                "A directional fill replacement contains unknown fields: "
+                + ", ".join(sorted(map(str, unexpected)))
+                + "."
+            )
+        direction = value.get("direction")
+        if direction not in {"forward", "backward"}:
+            raise OperationError("A directional fill direction must be forward or backward.")
+        result: dict[str, Any] = {
+            "kind": kind,
+            "direction": direction,
+            "orderBy": _normalize_transform_sort_rules(
+                value.get("orderBy"),
+                "fillMissingValues.replacement.orderBy",
+                allow_empty=False,
+            ),
+        }
+        if "maxGap" in value:
+            max_gap = value.get("maxGap")
+            if type(max_gap) is not int or not 1 <= max_gap <= _MAX_DIRECTIONAL_FILL_GAP:
+                raise OperationError(
+                    f"A directional fill maxGap must be an integer from 1 to {_MAX_DIRECTIONAL_FILL_GAP:,}."
+                )
+            result["maxGap"] = max_gap
+        return result
+    if kind == "groupedStatistic":
+        if set(value) != {"kind", "statistic", "keys"}:
+            raise OperationError("A grouped-statistic replacement must contain exactly kind, statistic, and keys.")
+        statistic = value.get("statistic")
+        if statistic not in {"mean", "median", "mostFrequent"}:
+            raise OperationError("A grouped-statistic fill must use mean, median, or mostFrequent.")
+        return {
+            "kind": kind,
+            "statistic": statistic,
+            "keys": _normalize_column_reference_list(
+                value.get("keys"),
+                "fillMissingValues.replacement.keys",
+            ),
+        }
+    if kind == "linearInterpolation":
+        fields = set(value)
+        missing = {"kind", "coordinate"} - fields
+        if missing:
+            raise OperationError(
+                "A linear-interpolation replacement is missing required fields: " + ", ".join(sorted(missing)) + "."
+            )
+        unexpected = fields - {"kind", "coordinate", "maxGap"}
+        if unexpected:
+            raise OperationError(
+                "A linear-interpolation replacement contains unknown fields: "
+                + ", ".join(sorted(map(str, unexpected)))
+                + "."
+            )
+        result = {
+            "kind": kind,
+            "coordinate": _normalize_column_reference(
+                value.get("coordinate"),
+                "fillMissingValues.replacement.coordinate",
+            ),
+        }
+        if "maxGap" in value:
+            max_gap = value.get("maxGap")
+            if type(max_gap) is not int or not 1 <= max_gap <= _MAX_LINEAR_INTERPOLATION_GAP:
+                raise OperationError(
+                    f"A linear interpolation maxGap must be an integer from 1 to {_MAX_LINEAR_INTERPOLATION_GAP:,}."
+                )
+            result["maxGap"] = max_gap
+        return result
     if kind not in _FILL_REPLACEMENT_KINDS:
         raise OperationError(f"Unsupported fill replacement type: {kind!r}.")
     if set(value) != {"kind", "value"}:
@@ -622,6 +714,15 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
             references.extend(
                 ("replacement.columns.name", item.get("name")) for item in params["replacement"]["columns"]
             )
+        elif kind == "fillMissingValues" and params["replacement"].get("kind") == "directional":
+            references.extend(
+                ("replacement.orderBy.column.name", rule["column"].get("name"))
+                for rule in params["replacement"]["orderBy"]
+            )
+        elif kind == "fillMissingValues" and params["replacement"].get("kind") == "groupedStatistic":
+            references.extend(("replacement.keys.name", key.get("name")) for key in params["replacement"]["keys"])
+        elif kind == "fillMissingValues" and params["replacement"].get("kind") == "linearInterpolation":
+            references.append(("replacement.coordinate.name", params["replacement"]["coordinate"].get("name")))
     elif kind == "formula":
         references.append(("leftColumn.name", params["leftColumn"].get("name")))
         if "rightColumn" in params:

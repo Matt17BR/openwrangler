@@ -143,7 +143,9 @@ ${namedRows.code}
 `;
     const result = runR(code);
 
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), openRequestId);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), openRequestId, {
+      expectExportFormats: true
+    });
     const paged = decodeRKernelResponseJson(marked(result.stdout, page.marker), pageRequestId);
     const profiled = decodeRKernelResponseJson(marked(result.stdout, summary.marker), summaryRequestId);
     const datasetStats = decodeRKernelResponseJson(marked(result.stdout, stats.marker), statsRequestId);
@@ -155,8 +157,11 @@ ${namedRows.code}
     );
     const changed = decodeRKernelResponseJson(marked(result.stdout, sourceChanged.marker), sourceChangedRequestId);
     const closed = decodeRKernelResponseJson(marked(result.stdout, close.marker), closeRequestId);
-    const namedRowsPage = decodeRKernelResponseJson(marked(result.stdout, namedRows.marker), namedRowsRequestId);
+    const namedRowsPage = decodeRKernelResponseJson(marked(result.stdout, namedRows.marker), namedRowsRequestId, {
+      expectExportFormats: true
+    });
     expect(opened).toMatchObject({ kind: "page", sessionId, page: { shape: { rows: 3, columns: 2 } } });
+    expect(opened).toMatchObject({ exportFormats: ["csv", "parquet"] });
     expect(paged).toMatchObject({ kind: "page", sessionId, page: { shape: { rows: 3, columns: 2 } } });
     if (paged.kind !== "page") throw new Error("Expected a page response.");
     expect(paged.page.page.rows.map((row) => row.rowNumber)).toEqual([0, 1, 2]);
@@ -230,6 +235,84 @@ ${namedRows.code}
         page: { rows: [{ id: "r:r:0", rowNumber: 0, rowLabel: "named-row" }] }
       }
     });
+  });
+
+  it("streams a native Parquet file through the strict kernel transport", () => {
+    const parquetSessionId = "10101010-1010-4010-8010-101010101010";
+    const parquetOpenId = "11111111-2222-4111-8111-111111111111";
+    const parquetExportRequestId = "22222222-3333-4222-8222-222222222222";
+    const parquetReadRequestId = "33333333-4444-4333-8333-333333333333";
+    const parquetCloseExportId = "44444444-5555-4444-8444-444444444444";
+    const parquetCloseSessionId = "55555555-6666-4555-8555-555555555555";
+    const parquetExportId = "66666666-7777-4666-8666-666666666666";
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: parquetOpenId,
+      kind: "openSession",
+      payload: { sessionId: parquetSessionId, variableName: "parquet_frame", page: pageWindow() }
+    });
+    const exportRequest = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: parquetExportRequestId,
+      kind: "exportData",
+      payload: { sessionId: parquetSessionId, revision: 0, exportId: parquetExportId, format: "parquet" }
+    });
+    const read = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: parquetReadRequestId,
+      kind: "readDataExport",
+      payload: {
+        sessionId: parquetSessionId,
+        revision: 0,
+        exportId: parquetExportId,
+        offset: 0,
+        limit: 1_048_576
+      }
+    });
+    const closeExport = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: parquetCloseExportId,
+      kind: "closeDataExport",
+      payload: { sessionId: parquetSessionId, revision: 0, exportId: parquetExportId }
+    });
+    const closeSession = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: parquetCloseSessionId,
+      kind: "closeSession",
+      payload: { sessionId: parquetSessionId }
+    });
+    const code = `
+parquet_frame <- data.frame(
+  duplicate = factor(c("one", "two")),
+  duplicate = as.Date(c("2026-01-01", "2026-01-02")),
+  check.names = FALSE
+)
+${bootstrap}
+${open.code}
+${exportRequest.code}
+${read.code}
+${closeExport.code}
+${closeSession.code}
+`;
+    const result = runR(code);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), parquetOpenId, {
+      expectExportFormats: true
+    });
+    const exported = decodeRKernelResponseJson(marked(result.stdout, exportRequest.marker), parquetExportRequestId);
+    const chunk = decodeRKernelResponseJson(marked(result.stdout, read.marker), parquetReadRequestId);
+    const exportClosed = decodeRKernelResponseJson(marked(result.stdout, closeExport.marker), parquetCloseExportId);
+    const sessionClosed = decodeRKernelResponseJson(marked(result.stdout, closeSession.marker), parquetCloseSessionId);
+
+    expect(opened).toMatchObject({ kind: "page", exportFormats: ["csv", "parquet"] });
+    expect(exported).toMatchObject({ kind: "dataExported", format: "parquet", rows: 2, columns: 2 });
+    expect(chunk).toMatchObject({ kind: "dataExportChunk", offset: 0 });
+    if (chunk.kind !== "dataExportChunk") throw new Error("Expected an R Parquet export chunk.");
+    const bytes = Buffer.from(chunk.data.buffer, chunk.data.byteOffset, chunk.data.byteLength);
+    expect(bytes.subarray(0, 4).toString("utf8")).toBe("PAR1");
+    expect(bytes.subarray(-4).toString("utf8")).toBe("PAR1");
+    expect(exportClosed).toMatchObject({ kind: "dataExportClosed", exportId: parquetExportId });
+    expect(sessionClosed).toMatchObject({ kind: "closed", sessionId: parquetSessionId });
   });
 
   it("preserves R profile semantics through the strict TypeScript decoder", () => {
@@ -439,7 +522,9 @@ stopifnot(identical(frame, frame_before))
 ${close.code}
 `);
 
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
     if (opened.kind !== "page") throw new Error("Expected an opened native R rename session.");
     const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
       inputSchema: opened.page.schema
@@ -644,7 +729,9 @@ stopifnot(identical(frame, frame_before))
 ${close.code}
 `);
 
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
     if (opened.kind !== "page") throw new Error("Expected an opened native R Drop Columns session.");
     const dropped = decodeRKernelResponseJson(marked(result.stdout, dropPreview.marker), ids.dropPreview, {
       inputSchema: opened.page.schema
@@ -824,7 +911,9 @@ stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 ${close.code}
 `);
 
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
     if (opened.kind !== "page") throw new Error("Expected an opened native R Select Columns session.");
     const selected = decodeRKernelResponseJson(marked(result.stdout, selectPreview.marker), ids.selectPreview, {
       inputSchema: opened.page.schema
@@ -1025,7 +1114,9 @@ stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 ${close.code}
 `);
 
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
     if (opened.kind !== "page") throw new Error("Expected an opened native R Clone Column session.");
     const cloned = decodeRKernelResponseJson(marked(result.stdout, clonePreview.marker), ids.clonePreview, {
       inputSchema: opened.page.schema
@@ -1199,7 +1290,9 @@ stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 ${close.code}
 `);
 
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
     if (opened.kind !== "page") throw new Error("Expected an opened native R Text Length session.");
     const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
       inputSchema: opened.page.schema
@@ -1378,7 +1471,9 @@ stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 ${close.code}
 `);
 
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
     if (opened.kind !== "page") throw new Error("Expected an opened native R lowercase session.");
     const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
       inputSchema: opened.page.schema
@@ -1588,7 +1683,9 @@ stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 ${close.code}
 `);
 
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
     if (opened.kind !== "page") throw new Error("Expected an opened native R text-cleaning session.");
     const upperPreviewed = decodeRKernelResponseJson(marked(result.stdout, upperPreview.marker), ids.upperPreview, {
       inputSchema: opened.page.schema
@@ -1761,7 +1858,9 @@ stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
 ${close.code}
 `);
 
-    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
     if (opened.kind !== "page") throw new Error("Expected an opened native R type-conversion session.");
     const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
       inputSchema: opened.page.schema

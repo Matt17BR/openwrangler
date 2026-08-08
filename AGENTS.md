@@ -90,6 +90,15 @@ their branches are integrated or abandoned.
 
 56. A plain `.R` launch owns the exact sole-open `TextDocument`, version, and complete in-memory source captured before execution. It runs that source exactly once in a dedicated Open Wrangler `Rscript --vanilla` process whose working directory is the document's parent. Startup paths use private child environment variables that are removed before source evaluation; they may not alter `commandArgs(trailingOnly = TRUE)`. User stdout and stderr never carry protocol frames. The file transport uses one private bounded mailbox, serializes requests, and stops its owned process and removes its private root after the last session closes. Every await before publication rechecks the same document object, URI uniqueness, and version. Generated-code insertion targets only that captured in-memory document, proves the exact complete result after one `WorkspaceEdit`, and never retries a stale or indeterminate edit. Direct `.R` execution is supported only on macOS and Linux until Windows has equivalent whole-tree process ownership; IRkernel notebook support remains cross-platform. The packaged R phase must cover a real `.R` command, picker, workbench, insertion, rerun, decoy-document isolation, unchanged disk sources, and terminal process cleanup in both VS Code and Cursor without starting a second editor phase.
 
+57. Fill Missing Values uses stable column references for fallback columns, directional order, and grouped statistics.
+    Grouped targets and keys must be distinct and type-compatible. Grouped fills never read the current viewing query,
+    treat null and NaN grouping keys as one missing group, leave tied or undefined groups unresolved, preserve row order,
+    and keep conservative nullable metadata. Linear interpolation accepts only a floating-point target and one distinct
+    numeric, date, or date-time coordinate. Coordinates must be complete, finite, unique, and precise enough to retain
+    their relative distance. It fills only bracketed runs between finite anchors, applies the optional whole-run limit,
+    restores source order, and never uses viewing filters or sorts. R `integer64` and native 128-bit integer coordinates
+    remain unsupported until their distances can be represented exactly.
+
 ## Public writing
 
 Read `docs/writing-style.md` before changing public text. Write like a maintainer explaining a concrete change to

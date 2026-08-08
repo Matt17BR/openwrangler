@@ -140,6 +140,25 @@ export type FillMissingReplacement =
       columns: FillMissingFallbackColumnReferenceArray;
     }
   | {
+      kind: "directional";
+      direction: "forward" | "backward";
+      /**
+       * @minItems 1
+       */
+      orderBy: [TransformSortRule, ...TransformSortRule[]];
+      maxGap?: number;
+    }
+  | {
+      kind: "groupedStatistic";
+      statistic: "median" | "mean" | "mostFrequent";
+      keys: NonEmptyColumnReferenceArray;
+    }
+  | {
+      kind: "linearInterpolation";
+      coordinate: ColumnReference;
+      maxGap?: number;
+    }
+  | {
       kind: "string";
       value: string;
     }
@@ -174,15 +193,15 @@ export type FillMissingReplacement =
  * @maxItems 64
  */
 export type FillMissingFallbackColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
+/**
+ * @minItems 1
+ */
+export type NonEmptyColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
 export type DropDuplicatesTransformStep = TransformStepTemplate & {
   kind: "dropDuplicates";
   params: DropDuplicatesParams;
   [k: string]: unknown;
 };
-/**
- * @minItems 1
- */
-export type NonEmptyColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
 export type SelectColumnsTransformStep = TransformStepTemplate & {
   kind: "selectColumns";
   params: ColumnsParams;
@@ -1213,6 +1232,7 @@ export interface StepPreviewResponse {
   page: GridPage;
   diff: DataDiff;
   code: string;
+  remainingMissingCells?: number;
   warnings?: string[];
 }
 export interface DataDiff {

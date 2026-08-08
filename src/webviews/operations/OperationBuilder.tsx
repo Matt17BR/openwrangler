@@ -11,6 +11,7 @@ import type {
   OperationKind,
   SessionMetadata,
   TransformFilterModel,
+  TransformSortRule,
   TransformStep
 } from "../../shared/protocol";
 import {
@@ -20,6 +21,7 @@ import {
   supportsOperation
 } from "../../shared/operations";
 import { isTransformStep } from "../../shared/protocolValidation";
+import { columnTypePresentation } from "../columnTypes";
 
 interface OperationBuilderProps {
   metadata: SessionMetadata;
@@ -36,10 +38,27 @@ const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "
 const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
 const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
 const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
-type FillMode = "median" | "mean" | "mostFrequent" | "fallbackColumns" | "value";
+type FillMode =
+  | "median"
+  | "mean"
+  | "mostFrequent"
+  | "groupedMedian"
+  | "groupedMean"
+  | "groupedMostFrequent"
+  | "linearInterpolation"
+  | "directionalForward"
+  | "directionalBackward"
+  | "fallbackColumns"
+  | "value";
 type FillValueKind = Exclude<
   FillMissingReplacement,
-  { kind: "median" } | { kind: "mean" } | { kind: "mostFrequent" } | { kind: "fallbackColumns" }
+  | { kind: "median" }
+  | { kind: "mean" }
+  | { kind: "mostFrequent" }
+  | { kind: "linearInterpolation" }
+  | { kind: "directional" }
+  | { kind: "groupedStatistic" }
+  | { kind: "fallbackColumns" }
 >["kind"];
 const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
@@ -52,10 +71,24 @@ const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "unknown"
 ]);
 const mostFrequentColumnTypes: ReadonlySet<ColumnType> = new Set(["string", "boolean"]);
+const interpolationCoordinateColumnTypes: ReadonlySet<ColumnType> = new Set([
+  "integer",
+  "float",
+  "decimal",
+  "date",
+  "datetime"
+]);
 const maxFillFallbackColumns = 64;
+const maxFillDirectionalGap = 1_000_000;
 interface FillFallbackRow {
   readonly key: string;
   readonly columnId: string;
+}
+interface FillOrderRow {
+  readonly key: string;
+  readonly columnId: string;
+  readonly direction: TransformSortRule["direction"];
+  readonly nulls: TransformSortRule["nulls"];
 }
 const fillValueKindOptions: readonly [FillValueKind, string][] = [
   ["string", "Text"],
@@ -250,7 +283,19 @@ function savedReferenceGroups(step: TransformStep): SavedReferenceGroup[] {
                   label: `fallback column ${index + 1}`,
                   reference
                 }))
-              : [])
+              : step.params.replacement.kind === "groupedStatistic"
+                ? step.params.replacement.keys.map((reference, index) => ({
+                    label: `group key ${index + 1}`,
+                    reference
+                  }))
+                : step.params.replacement.kind === "directional"
+                  ? step.params.replacement.orderBy.map((rule, index) => ({
+                      label: `calculation order ${index + 1}`,
+                      reference: rule.column
+                    }))
+                  : step.params.replacement.kind === "linearInterpolation"
+                    ? [{ label: "interpolation coordinate", reference: step.params.replacement.coordinate }]
+                    : [])
           ],
           rejectRepeatedIds: true
         }
@@ -371,6 +416,34 @@ function savedStepEditError(step: TransformStep, inputSchema: ColumnSchema[] | u
     );
     if (incompatible) {
       return `The saved fallback column “${incompatible.name}” is not compatible with the recorded ${target.type} target. ${recovery}`;
+    }
+  }
+  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "directional") {
+    const incompatible = step.params.replacement.orderBy.find((rule) => {
+      const column = columnsById.get(rule.column.id);
+      return !column || !orderedAggregationColumnTypes.has(column.type);
+    });
+    if (incompatible) {
+      return `The saved calculation-order column “${incompatible.column.name}” cannot be ordered safely. ${recovery}`;
+    }
+  }
+  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "linearInterpolation") {
+    const target = columnsById.get(step.params.column.id);
+    const coordinate = columnsById.get(step.params.replacement.coordinate.id);
+    if (target?.type !== "float") {
+      return `The saved interpolation target is not a floating-point column. ${recovery}`;
+    }
+    if (!coordinate || !isInterpolationCoordinateColumn(coordinate)) {
+      return `The saved interpolation coordinate cannot be used safely. ${recovery}`;
+    }
+  }
+  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "groupedStatistic") {
+    const incompatible = step.params.replacement.keys.find((reference) => {
+      const column = columnsById.get(reference.id);
+      return !column || !orderedAggregationColumnTypes.has(column.type);
+    });
+    if (incompatible) {
+      return `The saved group key “${incompatible.name}” cannot be used for grouped filling. ${recovery}`;
     }
   }
   if (step.kind === "byExample") {
@@ -1135,7 +1208,7 @@ function FillMissingFields({
 }) {
   const initialParams = initialStep?.kind === "fillMissingValues" ? initialStep.params : undefined;
   const initialReplacement = initialParams?.replacement;
-  const availableColumns = compatibleColumns(columns, fillValueColumnTypes);
+  const availableColumns = fillTargetColumns(columns);
   const savedColumnId = columnReferenceId(initialParams?.column);
   const [selectedColumnId, setSelectedColumnId] = useState(() =>
     savedColumnId && availableColumns.some((column) => column.id === savedColumnId)
@@ -1143,6 +1216,15 @@ function FillMissingFields({
       : (availableColumns.find((column) => column.nullable)?.id ?? availableColumns[0]?.id ?? "")
   );
   const selectedColumn = availableColumns.find((column) => column.id === selectedColumnId);
+  const savedInterpolationCoordinateId =
+    initialReplacement?.kind === "linearInterpolation" ? initialReplacement.coordinate.id : undefined;
+  const initialInterpolationCoordinates = interpolationCoordinateColumnsForTarget(selectedColumn, columns);
+  const [interpolationCoordinateId, setInterpolationCoordinateId] = useState(() =>
+    savedInterpolationCoordinateId &&
+    initialInterpolationCoordinates.some((column) => column.id === savedInterpolationCoordinateId)
+      ? savedInterpolationCoordinateId
+      : (initialInterpolationCoordinates[0]?.id ?? "")
+  );
   const savedFallbackColumnIds =
     initialReplacement?.kind === "fallbackColumns" ? initialReplacement.columns.map((column) => column.id) : [];
   const initialFallbackColumns = fallbackColumnsForTarget(selectedColumn, columns);
@@ -1161,13 +1243,65 @@ function FillMissingFields({
   const [fallbackRows, setFallbackRows] = useState<FillFallbackRow[]>(() =>
     initialFallbackIds.map((columnId, index) => ({ key: `fill-fallback-${index}`, columnId }))
   );
+  const savedGroupedKeyIds =
+    initialReplacement?.kind === "groupedStatistic" ? initialReplacement.keys.map((column) => column.id) : [];
+  const initialGroupedKeyColumns = groupedKeyColumnsForTarget(selectedColumn, columns);
+  const initialGroupedKeyIds = (() => {
+    const availableIds = new Set(initialGroupedKeyColumns.map((column) => column.id));
+    const seen = new Set<string>();
+    const restored = savedGroupedKeyIds.filter((id) => {
+      if (!availableIds.has(id) || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (restored.length > 0) return restored;
+    return initialGroupedKeyColumns[0] ? [initialGroupedKeyColumns[0].id] : [];
+  })();
+  const [groupedKeyIds, setGroupedKeyIds] = useState<string[]>(initialGroupedKeyIds);
+  const savedDirectionalRules = initialReplacement?.kind === "directional" ? initialReplacement.orderBy : ([] as const);
+  const initialOrderColumns = directionalOrderColumnsForTarget(selectedColumn, columns);
+  const initialOrderRows = (() => {
+    const availableIds = new Set(initialOrderColumns.map((column) => column.id));
+    const seen = new Set<string>();
+    const restored = savedDirectionalRules.flatMap((rule, index): FillOrderRow[] => {
+      if (!availableIds.has(rule.column.id) || seen.has(rule.column.id)) return [];
+      seen.add(rule.column.id);
+      return [
+        {
+          key: `fill-order-${index}`,
+          columnId: rule.column.id,
+          direction: rule.direction,
+          nulls: rule.nulls
+        }
+      ];
+    });
+    if (restored.length > 0) return restored;
+    const first = initialOrderColumns[0];
+    return first
+      ? [{ key: "fill-order-0", columnId: first.id, direction: "asc" as const, nulls: "last" as const }]
+      : [];
+  })();
+  const nextOrderRowId = useRef(Math.max(1, initialOrderRows.length));
+  const [orderRows, setOrderRows] = useState<FillOrderRow[]>(initialOrderRows);
   const savedMode: FillMode | undefined = initialReplacement
     ? initialReplacement.kind === "median" ||
       initialReplacement.kind === "mean" ||
       initialReplacement.kind === "mostFrequent" ||
       initialReplacement.kind === "fallbackColumns"
       ? initialReplacement.kind
-      : "value"
+      : initialReplacement.kind === "groupedStatistic"
+        ? initialReplacement.statistic === "median"
+          ? "groupedMedian"
+          : initialReplacement.statistic === "mean"
+            ? "groupedMean"
+            : "groupedMostFrequent"
+        : initialReplacement.kind === "linearInterpolation"
+          ? "linearInterpolation"
+          : initialReplacement.kind === "directional"
+            ? initialReplacement.direction === "forward"
+              ? "directionalForward"
+              : "directionalBackward"
+            : "value"
     : undefined;
   const fallbackColumns = fallbackColumnsForTarget(selectedColumn, columns);
   const [mode, setMode] = useState<FillMode>(() =>
@@ -1179,6 +1313,9 @@ function FillMissingFields({
     initialReplacement?.kind !== "median" &&
     initialReplacement?.kind !== "mean" &&
     initialReplacement?.kind !== "mostFrequent" &&
+    initialReplacement?.kind !== "groupedStatistic" &&
+    initialReplacement?.kind !== "linearInterpolation" &&
+    initialReplacement?.kind !== "directional" &&
     initialReplacement?.kind !== "fallbackColumns"
       ? initialReplacement?.kind
       : undefined;
@@ -1200,6 +1337,46 @@ function FillMissingFields({
       const first = nextFallbackColumns[0];
       return first ? [{ key: `fill-fallback-${nextFallbackRowId.current++}`, columnId: first.id }] : [];
     });
+    const nextGroupedKeyColumns = groupedKeyColumnsForTarget(column, columns);
+    const nextGroupedKeyIds = new Set(nextGroupedKeyColumns.map((candidate) => candidate.id));
+    setGroupedKeyIds((current) => {
+      const seen = new Set<string>();
+      const retained = current.filter((keyId) => {
+        if (!nextGroupedKeyIds.has(keyId) || seen.has(keyId)) return false;
+        seen.add(keyId);
+        return true;
+      });
+      if (retained.length > 0) return retained;
+      return nextGroupedKeyColumns[0] ? [nextGroupedKeyColumns[0].id] : [];
+    });
+    const nextInterpolationCoordinates = interpolationCoordinateColumnsForTarget(column, columns);
+    setInterpolationCoordinateId((current) =>
+      nextInterpolationCoordinates.some((candidate) => candidate.id === current)
+        ? current
+        : (nextInterpolationCoordinates[0]?.id ?? "")
+    );
+    const nextOrderColumns = directionalOrderColumnsForTarget(column, columns);
+    const nextOrderIds = new Set(nextOrderColumns.map((candidate) => candidate.id));
+    setOrderRows((current) => {
+      const seen = new Set<string>();
+      const retained = current.filter((row) => {
+        if (!nextOrderIds.has(row.columnId) || seen.has(row.columnId)) return false;
+        seen.add(row.columnId);
+        return true;
+      });
+      if (retained.length > 0) return retained;
+      const first = nextOrderColumns[0];
+      return first
+        ? [
+            {
+              key: `fill-order-${nextOrderRowId.current++}`,
+              columnId: first.id,
+              direction: "asc",
+              nulls: "last"
+            }
+          ]
+        : [];
+    });
     setUnknownValueKind(column?.type === "unknown" ? "string" : fillValueKindForColumn(column?.type));
     setMode((current) =>
       fillModesForColumn(column, columns).includes(current) ? current : defaultFillModeForColumn(column, columns)
@@ -1211,15 +1388,27 @@ function FillMissingFields({
     initialReplacement?.kind !== "median" &&
     initialReplacement?.kind !== "mean" &&
     initialReplacement?.kind !== "mostFrequent" &&
+    initialReplacement?.kind !== "groupedStatistic" &&
+    initialReplacement?.kind !== "linearInterpolation" &&
+    initialReplacement?.kind !== "directional" &&
     initialReplacement?.kind !== "fallbackColumns"
       ? String(initialReplacement?.value)
       : "";
   const fillModes = fillModesForColumn(selectedColumn, columns);
+  const interpolationCoordinates = interpolationCoordinateColumnsForTarget(selectedColumn, columns);
+  const groupedKeyColumns = groupedKeyColumnsForTarget(selectedColumn, columns);
+  const orderColumns = directionalOrderColumnsForTarget(selectedColumn, columns);
+  const selectedOrderIds = new Set(orderRows.map((row) => row.columnId));
+  const nextUnusedOrder = orderColumns.find((column) => !selectedOrderIds.has(column.id));
   const selectedFallbackIds = new Set(fallbackRows.map((row) => row.columnId));
   const nextUnusedFallback = fallbackColumns.find((column) => !selectedFallbackIds.has(column.id));
   const incompatibleFallbackCount = selectedColumn
     ? columns.filter((column) => column.id !== selectedColumn.id && column.type !== selectedColumn.type).length
     : 0;
+  const methodHelpId = useId();
+  const methodDescription = selectedColumn
+    ? `Available methods are based on the selected ${columnTypePresentation(selectedColumn).label.toLowerCase()} column.`
+    : "Choose a supported column to see its available methods.";
 
   return (
     <>
@@ -1236,17 +1425,51 @@ function FillMissingFields({
         <select
           name="fillMode"
           aria-label="Method"
+          aria-describedby={methodHelpId}
           value={mode}
           onChange={(event) => setMode(event.target.value as FillMode)}
         >
-          {fillModes.includes("median") && <option value="median">Median</option>}
-          {fillModes.includes("mean") && <option value="mean">Mean</option>}
-          {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
-          {fillModes.includes("fallbackColumns") && (
-            <option value="fallbackColumns">Other columns (first available)</option>
+          {fillModes.some((candidate) => ["median", "mean", "mostFrequent"].includes(candidate)) && (
+            <optgroup label="Column statistics">
+              {fillModes.includes("median") && <option value="median">Median</option>}
+              {fillModes.includes("mean") && <option value="mean">Mean</option>}
+              {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
+            </optgroup>
           )}
-          <option value="value">Specific value</option>
+          {fillModes.some((candidate) =>
+            ["groupedMedian", "groupedMean", "groupedMostFrequent"].includes(candidate)
+          ) && (
+            <optgroup label="Within groups">
+              {fillModes.includes("groupedMedian") && <option value="groupedMedian">Median within groups</option>}
+              {fillModes.includes("groupedMean") && <option value="groupedMean">Mean within groups</option>}
+              {fillModes.includes("groupedMostFrequent") && (
+                <option value="groupedMostFrequent">Most common value within groups</option>
+              )}
+            </optgroup>
+          )}
+          {fillModes.some((candidate) =>
+            ["linearInterpolation", "directionalForward", "directionalBackward"].includes(candidate)
+          ) && (
+            <optgroup label="Ordered data">
+              {fillModes.includes("linearInterpolation") && (
+                <option value="linearInterpolation">Linear interpolation</option>
+              )}
+              {fillModes.includes("directionalForward") && <option value="directionalForward">Previous value</option>}
+              {fillModes.includes("directionalBackward") && <option value="directionalBackward">Next value</option>}
+            </optgroup>
+          )}
+          {fillModes.includes("fallbackColumns") && (
+            <optgroup label="Other columns">
+              <option value="fallbackColumns">Fallback columns (same row)</option>
+            </optgroup>
+          )}
+          {fillModes.includes("value") && (
+            <optgroup label="Manual">
+              <option value="value">Specific value</option>
+            </optgroup>
+          )}
         </select>
+        <small id={methodHelpId}>{methodDescription}</small>
       </label>
       {mode === "median" ? (
         <p className="panelNote">
@@ -1258,12 +1481,189 @@ function FillMissingFields({
           Uses the mean of all non-missing values after earlier cleaning steps. Filters in the current view do not
           affect this calculation. If every cell is missing, choose a specific value.
         </p>
+      ) : mode === "linearInterpolation" ? (
+        <>
+          <ColumnReferenceSelect
+            name="fillInterpolationCoordinate"
+            label="Coordinate column"
+            columns={interpolationCoordinates}
+            value={interpolationCoordinateId}
+            onChange={setInterpolationCoordinateId}
+            emptyMessage="No numeric, date, or date-time coordinate is available."
+          />
+          <TextField
+            name="fillInterpolationMaxGap"
+            label="Maximum missing cells in a run (optional)"
+            defaultValue={
+              initialReplacement?.kind === "linearInterpolation" && initialReplacement.maxGap !== undefined
+                ? String(initialReplacement.maxGap)
+                : ""
+            }
+            type="number"
+            min={1}
+            max={maxFillDirectionalGap}
+            step={1}
+            inputMode="numeric"
+            description="Leave this blank to interpolate runs of any length. A longer run stays missing."
+          />
+          <p className="panelNote">
+            Fills a missing run only when finite values exist on both sides. The coordinate must contain unique,
+            non-missing numeric, date, or date-time values. Leading and trailing gaps stay missing. Current view filters
+            and sorts are ignored, and row order does not change.
+          </p>
+        </>
       ) : mode === "mostFrequent" ? (
         <p className="panelNote">
           Uses the most common non-missing value in this column after earlier cleaning steps. Filters in the current
           view do not affect this calculation. If there is no non-missing value or several values tie, choose a specific
           value.
         </p>
+      ) : mode === "groupedMedian" || mode === "groupedMean" || mode === "groupedMostFrequent" ? (
+        <>
+          <ColumnReferencesSelect
+            name="fillGroupKeys"
+            label="Group by"
+            columns={groupedKeyColumns}
+            defaultValue={initialGroupedKeyIds}
+            value={groupedKeyIds}
+            onChange={setGroupedKeyIds}
+            searchLabel="Search group columns"
+          />
+          <p className="panelNote">
+            Uses data after earlier cleaning steps. Filters and sorts in the current view are ignored, and row order
+            stays unchanged. Missing values in a grouping column match other missing values in that column.
+            {mode === "groupedMostFrequent"
+              ? " A group with no non-missing value or a tie stays missing."
+              : " If every target value in a group is missing, those cells stay missing."}
+            {mode === "groupedMedian" &&
+              (selectedColumn?.type === "integer" || selectedColumn?.type === "decimal") &&
+              " Preview fails if a group median cannot fit the column type."}
+          </p>
+        </>
+      ) : mode === "directionalForward" || mode === "directionalBackward" ? (
+        <>
+          <Fieldset legend="Calculation order">
+            {orderRows.map((row, index) => {
+              const rowColumns = orderColumns.filter(
+                (column) => column.id === row.columnId || !selectedOrderIds.has(column.id)
+              );
+              return (
+                <div className="compoundRow operationInputRow" key={row.key}>
+                  <ColumnReferenceSelect
+                    name="fillOrderColumn"
+                    label={`Order column ${index + 1}`}
+                    columns={rowColumns}
+                    value={row.columnId}
+                    onChange={(columnId) =>
+                      setOrderRows((current) =>
+                        current.map((candidate) =>
+                          candidate.key === row.key &&
+                          !current.some((other) => other.key !== row.key && other.columnId === columnId)
+                            ? { ...candidate, columnId }
+                            : candidate
+                        )
+                      )
+                    }
+                  />
+                  <label className="formField">
+                    <span>Direction</span>
+                    <select
+                      name="fillOrderDirection"
+                      aria-label={`Direction ${index + 1}`}
+                      value={row.direction}
+                      onChange={(event) =>
+                        setOrderRows((current) =>
+                          current.map((candidate) =>
+                            candidate.key === row.key
+                              ? { ...candidate, direction: event.target.value as TransformSortRule["direction"] }
+                              : candidate
+                          )
+                        )
+                      }
+                    >
+                      <option value="asc">Ascending</option>
+                      <option value="desc">Descending</option>
+                    </select>
+                  </label>
+                  <label className="formField">
+                    <span>Order missing values</span>
+                    <select
+                      name="fillOrderNulls"
+                      aria-label={`Order missing values ${index + 1}`}
+                      value={row.nulls}
+                      onChange={(event) =>
+                        setOrderRows((current) =>
+                          current.map((candidate) =>
+                            candidate.key === row.key
+                              ? { ...candidate, nulls: event.target.value as TransformSortRule["nulls"] }
+                              : candidate
+                          )
+                        )
+                      }
+                    >
+                      <option value="last">Last</option>
+                      <option value="first">First</option>
+                    </select>
+                  </label>
+                  <RowActions
+                    label={`fill order rule ${index + 1}`}
+                    canRemove={orderRows.length > 1}
+                    canMoveUp={index > 0}
+                    canMoveDown={index < orderRows.length - 1}
+                    onRemove={() => setOrderRows((current) => current.filter((candidate) => candidate.key !== row.key))}
+                    onMoveUp={() => setOrderRows((current) => moveItem(current, index, index - 1))}
+                    onMoveDown={() => setOrderRows((current) => moveItem(current, index, index + 1))}
+                  />
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              className="secondaryButton"
+              disabled={!nextUnusedOrder}
+              onClick={() => {
+                if (!nextUnusedOrder) return;
+                setOrderRows((current) => [
+                  ...current,
+                  {
+                    key: `fill-order-${nextOrderRowId.current++}`,
+                    columnId: nextUnusedOrder.id,
+                    direction: "asc",
+                    nulls: "last"
+                  }
+                ]);
+              }}
+            >
+              Add order column
+            </button>
+            <small>
+              Order column 1 has the highest priority. Move rows to change the priority; each column can appear once.
+            </small>
+          </Fieldset>
+          <TextField
+            name="fillMaxGap"
+            label="Maximum gap length (optional)"
+            defaultValue={
+              initialReplacement?.kind === "directional" && initialReplacement.maxGap !== undefined
+                ? String(initialReplacement.maxGap)
+                : ""
+            }
+            type="number"
+            min={1}
+            max={maxFillDirectionalGap}
+            step={1}
+            inputMode="numeric"
+            description="Leave this blank to fill runs of any length. If a missing run is longer than the limit, the whole run stays missing."
+          />
+          <p className="panelNote">
+            {mode === "directionalForward"
+              ? "Previous value uses the nearest earlier non-missing value in this calculation order. A missing run at the start can stay missing."
+              : "Next value uses the nearest later non-missing value in this calculation order. A missing run at the end can stay missing."}
+            {
+              " Current view filters and sorts do not affect the calculation, and the displayed row order does not change."
+            }
+          </p>
+        </>
       ) : mode === "fallbackColumns" ? (
         <>
           <Fieldset legend="Fallback order">
@@ -1348,8 +1748,9 @@ function FillMissingFields({
           <FillReplacementInput backend={backend} kind={valueKind} defaultValue={savedValue} />
           {selectedColumn?.type === "string" && (
             <p className="panelNote">
-              For categorical columns, a specific value may convert the column to text. Most common value keeps the
-              category type.
+              {backend === "r"
+                ? "Character columns stay character. For factor columns, a new value is added as a level and the factor type is kept."
+                : "For categorical columns, a specific value may convert the column to text. Most common value keeps the category type."}
             </p>
           )}
         </>
@@ -1360,11 +1761,50 @@ function FillMissingFields({
 
 function fillModesForColumn(column: ColumnSchema | undefined, columns: readonly ColumnSchema[]): FillMode[] {
   const fallback = fallbackColumnsForTarget(column, columns).length > 0 ? (["fallbackColumns"] as const) : [];
-  if (column?.type === "float") return ["median", "mean", ...fallback, "value"];
-  if (column && numericColumnTypes.has(column.type)) return ["median", ...fallback, "value"];
-  if (column && mostFrequentColumnTypes.has(column.type)) return ["mostFrequent", ...fallback, "value"];
-  if (column && (column.type === "date" || column.type === "datetime")) return [...fallback, "value"];
+  const grouped = groupedKeyColumnsForTarget(column, columns).length > 0;
+  const interpolation =
+    interpolationCoordinateColumnsForTarget(column, columns).length > 0 ? (["linearInterpolation"] as const) : [];
+  const directional =
+    directionalOrderColumnsForTarget(column, columns).length > 0
+      ? (["directionalForward", "directionalBackward"] as const)
+      : [];
+  if (column?.type === "float")
+    return [
+      "median",
+      "mean",
+      ...interpolation,
+      ...(grouped ? (["groupedMedian", "groupedMean"] as const) : []),
+      ...directional,
+      ...fallback,
+      "value"
+    ];
+  if (column && numericColumnTypes.has(column.type))
+    return ["median", ...(grouped ? (["groupedMedian"] as const) : []), ...directional, ...fallback, "value"];
+  if (column && mostFrequentColumnTypes.has(column.type))
+    return [
+      "mostFrequent",
+      ...(grouped ? (["groupedMostFrequent"] as const) : []),
+      ...directional,
+      ...fallback,
+      "value"
+    ];
+  if (column && (column.type === "date" || column.type === "datetime")) return [...directional, ...fallback, "value"];
+  if (column && portableScalarColumnTypes.has(column.type)) return [...directional];
   return ["value"];
+}
+
+function isInterpolationCoordinateColumn(column: ColumnSchema): boolean {
+  if (!interpolationCoordinateColumnTypes.has(column.type)) return false;
+  const rawType = column.rawType.toLowerCase();
+  return rawType !== "integer64" && !rawType.includes("int128") && !rawType.includes("hugeint");
+}
+
+function interpolationCoordinateColumnsForTarget(
+  target: ColumnSchema | undefined,
+  columns: readonly ColumnSchema[]
+): ColumnSchema[] {
+  if (target?.type !== "float") return [];
+  return columns.filter((column) => column.id !== target.id && isInterpolationCoordinateColumn(column));
 }
 
 function defaultFillModeForColumn(column: ColumnSchema | undefined, columns: readonly ColumnSchema[]): FillMode {
@@ -1374,6 +1814,30 @@ function defaultFillModeForColumn(column: ColumnSchema | undefined, columns: rea
 function fallbackColumnsForTarget(target: ColumnSchema | undefined, columns: readonly ColumnSchema[]): ColumnSchema[] {
   if (!target || target.type === "unknown") return [];
   return columns.filter((column) => column.id !== target.id && column.type === target.type);
+}
+
+function directionalOrderColumnsForTarget(
+  target: ColumnSchema | undefined,
+  columns: readonly ColumnSchema[]
+): ColumnSchema[] {
+  if (!target || !portableScalarColumnTypes.has(target.type)) return [];
+  return columns.filter((column) => column.id !== target.id && orderedAggregationColumnTypes.has(column.type));
+}
+
+function groupedKeyColumnsForTarget(
+  target: ColumnSchema | undefined,
+  columns: readonly ColumnSchema[]
+): ColumnSchema[] {
+  if (!target) return [];
+  return columns.filter((column) => column.id !== target.id && orderedAggregationColumnTypes.has(column.type));
+}
+
+function fillTargetColumns(columns: readonly ColumnSchema[]): ColumnSchema[] {
+  return columns.filter(
+    (column) =>
+      fillValueColumnTypes.has(column.type) ||
+      (portableScalarColumnTypes.has(column.type) && directionalOrderColumnsForTarget(column, columns).length > 0)
+  );
 }
 
 function fillValueKindForColumn(type: ColumnType | undefined): FillValueKind {
@@ -1499,6 +1963,70 @@ function buildParams(
     const fillMode = value("fillMode");
     if (fillMode === "median" || fillMode === "mean" || fillMode === "mostFrequent") {
       return { column: columnReference("column"), replacement: { kind: fillMode } };
+    }
+    if (fillMode === "linearInterpolation") {
+      const column = columnReference("column");
+      const coordinate = columnReference("fillInterpolationCoordinate");
+      if (coordinate.id === column.id) {
+        throw new Error("The fill target and interpolation coordinate must be different columns.");
+      }
+      const maxGap = value("fillInterpolationMaxGap").trim();
+      if (maxGap !== "" && (!/^[1-9][0-9]*$/u.test(maxGap) || Number(maxGap) > maxFillDirectionalGap)) {
+        throw new Error(
+          `Maximum missing cells in a run must be a whole number from 1 to ${maxFillDirectionalGap.toLocaleString()}.`
+        );
+      }
+      return {
+        column,
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate,
+          ...(maxGap === "" ? {} : { maxGap: Number(maxGap) })
+        }
+      };
+    }
+    if (fillMode === "directionalForward" || fillMode === "directionalBackward") {
+      const column = columnReference("column");
+      const orderColumns = requiredColumnReferences("fillOrderColumn", "Directional fill order");
+      if (orderColumns.some((orderColumn) => orderColumn.id === column.id)) {
+        throw new Error("A fill target cannot also be one of its calculation-order columns.");
+      }
+      const directions = form.getAll("fillOrderDirection").map(String);
+      const nulls = form.getAll("fillOrderNulls").map(String);
+      const maxGap = value("fillMaxGap").trim();
+      if (maxGap !== "" && (!/^[1-9][0-9]*$/u.test(maxGap) || Number(maxGap) > maxFillDirectionalGap)) {
+        throw new Error(
+          `Maximum gap length must be a whole number from 1 to ${maxFillDirectionalGap.toLocaleString()}.`
+        );
+      }
+      return {
+        column,
+        replacement: {
+          kind: "directional",
+          direction: fillMode === "directionalForward" ? "forward" : "backward",
+          orderBy: orderColumns.map((orderColumn, index) => ({
+            column: orderColumn,
+            direction: directions[index],
+            nulls: nulls[index]
+          })),
+          ...(maxGap === "" ? {} : { maxGap: Number(maxGap) })
+        }
+      };
+    }
+    if (fillMode === "groupedMedian" || fillMode === "groupedMean" || fillMode === "groupedMostFrequent") {
+      const column = columnReference("column");
+      const keys = requiredColumnReferences("fillGroupKeys", "Grouped fill");
+      if (keys.some((key) => key.id === column.id)) {
+        throw new Error("A fill target cannot also be one of its group keys.");
+      }
+      return {
+        column,
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: fillMode === "groupedMedian" ? "median" : fillMode === "groupedMean" ? "mean" : "mostFrequent",
+          keys
+        }
+      };
     }
     if (fillMode === "fallbackColumns") {
       const column = columnReference("column");
@@ -1834,7 +2362,12 @@ function AggregationRow({
       />
       <label className="formField">
         <span>Calculation</span>
-        <select name="aggregationOperation" value={operation} onChange={(event) => changeOperation(event.target.value)}>
+        <select
+          name="aggregationOperation"
+          aria-label={`Calculation ${index + 1}`}
+          value={operation}
+          onChange={(event) => changeOperation(event.target.value)}
+        >
           {aggregationOperations.map((value) => (
             <option key={value} value={value}>
               {value}
@@ -1911,7 +2444,10 @@ function ColumnReferencesSelect({
   columns,
   defaultValue,
   required = true,
-  preserveSelectionOrder = false
+  preserveSelectionOrder = false,
+  searchLabel,
+  value,
+  onChange
 }: {
   name: string;
   label: string;
@@ -1919,27 +2455,69 @@ function ColumnReferencesSelect({
   defaultValue: string[];
   required?: boolean;
   preserveSelectionOrder?: boolean;
+  searchLabel?: string;
+  value?: string[];
+  onChange?(value: string[]): void;
 }) {
   const selectId = useId();
   const helpId = `${selectId}-help`;
   const orderId = `${selectId}-order`;
+  const selectionId = `${selectId}-selection`;
   const validColumnIds = new Set(columns.map((column) => column.id));
   const optionLabels = useMemo(() => columnOptionLabels(columns), [columns]);
-  const [selectedIds, setSelectedIds] = useState(defaultValue.filter((id) => validColumnIds.has(id)));
+  const [searchQuery, setSearchQuery] = useState("");
+  const [internalSelectedIds, setInternalSelectedIds] = useState(defaultValue.filter((id) => validColumnIds.has(id)));
+  const selectedIds = (value ?? internalSelectedIds).filter((id) => validColumnIds.has(id));
+  const updateSelectedIds = (next: string[]) => {
+    if (onChange) onChange(next);
+    else setInternalSelectedIds(next);
+  };
   const selectedLabels = selectedIds.map((id) => {
     return optionLabels.get(id) ?? id;
   });
+  const selectedSummary =
+    selectedLabels.length <= 5
+      ? selectedLabels.join(", ")
+      : `${selectedLabels.slice(0, 5).join(", ")}, and ${selectedLabels.length - 5} more`;
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const visibleColumns =
+    normalizedQuery === ""
+      ? columns
+      : columns.filter((column) =>
+          (optionLabels.get(column.id) ?? column.name).toLowerCase().includes(normalizedQuery)
+        );
   return (
     <fieldset
       className="columnSelectionField"
-      aria-describedby={preserveSelectionOrder && selectedLabels.length > 0 ? `${helpId} ${orderId}` : helpId}
+      aria-describedby={
+        selectedLabels.length === 0
+          ? helpId
+          : preserveSelectionOrder
+            ? `${helpId} ${orderId}`
+            : searchLabel
+              ? `${helpId} ${selectionId}`
+              : helpId
+      }
     >
       <legend>{label}</legend>
       {selectedIds.map((id) => (
         <input key={id} type="hidden" name={name} value={id} />
       ))}
+      {searchLabel && columns.length > 1 && (
+        <label className="formField columnSelectionSearch">
+          <span>{searchLabel}</span>
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            aria-controls={selectId}
+            placeholder="Type a column name"
+            autoComplete="off"
+          />
+        </label>
+      )}
       <div className="columnChecklist" id={selectId}>
-        {columns.map((column) => (
+        {visibleColumns.map((column) => (
           <label className="columnChecklistItem" key={column.id}>
             <input
               type="checkbox"
@@ -1947,19 +2525,22 @@ function ColumnReferencesSelect({
               checked={selectedIds.includes(column.id)}
               onChange={(event) => {
                 const checked = event.currentTarget.checked;
-                setSelectedIds((current) => {
+                const next = (() => {
+                  const current = selectedIds;
                   if (!checked) return current.filter((id) => id !== column.id);
                   if (current.includes(column.id)) return current;
                   if (preserveSelectionOrder) return [...current, column.id];
                   const selected = new Set([...current, column.id]);
                   return columns.filter((candidate) => selected.has(candidate.id)).map((candidate) => candidate.id);
-                });
+                })();
+                updateSelectedIds(next);
               }}
             />
             <span>{optionLabels.get(column.id)}</span>
           </label>
         ))}
         {columns.length === 0 && <span className="mutedText">No compatible columns are available.</span>}
+        {columns.length > 0 && visibleColumns.length === 0 && <span className="mutedText">No matching columns.</span>}
       </div>
       <small id={helpId}>
         {required ? "Select at least one column. " : ""}
@@ -1970,6 +2551,11 @@ function ColumnReferencesSelect({
       {preserveSelectionOrder && selectedLabels.length > 0 && (
         <small id={orderId} aria-live="polite">
           Selected order: {selectedLabels.join(" → ")}
+        </small>
+      )}
+      {!preserveSelectionOrder && searchLabel && selectedLabels.length > 0 && (
+        <small id={selectionId} aria-live="polite">
+          Selected ({selectedLabels.length}): {selectedSummary}
         </small>
       )}
     </fieldset>
@@ -2043,10 +2629,12 @@ function TextField({
   required = false,
   type = "text",
   min,
+  max,
   step,
   inputMode,
   maxLength,
   maxUtf8Bytes,
+  description,
   normalizeOnBlur
 }: {
   name: string;
@@ -2055,10 +2643,12 @@ function TextField({
   required?: boolean;
   type?: string;
   min?: number;
+  max?: number;
   step?: number | "any";
   inputMode?: "numeric" | "decimal";
   maxLength?: number;
   maxUtf8Bytes?: number;
+  description?: ReactNode;
   normalizeOnBlur?: (value: string) => string;
 }) {
   const helpId = useId();
@@ -2077,12 +2667,13 @@ function TextField({
         name={name}
         type={type}
         min={min}
+        max={max}
         step={step}
         inputMode={inputMode}
         maxLength={maxLength}
         defaultValue={defaultValue}
         required={required}
-        aria-describedby={maxUtf8Bytes === undefined ? undefined : helpId}
+        aria-describedby={maxUtf8Bytes === undefined && description === undefined ? undefined : helpId}
         onInput={(event) => validateByteLength(event.currentTarget)}
         onBlur={
           normalizeOnBlur || maxUtf8Bytes !== undefined
@@ -2093,7 +2684,11 @@ function TextField({
             : undefined
         }
       />
-      {maxUtf8Bytes !== undefined && <small id={helpId}>R text replacements can use up to 8,192 UTF-8 bytes.</small>}
+      {(description !== undefined || maxUtf8Bytes !== undefined) && (
+        <small id={helpId}>
+          {description ?? `R text replacements can use up to ${maxUtf8Bytes?.toLocaleString()} UTF-8 bytes.`}
+        </small>
+      )}
     </label>
   );
 }

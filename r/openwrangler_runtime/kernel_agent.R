@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 6L
+  transport_version <- 9L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
@@ -7,6 +7,7 @@ openwrangler_r_kernel_agent <- local({
   maximum_response_bytes <- 17L * 1024L * 1024L
   maximum_generated_code_bytes <- 4L * 1024L * 1024L
   maximum_export_chunk_bytes <- 1L * 1024L * 1024L
+  maximum_fill_directional_gap <- 1000000L
   maximum_revision <- .Machine$integer.max
   default_strip_characters <- paste0(
     " \t\n\r\v\f",
@@ -172,7 +173,12 @@ openwrangler_r_kernel_agent <- local({
   }
 
   decode_sort_rules <- function(value, limits) {
-    if (!is.list(value) || is.object(value) || length(value) > limits$sortRules) {
+    if (
+      !is.list(value) ||
+        is.object(value) ||
+        !is.null(names(value)) ||
+        length(value) > limits$sortRules
+    ) {
       abort("invalid_request", "request.page.sorts must be a bounded array")
     }
     rules <- lapply(seq_along(value), function(index) {
@@ -182,13 +188,15 @@ openwrangler_r_kernel_agent <- local({
         sprintf("sort[%d].column", index),
         limits$columnIdBytes
       )
-      if (!rule$direction %in% c("asc", "desc") || !rule$nulls %in% c("first", "last")) {
+      direction <- bounded_text(rule$direction, sprintf("sort[%d].direction", index), 4L)
+      nulls <- bounded_text(rule$nulls, sprintf("sort[%d].nulls", index), 5L)
+      if (!direction %in% c("asc", "desc") || !nulls %in% c("first", "last")) {
         abort("invalid_request", sprintf("sort[%d] has an unsupported order", index))
       }
       list(
         column = column,
-        direction = rule$direction,
-        nulls = rule$nulls
+        direction = direction,
+        nulls = nulls
       )
     })
     ids <- vapply(rules, function(rule) rule$column$id, character(1L), USE.NAMES = FALSE)
@@ -470,18 +478,21 @@ openwrangler_r_kernel_agent <- local({
       value,
       "kind",
       "request.payload.step.params.replacement",
-      optional_fields = c("value", "columns")
+      optional_fields = c("value", "columns", "direction", "orderBy", "maxGap", "statistic", "keys", "coordinate")
     )
     kind <- bounded_text(
       replacement$kind,
       "request.payload.step.params.replacement.kind",
-      16L
+      24L
     )
     supported <- c(
       "mean",
       "median",
       "mostFrequent",
       "fallbackColumns",
+      "directional",
+      "groupedStatistic",
+      "linearInterpolation",
       "string",
       "integer",
       "float",
@@ -525,11 +536,113 @@ openwrangler_r_kernel_agent <- local({
       if (target_column$id %in% ids) abort("invalid_request", "the fill target cannot also be a fallback column")
       return(list(kind = kind, columns = columns))
     }
+    if (identical(kind, "directional")) {
+      required <- c("kind", "direction", "orderBy")
+      optional <- "maxGap"
+      if (!all(required %in% names(replacement)) || any(!names(replacement) %in% c(required, optional))) {
+        abort("invalid_request", "a directional replacement requires kind, direction, and orderBy")
+      }
+      direction <- bounded_text(
+        replacement$direction,
+        "request.payload.step.params.replacement.direction",
+        16L
+      )
+      if (!direction %in% c("forward", "backward")) {
+        abort("invalid_request", "a directional replacement must specify forward or backward")
+      }
+      order_by <- decode_sort_rules(replacement$orderBy, limits)
+      if (length(order_by) == 0L) {
+        abort("invalid_request", "a directional replacement requires at least one ordering column")
+      }
+      order_ids <- vapply(order_by, function(rule) rule$column$id, character(1L), USE.NAMES = FALSE)
+      if (target_column$id %in% order_ids) {
+        abort("invalid_request", "the fill target cannot also be a directional ordering column")
+      }
+      max_gap <- NULL
+      if ("maxGap" %in% names(replacement)) {
+        max_gap <- whole_number(
+          replacement$maxGap,
+          "request.payload.step.params.replacement.maxGap",
+          maximum_fill_directional_gap
+        )
+        if (max_gap < 1) {
+          abort("invalid_request", "request.payload.step.params.replacement.maxGap must be positive")
+        }
+        max_gap <- as.integer(max_gap)
+      }
+      result <- list(kind = kind, direction = direction, orderBy = order_by)
+      if (!is.null(max_gap)) result$maxGap <- max_gap
+      return(result)
+    }
+    if (identical(kind, "groupedStatistic")) {
+      if (!setequal(names(replacement), c("kind", "statistic", "keys"))) {
+        abort("invalid_request", "a grouped-statistic replacement requires exactly kind, statistic, and keys")
+      }
+      statistic <- bounded_text(
+        replacement$statistic,
+        "request.payload.step.params.replacement.statistic",
+        16L
+      )
+      if (!statistic %in% c("median", "mean", "mostFrequent")) {
+        abort("invalid_request", "a grouped-statistic replacement contains an unsupported statistic")
+      }
+      keys <- replacement$keys
+      if (
+        !is.list(keys) ||
+          is.object(keys) ||
+          !is.null(names(keys)) ||
+          length(keys) == 0L ||
+          length(keys) > limits$columns
+      ) {
+        abort("invalid_request", "grouping columns must be a bounded non-empty array")
+      }
+      keys <- lapply(seq_along(keys), function(index) {
+        decode_column_reference(
+          keys[[index]],
+          sprintf("request.payload.step.params.replacement.keys[%d]", index),
+          limits$columnIdBytes
+        )
+      })
+      ids <- vapply(keys, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (anyDuplicated(ids)) abort("invalid_request", "grouping columns contain a repeated column identity")
+      if (target_column$id %in% ids) abort("invalid_request", "the fill target cannot also be a grouping column")
+      return(list(kind = kind, statistic = statistic, keys = keys))
+    }
+    if (identical(kind, "linearInterpolation")) {
+      required <- c("kind", "coordinate")
+      optional <- "maxGap"
+      if (!all(required %in% names(replacement)) || any(!names(replacement) %in% c(required, optional))) {
+        abort("invalid_request", "linear interpolation requires kind and one coordinate column")
+      }
+      coordinate <- decode_column_reference(
+        replacement$coordinate,
+        "request.payload.step.params.replacement.coordinate",
+        limits$columnIdBytes
+      )
+      if (identical(coordinate$id, target_column$id)) {
+        abort("invalid_request", "the fill target cannot also be the interpolation coordinate")
+      }
+      max_gap <- NULL
+      if ("maxGap" %in% names(replacement)) {
+        max_gap <- whole_number(
+          replacement$maxGap,
+          "request.payload.step.params.replacement.maxGap",
+          maximum_fill_directional_gap
+        )
+        if (max_gap < 1) {
+          abort("invalid_request", "request.payload.step.params.replacement.maxGap must be positive")
+        }
+        max_gap <- as.integer(max_gap)
+      }
+      result <- list(kind = kind, coordinate = coordinate)
+      if (!is.null(max_gap)) result$maxGap <- max_gap
+      return(result)
+    }
     if (!"value" %in% names(replacement)) {
       abort("invalid_request", "a typed replacement requires a value")
     }
-    if ("columns" %in% names(replacement)) {
-      abort("invalid_request", "a typed replacement may not contain fallback columns")
+    if (!setequal(names(replacement), c("kind", "value"))) {
+      abort("invalid_request", "a typed replacement may contain only kind and value")
     }
     if (identical(kind, "boolean")) {
       if (!is.logical(replacement$value) || length(replacement$value) != 1L || is.na(replacement$value)) {
@@ -995,6 +1108,87 @@ openwrangler_r_kernel_agent <- local({
       }
       return(list(id = step_id, kind = kind, params = list(columns = columns)))
     }
+    if (identical(kind, "groupBy")) {
+      params <- exact_record(step$params, c("keys", "aggregations"), "request.payload.step.params")
+      keys <- params$keys
+      if (
+        !is.list(keys) ||
+          is.object(keys) ||
+          !is.null(names(keys)) ||
+          length(keys) == 0L ||
+          length(keys) > limits$columns
+      ) {
+        abort("invalid_request", "request.payload.step.params.keys must be a bounded non-empty array")
+      }
+      keys <- lapply(seq_along(keys), function(index) {
+        decode_column_reference(
+          keys[[index]],
+          sprintf("request.payload.step.params.keys[%d]", index),
+          limits$columnIdBytes
+        )
+      })
+      key_ids <- vapply(keys, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (anyDuplicated(key_ids)) {
+        abort("invalid_request", "request.payload.step.params.keys contains a repeated column identity")
+      }
+      aggregations <- params$aggregations
+      if (
+        !is.list(aggregations) ||
+          is.object(aggregations) ||
+          !is.null(names(aggregations)) ||
+          length(aggregations) == 0L ||
+          length(keys) + length(aggregations) > limits$columns
+      ) {
+        abort("invalid_request", "request.payload.step.params.aggregations exceeds the output-column limit")
+      }
+      aggregations <- lapply(seq_along(aggregations), function(index) {
+        aggregation <- exact_record(
+          aggregations[[index]],
+          c("column", "operation", "alias"),
+          sprintf("request.payload.step.params.aggregations[%d]", index)
+        )
+        operation <- bounded_text(
+          aggregation$operation,
+          sprintf("request.payload.step.params.aggregations[%d].operation", index),
+          16L
+        )
+        if (!operation %in% c("sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last")) {
+          abort("invalid_request", "request.payload.step.params.aggregations contains an unsupported operation")
+        }
+        alias <- bounded_text(
+          aggregation$alias,
+          sprintf("request.payload.step.params.aggregations[%d].alias", index),
+          maximum_variable_name_bytes
+        )
+        if (identical(alias, "")) {
+          abort("invalid_request", "request.payload.step.params.aggregations aliases may not be empty")
+        }
+        list(
+          column = decode_column_reference(
+            aggregation$column,
+            sprintf("request.payload.step.params.aggregations[%d].column", index),
+            limits$columnIdBytes
+          ),
+          operation = operation,
+          alias = alias,
+          outputId = bounded_text(
+            paste0("c:step:", step_id, ":", index - 1L),
+            sprintf("the derived R group aggregation identity %d", index),
+            limits$columnIdBytes
+          )
+        )
+      })
+      aliases <- vapply(aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
+      key_names <- vapply(keys, `[[`, character(1L), "name", USE.NAMES = FALSE)
+      if (anyDuplicated(aliases) || any(aliases %in% key_names)) {
+        abort("invalid_request", "group aggregation aliases must be unique and cannot duplicate a key name")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(keys = keys, aggregations = aggregations)
+      ))
+    }
     if (!kind %in% c(
       "renameColumn",
       "cloneColumn",
@@ -1156,7 +1350,21 @@ openwrangler_r_kernel_agent <- local({
     column <- schema[[position]]
     semantic_kind <- column$semantics$kind
     replacement_kind <- step$params$replacement$kind
-    compatible <- if (identical(replacement_kind, "fallbackColumns")) {
+    compatible <- if (identical(replacement_kind, "linearInterpolation")) {
+      identical(semantic_kind, "double")
+    } else if (identical(replacement_kind, "groupedStatistic")) {
+      switch(
+        step$params$replacement$statistic,
+        mean = identical(semantic_kind, "double"),
+        median = semantic_kind %in% c("integer", "integer64", "double"),
+        mostFrequent = semantic_kind %in% c("character", "factor", "logical"),
+        FALSE
+      )
+    } else if (identical(replacement_kind, "directional")) {
+      semantic_kind %in% c(
+        "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+      )
+    } else if (identical(replacement_kind, "fallbackColumns")) {
       semantic_kind %in% c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime")
     } else {
       switch(
@@ -1216,6 +1424,104 @@ openwrangler_r_kernel_agent <- local({
         )
       })
     }
+    order_by <- list()
+    if (identical(replacement_kind, "directional")) {
+      order_by <- lapply(seq_along(step$params$replacement$orderBy), function(index) {
+        rule <- step$params$replacement$orderBy[[index]]
+        reference <- rule$column
+        order_matches <- which(vapply(schema, function(candidate) identical(candidate$id, reference$id), logical(1L)))
+        if (
+          length(order_matches) != 1L ||
+            !identical(schema[[order_matches[[1L]]]]$name, reference$name)
+        ) {
+          abort("stale_column", "A directional ordering column no longer matches the active R dataframe", TRUE)
+        }
+        order_position <- as.integer(order_matches[[1L]])
+        order_column <- schema[[order_position]]
+        if (identical(order_column$id, column$id)) {
+          abort("invalid_request", "The fill target cannot also be a directional ordering column", TRUE)
+        }
+        list(
+          id = order_column$id,
+          position = order_position,
+          name = order_column$name,
+          semanticsKind = order_column$semantics$kind,
+          units = order_column$semantics$units,
+          direction = rule$direction,
+          nulls = rule$nulls
+        )
+      })
+    }
+    group_keys <- list()
+    if (identical(replacement_kind, "groupedStatistic")) {
+      supported_key_kinds <- c(
+        "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+      )
+      group_keys <- lapply(seq_along(step$params$replacement$keys), function(index) {
+        reference <- step$params$replacement$keys[[index]]
+        key_matches <- which(vapply(schema, function(candidate) identical(candidate$id, reference$id), logical(1L)))
+        if (
+          length(key_matches) != 1L ||
+            !identical(schema[[key_matches[[1L]]]]$name, reference$name)
+        ) {
+          abort("stale_column", "A grouping column no longer matches the active R dataframe", TRUE)
+        }
+        key_position <- as.integer(key_matches[[1L]])
+        key_column <- schema[[key_position]]
+        if (identical(key_column$id, column$id)) {
+          abort("invalid_request", "The fill target cannot also be a grouping column", TRUE)
+        }
+        if (!key_column$semantics$kind %in% supported_key_kinds) {
+          abort(
+            "invalid_request",
+            sprintf("R %s columns cannot be used as grouped-fill keys", key_column$semantics$kind),
+            TRUE
+          )
+        }
+        list(
+          id = key_column$id,
+          position = key_position,
+          name = key_column$name,
+          semanticsKind = key_column$semantics$kind,
+          units = key_column$semantics$units,
+          direction = "asc",
+          nulls = "first"
+        )
+      })
+      key_ids <- vapply(group_keys, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (length(group_keys) == 0L || anyDuplicated(key_ids)) {
+        abort("invalid_request", "Grouped fill requires unique grouping columns", TRUE)
+      }
+    }
+    interpolation_coordinate <- NULL
+    if (identical(replacement_kind, "linearInterpolation")) {
+      reference <- step$params$replacement$coordinate
+      coordinate_matches <- which(vapply(schema, function(candidate) identical(candidate$id, reference$id), logical(1L)))
+      if (
+        length(coordinate_matches) != 1L ||
+          !identical(schema[[coordinate_matches[[1L]]]]$name, reference$name)
+      ) {
+        abort("stale_column", "The interpolation coordinate no longer matches the active R dataframe", TRUE)
+      }
+      coordinate_position <- as.integer(coordinate_matches[[1L]])
+      coordinate_column <- schema[[coordinate_position]]
+      if (identical(coordinate_column$id, column$id)) {
+        abort("invalid_request", "The fill target cannot also be the interpolation coordinate", TRUE)
+      }
+      if (!coordinate_column$semantics$kind %in% c("integer", "double", "date", "datetime")) {
+        abort(
+          "invalid_request",
+          "Linear interpolation requires a numeric, Date, or POSIXct coordinate column",
+          TRUE
+        )
+      }
+      interpolation_coordinate <- list(
+        id = coordinate_column$id,
+        position = coordinate_position,
+        name = coordinate_column$name,
+        semanticsKind = coordinate_column$semantics$kind
+      )
+    }
     list(
       id = step$id,
       kind = step$kind,
@@ -1229,7 +1535,10 @@ openwrangler_r_kernel_agent <- local({
       ordered = isTRUE(column$semantics$ordered),
       levels = if (is.null(column$semantics$levels)) character() else column$semantics$levels,
       replacement = step$params$replacement,
-      fallbackColumns = fallback_columns
+      fallbackColumns = fallback_columns,
+      orderBy = order_by,
+      groupKeys = group_keys,
+      interpolationCoordinate = interpolation_coordinate
     )
   }
 
@@ -1299,6 +1608,88 @@ openwrangler_r_kernel_agent <- local({
       USE.NAMES = FALSE
     )
     list(id = step$id, kind = step$kind, columns = columns, removedNames = removed_names)
+  }
+
+  bind_group_by_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    supported_scalar_kinds <- c(
+      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+    )
+    bind_reference <- function(reference, label) {
+      matches <- which(schema_ids == reference$id)
+      if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, reference$name)) {
+        abort("stale_column", sprintf("The %s reference no longer matches the active R dataframe", label), TRUE)
+      }
+      position <- as.integer(matches[[1L]])
+      column <- schema[[position]]
+      if (!column$semantics$kind %in% supported_scalar_kinds) {
+        abort(
+          "invalid_request",
+          sprintf("R %s columns cannot be used by Group By", column$semantics$kind),
+          TRUE
+        )
+      }
+      list(
+        id = column$id,
+        position = position,
+        name = column$name,
+        semanticsKind = column$semantics$kind,
+        ordered = isTRUE(column$semantics$ordered),
+        units = column$semantics$units
+      )
+    }
+    keys <- lapply(step$params$keys, bind_reference, label = "group key")
+    key_ids <- vapply(keys, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    if (length(keys) == 0L || anyDuplicated(key_ids)) {
+      abort("invalid_request", "Group By requires unique key columns", TRUE)
+    }
+    aggregations <- lapply(seq_along(step$params$aggregations), function(index) {
+      aggregation <- step$params$aggregations[[index]]
+      column <- bind_reference(aggregation$column, "group aggregation")
+      if (
+        aggregation$operation %in% c("sum", "mean", "median") &&
+          !column$semanticsKind %in% c("integer", "integer64", "double")
+      ) {
+        abort(
+          "invalid_request",
+          sprintf("R %s columns do not support the %s aggregation", column$semanticsKind, aggregation$operation),
+          TRUE
+        )
+      }
+      c(
+        column,
+        list(
+          operation = aggregation$operation,
+          alias = aggregation$alias,
+          outputId = aggregation$outputId
+        )
+      )
+    })
+    aliases <- vapply(aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
+    key_names <- vapply(keys, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    if (
+      length(aggregations) == 0L ||
+        anyDuplicated(aliases) ||
+        any(aliases %in% key_names)
+    ) {
+      abort("invalid_request", "Group By output columns must be bounded and uniquely named", TRUE)
+    }
+    key_positions <- vapply(keys, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+    removed_names <- vapply(
+      schema[setdiff(seq_along(schema), key_positions)],
+      `[[`,
+      character(1L),
+      "name",
+      USE.NAMES = FALSE
+    )
+    list(
+      id = step$id,
+      kind = step$kind,
+      keys = keys,
+      aggregations = aggregations,
+      removedNames = removed_names
+    )
   }
 
   bind_row_reduction_step <- function(capture, step) {
@@ -1429,6 +1820,42 @@ openwrangler_r_kernel_agent <- local({
           nullability_source = capture,
           source_positions = seq_along(capture$descriptor$schema),
           source_row_positions = transformed$sourcePositions
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "groupBy")) {
+      bound <- bind_group_by_step(capture, step)
+      key_positions <- vapply(bound$keys, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+      aggregation_positions <- vapply(
+        bound$aggregations,
+        `[[`,
+        integer(1L),
+        "position",
+        USE.NAMES = FALSE
+      )
+      operations <- vapply(bound$aggregations, `[[`, character(1L), "operation", USE.NAMES = FALSE)
+      result <- frame_contract$group_by_at(
+        source,
+        key_positions,
+        vapply(bound$keys, `[[`, character(1L), "name", USE.NAMES = FALSE),
+        aggregation_positions,
+        vapply(bound$aggregations, `[[`, character(1L), "name", USE.NAMES = FALSE),
+        operations,
+        vapply(bound$aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
+      )
+      output_ids <- c(
+        vapply(bound$keys, `[[`, character(1L), "id", USE.NAMES = FALSE),
+        vapply(bound$aggregations, `[[`, character(1L), "outputId", USE.NAMES = FALSE)
+      )
+      return(list(
+        capture = frame_contract$capture_group_result(
+          result,
+          capture,
+          key_positions,
+          aggregation_positions,
+          operations,
+          output_ids
         ),
         bound = bound
       ))
@@ -1589,6 +2016,9 @@ openwrangler_r_kernel_agent <- local({
     if (identical(step$kind, "fillMissingValues")) {
       bound <- bind_fill_missing_step(capture, step)
       fallback_fill <- identical(bound$replacement$kind, "fallbackColumns")
+      directional_fill <- identical(bound$replacement$kind, "directional")
+      grouped_fill <- identical(bound$replacement$kind, "groupedStatistic")
+      interpolation_fill <- identical(bound$replacement$kind, "linearInterpolation")
       result <- if (fallback_fill) {
         frame_contract$fill_missing_from_fallback_columns_at(
           source,
@@ -1596,6 +2026,36 @@ openwrangler_r_kernel_agent <- local({
           bound$oldName,
           vapply(bound$fallbackColumns, `[[`, integer(1L), "position", USE.NAMES = FALSE),
           vapply(bound$fallbackColumns, `[[`, character(1L), "oldName", USE.NAMES = FALSE)
+        )
+      } else if (directional_fill) {
+        frame_contract$fill_missing_directional_at(
+          source,
+          bound$position,
+          bound$oldName,
+          vapply(bound$orderBy, `[[`, integer(1L), "position", USE.NAMES = FALSE),
+          vapply(bound$orderBy, `[[`, character(1L), "name", USE.NAMES = FALSE),
+          vapply(bound$orderBy, `[[`, character(1L), "direction", USE.NAMES = FALSE),
+          vapply(bound$orderBy, `[[`, character(1L), "nulls", USE.NAMES = FALSE),
+          bound$replacement$direction,
+          bound$replacement$maxGap
+        )
+      } else if (grouped_fill) {
+        frame_contract$fill_missing_grouped_statistic_at(
+          source,
+          bound$position,
+          bound$oldName,
+          vapply(bound$groupKeys, `[[`, integer(1L), "position", USE.NAMES = FALSE),
+          vapply(bound$groupKeys, `[[`, character(1L), "name", USE.NAMES = FALSE),
+          bound$replacement$statistic
+        )
+      } else if (interpolation_fill) {
+        frame_contract$fill_missing_linear_interpolation_at(
+          source,
+          bound$position,
+          bound$oldName,
+          bound$interpolationCoordinate$position,
+          bound$interpolationCoordinate$name,
+          bound$replacement$maxGap
         )
       } else {
         frame_contract$fill_missing_column_at(
@@ -1610,7 +2070,7 @@ openwrangler_r_kernel_agent <- local({
           result,
           nullability_source = capture,
           source_positions = seq_along(capture$descriptor$schema),
-          fill_missing_positions = if (fallback_fill) NULL else bound$position,
+          fill_missing_positions = if (fallback_fill || directional_fill || grouped_fill || interpolation_fill) NULL else bound$position,
           fallback_fill_positions = if (fallback_fill) bound$position else NULL
         ),
         bound = bound
@@ -2189,8 +2649,8 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_fill_replacement <- function(replacement) {
-    if (identical(replacement$kind, "fallbackColumns")) {
-      abort("runtime_error", "Generated R code received fallback columns through the scalar fill path")
+    if (replacement$kind %in% c("fallbackColumns", "directional", "groupedStatistic", "linearInterpolation")) {
+      abort("runtime_error", "Generated R code received a non-scalar replacement through the scalar fill path")
     }
     if (replacement$kind %in% c("mean", "median", "mostFrequent")) {
       return(sprintf("list(kind = %s)", r_string(replacement$kind)))
@@ -2205,6 +2665,141 @@ openwrangler_r_kernel_agent <- local({
 
   fill_missing_code_helper_lines <- function() {
     c(
+      "  .ow_fill_directional <- function(.ow_values, .ow_rows, .ow_direction, .ow_max_gap = NULL) {",
+      "    if (!.ow_direction %in% c(\"forward\", \"backward\")) stop(\"Open Wrangler received an invalid directional fill\", call. = FALSE)",
+      "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
+      "    .ow_result_values <- .ow_values",
+      "    .ow_missing <- is.na(.ow_values[.ow_rows])",
+      "    if (length(.ow_missing) == 0L || !any(.ow_missing)) return(.ow_result_values)",
+      "    .ow_runs <- rle(.ow_missing)",
+      "    .ow_run_ends <- cumsum(.ow_runs$lengths)",
+      "    .ow_run_starts <- .ow_run_ends - .ow_runs$lengths + 1L",
+      "    for (.ow_run_index in which(.ow_runs$values)) {",
+      "      .ow_run_length <- .ow_runs$lengths[[.ow_run_index]]",
+      "      if (!is.null(.ow_max_gap) && .ow_run_length > .ow_max_gap) next",
+      "      .ow_start <- .ow_run_starts[[.ow_run_index]]; .ow_end <- .ow_run_ends[[.ow_run_index]]",
+      "      .ow_donor <- if (.ow_direction == \"forward\") .ow_start - 1L else .ow_end + 1L",
+      "      if (.ow_donor < 1L || .ow_donor > length(.ow_rows)) next",
+      "      .ow_donor_position <- .ow_rows[[.ow_donor]]",
+      "      if (is.na(.ow_result_values[.ow_donor_position])) next",
+      "      .ow_result_values[.ow_rows[.ow_start:.ow_end]] <- .ow_result_values[.ow_donor_position]",
+      "    }",
+      "    .ow_result_values",
+      "  }",
+      "  .ow_fill_linear <- function(.ow_values, .ow_coordinate, .ow_max_gap = NULL) {",
+      "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
+      "    .ow_coordinate_values <- as.double(.ow_coordinate)",
+      "    if (anyNA(.ow_coordinate_values) || any(!is.finite(.ow_coordinate_values))) stop(\"Every interpolation coordinate must be present and finite\", call. = FALSE)",
+      "    if (anyDuplicated(.ow_coordinate_values)) stop(\"Interpolation coordinates must be unique\", call. = FALSE)",
+      "    .ow_rows <- order(.ow_coordinate_values, method = \"radix\")",
+      "    .ow_result_values <- .ow_values",
+      "    .ow_ordered_values <- .ow_result_values[.ow_rows]",
+      "    .ow_missing <- is.na(.ow_ordered_values)",
+      "    if (length(.ow_missing) == 0L || !any(.ow_missing)) return(.ow_result_values)",
+      "    .ow_runs <- rle(.ow_missing)",
+      "    .ow_run_ends <- cumsum(.ow_runs$lengths)",
+      "    .ow_run_starts <- .ow_run_ends - .ow_runs$lengths + 1L",
+      "    for (.ow_run_index in which(.ow_runs$values)) {",
+      "      .ow_run_length <- .ow_runs$lengths[[.ow_run_index]]",
+      "      if (!is.null(.ow_max_gap) && .ow_run_length > .ow_max_gap) next",
+      "      .ow_start <- .ow_run_starts[[.ow_run_index]]; .ow_end <- .ow_run_ends[[.ow_run_index]]",
+      "      .ow_left <- .ow_start - 1L; .ow_right <- .ow_end + 1L",
+      "      if (.ow_left < 1L || .ow_right > length(.ow_rows)) next",
+      "      .ow_left_value <- .ow_ordered_values[[.ow_left]]; .ow_right_value <- .ow_ordered_values[[.ow_right]]",
+      "      if (!is.finite(.ow_left_value) || !is.finite(.ow_right_value)) next",
+      "      .ow_left_coordinate <- .ow_coordinate_values[[.ow_rows[[.ow_left]]]]; .ow_right_coordinate <- .ow_coordinate_values[[.ow_rows[[.ow_right]]]]",
+      "      .ow_coordinate_width <- .ow_right_coordinate - .ow_left_coordinate",
+      "      .ow_scaled <- !is.finite(.ow_coordinate_width)",
+      "      if (.ow_scaled) { .ow_coordinate_scale <- max(abs(.ow_left_coordinate), abs(.ow_right_coordinate)); .ow_scaled_left <- .ow_left_coordinate / .ow_coordinate_scale; .ow_coordinate_width <- .ow_right_coordinate / .ow_coordinate_scale - .ow_scaled_left }",
+      "      if (!is.finite(.ow_coordinate_width) || .ow_coordinate_width <= 0) stop(\"Interpolation coordinates cannot be represented safely\", call. = FALSE)",
+      "      for (.ow_index in .ow_start:.ow_end) {",
+      "        .ow_coordinate_value <- .ow_coordinate_values[[.ow_rows[[.ow_index]]]]",
+      "        .ow_weight <- if (.ow_scaled) (.ow_coordinate_value / .ow_coordinate_scale - .ow_scaled_left) / .ow_coordinate_width else (.ow_coordinate_value - .ow_left_coordinate) / .ow_coordinate_width",
+      "        if (!is.finite(.ow_weight) || .ow_weight <= 0 || .ow_weight >= 1) stop(\"Interpolation coordinates cannot be represented safely\", call. = FALSE)",
+      "        .ow_interpolated <- if (sign(.ow_left_value) == sign(.ow_right_value)) .ow_left_value + (.ow_right_value - .ow_left_value) * .ow_weight else .ow_left_value * (1 - .ow_weight) + .ow_right_value * .ow_weight",
+      "        if (!is.finite(.ow_interpolated)) stop(\"Linear interpolation produced a non-finite value\", call. = FALSE)",
+      "        .ow_result_values[[.ow_rows[[.ow_index]]]] <- .ow_interpolated",
+      "      }",
+      "    }",
+      "    .ow_result_values",
+      "  }",
+      "  .ow_fill_grouped <- function(.ow_values, .ow_rows, .ow_keys, .ow_semantic_kind, .ow_statistic) {",
+      "    if (!.ow_statistic %in% c(\"mean\", \"median\", \"mostFrequent\")) stop(\"Open Wrangler received an invalid grouped statistic\", call. = FALSE)",
+      "    .ow_result_values <- .ow_values",
+      "    .ow_count <- length(.ow_rows)",
+      "    if (.ow_count == 0L || !anyNA(.ow_result_values)) return(.ow_result_values)",
+      "    .ow_same_group <- rep(TRUE, max(0L, .ow_count - 1L))",
+      "    if (.ow_count > 1L) {",
+      "      .ow_left_rows <- .ow_rows[-.ow_count]; .ow_right_rows <- .ow_rows[-1L]",
+      "      for (.ow_key in .ow_keys) {",
+      "        .ow_left <- .ow_key[.ow_left_rows]; .ow_right <- .ow_key[.ow_right_rows]",
+      "        .ow_left_missing <- is.na(.ow_left); .ow_right_missing <- is.na(.ow_right)",
+      "        .ow_equal <- (.ow_left_missing & .ow_right_missing) | (!.ow_left_missing & !.ow_right_missing & .ow_left == .ow_right)",
+      "        .ow_equal[is.na(.ow_equal)] <- FALSE",
+      "        .ow_same_group <- .ow_same_group & .ow_equal",
+      "      }",
+      "    }",
+      "    .ow_starts <- c(1L, which(!.ow_same_group) + 1L); .ow_ends <- c(.ow_starts[-1L] - 1L, .ow_count)",
+      "    for (.ow_group_index in seq_along(.ow_starts)) {",
+      "      .ow_group_rows <- .ow_rows[.ow_starts[[.ow_group_index]]:.ow_ends[[.ow_group_index]]]",
+      "      .ow_missing_rows <- .ow_group_rows[is.na(.ow_result_values[.ow_group_rows])]",
+      "      if (length(.ow_missing_rows) == 0L) next",
+      "      .ow_present <- .ow_result_values[.ow_group_rows[!is.na(.ow_result_values[.ow_group_rows])]]",
+      "      if (length(.ow_present) == 0L) next",
+      "      .ow_fill <- NULL",
+      "      if (.ow_statistic == \"mean\") {",
+      "        .ow_positive_infinity <- any(is.infinite(.ow_present) & .ow_present > 0); .ow_negative_infinity <- any(is.infinite(.ow_present) & .ow_present < 0)",
+      "        if (.ow_positive_infinity && .ow_negative_infinity) next",
+      "        if (.ow_positive_infinity) { .ow_fill <- Inf } else if (.ow_negative_infinity) { .ow_fill <- -Inf } else {",
+      "          .ow_scale <- max(abs(.ow_present)); .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, mean(.ow_present / .ow_scale))) * .ow_scale",
+      "        }",
+      "      } else if (.ow_statistic == \"median\") {",
+      "        .ow_ordered <- sort(.ow_present); .ow_present_count <- length(.ow_ordered)",
+      "        .ow_lower <- .ow_ordered[[(.ow_present_count + 1L) %/% 2L]]; .ow_upper <- .ow_ordered[[(.ow_present_count + 2L) %/% 2L]]",
+      "        if (.ow_semantic_kind == \"integer64\") {",
+      "          if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required for a grouped integer64 median\", call. = FALSE)",
+      "          if (.ow_present_count %% 2L == 1L) { .ow_fill <- .ow_lower } else {",
+      "            .ow_zero <- bit64::as.integer64(0L); .ow_two <- bit64::as.integer64(2L)",
+      "            if ((.ow_lower < .ow_zero && .ow_upper < .ow_zero) || (.ow_lower >= .ow_zero && .ow_upper >= .ow_zero)) {",
+      "              .ow_difference <- .ow_upper - .ow_lower",
+      "              if (as.character(.ow_difference %% .ow_two) != \"0\") stop(\"Open Wrangler grouped integer64 median is not an integer\", call. = FALSE)",
+      "              .ow_fill <- .ow_lower + .ow_difference %/% .ow_two",
+      "            } else {",
+      "              .ow_total <- .ow_lower + .ow_upper",
+      "              if (as.character(.ow_total %% .ow_two) != \"0\") stop(\"Open Wrangler grouped integer64 median is not an integer\", call. = FALSE)",
+      "              .ow_fill <- .ow_total %/% .ow_two",
+      "            }",
+      "            if (is.na(.ow_fill)) stop(\"Open Wrangler grouped integer64 median is outside the supported range\", call. = FALSE)",
+      "          }",
+      "        } else {",
+      "          .ow_fill <- if (.ow_present_count %% 2L == 1L) {",
+      "            .ow_lower",
+      "          } else if (.ow_semantic_kind == \"double\") {",
+      "            if (.ow_lower == .ow_upper) .ow_lower else if (is.finite(.ow_lower) && is.finite(.ow_upper)) {",
+      "              if ((.ow_lower < 0) == (.ow_upper < 0)) .ow_lower + ((.ow_upper - .ow_lower) / 2) else (.ow_lower / 2) + (.ow_upper / 2)",
+      "            } else {",
+      "              (.ow_lower + .ow_upper) / 2",
+      "            }",
+      "          } else {",
+      "            .ow_lower / 2 + .ow_upper / 2",
+      "          }",
+      "          if (is.nan(.ow_fill)) next",
+      "          if (.ow_semantic_kind == \"integer\") {",
+      "            if (!is.finite(.ow_fill) || .ow_fill != floor(.ow_fill)) stop(\"Open Wrangler grouped integer median is not an integer\", call. = FALSE)",
+      "            .ow_fill <- as.integer(.ow_fill)",
+      "            if (is.na(.ow_fill)) stop(\"Open Wrangler grouped integer median is outside the R integer range\", call. = FALSE)",
+      "          }",
+      "        }",
+      "      } else {",
+      "        .ow_candidates <- unique(.ow_present); .ow_counts <- tabulate(match(.ow_present, .ow_candidates), nbins = length(.ow_candidates))",
+      "        .ow_winners <- which(.ow_counts == max(.ow_counts))",
+      "        if (length(.ow_winners) != 1L) next",
+      "        .ow_fill <- .ow_candidates[[.ow_winners[[1L]]]]",
+      "      }",
+      "      .ow_result_values[.ow_missing_rows] <- .ow_fill",
+      "    }",
+      "    .ow_result_values",
+      "  }",
       "  .ow_fill_datetime <- function(.ow_text, .ow_timezone) {",
       "    .ow_match <- regexec(\"^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(\\\\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?$\", .ow_text, perl = TRUE)",
       "    .ow_parts <- regmatches(.ow_text, .ow_match)[[1L]]",
@@ -2373,6 +2968,270 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  generated_group_by <- function(.ow_frame, .ow_key_specs, .ow_aggregation_specs) {
+    .ow_normalize_integer <- function(.ow_value) {
+      .ow_value <- as.character(.ow_value)
+      .ow_negative <- startsWith(.ow_value, "-")
+      .ow_digits <- if (.ow_negative) substring(.ow_value, 2L) else .ow_value
+      .ow_digits <- sub("^0+", "", .ow_digits)
+      if (identical(.ow_digits, "")) return("0")
+      if (.ow_negative) paste0("-", .ow_digits) else .ow_digits
+    }
+    .ow_abs_compare <- function(.ow_left, .ow_right) {
+      if (nchar(.ow_left) != nchar(.ow_right)) return(sign(nchar(.ow_left) - nchar(.ow_right)))
+      if (identical(.ow_left, .ow_right)) return(0L)
+      if (.ow_left > .ow_right) 1L else -1L
+    }
+    .ow_abs_add <- function(.ow_left, .ow_right) {
+      .ow_l <- rev(utf8ToInt(.ow_left) - 48L)
+      .ow_r <- rev(utf8ToInt(.ow_right) - 48L)
+      .ow_size <- max(length(.ow_l), length(.ow_r))
+      length(.ow_l) <- .ow_size
+      length(.ow_r) <- .ow_size
+      .ow_l[is.na(.ow_l)] <- 0L
+      .ow_r[is.na(.ow_r)] <- 0L
+      .ow_out <- integer(.ow_size + 1L)
+      .ow_carry <- 0L
+      for (.ow_index in seq_len(.ow_size)) {
+        .ow_total <- .ow_l[[.ow_index]] + .ow_r[[.ow_index]] + .ow_carry
+        .ow_out[[.ow_index]] <- .ow_total %% 10L
+        .ow_carry <- .ow_total %/% 10L
+      }
+      .ow_out[[.ow_size + 1L]] <- .ow_carry
+      while (length(.ow_out) > 1L && .ow_out[[length(.ow_out)]] == 0L) {
+        .ow_out <- .ow_out[-length(.ow_out)]
+      }
+      paste0(rev(.ow_out), collapse = "")
+    }
+    .ow_abs_subtract <- function(.ow_left, .ow_right) {
+      .ow_l <- rev(utf8ToInt(.ow_left) - 48L)
+      .ow_r <- rev(utf8ToInt(.ow_right) - 48L)
+      length(.ow_r) <- length(.ow_l)
+      .ow_r[is.na(.ow_r)] <- 0L
+      .ow_out <- integer(length(.ow_l))
+      .ow_borrow <- 0L
+      for (.ow_index in seq_along(.ow_l)) {
+        .ow_digit <- .ow_l[[.ow_index]] - .ow_r[[.ow_index]] - .ow_borrow
+        if (.ow_digit < 0L) {
+          .ow_digit <- .ow_digit + 10L
+          .ow_borrow <- 1L
+        } else {
+          .ow_borrow <- 0L
+        }
+        .ow_out[[.ow_index]] <- .ow_digit
+      }
+      while (length(.ow_out) > 1L && .ow_out[[length(.ow_out)]] == 0L) {
+        .ow_out <- .ow_out[-length(.ow_out)]
+      }
+      paste0(rev(.ow_out), collapse = "")
+    }
+    .ow_signed_add <- function(.ow_left, .ow_right) {
+      .ow_left <- .ow_normalize_integer(.ow_left)
+      .ow_right <- .ow_normalize_integer(.ow_right)
+      .ow_left_negative <- startsWith(.ow_left, "-")
+      .ow_right_negative <- startsWith(.ow_right, "-")
+      .ow_left_abs <- if (.ow_left_negative) substring(.ow_left, 2L) else .ow_left
+      .ow_right_abs <- if (.ow_right_negative) substring(.ow_right, 2L) else .ow_right
+      if (identical(.ow_left_negative, .ow_right_negative)) {
+        .ow_sum <- .ow_abs_add(.ow_left_abs, .ow_right_abs)
+        return(if (.ow_left_negative && !identical(.ow_sum, "0")) paste0("-", .ow_sum) else .ow_sum)
+      }
+      .ow_comparison <- .ow_abs_compare(.ow_left_abs, .ow_right_abs)
+      if (.ow_comparison == 0L) return("0")
+      if (.ow_comparison > 0L) {
+        .ow_difference <- .ow_abs_subtract(.ow_left_abs, .ow_right_abs)
+        if (.ow_left_negative) paste0("-", .ow_difference) else .ow_difference
+      } else {
+        .ow_difference <- .ow_abs_subtract(.ow_right_abs, .ow_left_abs)
+        if (.ow_right_negative) paste0("-", .ow_difference) else .ow_difference
+      }
+    }
+    .ow_exact_sum_text <- function(.ow_values) {
+      Reduce(.ow_signed_add, as.list(as.character(.ow_values)), init = "0")
+    }
+    .ow_exact_sum <- function(.ow_values, .ow_kind) {
+      .ow_text <- .ow_exact_sum_text(.ow_values)
+      .ow_negative <- startsWith(.ow_text, "-")
+      .ow_magnitude <- if (.ow_negative) substring(.ow_text, 2L) else .ow_text
+      .ow_limit <- if (identical(.ow_kind, "integer")) "2147483647" else "9223372036854775807"
+      if (
+        nchar(.ow_magnitude) > nchar(.ow_limit) ||
+          (nchar(.ow_magnitude) == nchar(.ow_limit) && .ow_magnitude > .ow_limit)
+      ) {
+        stop(sprintf("Open Wrangler %s group sum is outside the supported range", .ow_kind), call. = FALSE)
+      }
+      if (identical(.ow_kind, "integer")) return(as.integer(.ow_text))
+      if (!requireNamespace("bit64", quietly = TRUE)) stop("bit64 is required for integer64 Group By", call. = FALSE)
+      .ow_result <- suppressWarnings(bit64::as.integer64(.ow_text))
+      if (is.na(.ow_result)) stop("Open Wrangler integer64 group sum is outside the supported range", call. = FALSE)
+      .ow_result
+    }
+    .ow_key_token <- function(.ow_values, .ow_kind) {
+      .ow_missing <- is.na(.ow_values)
+      .ow_text <- rep.int("", length(.ow_values))
+      .ow_present <- which(!.ow_missing)
+      if (length(.ow_present) > 0L) {
+        .ow_selected <- .ow_values[.ow_present]
+        .ow_text[.ow_present] <- if (.ow_kind %in% c("character", "factor")) {
+          enc2utf8(as.character(.ow_selected))
+        } else if (.ow_kind %in% c("double", "date", "datetime", "difftime")) {
+          .ow_numeric <- if (identical(.ow_kind, "difftime")) as.double(.ow_selected) else as.double(.ow_selected)
+          .ow_formatted <- sprintf("%.17g", .ow_numeric)
+          .ow_formatted[.ow_numeric == 0] <- "0"
+          .ow_formatted
+        } else {
+          as.character(.ow_selected)
+        }
+      }
+      .ow_token <- rep.int("M", length(.ow_values))
+      if (length(.ow_present) > 0L) {
+        .ow_token[.ow_present] <- paste0(
+          "P",
+          nchar(.ow_text[.ow_present], type = "bytes"),
+          ":",
+          .ow_text[.ow_present]
+        )
+      }
+      .ow_token
+    }
+    .ow_reduce <- function(.ow_source, .ow_rows, .ow_spec) {
+      .ow_present <- .ow_source[.ow_rows]
+      .ow_present <- .ow_present[!is.na(.ow_present)]
+      .ow_operation <- .ow_spec$operation
+      .ow_kind <- .ow_spec$kind
+      if (identical(.ow_operation, "count")) return(as.integer(length(.ow_present)))
+      if (identical(.ow_operation, "nUnique")) return(as.integer(length(unique(.ow_present))))
+      if (length(.ow_present) == 0L) {
+        if (identical(.ow_operation, "sum")) {
+          if (identical(.ow_kind, "integer")) return(0L)
+          if (identical(.ow_kind, "integer64")) {
+            if (!requireNamespace("bit64", quietly = TRUE)) stop("bit64 is required for integer64 Group By", call. = FALSE)
+            return(bit64::as.integer64("0"))
+          }
+          return(0)
+        }
+        if (.ow_operation %in% c("mean", "median")) return(NA_real_)
+        if (.ow_operation %in% c("min", "max") && identical(.ow_kind, "factor") && !isTRUE(.ow_spec$ordered)) {
+          return(NA_character_)
+        }
+        return(.ow_source[NA_integer_])
+      }
+      if (identical(.ow_operation, "first")) return(.ow_present[1L])
+      if (identical(.ow_operation, "last")) return(.ow_present[length(.ow_present)])
+      if (identical(.ow_operation, "sum")) {
+        if (.ow_kind %in% c("integer", "integer64")) return(.ow_exact_sum(.ow_present, .ow_kind))
+        return(sum(.ow_present))
+      }
+      if (identical(.ow_operation, "mean")) {
+        if (identical(.ow_kind, "integer64")) {
+          return(suppressWarnings(as.double(.ow_exact_sum_text(.ow_present))) / length(.ow_present))
+        }
+        .ow_numeric <- suppressWarnings(as.double(.ow_present))
+        .ow_positive_infinity <- any(is.infinite(.ow_numeric) & .ow_numeric > 0)
+        .ow_negative_infinity <- any(is.infinite(.ow_numeric) & .ow_numeric < 0)
+        if (.ow_positive_infinity && .ow_negative_infinity) return(NaN)
+        if (.ow_positive_infinity) return(Inf)
+        if (.ow_negative_infinity) return(-Inf)
+        .ow_scale <- max(abs(.ow_numeric))
+        return(if (.ow_scale == 0) 0 else max(-1, min(1, mean(.ow_numeric / .ow_scale))) * .ow_scale)
+      }
+      if (identical(.ow_operation, "median")) {
+        .ow_ordered <- sort(.ow_present)
+        .ow_count <- length(.ow_ordered)
+        .ow_lower <- suppressWarnings(as.double(.ow_ordered[[(.ow_count + 1L) %/% 2L]]))
+        if (.ow_count %% 2L == 1L) return(.ow_lower)
+        if (identical(.ow_kind, "integer64")) {
+          .ow_middle <- .ow_ordered[c((.ow_count + 1L) %/% 2L, (.ow_count + 2L) %/% 2L)]
+          return(suppressWarnings(as.double(.ow_exact_sum_text(.ow_middle))) / 2)
+        }
+        .ow_upper <- suppressWarnings(as.double(.ow_ordered[[(.ow_count + 2L) %/% 2L]]))
+        if (is.infinite(.ow_lower) && identical(.ow_lower, .ow_upper)) return(.ow_lower)
+        return(.ow_lower / 2 + .ow_upper / 2)
+      }
+      if (.ow_operation %in% c("min", "max")) {
+        if (identical(.ow_kind, "factor") && !isTRUE(.ow_spec$ordered)) {
+          return(if (identical(.ow_operation, "min")) min(as.character(.ow_present)) else max(as.character(.ow_present)))
+        }
+        .ow_result <- if (identical(.ow_operation, "min")) min(.ow_present) else max(.ow_present)
+        if (identical(.ow_kind, "logical")) .ow_result <- as.logical(.ow_result)
+        return(.ow_result)
+      }
+      stop("Open Wrangler received an unsupported Group By aggregation", call. = FALSE)
+    }
+    .ow_rows <- seq_len(nrow(.ow_frame))
+    .ow_composite <- rep.int("", length(.ow_rows))
+    for (.ow_spec in .ow_key_specs) {
+      if (ncol(.ow_frame) < .ow_spec$position || !identical(names(.ow_frame)[[.ow_spec$position]], .ow_spec$name)) {
+        stop("Open Wrangler column reference is stale", call. = FALSE)
+      }
+      .ow_token <- .ow_key_token(.ow_frame[[.ow_spec$position]], .ow_spec$kind)
+      .ow_composite <- paste0(.ow_composite, nchar(.ow_token, type = "bytes"), ":", .ow_token)
+    }
+    .ow_distinct <- unique(.ow_composite)
+    .ow_group_ids <- match(.ow_composite, .ow_distinct)
+    .ow_groups <- split(.ow_rows, factor(.ow_group_ids, levels = seq_along(.ow_distinct)))
+    .ow_representatives <- if (length(.ow_groups) == 0L) integer() else vapply(.ow_groups, `[[`, integer(1L), 1L)
+    .ow_output <- lapply(.ow_key_specs, function(.ow_spec) {
+      .ow_values <- .ow_frame[[.ow_spec$position]][.ow_representatives]
+      if (identical(.ow_spec$kind, "double") && length(.ow_values) > 0L) .ow_values[is.nan(.ow_values)] <- NA_real_
+      .ow_values
+    })
+    for (.ow_spec in .ow_aggregation_specs) {
+      if (ncol(.ow_frame) < .ow_spec$position || !identical(names(.ow_frame)[[.ow_spec$position]], .ow_spec$name)) {
+        stop("Open Wrangler column reference is stale", call. = FALSE)
+      }
+      .ow_source <- .ow_frame[[.ow_spec$position]]
+      .ow_values <- if (length(.ow_groups) == 0L) {
+        if (.ow_spec$operation %in% c("count", "nUnique")) integer()
+        else if (.ow_spec$operation %in% c("mean", "median")) numeric()
+        else if (.ow_spec$operation %in% c("min", "max") && identical(.ow_spec$kind, "factor") && !isTRUE(.ow_spec$ordered)) character()
+        else .ow_source[integer()]
+      } else {
+        do.call(c, lapply(.ow_groups, function(.ow_group_rows) .ow_reduce(.ow_source, .ow_group_rows, .ow_spec)))
+      }
+      .ow_output[[length(.ow_output) + 1L]] <- .ow_values
+    }
+    names(.ow_output) <- c(
+      vapply(.ow_key_specs, `[[`, character(1L), "name"),
+      vapply(.ow_aggregation_specs, `[[`, character(1L), "alias")
+    )
+    .ow_base <- as.data.frame(.ow_output, optional = TRUE, check.names = FALSE, stringsAsFactors = FALSE)
+    names(.ow_base) <- names(.ow_output)
+    row.names(.ow_base) <- NULL
+    if (inherits(.ow_frame, "data.table")) {
+      if (!requireNamespace("data.table", quietly = TRUE)) stop("data.table is required", call. = FALSE)
+      .ow_result <- data.table::as.data.table(.ow_base)
+      data.table::setkeyv(.ow_result, NULL)
+      return(.ow_result)
+    }
+    if (inherits(.ow_frame, "tbl_df")) {
+      if (!requireNamespace("tibble", quietly = TRUE)) stop("tibble is required", call. = FALSE)
+      return(tibble::as_tibble(.ow_base, .name_repair = "minimal"))
+    }
+    .ow_base
+  }
+
+  group_by_code_helper_lines <- function() {
+    c("  .ow_group_by <-", paste0("  ", deparse(generated_group_by, width.cutoff = 500L)))
+  }
+
+  r_group_spec <- function(specification, aggregation = FALSE) {
+    source_fields <- c(
+      sprintf("name = %s", r_string(specification$name)),
+      sprintf("position = %dL", specification$position),
+      sprintf("kind = %s", r_string(specification$semanticsKind)),
+      sprintf("ordered = %s", if (isTRUE(specification$ordered)) "TRUE" else "FALSE")
+    )
+    fields <- if (aggregation) {
+      c(
+        sprintf("alias = %s", r_string(specification$alias)),
+        sprintf("operation = %s", r_string(specification$operation)),
+        source_fields
+      )
+    } else source_fields
+    sprintf("list(%s)", paste(fields, collapse = ", "))
+  }
+
   compile_plan <- function(variable_name, bound_plan, maximum_columns, maximum_factor_levels) {
     if (length(bound_plan) == 0L) return("")
     lines <- c(
@@ -2395,6 +3254,9 @@ openwrangler_r_kernel_agent <- local({
     if (any(vapply(bound_plan, function(step) identical(step$kind, "fillMissingValues"), logical(1L)))) {
       lines <- c(lines, fill_missing_code_helper_lines())
     }
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "groupBy"), logical(1L)))) {
+      lines <- c(lines, group_by_code_helper_lines())
+    }
     if (any(vapply(
       bound_plan,
       function(step) identical(step$kind, "roundNumber") && identical(step$semanticKind, "integer64"),
@@ -2409,6 +3271,29 @@ openwrangler_r_kernel_agent <- local({
         lines <- c(lines, row_step_code_lines(step))
       } else if (step$kind %in% c("dropMissingRows", "dropDuplicates")) {
         lines <- c(lines, row_reduction_code_lines(step))
+      } else if (identical(step$kind, "groupBy")) {
+        key_specs <- vapply(step$keys, r_group_spec, character(1L), USE.NAMES = FALSE)
+        aggregation_specs <- vapply(
+          step$aggregations,
+          r_group_spec,
+          character(1L),
+          aggregation = TRUE,
+          USE.NAMES = FALSE
+        )
+        guard_lines <- character()
+        guarded <- c(step$keys, step$aggregations)
+        for (guard_index in seq_along(guarded)) {
+          guard_lines <- c(
+            guard_lines,
+            row_column_lines(guarded[[guard_index]], sprintf(".ow_group_source_%d", guard_index))
+          )
+        }
+        lines <- c(
+          lines,
+          guard_lines,
+          sprintf("  .ow_result <- .ow_group_by(.ow_result, list(%s),", paste(key_specs, collapse = ", ")),
+          sprintf("    list(%s))", paste(aggregation_specs, collapse = ", "))
+        )
       } else if (identical(step$kind, "renameColumn")) {
         lines <- c(
           lines,
@@ -2790,6 +3675,9 @@ openwrangler_r_kernel_agent <- local({
         }
       } else if (identical(step$kind, "fillMissingValues")) {
         fallback_fill <- identical(step$replacement$kind, "fallbackColumns")
+        directional_fill <- identical(step$replacement$kind, "directional")
+        grouped_fill <- identical(step$replacement$kind, "groupedStatistic")
+        interpolation_fill <- identical(step$replacement$kind, "linearInterpolation")
         lines <- c(
           lines,
           sprintf("  .ow_fill_position <- %dL", step$position),
@@ -2799,7 +3687,19 @@ openwrangler_r_kernel_agent <- local({
           row_type_guard(".ow_fill_source", list(semanticsKind = step$semanticKind)),
           "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_fill_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Fill Missing Values cannot replace a data.table key column\", call. = FALSE)"
         )
-        if (fallback_fill) {
+        if (interpolation_fill) {
+          coordinate <- step$interpolationCoordinate
+          lines <- c(
+            lines,
+            sprintf("  if (ncol(.ow_result) < %dL || !identical(names(.ow_result)[[%dL]], %s)) stop(\"Open Wrangler interpolation coordinate is stale\", call. = FALSE)", coordinate$position, coordinate$position, r_string(coordinate$name)),
+            sprintf("  .ow_fill_coordinate <- .ow_result[[%dL]]", coordinate$position),
+            row_type_guard(".ow_fill_coordinate", coordinate),
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_linear(.ow_fill_source, .ow_fill_coordinate, %s)",
+              if (is.null(step$replacement$maxGap)) "NULL" else sprintf("%dL", step$replacement$maxGap)
+            )
+          )
+        } else if (fallback_fill) {
           fallback_variables <- character(length(step$fallbackColumns))
           for (fallback_index in seq_along(step$fallbackColumns)) {
             fallback <- step$fallbackColumns[[fallback_index]]
@@ -2828,6 +3728,58 @@ openwrangler_r_kernel_agent <- local({
               fallback_list,
               fallback_kinds,
               maximum_factor_levels
+            )
+          )
+        } else if (grouped_fill) {
+          if (any(vapply(
+            c(list(list(semanticsKind = step$semanticKind)), step$groupKeys),
+            function(specification) identical(specification$semanticsKind, "integer64"),
+            logical(1L),
+            USE.NAMES = FALSE
+          ))) {
+            lines <- c(
+              lines,
+              "  if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required for this grouped fill\", call. = FALSE)"
+            )
+          }
+          group_key_values <- sprintf(
+            "list(%s)",
+            paste(vapply(
+              step$groupKeys,
+              function(key) sprintf(".ow_result[[%dL]]", key$position),
+              character(1L),
+              USE.NAMES = FALSE
+            ), collapse = ", ")
+          )
+          lines <- c(
+            lines,
+            row_sort_code_lines(step$groupKeys),
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_grouped(.ow_fill_source, .ow_rows, %s, %s, %s)",
+              group_key_values,
+              r_string(step$semanticKind),
+              r_string(step$replacement$statistic)
+            )
+          )
+        } else if (directional_fill) {
+          if (any(vapply(
+            step$orderBy,
+            function(specification) identical(specification$semanticsKind, "integer64"),
+            logical(1L),
+            USE.NAMES = FALSE
+          ))) {
+            lines <- c(
+              lines,
+              "  if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required for this directional fill\", call. = FALSE)"
+            )
+          }
+          lines <- c(
+            lines,
+            row_sort_code_lines(step$orderBy),
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_directional(.ow_fill_source, .ow_rows, %s, %s)",
+              r_string(step$replacement$direction),
+              if (is.null(step$replacement$maxGap)) "NULL" else sprintf("%dL", step$replacement$maxGap)
             )
           )
         } else {
@@ -2914,7 +3866,9 @@ openwrangler_r_kernel_agent <- local({
     before_page = NULL,
     after_page = NULL
   ) {
-    added_columns <- if (
+    added_columns <- if (identical(bound$kind, "groupBy")) {
+      vapply(bound$aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
+    } else if (
       bound$kind %in% c("cloneColumn", "textLength") ||
         (
           bound$kind %in% c(
@@ -2935,7 +3889,9 @@ openwrangler_r_kernel_agent <- local({
     } else {
       character()
     }
-    removed_columns <- if (identical(bound$kind, "dropColumns")) {
+    removed_columns <- if (identical(bound$kind, "groupBy")) {
+      bound$removedNames
+    } else if (identical(bound$kind, "dropColumns")) {
       vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
     } else if (identical(bound$kind, "selectColumns")) {
       bound$removedNames
@@ -2947,7 +3903,24 @@ openwrangler_r_kernel_agent <- local({
     truncated <- FALSE
     added_rows <- 0L
     removed_rows <- 0L
-    if (bound$kind %in% c("sortRows", "filterRows", "dropMissingRows", "dropDuplicates")) {
+    if (identical(bound$kind, "groupBy")) {
+      if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
+        abort("runtime_error", "The R Group By diff is missing its bounded page context")
+      }
+      if (is.null(after_page)) after_page <- materialize(frame_contract, after, page)
+      before_rows <- before$descriptor$shape$rows
+      after_rows <- after$descriptor$shape$rows
+      added_rows <- as.integer(after_rows)
+      removed_rows <- as.integer(before_rows)
+      before_complete <-
+        page$row_offset == 0 &&
+          page$row_limit >= before_rows
+      after_complete <-
+        after_page$page$offset == 0 &&
+          after_page$page$totalRows == after_rows &&
+          length(after_page$page$rows) == after_rows
+      truncated <- !(before_complete && after_complete)
+    } else if (bound$kind %in% c("sortRows", "filterRows", "dropMissingRows", "dropDuplicates")) {
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R row transform diff is missing its bounded page context")
       }
@@ -3082,6 +4055,7 @@ openwrangler_r_kernel_agent <- local({
   new_agent <- function(frame_contract, source_environment = .GlobalEnv, export_root = NULL) {
     required_functions <- c(
       "capture_frame",
+      "capture_group_result",
       "capture_live_frame",
       "isolate_capture",
       "rename_column",
@@ -3099,17 +4073,23 @@ openwrangler_r_kernel_agent <- local({
       "ceil_number_column_at",
       "fill_missing_column_at",
       "fill_missing_from_fallback_columns_at",
+      "fill_missing_directional_at",
+      "fill_missing_linear_interpolation_at",
+      "fill_missing_grouped_statistic_at",
       "cast_column_at",
       "drop_columns_at",
       "select_columns_at",
       "drop_missing_rows_at",
       "drop_duplicate_rows_at",
+      "group_by_at",
       "transform_rows",
       "materialize_view_page",
       "materialize_summaries",
       "materialize_dataset_stats",
       "materialize_column_values",
-      "write_csv"
+      "export_formats",
+      "write_csv",
+      "write_parquet"
     )
     if (
       !is.list(frame_contract) ||
@@ -3165,6 +4145,22 @@ openwrangler_r_kernel_agent <- local({
 
     sessions <- new.env(hash = TRUE, parent = emptyenv())
     exports <- new.env(hash = TRUE, parent = emptyenv())
+
+    supported_export_formats <- function() {
+      formats <- frame_contract$export_formats()
+      if (
+        !is.character(formats) ||
+          length(formats) < 1L ||
+          length(formats) > 2L ||
+          anyNA(formats) ||
+          anyDuplicated(formats) ||
+          !identical(formats[[1L]], "csv") ||
+          any(!formats %in% c("csv", "parquet"))
+      ) {
+        abort("runtime_error", "The R frame contract returned invalid export capabilities")
+      }
+      unname(formats)
+    }
 
     remove_export <- function(export_id) {
       if (!exists(export_id, envir = exports, inherits = FALSE)) return(invisible(FALSE))
@@ -3261,6 +4257,7 @@ openwrangler_r_kernel_agent <- local({
           requestId = request_id,
           kind = "page",
           sessionId = session_id,
+          exportFormats = I(supported_export_formats()),
           page = result
         )
         preflight_response(response)
@@ -3446,6 +4443,13 @@ openwrangler_r_kernel_agent <- local({
             frame_contract$limits$factorLevels
           )
         )
+        if (identical(applied$bound$kind, "fillMissingValues")) {
+          response$remainingMissingCells <- frame_contract$count_missing_at(
+            candidate$draft,
+            applied$bound$position,
+            applied$bound$oldName
+          )
+        }
         preflight_response(response)
         assign(session_id, candidate, envir = sessions)
         return(response)
@@ -3623,19 +4627,30 @@ openwrangler_r_kernel_agent <- local({
           abort("invalid_request", "The requested R export identity is already in use", TRUE)
         }
         format <- bounded_text(payload$format, "request.payload.format", 16L)
-        if (!identical(format, "csv")) {
-          abort("invalid_request", "Native R data export currently supports CSV only", TRUE)
+        if (!format %in% c("csv", "parquet")) {
+          abort("invalid_request", "Native R data export requires CSV or Parquet", TRUE)
+        }
+        if (!format %in% supported_export_formats()) {
+          abort(
+            "missing_package",
+            "Parquet export requires nanoparquet 0.5.1 or newer in the selected R runtime",
+            TRUE
+          )
         }
         capture <- if (isTRUE(session$editing)) session$committed else session$source
         if (is.null(capture)) {
           abort("runtime_error", "The committed R dataframe is no longer available")
         }
-        artifact_path <- file.path(export_root, paste0(export_id, ".csv"))
+        artifact_path <- file.path(export_root, paste0(export_id, if (identical(format, "csv")) ".csv" else ".parquet"))
         completed <- FALSE
         on.exit({
           if (!completed && file.exists(artifact_path)) try(unlink(artifact_path, force = TRUE), silent = TRUE)
         }, add = TRUE)
-        exported <- frame_contract$write_csv(capture, artifact_path)
+        exported <- if (identical(format, "csv")) {
+          frame_contract$write_csv(capture, artifact_path)
+        } else {
+          frame_contract$write_parquet(capture, artifact_path)
+        }
         response <- list(
           transportVersion = transport_version,
           requestId = request_id,
@@ -3643,7 +4658,7 @@ openwrangler_r_kernel_agent <- local({
           sessionId = session_id,
           revision = session$revision,
           exportId = export_id,
-          format = "csv",
+          format = format,
           rows = exported$rows,
           columns = exported$columns,
           bytes = exported$bytes

@@ -68,11 +68,11 @@ for very wide dataframes.
 <table>
   <tr>
     <td width="50%"><a href="images/readme/v1.2/gallery/operation-catalog.png"><img alt="The grouped Open Wrangler cleaning-operation catalog" src="images/readme/v1.2/gallery/operation-catalog.png" width="960"></a></td>
-    <td width="50%"><a href="images/readme/v1.2/gallery/operation-configuration.png"><img alt="Configuring a Formula column operation before preview" src="images/readme/v1.2/gallery/operation-configuration-detail.png" width="510"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/operation-configuration.png"><img alt="Filling missing revenue values with the mean for each market and segment" src="images/readme/v1.2/gallery/operation-configuration-detail.png" width="510"></a></td>
   </tr>
   <tr>
     <td>Search or browse 28 operations, including custom code and transformations inferred from examples.</td>
-    <td>Edit the operation parameters, then choose <strong>Preview changes</strong> to create a draft.</td>
+    <td>Choose methods that fit the column type, including statistics by group, interpolation, ordered fills, and same-row fallbacks.</td>
   </tr>
 </table>
 
@@ -168,13 +168,18 @@ the dataframes it creates. Unsaved editor changes are included. R Markdown and Q
 command does not render the document or attach to another R session.
 Each variable stays in R.
 
+<a href="images/readme/v1.2/gallery/r-quarto-variable-picker.png"><img alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders" src="images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
+
+The picker comes from a real `.qmd` run. The same command works for `.R` and `.Rmd` documents on macOS and Linux.
+
 <a href="images/editor-acceptance/vscode-notebook-r-dark.png"><img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="960"></a>
 
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
 Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates,
 Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, and Find
-and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling. A viewing filter or sort can be copied
-into a cleaning draft. Drop Missing Rows can check any or all selected columns and treats `NA` and `NaN` as missing.
+and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate. A viewing filter or
+sort can be copied into a cleaning draft. Drop Missing Rows can check any or all selected columns and treats `NA` and
+`NaN` as missing.
 Drop Duplicates can compare selected columns or the whole row and keep the first, last, or none of the repeated rows.
 Select keeps the order in which the columns were chosen. Text Length counts Unicode characters. The text operations
 convert factors to character and keep `NA`. Capitalize changes the first character to uppercase and the rest to
@@ -183,19 +188,24 @@ returns `NA` when the selected part is missing. Find and replace accepts literal
 type supports string, integer, float, boolean, date, and datetime targets. Values that cannot be converted become `NA`.
 Fill Missing Values can use the median of all non-missing numeric values, the mean of a double column, the most
 common non-missing character, factor, or logical value, or a value entered by the user. It can also check an ordered
-list of same-type columns and use the first present value in each row. These methods ignore `NA` and `NaN`. Dates,
-datetimes, and `integer64` keep their R types; a new factor value is added as a level.
+list of same-type columns and use the first present value in each row. Previous- and next-value fills take their own
+explicit sort order and can leave complete missing runs above an optional limit untouched. Median, mean, and most
+common value can also be calculated within selected groups. These methods ignore `NA` and `NaN`. Dates, datetimes,
+and `integer64` keep their R types; a new factor value is added as a level. Double columns can also interpolate
+missing runs along an ordinary numeric, `Date`, or `POSIXct` coordinate.
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's
 ties-to-even rule. A keyed `data.table` column can be written to a new output column but cannot be changed in place.
-All twenty operations use draft preview, generated R, apply, discard, inspection, latest-step editing, and undo.
+All twenty-one operations use draft preview, generated R, apply, discard, inspection, latest-step editing, and undo.
 Generated R can be copied, saved as a `.R` script, or inserted into the notebook or R document that opened the
-dataframe. R notebook and local R document sessions opened in Editing mode can export their cleaned result as CSV.
-R Parquet export is not supported yet.
+dataframe. Local R notebook and R document sessions opened in Editing mode can export their cleaned result as CSV.
+They can also export Parquet when `nanoparquet` 0.5.1 or newer is installed in the selected R environment. Reopen the
+dataframe after installing the package so the export menu can refresh.
 
-<a href="images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
+<a href="images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R" src="images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
-This Rename Column draft shows the changed schema and generated R before the step is applied.
+This draft groups regional orders by market and channel, then previews total revenue and the generated R before the
+step is applied.
 
 <a href="images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png"><img alt="Generated R cleaning code inserted as an R cell in the notebook that opened the dataframe" src="images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png" width="960"></a>
 
@@ -205,7 +215,7 @@ Convert type does not replace an active `data.table` key column. Clone that colu
 
 Default frames made with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing base-data-frame, tibble, and
 data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
-not supported. Operations outside the current 20-operation set are not supported in R yet.
+not supported. Other cleaning operations are not supported in R yet.
 
 Direct R-document execution currently requires macOS or Linux. R notebooks remain available on Windows.
 

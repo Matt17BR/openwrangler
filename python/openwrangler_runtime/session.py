@@ -685,6 +685,16 @@ class SessionManager:
                     before_page=before_page,
                     after_page=preview_page,
                 ),
+                **(
+                    {
+                        "remainingMissingCells": session.engine.missing_count(
+                            draft,
+                            int(bound_step["params"]["column"]["position"]),
+                        )
+                    }
+                    if normalized["kind"] == "fillMissingValues"
+                    else {}
+                ),
                 "code": session.engine.compile_plan(candidate_bound_plan),
                 "warnings": list(normalized["params"].get("warnings", [])),
             }
@@ -1371,10 +1381,15 @@ class SessionManager:
             raise EngineError("The fill-missing result does not match its target column.")
 
         replacement = params.get("replacement") if isinstance(params, Mapping) else None
-        if isinstance(replacement, Mapping) and replacement.get("kind") == "fallbackColumns":
-            # Ordered fallbacks may themselves be missing.  Keep the engine's
-            # observed nullability (or a lazy engine's conservative metadata)
-            # instead of claiming that every target cell was resolved.
+        if isinstance(replacement, Mapping) and replacement.get("kind") in {
+            "fallbackColumns",
+            "directional",
+            "groupedStatistic",
+            "linearInterpolation",
+        }:
+            # These replacements may leave cells missing.
+            # Keep the engine's observed nullability (or a lazy engine's
+            # conservative metadata) instead of claiming complete resolution.
             return result
 
         # Lazy Polars and DuckDB schemas cannot report nullability without a

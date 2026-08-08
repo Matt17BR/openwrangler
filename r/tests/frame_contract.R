@@ -35,6 +35,8 @@ require_package("jsonlite")
 require_package("tibble")
 require_package("data.table")
 require_package("bit64")
+require_package("collapse")
+require_package("nanoparquet")
 
 base_frame <- data.frame(
   duplicate = c(TRUE, NA, FALSE),
@@ -79,6 +81,76 @@ assert_identical(base_page$page$rows[[2L]]$values[[2L]]$kind, "null", "NA was no
 assert_identical(base_page$page$rows[[3L]]$values[[3L]]$kind, "infinity", "infinity was not typed")
 assert_identical(base_page$page$rows[[3L]]$values[[3L]]$sign, 1L, "infinity sign changed")
 assert_true(jsonlite::validate(openwrangler_r_frame_contract$encode_page(base_capture, row_limit = 3L)), "JSON is invalid")
+
+assert_true(
+  !openwrangler_r_frame_contract$nanoparquet_version_supported(NULL) &&
+    !openwrangler_r_frame_contract$nanoparquet_version_supported("not-a-version") &&
+    !openwrangler_r_frame_contract$nanoparquet_version_supported("0.5.0") &&
+    openwrangler_r_frame_contract$nanoparquet_version_supported("0.5.1") &&
+    openwrangler_r_frame_contract$nanoparquet_version_supported("1.0.0"),
+  "nanoparquet version gating changed"
+)
+assert_true(openwrangler_r_frame_contract$parquet_export_available(), "nanoparquet was not detected")
+assert_identical(
+  openwrangler_r_frame_contract$export_formats(),
+  c("csv", "parquet"),
+  "the R export format probe changed"
+)
+
+parquet_target <- tempfile(fileext = ".parquet")
+parquet_details <- openwrangler_r_frame_contract$write_parquet(base_capture, parquet_target)
+assert_identical(parquet_details$rows, 3L, "Parquet export changed the row count")
+assert_identical(parquet_details$columns, 10L, "Parquet export changed the column count")
+assert_true(parquet_details$bytes >= 8, "Parquet export reported an invalid byte count")
+parquet_connection <- file(parquet_target, open = "rb")
+parquet_prefix <- readBin(parquet_connection, what = "raw", n = 4L)
+seek(parquet_connection, where = -4L, origin = "end", rw = "read")
+parquet_suffix <- readBin(parquet_connection, what = "raw", n = 4L)
+close(parquet_connection)
+assert_identical(parquet_prefix, charToRaw("PAR1"), "Parquet export has an invalid header")
+assert_identical(parquet_suffix, charToRaw("PAR1"), "Parquet export has an invalid footer")
+parquet_frame <- nanoparquet::read_parquet(
+  parquet_target,
+  options = nanoparquet::parquet_options(class = "data.frame", read_int64_type = "integer64")
+)
+assert_identical(names(parquet_frame), names(base_frame), "Parquet export changed duplicate or non-syntactic names")
+assert_identical(parquet_frame[[1L]], base_frame[[1L]], "Parquet export changed logical values")
+assert_identical(parquet_frame[[2L]], base_frame[[2L]], "Parquet export changed integer values")
+assert_identical(parquet_frame[[3L]], base_frame[[3L]], "Parquet export changed double, NaN, or infinity values")
+assert_identical(parquet_frame[[4L]], base_frame[[4L]], "Parquet export changed UTF-8 text")
+assert_identical(as.character(parquet_frame[[5L]]), as.character(base_frame[[5L]]), "Parquet export changed factor values")
+assert_identical(levels(parquet_frame[[5L]]), levels(base_frame[[5L]]), "Parquet export changed factor levels")
+assert_identical(as.character(parquet_frame[[6L]]), as.character(base_frame[[6L]]), "Parquet export changed ordered values")
+assert_identical(as.numeric(parquet_frame[[7L]]), as.numeric(base_frame[[7L]]), "Parquet export changed Date values")
+assert_identical(as.numeric(parquet_frame[[8L]]), as.numeric(base_frame[[8L]]), "Parquet export changed POSIXct instants")
+assert_identical(as.numeric(parquet_frame[[9L]], units = "secs"), as.numeric(base_frame[[9L]], units = "secs"), "Parquet export changed difftime values")
+assert_identical(as.character(parquet_frame[[10L]]), as.character(base_frame[[10L]]), "Parquet export lost integer64 precision")
+unlink(parquet_target)
+
+zero_column_frame <- data.frame(row.names = seq_len(3L))
+zero_column_capture <- openwrangler_r_frame_contract$capture_frame(zero_column_frame)
+zero_column_target <- tempfile(fileext = ".parquet")
+zero_column_details <- openwrangler_r_frame_contract$write_parquet(zero_column_capture, zero_column_target)
+zero_column_result <- nanoparquet::read_parquet(
+  zero_column_target,
+  options = nanoparquet::parquet_options(class = "data.frame")
+)
+assert_identical(zero_column_details$rows, 3L, "zero-column Parquet export changed the row count")
+assert_identical(dim(zero_column_result), c(3L, 0L), "zero-column Parquet export did not round-trip")
+unlink(zero_column_target)
+
+existing_parquet_target <- tempfile(fileext = ".parquet")
+writeBin(charToRaw("do not replace"), existing_parquet_target)
+assert_error(
+  openwrangler_r_frame_contract$write_parquet(base_capture, existing_parquet_target),
+  "export-target-changed"
+)
+assert_identical(
+  readBin(existing_parquet_target, what = "raw", n = file.info(existing_parquet_target)$size),
+  charToRaw("do not replace"),
+  "a rejected Parquet export changed an existing target"
+)
+unlink(existing_parquet_target)
 
 ambient_frame <- data.frame(
   amount = 1234.5,
@@ -157,6 +229,172 @@ assert_identical(table_page$frameSemantics$keyColumnIds, I("r:c:0"), "data.table
 table_snapshot <- get("snapshot", envir = table_capture, inherits = FALSE)
 table_snapshot[, value := "changed"]
 assert_true(identical(table_frame, table_before), "data.table snapshot mutation reached the source frame")
+
+collapse_source <- data.frame(
+  row_id = 1:3,
+  group = c("a", "a", "b"),
+  value = c(3.5, 1.5, 2.5),
+  stringsAsFactors = FALSE
+)
+collapse_cases <- list(
+  list(frame = collapse::qDF(collapse_source), flavor = "r.data.frame", classes = "data.frame"),
+  list(frame = collapse::qTBL(collapse_source), flavor = "r.tibble", classes = c("tbl_df", "tbl", "data.frame")),
+  list(frame = collapse::qDT(collapse_source), flavor = "r.data.table", classes = c("data.table", "data.frame"))
+)
+for (case in collapse_cases) {
+  assert_identical(class(case$frame), case$classes, "collapse quick conversion returned unexpected classes")
+  capture <- openwrangler_r_frame_contract$capture_frame(case$frame)
+  page <- openwrangler_r_frame_contract$materialize_page(capture, row_limit = 3L, column_limit = 3L)
+  assert_identical(page$dataframeFlavor, case$flavor, "collapse quick conversion used the wrong dataframe flavor")
+  assert_identical(page$shape, list(rows = 3L, columns = 3L), "collapse quick conversion changed shape")
+  assert_identical(
+    vapply(page$schema, `[[`, character(1L), "name"),
+    c("row_id", "group", "value"),
+    "collapse quick conversion changed column names"
+  )
+}
+
+group_identity_source <- data.frame(
+  group = c("b", "a", "b"),
+  value = c(1L, 2L, 3L),
+  stringsAsFactors = FALSE,
+  row.names = c("source-b-1", "source-a", "source-b-2")
+)
+group_identity_source_capture <- openwrangler_r_frame_contract$capture_frame(group_identity_source)
+group_identity_result <- openwrangler_r_frame_contract$group_by_at(
+  group_identity_source,
+  1L,
+  "group",
+  2L,
+  "value",
+  "sum",
+  "total"
+)
+group_identity_capture <- openwrangler_r_frame_contract$capture_group_result(
+  group_identity_result,
+  group_identity_source_capture,
+  1L,
+  2L,
+  "sum",
+  c("r:c:0", "c:step:group-identity:0")
+)
+group_identity_page <- openwrangler_r_frame_contract$materialize_page(
+  group_identity_capture,
+  row_limit = 10L,
+  column_limit = 10L
+)
+assert_identical(
+  group_identity_capture$descriptor$shape$rows,
+  2L,
+  "a grouped capture lost its actual row count"
+)
+assert_identical(
+  group_identity_capture$rowOrigins,
+  c(4L, 5L),
+  "grouped rows reused identities from their source capture"
+)
+assert_identical(
+  group_identity_capture$rowIdentityDomain,
+  5,
+  "a grouped capture did not expand the source identity domain"
+)
+assert_identical(
+  group_identity_page$shape$rows,
+  5,
+  "a grouped page did not publish the expanded identity domain"
+)
+assert_identical(group_identity_page$page$totalRows, 2L, "a grouped page lost its actual visible row count")
+assert_identical(
+  group_identity_page$frameSemantics$rowNames,
+  "positional",
+  "a grouped result retained source row-name semantics"
+)
+assert_true(
+  all(vapply(group_identity_page$page$rows, function(row) is.null(row$rowLabel), logical(1L))),
+  "a grouped result retained source row labels"
+)
+assert_identical(
+  vapply(group_identity_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:3", "r:r:4"),
+  "a grouped page published overlapping row identities"
+)
+
+group_integer64_source <- data.frame(
+  case = c("cancel", "cancel", "odd", "odd", "odd", "same", "same"),
+  value = bit64::as.integer64(c(
+    "9223372036854775806", "-9223372036854775805",
+    "-9223372036854775805", "2", "9223372036854775806",
+    "9223372036854775802", "9223372036854775806"
+  )),
+  stringsAsFactors = FALSE
+)
+group_integer64_before <- unserialize(serialize(group_integer64_source, NULL, version = 3L))
+group_integer64_result <- openwrangler_r_frame_contract$group_by_at(
+  group_integer64_source,
+  1L,
+  "case",
+  c(2L, 2L),
+  c("value", "value"),
+  c("mean", "median"),
+  c("value_mean", "value_median")
+)
+same_sign_midpoint <- suppressWarnings(as.double(bit64::as.integer64("9223372036854775804")))
+assert_identical(
+  group_integer64_result$value_mean,
+  c(0.5, 1, same_sign_midpoint),
+  "integer64 Group By mean lost cancellation, odd-count, or same-sign precision"
+)
+assert_identical(
+  group_integer64_result$value_median,
+  c(0.5, 2, same_sign_midpoint),
+  "integer64 Group By median lost cancellation, odd-count, or same-sign precision"
+)
+assert_identical(
+  group_integer64_source,
+  group_integer64_before,
+  "integer64 Group By mutated its source dataframe"
+)
+
+group_integer64_sum_source <- data.frame(
+  group = c("cancel", "cancel"),
+  value = bit64::as.integer64(c("9223372036854775807", "-9223372036854775807")),
+  stringsAsFactors = FALSE
+)
+group_integer64_sum_result <- openwrangler_r_frame_contract$group_by_at(
+  group_integer64_sum_source,
+  1L,
+  "group",
+  2L,
+  "value",
+  "sum",
+  "value_sum"
+)
+assert_identical(
+  class(group_integer64_sum_result$value_sum),
+  "integer64",
+  "an exact R integer64 Group By sum changed output type"
+)
+assert_identical(
+  as.character(group_integer64_sum_result$value_sum),
+  "0",
+  "an exact R integer64 Group By sum lost cancellation"
+)
+assert_error(
+  openwrangler_r_frame_contract$group_by_at(
+    data.frame(
+      group = c("overflow", "overflow"),
+      value = bit64::as.integer64(c("9223372036854775807", "1")),
+      stringsAsFactors = FALSE
+    ),
+    1L,
+    "group",
+    2L,
+    "value",
+    "sum",
+    "value_sum"
+  ),
+  "outside the integer64 range"
+)
 
 rename_frame <- data.frame(
   duplicate = c(1L, 2L),
@@ -1564,6 +1802,512 @@ assert_error(
   "key column"
 )
 assert_identical(fallback_table, fallback_table_before, "fallback fill mutated its source data.table")
+
+directional_frame <- data.frame(
+  sequence = c(4L, 1L, 3L, 2L, 6L, 5L),
+  target = ordered(c(NA, "start", NA, NA, NA, "end"), levels = c("start", "end")),
+  row.names = paste0("directional-", 1:6),
+  check.names = FALSE
+)
+directional_before <- unserialize(serialize(directional_frame, NULL, version = 3L))
+directional_forward <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_frame,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "forward"
+)
+assert_identical(
+  directional_forward$target,
+  ordered(c("start", "start", "start", "start", "end", "end"), levels = c("start", "end")),
+  "forward directional fill ignored explicit order or failed to restore source row order"
+)
+assert_identical(
+  row.names(directional_forward),
+  row.names(directional_frame),
+  "directional fill changed explicit row names"
+)
+assert_identical(levels(directional_forward$target), levels(directional_frame$target), "directional fill changed factor levels")
+
+directional_limited <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_frame,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "forward",
+  2L
+)
+assert_identical(
+  directional_limited$target,
+  ordered(c(NA, "start", NA, NA, "end", "end"), levels = c("start", "end")),
+  "max_gap partially filled a missing run that exceeded the whole-run threshold"
+)
+
+directional_boundaries <- data.frame(
+  sequence = c(3L, 1L, 5L, 2L, 4L),
+  target = c("middle", NA_character_, NA_character_, NA_character_, NA_character_),
+  check.names = FALSE
+)
+directional_backward <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_boundaries,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "backward",
+  2L
+)
+assert_identical(
+  directional_backward$target,
+  c("middle", "middle", NA_character_, "middle", NA_character_),
+  "backward directional fill did not fill the leading boundary or incorrectly filled the trailing boundary"
+)
+
+directional_table <- data.table::data.table(
+  sequence = c(2L, 1L, 3L),
+  target = as.POSIXct(c(NA, "2026-01-01 12:00:00", NA), tz = "Europe/Berlin")
+)
+data.table::setkey(directional_table, sequence)
+directional_table_before <- data.table::copy(directional_table)
+directional_table_result <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_table,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "forward"
+)
+assert_identical(class(directional_table_result), c("data.table", "data.frame"), "directional fill changed data.table class")
+assert_identical(data.table::key(directional_table_result), "sequence", "directional fill dropped an unaffected data.table key")
+assert_identical(attr(directional_table_result$target, "tzone"), "Europe/Berlin", "directional fill changed timezone")
+assert_true(!anyNA(directional_table_result$target), "directional fill did not fill ordered datetime gaps")
+assert_identical(directional_table, directional_table_before, "directional fill mutated its source data.table")
+
+directional_collapse <- collapse::qTBL(data.frame(sequence = 1:3, target = c(1L, NA_integer_, 3L)))
+directional_collapse_result <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_collapse,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "forward"
+)
+assert_identical(
+  class(directional_collapse_result),
+  c("tbl_df", "tbl", "data.frame"),
+  "directional fill changed collapse tibble flavor"
+)
+assert_identical(directional_collapse_result$target, c(1L, 1L, 3L), "directional fill changed integer dtype")
+assert_identical(directional_frame, directional_before, "directional fill mutated its source data.frame")
+
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_directional_at(
+    directional_frame,
+    2L,
+    "target",
+    2L,
+    "target",
+    "asc",
+    "last",
+    "forward"
+  ),
+  "directional ordering selection"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_directional_at(
+    directional_frame,
+    2L,
+    "target",
+    1L,
+    "sequence",
+    "asc",
+    "last",
+    "forward",
+    0L
+  ),
+  "max_gap must be positive"
+)
+
+interpolation_frame <- data.frame(
+  coordinate = c(12, 0, 5, 20, 8, 30, 3),
+  target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_),
+  row.names = paste0("interpolation-", 1:7),
+  check.names = FALSE
+)
+interpolation_before <- unserialize(serialize(interpolation_frame, NULL, version = 3L))
+interpolation_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_frame,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+assert_identical(
+  interpolation_result$target,
+  c(NA_real_, 0, 50, Inf, 80, NA_real_, 30),
+  "linear interpolation did not use coordinate distance or preserve unresolved gaps"
+)
+assert_identical(
+  row.names(interpolation_result),
+  row.names(interpolation_frame),
+  "linear interpolation changed source row order or row names"
+)
+assert_identical(interpolation_frame, interpolation_before, "linear interpolation mutated its source data.frame")
+
+empty_interpolation_frame <- data.frame(coordinate = integer(), target = double(), check.names = FALSE)
+empty_interpolation_before <- unserialize(serialize(empty_interpolation_frame, NULL, version = 3L))
+empty_interpolation_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  empty_interpolation_frame,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+empty_interpolation_capture <- openwrangler_r_frame_contract$capture_frame(empty_interpolation_result)
+assert_identical(class(empty_interpolation_result), "data.frame", "empty interpolation changed the base frame flavor")
+assert_identical(typeof(empty_interpolation_result$target), "double", "empty interpolation changed target storage")
+assert_identical(
+  empty_interpolation_capture$descriptor$schema[[2L]]$type,
+  "float",
+  "empty interpolation published the wrong target type"
+)
+assert_identical(
+  empty_interpolation_capture$descriptor$schema[[2L]]$rawType,
+  "double",
+  "empty interpolation published the wrong raw target type"
+)
+assert_identical(
+  empty_interpolation_capture$descriptor$schema[[2L]]$semantics$kind,
+  "double",
+  "empty interpolation published the wrong target semantics"
+)
+assert_identical(empty_interpolation_frame, empty_interpolation_before, "empty interpolation mutated its source")
+
+interpolation_limited <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_frame,
+  2L,
+  "target",
+  1L,
+  "coordinate",
+  1L
+)
+assert_identical(
+  interpolation_limited$target,
+  interpolation_frame$target,
+  "max_gap partially interpolated a run that exceeded the whole-run threshold"
+)
+
+interpolation_huge <- data.frame(
+  coordinate = c(-.Machine$double.xmax, 0, .Machine$double.xmax),
+  target = c(.Machine$double.xmax, NA_real_, -.Machine$double.xmax)
+)
+interpolation_huge_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_huge,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+assert_identical(
+  interpolation_huge_result$target,
+  c(.Machine$double.xmax, 0, -.Machine$double.xmax),
+  "linear interpolation overflowed finite opposite-sign endpoints"
+)
+
+interpolation_date <- data.frame(
+  coordinate = as.Date(c("2026-01-01", "2026-01-03", "2026-01-11")),
+  target = c(0, NA_real_, 100)
+)
+interpolation_date_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_date,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+assert_identical(
+  interpolation_date_result$target,
+  c(0, 20, 100),
+  "Date interpolation did not use elapsed days"
+)
+
+interpolation_instant <- data.frame(
+  coordinate = as.POSIXct(
+    c("2026-03-29 00:00:00", "2026-03-29 03:00:00", "2026-03-29 04:00:00"),
+    tz = "Europe/Berlin"
+  ),
+  target = c(0, NA_real_, 30)
+)
+interpolation_instant_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_instant,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+assert_identical(
+  interpolation_instant_result$target,
+  c(0, 20, 30),
+  "POSIXct interpolation did not use elapsed instants across DST"
+)
+
+interpolation_flavors <- list(
+  list(frame = tibble::tibble(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8))),
+  list(frame = data.table::data.table(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8))),
+  list(frame = collapse::qDF(data.frame(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8)))),
+  list(frame = collapse::qTBL(data.frame(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8)))),
+  list(frame = collapse::qDT(data.frame(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8))))
+)
+for (case in interpolation_flavors) {
+  frame <- case$frame
+  if (inherits(frame, "data.table")) data.table::setkey(frame, coordinate)
+  before <- if (inherits(frame, "data.table")) data.table::copy(frame) else unserialize(serialize(frame, NULL, version = 3L))
+  result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+    frame,
+    2L,
+    "target",
+    1L,
+    "coordinate"
+  )
+  assert_identical(class(result), class(frame), "linear interpolation changed the R dataframe flavor")
+  assert_identical(result$target, c(0, 4, 8), "linear interpolation changed floating-point target dtype")
+  assert_identical(typeof(result$target), "double", "linear interpolation changed target storage")
+  if (inherits(frame, "data.table")) {
+    assert_identical(data.table::key(result), "coordinate", "linear interpolation dropped an unaffected data.table key")
+  }
+  assert_identical(frame, before, "linear interpolation mutated an R dataframe flavor source")
+}
+
+invalid_interpolation_coordinates <- list(
+  data.frame(coordinate = c(0, NA_real_, 2), target = c(0, NA_real_, 2)),
+  data.frame(coordinate = c(0, Inf, 2), target = c(0, NA_real_, 2)),
+  data.frame(coordinate = c(0, 0, 2), target = c(0, NA_real_, 2)),
+  data.frame(coordinate = c("a", "b", "c"), target = c(0, NA_real_, 2)),
+  data.frame(coordinate = bit64::as.integer64(c(0, 1, 2)), target = c(0, NA_real_, 2))
+)
+for (invalid_frame in invalid_interpolation_coordinates) {
+  assert_error(
+    openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+      invalid_frame,
+      2L,
+      "target",
+      1L,
+      "coordinate"
+    ),
+    "interpolation"
+  )
+}
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+    data.frame(coordinate = c(0, 1, 2), target = c(0L, NA_integer_, 2L)),
+    2L,
+    "target",
+    1L,
+    "coordinate"
+  ),
+  "floating-point"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+    interpolation_frame,
+    2L,
+    "target",
+    2L,
+    "target"
+  ),
+  "fill target"
+)
+
+grouped_mean_frame <- data.frame(
+  group = c(NA_real_, NaN, 1, 1, 2, 2, 3, 3, 3),
+  day = as.Date(rep("2026-01-01", 9L)),
+  target = c(2, NA, 4, NaN, Inf, NA, Inf, -Inf, NA),
+  row.names = paste0("grouped-", 1:9),
+  check.names = FALSE
+)
+grouped_mean_before <- unserialize(serialize(grouped_mean_frame, NULL, version = 3L))
+grouped_mean_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_mean_frame,
+  3L,
+  "target",
+  c(1L, 2L),
+  c("group", "day"),
+  "mean"
+)
+assert_identical(
+  grouped_mean_result$target,
+  c(2, 2, 4, 4, Inf, Inf, Inf, -Inf, NA),
+  "grouped mean did not fill a target NaN, normalize NA/NaN keys, or preserve an unresolved null gap"
+)
+assert_identical(row.names(grouped_mean_result), row.names(grouped_mean_frame), "grouped mean changed row names")
+assert_identical(grouped_mean_frame, grouped_mean_before, "grouped mean mutated its source data.frame")
+
+smallest_positive_double <- 2^-1074
+grouped_float_median <- data.frame(
+  group = c("odd", "odd", "even", "even", "even"),
+  target = c(
+    smallest_positive_double,
+    NA_real_,
+    .Machine$double.xmax / 2,
+    .Machine$double.xmax,
+    NA_real_
+  )
+)
+grouped_float_median_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_float_median,
+  2L,
+  "target",
+  1L,
+  "group",
+  "median"
+)
+assert_identical(
+  grouped_float_median_result$target[[2L]],
+  smallest_positive_double,
+  "an odd grouped float median underflowed instead of returning its exact middle value"
+)
+assert_identical(
+  grouped_float_median_result$target[[5L]],
+  (.Machine$double.xmax / 2) + ((.Machine$double.xmax - (.Machine$double.xmax / 2)) / 2),
+  "an even grouped float median did not use the safe same-sign midpoint"
+)
+
+grouped_integer <- data.frame(group = c("a", "a", "a", "b", "b"), target = c(1L, 3L, NA_integer_, NA_integer_, NA_integer_))
+grouped_integer_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_integer,
+  2L,
+  "target",
+  1L,
+  "group",
+  "median"
+)
+assert_identical(
+  grouped_integer_result$target,
+  c(1L, 3L, 2L, NA_integer_, NA_integer_),
+  "grouped integer median did not fill exact groups or leave all-missing groups unresolved"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+    data.frame(group = c("a", "a", "a"), target = c(1L, 2L, NA_integer_)),
+    2L,
+    "target",
+    1L,
+    "group",
+    "median"
+  ),
+  "grouped integer median is not an integer"
+)
+
+grouped_wide <- data.frame(
+  group = c("a", "a", "a"),
+  target = bit64::as.integer64(c("9007199254740993", "9007199254740995", NA)),
+  check.names = FALSE
+)
+grouped_wide_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_wide,
+  2L,
+  "target",
+  1L,
+  "group",
+  "median"
+)
+assert_identical(
+  as.character(grouped_wide_result$target),
+  c("9007199254740993", "9007199254740995", "9007199254740994"),
+  "grouped integer64 median lost precision"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+    data.frame(group = c("a", "a", "a"), target = bit64::as.integer64(c("1", "2", NA))),
+    2L,
+    "target",
+    1L,
+    "group",
+    "median"
+  ),
+  "integer64 median is not an integer"
+)
+
+grouped_wide_keys <- data.frame(
+  group = bit64::as.integer64(c(
+    "9007199254740993", "9007199254740993", "9007199254740994", "9007199254740994"
+  )),
+  target = c(10, NA, 20, NA),
+  check.names = FALSE
+)
+grouped_wide_keys_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_wide_keys,
+  2L,
+  "target",
+  1L,
+  "group",
+  "mean"
+)
+assert_identical(
+  grouped_wide_keys_result$target,
+  c(10, 10, 20, 20),
+  "grouped fill collapsed distinct integer64 keys"
+)
+
+grouped_mode <- data.frame(
+  group = c("a", "a", "a", "b", "b", "b", "c"),
+  target = factor(c("x", "x", NA, "x", "y", NA, NA), levels = c("x", "y", "unused")),
+  check.names = FALSE
+)
+grouped_mode_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_mode,
+  2L,
+  "target",
+  1L,
+  "group",
+  "mostFrequent"
+)
+assert_identical(
+  as.character(grouped_mode_result$target),
+  c("x", "x", "x", "x", "y", NA_character_, NA_character_),
+  "grouped mode filled a tied or all-missing group"
+)
+assert_identical(levels(grouped_mode_result$target), levels(grouped_mode$target), "grouped mode changed factor levels")
+
+grouped_table <- data.table::data.table(group = c("a", "a", "b"), target = c(1, NA, NA))
+data.table::setkey(grouped_table, group)
+grouped_table_before <- data.table::copy(grouped_table)
+grouped_table_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_table,
+  2L,
+  "target",
+  1L,
+  "group",
+  "mean"
+)
+assert_identical(class(grouped_table_result), c("data.table", "data.frame"), "grouped fill changed data.table flavor")
+assert_identical(data.table::key(grouped_table_result), "group", "grouped fill dropped a compatible data.table key")
+assert_identical(grouped_table_result$target, c(1, 1, NA_real_), "grouped fill changed keyed data.table values")
+assert_identical(grouped_table, grouped_table_before, "grouped fill mutated its source data.table")
+
+grouped_collapse <- collapse::qTBL(data.frame(group = c("a", "a", "b"), target = c(TRUE, NA, NA)))
+grouped_collapse_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_collapse,
+  2L,
+  "target",
+  1L,
+  "group",
+  "mostFrequent"
+)
+assert_identical(class(grouped_collapse_result), class(grouped_collapse), "grouped fill changed collapse frame flavor")
+assert_identical(grouped_collapse_result$target, c(TRUE, TRUE, NA), "grouped fill changed collapse values")
 
 cast_cases <- list(
   list(
@@ -3596,9 +4340,13 @@ grouped_tibble <- tibble::tibble(value = 1:2)
 class(grouped_tibble) <- c("grouped_df", class(grouped_tibble))
 assert_error(openwrangler_r_frame_contract$capture_frame(grouped_tibble), "unsupported-frame-class")
 
-collapse_grouped_frame <- data.frame(group = "a", value = 1L)
-class(collapse_grouped_frame) <- c("GRP_df", "grouped_df", "data.frame")
+collapse_grouped_frame <- collapse::fgroup_by(collapse_source, group)
+assert_true(inherits(collapse_grouped_frame, "GRP_df"), "collapse did not create a grouped GRP_df")
 assert_error(openwrangler_r_frame_contract$capture_frame(collapse_grouped_frame), "unsupported-frame-class")
+
+collapse_indexed_frame <- collapse::findex_by(collapse_source, group, row_id)
+assert_true(inherits(collapse_indexed_frame, "indexed_frame"), "collapse did not create an indexed_frame")
+assert_error(openwrangler_r_frame_contract$capture_frame(collapse_indexed_frame), "unsupported-frame-class")
 
 list_frame <- data.frame(value = I(list(1L, 2L)))
 assert_error(openwrangler_r_frame_contract$capture_frame(list_frame), "unsupported-column")

@@ -174,6 +174,122 @@ def test_fill_missing_binds_ordered_fallback_columns_by_identity() -> None:
     ]
 
 
+def test_fill_missing_binds_directional_order_by_identity() -> None:
+    public = step(
+        "fillMissingValues",
+        column=ref("c:source:2", "value"),
+        replacement={
+            "kind": "directional",
+            "direction": "backward",
+            "orderBy": [
+                {
+                    "column": ref("c:source:1", "duplicate"),
+                    "direction": "desc",
+                    "nulls": "first",
+                },
+                {
+                    "column": ref("c:source:0", "duplicate"),
+                    "direction": "asc",
+                    "nulls": "last",
+                },
+            ],
+            "maxGap": 3,
+        },
+    )
+
+    bound = bind_step(public, SCHEMA, LINEAGE)
+
+    assert bound["params"]["replacement"] == {
+        "kind": "directional",
+        "direction": "backward",
+        "orderBy": [
+            {
+                "column": {"id": "c:source:1", "name": "duplicate", "position": 1},
+                "direction": "desc",
+                "nulls": "first",
+            },
+            {
+                "column": {"id": "c:source:0", "name": "duplicate", "position": 0},
+                "direction": "asc",
+                "nulls": "last",
+            },
+        ],
+        "maxGap": 3,
+    }
+    assert public["params"]["replacement"]["orderBy"][0]["column"] == ref("c:source:1", "duplicate")
+
+
+def test_fill_missing_binding_rejects_invalid_directional_columns_and_shape() -> None:
+    target = ref("c:source:2", "value")
+    target_rule = {"column": target, "direction": "asc", "nulls": "last"}
+    with pytest.raises(ColumnBindingError, match="target cannot also be"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=target,
+                replacement={"kind": "directional", "direction": "forward", "orderBy": [target_rule]},
+            ),
+            SCHEMA,
+            LINEAGE,
+        )
+
+    typed_schema = [{"name": "target", "type": "integer"}, {"name": "order", "type": "binary"}]
+    typed_lineage = [{"id": "c:target", "name": "target"}, {"id": "c:order", "name": "order"}]
+    with pytest.raises(ColumnBindingError, match="portable comparable"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:target", "target"),
+                replacement={
+                    "kind": "directional",
+                    "direction": "forward",
+                    "orderBy": [
+                        {
+                            "column": ref("c:order", "order"),
+                            "direction": "asc",
+                            "nulls": "last",
+                        }
+                    ],
+                },
+            ),
+            typed_schema,
+            typed_lineage,
+        )
+
+    unsupported_schema = [{"name": "target", "type": "list"}, {"name": "order", "type": "integer"}]
+    with pytest.raises(ColumnBindingError, match="choose a scalar column"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:target", "target"),
+                replacement={
+                    "kind": "directional",
+                    "direction": "forward",
+                    "orderBy": [
+                        {
+                            "column": ref("c:order", "order"),
+                            "direction": "asc",
+                            "nulls": "last",
+                        }
+                    ],
+                },
+            ),
+            unsupported_schema,
+            typed_lineage,
+        )
+
+    with pytest.raises(ColumnBindingError, match="optional maxGap"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:source:2", "value"),
+                replacement={"kind": "directional", "direction": "forward", "orderBy": [], "extra": True},
+            ),
+            SCHEMA,
+            LINEAGE,
+        )
+
+
 def test_fill_missing_binding_rejects_target_cross_type_and_oversized_fallbacks() -> None:
     with pytest.raises(ColumnBindingError, match="target cannot also be"):
         bind_step(
@@ -953,4 +1069,55 @@ def test_by_example_type_validation_recurses_through_nested_programs() -> None:
             by_example_step(reference, program),
             [{"name": "value", "type": "decimal"}],
             [reference],
+        )
+
+
+def test_fill_missing_binds_grouped_statistic_keys_by_identity() -> None:
+    schema = [
+        {"name": "group", "type": "string"},
+        {"name": "sequence", "type": "integer"},
+        {"name": "value", "type": "float"},
+    ]
+    lineage = [ref("c:group", "group"), ref("c:sequence", "sequence"), ref("c:value", "value")]
+    bound = bind_step(
+        step(
+            "fillMissingValues",
+            column=ref("c:value", "value"),
+            replacement={
+                "kind": "groupedStatistic",
+                "statistic": "mean",
+                "keys": [ref("c:group", "group"), ref("c:sequence", "sequence")],
+            },
+        ),
+        schema,
+        lineage,
+    )
+
+    assert bound["params"]["replacement"]["keys"] == [
+        {"id": "c:group", "name": "group", "position": 0},
+        {"id": "c:sequence", "name": "sequence", "position": 1},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target_type", "statistic"),
+    [("integer", "mean"), ("date", "median"), ("integer", "mostFrequent")],
+)
+def test_fill_missing_binding_rejects_incompatible_grouped_statistic_targets(target_type: str, statistic: str) -> None:
+    schema = [{"name": "key", "type": "string"}, {"name": "value", "type": target_type}]
+    lineage = [ref("c:key", "key"), ref("c:value", "value")]
+
+    with pytest.raises(ColumnBindingError, match="compatible target"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:value", "value"),
+                replacement={
+                    "kind": "groupedStatistic",
+                    "statistic": statistic,
+                    "keys": [ref("c:key", "key")],
+                },
+            ),
+            schema,
+            lineage,
         )

@@ -154,6 +154,899 @@ def schema_column(metadata: dict[str, Any], name: str) -> dict[str, Any]:
     return next(column for column in metadata["schema"] if column["name"] == name)
 
 
+_DIRECTIONAL_SOURCE = [
+    (4, 0, 4, 20.0),
+    (0, 0, 0, None),
+    (8, 1, 3, 30.0),
+    (3, 0, 3, float("nan")),
+    (6, 1, 1, None),
+    (1, 0, 1, 10.0),
+    (9, 1, 4, None),
+    (2, 0, 2, None),
+    (7, 1, 2, float("nan")),
+    (5, 1, 0, None),
+]
+
+
+def directional_frame(engine: Any) -> Any:
+    columns = ["row", "priority", "sequence", "value"]
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame(_DIRECTIONAL_SOURCE, columns=columns)
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame(_DIRECTIONAL_SOURCE, schema=columns, orient="row")
+
+    def value_sql(value: float | None) -> str:
+        if value is None:
+            return "NULL::DOUBLE"
+        if isnan(value):
+            return "'NaN'::DOUBLE"
+        return f"{value!r}::DOUBLE"
+
+    values = ", ".join(
+        f"({row}::INTEGER, {priority}::INTEGER, {sequence}::INTEGER, {value_sql(value)})"
+        for row, priority, sequence, value in _DIRECTIONAL_SOURCE
+    )
+    return duckdb.sql(f'SELECT * FROM (VALUES {values}) AS source("row", "priority", "sequence", "value")')
+
+
+def directional_step(direction: str, max_gap: int | None = 2) -> dict[str, Any]:
+    replacement: dict[str, Any] = {
+        "kind": "directional",
+        "direction": direction,
+        "orderBy": [
+            {
+                "column": bound_ref("c:source:1", "priority", 1),
+                "direction": "asc",
+                "nulls": "last",
+            },
+            {
+                "column": bound_ref("c:source:2", "sequence", 2),
+                "direction": "asc",
+                "nulls": "last",
+            },
+        ],
+    }
+    if max_gap is not None:
+        replacement["maxGap"] = max_gap
+    return fill_step(bound_ref("c:source:3", "value", 3), replacement, step_id=f"{direction}-fill")
+
+
+def grouped_step(statistic: str, target_position: int, keys: list[tuple[int, str]]) -> dict[str, Any]:
+    return fill_step(
+        bound_ref(f"c:source:{target_position}", "value", target_position),
+        {
+            "kind": "groupedStatistic",
+            "statistic": statistic,
+            "keys": [bound_ref(f"c:source:{position}", name, position) for position, name in keys],
+        },
+        step_id=f"grouped-{statistic}",
+    )
+
+
+def grouped_float_frame(engine: Any) -> Any:
+    values = [
+        ("x", 1.0, 1.0),
+        ("x", 1.0, None),
+        ("x", 1.0, 3.0),
+        ("y", None, float("inf")),
+        ("y", float("nan"), float("-inf")),
+        ("y", None, None),
+        ("z", 2.0, None),
+        ("w", 3.0, float("inf")),
+        ("w", 3.0, None),
+    ]
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame(values, columns=["group", "bucket", "value"])
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame(values, schema=["group", "bucket", "value"], orient="row").lazy()
+    sql_values = ", ".join(
+        "("
+        + ", ".join(
+            "NULL"
+            if value is None
+            else "'NaN'::DOUBLE"
+            if isinstance(value, float) and isnan(value)
+            else "'Infinity'::DOUBLE"
+            if value == float("inf")
+            else "'-Infinity'::DOUBLE"
+            if value == float("-inf")
+            else repr(value)
+            for value in row
+        )
+        + ")"
+        for row in values
+    )
+    return duckdb.sql(f'SELECT * FROM (VALUES {sql_values}) AS source("group", "bucket", "value")')
+
+
+def grouped_string_frame(engine: Any) -> Any:
+    values = [
+        ("x", "A"),
+        ("x", "A"),
+        ("x", "a"),
+        ("x", None),
+        ("y", "C"),
+        ("y", "D"),
+        ("y", None),
+        ("z", None),
+    ]
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame(values, columns=["group", "value"])
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame(values, schema=["group", "value"], orient="row").lazy()
+    sql_values = ", ".join(f"({group!r}, {('NULL' if value is None else repr(value))})" for group, value in values)
+    return duckdb.sql(f'SELECT * FROM (VALUES {sql_values}) AS source("group", "value")')
+
+
+def grouped_exact_median_frame(engine: Any, kind: str, *, exact: bool) -> Any:
+    lower = 1 if kind == "integer" else Decimal("1.25")
+    upper = (3 if exact else 2) if kind == "integer" else Decimal("1.27" if exact else "1.26")
+    # The y group has an inexact median but no missing cell, so it must not
+    # make an otherwise valid preview fail.
+    untouched_upper = 2 if kind == "integer" else Decimal("1.26")
+    values = [("x", lower), ("x", None), ("x", upper), ("y", lower), ("y", untouched_upper)]
+    if isinstance(engine, PandasEngine):
+        dtype = "Int64" if kind == "integer" else pd.ArrowDtype(pa.decimal128(38, 2))
+        return pd.DataFrame(
+            {
+                "group": [group for group, _value in values],
+                "value": pd.Series([value for _group, value in values], dtype=dtype),
+            }
+        )
+    if isinstance(engine, PolarsEngine):
+        dtype = pl.Int64 if kind == "integer" else pl.Decimal(38, 2)
+        return pl.DataFrame(
+            {
+                "group": [group for group, _value in values],
+                "value": pl.Series([value for _group, value in values], dtype=dtype),
+            }
+        ).lazy()
+    raw_type = "BIGINT" if kind == "integer" else "DECIMAL(38, 2)"
+    sql_values = ", ".join(
+        f"({group!r}, {('NULL' if value is None else repr(str(value)) if kind == 'decimal' else value)}::{raw_type})"
+        for group, value in values
+    )
+    return duckdb.sql(f'SELECT * FROM (VALUES {sql_values}) AS source("group", "value")')
+
+
+def test_grouped_mean_uses_exact_multi_keys_and_leaves_undefined_groups_missing(engine_and_frame) -> None:
+    engine, _unused = engine_and_frame
+    source = grouped_float_frame(engine)
+    operation = grouped_step("mean", 2, [(0, "group"), (1, "bucket")])
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        ("x", 1.0, 1.0),
+        ("x", 1.0, 2.0),
+        ("x", 1.0, 3.0),
+        ("y", None, float("inf")),
+        ("y", None, float("-inf")),
+        ("y", None, None),
+        ("z", 2.0, None),
+        ("w", 3.0, float("inf")),
+        ("w", 3.0, float("inf")),
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+    if isinstance(engine, PolarsEngine):
+        assert isinstance(live, pl.LazyFrame)
+        assert isinstance(generated, pl.LazyFrame)
+
+
+def test_grouped_mean_treats_target_nan_and_null_as_the_same_missing_value(engine_and_frame) -> None:
+    engine, _unused = engine_and_frame
+    values = [
+        ("fill", 1.0),
+        ("fill", float("nan")),
+        ("fill", None),
+        ("fill", 3.0),
+        ("undefined", float("-inf")),
+        ("undefined", float("nan")),
+        ("undefined", None),
+        ("undefined", float("inf")),
+    ]
+    if isinstance(engine, PandasEngine):
+        source = pd.DataFrame(values, columns=["group", "value"])
+    elif isinstance(engine, PolarsEngine):
+        source = pl.DataFrame(values, schema=["group", "value"], orient="row").lazy()
+    else:
+        source = duckdb.sql(
+            "SELECT * FROM (VALUES ('fill', 1.0::DOUBLE), ('fill', 'NaN'::DOUBLE), "
+            "('fill', NULL::DOUBLE), ('fill', 3.0::DOUBLE), "
+            "('undefined', '-Infinity'::DOUBLE), ('undefined', 'NaN'::DOUBLE), "
+            "('undefined', NULL::DOUBLE), ('undefined', 'Infinity'::DOUBLE)) "
+            'AS source("group", "value")'
+        )
+    operation = grouped_step("mean", 1, [(0, "group")])
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        ("fill", 1.0),
+        ("fill", 2.0),
+        ("fill", 2.0),
+        ("fill", 3.0),
+        ("undefined", float("-inf")),
+        ("undefined", None),
+        ("undefined", None),
+        ("undefined", float("inf")),
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def test_grouped_most_frequent_is_case_sensitive_and_does_not_break_ties(engine_and_frame) -> None:
+    engine, _unused = engine_and_frame
+    source = grouped_string_frame(engine)
+    operation = grouped_step("mostFrequent", 1, [(0, "group")])
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        ("x", "A"),
+        ("x", "A"),
+        ("x", "a"),
+        ("x", "A"),
+        ("y", "C"),
+        ("y", "D"),
+        ("y", None),
+        ("z", None),
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+@pytest.mark.parametrize("target_kind", ["categorical", "boolean"])
+def test_grouped_most_frequent_preserves_categorical_and_boolean_types(engine_and_frame, target_kind: str) -> None:
+    engine, _unused = engine_and_frame
+    raw_values: list[Any] = ["a", "a", "b", None] if target_kind == "categorical" else [True, True, False, None]
+    expected_fill = "a" if target_kind == "categorical" else True
+    sources: list[Any]
+    if isinstance(engine, PandasEngine):
+        dtype = "category" if target_kind == "categorical" else "boolean"
+        sources = [pd.DataFrame({"group": ["x"] * 4, "value": pd.Series(raw_values, dtype=dtype)})]
+    elif isinstance(engine, PolarsEngine):
+        dtypes = [pl.Categorical, pl.Enum(["a", "b"])] if target_kind == "categorical" else [pl.Boolean]
+        sources = [
+            pl.DataFrame({"group": ["x"] * 4, "value": pl.Series(raw_values, dtype=dtype)}).lazy() for dtype in dtypes
+        ]
+    else:
+        raw_type = "ENUM('a', 'b')" if target_kind == "categorical" else "BOOLEAN"
+        literals = [
+            "NULL" if value is None else repr(value) if isinstance(value, str) else str(value).upper()
+            for value in raw_values
+        ]
+        sources = [
+            duckdb.sql(
+                "SELECT * FROM (VALUES "
+                + ", ".join(f"('x', {literal}::{raw_type})" for literal in literals)
+                + ') AS source("group", "value")'
+            )
+        ]
+
+    operation = grouped_step("mostFrequent", 1, [(0, "group")])
+    for source in sources:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert normalized_rows(live)[-1] == ("x", expected_fill)
+        assert normalized_rows(generated)[-1] == ("x", expected_fill)
+        if isinstance(engine, PandasEngine):
+            if target_kind == "categorical":
+                assert isinstance(live.dtypes.iloc[1], pd.CategoricalDtype)
+                assert isinstance(generated.dtypes.iloc[1], pd.CategoricalDtype)
+            else:
+                assert str(live.dtypes.iloc[1]) == "boolean"
+                assert str(generated.dtypes.iloc[1]) == "boolean"
+        elif isinstance(engine, PolarsEngine):
+            assert live.collect_schema()["value"] == source.collect_schema()["value"]
+            assert generated.collect_schema()["value"] == source.collect_schema()["value"]
+        else:
+            assert str(live.types[1]) == str(source.types[1])
+            assert str(generated.types[1]) == str(source.types[1])
+
+
+def test_grouped_float_median_leaves_an_undefined_infinite_midpoint_missing(engine_and_frame) -> None:
+    engine, _unused = engine_and_frame
+    values = [("x", float("-inf")), ("x", None), ("x", float("inf"))]
+    if isinstance(engine, PandasEngine):
+        source = pd.DataFrame(values, columns=["group", "value"])
+    elif isinstance(engine, PolarsEngine):
+        source = pl.DataFrame(values, schema=["group", "value"], orient="row").lazy()
+    else:
+        source = duckdb.sql(
+            "SELECT * FROM (VALUES ('x', '-Infinity'::DOUBLE), ('x', NULL::DOUBLE), "
+            "('x', 'Infinity'::DOUBLE)) AS source(\"group\", \"value\")"
+        )
+    operation = grouped_step("median", 1, [(0, "group")])
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    assert normalized_rows(live) == [("x", float("-inf")), ("x", None), ("x", float("inf"))]
+    assert normalized_rows(generated) == [("x", float("-inf")), ("x", None), ("x", float("inf"))]
+
+
+def test_grouped_float_median_avoids_opposite_sign_overflow(engine_and_frame) -> None:
+    engine, _unused = engine_and_frame
+    values = [("x", -1e308), ("x", None), ("x", 1e308)]
+    if isinstance(engine, PandasEngine):
+        source = pd.DataFrame(values, columns=["group", "value"])
+    elif isinstance(engine, PolarsEngine):
+        source = pl.DataFrame(values, schema=["group", "value"], orient="row").lazy()
+    else:
+        source = duckdb.sql(
+            "SELECT * FROM (VALUES ('x', -1e308::DOUBLE), ('x', NULL::DOUBLE), "
+            '(\'x\', 1e308::DOUBLE)) AS source("group", "value")'
+        )
+    operation = grouped_step("median", 1, [(0, "group")])
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    assert normalized_rows(live)[1] == ("x", 0.0)
+    assert normalized_rows(generated)[1] == ("x", 0.0)
+
+
+@pytest.mark.parametrize("kind", ["integer", "decimal"])
+def test_grouped_median_preserves_exact_target_type_or_fails_before_filling(engine_and_frame, kind: str) -> None:
+    engine, _unused = engine_and_frame
+    operation = grouped_step("median", 1, [(0, "group")])
+    exact_source = grouped_exact_median_frame(engine, kind, exact=True)
+    inexact_source = grouped_exact_median_frame(engine, kind, exact=False)
+
+    live = engine.apply_transform(exact_source, operation)
+    generated = execute_generated(engine, exact_source, [operation])
+    expected = 2 if kind == "integer" else Decimal("1.26")
+    assert normalized_rows(live)[1] == ("x", expected)
+    assert normalized_rows(generated)[1] == ("x", expected)
+
+    with pytest.raises((EngineError, ValueError, duckdb.Error), match="fractional|represented exactly|scale"):
+        normalized_rows(engine.apply_transform(inexact_source, operation))
+    with pytest.raises((EngineError, ValueError, duckdb.Error), match="fractional|represented exactly|scale"):
+        normalized_rows(execute_generated(engine, inexact_source, [operation]))
+
+
+def test_pandas_grouped_mode_distinguishes_boolean_and_integer_object_values() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "group": ["x", "x", "x"],
+            "value": pd.Series([1, True, None], dtype=object),
+        }
+    )
+    operation = grouped_step("mostFrequent", 1, [(0, "group")])
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    assert normalized_rows(live) == [("x", 1), ("x", True), ("x", None)]
+    assert normalized_rows(generated) == normalized_rows(live)
+
+
+def test_pandas_grouped_fill_rejects_unhashable_mixed_object_keys_clearly() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "group": pd.Series(["x", ["x"], "x"], dtype=object),
+            "value": [1.0, None, 3.0],
+        }
+    )
+    operation = grouped_step("mean", 1, [(0, "group")])
+
+    with pytest.raises(EngineError, match="scalar Pandas group keys"):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match="scalar Pandas group keys"):
+        execute_generated(engine, source, [operation])
+
+
+def test_pandas_grouped_fill_includes_the_missing_categorical_key_group() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "group": pd.Series(["x", None, None, None], dtype="category"),
+            "value": [9.0, 1.0, None, float("nan")],
+        }
+    )
+    operation = grouped_step("mean", 1, [(0, "group")])
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [("x", 9.0), (None, 1.0), (None, 1.0), (None, 1.0)]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def test_pandas_grouped_decimal_median_ignores_untouched_high_scale_groups() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        {
+            "group": ["fill", "fill", "fill", "untouched"],
+            "value": pd.Series(
+                [Decimal("1.0"), None, Decimal("3.0"), Decimal("1E-100")],
+                dtype=object,
+            ),
+        }
+    )
+    operation = grouped_step("median", 1, [(0, "group")])
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        ("fill", Decimal("1.0")),
+        ("fill", Decimal("2.0")),
+        ("fill", Decimal("3.0")),
+        ("untouched", Decimal("1E-100")),
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+@pytest.mark.parametrize("object_role", ["key", "target"])
+def test_polars_grouped_fill_rejects_object_columns_before_execution(object_role: str) -> None:
+    engine = PolarsEngine()
+    source = pl.DataFrame(
+        {
+            "group": pl.Series(["x", "x"], dtype=pl.Object if object_role == "key" else pl.String),
+            "value": pl.Series([1.0, None], dtype=pl.Object if object_role == "target" else pl.Float64),
+        }
+    ).lazy()
+    statistic = "mostFrequent" if object_role == "target" else "mean"
+    operation = grouped_step(statistic, 1, [(0, "group")])
+
+    with pytest.raises(EngineError, match="Object columns are not supported"):
+        engine.apply_transform(source, operation)
+    with pytest.raises(ValueError, match="Object columns are not supported"):
+        execute_generated(engine, source, [operation])
+
+
+def test_polars_grouped_exact_median_builds_a_lazy_plan_without_collecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PolarsEngine()
+    source = grouped_exact_median_frame(engine, "integer", exact=True)
+    operation = grouped_step("median", 1, [(0, "group")])
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            pl.LazyFrame,
+            "collect",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("grouped fill collected eagerly")),
+        )
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+    assert isinstance(live, pl.LazyFrame)
+    assert isinstance(generated, pl.LazyFrame)
+    assert normalized_rows(live)[1] == ("x", 2)
+    assert normalized_rows(generated)[1] == ("x", 2)
+
+
+def test_duckdb_grouped_fill_ignores_nocase_collation_for_public_exact_semantics() -> None:
+    engine = DuckDBEngine()
+    mode_source = duckdb.sql(
+        'SELECT "group", value COLLATE nocase AS value FROM '
+        "(VALUES ('x', 'A'), ('x', 'a'), ('x', NULL)) AS source(\"group\", value)"
+    )
+    key_source = duckdb.sql(
+        'SELECT raw_group COLLATE nocase AS "group", value FROM '
+        "(VALUES ('A', 1.0), ('A', NULL), ('a', 3.0), ('a', NULL)) AS source(raw_group, value)"
+    )
+    mode_operation = grouped_step("mostFrequent", 1, [(0, "group")])
+    key_operation = grouped_step("median", 1, [(0, "group")])
+
+    try:
+        expected_mode = [("x", "A"), ("x", "a"), ("x", None)]
+        expected_keys = [("A", Decimal("1.0")), ("A", Decimal("1.0")), ("a", Decimal("3.0")), ("a", Decimal("3.0"))]
+        assert normalized_rows(engine.apply_transform(mode_source, mode_operation)) == expected_mode
+        assert normalized_rows(execute_generated(engine, mode_source, [mode_operation])) == expected_mode
+        assert normalized_rows(engine.apply_transform(key_source, key_operation)) == expected_keys
+        assert normalized_rows(execute_generated(engine, key_source, [key_operation])) == expected_keys
+    finally:
+        engine.close()
+
+
+def test_duckdb_grouped_exact_median_defers_validation_to_the_single_lazy_query() -> None:
+    engine = DuckDBEngine()
+    source = grouped_exact_median_frame(engine, "integer", exact=False)
+    operation = grouped_step("median", 1, [(0, "group")])
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+        assert isinstance(live, DuckDBSqlPlan)
+        with pytest.raises(duckdb.Error, match="represented exactly"):
+            normalized_rows(live)
+        with pytest.raises(duckdb.Error, match="represented exactly"):
+            normalized_rows(generated)
+    finally:
+        engine.close()
+
+
+def test_pandas_grouped_fill_addresses_duplicate_and_non_string_labels_by_position() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        [["x", 1, "ignored"], ["x", None, "ignored"], ["x", 3, "ignored"]],
+        columns=[0, "value", "value"],
+    )
+    source.isetitem(1, pd.Series([1, None, 3], dtype="Int64"))
+    operation = grouped_step("median", 1, [(0, "0")])
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    assert list(live.iloc[:, 1]) == [1, 2, 3]
+    assert list(generated.iloc[:, 1]) == [1, 2, 3]
+    assert list(live.iloc[:, 2]) == ["ignored"] * 3
+    assert list(generated.iloc[:, 2]) == ["ignored"] * 3
+
+
+def test_duckdb_grouped_fill_preserves_case_variant_internal_name_columns() -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(
+        "SELECT * FROM (VALUES (10, 'x', 1.0), (20, 'x', NULL), (30, 'x', 3.0)) "
+        'AS source("__OW_GROUPED_ORIGINAL", "group", "value")'
+    )
+    operation = grouped_step("mean", 2, [(1, "group")])
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert normalized_rows(live) == [(10, "x", 1.0), (20, "x", 2.0), (30, "x", 3.0)]
+        assert normalized_rows(generated) == [(10, "x", 1.0), (20, "x", 2.0), (30, "x", 3.0)]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected_by_row"),
+    [
+        (
+            "forward",
+            {0: None, 1: 10.0, 2: 10.0, 3: 10.0, 4: 20.0, 5: None, 6: None, 7: None, 8: 30.0, 9: 30.0},
+        ),
+        (
+            "backward",
+            {0: 10.0, 1: 10.0, 2: 20.0, 3: 20.0, 4: 20.0, 5: None, 6: None, 7: None, 8: 30.0, 9: None},
+        ),
+    ],
+)
+def test_directional_fill_respects_stable_multi_sort_whole_gap_limit_and_source_order(
+    engine_and_frame,
+    direction: str,
+    expected_by_row: dict[int, float | None],
+) -> None:
+    engine, _unused = engine_and_frame
+    source = directional_frame(engine)
+    operation = directional_step(direction, max_gap=2)
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        (row, priority, sequence, expected_by_row[row]) for row, priority, sequence, _value in _DIRECTIONAL_SOURCE
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def test_directional_fill_without_max_gap_fills_every_anchored_run(engine_and_frame) -> None:
+    engine, _unused = engine_and_frame
+    source = directional_frame(engine)
+    operation = directional_step("forward", max_gap=None)
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected_by_row = {
+        0: None,
+        1: 10.0,
+        2: 10.0,
+        3: 10.0,
+        4: 20.0,
+        5: 20.0,
+        6: 20.0,
+        7: 20.0,
+        8: 30.0,
+        9: 30.0,
+    }
+    expected = [
+        (row, priority, sequence, expected_by_row[row]) for row, priority, sequence, _value in _DIRECTIONAL_SOURCE
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def string_tie_frame(engine: Any) -> Any:
+    records = [
+        (0, 1, "alpha"),
+        (1, 1, None),
+        (2, 1, "beta"),
+        (3, 2, None),
+        (4, 2, "omega"),
+    ]
+    columns = ["row", "order", "value"]
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame(records, columns=columns)
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame(records, schema=columns, orient="row")
+    return duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (0::INTEGER, 1::INTEGER, 'alpha'::VARCHAR),
+            (1::INTEGER, 1::INTEGER, NULL::VARCHAR),
+            (2::INTEGER, 1::INTEGER, 'beta'::VARCHAR),
+            (3::INTEGER, 2::INTEGER, NULL::VARCHAR),
+            (4::INTEGER, 2::INTEGER, 'omega'::VARCHAR)
+        ) AS source("row", "order", "value")
+        """
+    )
+
+
+def test_directional_fill_breaks_identical_order_keys_by_stable_source_order(engine_and_frame) -> None:
+    engine, _unused = engine_and_frame
+    source = string_tie_frame(engine)
+    operation = fill_step(
+        bound_ref("c:source:2", "value", 2),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:1", "order", 1),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        step_id="stable-tie-fill",
+    )
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        (0, 1, "alpha"),
+        (1, 1, "alpha"),
+        (2, 1, "beta"),
+        (3, 2, "beta"),
+        (4, 2, "omega"),
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def float_missing_order_frame(engine: Any) -> Any:
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame(
+            {
+                "row": [0, 1, 2],
+                "order": [None, float("nan"), 1.0],
+                "value": ["missing-anchor", None, "finite-anchor"],
+            }
+        )
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame(
+            {
+                "row": pl.Series([0, 1, 2], dtype=pl.Int64),
+                "order": pl.Series([None, float("nan"), 1.0], dtype=pl.Float64),
+                "value": pl.Series(["missing-anchor", None, "finite-anchor"], dtype=pl.String),
+            }
+        )
+    return duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (0::INTEGER, NULL::DOUBLE, 'missing-anchor'::VARCHAR),
+            (1::INTEGER, 'NaN'::DOUBLE, NULL::VARCHAR),
+            (2::INTEGER, 1.0::DOUBLE, 'finite-anchor'::VARCHAR)
+        ) AS source("row", "order", "value")
+        """
+    )
+
+
+@pytest.mark.parametrize("nulls", ["first", "last"])
+def test_directional_float_order_treats_null_and_nan_as_one_stable_missing_group(
+    engine_and_frame,
+    nulls: str,
+) -> None:
+    engine, _unused = engine_and_frame
+    source = float_missing_order_frame(engine)
+    operation = fill_step(
+        bound_ref("c:source:2", "value", 2),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:1", "order", 1),
+                    "direction": "asc",
+                    "nulls": nulls,
+                }
+            ],
+        },
+        step_id=f"float-missing-order-{nulls}",
+    )
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        (0, None, "missing-anchor"),
+        (1, None, "missing-anchor"),
+        (2, 1.0, "finite-anchor"),
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def test_polars_directional_fill_stays_lazy_until_the_result_is_collected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        pl.DataFrame,
+        "to_pandas",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars must stay native")),
+        raising=False,
+    )
+    engine = PolarsEngine()
+    source = pl.DataFrame({"order": [2, 1, 3], "value": [None, "seed", None]}).lazy()
+    operation = fill_step(
+        bound_ref("c:source:1", "value", 1),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:0", "order", 0),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        step_id="lazy-directional-fill",
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert isinstance(live, pl.LazyFrame)
+        assert isinstance(generated, pl.LazyFrame)
+        assert rows(live) == [(2, "seed"), (1, "seed"), (3, "seed")]
+        assert rows(generated) == rows(live)
+    finally:
+        engine.close()
+
+
+def test_pandas_directional_fill_uses_exact_duplicate_label_positions_in_live_and_generated_code() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        [
+            [9, 2, "decoy-0", None],
+            [8, 1, "decoy-1", "seed"],
+            [7, 3, "decoy-2", None],
+            [6, 4, "decoy-3", "end"],
+        ],
+        columns=["order", "order", "value", "value"],
+    )
+    operation = fill_step(
+        bound_ref("c:source:3", "value", 3),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:1", "order", 1),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        step_id="duplicate-position-directional-fill",
+    )
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        (9, 2, "decoy-0", "seed"),
+        (8, 1, "decoy-1", "seed"),
+        (7, 3, "decoy-2", "seed"),
+        (6, 4, "decoy-3", "end"),
+    ]
+    assert list(live.columns) == ["order", "order", "value", "value"]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def test_duckdb_directional_fill_preserves_case_variant_internal_name_columns() -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (101::INTEGER, 1::INTEGER, 'seed'::VARCHAR),
+            (102::INTEGER, 2::INTEGER, NULL::VARCHAR),
+            (103::INTEGER, 3::INTEGER, NULL::VARCHAR)
+        ) AS source("__OW_DIRECTIONAL_ORIGINAL", "order", "value")
+        """
+    )
+    operation = fill_step(
+        bound_ref("c:source:2", "value", 2),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:1", "order", 1),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        step_id="duckdb-casefolded-temporary-fill",
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        expected = [(101, 1, "seed"), (102, 2, "seed"), (103, 3, "seed")]
+        assert list(live.columns) == ["__OW_DIRECTIONAL_ORIGINAL", "order", "value"]
+        assert normalized_rows(live) == expected
+        assert normalized_rows(generated) == expected
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_session_directional_fill_keeps_nullable_metadata(
+    backend: str,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / f"directional-nullability-{backend}.csv"
+    path.write_text("order,target\n1,\n2,present\n3,\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    operation = {
+        "id": "directional-fill",
+        "kind": "fillMissingValues",
+        "params": {
+            "column": {"id": "c:source:1", "name": "target"},
+            "replacement": {
+                "kind": "directional",
+                "direction": "forward",
+                "orderBy": [
+                    {
+                        "column": {"id": "c:source:0", "name": "order"},
+                        "direction": "asc",
+                        "nulls": "last",
+                    }
+                ],
+            },
+        },
+    }
+
+    try:
+        preview = manager.preview_step(session_id, 0, operation, 0, 10)
+        assert preview["remainingMissingCells"] == 1
+        assert schema_column(preview["metadata"], "target")["nullable"] is True
+        applied = manager.apply_draft(session_id, 1, 0, 10)
+        assert schema_column(applied["metadata"], "target")["nullable"] is True
+    finally:
+        manager.close_session(session_id, 2)
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 def test_session_fill_metadata_stays_consistent_through_preview_apply_and_replay(
     backend: str,
@@ -190,12 +1083,14 @@ def test_session_fill_metadata_stays_consistent_through_preview_apply_and_replay
         assert schema_column(opened["metadata"], "label")["nullable"] is True
 
         preview = manager.preview_step(session_id, 0, step, 0, 10)
+        assert preview["remainingMissingCells"] == 0
         assert schema_column(preview["metadata"], "label")["nullable"] is False
 
         discarded = manager.discard_draft(session_id, 1, 0, 10)
         assert schema_column(discarded["metadata"], "label")["nullable"] is True
 
         preview = manager.preview_step(session_id, 2, step, 0, 10)
+        assert preview["remainingMissingCells"] == 0
         applied = manager.apply_draft(session_id, 3, 0, 10)
         assert schema_column(applied["metadata"], "label")["nullable"] is False
 
@@ -237,6 +1132,7 @@ def test_session_fallback_fill_keeps_nullable_metadata_when_rows_remain_unresolv
 
     try:
         preview = manager.preview_step(session_id, 0, operation, 0, 10)
+        assert preview["remainingMissingCells"] == 1
         assert schema_column(preview["metadata"], "target")["nullable"] is True
         applied = manager.apply_draft(session_id, 1, 0, 10)
         assert schema_column(applied["metadata"], "target")["nullable"] is True

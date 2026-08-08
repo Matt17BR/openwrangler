@@ -76,7 +76,10 @@ describe("Marketplace and walkthrough copy", () => {
       "R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set."
     );
     expect(walkthrough?.description).toContain(
-      "DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only."
+      "DuckDB file sessions support cleaning and export; notebook relations are experimental and view-only."
+    );
+    expect(walkthrough?.description).toContain(
+      "Local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only."
     );
     expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
       "Use the notebook toolbar for live Python or R dataframes."
@@ -171,7 +174,7 @@ describe("file launch contributions", () => {
 
   it("offers the trusted R document command on local and remote R, R Markdown, and Quarto sources", () => {
     const rSourcePredicate =
-      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+      "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
 
     expect(manifest.activationEvents).toContain("onCommand:openWrangler.runRDocument");
     expect(manifest.contributes?.commands).toContainEqual({
@@ -199,6 +202,9 @@ describe("file launch contributions", () => {
       when: rSourcePredicate,
       group: "navigation@49"
     });
+    expect(manifest.contributes?.menus?.commandPalette).not.toContainEqual(
+      expect.objectContaining({ command: "openWrangler.runRDocument" })
+    );
   });
 
   it("keeps the supported extension predicate case-insensitive and closed to unrelated files", () => {

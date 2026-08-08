@@ -13,7 +13,7 @@ Open Wrangler has three cooperating parts:
 Python and R sessions use the same coordinator, grid, filters, sorts, profiles, draft review, and cleaning history.
 R currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Round, Floor, and Ceiling.
+Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate.
 The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
@@ -134,12 +134,18 @@ a `data.table` key column is rejected; choosing a new output column leaves the e
 data frames and tibbles are copied with R serialization; `data.table` uses
 `data.table::copy()` and native column selection, preserving compatible keys without mutating the notebook variable.
 Fill Missing Values offers a typed value, an exact numeric median, a mean for double columns, or the most common
-non-missing value for character, factor, and logical columns. It also accepts an ordered list of same-type fallback
-columns and takes the first present value in each row. Calculated replacements ignore `NA` and `NaN`. When missing
-cells need filling, ties, all-missing columns, and undefined means fail before a draft is published. Factors, ordered
-factors, dates, datetimes, and `integer64` keep their native types. A no-op returns the unchanged column. Key columns
-are blocked because replacing a key value can invalidate the data-table order. R text replacements use the frame
-contract's 8 KiB UTF-8 limit, which the operation form checks before preview.
+non-missing value for character, factor, and logical columns. Median, mean, and most common replacements can also be
+calculated within one or more groups. It accepts an ordered list of same-type fallback columns and takes the first
+present value in each row. Directional fills use an explicit stable sort, restore the original row order, and may
+reject a whole missing run above a chosen limit. Forward fill leaves leading gaps
+unresolved; backward fill leaves trailing gaps unresolved. A double column can instead interpolate between finite
+anchors along an ordinary numeric, `Date`, or `POSIXct` coordinate. Coordinates must be complete, finite, and unique.
+The calculation uses their actual distance, fills only bracketed runs, and restores source order. `integer64` is not a
+supported coordinate. Calculated replacements ignore `NA` and `NaN`. When
+missing cells need filling, ties, all-missing columns, and undefined means fail before a draft is published. Factors,
+ordered factors, dates, datetimes, and `integer64` keep their native types. A no-op returns the unchanged column. Key
+columns are blocked because replacing a key value can invalidate the data-table order. R text replacements use the
+frame contract's 8 KiB UTF-8 limit, which the operation form checks before preview.
 Convert type replaces one column while retaining its name, position, and stable ID. It targets character, integer,
 double, logical, Date, or UTC POSIXct output, and factors convert through their labels. An `integer64` source stays
 `integer64` when the target is integer. A supported value that cannot be parsed becomes `NA`; conversions that would
@@ -148,11 +154,20 @@ Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` colum
 outputs are R doubles. `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and `-Inf`,
 and Round follows R's ties-to-even rule. An in-place change to an active `data.table` key is rejected; writing to a
 new output column is allowed and leaves the key alone.
+Group and aggregate binds every key and input by stable ID and name. It keeps groups in first-seen order, treats
+`NA` and `NaN` keys as the same missing group, and supports sum, mean, median, minimum, maximum, count, distinct
+count, first, and last. The result stays a base data frame, tibble, or data table to match its input. A data-table
+key is cleared because the grouped output does not promise keyed order. Grouped rows receive new identities after
+the input identity domain, so page diffs cannot mistake an aggregate row for a source row. Exact integer and
+`integer64` sums keep their native R type. Base R and `bit64` do not provide an exact 38-digit integer type, so a
+sum outside that native type's range fails before publication instead of being converted to text or another engine.
+Integer64 mean and median use exact decimal addition before their final double result, including cancellation and
+same-sign boundary pairs. First and last use source order.
 A live session reports nullability conservatively; isolating it for editing or changing the schema keeps retained
 nullability metadata unless Fill Missing Values has removed every missing value. Preview, apply, discard, latest-step replacement,
 undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
 response before publishing the candidate state. Generated code repeats the positional and stale-name checks for all
-twenty operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
+twenty-one operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
 for the chosen rules instead of embedding a generic interpreter in every preview.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
@@ -179,12 +194,14 @@ temporary directory, and responses are published by atomic rename. Requests are 
 different source sessions may run independently. Closing the panel closes its R session, stops the owned process, and
 removes its temporary directory.
 
-An editable R notebook or local R document session can export its committed cleaning result as CSV. A document process
-writes an opaque file in its private directory; the extension verifies and streams that file. IRkernel keeps its file
-inside the kernel and returns bounded, offset-addressed chunks. Both routes feed the existing atomic file transaction,
-and R never receives the destination path. Drafts, stale revisions, and Parquet requests are rejected. Viewing filters
-and sorts are not part of the exported cleaning result. Notebook export is offered only when the notebook belongs to
-the current local extension host; the public export request does not yet carry a VS Code remote authority.
+An editable R notebook or local R document session can export its committed cleaning result as CSV or Parquet. CSV is
+part of base R. Parquet requires `nanoparquet` 0.5.1 or newer in the exact R process that owns the session; the runtime
+checks this when the session opens and again when export starts. A document process writes an opaque file in its
+private directory; the extension verifies and streams that file. IRkernel keeps its file inside the kernel and returns
+bounded, offset-addressed chunks. Both routes feed the existing atomic file transaction, and R never receives the
+destination path. Drafts and stale revisions are rejected. Viewing filters and sorts are not part of the exported
+cleaning result. Notebook export is offered only when the notebook belongs to the current local extension host; the
+public export request does not yet carry a VS Code remote authority.
 
 Direct R-document execution is currently disabled on Windows. Node's ordinary child-process API cannot prove that every
 process started by user R code has exited. The command can be enabled there only after the extension owns the R
@@ -198,7 +215,7 @@ code. Native variable discovery requires `jsonlite` and `rlang` in the selected 
 commands enable native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Round, Floor, and Ceiling. Operations outside this 20-operation set are not
+Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate. Other operations are not
 supported in R yet.
 Generated R can be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session. Notebook
 insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the complete
@@ -209,14 +226,15 @@ and the profile drawer still loads the selected column or dataset on request. Th
 checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
-frame, and final session cleanup. The packaged VS Code and Cursor runs cover all twenty operations, including the
-visible forms for Find and replace, Uppercase, Round, Floor, and Ceiling. The
+frame, and final session cleanup. The packaged VS Code and Cursor runs cover all twenty-one operations, including the
+visible forms for Find and replace, Uppercase, Round, Floor, Ceiling, and Group and aggregate. The
 base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
 applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,
 and undo. The run checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed
 data tables additionally cover editable open plus Rename and Drop preview/discard. The direct R suites cover all
-twenty operations, plus class and key behavior for tibbles and data tables. The packaged run opens the Round, Floor,
-and Ceiling forms and checks their derived values before applying or discarding the draft. An applied-step
+twenty-one operations, plus class and key behavior for tibbles and data tables. The packaged run opens the Round,
+Floor, Ceiling, and Group and aggregate forms and checks their derived values before applying or discarding the draft.
+An applied-step
 inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
 retained input and output schemas and calculates the public diff only after all three responses agree.
 
@@ -239,6 +257,23 @@ For Pandas and Polars, formatter registration retains `text/plain`, suppresses o
 The Jupyter extension remains optional and is never a package dependency. Its Variables action and Open Wrangler's notebook-variable command converge on the same exact `NotebookDocument`-owned launch path. Menu placement uses only stable VS Code context: VS Code exposes the command in the notebook toolbar, or in the editor title when the global notebook toolbar is disabled; Cursor receives the same canonical command as a declaratively pinned editor-title action because it does not currently render the third-party notebook-toolbar contribution consistently. One immutable app-name-derived context selects that Cursor fallback during activation and suppresses the standard notebook-toolbar contribution, so a host can never render both actions together. No Jupyter-private context key determines visibility or provenance. At command receipt, a manual toolbar launch reconciles any direct public URI with the public active `NotebookEditor` and `TabInputNotebook`; every available signal must identify the same URI, the tab and document must both use the exact `jupyter-notebook` type, and exactly one still-open `NotebookDocument` must own it. That exact object is captured before the variable prompt and revalidated afterward, so toolbar focus may clear `activeNotebookEditor` without permitting a URI-only, stale-tab, duplicate-document, non-Jupyter, or private-context fallback. The command still validates the released Jupyter API, exact notebook, kernel, and dataframe value before opening a session. Jupyter owns the first-use kernel-access consent; denial persists until the user changes Jupyter's access decision and cannot be bypassed by Open Wrangler. A kernel restart invalidates the bridge generation, after which the coordinator reacquires the exact notebook kernel, transfers the runtime again, and replays only the last confirmed plan. Status invalidation remains scoped to the exact observed generation, while a timeout or cancellation before dispatch may detach only its still-current acquisition epoch. After dispatch, a host timeout or cancellation is a typed indeterminate boundary rather than transport loss: the observed kernel generation remains owned, the exact execution stays alive with a never-cancelled token, and the coordinator parks that session behind its settlement promise. Reads are never replayed through that boundary; mutations restore the last confirmed state only after the original execution settles. A failed or detached open likewise chains exact-kernel candidate cleanup after its original open settles, so an early `unknown_session` close can never retire an identity before a late open creates it. Released-package acceptance therefore uses independently rooted allow and deny profiles, workspaces, Jupyter state, and IPython state so consent and kernels cannot leak between cases. Those phases run a disposable dependency-only kernel interpreter that cannot import `openwrangler_runtime` before Open Wrangler bootstraps it; the same absence is rechecked after an observed real kernel restart, preventing an editable development install from masking failed runtime transfer or recovery.
 
 Pandas, Polars, and DuckDB adapters implement the same engine contract for schema, blocks, profiling, viewing queries, transformations, code generation, and exports. Each adapter retains its native frame type; runtime paths never bridge a dataframe through another engine. An ordered engine registry stores factories rather than adapter singletons: automatic file selection tries fresh Polars, DuckDB, then Pandas candidates, closes every rejected candidate, and transfers the matching instance to exactly one session. Immutable engine capabilities independently describe supported source kinds, editing, lazy file extensions, exports, shutdown interruption, and request cancellation; wire capabilities combine those facts with the current source and session mode. `python/openwrangler_runtime/operations.py` is the validated operation registry and shared transformation IR boundary: it rejects unknown operations, malformed predicates/sorts, invalid option types, and conflicting group aliases before an adapter runs them. Engine results and executable generated functions must agree on semantic output while generated code remains idiomatic to the source engine. Shared semantics include stable ordered sorts with per-column null placement, source-ordered groups with null-excluding `nUnique`/`first`/`last`, independently typed null and NaN filters, missing-value fills that treat null and NaN alike, distinct values ordered by count descending then display text ascending, null/blank-excluding categorical encodings, output-collision rejection, globally ordered one-hot output for numeric, boolean, date, and text values, categorical-null-safe multi-label encoding, empty literal find replacement at every text boundary, and finite-only min-max scaling. Explicit fill values are type-checked before their stable column reference is bound. Mean, median, and most-common fills exclude missing values and operate on the complete cleaned dataframe, independently of viewing filters. Mean is currently limited to floating-point columns and uses a scaled calculation so large finite values do not overflow only because of an intermediate sum. Ordered fallback fills read only same-type columns from the same row, keep the first present target or fallback value, and leave the target missing if every candidate is missing. Separate categorical or enum columns may have different native domains, so Python engines preserve the target type when selected fallback values fit and expose any required widening to ordinary text in the draft preview. When a fill is needed, the most-common method requires one winner under the engine's native equality; ties and all-missing columns return a clear error. A column without missing cells returns unchanged before any widening or cast. On Python engines, an explicit value can also widen a categorical or enum column to text; a most-common fill uses an existing value and preserves the category type. Median fills preserve the native column type; an integer midpoint must be integral and a decimal midpoint must fit the existing precision and scale exactly. Explicit decimal values follow the same exact-scale rule. Datetime replacements must match the column's timezone awareness. Unicode casing remains native and is golden-tested per adapter; default stripping uses one explicit Unicode/control-whitespace set in every live and generated path. Pandas custom-code execution and its generated function recursively isolate object-dtype cell values before arbitrary code runs, because Pandas' normal deep copy does not clone nested Python objects.
+
+Directional fill rules carry their own non-empty transform sort and never read the current viewing sort. Each engine
+uses the source row position as the final stable tie-breaker, calculates previous- or next-value fills in that order,
+then restores the earlier row order. An optional maximum gap applies to the whole consecutive missing run: a longer
+run is left unchanged rather than partially filled. The target cannot also be an ordering column. Because edge and
+over-limit gaps may remain, directional fills keep conservative nullable metadata.
+
+Grouped fills carry one or more stable grouping-column references and never read the viewing query. Float-key NaN
+and null values share one missing-key group. Median and mean candidates follow the same type rules as their global
+counterparts; a tied mode, undefined statistic, or all-missing group leaves that group's target gaps unresolved.
+Existing values and row order do not change, and nullable metadata remains conservative.
+
+A Fill Missing Values preview includes `remainingMissingCells`, the exact null-plus-NaN count in the target column
+after the draft runs against the complete cleaned dataframe. Other preview operations must not send the field. The
+host rejects a missing, negative, non-integer, or larger-than-row-count result before publishing the draft. Pandas,
+Polars, DuckDB, and R compute the single-column aggregate in their own engines; lazy Polars collects the aggregate in
+streaming mode.
 
 Text summaries carry an optional protocol-v2 `text` block only for semantic string columns. It always contains an exact `emptyCount`; either all three length scalars (`minLength`, `maxLength`, and `meanLength`) are present or none are. Nulls and NaNs never contribute, an empty string is exactly a zero-length value without trimming, and length means Unicode code points rather than UTF-8 bytes or UTF-16 code units. A zero minimum therefore requires a positive empty count, an all-empty column has only zero length statistics, and an all-null text column reports `emptyCount: 0` with no invented bounds. Pandas and eager Polars compute the values within their native frames; lazy Polars, DuckDB, and PySpark use fixed-size native aggregate projections. Pandas mixed-object and non-string categorical columns fall back to the same normalized cell display used by the grid, avoiding both engine conversion and a disagreement between visible text and measured text. Saved notebook snapshots use the identical contract over their bounded captured truth. The validator rejects negative, partial, non-finite, contradictory, or non-string text summaries, while omission remains valid for saved protocol-v2 output created before this field existed. Column profiles hide a zero-valued NaN row for text but retain it whenever Pandas reports actual NaN-backed missing values.
 
@@ -273,6 +308,12 @@ The extension host assigns stable public session IDs and monotonic public revisi
 Preview, apply, discard, and undo publish runtime state transactionally: an exception after computation restores the prior frame, plan, draft, revision, lineage, and block cache before returning an error. The coordinator independently validates the response kind, action, runtime ID, revision, column, export destination, and view correlation expected by the original request. Only page, summary, statistics, values, and applied-step inspection reads may be reissued after an ambiguous transport failure. A mutation with an uncertain result is never reissued; the coordinator marks that runtime generation uncertain and reconstructs the last confirmed plan in a fresh internal session before accepting later work. Previewing a validated step creates one bounded draft frame, increments the revision, and returns a page-level typed diff plus generated code. Toolbar, host-message, native-view, and command entry points cannot start another operation until that draft is applied or discarded. A new draft anchors its before-page and before-schema to the immediately preceding committed state; a latest-step replacement instead uses the recorded input boundary of that step. Apply, discard, and undo each increment the revision; undo replays the validated plan from the immutable source. Applied steps have unique stable IDs. Inspecting one replays only its engine-native source-to-step prefix under the session read lease and returns its input/output pages, identity-aware diff, and generated code through that step without changing revisions, drafts, viewing state, or caches and without retaining historical frames. The input schema for the latest step is retained separately from the committed schema so structural steps remain editable after renames or drops.
 
 Closing an editor marks the coordinator session terminal before queuing `closeSession`; later work is rejected, close is never replayed as user work, and a cancelled, mismatched, or failed acknowledgement receives one fresh bounded cleanup attempt plus a diagnostic before local release. The first terminal request and every fallback explicitly disable runtime startup and timeout recovery, so closing an already-exited standalone or kernel runtime cannot create a replacement process merely to report an unknown session. Recovery candidates, retired generations, saved-plan fallbacks, and late opens use the same correlated no-start cleanup path. Detached cleanups participate in shutdown tracking, and their timeout never restarts a standalone process that may also own the live replacement session. Both the coordinator and Python runtime treat the supplied close revision as advisory: cleanup must still remove the exact session and invoke its owned engine hook once when a panel knows only the last confirmed revision but an ambiguous response or external action may already have advanced the session. Unknown session IDs remain errors. Concurrent runtime shutdown callers join one drain, including pending opens, while late extension-host opens are closed without registration. Async extension deactivation waits within a bound for standalone and live-kernel closes. Normal standalone stops end stdin, cancels queued futures, and starts engine/session cleanup immediately; the extension retains a bounded force-kill fallback for a process whose active non-interruptible work does not drain. The bridge continues to report that runtime as active and gates every replacement start until the exact child emits exit; after forced termination, a second bound requires exit confirmation, and missing confirmation latches a shutdown failure instead of allowing overlapping runtimes. Notebook snapshots enforce source capabilities and surface cleanup failure after successful rendering without masking an earlier render failure. Standalone process creation is single-flight, so concurrent session recovery cannot spawn competing runtimes. The complete session-establishment critical section, covering ordinary opens, saved-state restoration, and recovery candidate open-and-restore, is serialized per runtime delegate, preventing new or recovering sessions from racing native engine initialization while independent standalone or kernel runtimes remain concurrent. Every restart advances an epoch that invalidates a pending start; after the last session closes, the coordinator releases the idle Python process. An ordinary standalone request timeout restarts the process forcefully, while a detached cleanup timeout only abandons that cleanup request. Recovery builds and fully restores a candidate runtime session, closes it on failure, and only then swaps internal IDs; the public revision never moves backward. Notebook kernel acquisition and bootstrap are single-flight and generation-safe. One end-to-end deadline covers acquisition, bootstrap, execution, response parsing, and the sole permitted retry; only explicitly idempotent reads may retry after dispatch, so a lost mutation response cannot execute the mutation twice. Permission denial and user cancellation never trigger a retry.
+
+A live notebook variable that supports editing can move from Viewing to Editing without changing its public session ID.
+The toolbar action uses the coordinator's captured `NotebookDocument`; it never looks up `activeNotebookEditor` after
+an await. The coordinator opens an Editing-mode candidate on that same origin, restores the confirmed filters, sorts,
+widths, selection, and viewport, rechecks that the exact notebook is still uniquely open, and then swaps runtimes. A
+failed candidate is closed and the existing Viewing session stays active.
 
 The standalone bridge partitions Python ownership by selection scope: a source inside a workspace uses that workspace-folder URI, a source outside every workspace uses its exact URI, and requests without a resource use one explicit default scope. Each scope owns its environment-selection epoch, process/start/stop state, stderr, pending requests, provisional candidates, and confirmed sessions. Sources in one workspace folder share one single-flight process; different roots remain concurrent and isolated even when they resolve to the same executable. Session-bound requests route only through the exact confirmed owner, cancellations route through the pending request owner, and an ordinary query can never use an unconfirmed candidate merely because its requested ID is known.
 

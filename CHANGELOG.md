@@ -4,8 +4,51 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.2] - 2026-08-08
+
+### Added
+
+- R can now group by one or more columns and calculate sum, mean, median, minimum, maximum, count, distinct count,
+  first, or last. Results stay a base data frame, tibble, or data.table to match the input and use the usual preview,
+  code, history, edit, and undo flow.
+- Live notebook variables that open in Viewing mode now have a **Switch to Editing** button in the dataframe toolbar.
+  The session keeps its filters, sorts, column widths, selection, and scroll position when the editing runtime opens.
+- Stable release candidates now run the R 4.5.2 contract and the packaged R notebook journey in VS Code and Cursor
+  before publication. Preview candidates already used this gate.
+- Preview and stable release candidates now run the packaged local R notebook journey in VS Code on macOS and
+  Windows. macOS also runs the `.R`, `.Rmd`, and `.qmd` document checks. Local Windows file actions are hidden, while
+  remote and Command Palette entry points remain available. Remote R-document execution is still experimental and is
+  not part of the release matrix. These jobs keep the native Python environment smoke but leave the full Python suite
+  to Linux.
+- Local R notebook and R document sessions can now export committed cleaning results as Parquet with `nanoparquet`
+  0.5.1 or newer. The R process writes the file directly, and the extension streams it through the same atomic Save
+  path used by CSV.
+- Fill Missing Values previews now report the exact number of values that are still missing in the target column.
+  The count covers the complete cleaned dataframe, not just the visible grid block.
+- Fill Missing Values can now use the previous or next value after sorting by one or more explicit columns. An
+  optional maximum gap leaves longer missing runs untouched. The calculation order is part of the cleaning step and
+  does not reuse viewing sorts.
+- Missing numeric, text, categorical, and boolean values can now use a statistic calculated separately within one or
+  more grouping columns. All-missing groups and tied most-common values stay missing.
+- Floating-point columns can now interpolate missing runs along a numeric, date, or date-time coordinate. Leading and
+  trailing gaps stay missing, and an optional run limit leaves longer gaps unchanged.
+
+### Changed
+
+- The Fill Missing Values method menu now groups column statistics, grouped statistics, ordered data, fallback
+  columns, and manual replacement. The fallback choice is labeled **Fallback columns (same row)**, and the menu names
+  the selected column type so it is clear why options appear or disappear.
+- Generated R now lays out Group and aggregate calls across several lines so the selected keys and output names are
+  readable in Code Preview.
+- Updated the R gallery with a Quarto dataframe picker and a grouped revenue example.
+
 ### Fixed
 
+- The operation search icon now stays inside the search field.
+- The getting-started walkthrough now distinguishes editable DuckDB file sessions from view-only notebook
+  relations.
+- Editing the latest R Group and aggregate step now keeps filters and sorts on its aggregation results. Applying the
+  replacement and then undoing it also clears view rules that no longer exist in the restored source schema.
 - Preview and stable release jobs now create the exact local release tag before registry checks. Previously the tag
   was pushed to GitHub but remained absent from the runner, which stopped Open VSX publication after the GitHub
   release had already succeeded.

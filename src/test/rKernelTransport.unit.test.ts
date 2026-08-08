@@ -7,6 +7,7 @@ import {
   R_KERNEL_TRANSPORT_VERSION,
   decodeRKernelResponseJson,
   encodeRKernelRequest,
+  type RKernelGroupByStep,
   type RKernelRequest
 } from "../extension/r/rKernelProtocol";
 import { R_FRAME_CONTRACT_LIMITS } from "../extension/r/rFrameContract";
@@ -87,15 +88,46 @@ describe("native R kernel protocol", () => {
       requestId: openRequestId,
       kind: "page",
       sessionId,
+      exportFormats: ["csv", "parquet"],
       page: minimalFramePage()
     });
 
-    expect(decodeRKernelResponseJson(encoded, openRequestId)).toMatchObject({
+    expect(decodeRKernelResponseJson(encoded, openRequestId, { expectExportFormats: true })).toMatchObject({
       kind: "page",
       sessionId,
+      exportFormats: ["csv", "parquet"],
       page: { dataframeFlavor: "r.data.frame", shape: { rows: 1, columns: 1 } }
     });
-    expect(() => decodeRKernelResponseJson(encoded, pageRequestId)).toThrow("stale or mis-correlated");
+    expect(() => decodeRKernelResponseJson(encoded, pageRequestId, { expectExportFormats: true })).toThrow(
+      "stale or mis-correlated"
+    );
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: openRequestId,
+          kind: "page",
+          sessionId,
+          exportFormats: ["parquet", "csv"],
+          page: minimalFramePage()
+        }),
+        openRequestId,
+        { expectExportFormats: true }
+      )
+    ).toThrow("must contain csv first");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: openRequestId,
+          kind: "page",
+          sessionId,
+          page: minimalFramePage()
+        }),
+        openRequestId,
+        { expectExportFormats: true }
+      )
+    ).toThrow("invalid fields");
   });
 
   it("strictly decodes bounded column profiles and dataset statistics", () => {
@@ -277,7 +309,7 @@ describe("native R kernel protocol", () => {
     ).toThrow("typed selection");
   });
 
-  it("validates private streamed CSV exports", () => {
+  it("validates private streamed CSV and Parquet exports", () => {
     const request: Extract<RKernelRequest, { kind: "exportData" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: exportRequestId,
@@ -313,6 +345,29 @@ describe("native R kernel protocol", () => {
       columns: 2,
       bytes: 42
     });
+
+    const parquetRequest = {
+      ...request,
+      payload: { ...request.payload, format: "parquet" as const }
+    };
+    expect(JSON.parse(encodeRKernelRequest(parquetRequest))).toEqual(parquetRequest);
+    expect(
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: exportRequestId,
+          kind: "dataExported",
+          sessionId,
+          revision: 4,
+          exportId,
+          format: "parquet",
+          rows: 3,
+          columns: 2,
+          bytes: 84
+        }),
+        exportRequestId
+      )
+    ).toMatchObject({ kind: "dataExported", format: "parquet", bytes: 84 });
 
     expect(() =>
       encodeRKernelRequest({
@@ -1195,6 +1250,28 @@ describe("native R kernel protocol", () => {
       { kind: "mean" },
       { kind: "median" },
       { kind: "mostFrequent" },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [
+          {
+            column: { id: "r:c:1", name: "sequence" },
+            direction: "asc",
+            nulls: "last"
+          }
+        ],
+        maxGap: 25
+      },
+      {
+        kind: "groupedStatistic",
+        statistic: "mean",
+        keys: [{ id: "r:c:1", name: "group" }]
+      },
+      {
+        kind: "linearInterpolation",
+        coordinate: { id: "r:c:1", name: "coordinate" },
+        maxGap: 25
+      },
       { kind: "string", value: "unknown" },
       { kind: "integer", value: "-42" },
       { kind: "float", value: "1.25e+3" },
@@ -1222,6 +1299,33 @@ describe("native R kernel protocol", () => {
       };
       expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
     }
+
+    const previewResponse = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "stepPreview",
+      sessionId,
+      revision: 1,
+      page: minimalFramePage(),
+      diff: minimalRenameDiff(),
+      code: "open_wrangler_result <- frame\n",
+      remainingMissingCells: 1
+    };
+    expect(
+      decodeRKernelResponseJson(JSON.stringify(previewResponse), previewRequestId, {
+        inputSchema: minimalFramePage().schema
+      })
+    ).toMatchObject({ kind: "stepPreview", remainingMissingCells: 1 });
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          ...previewResponse,
+          remainingMissingCells: minimalFramePage().shape.rows + 1
+        }),
+        previewRequestId,
+        { inputSchema: minimalFramePage().schema }
+      )
+    ).toThrow("response.remainingMissingCells");
 
     const fallbackRequest = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -1276,6 +1380,129 @@ describe("native R kernel protocol", () => {
         { kind: "fallbackColumns", columns: [{ id: "r:c:1", name: "first" }], value: "wrong" },
         "may not contain a value"
       ],
+      [{ kind: "directional", direction: "forward", orderBy: [] }, "sorts exceed the supported limit"],
+      [
+        {
+          kind: "directional",
+          direction: "forward",
+          orderBy: [{ column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" }]
+        },
+        "cannot also be a directional ordering column"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "forward",
+          orderBy: [
+            { column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" },
+            { column: { id: "r:c:1", name: "sequence" }, direction: "desc", nulls: "first" }
+          ]
+        },
+        "repeated column identity"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "sideways",
+          orderBy: [{ column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" }]
+        },
+        "forward or backward"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "backward",
+          orderBy: [{ column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" }],
+          maxGap: 0
+        },
+        "must be positive"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "backward",
+          orderBy: [{ column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" }],
+          maxGap: 1_000_001
+        },
+        "outside its supported range"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "forward",
+          sortRules: [{ column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" }]
+        },
+        "invalid fields"
+      ],
+      [{ kind: "groupedStatistic", statistic: "mean", keys: [] }, "bounded non-empty array"],
+      [
+        {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [{ id: "r:c:0", name: "value" }]
+        },
+        "cannot also be a grouping column"
+      ],
+      [
+        {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [
+            { id: "r:c:1", name: "group" },
+            { id: "r:c:1", name: "group" }
+          ]
+        },
+        "repeated identity"
+      ],
+      [
+        {
+          kind: "groupedStatistic",
+          statistic: "sum",
+          keys: [{ id: "r:c:1", name: "group" }]
+        },
+        "unsupported statistic"
+      ],
+      [
+        {
+          kind: "groupedStatistic",
+          statistic: "median",
+          keys: [{ id: "r:c:1", name: "group" }],
+          maxGap: 1
+        },
+        "may contain only"
+      ],
+      [
+        {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:0", name: "value" }
+        },
+        "cannot also be the interpolation coordinate"
+      ],
+      [{ kind: "linearInterpolation" }, "request.payload.step.params.replacement.coordinate"],
+      [
+        {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:1", name: "coordinate" },
+          maxGap: 0
+        },
+        "must be positive"
+      ],
+      [
+        {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:1", name: "coordinate" },
+          maxGap: 1_000_001
+        },
+        "outside its supported range"
+      ],
+      [
+        {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:1", name: "coordinate" },
+          keys: [{ id: "r:c:2", name: "extra" }]
+        },
+        "may contain only"
+      ],
       [{ kind: "string" }, "requires a value"],
       [{ kind: "integer", value: "01" }, "canonical decimal text"],
       [{ kind: "float", value: "NaN" }, "canonical decimal text"],
@@ -1324,6 +1551,91 @@ describe("native R kernel protocol", () => {
       }
     };
     expect(() => encodeRKernelRequest(extraParameter as RKernelRequest)).toThrow("invalid fields");
+  });
+
+  it("strictly validates native R Group By payloads", () => {
+    const aggregation = (
+      operation: RKernelGroupByStep["params"]["aggregations"][number]["operation"],
+      index: number
+    ) => ({
+      column: { id: "r:c:0", name: "value" },
+      operation,
+      alias: `${operation}_${index}`
+    });
+    const step: RKernelGroupByStep = {
+      id: "group-step",
+      kind: "groupBy",
+      params: {
+        keys: [{ id: "r:c:1", name: "group" }],
+        aggregations: [
+          aggregation("sum", 0),
+          aggregation("mean", 1),
+          aggregation("median", 2),
+          aggregation("min", 3),
+          aggregation("max", 4),
+          aggregation("count", 5),
+          aggregation("nUnique", 6),
+          aggregation("first", 7),
+          aggregation("last", 8)
+        ]
+      }
+    };
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: { sessionId, revision: 0, step, page: pageWindow() }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    const expectRejected = (candidate: unknown, message: string) => {
+      expect(() =>
+        encodeRKernelRequest({
+          ...request,
+          payload: { ...request.payload, step: candidate }
+        } as RKernelRequest)
+      ).toThrow(message);
+    };
+    expectRejected({ ...step, params: { ...step.params, keys: [] } }, "bounded non-empty array");
+    expectRejected(
+      { ...step, params: { ...step.params, keys: [step.params.keys[0], step.params.keys[0]] } },
+      "repeated identity"
+    );
+    expectRejected({ ...step, params: { ...step.params, aggregations: [] } }, "output-column limit");
+    expectRejected(
+      {
+        ...step,
+        params: {
+          ...step.params,
+          aggregations: [{ ...step.params.aggregations[0], operation: "variance" }]
+        }
+      },
+      "unsupported operation"
+    );
+    expectRejected(
+      {
+        ...step,
+        params: {
+          ...step.params,
+          aggregations: [
+            step.params.aggregations[0],
+            { ...step.params.aggregations[1], alias: step.params.aggregations[0]!.alias }
+          ]
+        }
+      },
+      "aliases must be unique"
+    );
+    expectRejected(
+      {
+        ...step,
+        params: {
+          ...step.params,
+          aggregations: [{ ...step.params.aggregations[0], alias: "group" }]
+        }
+      },
+      "cannot duplicate a key name"
+    );
+    expectRejected({ ...step, params: { ...step.params, extra: true } }, "invalid fields");
   });
 
   it("strictly validates native R Round, Floor, and Ceiling payloads", () => {
@@ -1943,6 +2255,7 @@ describe("exact IRkernel session transport", () => {
 
     await expect(transport.open("frame", pageWindow())).resolves.toMatchObject({
       sessionId,
+      exportFormats: ["csv"],
       page: { dataframeFlavor: "r.data.frame" }
     });
     await expect(transport.getPage(sessionId, pageWindow([sortRule()]))).resolves.toMatchObject({
@@ -1976,90 +2289,94 @@ describe("exact IRkernel session transport", () => {
     });
   });
 
-  it("streams a bounded CSV from the exact IRkernel and closes its private artifact", async () => {
-    const requests: RKernelRequest[] = [];
-    const controller = controlledRKernel(async (request) => {
-      requests.push(request);
-      if (request.kind === "exportData") {
+  it.each(["csv", "parquet"] as const)(
+    "streams a bounded %s export from the exact IRkernel and closes its private artifact",
+    async (format) => {
+      const requests: RKernelRequest[] = [];
+      const controller = controlledRKernel(async (request) => {
+        requests.push(request);
+        if (request.kind === "exportData") {
+          return response(request, {
+            kind: "dataExported",
+            sessionId,
+            revision: request.payload.revision,
+            exportId: request.payload.exportId,
+            format,
+            rows: 1,
+            columns: 1,
+            bytes: R_KERNEL_EXPORT_CHUNK_BYTES + 3
+          });
+        }
+        if (request.kind === "readDataExport") {
+          const data =
+            request.payload.offset === 0 ? Buffer.alloc(R_KERNEL_EXPORT_CHUNK_BYTES, 0x61) : Buffer.from("end", "utf8");
+          return response(request, {
+            kind: "dataExportChunk",
+            sessionId,
+            revision: request.payload.revision,
+            exportId: request.payload.exportId,
+            offset: request.payload.offset,
+            bytes: data.byteLength,
+            data: data.toString("base64")
+          });
+        }
+        if (request.kind === "closeDataExport") {
+          return response(request, {
+            kind: "dataExportClosed",
+            sessionId,
+            revision: request.payload.revision,
+            exportId: request.payload.exportId
+          });
+        }
+        if (request.kind === "closeSession") {
+          return response(request, { kind: "closed", sessionId: request.payload.sessionId });
+        }
         return response(request, {
-          kind: "dataExported",
-          sessionId,
-          revision: request.payload.revision,
-          exportId: request.payload.exportId,
-          format: "csv",
-          rows: 1,
-          columns: 1,
-          bytes: R_KERNEL_EXPORT_CHUNK_BYTES + 3
+          kind: "page",
+          sessionId: request.payload.sessionId,
+          exportFormats: ["csv", "parquet"],
+          page: minimalFramePage()
         });
-      }
-      if (request.kind === "readDataExport") {
-        const data =
-          request.payload.offset === 0 ? Buffer.alloc(R_KERNEL_EXPORT_CHUNK_BYTES, 0x61) : Buffer.from("end", "utf8");
-        return response(request, {
-          kind: "dataExportChunk",
-          sessionId,
-          revision: request.payload.revision,
-          exportId: request.payload.exportId,
-          offset: request.payload.offset,
-          bytes: data.byteLength,
-          data: data.toString("base64")
-        });
-      }
-      if (request.kind === "closeDataExport") {
-        return response(request, {
-          kind: "dataExportClosed",
-          sessionId,
-          revision: request.payload.revision,
-          exportId: request.payload.exportId
-        });
-      }
-      if (request.kind === "closeSession") {
-        return response(request, { kind: "closed", sessionId: request.payload.sessionId });
-      }
-      return response(request, {
-        kind: "page",
-        sessionId: request.payload.sessionId,
-        page: minimalFramePage()
       });
-    });
-    mockKernel(controller.kernel);
-    const document = notebookDocument();
-    setOpenNotebookDocuments(document);
-    const transport = createTransport(document, [
-      sessionId,
-      openRequestId,
-      exportId,
-      exportRequestId,
-      exportChunkRequestId,
-      exportSecondChunkRequestId,
-      exportCloseRequestId,
-      closeRequestId
-    ]);
-    const chunks: Uint8Array[] = [];
+      mockKernel(controller.kernel);
+      const document = notebookDocument();
+      setOpenNotebookDocuments(document);
+      const transport = createTransport(document, [
+        sessionId,
+        openRequestId,
+        exportId,
+        exportRequestId,
+        exportChunkRequestId,
+        exportSecondChunkRequestId,
+        exportCloseRequestId,
+        closeRequestId
+      ]);
+      const chunks: Uint8Array[] = [];
 
-    await transport.open("frame", pageWindow());
-    await expect(
-      transport.exportData(sessionId, 0, "csv", async (chunk) => {
-        chunks.push(chunk);
-      })
-    ).resolves.toEqual({ sessionId, revision: 0, format: "csv", rows: 1, columns: 1 });
-    await transport.close(sessionId);
-    await transport.dispose();
+      await transport.open("frame", pageWindow());
+      await expect(
+        transport.exportData(sessionId, 0, format, async (chunk) => {
+          chunks.push(chunk);
+        })
+      ).resolves.toEqual({ sessionId, revision: 0, format, rows: 1, columns: 1 });
+      await transport.close(sessionId);
+      await transport.dispose();
 
-    expect(chunks).toHaveLength(2);
-    expect(chunks[0]).toHaveLength(R_KERNEL_EXPORT_CHUNK_BYTES);
-    expect(Buffer.from(chunks[1]!).toString("utf8")).toBe("end");
-    expect(requests.map(({ kind }) => kind)).toEqual([
-      "openSession",
-      "exportData",
-      "readDataExport",
-      "readDataExport",
-      "closeDataExport",
-      "closeSession"
-    ]);
-    expect(requests[2]).toMatchObject({ payload: { offset: 0, limit: R_KERNEL_EXPORT_CHUNK_BYTES } });
-    expect(requests[3]).toMatchObject({ payload: { offset: R_KERNEL_EXPORT_CHUNK_BYTES, limit: 3 } });
-  });
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0]).toHaveLength(R_KERNEL_EXPORT_CHUNK_BYTES);
+      expect(Buffer.from(chunks[1]!).toString("utf8")).toBe("end");
+      expect(requests.map(({ kind }) => kind)).toEqual([
+        "openSession",
+        "exportData",
+        "readDataExport",
+        "readDataExport",
+        "closeDataExport",
+        "closeSession"
+      ]);
+      expect(requests[2]).toMatchObject({ payload: { offset: 0, limit: R_KERNEL_EXPORT_CHUNK_BYTES } });
+      expect(requests[3]).toMatchObject({ payload: { offset: R_KERNEL_EXPORT_CHUNK_BYTES, limit: 3 } });
+    }
+  );
 
   it("closes a private IRkernel export after a timed-out begin request settles", async () => {
     vi.useFakeTimers();
@@ -3227,7 +3544,8 @@ function minimalColumnValue() {
 }
 
 function response(request: RKernelRequest, body: Record<string, unknown>) {
-  return { transportVersion: R_KERNEL_TRANSPORT_VERSION, requestId: request.requestId, ...body };
+  const exportFormats = request.kind === "openSession" && body.kind === "page" ? { exportFormats: ["csv"] } : {};
+  return { transportVersion: R_KERNEL_TRANSPORT_VERSION, requestId: request.requestId, ...exportFormats, ...body };
 }
 
 function createTransport(

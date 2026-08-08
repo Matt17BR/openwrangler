@@ -20,7 +20,7 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 6 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 9 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -31,6 +31,7 @@ const maximumDiagnosticBytes = 4_096;
 const maximumGeneratedCodeBytes = 4 * 1_024 * 1_024;
 const maximumStepIdBytes = R_FRAME_CONTRACT_LIMITS.stepIdBytes;
 const maximumFillFallbackColumns = 64;
+const maximumFillDirectionalGap = 1_000_000;
 
 export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "duplicate_session",
@@ -203,9 +204,38 @@ export interface RKernelFillMissingValuesStep {
   readonly kind: "fillMissingValues";
   readonly params: Readonly<{
     column: RKernelColumnReference;
-    replacement: FillMissingReplacement;
+    replacement: RKernelFillMissingReplacement;
   }>;
 }
+
+export type RKernelFillMissingReplacement =
+  | Exclude<
+      FillMissingReplacement,
+      | { kind: "fallbackColumns" }
+      | { kind: "directional" }
+      | { kind: "groupedStatistic" }
+      | { kind: "linearInterpolation" }
+    >
+  | Readonly<{
+      kind: "fallbackColumns";
+      columns: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    }>
+  | Readonly<{
+      kind: "directional";
+      direction: "forward" | "backward";
+      orderBy: readonly [RKernelSortRule, ...RKernelSortRule[]];
+      maxGap?: number;
+    }>
+  | Readonly<{
+      kind: "groupedStatistic";
+      statistic: "median" | "mean" | "mostFrequent";
+      keys: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    }>
+  | Readonly<{
+      kind: "linearInterpolation";
+      coordinate: RKernelColumnReference;
+      maxGap?: number;
+    }>;
 
 export interface RKernelRoundNumberStep {
   readonly id: string;
@@ -285,11 +315,35 @@ export interface RKernelDropDuplicatesStep {
   }>;
 }
 
+export type RKernelAggregationOperation =
+  "sum" | "mean" | "min" | "max" | "median" | "count" | "nUnique" | "first" | "last";
+
+export interface RKernelGroupByStep {
+  readonly id: string;
+  readonly kind: "groupBy";
+  readonly params: Readonly<{
+    readonly keys: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    readonly aggregations: readonly [
+      Readonly<{
+        column: RKernelColumnReference;
+        operation: RKernelAggregationOperation;
+        alias: string;
+      }>,
+      ...Readonly<{
+        column: RKernelColumnReference;
+        operation: RKernelAggregationOperation;
+        alias: string;
+      }>[]
+    ];
+  }>;
+}
+
 export type RKernelTransformStep =
   | RKernelSortRowsStep
   | RKernelFilterRowsStep
   | RKernelDropMissingRowsStep
   | RKernelDropDuplicatesStep
+  | RKernelGroupByStep
   | RKernelRenameColumnStep
   | RKernelCloneColumnStep
   | RKernelCastColumnStep
@@ -313,6 +367,7 @@ export interface RKernelStepPreviewResult {
   readonly page: RFramePageContract;
   readonly diff: DataDiff;
   readonly code: string;
+  readonly remainingMissingCells?: number;
 }
 
 export interface RKernelPlanUpdatedResult {
@@ -335,10 +390,12 @@ export interface RKernelStepInspectionResult {
   readonly code: string;
 }
 
+export type RKernelExportFormat = "csv" | "parquet";
+
 export interface RKernelDataExportResult {
   readonly sessionId: string;
   readonly revision: number;
-  readonly format: "csv";
+  readonly format: RKernelExportFormat;
   readonly rows: number;
   readonly columns: number;
 }
@@ -436,7 +493,7 @@ export type RKernelRequest =
         sessionId: string;
         revision: number;
         exportId: string;
-        format: "csv";
+        format: RKernelExportFormat;
       }>;
     }>
   | Readonly<{
@@ -474,6 +531,7 @@ export type RKernelResponse =
       requestId: string;
       kind: "page";
       sessionId: string;
+      exportFormats?: readonly RKernelExportFormat[];
       page: RFramePageContract;
     }>
   | Readonly<{
@@ -515,6 +573,7 @@ export type RKernelResponse =
       page: RFramePageContract;
       diff: DataDiff;
       code: string;
+      remainingMissingCells?: number;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -554,7 +613,7 @@ export type RKernelResponse =
       sessionId: string;
       revision: number;
       exportId: string;
-      format: "csv";
+      format: RKernelExportFormat;
       rows: number;
       columns: number;
       bytes: number;
@@ -590,6 +649,8 @@ export interface RKernelErrorResponse {
 }
 
 export interface RKernelResponseDecodeContext {
+  /** An open-session page must carry capabilities from the exact R runtime. */
+  readonly expectExportFormats?: boolean;
   /** Exact host-retained schema for mutation input-cell validation. */
   readonly inputSchema?: readonly RColumnSchema[];
   /** Exact host-retained schema for applied-step output validation. */
@@ -626,13 +687,22 @@ export function decodeRKernelResponseJson(
   if (!isRecord(value)) fail("R kernel response must be an object.");
   const kind = value.kind;
   if (kind === "page") {
-    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "page"]);
+    const record = exactRecord(
+      value,
+      context.expectExportFormats
+        ? ["transportVersion", "requestId", "kind", "sessionId", "exportFormats", "page"]
+        : ["transportVersion", "requestId", "kind", "sessionId", "page"]
+    );
     validateEnvelope(record, expected);
+    const exportFormats = context.expectExportFormats
+      ? decodeExportFormats(record.exportFormats, "response.exportFormats")
+      : undefined;
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
       kind: "page" as const,
       sessionId: identifier(record.sessionId, "response.sessionId"),
+      ...(exportFormats === undefined ? {} : { exportFormats }),
       page: decodeRFramePage(record.page)
     });
   }
@@ -737,16 +807,11 @@ export function decodeRKernelResponseJson(
     });
   }
   if (kind === "stepPreview") {
-    const record = exactRecord(value, [
-      "transportVersion",
-      "requestId",
-      "kind",
-      "sessionId",
-      "revision",
-      "page",
-      "diff",
-      "code"
-    ]);
+    const record = exactRecord(
+      value,
+      ["transportVersion", "requestId", "kind", "sessionId", "revision", "page", "diff", "code"],
+      ["remainingMissingCells"]
+    );
     validateEnvelope(record, expected);
     const page = decodeRFramePage(record.page);
     const inputSchema = expectedMutationInputSchema(context, "step preview");
@@ -758,7 +823,16 @@ export function decodeRKernelResponseJson(
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
       page,
       diff: validateMutationDiff(record.diff, page, inputSchema),
-      code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false)
+      code: boundedText(record.code, "response.code", maximumGeneratedCodeBytes, false),
+      ...(record.remainingMissingCells === undefined
+        ? {}
+        : {
+            remainingMissingCells: boundedInteger(
+              record.remainingMissingCells,
+              "response.remainingMissingCells",
+              page.shape.rows
+            )
+          })
     });
   }
   if (kind === "planUpdated") {
@@ -860,7 +934,7 @@ export function decodeRKernelResponseJson(
       "bytes"
     ]);
     validateEnvelope(record, expected);
-    if (record.format !== "csv") fail("R kernel data-export response has an invalid format.");
+    const format = decodeExportFormat(record.format, "response.format");
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
@@ -868,7 +942,7 @@ export function decodeRKernelResponseJson(
       sessionId: identifier(record.sessionId, "response.sessionId"),
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
       exportId: identifier(record.exportId, "response.exportId"),
-      format: "csv" as const,
+      format,
       rows: boundedInteger(record.rows, "response.rows", R_FRAME_CONTRACT_LIMITS.rows),
       columns: boundedInteger(record.columns, "response.columns", R_FRAME_CONTRACT_LIMITS.columns),
       bytes: boundedInteger(record.bytes, "response.bytes", Number.MAX_SAFE_INTEGER)
@@ -1054,7 +1128,7 @@ function validateRequest(request: RKernelRequest): void {
     identifier(payload.sessionId, "request.payload.sessionId");
     boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
     identifier(payload.exportId, "request.payload.exportId");
-    if (payload.format !== "csv") fail("request.payload.format must be csv.");
+    decodeExportFormat(payload.format, "request.payload.format");
     return;
   }
   if (record.kind === "readDataExport") {
@@ -1142,6 +1216,65 @@ function validateTransformStep(value: unknown): void {
     }
     if (params.keep !== undefined && params.keep !== "first" && params.keep !== "last" && params.keep !== "none") {
       fail("R kernel drop-duplicates parameters contain an invalid keep mode.");
+    }
+    return;
+  }
+  if (step.kind === "groupBy") {
+    const params = exactRecord(step.params, ["keys", "aggregations"], "R kernel group-by parameters");
+    if (
+      !Array.isArray(params.keys) ||
+      params.keys.length === 0 ||
+      params.keys.length > R_FRAME_CONTRACT_LIMITS.columns
+    ) {
+      fail("R kernel group-by keys must be a bounded non-empty array.");
+    }
+    const keyIds = new Set<string>();
+    const keyNames = new Set<string>();
+    for (const [index, candidate] of params.keys.entries()) {
+      const reference = validateColumnReference(candidate, `request.payload.step.params.keys[${index}]`);
+      if (keyIds.has(reference.id)) fail("R kernel group-by keys contain a repeated identity.");
+      keyIds.add(reference.id);
+      keyNames.add(reference.name);
+    }
+    if (
+      !Array.isArray(params.aggregations) ||
+      params.aggregations.length === 0 ||
+      params.keys.length + params.aggregations.length > R_FRAME_CONTRACT_LIMITS.columns
+    ) {
+      fail("R kernel group-by aggregations exceed the output-column limit.");
+    }
+    const operations = new Set<RKernelAggregationOperation>([
+      "sum",
+      "mean",
+      "min",
+      "max",
+      "median",
+      "count",
+      "nUnique",
+      "first",
+      "last"
+    ]);
+    const aliases = new Set<string>();
+    for (const [index, candidate] of params.aggregations.entries()) {
+      const aggregation = exactRecord(
+        candidate,
+        ["column", "operation", "alias"],
+        `request.payload.step.params.aggregations[${index}]`
+      );
+      validateColumnReference(aggregation.column, `request.payload.step.params.aggregations[${index}].column`);
+      if (!operations.has(aggregation.operation as RKernelAggregationOperation)) {
+        fail("R kernel group-by aggregation contains an unsupported operation.");
+      }
+      const alias = boundedText(
+        aggregation.alias,
+        `request.payload.step.params.aggregations[${index}].alias`,
+        maximumVariableNameBytes,
+        false
+      );
+      if (aliases.has(alias) || keyNames.has(alias)) {
+        fail("R kernel group-by aliases must be unique and cannot duplicate a key name.");
+      }
+      aliases.add(alias);
     }
     return;
   }
@@ -1242,15 +1375,39 @@ function validateTransformStep(value: unknown): void {
 }
 
 function validateFillMissingReplacement(value: unknown, targetColumnId: string): void {
-  const replacement = exactRecord(value, ["kind"], ["value", "columns"], "R kernel fill-missing replacement");
+  const replacement = exactRecord(
+    value,
+    ["kind"],
+    ["value", "columns", "direction", "orderBy", "maxGap", "statistic", "keys", "coordinate"],
+    "R kernel fill-missing replacement"
+  );
   if (replacement.kind === "mean" || replacement.kind === "median" || replacement.kind === "mostFrequent") {
-    if (replacement.value !== undefined || replacement.columns !== undefined) {
+    if (
+      replacement.value !== undefined ||
+      replacement.columns !== undefined ||
+      replacement.direction !== undefined ||
+      replacement.orderBy !== undefined ||
+      replacement.maxGap !== undefined ||
+      replacement.statistic !== undefined ||
+      replacement.keys !== undefined ||
+      replacement.coordinate !== undefined
+    ) {
       fail("A calculated replacement may not contain a value or fallback columns.");
     }
     return;
   }
   if (replacement.kind === "fallbackColumns") {
-    if (replacement.value !== undefined) fail("A fallback-column replacement may not contain a value.");
+    if (
+      replacement.value !== undefined ||
+      replacement.direction !== undefined ||
+      replacement.orderBy !== undefined ||
+      replacement.maxGap !== undefined ||
+      replacement.statistic !== undefined ||
+      replacement.keys !== undefined ||
+      replacement.coordinate !== undefined
+    ) {
+      fail("A fallback-column replacement may not contain a value.");
+    }
     if (
       !Array.isArray(replacement.columns) ||
       replacement.columns.length === 0 ||
@@ -1267,7 +1424,113 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
     }
     return;
   }
-  if (replacement.value === undefined || replacement.columns !== undefined) {
+  if (replacement.kind === "directional") {
+    if (
+      replacement.value !== undefined ||
+      replacement.columns !== undefined ||
+      replacement.statistic !== undefined ||
+      replacement.keys !== undefined ||
+      replacement.coordinate !== undefined
+    ) {
+      fail("A directional replacement may not contain a value or fallback columns.");
+    }
+    if (replacement.direction !== "forward" && replacement.direction !== "backward") {
+      fail("A directional replacement must specify forward or backward.");
+    }
+    validateSorts(replacement.orderBy, "request.payload.step.params.replacement.orderBy", false);
+    for (const rule of replacement.orderBy as readonly RKernelSortRule[]) {
+      if (rule.column.id === targetColumnId) {
+        fail("The fill target cannot also be a directional ordering column.");
+      }
+    }
+    if (replacement.maxGap !== undefined) {
+      if (
+        boundedInteger(
+          replacement.maxGap,
+          "request.payload.step.params.replacement.maxGap",
+          maximumFillDirectionalGap
+        ) < 1
+      ) {
+        fail("request.payload.step.params.replacement.maxGap must be positive.");
+      }
+    }
+    return;
+  }
+  if (replacement.kind === "groupedStatistic") {
+    if (
+      replacement.value !== undefined ||
+      replacement.columns !== undefined ||
+      replacement.direction !== undefined ||
+      replacement.orderBy !== undefined ||
+      replacement.maxGap !== undefined ||
+      replacement.coordinate !== undefined
+    ) {
+      fail("A grouped-statistic replacement may contain only a statistic and grouping columns.");
+    }
+    if (
+      replacement.statistic !== "median" &&
+      replacement.statistic !== "mean" &&
+      replacement.statistic !== "mostFrequent"
+    ) {
+      fail("A grouped-statistic replacement contains an unsupported statistic.");
+    }
+    if (
+      !Array.isArray(replacement.keys) ||
+      replacement.keys.length === 0 ||
+      replacement.keys.length > R_FRAME_CONTRACT_LIMITS.columns
+    ) {
+      fail("R kernel grouping columns must be a bounded non-empty array.");
+    }
+    const seen = new Set<string>();
+    for (const [index, candidate] of replacement.keys.entries()) {
+      const reference = validateColumnReference(candidate, `request.payload.step.params.replacement.keys[${index}]`);
+      if (reference.id === targetColumnId) fail("The fill target cannot also be a grouping column.");
+      if (seen.has(reference.id)) fail("R kernel grouping columns contain a repeated identity.");
+      seen.add(reference.id);
+    }
+    return;
+  }
+  if (replacement.kind === "linearInterpolation") {
+    if (
+      replacement.value !== undefined ||
+      replacement.columns !== undefined ||
+      replacement.direction !== undefined ||
+      replacement.orderBy !== undefined ||
+      replacement.statistic !== undefined ||
+      replacement.keys !== undefined
+    ) {
+      fail("Linear interpolation may contain only one coordinate column and an optional maximum gap.");
+    }
+    const coordinate = validateColumnReference(
+      replacement.coordinate,
+      "request.payload.step.params.replacement.coordinate"
+    );
+    if (coordinate.id === targetColumnId) {
+      fail("The fill target cannot also be the interpolation coordinate.");
+    }
+    if (replacement.maxGap !== undefined) {
+      if (
+        boundedInteger(
+          replacement.maxGap,
+          "request.payload.step.params.replacement.maxGap",
+          maximumFillDirectionalGap
+        ) < 1
+      ) {
+        fail("request.payload.step.params.replacement.maxGap must be positive.");
+      }
+    }
+    return;
+  }
+  if (
+    replacement.value === undefined ||
+    replacement.columns !== undefined ||
+    replacement.direction !== undefined ||
+    replacement.orderBy !== undefined ||
+    replacement.maxGap !== undefined ||
+    replacement.statistic !== undefined ||
+    replacement.keys !== undefined ||
+    replacement.coordinate !== undefined
+  ) {
     fail("A typed fill-missing replacement requires a value and may not contain fallback columns.");
   }
   if (replacement.kind === "boolean") {
@@ -1520,6 +1783,22 @@ function validateColumnReference(value: unknown, label: string): Readonly<{ id: 
     id: boundedText(reference.id, `${label}.id`, R_FRAME_CONTRACT_LIMITS.columnIdBytes, false),
     name: boundedText(reference.name, `${label}.name`, maximumVariableNameBytes, true)
   });
+}
+
+function decodeExportFormat(value: unknown, label: string): RKernelExportFormat {
+  if (value !== "csv" && value !== "parquet") fail(`${label} must be csv or parquet.`);
+  return value;
+}
+
+function decodeExportFormats(value: unknown, label: string): readonly RKernelExportFormat[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 2) {
+    fail(`${label} must be a non-empty export-format array.`);
+  }
+  const formats = value.map((format, index) => decodeExportFormat(format, `${label}[${index}]`));
+  if (formats[0] !== "csv" || new Set(formats).size !== formats.length) {
+    fail(`${label} must contain csv first without duplicates.`);
+  }
+  return Object.freeze(formats);
 }
 
 function validateViewQuery(value: unknown): void {

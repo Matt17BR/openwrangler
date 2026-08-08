@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from decimal import Decimal
 from importlib import import_module
 from importlib.util import find_spec
@@ -699,6 +699,26 @@ class PolarsEngine(DataFrameEngine):
         except Exception as error:
             raise EngineError(f"Polars could not compute exact summary counts for {column}: {error}") from error
 
+    def missing_count(self, frame: Any, column_position: int) -> int:
+        import polars as pl
+
+        columns = self._visible_columns(frame)
+        if (
+            not isinstance(column_position, int)
+            or isinstance(column_position, bool)
+            or column_position < 0
+            or column_position >= len(columns)
+        ):
+            raise EngineError("The selected column is unavailable for missing-value counting.")
+        column = columns[column_position]
+        schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+        missing = pl.col(column).is_null()
+        if infer_semantic_type(str(schema[column])) == "float":
+            missing = missing | pl.col(column).is_nan()
+        query = frame.select(missing.sum().alias("__open_wrangler_missing_count"))
+        result = query.collect(engine="streaming") if isinstance(query, pl.LazyFrame) else query
+        return int(result.item(0, 0) or 0)
+
     def header_stats(self, frame: Any) -> dict[str, Any]:
         import polars as pl
 
@@ -922,6 +942,35 @@ class PolarsEngine(DataFrameEngine):
                     df,
                     column,
                     [bound_column_name(fallback, kind) for fallback in replacement["columns"]],
+                )
+            if replacement.get("kind") == "directional":
+                order_rules = [
+                    {
+                        **rule,
+                        "column": bound_column_name(rule["column"], kind),
+                    }
+                    for rule in replacement["orderBy"]
+                ]
+                return _polars_fill_missing_directional(
+                    df,
+                    column,
+                    order_rules,
+                    replacement["direction"],
+                    replacement.get("maxGap"),
+                )
+            if replacement.get("kind") == "groupedStatistic":
+                return _polars_fill_missing_grouped_statistic(
+                    df,
+                    column,
+                    [bound_column_name(key, kind) for key in replacement["keys"]],
+                    replacement["statistic"],
+                )
+            if replacement.get("kind") == "linearInterpolation":
+                return _polars_fill_missing_linear_interpolation(
+                    df,
+                    column,
+                    bound_column_name(replacement["coordinate"], kind),
+                    replacement.get("maxGap"),
                 )
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             dtype = schema[column]
@@ -1203,6 +1252,7 @@ class PolarsEngine(DataFrameEngine):
             lines.extend(generated_view_value_helper_lines())
         if needs_fill_helpers:
             lines.extend(_generated_polars_fill_helpers())
+            lines.extend(_generated_polars_linear_interpolation_helpers())
         if any(_polars_step_needs_checked_integer_helpers(step) for step in plan):
             lines.extend(
                 [
@@ -1364,6 +1414,37 @@ class PolarsEngine(DataFrameEngine):
             if replacement.get("kind") == "fallbackColumns":
                 fallback_columns = [bound_column_name(fallback, kind) for fallback in replacement["columns"]]
                 return [(f"{prefix}df = _ow_polars_fill_missing_from_columns(df, {column!r}, {fallback_columns!r})")]
+            if replacement.get("kind") == "directional":
+                order_rules = [
+                    {
+                        **rule,
+                        "column": bound_column_name(rule["column"], kind),
+                    }
+                    for rule in replacement["orderBy"]
+                ]
+                return [
+                    (
+                        f"{prefix}df = _ow_polars_fill_missing_directional("
+                        f"df, {column!r}, {order_rules!r}, {replacement['direction']!r}, "
+                        f"{replacement.get('maxGap')!r})"
+                    )
+                ]
+            if replacement.get("kind") == "groupedStatistic":
+                keys = [bound_column_name(key, kind) for key in replacement["keys"]]
+                return [
+                    (
+                        f"{prefix}df = _ow_polars_fill_missing_grouped_statistic("
+                        f"df, {column!r}, {keys!r}, {replacement['statistic']!r})"
+                    )
+                ]
+            if replacement.get("kind") == "linearInterpolation":
+                coordinate = bound_column_name(replacement["coordinate"], kind)
+                return [
+                    (
+                        f"{prefix}df = _ow_polars_fill_missing_linear_interpolation("
+                        f"df, {column!r}, {coordinate!r}, {replacement.get('maxGap')!r})"
+                    )
+                ]
             schema = f"_fill_schema_{index}"
             expression = f"_fill_expression_{index}"
             lines = [
@@ -2016,6 +2097,471 @@ def _polars_fill_missing_from_columns(frame: Any, target: str, fallbacks: list[s
     return frame.with_columns(result.alias(target))
 
 
+def _polars_fill_missing_directional(
+    frame: Any,
+    target: str,
+    order_rules: Sequence[Mapping[str, Any]],
+    direction: str,
+    max_gap: int | None,
+) -> Any:
+    """Fill complete missing runs in stable calculation order without collecting a lazy frame."""
+
+    import polars as pl
+
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    reserved = set(schema.names())
+
+    def unique(base: str) -> str:
+        candidate = base
+        while candidate in reserved:
+            candidate += "_"
+        reserved.add(candidate)
+        return candidate
+
+    position_name = unique("__ow_directional_position")
+    missing_name = unique("__ow_directional_missing")
+    run_name = unique("__ow_directional_run")
+    gap_name = unique("__ow_directional_gap")
+    candidate_name = unique("__ow_directional_candidate")
+
+    target_value = pl.col(target)
+    target_missing = target_value.is_null()
+    candidate = target_value
+    if schema[target].is_float():
+        target_missing = target_missing | target_value.is_nan()
+        candidate = candidate.fill_nan(None)
+
+    order_expressions = []
+    for rule in order_rules:
+        expression = pl.col(rule["column"])
+        if schema[rule["column"]].is_float():
+            expression = expression.fill_nan(None)
+        order_expressions.append(expression)
+    ordered = frame.with_row_index(position_name).sort(
+        order_expressions,
+        descending=[rule["direction"] == "desc" for rule in order_rules],
+        nulls_last=[rule["nulls"] == "last" for rule in order_rules],
+        maintain_order=True,
+    )
+    ordered = ordered.with_columns(target_missing.alias(missing_name))
+    ordered = ordered.with_columns(
+        (pl.col(missing_name) != pl.col(missing_name).shift(1).fill_null(False)).cum_sum().alias(run_name)
+    )
+    ordered = ordered.with_columns(
+        pl.when(pl.col(missing_name)).then(pl.len().over(run_name)).otherwise(0).alias(gap_name),
+        (candidate.forward_fill() if direction == "forward" else candidate.backward_fill()).alias(candidate_name),
+    )
+    eligible = pl.col(missing_name) & pl.col(candidate_name).is_not_null()
+    if max_gap is not None:
+        eligible = eligible & (pl.col(gap_name) <= max_gap)
+    result = pl.when(eligible).then(pl.col(candidate_name)).otherwise(target_value)
+    return (
+        ordered.with_columns(result.alias(target))
+        .sort(position_name)
+        .drop(position_name, missing_name, run_name, gap_name, candidate_name)
+    )
+
+
+def _polars_fill_missing_linear_interpolation(
+    frame: Any,
+    target: str,
+    coordinate: str,
+    max_gap: int | None,
+) -> Any:
+    """Interpolate bracketed float gaps while preserving a lazy input plan."""
+
+    import polars as pl
+
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    target_dtype = schema[target]
+    coordinate_dtype = schema[coordinate]
+    if not target_dtype.is_float():
+        raise EngineError("Linear interpolation requires a floating-point target column.")
+    coordinate_kind = _polars_interpolation_coordinate_kind(coordinate_dtype)
+    source_coordinate = pl.col(coordinate)
+    invalid_coordinate = source_coordinate.is_null()
+    if coordinate_dtype.is_float():
+        invalid_coordinate = invalid_coordinate | ~source_coordinate.is_finite()
+    reserved = set(schema.names())
+
+    def unique(base: str) -> str:
+        candidate = base
+        while candidate in reserved:
+            candidate += "_"
+        reserved.add(candidate)
+        return candidate
+
+    validation_minimum_name = unique("__ow_interpolation_validation_minimum")
+    validation_coordinate_name = unique("__ow_interpolation_validation_coordinate")
+    validation_frame = frame.with_columns(source_coordinate.min().alias(validation_minimum_name))
+    validation_coordinate = _polars_interpolation_coordinate_expression(
+        source_coordinate,
+        coordinate_dtype,
+        coordinate_kind,
+        pl.col(validation_minimum_name),
+    )
+    validation_roundtrip = _polars_interpolation_coordinate_roundtrip(
+        source_coordinate,
+        coordinate_dtype,
+        coordinate_kind,
+        pl.col(validation_minimum_name),
+    )
+    summary_query = validation_frame.with_columns(validation_coordinate.alias(validation_coordinate_name)).select(
+        pl.len().alias("__ow_count"),
+        invalid_coordinate.sum().alias("__ow_invalid"),
+        source_coordinate.n_unique().alias("__ow_unique"),
+        pl.col(validation_coordinate_name).n_unique().alias("__ow_projected_unique"),
+        pl.col(validation_coordinate_name).is_finite().all().alias("__ow_projected_finite"),
+        validation_roundtrip.all().alias("__ow_projected_exact"),
+        pl.col(validation_minimum_name).first().alias("__ow_minimum"),
+    )
+    try:
+        summary = (
+            summary_query.collect(engine="streaming") if isinstance(summary_query, pl.LazyFrame) else summary_query
+        )
+    except Exception as error:
+        raise EngineError("Linear interpolation cannot represent the selected coordinate distances exactly.") from error
+    count = int(summary["__ow_count"][0])
+    if int(summary["__ow_invalid"][0] or 0):
+        raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+    if int(summary["__ow_unique"][0]) != count:
+        raise EngineError("Linear interpolation requires unique coordinate values.")
+    if count and (
+        not bool(summary["__ow_projected_finite"][0])
+        or not bool(summary["__ow_projected_exact"][0])
+        or int(summary["__ow_projected_unique"][0]) != count
+    ):
+        raise EngineError(
+            "Linear interpolation cannot preserve the selected coordinate distances exactly enough; "
+            "choose a lower-precision coordinate column."
+        )
+    minimum = summary["__ow_minimum"][0] if count else None
+    numeric_coordinate = _polars_interpolation_coordinate_expression(
+        source_coordinate,
+        coordinate_dtype,
+        coordinate_kind,
+        minimum,
+    )
+    position_name = unique("__ow_interpolation_position")
+    missing_name = unique("__ow_interpolation_missing")
+    run_name = unique("__ow_interpolation_run")
+    gap_name = unique("__ow_interpolation_gap")
+    coordinate_name = unique("__ow_interpolation_coordinate")
+    left_value_name = unique("__ow_interpolation_left_value")
+    right_value_name = unique("__ow_interpolation_right_value")
+    left_coordinate_name = unique("__ow_interpolation_left_coordinate")
+    right_coordinate_name = unique("__ow_interpolation_right_coordinate")
+
+    target_value = pl.col(target)
+    missing = target_value.is_null() | target_value.is_nan()
+    present_target = pl.when(missing).then(None).otherwise(target_value)
+    present_coordinate = pl.when(missing).then(None).otherwise(pl.col(coordinate_name))
+    ordered = (
+        frame.with_row_index(position_name)
+        .sort(coordinate, maintain_order=True)
+        .with_columns(
+            missing.alias(missing_name),
+            numeric_coordinate.alias(coordinate_name),
+        )
+        .with_columns(
+            (pl.col(missing_name) != pl.col(missing_name).shift(1).fill_null(False)).cum_sum().alias(run_name),
+            present_target.shift(1).forward_fill().alias(left_value_name),
+            present_target.shift(-1).backward_fill().alias(right_value_name),
+            present_coordinate.shift(1).forward_fill().alias(left_coordinate_name),
+            present_coordinate.shift(-1).backward_fill().alias(right_coordinate_name),
+        )
+        .with_columns(pl.when(pl.col(missing_name)).then(pl.len().over(run_name)).otherwise(0).alias(gap_name))
+    )
+    left_coordinate = pl.col(left_coordinate_name)
+    right_coordinate = pl.col(right_coordinate_name)
+    current_coordinate = pl.col(coordinate_name)
+    coordinate_span = right_coordinate - left_coordinate
+    direct_weight = (current_coordinate - left_coordinate) / coordinate_span
+    scaled_weight = ((current_coordinate / 2.0) - (left_coordinate / 2.0)) / (
+        (right_coordinate / 2.0) - (left_coordinate / 2.0)
+    )
+    weight = pl.when(coordinate_span.is_finite()).then(direct_weight).otherwise(scaled_weight)
+    left_value = pl.col(left_value_name)
+    right_value = pl.col(right_value_name)
+    interpolated = ((pl.lit(1.0) - weight) * left_value + weight * right_value).cast(target_dtype)
+    eligible = (
+        pl.col(missing_name)
+        & left_value.is_finite()
+        & right_value.is_finite()
+        & weight.is_finite()
+        & weight.is_between(0.0, 1.0, closed="both")
+    )
+    if max_gap is not None:
+        eligible = eligible & (pl.col(gap_name) <= max_gap)
+    temporary_names = [
+        position_name,
+        missing_name,
+        run_name,
+        gap_name,
+        coordinate_name,
+        left_value_name,
+        right_value_name,
+        left_coordinate_name,
+        right_coordinate_name,
+    ]
+    return (
+        ordered.with_columns(pl.when(eligible).then(interpolated).otherwise(target_value).alias(target))
+        .sort(position_name)
+        .drop(*temporary_names)
+    )
+
+
+def _polars_interpolation_coordinate_kind(dtype: Any) -> str:
+    import polars as pl
+
+    if dtype in {pl.Int128, pl.UInt128}:
+        raise EngineError(
+            "Linear interpolation does not support 128-bit integer coordinates; "
+            "convert the coordinate to a narrower exact type first."
+        )
+    if dtype.is_integer():
+        return "integer"
+    if dtype.is_float():
+        return "float"
+    if dtype.base_type() == pl.Decimal:
+        return "decimal"
+    if dtype == pl.Date:
+        return "date"
+    if dtype.base_type() == pl.Datetime:
+        return "datetime"
+    raise EngineError("Linear interpolation coordinates must be numeric, dates, or datetimes.")
+
+
+def _polars_interpolation_coordinate_expression(
+    expression: Any,
+    dtype: Any,
+    kind: str,
+    minimum: Any,
+) -> Any:
+    import polars as pl
+
+    if kind == "float":
+        return expression.cast(pl.Float64)
+    minimum_expression = minimum if isinstance(minimum, pl.Expr) else pl.lit(minimum, dtype=dtype)
+    if kind in {"integer", "datetime"}:
+        raw = expression.cast(pl.Int128)
+        minimum_raw = minimum_expression.cast(pl.Int128)
+        return (raw - minimum_raw).cast(pl.Float64)
+    if kind == "date":
+        raw = expression.cast(pl.Int32).cast(pl.Int64)
+        minimum_raw = minimum_expression.cast(pl.Date).cast(pl.Int32).cast(pl.Int64)
+        return (raw - minimum_raw).cast(pl.Float64)
+    exact_dtype = pl.Decimal(38, dtype.scale)
+    return (expression.cast(exact_dtype) - minimum_expression.cast(exact_dtype)).cast(pl.Float64)
+
+
+def _polars_interpolation_coordinate_roundtrip(
+    expression: Any,
+    dtype: Any,
+    kind: str,
+    minimum: Any,
+) -> Any:
+    import polars as pl
+
+    if kind == "float":
+        return pl.lit(True)
+    minimum_expression = minimum if isinstance(minimum, pl.Expr) else pl.lit(minimum, dtype=dtype)
+    if kind in {"integer", "datetime"}:
+        exact = expression.cast(pl.Int128) - minimum_expression.cast(pl.Int128)
+        return exact.cast(pl.Float64).cast(pl.Int128) == exact
+    if kind == "date":
+        exact = expression.cast(pl.Int32).cast(pl.Int64) - minimum_expression.cast(pl.Date).cast(pl.Int32).cast(
+            pl.Int64
+        )
+        return exact.cast(pl.Float64).cast(pl.Int64) == exact
+    exact_dtype = pl.Decimal(38, dtype.scale)
+    exact = expression.cast(exact_dtype) - minimum_expression.cast(exact_dtype)
+    return exact.cast(pl.Float64).cast(exact_dtype) == exact
+
+
+def _polars_fill_missing_grouped_statistic(
+    frame: Any,
+    target: str,
+    keys: list[str],
+    statistic: str,
+) -> Any:
+    import polars as pl
+
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    target_dtype = schema[target]
+    object_columns = [column for column in [target, *keys] if schema[column] == pl.Object]
+    if object_columns:
+        raise EngineError(
+            "Grouped fills require native scalar Polars columns; Object columns are not supported: "
+            + ", ".join(object_columns)
+        )
+    target_value = pl.col(target)
+    if target_dtype.is_float():
+        target_value = target_value.fill_nan(None)
+
+    reserved = set(schema.names())
+
+    def unique(base: str) -> str:
+        candidate = base
+        while candidate in reserved:
+            candidate += "_"
+        reserved.add(candidate)
+        return candidate
+
+    normalized_keys: list[str] = []
+    key_expressions = []
+    for index, key in enumerate(keys):
+        name = unique(f"__ow_grouped_key_{index}")
+        expression = pl.col(key)
+        if schema[key].is_float():
+            expression = expression.fill_nan(None)
+        normalized_keys.append(name)
+        key_expressions.append(expression.alias(name))
+    fill_name = unique("__ow_grouped_fill")
+
+    normalized = frame.with_columns(key_expressions)
+    if statistic == "mean":
+        positive_name = unique("__ow_grouped_positive")
+        negative_name = unique("__ow_grouped_negative")
+        scale_name = unique("__ow_grouped_scale")
+        scaled_name = unique("__ow_grouped_scaled")
+        stats = normalized.group_by(normalized_keys, maintain_order=True).agg(
+            (target_value == float("inf")).any().alias(positive_name),
+            (target_value == float("-inf")).any().alias(negative_name),
+            target_value.filter(target_value.is_finite()).abs().max().alias(scale_name),
+        )
+        annotated = normalized.join(
+            stats,
+            on=normalized_keys,
+            how="left",
+            nulls_equal=True,
+            maintain_order="left",
+        )
+        summary = annotated.group_by(normalized_keys, maintain_order=True).agg(
+            pl.col(positive_name).first(),
+            pl.col(negative_name).first(),
+            pl.col(scale_name).first(),
+            (target_value / pl.col(scale_name)).filter(target_value.is_finite()).mean().alias(scaled_name),
+        )
+        fill = (
+            pl.when(pl.col(positive_name) & pl.col(negative_name))
+            .then(None)
+            .when(pl.col(positive_name))
+            .then(float("inf"))
+            .when(pl.col(negative_name))
+            .then(float("-inf"))
+            .when(pl.col(scale_name).is_null())
+            .then(None)
+            .when(pl.col(scale_name) == 0)
+            .then(0.0)
+            .otherwise(pl.col(scaled_name).clip(-1.0, 1.0) * pl.col(scale_name))
+            .cast(target_dtype, strict=True)
+            .alias(fill_name)
+        )
+        summary = summary.select(*normalized_keys, fill)
+    elif statistic == "mostFrequent":
+        count_name = unique("__ow_grouped_count")
+        maximum_name = unique("__ow_grouped_maximum")
+        ties_name = unique("__ow_grouped_ties")
+        counts = (
+            normalized.filter(target_value.is_not_null())
+            .group_by([*normalized_keys, target], maintain_order=True)
+            .len(name=count_name)
+        )
+        winners = counts.with_columns(pl.col(count_name).max().over(normalized_keys).alias(maximum_name)).filter(
+            pl.col(count_name) == pl.col(maximum_name)
+        )
+        summary = winners.group_by(normalized_keys, maintain_order=True).agg(
+            pl.col(target).first().alias(fill_name),
+            pl.len().alias(ties_name),
+        )
+        summary = summary.with_columns(
+            pl.when(pl.col(ties_name) == 1)
+            .then(pl.col(fill_name))
+            .otherwise(None)
+            .cast(target_dtype, strict=True)
+            .alias(fill_name)
+        ).drop(ties_name)
+    elif target_dtype.is_float():
+        lower_name = unique("__ow_grouped_lower")
+        upper_name = unique("__ow_grouped_upper")
+        summary = normalized.group_by(normalized_keys, maintain_order=True).agg(
+            target_value.quantile(0.5, interpolation="lower").alias(lower_name),
+            target_value.quantile(0.5, interpolation="higher").alias(upper_name),
+        )
+        lower = pl.col(lower_name)
+        upper = pl.col(upper_name)
+        finite = lower.is_finite() & upper.is_finite()
+        same_sign = (lower < 0) == (upper < 0)
+        midpoint = (
+            pl.when(lower == upper)
+            .then(lower)
+            .when(finite & same_sign)
+            .then(lower + ((upper - lower) / 2.0))
+            .otherwise((lower / 2.0) + (upper / 2.0))
+            .fill_nan(None)
+            .cast(target_dtype, strict=True)
+            .alias(fill_name)
+        )
+        summary = summary.select(*normalized_keys, midpoint)
+    else:
+        lower_name = unique("__ow_grouped_lower")
+        upper_name = unique("__ow_grouped_upper")
+        missing_name = unique("__ow_grouped_missing")
+        present = target_value.drop_nulls()
+        summary = normalized.group_by(normalized_keys, maintain_order=True).agg(
+            present.sort().get((present.len() - 1) // 2, null_on_oob=True).alias(lower_name),
+            present.sort().get(present.len() // 2, null_on_oob=True).alias(upper_name),
+            target_value.is_null().any().alias(missing_name),
+        )
+
+        def calculate(item: dict[str, Any]) -> Any:
+            if not item[missing_name] or item[lower_name] is None or item[upper_name] is None:
+                return None
+            lower = item[lower_name]
+            upper = item[upper_name]
+            if target_dtype.is_integer():
+                return exact_integer_median(lower, upper)
+            if isinstance(target_dtype, pl.Decimal):
+                return exact_decimal_median(lower, upper, target_dtype.precision, target_dtype.scale)
+            raise EngineError("Grouped median requires an integer or decimal Polars column.")
+
+        fill = (
+            pl.struct(lower_name, upper_name, missing_name)
+            .map_elements(
+                calculate,
+                return_dtype=target_dtype,
+                skip_nulls=False,
+            )
+            .alias(fill_name)
+        )
+        summary = summary.select(*normalized_keys, fill)
+
+    if isinstance(frame, pl.LazyFrame):
+        assert isinstance(normalized, pl.LazyFrame)
+        mapping = summary if isinstance(summary, pl.LazyFrame) else summary.lazy()
+        joined = normalized.join(
+            mapping,
+            on=normalized_keys,
+            how="left",
+            nulls_equal=True,
+            maintain_order="left",
+        )
+    else:
+        assert isinstance(normalized, pl.DataFrame)
+        mapping = summary.collect(engine="streaming") if isinstance(summary, pl.LazyFrame) else summary
+        joined = normalized.join(
+            mapping,
+            on=normalized_keys,
+            how="left",
+            nulls_equal=True,
+            maintain_order="left",
+        )
+    eligible = target_value.is_null() & pl.col(fill_name).is_not_null()
+    result = pl.when(eligible).then(pl.col(fill_name)).otherwise(pl.col(target)).alias(target)
+    return joined.with_columns(result).drop(*normalized_keys, fill_name)
+
+
 def _polars_has_missing(frame: Any, expression: Any) -> bool:
     import polars as pl
 
@@ -2088,6 +2634,188 @@ def _polars_most_frequent_value(frame: Any, column: str, expression: Any) -> Any
             f"This column has no single most common value: {tie_count} values are tied. Choose a specific value."
         )
     return result[column][0]
+
+
+def _generated_polars_linear_interpolation_helpers() -> list[str]:
+    source: str = r"""
+
+def _ow_polars_interpolation_coordinate_kind(dtype):
+    if dtype in {pl.Int128, pl.UInt128}:
+        raise ValueError(
+            'Linear interpolation does not support 128-bit integer coordinates; '
+            'convert the coordinate to a narrower exact type first.'
+        )
+    if dtype.is_integer():
+        return 'integer'
+    if dtype.is_float():
+        return 'float'
+    if dtype.base_type() == pl.Decimal:
+        return 'decimal'
+    if dtype == pl.Date:
+        return 'date'
+    if dtype.base_type() == pl.Datetime:
+        return 'datetime'
+    raise ValueError('Linear interpolation coordinates must be numeric, dates, or datetimes.')
+
+
+def _ow_polars_interpolation_coordinate_expression(expression, dtype, kind, minimum):
+    if kind == 'float':
+        return expression.cast(pl.Float64)
+    minimum_expression = minimum if isinstance(minimum, pl.Expr) else pl.lit(minimum, dtype=dtype)
+    if kind in {'integer', 'datetime'}:
+        raw = expression.cast(pl.Int128)
+        minimum_raw = minimum_expression.cast(pl.Int128)
+        return (raw - minimum_raw).cast(pl.Float64)
+    if kind == 'date':
+        raw = expression.cast(pl.Int32).cast(pl.Int64)
+        minimum_raw = minimum_expression.cast(pl.Date).cast(pl.Int32).cast(pl.Int64)
+        return (raw - minimum_raw).cast(pl.Float64)
+    exact_dtype = pl.Decimal(38, dtype.scale)
+    return (expression.cast(exact_dtype) - minimum_expression.cast(exact_dtype)).cast(pl.Float64)
+
+
+def _ow_polars_interpolation_coordinate_roundtrip(expression, dtype, kind, minimum):
+    if kind == 'float':
+        return pl.lit(True)
+    minimum_expression = minimum if isinstance(minimum, pl.Expr) else pl.lit(minimum, dtype=dtype)
+    if kind in {'integer', 'datetime'}:
+        exact = expression.cast(pl.Int128) - minimum_expression.cast(pl.Int128)
+        return exact.cast(pl.Float64).cast(pl.Int128) == exact
+    if kind == 'date':
+        exact = (
+            expression.cast(pl.Int32).cast(pl.Int64)
+            - minimum_expression.cast(pl.Date).cast(pl.Int32).cast(pl.Int64)
+        )
+        return exact.cast(pl.Float64).cast(pl.Int64) == exact
+    exact_dtype = pl.Decimal(38, dtype.scale)
+    exact = expression.cast(exact_dtype) - minimum_expression.cast(exact_dtype)
+    return exact.cast(pl.Float64).cast(exact_dtype) == exact
+
+
+def _ow_polars_fill_missing_linear_interpolation(frame, target, coordinate, max_gap):
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    target_dtype = schema[target]
+    coordinate_dtype = schema[coordinate]
+    if not target_dtype.is_float():
+        raise ValueError('Linear interpolation requires a floating-point target column.')
+    coordinate_kind = _ow_polars_interpolation_coordinate_kind(coordinate_dtype)
+    source_coordinate = pl.col(coordinate)
+    invalid_coordinate = source_coordinate.is_null()
+    if coordinate_dtype.is_float():
+        invalid_coordinate = invalid_coordinate | ~source_coordinate.is_finite()
+    reserved = set(schema.names())
+    def unique(base):
+        candidate = base
+        while candidate in reserved:
+            candidate += '_'
+        reserved.add(candidate)
+        return candidate
+    validation_minimum_name = unique('__ow_interpolation_validation_minimum')
+    validation_coordinate_name = unique('__ow_interpolation_validation_coordinate')
+    validation_frame = frame.with_columns(source_coordinate.min().alias(validation_minimum_name))
+    validation_coordinate = _ow_polars_interpolation_coordinate_expression(
+        source_coordinate, coordinate_dtype, coordinate_kind, pl.col(validation_minimum_name)
+    )
+    validation_roundtrip = _ow_polars_interpolation_coordinate_roundtrip(
+        source_coordinate, coordinate_dtype, coordinate_kind, pl.col(validation_minimum_name)
+    )
+    summary_query = validation_frame.with_columns(validation_coordinate.alias(validation_coordinate_name)).select(
+        pl.len().alias('__ow_count'),
+        invalid_coordinate.sum().alias('__ow_invalid'),
+        source_coordinate.n_unique().alias('__ow_unique'),
+        pl.col(validation_coordinate_name).n_unique().alias('__ow_projected_unique'),
+        pl.col(validation_coordinate_name).is_finite().all().alias('__ow_projected_finite'),
+        validation_roundtrip.all().alias('__ow_projected_exact'),
+        pl.col(validation_minimum_name).first().alias('__ow_minimum'),
+    )
+    try:
+        summary = (
+            summary_query.collect(engine='streaming')
+            if isinstance(summary_query, pl.LazyFrame)
+            else summary_query
+        )
+    except Exception as error:
+        raise ValueError(
+            'Linear interpolation cannot represent the selected coordinate distances exactly.'
+        ) from error
+    count = int(summary['__ow_count'][0])
+    if int(summary['__ow_invalid'][0] or 0):
+        raise ValueError('Linear interpolation requires every coordinate value to be present and finite.')
+    if int(summary['__ow_unique'][0]) != count:
+        raise ValueError('Linear interpolation requires unique coordinate values.')
+    if count and (
+        not bool(summary['__ow_projected_finite'][0])
+        or not bool(summary['__ow_projected_exact'][0])
+        or int(summary['__ow_projected_unique'][0]) != count
+    ):
+        raise ValueError(
+            'Linear interpolation cannot preserve the selected coordinate distances exactly enough; '
+            'choose a lower-precision coordinate column.'
+        )
+    minimum = summary['__ow_minimum'][0] if count else None
+    numeric_coordinate = _ow_polars_interpolation_coordinate_expression(
+        source_coordinate, coordinate_dtype, coordinate_kind, minimum
+    )
+    position_name = unique('__ow_interpolation_position')
+    missing_name = unique('__ow_interpolation_missing')
+    run_name = unique('__ow_interpolation_run')
+    gap_name = unique('__ow_interpolation_gap')
+    coordinate_name = unique('__ow_interpolation_coordinate')
+    left_value_name = unique('__ow_interpolation_left_value')
+    right_value_name = unique('__ow_interpolation_right_value')
+    left_coordinate_name = unique('__ow_interpolation_left_coordinate')
+    right_coordinate_name = unique('__ow_interpolation_right_coordinate')
+    target_value = pl.col(target)
+    missing = target_value.is_null() | target_value.is_nan()
+    present_target = pl.when(missing).then(None).otherwise(target_value)
+    present_coordinate = pl.when(missing).then(None).otherwise(pl.col(coordinate_name))
+    ordered = (
+        frame.with_row_index(position_name)
+        .sort(coordinate, maintain_order=True)
+        .with_columns(missing.alias(missing_name), numeric_coordinate.alias(coordinate_name))
+        .with_columns(
+            (pl.col(missing_name) != pl.col(missing_name).shift(1).fill_null(False)).cum_sum().alias(run_name),
+            present_target.shift(1).forward_fill().alias(left_value_name),
+            present_target.shift(-1).backward_fill().alias(right_value_name),
+            present_coordinate.shift(1).forward_fill().alias(left_coordinate_name),
+            present_coordinate.shift(-1).backward_fill().alias(right_coordinate_name),
+        )
+        .with_columns(pl.when(pl.col(missing_name)).then(pl.len().over(run_name)).otherwise(0).alias(gap_name))
+    )
+    left_coordinate = pl.col(left_coordinate_name)
+    right_coordinate = pl.col(right_coordinate_name)
+    current_coordinate = pl.col(coordinate_name)
+    coordinate_span = right_coordinate - left_coordinate
+    direct_weight = (current_coordinate - left_coordinate) / coordinate_span
+    scaled_weight = ((current_coordinate / 2.0) - (left_coordinate / 2.0)) / (
+        (right_coordinate / 2.0) - (left_coordinate / 2.0)
+    )
+    weight = pl.when(coordinate_span.is_finite()).then(direct_weight).otherwise(scaled_weight)
+    left_value = pl.col(left_value_name)
+    right_value = pl.col(right_value_name)
+    interpolated = ((pl.lit(1.0) - weight) * left_value + weight * right_value).cast(target_dtype)
+    eligible = (
+        pl.col(missing_name)
+        & left_value.is_finite()
+        & right_value.is_finite()
+        & weight.is_finite()
+        & weight.is_between(0.0, 1.0, closed='both')
+    )
+    if max_gap is not None:
+        eligible = eligible & (pl.col(gap_name) <= max_gap)
+    temporary_names = [
+        position_name, missing_name, run_name, gap_name, coordinate_name,
+        left_value_name, right_value_name, left_coordinate_name, right_coordinate_name,
+    ]
+    return (
+        ordered.with_columns(pl.when(eligible).then(interpolated).otherwise(target_value).alias(target))
+        .sort(position_name)
+        .drop(*temporary_names)
+    )
+"""
+    lines: list[str] = []
+    lines.extend(source.strip("\n").splitlines())
+    return lines
 
 
 def _generated_polars_fill_helpers() -> list[str]:
@@ -2198,6 +2926,220 @@ def _generated_polars_fill_helpers() -> list[str]:
             ".otherwise(output_target)"
         ),
         "    return frame.with_columns(result.alias(target))",
+        "",
+        "",
+        "def _ow_polars_fill_missing_directional(frame, target, order_rules, direction, max_gap):",
+        "    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema",
+        "    reserved = set(schema.names())",
+        "    def unique(base):",
+        "        candidate_name = base",
+        "        while candidate_name in reserved:",
+        "            candidate_name += '_'",
+        "        reserved.add(candidate_name)",
+        "        return candidate_name",
+        "    position_name = unique('__ow_directional_position')",
+        "    missing_name = unique('__ow_directional_missing')",
+        "    run_name = unique('__ow_directional_run')",
+        "    gap_name = unique('__ow_directional_gap')",
+        "    candidate_name = unique('__ow_directional_candidate')",
+        "    target_value = pl.col(target)",
+        "    target_missing = target_value.is_null()",
+        "    candidate = target_value",
+        "    if schema[target].is_float():",
+        "        target_missing = target_missing | target_value.is_nan()",
+        "        candidate = candidate.fill_nan(None)",
+        "    order_expressions = []",
+        "    for rule in order_rules:",
+        "        expression = pl.col(rule['column'])",
+        "        if schema[rule['column']].is_float():",
+        "            expression = expression.fill_nan(None)",
+        "        order_expressions.append(expression)",
+        "    ordered = frame.with_row_index(position_name).sort(",
+        "        order_expressions,",
+        "        descending=[rule['direction'] == 'desc' for rule in order_rules],",
+        "        nulls_last=[rule['nulls'] == 'last' for rule in order_rules],",
+        "        maintain_order=True,",
+        "    )",
+        "    ordered = ordered.with_columns(target_missing.alias(missing_name))",
+        "    ordered = ordered.with_columns(",
+        ("        (pl.col(missing_name) != pl.col(missing_name).shift(1).fill_null(False)).cum_sum().alias(run_name)"),
+        "    )",
+        "    ordered = ordered.with_columns(",
+        "        pl.when(pl.col(missing_name)).then(pl.len().over(run_name)).otherwise(0).alias(gap_name),",
+        "        (candidate.forward_fill() if direction == 'forward' else candidate.backward_fill()).alias(",
+        "            candidate_name",
+        "        ),",
+        "    )",
+        "    eligible = pl.col(missing_name) & pl.col(candidate_name).is_not_null()",
+        "    if max_gap is not None:",
+        "        eligible = eligible & (pl.col(gap_name) <= max_gap)",
+        "    result = pl.when(eligible).then(pl.col(candidate_name)).otherwise(target_value)",
+        "    return (",
+        "        ordered.with_columns(result.alias(target))",
+        "        .sort(position_name)",
+        "        .drop(position_name, missing_name, run_name, gap_name, candidate_name)",
+        "    )",
+        "",
+        "",
+        "def _ow_polars_fill_missing_grouped_statistic(frame, target, keys, statistic):",
+        "    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema",
+        "    target_dtype = schema[target]",
+        "    object_columns = [column for column in [target, *keys] if schema[column] == pl.Object]",
+        "    if object_columns:",
+        (
+            "        raise ValueError('Grouped fills require native scalar Polars columns; Object columns are "
+            "not supported: ' + ', '.join(object_columns))"
+        ),
+        "    target_value = pl.col(target)",
+        "    if target_dtype.is_float():",
+        "        target_value = target_value.fill_nan(None)",
+        "    reserved = set(schema.names())",
+        "    def unique(base):",
+        "        candidate = base",
+        "        while candidate in reserved:",
+        "            candidate += '_'",
+        "        reserved.add(candidate)",
+        "        return candidate",
+        "    normalized_keys = []",
+        "    key_expressions = []",
+        "    for index, key in enumerate(keys):",
+        "        name = unique(f'__ow_grouped_key_{index}')",
+        "        expression = pl.col(key)",
+        "        if schema[key].is_float():",
+        "            expression = expression.fill_nan(None)",
+        "        normalized_keys.append(name)",
+        "        key_expressions.append(expression.alias(name))",
+        "    fill_name = unique('__ow_grouped_fill')",
+        "    normalized = frame.with_columns(key_expressions)",
+        "    if statistic == 'mean':",
+        "        positive_name = unique('__ow_grouped_positive')",
+        "        negative_name = unique('__ow_grouped_negative')",
+        "        scale_name = unique('__ow_grouped_scale')",
+        "        scaled_name = unique('__ow_grouped_scaled')",
+        "        stats = normalized.group_by(normalized_keys, maintain_order=True).agg(",
+        "            (target_value == float('inf')).any().alias(positive_name),",
+        "            (target_value == float('-inf')).any().alias(negative_name),",
+        "            target_value.filter(target_value.is_finite()).abs().max().alias(scale_name),",
+        "        )",
+        (
+            "        annotated = normalized.join(stats, on=normalized_keys, how='left', "
+            "nulls_equal=True, maintain_order='left')"
+        ),
+        "        summary = annotated.group_by(normalized_keys, maintain_order=True).agg(",
+        "            pl.col(positive_name).first(),",
+        "            pl.col(negative_name).first(),",
+        "            pl.col(scale_name).first(),",
+        "            (target_value / pl.col(scale_name))",
+        "            .filter(target_value.is_finite())",
+        "            .mean()",
+        "            .alias(scaled_name),",
+        "        )",
+        "        fill = (",
+        "            pl.when(pl.col(positive_name) & pl.col(negative_name))",
+        "            .then(None)",
+        "            .when(pl.col(positive_name))",
+        "            .then(float('inf'))",
+        "            .when(pl.col(negative_name))",
+        "            .then(float('-inf'))",
+        "            .when(pl.col(scale_name).is_null())",
+        "            .then(None)",
+        "            .when(pl.col(scale_name) == 0)",
+        "            .then(0.0)",
+        "            .otherwise(pl.col(scaled_name).clip(-1.0, 1.0) * pl.col(scale_name))",
+        "            .cast(target_dtype, strict=True)",
+        "            .alias(fill_name)",
+        "        )",
+        "        summary = summary.select(*normalized_keys, fill)",
+        "    elif statistic == 'mostFrequent':",
+        "        count_name = unique('__ow_grouped_count')",
+        "        maximum_name = unique('__ow_grouped_maximum')",
+        "        ties_name = unique('__ow_grouped_ties')",
+        "        counts = (",
+        "            normalized.filter(target_value.is_not_null())",
+        "            .group_by([*normalized_keys, target], maintain_order=True)",
+        "            .len(name=count_name)",
+        "        )",
+        "        winners = counts.with_columns(",
+        "            pl.col(count_name).max().over(normalized_keys).alias(maximum_name)",
+        "        ).filter(pl.col(count_name) == pl.col(maximum_name))",
+        "        summary = winners.group_by(normalized_keys, maintain_order=True).agg(",
+        "            pl.col(target).first().alias(fill_name),",
+        "            pl.len().alias(ties_name),",
+        "        )",
+        "        summary = summary.with_columns(",
+        "            pl.when(pl.col(ties_name) == 1)",
+        "            .then(pl.col(fill_name))",
+        "            .otherwise(None)",
+        "            .cast(target_dtype, strict=True)",
+        "            .alias(fill_name)",
+        "        ).drop(ties_name)",
+        "    elif target_dtype.is_float():",
+        "        lower_name = unique('__ow_grouped_lower')",
+        "        upper_name = unique('__ow_grouped_upper')",
+        "        summary = normalized.group_by(normalized_keys, maintain_order=True).agg(",
+        "            target_value.quantile(0.5, interpolation='lower').alias(lower_name),",
+        "            target_value.quantile(0.5, interpolation='higher').alias(upper_name),",
+        "        )",
+        "        lower = pl.col(lower_name)",
+        "        upper = pl.col(upper_name)",
+        "        finite = lower.is_finite() & upper.is_finite()",
+        "        same_sign = (lower < 0) == (upper < 0)",
+        "        midpoint = (",
+        "            pl.when(lower == upper)",
+        "            .then(lower)",
+        "            .when(finite & same_sign)",
+        "            .then(lower + ((upper - lower) / 2.0))",
+        "            .otherwise((lower / 2.0) + (upper / 2.0))",
+        "            .fill_nan(None)",
+        "            .cast(target_dtype, strict=True)",
+        "            .alias(fill_name)",
+        "        )",
+        "        summary = summary.select(*normalized_keys, midpoint)",
+        "    else:",
+        "        lower_name = unique('__ow_grouped_lower')",
+        "        upper_name = unique('__ow_grouped_upper')",
+        "        missing_name = unique('__ow_grouped_missing')",
+        "        present = target_value.drop_nulls()",
+        "        summary = normalized.group_by(normalized_keys, maintain_order=True).agg(",
+        ("            present.sort().get((present.len() - 1) // 2, null_on_oob=True).alias(lower_name),"),
+        "            present.sort().get(present.len() // 2, null_on_oob=True).alias(upper_name),",
+        "            target_value.is_null().any().alias(missing_name),",
+        "        )",
+        "        def calculate(item):",
+        "            if not item[missing_name] or item[lower_name] is None or item[upper_name] is None:",
+        "                return None",
+        "            lower = item[lower_name]",
+        "            upper = item[upper_name]",
+        "            if target_dtype.is_integer():",
+        "                total = int(lower) + int(upper)",
+        "                if total % 2:",
+        (
+            "                    raise ValueError('The integer median is fractional. Cast the column to float "
+            "or decimal before filling missing values.')"
+        ),
+        "                return total // 2",
+        "            if isinstance(target_dtype, pl.Decimal):",
+        "                left, right = Decimal(lower), Decimal(upper)",
+        "                with localcontext() as context:",
+        (
+            "                    context.prec = max(80, target_dtype.precision + target_dtype.scale + 4, "
+            "len(left.as_tuple().digits) + len(right.as_tuple().digits) + target_dtype.scale + 4)"
+        ),
+        "                    value = (left + right) / Decimal(2)",
+        "                return _ow_decimal_at_scale(value, target_dtype.precision, target_dtype.scale)",
+        "            raise ValueError('Grouped median requires an integer or decimal Polars column.')",
+        "        fill = pl.struct(lower_name, upper_name, missing_name).map_elements(",
+        "            calculate, return_dtype=target_dtype, skip_nulls=False",
+        "        ).alias(fill_name)",
+        "        summary = summary.select(*normalized_keys, fill)",
+        "    mapping = summary.lazy() if isinstance(frame, pl.LazyFrame) else summary",
+        (
+            "    joined = normalized.join(mapping, on=normalized_keys, how='left', "
+            "nulls_equal=True, maintain_order='left')"
+        ),
+        "    eligible = target_value.is_null() & pl.col(fill_name).is_not_null()",
+        "    result = pl.when(eligible).then(pl.col(fill_name)).otherwise(pl.col(target)).alias(target)",
+        "    return joined.with_columns(result).drop(*normalized_keys, fill_name)",
         "",
         "",
         "def _ow_polars_has_missing(frame, expression):",

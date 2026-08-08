@@ -1292,6 +1292,19 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       delete workflow.jobs["released-jupyter"];
     },
     (workflow) => {
+      workflow.jobs["cross-platform"].steps.find((step) => step.id === "rscript").shell = "bash";
+    },
+    (workflow) => {
+      workflow.jobs["cross-platform"].steps.find(
+        (step) => step.id === "packaged_editor_r_platform"
+      ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "1";
+    },
+    (workflow) => {
+      const steps = workflow.jobs["cross-platform"].steps;
+      const runnerIndex = steps.findIndex((step) => step.id === "packaged_editor_r_platform");
+      steps.splice(runnerIndex, 0, { run: "echo intervening" });
+    },
+    (workflow) => {
       workflow.jobs.package.steps.find((step) => String(step.uses ?? "").startsWith("actions/checkout@")).uses =
         "actions/checkout@v6";
     },

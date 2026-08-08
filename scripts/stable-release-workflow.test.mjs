@@ -49,6 +49,10 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "      - run: npm run test:python-environment-smoke\n        if: ${{ false }}"
     ),
     source.replace(
+      "      - run: npm run test:python-environment-smoke",
+      "      - run: npm run test:python-environment-smoke\n      - run: python -m pytest python/tests -q"
+    ),
+    source.replace(
       "      - id: packaged_editor\n        name: Test packaged VS Code",
       "      - id: packaged_editor\n        name: Test packaged VS Code\n        if: ${{ false }}"
     ),
@@ -84,6 +88,54 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     ),
     source.replace('OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"', 'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"'),
     source.replace("OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor", "OPEN_WRANGLER_PACKAGED_EDITORS: vscode"),
+    source.replace('          r-version: "4.5.2"', '          r-version: "4.4"'),
+    source.replace("        shell: Rscript {0}", "        shell: bash"),
+    source.replace(
+      '          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter\n          OPEN_WRANGLER_PACKAGED_EDITORS: vscode\n          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"\n          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"',
+      '          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter\n          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor\n          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"\n          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"'
+    ),
+    source.replace(
+      "run: node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}",
+      "run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
+    ),
+    source.replace(
+      "path: ${{ steps.packaged_editor_r_platform.outputs.evidence_path }}",
+      "path: ${{ runner.temp }}/**"
+    ),
+    source.replace(
+      "          RSCRIPT: ${{ steps.rscript.outputs.executable }}\n        run: >-",
+      "          RSCRIPT: Rscript\n        run: >-"
+    ),
+    source.replace(
+      "      - name: Install R contract packages\n        env:",
+      "      - name: Skip R contract package installation\n        env:"
+    ),
+    source.replace("      - run: npm run test:r-contract", "      - run: npm run test:r-contract:skip"),
+    source.replace(
+      "          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter",
+      "          OPEN_WRANGLER_PACKAGED_MODE: default"
+    ),
+    source.replace(
+      "run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}",
+      "run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
+    ),
+    source.replace(
+      "          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter\n          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor",
+      "          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter\n          OPEN_WRANGLER_PACKAGED_EDITORS: vscode"
+    ),
+    source.replace(
+      '          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"\n          OPEN_WRANGLER_TEST_RSCRIPT:',
+      '          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"\n          OPEN_WRANGLER_TEST_RSCRIPT:'
+    ),
+    source.replace(
+      "run: node scripts/verify-canonical-release-artifact.mjs canonical-release\n      - id: packaged_editor_r",
+      "run: node scripts/verify-preview-release-artifact.mjs canonical-release\n      - id: packaged_editor_r"
+    ),
+    source.replace(
+      "name: stable-release-r-jupyter-${{ runner.os }}-${{ github.run_attempt }}",
+      "name: stable-release-r-jupyter"
+    ),
+    source.replace("path: ${{ steps.packaged_editor_r.outputs.evidence_path }}", "path: ${{ runner.temp }}/**"),
     source.replace("if: ${{ inputs.publish == true }}", "if: ${{ inputs.publish != false }}"),
     source.replace("environment: publishing", "environment: stable-release"),
     source.replace('test "$REMOTE_SSH_RESULT" = "success"', 'test "$REMOTE_SSH_RESULT" != "failure"'),

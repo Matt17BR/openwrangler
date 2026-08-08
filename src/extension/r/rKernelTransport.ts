@@ -22,6 +22,7 @@ import {
   type RKernelDatasetStatsResult,
   type RKernelDataExportResult,
   type RKernelErrorResponse,
+  type RKernelExportFormat,
   type RKernelColumnReference,
   type RKernelPageWindow,
   type RKernelPlanUpdatedResult,
@@ -56,6 +57,7 @@ export interface RKernelRequestOptions {
 
 export interface RKernelOpenResult {
   readonly sessionId: string;
+  readonly exportFormats: readonly RKernelExportFormat[];
   readonly page: RFramePageContract;
 }
 
@@ -161,7 +163,7 @@ export class RKernelSessionTransport {
       assertDispatchAllowed(options.cancellation, remainingTimeout(timeoutMs, started));
 
       this.sessionKernels.set(sessionId, acquired.kernel);
-      const completion = this.executeRequest(acquired.kernel, request);
+      const completion = this.executeRequest(acquired.kernel, request, { expectExportFormats: true });
       void completion.catch(() => undefined);
       let detachedReason: DetachedBridgeRequestReason | undefined;
       let response: RKernelResponse;
@@ -206,13 +208,16 @@ export class RKernelSessionTransport {
         if (response.kind !== "page" || response.sessionId !== sessionId) {
           throw new Error("The R kernel returned a mismatched session identity.");
         }
+        if (!response.exportFormats) {
+          throw new Error("The R kernel did not report its data-export capabilities.");
+        }
         if (
           this.verifiedSelection &&
           response.page.dataframeFlavor !== this.verifiedSelection.variable.dataframeFlavor
         ) {
           throw new Error("The selected R dataframe changed before Open Wrangler opened it.");
         }
-        return Object.freeze({ sessionId, page: response.page });
+        return Object.freeze({ sessionId, exportFormats: response.exportFormats, page: response.page });
       } catch (error) {
         await this.cleanupFailedOpen(sessionId, acquired.kernel);
         throw error;
@@ -302,7 +307,7 @@ export class RKernelSessionTransport {
   async exportData(
     sessionId: string,
     revision: number,
-    format: "csv",
+    format: RKernelExportFormat,
     writeChunk: (chunk: Uint8Array) => Promise<void>,
     options: RKernelRequestOptions = {}
   ): Promise<RKernelDataExportResult> {
@@ -423,7 +428,8 @@ export class RKernelSessionTransport {
       revision: response.revision,
       page: response.page,
       diff: response.diff,
-      code: response.code
+      code: response.code,
+      ...(response.remainingMissingCells === undefined ? {} : { remainingMissingCells: response.remainingMissingCells })
     });
   }
 

@@ -54,9 +54,9 @@ Git commit rather than from later worktree state. It rejects linked or replaced 
 the verified VSIX, checksum, and provenance document. Every stable acceptance job downloads that same artifact ID.
 The preview workflow uses the separate preview form below; neither channel invents provenance after packaging.
 
-Every Open Wrangler 2 preview runs the R 4.5.2 contract tests. Before publishing, the workflow installs the same
-candidate VSIX in VS Code and Cursor and runs the R notebook and document tests. Failures use the same redacted
-diagnostics as the other packaged editor tests.
+Every Open Wrangler 2 release candidate runs the R 4.5.2 contract tests. The preview and stable workflows then
+install their canonical VSIX in VS Code and Cursor and run the R notebook journey. The stable job verifies the
+artifact again immediately before that journey. Failed editor runs may upload only the usual sealed diagnostics.
 
 The preview-only form of the same author is `node scripts/create-canonical-release-artifact.mjs <candidate> --out-dir <directory> --preview-release`. It binds a clean exact `EXPECTED_SHA`, the intended numeric `RELEASE_TAG`, preview source/package/runtime identity, the VSIX pre-release marker, and immutable candidate bytes, but deliberately does not invoke stable parity, changelog, or README readiness and does not require the intended tag to exist. It emits the same three filenames as stable with the distinct `openwrangler-canonical-preview-release-artifact-v1` provenance protocol and `preview: true`. Pre-tag acceptance uses `scripts/verify-preview-release-artifact.mjs`; public registry intake independently revalidates the same triple. Historical two-file previews are not canonical inputs and are rejected rather than receiving invented provenance.
 
@@ -72,7 +72,7 @@ The VSIX may contain production extension bundles, webview assets, the Python an
 
 `.github/workflows/released-jupyter.yml` runs only when manually dispatched. Pull requests rely on unit, renderer, and extension-host coverage; preview and stable release candidates run their own checks against the exact candidate VSIX. All editor processes use isolated profiles and an invisible test display.
 
-The workflow keeps the Python and R fixtures separate. The Python fixture runs the remote journey in VS Code and installs Pandas, Polars, DuckDB, IPykernel, and Jupyter Server from `scripts/remote-jupyter/requirements.txt`. The R fixture uses Rocker R 4.5.2, the dated Ubuntu snapshot and P3M repository recorded in `docs/testing.md`, and fixed versions of IRkernel, jsonlite, rlang, tibble, and data.table. It installs only Jupyter Server and its Python dependencies from `scripts/remote-jupyter/requirements.r.txt`. Local R runs in VS Code and Cursor; remote R runs in VS Code.
+The workflow keeps the Python and R fixtures separate. The Python fixture runs the remote journey in VS Code and installs Pandas, Polars, DuckDB, IPykernel, and Jupyter Server from `scripts/remote-jupyter/requirements.txt`. The R fixture uses Rocker R 4.5.2, the dated Ubuntu snapshot and P3M repositories recorded in `docs/testing.md`, and fixed versions of IRkernel, jsonlite, rlang, tibble, data.table, collapse, and nanoparquet. It installs only Jupyter Server and its Python dependencies from `scripts/remote-jupyter/requirements.r.txt`. Linux runs local R in VS Code and Cursor and remote R notebooks in VS Code. The macOS and Windows release cells install R 4.5.2 with the pinned setup action, resolve the hosted `Rscript`, and run the same local `r-jupyter` journey in packaged VS Code against the freshly verified VSIX. macOS includes the local `.R`, `.Rmd`, and `.qmd` subjourney. Windows skips direct documents. Local Windows file menus are hidden, while remote-resource and Command Palette entry points remain available because static client keys cannot identify the extension-host platform. The runtime guard is authoritative; remote R-document execution is experimental and is not part of the release matrix.
 
 Both remote fixtures are unprivileged, read-only containers with no host mounts and one loopback port. Their credentials are generated inside the runner and are never workflow secrets or environment values. Container and image cleanup must be provable or the run publishes no evidence path and leaves the private root in place for investigation. The fixture locks are excluded from the VSIX but remain release inputs: `npm run audit:remote-jupyter` scans both complete locks without advisory suppressions, and `npm run lock:remote-jupyter:check` must reproduce their committed bytes with the exact tool, target, and cutoff documented in `docs/testing.md`.
 
@@ -111,7 +111,7 @@ The verifier requires the remote README at that exact commit to byte-match the r
 `package.json` version to match the supplied version. Before reading any PNG, it bounds the inventory's entry count,
 depth, relative-path bytes, individual file size, and cumulative size. Every declared file must then pass chunk CRC,
 IHDR/IDAT ordering, complete decode, reviewed natural dimensions, standard sRGB, and immutable-byte checks. The two
-registries must show the exact version, all three surfaces must render the expected README content, and all 19
+registries must show the exact version, all three surfaces must render the expected README content, and all 20
 displayed images must retain the reviewed raw URL and natural dimensions. Screenshot markup is width-only and capped
 at 960 CSS pixels; rendered images must stay inside that cap, their container, and the viewport, preserve their aspect ratio, and
 retain at least two natural pixels per CSS pixel. Four representative images are rechecked near 760px and 1400px
@@ -217,7 +217,7 @@ run builds and tests one canonical set, then creates the lightweight tag and Git
 The tag event starts the Marketplace pipeline. Do not create stable tags manually; the stable workflow creates the
 tag and GitHub Release together at the accepted `main` commit.
 
-Preview candidates run macOS/Python 3.12 and Windows/Python 3.14 native acceptance beside, not before, the complete Linux owner. Cross-platform jobs keep environment smoke, extension-host, packaged VS Code, and Cursor platform coverage without rerunning the complete Python corpus. Linux owns source checks, script contracts, visual/accessibility, instrumented coverage, dependency audits, runtime benchmark, and full packaged VS Code/Cursor journeys exactly once. Installed performance, released/remote Jupyter, and Remote SSH remain independent parallel consumers of the same canonical triple.
+Preview candidates run macOS/Python 3.12 and Windows/Python 3.14 native acceptance beside, not before, the complete Linux owner. Cross-platform jobs keep environment smoke, extension-host, packaged VS Code and Cursor platform coverage, plus one local R/IRkernel journey in packaged VS Code, without rerunning the complete Python or R contract suites. Linux owns source checks, script contracts, visual/accessibility, instrumented coverage, dependency audits, runtime benchmark, and full packaged VS Code/Cursor journeys exactly once. Installed performance, released/remote Jupyter, and Remote SSH remain independent parallel consumers of the same canonical triple.
 
 ## Registry publication
 
@@ -266,7 +266,7 @@ For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the
 from the reviewed lockfile and runs the media verifier against the exact release source. This keeps a historical
 release tied to its own screenshot inventory when `main` has moved on. All declared
 PNGs must retain their reviewed natural dimensions, standard sRGB declaration, file and aggregate budgets, valid
-chunk/decode structure, and immutable remote bytes. Every one of the 19 README images must then render from its exact
+chunk/decode structure, and immutable remote bytes. Every one of the 20 README images must then render from its exact
 reviewed URL without upscaling, aspect distortion, container overflow, or viewport overflow on GitHub, Visual Studio Marketplace, and
 Open VSX; representative images are rechecked near 760px and 1400px viewport widths. Registry observations receive at most
 forty fresh browser contexts at thirty-second intervals inside one thirty-minute propagation deadline; network fetches

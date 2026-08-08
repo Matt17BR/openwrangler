@@ -1,6 +1,10 @@
 source("r/openwrangler_runtime/frame_contract.R", local = FALSE)
 source("r/openwrangler_runtime/kernel_agent.R", local = FALSE)
 
+if (!requireNamespace("nanoparquet", quietly = TRUE)) {
+  stop("The R kernel agent test requires nanoparquet", call. = FALSE)
+}
+
 assert_identical <- function(actual, expected, message) {
   if (!identical(actual, expected)) {
     stop(sprintf("%s\nExpected: %s\nActual: %s", message, deparse(expected), deparse(actual)), call. = FALSE)
@@ -49,15 +53,31 @@ mean_fill_session_id <- "60606060-6060-4060-8060-606060606060"
 fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
 most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
 fallback_fill_session_id <- "40404040-4040-4040-8040-404040404040"
+directional_fill_session_id <- "45454545-4545-4545-8545-454545454545"
+linear_fill_session_id <- "52525252-5252-4252-8252-525252525252"
+grouped_fill_session_id <- "46464646-4646-4646-8646-464646464646"
+grouped_wide_session_id <- "47474747-4747-4747-8747-474747474747"
+grouped_float_session_id <- "51515151-5151-4151-8151-515151515151"
+grouped_factor_session_id <- "48484848-4848-4848-8848-484848484848"
+grouped_table_session_id <- "49494949-4949-4949-8949-494949494949"
+grouped_collapse_session_id <- "50505050-5050-4050-8050-505050505050"
 export_session_id <- "41414141-4141-4141-8141-414141414141"
 export_id <- "42424242-4242-4242-8242-424242424242"
 cleanup_export_id <- "43434343-4343-4343-8343-434343434343"
+parquet_export_id <- "53535353-5353-4353-8353-535353535353"
+unavailable_export_session_id <- "54545454-5454-4454-8454-545454545454"
 text_cleanup_session_id <- "34343434-3434-4434-8434-343434343434"
 text_cleanup_table_session_id <- "35353535-3535-4535-8535-353535353535"
 text_failure_session_id <- "36363636-3636-4636-8636-363636363636"
 numeric_session_id <- "37373737-3737-4737-8737-373737373737"
 numeric_table_session_id <- "38383838-3838-4838-8838-383838383838"
 numeric_integer64_session_id <- "39393939-3939-4939-8939-393939393939"
+group_by_session_id <- "61616161-6161-4161-8161-616161616161"
+group_by_overflow_session_id <- "62626262-6262-4262-8262-626262626262"
+group_by_precision_session_id <- "63636363-6363-4363-8363-636363636363"
+group_by_export_id <- "64646464-6464-4464-8464-646464646464"
+group_by_tibble_session_id <- "65656565-6565-4565-8565-656565656565"
+group_by_table_session_id <- "67676767-6767-4767-8767-676767676767"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -70,9 +90,11 @@ source_before <- unserialize(serialize(source_environment$frame, NULL, version =
 
 isolated_capture_count <- 0L
 full_capture_count <- 0L
+group_by_source_materializations <- 0L
 instrumented_frame_contract <- openwrangler_r_frame_contract
 real_capture_frame <- instrumented_frame_contract$capture_frame
 real_isolate_capture <- instrumented_frame_contract$isolate_capture
+real_materialize_view_page <- instrumented_frame_contract$materialize_view_page
 instrumented_frame_contract$capture_frame <- function(value, ...) {
   full_capture_count <<- full_capture_count + 1L
   real_capture_frame(value, ...)
@@ -80,6 +102,13 @@ instrumented_frame_contract$capture_frame <- function(value, ...) {
 instrumented_frame_contract$isolate_capture <- function(capture) {
   isolated_capture_count <<- isolated_capture_count + 1L
   real_isolate_capture(capture)
+}
+instrumented_frame_contract$materialize_view_page <- function(capture, ...) {
+  schema_names <- vapply(capture$descriptor$schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+  if (identical(schema_names, c("group", "number", "label", "ordered_label", "when", "flag"))) {
+    group_by_source_materializations <<- group_by_source_materializations + 1L
+  }
+  real_materialize_view_page(capture, ...)
 }
 agent <- openwrangler_r_kernel_agent$new_agent(instrumented_frame_contract, source_environment)
 
@@ -107,7 +136,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 6L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 9L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -199,6 +228,7 @@ opened <- dispatch(
 )
 assert_identical(opened$kind, "page", "the R agent did not open a page session")
 assert_identical(opened$sessionId, session_id, "the R agent changed the candidate session identity")
+assert_identical(opened$exportFormats, list("csv", "parquet"), "the R agent reported the wrong export formats")
 assert_identical(isolated_capture_count, 0L, "viewing open created an isolated full-frame snapshot")
 assert_identical(full_capture_count, 0L, "viewing open copied the full R dataframe")
 assert_identical(opened$page$page$columnIds, list("r:c:0", "r:c:1"), "the initial projection changed")
@@ -3133,6 +3163,11 @@ fallback_fill_partial <- dispatch(
 )
 assert_identical(fallback_fill_partial$kind, "stepPreview", "R fallback fill did not preview")
 assert_identical(
+  fallback_fill_partial$remainingMissingCells,
+  1L,
+  "R fallback fill returned the wrong remaining missing-value count"
+)
+assert_identical(
   fallback_fill_partial$page$schema[[1L]]$nullable,
   TRUE,
   "an unresolved R fallback fill was published as non-nullable"
@@ -3166,6 +3201,11 @@ fallback_fill_complete_preview <- dispatch(
   )
 )
 assert_identical(fallback_fill_complete_preview$kind, "stepPreview", "complete R fallback fill did not preview")
+assert_identical(
+  fallback_fill_complete_preview$remainingMissingCells,
+  0L,
+  "complete R fallback fill retained a missing target value"
+)
 assert_identical(
   fallback_fill_complete_preview$page$schema[[2L]]$nullable,
   FALSE,
@@ -3241,6 +3281,648 @@ assert_identical(
 )
 fallback_fill_closed <- dispatch("closeSession", list(sessionId = fallback_fill_session_id))
 assert_identical(fallback_fill_closed$kind, "closed", "the R fallback-fill session did not close")
+
+source_environment$directional_fill_frame <- data.frame(
+  sequence = c(4L, 1L, 3L, 2L, 6L, 5L),
+  target = c(NA_character_, "start", NA_character_, NA_character_, NA_character_, "end"),
+  row.names = paste0("directional-", 1:6),
+  check.names = FALSE
+)
+directional_fill_before <- unserialize(serialize(source_environment$directional_fill_frame, NULL, version = 3L))
+directional_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = directional_fill_session_id, variableName = "directional_fill_frame", page = page_window())
+)
+assert_identical(directional_fill_open$kind, "page", "the R directional-fill session did not open")
+
+directional_target_order <- dispatch(
+  "previewStep",
+  list(
+    sessionId = directional_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "directional-target-order",
+      "r:c:1",
+      "target",
+      list(
+        kind = "directional",
+        direction = "forward",
+        orderBy = I(list(list(
+          column = list(id = "r:c:1", name = "target"),
+          direction = "asc",
+          nulls = "last"
+        )))
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(directional_target_order$kind, "error", "R directional fill accepted its target as ordering input")
+assert_identical(directional_target_order$code, "invalid_request", "the directional target-order diagnostic changed")
+
+directional_malformed_orders <- list(
+  list(
+    label = "object-shaped ordering",
+    orderBy = list(notAnArray = list(
+      column = list(id = "r:c:0", name = "sequence"),
+      direction = "asc",
+      nulls = "last"
+    ))
+  ),
+  list(
+    label = "array-valued direction",
+    orderBy = I(list(list(
+      column = list(id = "r:c:0", name = "sequence"),
+      direction = I(c("asc", "desc")),
+      nulls = "last"
+    )))
+  ),
+  list(
+    label = "array-valued null placement",
+    orderBy = I(list(list(
+      column = list(id = "r:c:0", name = "sequence"),
+      direction = "asc",
+      nulls = I(c("last", "first"))
+    )))
+  )
+)
+for (malformed_index in seq_along(directional_malformed_orders)) {
+  malformed <- directional_malformed_orders[[malformed_index]]
+  malformed_result <- dispatch(
+    "previewStep",
+    list(
+      sessionId = directional_fill_session_id,
+      revision = 0L,
+      step = fill_step(
+        sprintf("directional-malformed-%d", malformed_index),
+        "r:c:1",
+        "target",
+        list(
+          kind = "directional",
+          direction = "forward",
+          orderBy = malformed$orderBy
+        )
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(
+    malformed_result$kind,
+    "error",
+    sprintf("R directional fill accepted %s", malformed$label)
+  )
+  assert_identical(
+    malformed_result$code,
+    "invalid_request",
+    sprintf("the %s diagnostic changed", malformed$label)
+  )
+}
+
+directional_limited_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = directional_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "directional-limited",
+      "r:c:1",
+      "target",
+      list(
+        kind = "directional",
+        direction = "forward",
+        orderBy = I(list(list(
+          column = list(id = "r:c:0", name = "sequence"),
+          direction = "asc",
+          nulls = "last"
+        ))),
+        maxGap = 2L
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(directional_limited_preview$kind, "stepPreview", "R bounded directional fill did not preview")
+assert_identical(
+  directional_limited_preview$diff$changedCells,
+  1L,
+  "R maxGap partially filled a run exceeding the whole-run threshold"
+)
+assert_identical(
+  directional_limited_preview$page$schema[[2L]]$nullable,
+  TRUE,
+  "R directional fill published optimistic nullability"
+)
+directional_limited_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = directional_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(directional_limited_discard$action, "discard", "the bounded directional draft did not discard")
+
+directional_complete_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = directional_fill_session_id,
+    revision = 2L,
+    step = fill_step(
+      "directional-complete",
+      "r:c:1",
+      "target",
+      list(
+        kind = "directional",
+        direction = "forward",
+        orderBy = I(list(list(
+          column = list(id = "r:c:0", name = "sequence"),
+          direction = "asc",
+          nulls = "last"
+        )))
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(directional_complete_preview$kind, "stepPreview", "R directional fill did not preview")
+assert_identical(directional_complete_preview$diff$changedCells, 4L, "R directional fill returned an inexact diff")
+assert_identical(
+  directional_complete_preview$page$schema[[2L]]$nullable,
+  TRUE,
+  "R directional fill did not retain conservative nullability"
+)
+directional_complete_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = directional_fill_session_id, revision = 3L, page = page_window())
+)
+assert_identical(directional_complete_apply$action, "apply", "R directional fill did not apply")
+if (!grepl(".ow_fill_directional", directional_complete_apply$code, fixed = TRUE)) {
+  stop("generated R directional fill lost its native helper", call. = FALSE)
+}
+assign("directional_fill_frame", source_environment$directional_fill_frame, envir = .GlobalEnv)
+eval(parse(text = directional_complete_apply$code), envir = .GlobalEnv)
+directional_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  directional_fill_generated$target,
+  c("start", "start", "start", "start", "end", "end"),
+  "generated R directional fill changed explicit ordering or source row order"
+)
+assert_identical(
+  row.names(directional_fill_generated),
+  row.names(directional_fill_before),
+  "generated R directional fill changed row names"
+)
+assert_identical(
+  get("directional_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  directional_fill_before,
+  "generated R directional fill mutated its source"
+)
+assert_identical(
+  source_environment$directional_fill_frame,
+  directional_fill_before,
+  "the R directional-fill lifecycle mutated its source"
+)
+rm("directional_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+directional_fill_closed <- dispatch("closeSession", list(sessionId = directional_fill_session_id))
+assert_identical(directional_fill_closed$kind, "closed", "the R directional-fill session did not close")
+
+source_environment$linear_fill_frame <- data.frame(
+  coordinate = c(12, 0, 5, 20, 8, 30, 3),
+  target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_),
+  row.names = paste0("linear-", 1:7),
+  check.names = FALSE
+)
+linear_fill_before <- unserialize(serialize(source_environment$linear_fill_frame, NULL, version = 3L))
+linear_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = linear_fill_session_id, variableName = "linear_fill_frame", page = page_window())
+)
+assert_identical(linear_fill_open$kind, "page", "the R linear-interpolation session did not open")
+
+linear_target_coordinate <- dispatch(
+  "previewStep",
+  list(
+    sessionId = linear_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "linear-target-coordinate",
+      "r:c:1",
+      "target",
+      list(kind = "linearInterpolation", coordinate = list(id = "r:c:1", name = "target"))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(linear_target_coordinate$kind, "error", "R linear interpolation accepted its target as coordinate")
+assert_identical(linear_target_coordinate$code, "invalid_request", "the linear target-coordinate diagnostic changed")
+
+linear_limited_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = linear_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "linear-limited",
+      "r:c:1",
+      "target",
+      list(
+        kind = "linearInterpolation",
+        coordinate = list(id = "r:c:0", name = "coordinate"),
+        maxGap = 1L
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(linear_limited_preview$kind, "stepPreview", "bounded R linear interpolation did not preview")
+assert_identical(linear_limited_preview$diff$changedCells, 0L, "R maxGap partially interpolated an oversized run")
+assert_identical(
+  linear_limited_preview$page$schema[[2L]]$nullable,
+  TRUE,
+  "R linear interpolation published optimistic nullability"
+)
+linear_limited_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = linear_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(linear_limited_discard$action, "discard", "the bounded linear interpolation draft did not discard")
+
+linear_complete_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = linear_fill_session_id,
+    revision = 2L,
+    step = fill_step(
+      "linear-complete",
+      "r:c:1",
+      "target",
+      list(kind = "linearInterpolation", coordinate = list(id = "r:c:0", name = "coordinate"))
+    ),
+    page = page_window()
+  )
+)
+assert_identical(linear_complete_preview$kind, "stepPreview", "R linear interpolation did not preview")
+assert_identical(linear_complete_preview$diff$changedCells, 2L, "R linear interpolation returned an inexact diff")
+linear_complete_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = linear_fill_session_id, revision = 3L, page = page_window())
+)
+assert_identical(linear_complete_apply$action, "apply", "R linear interpolation did not apply")
+if (!grepl(".ow_fill_linear", linear_complete_apply$code, fixed = TRUE)) {
+  stop("generated R linear interpolation lost its native helper", call. = FALSE)
+}
+linear_generated_flavors <- list(
+  data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_), check.names = FALSE),
+  tibble::tibble(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_)),
+  data.table::data.table(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_)),
+  collapse::qDF(data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_))),
+  collapse::qTBL(data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_))),
+  collapse::qDT(data.frame(coordinate = c(12, 0, 5, 20, 8, 30, 3), target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_)))
+)
+for (linear_source in linear_generated_flavors) {
+  if (inherits(linear_source, "data.table")) data.table::setkey(linear_source, coordinate)
+  linear_source_before <- if (inherits(linear_source, "data.table")) {
+    data.table::copy(linear_source)
+  } else {
+    unserialize(serialize(linear_source, NULL, version = 3L))
+  }
+  assign("linear_fill_frame", linear_source, envir = .GlobalEnv)
+  eval(parse(text = linear_complete_apply$code), envir = .GlobalEnv)
+  linear_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_identical(class(linear_generated), class(linear_source), "generated interpolation changed R dataframe flavor")
+  expected_linear_target <- unname(c(
+    `0` = 0,
+    `3` = 30,
+    `5` = 50,
+    `8` = 80,
+    `12` = NA_real_,
+    `20` = Inf,
+    `30` = NA_real_
+  )[as.character(linear_source$coordinate)])
+  assert_identical(
+    linear_generated$target,
+    expected_linear_target,
+    "generated R linear interpolation changed coordinate-distance behavior"
+  )
+  assert_identical(typeof(linear_generated$target), "double", "generated interpolation changed target storage")
+  if (inherits(linear_source, "data.table")) {
+    assert_identical(data.table::key(linear_generated), "coordinate", "generated interpolation dropped a data.table key")
+  }
+  assert_identical(
+    get("linear_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+    linear_source_before,
+    "generated R linear interpolation mutated its source"
+  )
+  rm("linear_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+}
+linear_huge_source <- data.frame(
+  coordinate = c(-.Machine$double.xmax, 0, .Machine$double.xmax),
+  target = c(.Machine$double.xmax, NA_real_, -.Machine$double.xmax)
+)
+linear_huge_before <- unserialize(serialize(linear_huge_source, NULL, version = 3L))
+assign("linear_fill_frame", linear_huge_source, envir = .GlobalEnv)
+eval(parse(text = linear_complete_apply$code), envir = .GlobalEnv)
+linear_huge_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  linear_huge_generated$target,
+  c(.Machine$double.xmax, 0, -.Machine$double.xmax),
+  "generated R interpolation overflowed finite opposite-sign endpoints"
+)
+assert_identical(typeof(linear_huge_generated$target), "double", "generated interpolation changed target storage")
+assert_identical(
+  get("linear_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  linear_huge_before,
+  "generated extreme interpolation mutated its source"
+)
+rm("linear_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+assert_identical(
+  source_environment$linear_fill_frame,
+  linear_fill_before,
+  "the R linear-interpolation lifecycle mutated its source"
+)
+linear_fill_closed <- dispatch("closeSession", list(sessionId = linear_fill_session_id))
+assert_identical(linear_fill_closed$kind, "closed", "the R linear-interpolation session did not close")
+
+source_environment$grouped_fill_frame <- data.frame(
+  group = c(NA_real_, NaN, 1, 1, 2, 2, 3, 3, 3, 4, 4),
+  wide = bit64::as.integer64(c(
+    "9007199254740993", "9007199254740993", "9007199254740994", "9007199254740994",
+    "9007199254740995", "9007199254740995", "9007199254740996", "9007199254740996", "9007199254740996",
+    "9007199254740997", "9007199254740997"
+  )),
+  day = as.Date(rep("2026-01-01", 11L)),
+  target = c(2, NA, 4, NaN, Inf, NA, Inf, -Inf, NA, 2^-1074, NA),
+  row.names = paste0("grouped-", 1:11),
+  check.names = FALSE
+)
+grouped_fill_before <- unserialize(serialize(source_environment$grouped_fill_frame, NULL, version = 3L))
+grouped_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = grouped_fill_session_id, variableName = "grouped_fill_frame", page = page_window())
+)
+assert_identical(grouped_fill_open$kind, "page", "the R grouped-fill session did not open")
+
+grouped_malformed_replacements <- list(
+  list(kind = "groupedStatistic", statistic = "mean", keys = list()),
+  list(
+    kind = "groupedStatistic",
+    statistic = "mean",
+    keys = list(list(id = "r:c:0", name = "group"), list(id = "r:c:0", name = "group"))
+  ),
+  list(kind = "groupedStatistic", statistic = "mean", keys = list(list(id = "r:c:3", name = "target"))),
+  list(kind = "groupedStatistic", statistic = "sum", keys = list(list(id = "r:c:0", name = "group")))
+)
+for (malformed_index in seq_along(grouped_malformed_replacements)) {
+  grouped_malformed <- dispatch(
+    "previewStep",
+    list(
+      sessionId = grouped_fill_session_id,
+      revision = 0L,
+      step = fill_step(
+        sprintf("grouped-malformed-%d", malformed_index),
+        "r:c:3",
+        "target",
+        grouped_malformed_replacements[[malformed_index]]
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(grouped_malformed$kind, "error", "R grouped fill accepted a malformed replacement")
+  assert_identical(grouped_malformed$code, "invalid_request", "the malformed grouped-fill diagnostic changed")
+}
+
+grouped_fill_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = grouped_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "grouped-mean",
+      "r:c:3",
+      "target",
+      list(
+        kind = "groupedStatistic",
+        statistic = "mean",
+        keys = list(
+          list(id = "r:c:0", name = "group"),
+          list(id = "r:c:1", name = "wide"),
+          list(id = "r:c:2", name = "day")
+        )
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(grouped_fill_preview$kind, "stepPreview", "R grouped fill did not preview")
+assert_identical(grouped_fill_preview$diff$changedCells, 4L, "R grouped fill returned an inexact diff")
+assert_identical(
+  grouped_fill_preview$page$schema[[4L]]$nullable,
+  TRUE,
+  "R grouped fill published optimistic nullability"
+)
+grouped_fill_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = grouped_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(grouped_fill_apply$action, "apply", "R grouped fill did not apply")
+if (!grepl(".ow_fill_grouped", grouped_fill_apply$code, fixed = TRUE)) {
+  stop("generated R grouped fill lost its native helper", call. = FALSE)
+}
+assign("grouped_fill_frame", source_environment$grouped_fill_frame, envir = .GlobalEnv)
+eval(parse(text = grouped_fill_apply$code), envir = .GlobalEnv)
+grouped_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  grouped_fill_generated$target,
+  c(2, 2, 4, 4, Inf, Inf, Inf, -Inf, NA, 2^-1074, 2^-1074),
+  "generated R grouped fill changed grouped values"
+)
+assert_identical(row.names(grouped_fill_generated), row.names(grouped_fill_before), "generated grouped fill changed row names")
+assert_identical(
+  get("grouped_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  grouped_fill_before,
+  "generated R grouped fill mutated its source"
+)
+assert_identical(
+  source_environment$grouped_fill_frame,
+  grouped_fill_before,
+  "the R grouped-fill lifecycle mutated its source"
+)
+rm("grouped_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+grouped_fill_closed <- dispatch("closeSession", list(sessionId = grouped_fill_session_id))
+assert_identical(grouped_fill_closed$kind, "closed", "the R grouped-fill session did not close")
+
+assert_grouped_generated_case <- function(
+  case_session_id,
+  variable_name,
+  source,
+  statistic,
+  assert_result
+) {
+  source_environment[[variable_name]] <- source
+  before <- if (inherits(source, "data.table")) {
+    data.table::copy(source_environment[[variable_name]])
+  } else {
+    unserialize(serialize(source, NULL, version = 3L))
+  }
+  opened <- dispatch(
+    "openSession",
+    list(sessionId = case_session_id, variableName = variable_name, page = page_window())
+  )
+  assert_identical(opened$kind, "page", sprintf("the %s grouped-fill session did not open", variable_name))
+  preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = case_session_id,
+      revision = 0L,
+      step = fill_step(
+        paste0("grouped-", variable_name),
+        "r:c:1",
+        "target",
+        list(
+          kind = "groupedStatistic",
+          statistic = statistic,
+          keys = list(list(id = "r:c:0", name = "group"))
+        )
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(preview$kind, "stepPreview", sprintf("the %s grouped fill did not preview", variable_name))
+  applied <- dispatch(
+    "applyDraft",
+    list(sessionId = case_session_id, revision = 1L, page = page_window())
+  )
+  assert_identical(applied$action, "apply", sprintf("the %s grouped fill did not apply", variable_name))
+  if (!grepl(".ow_fill_grouped", applied$code, fixed = TRUE)) {
+    stop(sprintf("generated %s grouped fill lost its native helper", variable_name), call. = FALSE)
+  }
+  assign(variable_name, source_environment[[variable_name]], envir = .GlobalEnv)
+  eval(parse(text = applied$code), envir = .GlobalEnv)
+  result <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_result(result)
+  assert_identical(
+    get(variable_name, envir = .GlobalEnv, inherits = FALSE),
+    before,
+    sprintf("generated %s grouped fill mutated its source", variable_name)
+  )
+  assert_identical(
+    source_environment[[variable_name]],
+    before,
+    sprintf("the %s grouped-fill lifecycle mutated its source", variable_name)
+  )
+  rm(list = c(variable_name, "open_wrangler_result"), envir = .GlobalEnv)
+  closed <- dispatch("closeSession", list(sessionId = case_session_id))
+  assert_identical(closed$kind, "closed", sprintf("the %s grouped-fill session did not close", variable_name))
+  rm(list = variable_name, envir = source_environment)
+}
+
+if (requireNamespace("bit64", quietly = TRUE)) {
+  assert_grouped_generated_case(
+    grouped_wide_session_id,
+    "grouped_wide_frame",
+    data.frame(
+      group = c("a", "a", "a"),
+      target = bit64::as.integer64(c("9007199254740993", "9007199254740995", NA)),
+      check.names = FALSE
+    ),
+    "median",
+    function(result) {
+      assert_identical(class(result$target), "integer64", "generated grouped integer64 median changed type")
+      assert_identical(
+        as.character(result$target),
+        c("9007199254740993", "9007199254740995", "9007199254740994"),
+        "generated grouped integer64 median lost precision"
+      )
+    }
+  )
+}
+
+assert_grouped_generated_case(
+  grouped_float_session_id,
+  "grouped_float_frame",
+  data.frame(
+    group = c("odd", "odd", "even", "even", "even", "infinite", "infinite", "infinite"),
+    target = c(
+      2^-1074,
+      NA_real_,
+      .Machine$double.xmax / 2,
+      .Machine$double.xmax,
+      NA_real_,
+      -Inf,
+      Inf,
+      NA_real_
+    ),
+    check.names = FALSE
+  ),
+  "median",
+  function(result) {
+    expected_midpoint <- (.Machine$double.xmax / 2) +
+      ((.Machine$double.xmax - (.Machine$double.xmax / 2)) / 2)
+    assert_identical(
+      result$target,
+      c(
+        2^-1074,
+        2^-1074,
+        .Machine$double.xmax / 2,
+        .Machine$double.xmax,
+        expected_midpoint,
+        -Inf,
+        Inf,
+        NA_real_
+      ),
+      "generated grouped double median changed an exact, safe, or unresolved result"
+    )
+  }
+)
+
+assert_grouped_generated_case(
+  grouped_factor_session_id,
+  "grouped_factor_frame",
+  data.frame(
+    group = c("a", "a", "a", "b", "b", "b"),
+    target = factor(c("x", "x", NA, "x", "y", NA), levels = c("x", "y", "unused")),
+    check.names = FALSE
+  ),
+  "mostFrequent",
+  function(result) {
+    assert_identical(class(result$target), "factor", "generated grouped factor mode changed type")
+    assert_identical(
+      as.character(result$target),
+      c("x", "x", "x", "x", "y", NA_character_),
+      "generated grouped factor mode filled a tied group"
+    )
+    assert_identical(levels(result$target), c("x", "y", "unused"), "generated grouped factor mode changed levels")
+  }
+)
+
+if (requireNamespace("data.table", quietly = TRUE)) {
+  grouped_table_source <- data.table::data.table(group = c("a", "a", "b"), target = c(1, NA, NA))
+  data.table::setkey(grouped_table_source, group)
+  assert_grouped_generated_case(
+    grouped_table_session_id,
+    "grouped_table_frame",
+    grouped_table_source,
+    "mean",
+    function(result) {
+      assert_identical(class(result), c("data.table", "data.frame"), "generated grouped fill changed data.table flavor")
+      assert_identical(data.table::key(result), "group", "generated grouped fill dropped a data.table key")
+      assert_identical(result$target, c(1, 1, NA_real_), "generated grouped fill changed data.table values")
+    }
+  )
+}
+
+if (requireNamespace("collapse", quietly = TRUE)) {
+  assert_grouped_generated_case(
+    grouped_collapse_session_id,
+    "grouped_collapse_frame",
+    collapse::qTBL(data.frame(group = c("a", "a", "b"), target = c(TRUE, NA, NA))),
+    "mostFrequent",
+    function(result) {
+      assert_identical(
+        class(result),
+        c("tbl_df", "tbl", "data.frame"),
+        "generated grouped fill changed collapse frame flavor"
+      )
+      assert_identical(result$target, c(TRUE, TRUE, NA), "generated grouped fill changed collapse values")
+    }
+  )
+}
 
 source_environment$most_fill_frame <- data.frame(
   label = ordered(c("high", NA, "high", "low"), levels = c("low", "high")),
@@ -5199,6 +5881,7 @@ assert_identical(oversized$recoverable, TRUE, "an oversized page was not marked 
 
 missing_package_contract <- list(
   capture_frame = function(...) stop("unexpected isolated capture", call. = FALSE),
+  capture_group_result = function(...) stop("unexpected grouped capture", call. = FALSE),
   capture_live_frame = function(source_reader) {
     stop(structure(
       list(message = "example package is required", call = NULL, code = "missing-package"),
@@ -5221,19 +5904,59 @@ missing_package_contract <- list(
   ceil_number_column_at = function(...) stop("unexpected ceiling", call. = FALSE),
   fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
   fill_missing_from_fallback_columns_at = function(...) stop("unexpected fallback fill", call. = FALSE),
+  fill_missing_directional_at = function(...) stop("unexpected directional fill", call. = FALSE),
+  fill_missing_linear_interpolation_at = function(...) stop("unexpected linear interpolation", call. = FALSE),
+  fill_missing_grouped_statistic_at = function(...) stop("unexpected grouped fill", call. = FALSE),
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
   drop_missing_rows_at = function(...) stop("unexpected drop missing", call. = FALSE),
   drop_duplicate_rows_at = function(...) stop("unexpected drop duplicates", call. = FALSE),
+  group_by_at = function(...) stop("unexpected group by", call. = FALSE),
   transform_rows = function(...) stop("unexpected row transform", call. = FALSE),
   materialize_view_page = function(...) stop("unexpected page materialization", call. = FALSE),
   materialize_summaries = function(...) stop("unexpected summary materialization", call. = FALSE),
   materialize_dataset_stats = function(...) stop("unexpected dataset profile", call. = FALSE),
   materialize_column_values = function(...) stop("unexpected column values", call. = FALSE),
+  export_formats = function() "csv",
   write_csv = function(...) stop("unexpected CSV export", call. = FALSE),
+  write_parquet = function(...) stop("unexpected Parquet export", call. = FALSE),
   limits = openwrangler_r_frame_contract$limits
 )
+for (required_group_tool in c("capture_group_result", "group_by_at")) {
+  incomplete_group_contract <- missing_package_contract
+  incomplete_group_contract[[required_group_tool]] <- NULL
+  incomplete_group_error <- tryCatch(
+    {
+      openwrangler_r_kernel_agent$new_agent(incomplete_group_contract, source_environment)
+      NULL
+    },
+    error = function(error) error
+  )
+  if (
+    is.null(incomplete_group_error) ||
+      !identical(conditionMessage(incomplete_group_error), "Open Wrangler received an invalid R frame contract.")
+  ) {
+    stop(sprintf("the R agent accepted a frame contract without %s", required_group_tool), call. = FALSE)
+  }
+}
+for (required_export_tool in c("export_formats", "write_csv", "write_parquet")) {
+  incomplete_export_contract <- missing_package_contract
+  incomplete_export_contract[[required_export_tool]] <- NULL
+  incomplete_export_error <- tryCatch(
+    {
+      openwrangler_r_kernel_agent$new_agent(incomplete_export_contract, source_environment)
+      NULL
+    },
+    error = function(error) error
+  )
+  if (
+    is.null(incomplete_export_error) ||
+      !identical(conditionMessage(incomplete_export_error), "Open Wrangler received an invalid R frame contract.")
+  ) {
+    stop(sprintf("the R agent accepted a frame contract without %s support", required_export_tool), call. = FALSE)
+  }
+}
 missing_write_csv_contract <- missing_package_contract
 missing_write_csv_contract$write_csv <- NULL
 missing_write_csv_error <- tryCatch(
@@ -5381,6 +6104,51 @@ if (
 ) {
   stop("the R agent accepted a frame contract without fallback-column fill support", call. = FALSE)
 }
+missing_directional_fill_contract <- missing_package_contract
+missing_directional_fill_contract$fill_missing_directional_at <- NULL
+missing_directional_fill_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_directional_fill_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_directional_fill_error) ||
+    !identical(conditionMessage(missing_directional_fill_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without directional fill support", call. = FALSE)
+}
+missing_linear_fill_contract <- missing_package_contract
+missing_linear_fill_contract$fill_missing_linear_interpolation_at <- NULL
+missing_linear_fill_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_linear_fill_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_linear_fill_error) ||
+    !identical(conditionMessage(missing_linear_fill_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without linear interpolation support", call. = FALSE)
+}
+missing_grouped_fill_contract <- missing_package_contract
+missing_grouped_fill_contract$fill_missing_grouped_statistic_at <- NULL
+missing_grouped_fill_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_grouped_fill_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_grouped_fill_error) ||
+    !identical(conditionMessage(missing_grouped_fill_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without grouped fill support", call. = FALSE)
+}
 missing_cast_contract <- missing_package_contract
 missing_cast_contract$cast_column_at <- NULL
 missing_cast_error <- tryCatch(
@@ -5444,6 +6212,622 @@ if (
 ) {
   stop("the R agent accepted a frame contract without Drop Duplicates support", call. = FALSE)
 }
+
+assert_group_by_flavor_case <- function(
+  case_session_id,
+  variable_name,
+  source,
+  expected_flavor,
+  expected_classes,
+  expected_source_key_ids,
+  expected_groups,
+  expected_totals
+) {
+  source_environment[[variable_name]] <- source
+  before <- if (inherits(source, "data.table")) {
+    data.table::copy(source)
+  } else {
+    unserialize(serialize(source, NULL, version = 3L))
+  }
+  invisible(dispatch(
+    "openSession",
+    list(sessionId = case_session_id, variableName = variable_name, page = page_window())
+  ))
+
+  step_id <- paste0(variable_name, "-group-by")
+  previewed <- dispatch(
+    "previewStep",
+    list(
+      sessionId = case_session_id,
+      revision = 0L,
+      step = list(
+        id = step_id,
+        kind = "groupBy",
+        params = list(
+          keys = I(list(list(id = "r:c:0", name = "group"))),
+          aggregations = I(list(list(
+            column = list(id = "r:c:1", name = "value"),
+            operation = "sum",
+            alias = "total"
+          )))
+        )
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(
+    list(
+      kind = previewed$kind,
+      flavor = previewed$page$dataframeFlavor,
+      classes = previewed$page$frameSemantics$classes,
+      keyColumnIds = previewed$page$frameSemantics$keyColumnIds,
+      groups = vapply(
+        previewed$page$page$rows,
+        function(row) as.character(row$values[[1L]]$raw),
+        character(1L),
+        USE.NAMES = FALSE
+      ),
+      totals = vapply(
+        previewed$page$page$rows,
+        function(row) as.integer(row$values[[2L]]$raw),
+        integer(1L),
+        USE.NAMES = FALSE
+      )
+    ),
+    list(
+      kind = "stepPreview",
+      flavor = expected_flavor,
+      classes = as.list(expected_classes),
+      keyColumnIds = list(),
+      groups = expected_groups,
+      totals = expected_totals
+    ),
+    sprintf("the %s Group By preview changed its dataframe family or result", variable_name)
+  )
+
+  applied <- dispatch(
+    "applyDraft",
+    list(sessionId = case_session_id, revision = previewed$revision, page = page_window())
+  )
+  assert_identical(applied$action, "apply", sprintf("the %s Group By did not apply", variable_name))
+
+  assign(variable_name, source_environment[[variable_name]], envir = .GlobalEnv)
+  eval(parse(text = applied$code), envir = .GlobalEnv)
+  generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_identical(
+    list(
+      classes = class(generated),
+      groups = as.character(generated$group),
+      totals = as.integer(generated$total),
+      key = if (inherits(generated, "data.table")) data.table::key(generated) else NULL,
+      generatedSource = get(variable_name, envir = .GlobalEnv, inherits = FALSE),
+      liveSource = source_environment[[variable_name]]
+    ),
+    list(
+      classes = expected_classes,
+      groups = expected_groups,
+      totals = expected_totals,
+      key = NULL,
+      generatedSource = before,
+      liveSource = before
+    ),
+    sprintf("generated %s Group By changed its dataframe family, result, or source", variable_name)
+  )
+  rm(list = c(variable_name, "open_wrangler_result"), envir = .GlobalEnv)
+
+  undone <- dispatch(
+    "undoStep",
+    list(sessionId = case_session_id, revision = applied$revision, page = page_window())
+  )
+  assert_identical(
+    list(
+      action = undone$action,
+      flavor = undone$page$dataframeFlavor,
+      classes = undone$page$frameSemantics$classes,
+      keyColumnIds = undone$page$frameSemantics$keyColumnIds,
+      source = source_environment[[variable_name]]
+    ),
+    list(
+      action = "undo",
+      flavor = expected_flavor,
+      classes = as.list(expected_classes),
+      keyColumnIds = expected_source_key_ids,
+      source = before
+    ),
+    sprintf("undoing the %s Group By did not restore its dataframe family or source", variable_name)
+  )
+
+  invisible(dispatch("closeSession", list(sessionId = case_session_id)))
+  rm(list = variable_name, envir = source_environment)
+}
+
+assert_group_by_flavor_case(
+  group_by_tibble_session_id,
+  "group_by_tibble",
+  tibble::tibble(group = c("b", "a", "b"), value = c(1L, 2L, 3L)),
+  "r.tibble",
+  c("tbl_df", "tbl", "data.frame"),
+  list(),
+  c("b", "a"),
+  c(4L, 2L)
+)
+
+group_by_table_source <- data.table::data.table(
+  group = c("b", "a", "c", "b"),
+  value = c(1L, 2L, 3L, 4L),
+  source_order = c(30L, 20L, 10L, 40L)
+)
+data.table::setkey(group_by_table_source, source_order)
+assert_group_by_flavor_case(
+  group_by_table_session_id,
+  "group_by_table",
+  group_by_table_source,
+  "r.data.table",
+  c("data.table", "data.frame"),
+  list("r:c:2"),
+  c("c", "a", "b"),
+  c(3L, 2L, 5L)
+)
+
+source_environment$group_by_frame <- data.frame(
+  group = c(2, 1, 2, NA_real_, NaN, 1, 2),
+  number = c(1L, 2L, 4L, NA_integer_, NA_integer_, 4L, 10L),
+  label = factor(c("z", "b", NA, "c", "a", "a", NA), levels = c("z", "a", "b", "c")),
+  ordered_label = ordered(
+    c("medium", "low", "high", NA, "medium", "high", NA),
+    levels = c("low", "medium", "high")
+  ),
+  when = as.Date("2026-01-01") + c(0, 1, 2, NA, 4, 5, NA),
+  flag = c(TRUE, NA, FALSE, FALSE, NA, TRUE, NA),
+  check.names = FALSE,
+  row.names = paste0("source-row-", seq_len(7L))
+)
+group_by_source_before <- unserialize(serialize(source_environment$group_by_frame, NULL, version = 3L))
+group_by_open <- dispatch(
+  "openSession",
+  list(sessionId = group_by_session_id, variableName = "group_by_frame", page = page_window())
+)
+assert_identical(group_by_open$kind, "page", "the R Group By session did not open")
+group_by_aggregations <- list(
+  list(column = list(id = "r:c:1", name = "number"), operation = "sum", alias = "number_sum"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "mean", alias = "number_mean"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "median", alias = "number_median"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "min", alias = "number_min"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "max", alias = "number_max"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "count", alias = "number_count"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "nUnique", alias = "number_unique"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "first", alias = "number_first"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "last", alias = "number_last"),
+  list(column = list(id = "r:c:2", name = "label"), operation = "min", alias = "label_min"),
+  list(column = list(id = "r:c:2", name = "label"), operation = "max", alias = "label_max"),
+  list(column = list(id = "r:c:3", name = "ordered_label"), operation = "min", alias = "ordered_min"),
+  list(column = list(id = "r:c:3", name = "ordered_label"), operation = "max", alias = "ordered_max"),
+  list(column = list(id = "r:c:4", name = "when"), operation = "min", alias = "date_min"),
+  list(column = list(id = "r:c:4", name = "when"), operation = "max", alias = "date_max"),
+  list(column = list(id = "r:c:5", name = "flag"), operation = "min", alias = "flag_min"),
+  list(column = list(id = "r:c:5", name = "flag"), operation = "max", alias = "flag_max")
+)
+group_by_step <- list(
+  id = "group-by-step",
+  kind = "groupBy",
+  params = list(
+    keys = I(list(list(id = "r:c:0", name = "group"))),
+    aggregations = I(group_by_aggregations)
+  )
+)
+group_by_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = group_by_session_id,
+    revision = 0L,
+    step = group_by_step,
+    page = page_window()
+  )
+)
+assert_identical(group_by_preview$kind, "stepPreview", "R Group By did not preview")
+assert_identical(
+  group_by_preview$page$frameSemantics$rowNames,
+  "positional",
+  "R Group By retained source row-name semantics"
+)
+assert_identical(
+  all(vapply(group_by_preview$page$page$rows, function(row) is.null(row$rowLabel), logical(1L))),
+  TRUE,
+  "R Group By retained source row labels"
+)
+assert_identical(group_by_preview$page$shape$rows, 10L, "R Group By returned the wrong row-identity domain")
+assert_identical(group_by_preview$page$page$totalRows, 3L, "R Group By returned the wrong group count")
+assert_identical(group_by_preview$diff$addedRows, 3L, "R Group By did not report its replacement rows")
+assert_identical(group_by_preview$diff$removedRows, 7L, "R Group By did not report all replaced source rows")
+assert_identical(
+  unlist(group_by_preview$diff$addedColumns, use.names = FALSE),
+  vapply(group_by_aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE),
+  "R Group By reported the wrong added columns"
+)
+assert_identical(
+  unlist(group_by_preview$diff$removedColumns, use.names = FALSE),
+  c("number", "label", "ordered_label", "when", "flag"),
+  "R Group By reported the wrong removed columns"
+)
+assert_identical(group_by_preview$diff$changedCells, 0L, "R Group By reported cell-level changes")
+assert_identical(group_by_preview$diff$truncated, FALSE, "a complete R Group By diff was marked truncated")
+assert_identical(
+  unlist(group_by_preview$page$page$columnIds, use.names = FALSE),
+  c("r:c:0", paste0("c:step:group-by-step:", 0:16)),
+  "R Group By returned unstable output identities"
+)
+assert_identical(
+  vapply(group_by_preview$page$schema, `[[`, character(1L), "rawType", USE.NAMES = FALSE),
+  c(
+    "double", "integer", "double", "double", "integer", "integer", "integer", "integer", "integer",
+    "integer", "character", "character", "ordered factor", "ordered factor", "Date", "Date", "logical", "logical"
+  ),
+  "R Group By returned the wrong output types"
+)
+group_cells <- lapply(group_by_preview$page$page$rows, function(row) row$values[[1L]])
+assert_identical(
+  vapply(group_cells[1:2], function(cell) as.double(cell$raw), double(1L)),
+  c(2, 1),
+  "R Group By did not retain first-seen group order"
+)
+assert_identical(group_cells[[3L]]$isNull, TRUE, "R Group By did not combine NA and NaN into one missing group")
+missing_group_values <- group_by_preview$page$page$rows[[3L]]$values
+assert_identical(as.integer(missing_group_values[[2L]]$raw), 0L, "an all-missing integer group did not sum to zero")
+assert_identical(missing_group_values[[3L]]$isNull, TRUE, "an all-missing group mean was not missing")
+assert_identical(missing_group_values[[4L]]$isNull, TRUE, "an all-missing group median was not missing")
+assert_identical(as.integer(missing_group_values[[7L]]$raw), 0L, "an all-missing group count was not zero")
+assert_identical(as.integer(missing_group_values[[8L]]$raw), 0L, "an all-missing distinct count was not zero")
+
+group_by_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = group_by_session_id, revision = 1L, page = page_window())
+)
+assert_identical(group_by_apply$action, "apply", "the R Group By draft did not apply")
+if (!grepl(".ow_group_by", group_by_apply$code, fixed = TRUE)) {
+  stop("generated R Group By code omitted its native reducer", call. = FALSE)
+}
+if (!grepl("  .ow_result <- .ow_group_by(.ow_result, list(", group_by_apply$code, fixed = TRUE)) {
+  stop("generated R Group By code did not format its call across readable lines", call. = FALSE)
+}
+if (!grepl('list(alias = "number_sum", operation = "sum"', group_by_apply$code, fixed = TRUE)) {
+  stop("generated R Group By code did not keep the output name visible at the start of its aggregation", call. = FALSE)
+}
+assign("group_by_frame", source_environment$group_by_frame, envir = .GlobalEnv)
+eval(parse(text = group_by_apply$code), envir = .GlobalEnv)
+group_by_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(group_by_generated$group[1:2], c(2, 1), "generated R Group By changed group order")
+assert_identical(is.na(group_by_generated$group[[3L]]), TRUE, "generated R Group By split the missing group")
+assert_identical(group_by_generated$number_sum, c(15L, 6L, 0L), "generated R Group By changed integer sums")
+assert_identical(group_by_generated$number_mean, c(5, 3, NA_real_), "generated R Group By changed means")
+assert_identical(group_by_generated$number_median, c(4, 3, NA_real_), "generated R Group By changed medians")
+assert_identical(group_by_generated$number_min, c(1L, 2L, NA_integer_), "generated R Group By changed minima")
+assert_identical(group_by_generated$number_max, c(10L, 4L, NA_integer_), "generated R Group By changed maxima")
+assert_identical(group_by_generated$number_count, c(3L, 2L, 0L), "generated R Group By changed counts")
+assert_identical(group_by_generated$number_unique, c(3L, 2L, 0L), "generated R Group By changed distinct counts")
+assert_identical(group_by_generated$number_first, c(1L, 2L, NA_integer_), "generated R Group By changed first values")
+assert_identical(group_by_generated$number_last, c(10L, 4L, NA_integer_), "generated R Group By changed last values")
+assert_identical(group_by_generated$label_min, c("z", "a", "a"), "generated R Group By changed factor minima")
+assert_identical(group_by_generated$label_max, c("z", "b", "c"), "generated R Group By changed factor maxima")
+assert_identical(is.ordered(group_by_generated$ordered_min), TRUE, "generated R Group By lost ordered factors")
+assert_identical(inherits(group_by_generated$date_min, "Date"), TRUE, "generated R Group By lost Date extrema")
+assert_identical(is.logical(group_by_generated$flag_min), TRUE, "generated R Group By lost logical extrema")
+assert_identical(
+  .row_names_info(group_by_generated, type = 1L) < 0L,
+  TRUE,
+  "generated R Group By retained source row-name semantics"
+)
+assert_identical(
+  get("group_by_frame", envir = .GlobalEnv, inherits = FALSE),
+  group_by_source_before,
+  "generated R Group By mutated its source dataframe"
+)
+rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+group_by_filter_view <- page_window(
+  filters = list(list(
+    column = list(id = "c:step:group-by-step:1", name = "number_mean"),
+    type = "float",
+    predicates = I(list(list(kind = "predicate", operator = "gt", value = 3L)))
+  ))
+)
+group_by_filtered_step <- unserialize(serialize(group_by_step, NULL, version = 3L))
+group_by_filtered_step$params$aggregations[[2L]]$operation <- "median"
+source_materializations_before_edit <- group_by_source_materializations
+group_by_filter_edit_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_apply$revision,
+    step = group_by_filtered_step,
+    replaceStepId = "group-by-step",
+    page = group_by_filter_view
+  )
+)
+assert_identical(
+  group_by_filter_edit_preview$kind,
+  "stepPreview",
+  "editing R Group By applied an aggregation-output filter to its source input"
+)
+assert_identical(
+  group_by_source_materializations,
+  source_materializations_before_edit,
+  "editing R Group By materialized the source just to determine diff truncation"
+)
+assert_identical(
+  group_by_filter_edit_preview$page$page$totalRows,
+  1L,
+  "the edited R Group By lost its aggregation-output filter"
+)
+assert_identical(
+  as.double(group_by_filter_edit_preview$page$page$rows[[1L]]$values[[3L]]$raw),
+  4,
+  "the edited R Group By did not execute the replacement median"
+)
+assert_identical(
+  group_by_filter_edit_preview$diff$truncated,
+  TRUE,
+  "a filtered R Group By replacement diff was complete"
+)
+assign("group_by_frame", source_environment$group_by_frame, envir = .GlobalEnv)
+eval(parse(text = group_by_filter_edit_preview$code), envir = .GlobalEnv)
+group_by_filtered_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  group_by_filtered_generated$number_mean,
+  c(4, 3, NA_real_),
+  "generated R Group By did not match the filtered live replacement"
+)
+rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
+group_by_filter_edit_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_filter_edit_preview$revision,
+    page = group_by_filter_view
+  )
+)
+assert_identical(group_by_filter_edit_apply$action, "apply", "the filtered R Group By replacement did not apply")
+
+group_by_sort_view <- page_window(
+  sorts = list(list(
+    column = list(id = "c:step:group-by-step:1", name = "number_mean"),
+    direction = "desc",
+    nulls = "last"
+  ))
+)
+group_by_sorted_step <- unserialize(serialize(group_by_filtered_step, NULL, version = 3L))
+group_by_sorted_step$params$aggregations[[2L]]$operation <- "mean"
+source_materializations_before_edit <- group_by_source_materializations
+group_by_sort_edit_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_filter_edit_apply$revision,
+    step = group_by_sorted_step,
+    replaceStepId = "group-by-step",
+    page = group_by_sort_view
+  )
+)
+assert_identical(group_by_sort_edit_preview$kind, "stepPreview", "editing R Group By lost its output sort")
+assert_identical(
+  group_by_source_materializations,
+  source_materializations_before_edit,
+  "sorting an edited R Group By materialized its source for the replacement diff"
+)
+assert_identical(group_by_sort_edit_preview$diff$truncated, FALSE, "a complete sorted replacement diff was truncated")
+assert_identical(
+  vapply(
+    group_by_sort_edit_preview$page$page$rows[1:2],
+    function(row) as.double(row$values[[1L]]$raw),
+    double(1L)
+  ),
+  c(2, 1),
+  "the edited R Group By did not sort its aggregation output"
+)
+assign("group_by_frame", source_environment$group_by_frame, envir = .GlobalEnv)
+eval(parse(text = group_by_sort_edit_preview$code), envir = .GlobalEnv)
+group_by_sorted_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  group_by_sorted_generated$number_mean,
+  c(5, 3, NA_real_),
+  "generated R Group By did not match the sorted live replacement"
+)
+rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
+group_by_edit_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_sort_edit_preview$revision,
+    page = group_by_sort_view
+  )
+)
+assert_identical(group_by_edit_apply$action, "apply", "the sorted R Group By replacement did not apply")
+
+group_by_parquet_ready <- dispatch(
+  "exportData",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_edit_apply$revision,
+    exportId = group_by_export_id,
+    format = "parquet"
+  )
+)
+assert_identical(group_by_parquet_ready$kind, "dataExported", "the grouped R result did not export to Parquet")
+assert_identical(group_by_parquet_ready$rows, 3L, "the retained view changed the grouped Parquet export")
+group_by_parquet_bytes <- raw()
+group_by_parquet_offset <- 0L
+while (group_by_parquet_offset < group_by_parquet_ready$bytes) {
+  group_by_parquet_chunk <- dispatch(
+    "readDataExport",
+    list(
+      sessionId = group_by_session_id,
+      revision = group_by_edit_apply$revision,
+      exportId = group_by_export_id,
+      offset = group_by_parquet_offset,
+      limit = 1024L
+    )
+  )
+  group_by_parquet_decoded <- jsonlite::base64_dec(group_by_parquet_chunk$data)
+  group_by_parquet_bytes <- c(group_by_parquet_bytes, group_by_parquet_decoded)
+  group_by_parquet_offset <- group_by_parquet_offset + group_by_parquet_chunk$bytes
+}
+group_by_parquet_target <- tempfile(fileext = ".parquet")
+writeBin(group_by_parquet_bytes, group_by_parquet_target)
+group_by_parquet_frame <- nanoparquet::read_parquet(
+  group_by_parquet_target,
+  options = nanoparquet::parquet_options(class = "data.frame")
+)
+unlink(group_by_parquet_target)
+assert_identical(
+  names(group_by_parquet_frame),
+  c("group", vapply(group_by_aggregations, `[[`, character(1L), "alias")),
+  "grouped Parquet export changed aliases"
+)
+assert_identical(group_by_parquet_frame$number_mean, c(5, 3, NA_real_), "grouped Parquet export changed means")
+assert_identical(source_environment$group_by_frame, group_by_source_before, "grouped Parquet export mutated its source")
+invisible(dispatch(
+  "closeDataExport",
+  list(
+    sessionId = group_by_session_id,
+    revision = group_by_edit_apply$revision,
+    exportId = group_by_export_id
+  )
+))
+
+group_by_inspection <- inspect_step(
+  group_by_session_id,
+  group_by_edit_apply$revision,
+  "group-by-step",
+  page_window(),
+  input_row_count = 7L,
+  output_row_count = 3L
+)
+assert_schema_less_inspection(group_by_inspection, "R Group By inspection")
+assert_identical(group_by_inspection$outputPage$page$totalRows, 3L, "R Group By inspection lost its output groups")
+group_by_undo <- dispatch(
+  "undoStep",
+  list(sessionId = group_by_session_id, revision = group_by_edit_apply$revision, page = page_window())
+)
+assert_identical(group_by_undo$action, "undo", "R Group By did not undo")
+assert_identical(group_by_undo$page$shape$rows, 7L, "undoing R Group By did not restore the source rows")
+assert_identical(
+  group_by_undo$page$frameSemantics$rowNames,
+  "explicit",
+  "undoing R Group By did not restore explicit row-name semantics"
+)
+assert_identical(group_by_undo$code, "", "undoing the final R Group By step retained generated code")
+assert_identical(source_environment$group_by_frame, group_by_source_before, "R Group By mutated its live source")
+group_by_closed <- dispatch("closeSession", list(sessionId = group_by_session_id))
+assert_identical(group_by_closed$kind, "closed", "the R Group By session did not close")
+
+source_environment$group_by_precision <- data.frame(
+  case = c("cancel", "cancel", "odd", "odd", "odd", "same", "same"),
+  value = bit64::as.integer64(c(
+    "9223372036854775806", "-9223372036854775805",
+    "-9223372036854775805", "2", "9223372036854775806",
+    "9223372036854775802", "9223372036854775806"
+  )),
+  stringsAsFactors = FALSE
+)
+group_by_precision_before <- unserialize(serialize(source_environment$group_by_precision, NULL, version = 3L))
+group_by_precision_open <- dispatch(
+  "openSession",
+  list(sessionId = group_by_precision_session_id, variableName = "group_by_precision", page = page_window())
+)
+assert_identical(group_by_precision_open$kind, "page", "the integer64 Group By session did not open")
+group_by_precision_step <- list(
+  id = "group-by-precision",
+  kind = "groupBy",
+  params = list(
+    keys = I(list(list(id = "r:c:0", name = "case"))),
+    aggregations = I(list(
+      list(column = list(id = "r:c:1", name = "value"), operation = "mean", alias = "value_mean"),
+      list(column = list(id = "r:c:1", name = "value"), operation = "median", alias = "value_median")
+    ))
+  )
+)
+group_by_precision_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = group_by_precision_session_id,
+    revision = 0L,
+    step = group_by_precision_step,
+    page = page_window()
+  )
+)
+assert_identical(group_by_precision_preview$kind, "stepPreview", "integer64 Group By did not preview")
+group_by_precision_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = group_by_precision_session_id,
+    revision = group_by_precision_preview$revision,
+    page = page_window()
+  )
+)
+assign("group_by_precision", source_environment$group_by_precision, envir = .GlobalEnv)
+eval(parse(text = group_by_precision_apply$code), envir = .GlobalEnv)
+group_by_precision_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+same_sign_midpoint <- suppressWarnings(as.double(bit64::as.integer64("9223372036854775804")))
+assert_identical(
+  group_by_precision_generated$value_mean,
+  c(0.5, 1, same_sign_midpoint),
+  "generated integer64 Group By mean lost cancellation, odd-count, or same-sign precision"
+)
+assert_identical(
+  group_by_precision_generated$value_median,
+  c(0.5, 2, same_sign_midpoint),
+  "generated integer64 Group By median lost cancellation, odd-count, or same-sign precision"
+)
+preview_precision_values <- lapply(group_by_precision_preview$page$page$rows, function(row) {
+  vapply(row$values[2:3], function(cell) as.double(cell$raw), double(1L))
+})
+assert_identical(
+  preview_precision_values,
+  list(c(0.5, 0.5), c(1, 2), c(same_sign_midpoint, same_sign_midpoint)),
+  "live integer64 Group By disagreed with generated cancellation, odd-count, or same-sign results"
+)
+assert_identical(
+  source_environment$group_by_precision,
+  group_by_precision_before,
+  "integer64 Group By mutated its source dataframe"
+)
+rm("group_by_precision", "open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = group_by_precision_session_id)))
+
+source_environment$group_by_overflow <- data.frame(group = c("a", "a"), value = c(2147483647L, 1L))
+group_by_overflow_open <- dispatch(
+  "openSession",
+  list(sessionId = group_by_overflow_session_id, variableName = "group_by_overflow", page = page_window())
+)
+assert_identical(group_by_overflow_open$kind, "page", "the R Group By overflow session did not open")
+group_by_overflow <- dispatch(
+  "previewStep",
+  list(
+    sessionId = group_by_overflow_session_id,
+    revision = 0L,
+    step = list(
+      id = "group-overflow",
+      kind = "groupBy",
+      params = list(
+        keys = I(list(list(id = "r:c:0", name = "group"))),
+        aggregations = I(list(list(
+          column = list(id = "r:c:1", name = "value"),
+          operation = "sum",
+          alias = "total"
+        )))
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(group_by_overflow$kind, "error", "R Group By accepted an overflowing integer sum")
+assert_identical(group_by_overflow$code, "invalid_request", "R Group By normalized overflow incorrectly")
+assert_identical(
+  source_environment$group_by_overflow,
+  data.frame(group = c("a", "a"), value = c(2147483647L, 1L)),
+  "a failed R Group By mutated its source"
+)
+group_by_overflow_closed <- dispatch("closeSession", list(sessionId = group_by_overflow_session_id))
+assert_identical(group_by_overflow_closed$kind, "closed", "the failed R Group By session did not close")
 
 source_environment$export_frame <- data.frame(
   "order id" = c(3L, 1L, 2L),
@@ -5603,6 +6987,71 @@ export_closed_again <- dispatch(
 )
 assert_identical(export_closed_again$kind, "dataExportClosed", "closing an R export was not idempotent")
 
+parquet_ready <- dispatch(
+  "exportData",
+  list(
+    sessionId = export_session_id,
+    revision = export_discard$revision,
+    exportId = parquet_export_id,
+    format = "parquet"
+  )
+)
+assert_identical(parquet_ready$kind, "dataExported", "the R agent did not prepare a Parquet export")
+assert_identical(parquet_ready$format, "parquet", "the R agent changed the Parquet export format")
+assert_identical(parquet_ready$rows, 3L, "viewing state changed the Parquet export row count")
+assert_identical(parquet_ready$columns, 6L, "the Parquet export returned the wrong width")
+parquet_bytes <- raw()
+offset <- 0L
+while (offset < parquet_ready$bytes) {
+  chunk <- dispatch(
+    "readDataExport",
+    list(
+      sessionId = export_session_id,
+      revision = export_discard$revision,
+      exportId = parquet_export_id,
+      offset = offset,
+      limit = 13L
+    )
+  )
+  decoded <- jsonlite::base64_dec(chunk$data)
+  assert_identical(length(decoded), chunk$bytes, "the R Parquet export chunk byte count changed")
+  parquet_bytes <- c(parquet_bytes, decoded)
+  offset <- offset + chunk$bytes
+}
+assert_identical(length(parquet_bytes), parquet_ready$bytes, "the R Parquet export stream was truncated")
+assert_identical(parquet_bytes[seq_len(4L)], charToRaw("PAR1"), "the R Parquet export has an invalid header")
+assert_identical(tail(parquet_bytes, 4L), charToRaw("PAR1"), "the R Parquet export has an invalid footer")
+parquet_target <- tempfile(fileext = ".parquet")
+writeBin(parquet_bytes, parquet_target)
+parquet_frame <- nanoparquet::read_parquet(
+  parquet_target,
+  options = nanoparquet::parquet_options(class = "data.frame")
+)
+unlink(parquet_target)
+assert_identical(
+  names(parquet_frame),
+  c("order_id", "duplicate", "duplicate", "when", "at", "value"),
+  "Parquet export changed duplicate or renamed columns"
+)
+assert_identical(parquet_frame[[1L]], c(3L, 1L, 2L), "viewing filters or sorts changed the committed Parquet data")
+assert_identical(as.character(parquet_frame[[2L]]), c("gamma", "alpha", "beta"), "Parquet export changed factor labels")
+assert_identical(
+  as.numeric(parquet_frame[[4L]]),
+  as.numeric(source_environment$export_frame[[4L]]),
+  "Parquet export changed Date values"
+)
+assert_identical(
+  as.numeric(parquet_frame[[5L]]),
+  as.numeric(source_environment$export_frame[[5L]]),
+  "Parquet export changed POSIXct instants"
+)
+assert_identical(source_environment$export_frame, export_source_before, "Parquet export mutated its R source")
+parquet_closed <- dispatch(
+  "closeDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = parquet_export_id)
+)
+assert_identical(parquet_closed$kind, "dataExportClosed", "the R Parquet export artifact did not close")
+
 cleanup_ready <- dispatch(
   "exportData",
   list(sessionId = export_session_id, revision = export_discard$revision, exportId = cleanup_export_id, format = "csv")
@@ -5615,6 +7064,45 @@ cleanup_read <- dispatch(
   list(sessionId = export_session_id, revision = export_discard$revision, exportId = cleanup_export_id, offset = 0L, limit = 1L)
 )
 assert_identical(cleanup_read$kind, "error", "closing the R session retained its export artifact")
+
+unavailable_write_count <- 0L
+unavailable_parquet_contract <- openwrangler_r_frame_contract
+unavailable_parquet_contract$export_formats <- function() "csv"
+unavailable_parquet_contract$write_parquet <- function(...) {
+  unavailable_write_count <<- unavailable_write_count + 1L
+  stop("unexpected unavailable Parquet writer", call. = FALSE)
+}
+unavailable_parquet_agent <- openwrangler_r_kernel_agent$new_agent(
+  unavailable_parquet_contract,
+  source_environment
+)
+unavailable_open <- dispatch_with(
+  unavailable_parquet_agent,
+  "openSession",
+  list(sessionId = unavailable_export_session_id, variableName = "export_frame", page = page_window())
+)
+assert_identical(unavailable_open$kind, "page", "the CSV-only R export session did not open")
+assert_identical(unavailable_open$exportFormats, list("csv"), "the CSV-only R session advertised Parquet")
+unavailable_parquet <- dispatch_with(
+  unavailable_parquet_agent,
+  "exportData",
+  list(
+    sessionId = unavailable_export_session_id,
+    revision = 0L,
+    exportId = parquet_export_id,
+    format = "parquet"
+  )
+)
+assert_identical(unavailable_parquet$kind, "error", "the R agent accepted unavailable Parquet export")
+assert_identical(unavailable_parquet$code, "missing_package", "the unavailable Parquet diagnostic changed")
+assert_identical(unavailable_parquet$recoverable, TRUE, "the unavailable Parquet diagnostic was not recoverable")
+assert_identical(unavailable_write_count, 0L, "the R agent called an unavailable Parquet writer")
+invisible(dispatch_with(
+  unavailable_parquet_agent,
+  "closeSession",
+  list(sessionId = unavailable_export_session_id)
+))
+unavailable_parquet_agent$dispose()
 
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(

@@ -39,6 +39,7 @@ import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
+import { supportsRDocumentExecution } from "../../extension/r/rDocumentCommands";
 import { R_KERNEL_RUNTIME_BINDING } from "../../extension/r/rKernelRuntimeBundle";
 import type { SessionSchedulerState } from "../../extension/sessionCoordinator";
 import {
@@ -283,7 +284,8 @@ const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
   "upperText",
   "roundNumber",
   "floorNumber",
-  "ceilNumber"
+  "ceilNumber",
+  "groupBy"
 ]);
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
@@ -309,6 +311,17 @@ const PERSISTED_PANEL_SELECTED_COLUMN = "gross_margin";
 const PERSISTED_PANEL_COLUMN_WIDTH = 333;
 const PERSISTED_PANEL_FIRST_VISIBLE_ROW = 400;
 const PERSISTED_PANEL_SCROLL_LEFT = 1_400;
+const PACKAGED_LINEAR_INTERPOLATION_FIXTURE_CSV = [
+  "source_row,coordinate,measurement",
+  "r4,20,",
+  "r1,0,10.0",
+  "r5,40,50.0",
+  "r2,5,",
+  "r6,50,",
+  "r3,15,",
+  "r7,60,70.0",
+  ""
+].join("\n");
 
 function persistedPanelFilterModel(): FilterModel {
   return {
@@ -631,7 +644,7 @@ export async function run(): Promise<void> {
   const fileResourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const rDocumentPredicate =
-    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+    "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
@@ -706,6 +719,11 @@ export async function run(): Promise<void> {
         item.group === "navigation@49"
     ),
     "R document tabs must expose Run in Open Wrangler in their context menu."
+  );
+  assert.equal(
+    contributions.menus?.commandPalette?.some((item) => item.command === "openWrangler.runRDocument"),
+    false,
+    "The R document command must remain available from the Command Palette for supported remote hosts."
   );
   assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
@@ -1065,6 +1083,15 @@ function ensurePackagedProductSceneFixture(workspace: vscode.Uri): vscode.Uri {
   return ensureDeterministicDelimitedFixture(workspace, "orders.csv", packagedProductFixtureCsv(), "product-scene");
 }
 
+function ensurePackagedLinearInterpolationFixture(workspace: vscode.Uri): vscode.Uri {
+  return ensureDeterministicDelimitedFixture(
+    workspace,
+    "linear-interpolation.csv",
+    PACKAGED_LINEAR_INTERPOLATION_FIXTURE_CSV,
+    "linear-interpolation"
+  );
+}
+
 function ensureDeterministicDelimitedFixture(
   workspace: vscode.Uri,
   fileName: string,
@@ -1179,7 +1206,7 @@ interface ReleasedRDocumentFixture {
 interface ReleasedRLiterateDocumentFixture {
   readonly kind: "rmarkdown" | "quarto";
   readonly sourceUri: vscode.Uri;
-  readonly processIdPath: string;
+  readonly processIdPath?: string;
   readonly variableName: string;
   readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
 }
@@ -1554,12 +1581,18 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = 'minimal')",
     "orders_table <- data.table::as.data.table(orders_frame)",
     "data.table::setkey(orders_table, row_id)",
+    "collapse_frame <- collapse::qDF(orders_frame)",
+    "collapse_tibble <- collapse::qTBL(orders_frame)",
+    "collapse_table <- collapse::qDT(orders_frame)",
+    "collapse_grouped <- collapse::fgroup_by(collapse_frame, group)",
+    "collapse_indexed <- collapse::findex_by(collapse_frame, group, row_id)",
     "orders_frame_before <- serialize(orders_frame, NULL, version = 3L)",
     "orders_tibble_before <- serialize(orders_tibble, NULL, version = 3L)",
     "orders_table_before <- serialize(orders_table, NULL, version = 3L)",
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
     "  pid = Sys.getpid(), rows = nrow(orders_frame), columns = ncol(orders_frame),",
     "  rVersion = as.character(getRversion()),",
+    "  collapseVersion = as.character(utils::packageVersion('collapse')),",
     "  remoteRunId = Sys.getenv('OPEN_WRANGLER_REMOTE_RUN_ID', unset = ''),",
     "  hostname = unname(Sys.info()[['nodename']])",
     "), auto_unbox = TRUE)), '\\n', sep = '')"
@@ -1784,48 +1817,62 @@ function writeReleasedRLiterateDocumentFixture(
   const sourcePath = path.join(fixtureDirectory, `orders-analysis.${extension}`);
   const csvPath = path.join(fixtureDirectory, "orders.csv");
   const processIdPath = path.join(fixtureDirectory, "open-wrangler-r.pid");
-  const variableName = "literate_orders";
-  const frontMatter =
+  const variableName = kind === "quarto" ? "regional_orders" : "literate_orders";
+  const loadCell = [
+    kind === "quarto" ? "```{r}" : "```{r load-orders, echo=FALSE}",
+    ...(kind === "quarto" ? ["#| label: load-regional-orders", "#| echo: false"] : []),
+    `${variableName} <- utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE)`,
+    `${variableName}$order_date <- as.Date(${variableName}$order_date)`,
+    `${variableName}$score[2L] <- NA_real_`,
+    ...(kind === "rmarkdown" ? ['writeLines(as.character(Sys.getpid()), "open-wrangler-r.pid", useBytes = TRUE)'] : []),
+    "```",
+    ""
+  ];
+  const sourceLines =
     kind === "quarto"
-      ? ["---", "title: Regional orders", "format: html", "payload: |"]
-      : ["---", "title: Regional orders", "output: html_document", "payload: |"];
-  const sourceBytes = Buffer.from(
-    [
-      ...frontMatter,
-      "  ```{r}",
-      "  stop('A YAML block scalar is not an executable cell')",
-      "  ```",
-      "---",
-      "",
-      "# Regional orders",
-      "",
-      "This prose contains `data.frame(id = 0L)` but is not R code.",
-      "",
-      "<!--",
-      "```{r}",
-      "stop('An HTML comment is not an executable cell')",
-      "```",
-      "-->",
-      "",
-      "```{python}",
-      "raise RuntimeError('A Python cell must not run in the R document process')",
-      "```",
-      "",
-      "```{r disabled, eval=FALSE}",
-      "stop('A disabled R cell must not run')",
-      "```",
-      "",
-      "```{r load-orders, echo=FALSE}",
-      ...(kind === "quarto" ? ["#| label: load-regional-orders"] : []),
-      `${variableName} <- utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE)`,
-      `${variableName}$order_date <- as.Date(${variableName}$order_date)`,
-      `${variableName}$score[2L] <- NA_real_`,
-      'writeLines(as.character(Sys.getpid()), "open-wrangler-r.pid", useBytes = TRUE)',
-      "```",
-      ""
-    ].join("\n"),
-    "utf8"
-  );
+      ? [
+          "---",
+          "title: Regional orders",
+          "format: html",
+          "---",
+          "",
+          "# Regional orders",
+          "",
+          "Load the latest regional order export and inspect it in Open Wrangler.",
+          "",
+          ...loadCell
+        ]
+      : [
+          "---",
+          "title: Regional orders",
+          "output: html_document",
+          "payload: |",
+          "  ```{r}",
+          "  stop('A YAML block scalar is not an executable cell')",
+          "  ```",
+          "---",
+          "",
+          "# Regional orders",
+          "",
+          "This prose contains `data.frame(id = 0L)` but is not R code.",
+          "",
+          ...loadCell,
+          "<!--",
+          "```{r}",
+          "stop('An HTML comment is not an executable cell')",
+          "```",
+          "-->",
+          "",
+          "```{python}",
+          "raise RuntimeError('A Python cell must not run in the R document process')",
+          "```",
+          "",
+          "```{r disabled, eval=FALSE}",
+          "stop('A disabled R cell must not run')",
+          "```",
+          ""
+        ];
+  const sourceBytes = Buffer.from(sourceLines.join("\n"), "utf8");
   const csvBytes = Buffer.from(
     [
       "order_id,market,score,order_date",
@@ -1844,7 +1891,7 @@ function writeReleasedRLiterateDocumentFixture(
   return {
     kind,
     sourceUri: vscode.Uri.file(sourcePath),
-    processIdPath,
+    ...(kind === "rmarkdown" ? { processIdPath } : {}),
     variableName,
     immutableFiles: [
       { path: sourcePath, bytes: sourceBytes },
@@ -1954,6 +2001,7 @@ async function exerciseReleasedRJupyterExtension(
     phase === "jupyter-r" && process.platform === "linux"
       ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
       : undefined;
+  let ranRDocumentJourney = false;
   writeReleasedRNotebook(notebookPath, phase);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
@@ -1978,6 +2026,7 @@ async function exerciseReleasedRJupyterExtension(
     const setup = releasedNotebookJsonResult(notebook.cellAt(0), RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
     assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
     assertReleasedRVersion(setup, kernelTarget, "R setup");
+    assert.equal(setup.collapseVersion, "2.1.7");
     assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
     if (kernelTarget.remote) {
       assert.equal(setup.remoteRunId, kernelTarget.remote.runId);
@@ -2003,13 +2052,23 @@ async function exerciseReleasedRJupyterExtension(
       for (const [name, flavor] of [
         ["orders_frame", "data.frame"],
         ["orders_tibble", "tibble"],
-        ["orders_table", "data.table"]
+        ["orders_table", "data.table"],
+        ["collapse_frame", "data.frame"],
+        ["collapse_tibble", "tibble"],
+        ["collapse_table", "data.table"]
       ] as const) {
         const row = await releasedJupyterQuickPickRow(picker, name);
         assert.ok(row, `The real R variable picker must expose ${name}.`);
         assert.match(
           (await row.innerText()).replace(/\s+/gu, " "),
           new RegExp(`R · ${flavor}.*Live notebook session`, "u")
+        );
+      }
+      for (const name of ["collapse_grouped", "collapse_indexed"] as const) {
+        assert.equal(
+          await releasedJupyterQuickPickRow(picker, name),
+          undefined,
+          `The real R variable picker must omit unsupported ${name}.`
         );
       }
       if (screenshotOutput) await captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput);
@@ -2020,7 +2079,7 @@ async function exerciseReleasedRJupyterExtension(
       await restorePickerWorkbench?.();
     }
 
-    const base = await waitForReleasedVariableSession(
+    let base = await waitForReleasedVariableSession(
       workbench,
       testing,
       notebook,
@@ -2048,47 +2107,8 @@ async function exerciseReleasedRJupyterExtension(
       columnValues: true,
       supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS
     });
-    await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
-    await disposePackagedSessionPanel(testing, base.sessionId, "the orders R data.frame session");
-
-    if (phase === "jupyter-r") {
-      await exerciseReleasedRDocumentJourney(testing, workbench, directory);
-      assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
-    }
-
-    await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
-    await showExactReleasedNotebook(notebook);
-    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
-    const editing = await waitForReleasedVariableSession(
-      workbench,
-      testing,
-      notebook,
-      {
-        name: "orders_frame",
-        type: "data.frame",
-        backend: "r",
-        rDataframeFlavor: "r.data.frame",
-        firstValue: "1",
-        notebookInsert: true
-      },
-      "the orders R data.frame opened in editing mode"
-    );
-    await exerciseReleasedREditingJourney(
-      testing,
-      workbench,
-      editing.sessionId,
-      notebook,
-      notebookPath,
-      directory,
-      phase,
-      screenshotOutput
-    );
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-editing-journey`);
-    await disposePackagedSessionPanel(testing, editing.sessionId, "the editable orders R data.frame session");
-    await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
-
     if (screenshotOutput) {
+      await disposePackagedSessionPanel(testing, base.sessionId, "the initial R data.frame before media capture");
       const mediaEditor = await showExactReleasedNotebook(notebook);
       await executeReleasedNotebookCell(
         notebook,
@@ -2119,8 +2139,154 @@ async function exerciseReleasedRJupyterExtension(
         "the representative R orders session"
       );
       await captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput);
+      await captureReleasedRNotebookGroupByDraft(workbench, testing, mediaSession.sessionId, screenshotOutput);
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-after-capture`);
       await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
+
+      if (supportsRDocumentExecution(process.platform)) {
+        await exerciseReleasedRDocumentJourney(testing, workbench, directory, screenshotOutput);
+        ranRDocumentJourney = true;
+        assert.equal(testing.diagnostics().sessionCount, 0, "The R document journey must release its processes.");
+      }
+
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
+      base = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "orders_frame",
+          type: "data.frame",
+          backend: "r",
+          rDataframeFlavor: "r.data.frame",
+          firstValue: "1",
+          notebookInsert: true
+        },
+        "the orders R data.frame reopened after media capture"
+      );
+      await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page-after-media`);
+    }
+    await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
+    const viewingStateBeforeEditing = testing.activeSession()?.viewState;
+    assert.ok(viewingStateBeforeEditing, "The R mode switch requires the confirmed Viewing-mode presentation.");
+    assert.deepEqual(
+      viewingStateBeforeEditing.filterModel.sort.map((rule) => rule.column),
+      ["group", "score"],
+      "The R mode switch acceptance must begin with a real compound sort to prove view replay."
+    );
+    const viewingRevision = testing.activeSession()?.metadata.revision;
+    assert.ok(viewingRevision !== undefined);
+    assertExactOpenNotebookDocument(notebook, "before switching the live R variable to Editing mode");
+    let editingApp = await releasedRSessionApp(workbench, testing, base.sessionId, "the viewing R session");
+    const switchToEditing = editingApp.getByRole("button", { name: "Switch to Editing", exact: true });
+    await switchToEditing.waitFor({ state: "visible", timeout: 10_000 });
+    recordAcceptanceProgress(`${phase}:editing:switch`);
+    await switchToEditing.click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === base.sessionId &&
+          active.metadata.mode === "editing" &&
+          active.metadata.revision > viewingRevision &&
+          active.viewState.filterModel.sort.map((rule) => rule.column).join(",") === "group,score"
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the exact live R session to reopen in Editing mode with its view intact",
+      () => JSON.stringify(testing.diagnostics())
+    );
+    assertExactOpenNotebookDocument(notebook, "after switching the live R variable to Editing mode");
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      base.sessionId,
+      "The Editing-mode R session must acknowledge its atomically replaced runtime."
+    );
+    editingApp = await releasedRSessionApp(workbench, testing, base.sessionId, "the switched R session");
+    assert.equal(await editingApp.getByRole("button", { name: "Switch to Editing", exact: true }).count(), 0);
+    assert.equal((await editingApp.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
+    await editingApp.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+    const editingDrawer = editingApp.getByRole("complementary", {
+      name: "Column profiles and filters",
+      exact: true
+    });
+    await editingDrawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+    await editingDrawer.getByRole("button", { name: "Clear all", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === base.sessionId &&
+          active.viewState.filterModel.filters.length === 0 &&
+          active.viewState.filterModel.sort.length === 0
+        );
+      },
+      30_000,
+      "clearing the replayed R view before the cleaning journey"
+    );
+    await editingDrawer.getByRole("button", { name: "Close panel" }).click();
+    await exerciseReleasedREditingJourney(
+      testing,
+      workbench,
+      base.sessionId,
+      notebook,
+      notebookPath,
+      directory,
+      phase,
+      screenshotOutput
+    );
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-editing-journey`);
+    await disposePackagedSessionPanel(testing, base.sessionId, "the editable orders R data.frame session");
+
+    const collapseFrames = [
+      {
+        name: "collapse_frame",
+        factory: "qDF",
+        type: "data.frame",
+        backend: "r" as const,
+        rDataframeFlavor: "r.data.frame" as const,
+        firstValue: "1",
+        notebookInsert: true
+      },
+      {
+        name: "collapse_tibble",
+        factory: "qTBL",
+        type: "tbl_df",
+        backend: "r" as const,
+        rDataframeFlavor: "r.tibble" as const,
+        firstValue: "1",
+        notebookInsert: true
+      },
+      {
+        name: "collapse_table",
+        factory: "qDT",
+        type: "data.table",
+        backend: "r" as const,
+        rDataframeFlavor: "r.data.table" as const,
+        firstValue: "1",
+        notebookInsert: true
+      }
+    ] as const;
+    for (const expected of collapseFrames) {
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+      const session = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        expected,
+        `the collapse::${expected.factory}() session`
+      );
+      assert.deepEqual(session.metadata.shape, { rows: 1_205, columns: 25 });
+      await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
+      await disposePackagedSessionPanel(testing, session.sessionId, `the collapse::${expected.factory}() session`);
+    }
+
+    if (phase === "jupyter-r" && supportsRDocumentExecution(process.platform) && !ranRDocumentJourney) {
+      await exerciseReleasedRDocumentJourney(testing, workbench, directory, screenshotOutput);
+      assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
     }
 
     const additionalRFrames = [
@@ -2286,6 +2452,7 @@ async function exerciseReleasedRJupyterExtension(
     );
     assert.notEqual(Number(replacementSetup.pid), Number(setup.pid));
     assertReleasedRVersion(replacementSetup, kernelTarget, "replacement R setup");
+    assert.equal(replacementSetup.collapseVersion, "2.1.7");
     if (kernelTarget.remote) {
       assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
       assert.equal(replacementSetup.hostname, kernelTarget.remote.hostname);
@@ -2343,7 +2510,12 @@ async function exerciseReleasedRJupyterExtension(
   if (acceptanceError) throw acceptanceError.value;
 }
 
-async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Page, directory: string): Promise<void> {
+async function exerciseReleasedRDocumentJourney(
+  testing: TestApi,
+  workbench: Page,
+  directory: string,
+  screenshotOutput?: string
+): Promise<void> {
   recordAcceptanceProgress("jupyter-r:document:create");
   assert.equal(vscode.workspace.isTrusted, true, "Running a plain R file requires the trusted packaged workspace.");
   assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must start without another session.");
@@ -2407,7 +2579,7 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
       lazy: false,
       cancel: false,
       exportCsv: true,
-      exportParquet: false,
+      exportParquet: true,
       filter: true,
       sort: true,
       profile: true,
@@ -2472,12 +2644,15 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
     assertReleasedRGeneratedCode(generatedCode, "record_id", "orders_frame");
     assert.equal(applied.metadata.capabilities.documentInsert, true);
     assert.equal(applied.metadata.capabilities.notebookInsert, false);
+    assert.equal(applied.metadata.capabilities.exportCsv, true);
+    assert.equal(applied.metadata.capabilities.exportParquet, true);
 
     recordAcceptanceProgress("jupyter-r:document:export-cleaned-csv");
     app = await releasedRSessionApp(workbench, testing, opened.sessionId, "the applied plain R session before export");
     await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-document-export-"));
     const exportPath = path.join(exportDirectory, "orders-cleaned.csv");
+    const parquetExportPath = path.join(exportDirectory, "orders-cleaned.parquet");
     try {
       await exportCleanedDataThroughCommand(workbench, exportPath);
       await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R CSV export to appear");
@@ -2486,15 +2661,18 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
         releasedRDocumentCleanedCsv(),
         "The public R export command must write every cleaned row and the renamed schema."
       );
+      await exportCleanedDataThroughCommand(workbench, parquetExportPath, "parquet");
+      await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R Parquet export to appear");
+      assertParquetFile(parquetExportPath, "The public R document export");
       assert.deepEqual(
-        readdirSync(exportDirectory),
-        [path.basename(exportPath)],
-        "The R CSV export must not retain a sibling temporary file."
+        readdirSync(exportDirectory).sort(),
+        [path.basename(exportPath), path.basename(parquetExportPath)].sort(),
+        "R document exports must not retain sibling temporary files."
       );
       assert.deepEqual(
         readdirSync(path.join(processRoot, "exports")),
         [],
-        "The R process must remove its private export artifact after the host has copied it."
+        "The R process must remove its private export artifacts after the host has copied them."
       );
       assert.equal(sourceDocument.getText(), sourceTextBefore, "Export must not edit the open R source document.");
       assert.equal(
@@ -2690,13 +2868,14 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
       }
     }
   }
-  await exerciseReleasedRLiterateDocumentJourneys(testing, workbench, directory);
+  await exerciseReleasedRLiterateDocumentJourneys(testing, workbench, directory, screenshotOutput);
 }
 
 async function exerciseReleasedRLiterateDocumentJourneys(
   testing: TestApi,
   workbench: Page,
-  directory: string
+  directory: string,
+  screenshotOutput?: string
 ): Promise<void> {
   const fixtures = [
     writeReleasedRLiterateDocumentFixture(directory, "rmarkdown"),
@@ -2732,7 +2911,7 @@ async function exerciseReleasedRLiterateDocumentJourneys(
       assert.equal(vscode.window.activeTextEditor?.document, document);
 
       if (fixture.kind === "quarto") {
-        await invokeReleasedRDocumentTitleAction(workbench, fixture.sourceUri, fixture.variableName);
+        await invokeReleasedRDocumentTitleAction(workbench, fixture.sourceUri, fixture.variableName, screenshotOutput);
       } else {
         await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, fixture.variableName, false);
       }
@@ -2758,9 +2937,11 @@ async function exerciseReleasedRLiterateDocumentJourneys(
         `jupyter-r-document-${fixture.kind}-page`
       );
       assert.equal(page.metadata.backend, "r");
-      const processId = readReleasedRDocumentProcessId(fixture.processIdPath);
-      liveProcessIds.add(processId);
-      assert.equal(acceptanceProcessIsAlive(processId), true);
+      const processId = fixture.processIdPath ? readReleasedRDocumentProcessId(fixture.processIdPath) : undefined;
+      if (processId !== undefined) {
+        liveProcessIds.add(processId);
+        assert.equal(acceptanceProcessIsAlive(processId), true);
+      }
 
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:hydrate-panel`);
       await requireFreshExactSessionPanelHydration(
@@ -2853,8 +3034,10 @@ async function exerciseReleasedRLiterateDocumentJourneys(
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:close`);
       await disposePackagedSessionPanel(testing, opened.sessionId, `the ${fixture.kind} document session`);
       openSessionIds.delete(opened.sessionId);
-      await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, `the ${fixture.kind} R process to stop`);
-      liveProcessIds.delete(processId);
+      if (processId !== undefined) {
+        await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, `the ${fixture.kind} R process to stop`);
+        liveProcessIds.delete(processId);
+      }
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:revert`);
       await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
       await withBoundedAcceptancePromise(
@@ -2936,34 +3119,211 @@ async function exerciseReleasedRLiterateDocumentJourneys(
   if (acceptanceError) throw acceptanceError.value;
 }
 
-async function invokeReleasedRDocumentTitleAction(
+async function prepareReleasedRDocumentScreenshotWorkbench(
   workbench: Page,
   source: vscode.Uri,
   variableName: string
-): Promise<void> {
-  await workbench.bringToFront();
-  const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
-  const action = activeGroup.getByRole("button", { name: /Run(?: R Document)? in Open Wrangler/u }).first();
-  if ((await action.count()) > 0 && (await action.isVisible())) {
-    await action.click();
-  } else {
-    const more = activeGroup.locator('[aria-label="More Actions..."]:visible').first();
-    await more.click();
-    const menuItem = workbench
-      .locator('.context-view.monaco-menu-container [role="menuitem"]:visible')
-      .filter({ hasText: /Run(?: R Document)? in Open Wrangler/u })
-      .first();
-    await menuItem.waitFor({ state: "visible", timeout: 10_000 });
-    await menuItem.click();
+): Promise<() => Promise<void>> {
+  if (process.platform !== "linux") return async () => {};
+  const previousViewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  const previousThemeKind = vscode.window.activeColorTheme.kind;
+  const workbenchConfiguration = vscode.workspace.getConfiguration("workbench");
+  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
+  const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const settings = [
+    { configuration: windowConfiguration, key: "autoDetectColorScheme" },
+    { configuration: windowConfiguration, key: "autoDetectHighContrast" },
+    { configuration: windowConfiguration, key: "commandCenter" },
+    { configuration: windowConfiguration, key: "title" },
+    { configuration: workbenchConfiguration, key: "colorTheme" },
+    { configuration: workbenchConfiguration, key: "statusBar.visible" },
+    { configuration: breadcrumbs, key: "enabled" }
+  ] as const;
+  const previousSettings = settings.map(({ configuration, key }) => ({
+    configuration,
+    key,
+    value: configuration.inspect(key)?.globalValue
+  }));
+  const restore = async () => {
+    for (const { configuration, key, value } of [...previousSettings].reverse()) {
+      await configuration.update(key, value, vscode.ConfigurationTarget.Global);
+    }
+    await workbench.setViewportSize(previousViewport);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === previousThemeKind,
+      10_000,
+      "the Quarto workbench to restore its prior color theme"
+    );
+    await workbench.waitForTimeout(500);
+  };
+
+  try {
+    await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    assert.deepEqual(
+      await workbench.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+      "The Quarto picker scene requires the standard 1440 by 900 editor viewport."
+    );
+    await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update(
+      "title",
+      "${activeEditorShort}${separator}Open Wrangler",
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update(
+      "colorTheme",
+      releasedJupyterScreenshotTheme(),
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+      10_000,
+      "the dark Quarto screenshot theme"
+    );
+    await closeVisibleWorkbenchPart(workbench, ".part.sidebar", [
+      "workbench.action.closeSidebar",
+      "workbench.action.toggleSidebarVisibility"
+    ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.auxiliarybar", [
+      "workbench.action.closeAuxiliaryBar",
+      "workbench.action.toggleAuxiliaryBar"
+    ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.panel", [
+      "workbench.action.closePanel",
+      "workbench.action.togglePanel"
+    ]);
+    await clearReleasedJupyterScreenshotTransientUi(workbench);
+
+    const matches = vscode.workspace.textDocuments.filter((document) => document.uri.toString() === source.toString());
+    assert.equal(matches.length, 1, "Quarto media capture requires one exact open source document.");
+    const document = matches[0]!;
+    const editor = await vscode.window.showTextDocument(document, {
+      preview: false,
+      viewColumn: vscode.ViewColumn.One
+    });
+    const dataLine = document
+      .getText()
+      .split("\n")
+      .findIndex((line) => line.includes(`${variableName} <-`));
+    assert.ok(dataLine >= 0, "The Quarto media fixture must contain its dataframe construction line.");
+    editor.selection = new vscode.Selection(dataLine, 0, dataLine, 0);
+    editor.revealRange(
+      new vscode.Range(Math.max(0, dataLine - 4), 0, dataLine + 3, 0),
+      vscode.TextEditorRevealType.InCenter
+    );
+    await workbench.waitForTimeout(500);
+    return restore;
+  } catch (error) {
+    await restore();
+    throw error;
   }
-  const title = `Open Wrangler: Choose a dataframe from ${path.basename(source.fsPath)}`;
-  const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
-  await picker.waitFor({ state: "visible", timeout: 30_000 });
-  const input = picker.locator(".quick-input-box input:visible").first();
-  await input.fill(variableName);
-  const row = await releasedJupyterQuickPickRow(picker, variableName);
-  assert.ok(row, `The R document title action did not expose ${JSON.stringify(variableName)}.`);
-  await row.click();
+}
+
+async function invokeReleasedRDocumentTitleAction(
+  workbench: Page,
+  source: vscode.Uri,
+  variableName: string,
+  screenshotOutput?: string
+): Promise<void> {
+  const captureScreenshot = screenshotOutput !== undefined && process.platform === "linux";
+  const restore = captureScreenshot
+    ? await prepareReleasedRDocumentScreenshotWorkbench(workbench, source, variableName)
+    : async () => {};
+  try {
+    await workbench.bringToFront();
+    const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
+    const action = activeGroup.getByRole("button", { name: /Run(?: R Document)? in Open Wrangler/u }).first();
+    if ((await action.count()) > 0 && (await action.isVisible())) {
+      await action.click();
+    } else {
+      const more = activeGroup.locator('[aria-label="More Actions..."]:visible').first();
+      await more.click();
+      const menuItem = workbench
+        .locator('.context-view.monaco-menu-container [role="menuitem"]:visible')
+        .filter({ hasText: /Run(?: R Document)? in Open Wrangler/u })
+        .first();
+      await menuItem.waitFor({ state: "visible", timeout: 10_000 });
+      await menuItem.click();
+    }
+    const title = `Open Wrangler: Choose a dataframe from ${path.basename(source.fsPath)}`;
+    const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
+    await picker.waitFor({ state: "visible", timeout: 30_000 });
+    const input = picker.locator(".quick-input-box input:visible").first();
+    await input.fill(variableName);
+    const row = await releasedJupyterQuickPickRow(picker, variableName);
+    assert.ok(row, `The R document title action did not expose ${JSON.stringify(variableName)}.`);
+    if (captureScreenshot) {
+      const commands = new Set(await vscode.commands.getCommands(true));
+      assert.ok(commands.has("notifications.hideToasts"), "Quarto media capture requires toast hiding support.");
+      await vscode.commands.executeCommand("notifications.hideToasts");
+      await workbench
+        .locator(".notifications-toasts .notification-toast:visible")
+        .first()
+        .waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+      await assertReleasedNotebookVariablePickerGeometry(picker, [variableName]);
+      await assertReleasedRDocumentPickerMediaGeometry(workbench, picker, variableName);
+      mkdirSync(screenshotOutput, { recursive: true });
+      recordAcceptanceProgress("jupyter-r:screenshot:quarto-picker");
+      await captureNotebookWorkbenchScreenshot(
+        workbench,
+        path.resolve(
+          screenshotOutput,
+          packagedScreenshotFileName(
+            process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor",
+            "r-quarto-variable-picker",
+            "dark"
+          )
+        )
+      );
+    }
+    await row.click();
+    await picker.waitFor({ state: "hidden", timeout: 10_000 });
+  } finally {
+    await restore();
+  }
+}
+
+async function assertReleasedRDocumentPickerMediaGeometry(
+  workbench: Page,
+  picker: Locator,
+  variableName: string
+): Promise<void> {
+  const sourceLine = workbench
+    .locator(".part.editor .editor-group-container.active .view-lines .view-line:visible")
+    .filter({ hasText: `${variableName} <-` })
+    .first();
+  await sourceLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  const [lineText, lineBounds, pickerBounds] = await Promise.all([
+    sourceLine.innerText(),
+    sourceLine.boundingBox(),
+    picker.boundingBox()
+  ]);
+  assert.match(lineText, new RegExp(`${variableName}\\s*<-\\s*utils::read\\.csv`, "u"));
+  assert.ok(lineBounds, "The Quarto picker scene requires a measurable dataframe source line.");
+  assert.ok(pickerBounds, "The Quarto picker scene requires a measurable picker.");
+  const crop = { left: 80, top: 20, right: 1_360, bottom: 540 };
+  for (const [subject, bounds] of [
+    ["source line", lineBounds],
+    ["picker", pickerBounds]
+  ] as const) {
+    assert.ok(
+      bounds.x >= crop.left &&
+        bounds.y >= crop.top &&
+        bounds.x + bounds.width <= crop.right &&
+        bounds.y + bounds.height <= crop.bottom,
+      `The Quarto ${subject} must fit inside the README detail crop: ${JSON.stringify(bounds)}.`
+    );
+  }
 }
 
 async function invokeReleasedRDocumentVariable(
@@ -3114,8 +3474,8 @@ async function exerciseReleasedRDocumentGrid(testing: TestApi, workbench: Page, 
     "the plain R group filter"
   );
   await drawer.getByRole("button", { name: "Close panel" }).click();
-  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
-  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
   const active = testing.activeSession();
   assert.ok(active, "The sorted plain R session must remain active.");
   const first = await testing.request({
@@ -3463,8 +3823,8 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     .filter({ hasText: "value-20-1205" })
     .waitFor({ state: "visible", timeout: 10_000 });
 
-  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
-  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
   const scoreFirst = await testing.request({
     kind: "getPage",
     ...GRID_COLUMN_WINDOW,
@@ -3647,8 +4007,8 @@ async function exerciseReleasedRPersistentRowsJourney(
     "the R group viewing filter"
   );
   await drawer.getByRole("button", { name: "Close panel" }).click();
-  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
-  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
   active = testing.activeSession();
   assert.ok(active, "The R persistent-filter journey requires its active view.");
   assert.equal(active.metadata.shape.rows, 1_205);
@@ -4156,7 +4516,12 @@ async function exerciseReleasedRFillMissingJourney(
   assert.deepEqual(await fillMode.locator("option").allTextContents(), [
     "Median",
     "Mean",
-    "Other columns (first available)",
+    "Median within groups",
+    "Mean within groups",
+    "Linear interpolation",
+    "Previous value",
+    "Next value",
+    "Fallback columns (same row)",
     "Specific value"
   ]);
   await fillMode.selectOption("mean");
@@ -4441,7 +4806,7 @@ async function exerciseReleasedREditingJourney(
     lazy: false,
     cancel: false,
     exportCsv: true,
-    exportParquet: false,
+    exportParquet: true,
     notebookInsert: true,
     filter: true,
     sort: true,
@@ -4498,10 +4863,6 @@ async function exerciseReleasedREditingJourney(
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R session after discarding its draft");
   const previewed = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
   app = previewed.app;
-  if (screenshotOutput) {
-    await captureReleasedRNotebookRenameDraft(workbench, testing, sessionId, screenshotOutput);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the captured R rename draft");
-  }
   await app
     .getByRole("region", { name: "Draft review" })
     .getByRole("button", { name: "Apply step", exact: true })
@@ -4534,7 +4895,7 @@ async function exerciseReleasedREditingJourney(
   assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
   assert.equal(firstApplied.metadata.capabilities.notebookInsert, true);
   assert.equal(firstApplied.metadata.capabilities.exportCsv, true);
-  assert.equal(firstApplied.metadata.capabilities.exportParquet, false);
+  assert.equal(firstApplied.metadata.capabilities.exportParquet, true);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
   await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
 
@@ -4568,8 +4929,8 @@ async function exerciseReleasedREditingJourney(
     "the R notebook export viewing filter"
   );
   await exportDrawer.getByRole("button", { name: "Close panel" }).click();
-  await applyReleasedRQuickSort(app, testing, "group", "ascending", ["group"]);
-  await applyReleasedRQuickSort(app, testing, "score", "descending", ["score", "group"]);
+  await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+  await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
   const exportView = testing.activeSession();
   assert.ok(exportView, "The filtered R notebook export requires its exact active session.");
   assert.equal(exportView.sessionId, sessionId);
@@ -4591,10 +4952,14 @@ async function exerciseReleasedREditingJourney(
   assert.equal(exportedLines[1], releasedRNotebookCleanedCsvRow(1));
   assert.equal(exportedLines[2], releasedRNotebookCleanedCsvRow(2));
   assert.equal(exportedLines[1_205], releasedRNotebookCleanedCsvRow(1_205));
+  const parquetExportPath = path.join(outputDirectory, `${phase}.orders.clean.parquet`);
+  await exportCleanedDataThroughCommand(workbench, parquetExportPath, "parquet");
+  await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R notebook Parquet export to appear");
+  assertParquetFile(parquetExportPath, "The public R notebook export");
   assert.deepEqual(
     readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
     [],
-    "The R notebook CSV export must not retain a sibling temporary file."
+    "R notebook exports must not retain a sibling temporary file."
   );
   assert.deepEqual(
     testing.activeSession()?.viewState.filterModel,
@@ -4613,7 +4978,7 @@ async function exerciseReleasedREditingJourney(
     notebookBytesBeforeExport,
     "Export must not change the notebook on disk."
   );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after CSV export");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after data export");
   await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
   exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
@@ -5764,8 +6129,12 @@ async function exerciseReleasedREditingJourney(
     app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Capitalize session");
     await app.getByRole("button", { name: "Undo", exact: true }).click();
     await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Capitalize");
+
+    await exerciseReleasedRGroupByJourney(testing, workbench, sessionId);
   }
 
+  // Coordinator-only checks intentionally follow the final Open Wrangler
+  // renderer mutation so their newer revisions cannot stale a later UI action.
   recordAcceptanceProgress(`${phase}:editing:lowercase-preview-apply-undo`);
   const lowercaseBase = testing.activeSession();
   assert.ok(lowercaseBase, "The restored R session must remain available for Lowercase.");
@@ -5864,8 +6233,7 @@ async function exerciseReleasedREditingJourney(
     assert.equal(uppercaseUndo.kind, "planUpdated", "Packaged native R Uppercase must undo.");
     if (uppercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Uppercase undo failed.");
     assert.equal(uppercaseUndo.page.rows[0]?.values[0]?.display, "row-0001");
-    // These direct coordinator checks intentionally follow the final Open Wrangler
-    // renderer mutation so their newer revisions cannot leave a later UI action stale.
+
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
   }
@@ -5885,6 +6253,109 @@ async function exerciseReleasedREditingJourney(
       }
     );
   }
+}
+
+async function exerciseReleasedRGroupByJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  recordAcceptanceProgress("jupyter-r:editing:group-by-preview-apply-undo");
+  const groupBase = testing.activeSession();
+  assert.ok(groupBase, "The restored R session must remain available for Group and aggregate.");
+  assert.equal(groupBase.metadata.steps.length, 0);
+  assert.equal(groupBase.metadata.draftStep, undefined);
+  const groupKeyColumn = groupBase.metadata.schema.find((column) => column.name === "group");
+  const groupedScoreColumn = groupBase.metadata.schema.find((column) => column.name === "score");
+  assert.ok(groupKeyColumn, "The packaged R Group and aggregate journey requires the group column.");
+  assert.ok(groupedScoreColumn, "The packaged R Group and aggregate journey requires the score column.");
+
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Group and aggregate");
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const groupDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await groupDialog.getByPlaceholder("Search operations").fill("group");
+  await groupDialog.getByRole("button", { name: /^Group and aggregate\b/u }).click();
+  await groupDialog
+    .getByRole("group", { name: "Group keys", exact: true })
+    .getByRole("checkbox", { name: "group", exact: true })
+    .check();
+  await groupDialog.getByLabel("Value 1", { exact: true }).selectOption(groupedScoreColumn.id);
+  await groupDialog.getByLabel("Calculation 1", { exact: true }).selectOption("sum");
+  await groupDialog.getByLabel("Output name", { exact: true }).fill("total_score");
+  await groupDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep?.kind === "groupBy" &&
+        active.metadata.schema.map((column) => column.name).join(",") === "group,total_score"
+      );
+    },
+    30_000,
+    "previewing native R Group and aggregate through its visible form"
+  );
+  const groupPreview = testing.activeSession();
+  assert.ok(groupPreview?.metadata.draftStep?.kind === "groupBy");
+  assert.deepEqual(groupPreview.metadata.draftStep.params.keys, [{ id: groupKeyColumn.id, name: groupKeyColumn.name }]);
+  assert.deepEqual(groupPreview.metadata.draftStep.params.aggregations, [
+    {
+      column: { id: groupedScoreColumn.id, name: groupedScoreColumn.name },
+      operation: "sum",
+      alias: "total_score"
+    }
+  ]);
+  assert.match(groupPreview.code ?? "", /\.ow_group_by\b/u);
+  assert.match(groupPreview.code ?? "", /total_score/u);
+  assert.doesNotMatch(groupPreview.code ?? "", /\b(?:pandas|polars|python)\b/iu);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The R Group and aggregate preview must reach its renderer."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Group and aggregate preview");
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByText("Group and aggregate", { exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  const totalScoreColumn = groupPreview.metadata.schema.find((column) => column.name === "total_score");
+  assert.ok(totalScoreColumn, "The R Group and aggregate preview must expose its total_score output.");
+  await waitForLocatorText(
+    app.locator(`td[data-grid-row="0"][data-grid-column="${totalScoreColumn.position}"]`),
+    (text) => text.trim() === "181503",
+    10_000,
+    "the first visible R grouped sum"
+  );
+  await waitForLocatorText(
+    app.locator(`td[data-grid-row="1"][data-grid-column="${totalScoreColumn.position}"]`),
+    (text) => text.trim() === "545112",
+    10_000,
+    "the second visible R grouped sum"
+  );
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return active?.metadata.steps.length === 1 && active.metadata.steps[0]?.kind === "groupBy";
+    },
+    30_000,
+    "applying native R Group and aggregate"
+  );
+  await requireFreshExactSessionPanelHydration(testing, sessionId, "Applied R Group and aggregate must settle.");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Group and aggregate session");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema.some((column) => column.id === groupedScoreColumn.id)
+      );
+    },
+    30_000,
+    "undoing native R Group and aggregate"
+  );
 }
 
 async function previewReleasedRSortRows(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
@@ -6586,7 +7057,7 @@ function assertReleasedRSelectGeneratedCode(
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 
-async function captureReleasedRNotebookRenameDraft(
+async function captureReleasedRNotebookGroupByDraft(
   workbench: Page,
   testing: TestApi,
   sessionId: string,
@@ -6643,29 +7114,102 @@ async function captureReleasedRNotebookRenameDraft(
       "workbench.action.closeAuxiliaryBar",
       "workbench.action.toggleAuxiliaryBar"
     ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.panel", [
+      "workbench.action.closePanel",
+      "workbench.action.togglePanel"
+    ]);
 
+    let app = await releasedRSessionApp(workbench, testing, sessionId, "the R media session before editing");
+    const viewing = testing.activeSession();
+    assert.equal(viewing?.sessionId, sessionId, "The R editing screenshot must retain its exact live session.");
+    assert.ok(viewing, "The R editing screenshot requires one active session.");
+    assert.equal(viewing.metadata.backend, "r");
+    assert.equal(viewing.metadata.rDataframeFlavor, "r.data.frame");
+    assert.equal(viewing.metadata.mode, "viewing");
+    assert.equal(viewing.metadata.source.kind, "notebookVariable");
+    assert.equal(viewing.metadata.source.variableName, "regional_orders");
+
+    await app.getByRole("button", { name: "Switch to Editing", exact: true }).click();
+    await waitFor(
+      () => testing.activeSession()?.sessionId === sessionId && testing.activeSession()?.metadata.mode === "editing",
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "switching the representative R notebook dataframe to Editing mode"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The representative R editing renderer must acknowledge the reopened live session."
+    );
+
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the representative R editing session");
+    const profileToggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });
+    if ((await profileToggle.getAttribute("aria-expanded")) !== "true") await profileToggle.click();
+    const drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+    await drawer.getByRole("button", { name: "Clear all", exact: true }).click();
+    await waitFor(
+      () => {
+        const current = testing.activeSession();
+        return current?.viewState.filterModel.filters.length === 0 && current.viewState.filterModel.sort.length === 0;
+      },
+      30_000,
+      "clearing the representative R view before Group and aggregate"
+    );
+    await drawer.getByRole("button", { name: "Close panel", exact: true }).click();
+    await drawer.waitFor({ state: "hidden", timeout: 10_000 });
+
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R media session before its Group By draft");
+    await app.getByRole("button", { name: "Add step", exact: true }).click();
+    const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    await dialog.getByPlaceholder("Search operations").fill("group");
+    await dialog.getByRole("button", { name: /^Group and aggregate\b/u }).click();
+    const groupKeys = dialog.getByRole("group", { name: "Group keys", exact: true });
+    await groupKeys.getByRole("checkbox", { name: "market", exact: true }).check();
+    await groupKeys.getByRole("checkbox", { name: "channel", exact: true }).check();
+    const editing = testing.activeSession();
+    assert.ok(editing, "The representative R Group By form requires one active session.");
+    const revenue = columnReference(editing.metadata, "revenue");
+    await dialog.getByLabel("Value 1", { exact: true }).selectOption(revenue.id);
+    await dialog.getByLabel("Calculation 1", { exact: true }).selectOption("sum");
+    await dialog.getByLabel("Output name", { exact: true }).fill("total_revenue");
+    await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const current = testing.activeSession();
+        return (
+          current?.sessionId === sessionId &&
+          current.metadata.draftStep?.kind === "groupBy" &&
+          current.metadata.schema.map((column) => column.name).join(",") === "market,channel,total_revenue"
+        );
+      },
+      30_000,
+      "previewing the representative R Group and aggregate draft"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The representative R Group By draft must reach its exact renderer."
+    );
     const active = testing.activeSession();
-    assert.equal(active?.sessionId, sessionId, "The R editing screenshot must retain its exact live session.");
-    assert.ok(active, "The R editing screenshot requires one active session.");
-    assert.equal(active.metadata.backend, "r");
-    assert.equal(active.metadata.rDataframeFlavor, "r.data.frame");
-    assert.equal(active.metadata.mode, "editing");
-    assert.equal(active.metadata.source.kind, "notebookVariable");
-    assert.equal(active.metadata.source.variableName, "orders_frame");
-    const draft = active.metadata.draftStep;
-    assert.ok(draft && draft.kind === "renameColumn", "The R editing screenshot requires a Rename Column draft.");
-    assert.equal(draft.params.newName, "record_id");
-    assert.equal(active.metadata.schema[0]?.name, "record_id");
+    assert.ok(active?.metadata.draftStep?.kind === "groupBy");
+    assert.deepEqual(active.metadata.shape, { rows: 12, columns: 3 });
+    assert.deepEqual(
+      active.metadata.draftStep.params.keys.map((column) => column.name),
+      ["market", "channel"]
+    );
+    assert.deepEqual(active.metadata.draftStep.params.aggregations, [
+      { column: revenue, operation: "sum", alias: "total_revenue" }
+    ]);
     assert.equal(await testing.synchronizePanel(sessionId), true);
 
-    const firstColumns = active.metadata.schema.slice(0, 4);
+    const firstColumns = active.metadata.schema;
     const firstColumn = firstColumns[0];
     assert.ok(firstColumn, "The R editing screenshot requires at least one visible column.");
     await testing.updateViewState(sessionId, {
       ...active.viewState,
       columnWidths: {
         ...active.viewState.columnWidths,
-        ...Object.fromEntries(firstColumns.map((column) => [column.id, 190]))
+        ...Object.fromEntries(firstColumns.map((column) => [column.id, column.name === "total_revenue" ? 240 : 190]))
       },
       selectedColumnId: firstColumn.id,
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
@@ -6673,19 +7217,26 @@ async function captureReleasedRNotebookRenameDraft(
     assert.equal(await testing.synchronizePanel(sessionId), true);
 
     await vscode.commands.executeCommand("openWrangler.codePreview.focus");
-    const codePreview = await waitForCodePreview(workbench, "record_id", "R");
-    assertReleasedRGeneratedCode(await codePreview.innerText(), "record_id");
+    const codePreview = await waitForCodePreview(workbench, "open_wrangler_result <- local", "R");
+    const generatedCode = active.code ?? "";
+    assert.match(generatedCode, /\.ow_group_by\b/u);
+    assert.match(generatedCode, /total_revenue/u);
+    assert.doesNotMatch(generatedCode, /\b(?:pandas|polars|python)\b/iu);
     const sidebar = await arrangePackagedProductSidebar(workbench, "workflow");
     await sidebar
       .getByRole("tree", { name: /Cleaning Steps/u })
-      .getByRole("treeitem", { name: /^Draft · Rename column/u })
+      .getByRole("treeitem", { name: /^Draft · Group and aggregate/u })
       .waitFor({ state: "visible", timeout: 10_000 });
+    await ensureCodePreviewHeight(workbench, 180);
+    await revealCodePreviewOperationLine(codePreview, ".ow_result <- .ow_group_by", "total_revenue");
 
-    const app = await releasedRSessionApp(workbench, testing, sessionId, "the R editing screenshot");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R editing screenshot");
     assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
     assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
-    await app.getByRole("region", { name: "Draft review" }).waitFor({ state: "visible", timeout: 10_000 });
-    await app.locator('th[data-column="record_id"]').waitFor({ state: "visible", timeout: 10_000 });
+    const review = app.getByRole("region", { name: "Draft review" });
+    await review.waitFor({ state: "visible", timeout: 10_000 });
+    await review.getByText("Group and aggregate", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await app.locator('th[data-column="total_revenue"]').waitFor({ state: "visible", timeout: 10_000 });
     await app.getByRole("button", { name: "Apply step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     await app.getByRole("button", { name: "Discard", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     await assertMediaColumnTitlesUnclipped(
@@ -6694,7 +7245,7 @@ async function captureReleasedRNotebookRenameDraft(
       "The R editing notebook scene"
     );
     await clearReleasedJupyterScreenshotTransientUi(workbench);
-    assert.equal(testing.activeSession()?.metadata.draftStep?.kind, "renameColumn");
+    assert.equal(testing.activeSession()?.metadata.draftStep?.kind, "groupBy");
 
     mkdirSync(outputDirectory, { recursive: true });
     recordAcceptanceProgress("jupyter-r:screenshot:editing");
@@ -6705,7 +7256,18 @@ async function captureReleasedRNotebookRenameDraft(
         packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-editing", "dark")
       )
     );
+    await review.getByRole("button", { name: "Discard", exact: true }).click();
+    await waitFor(
+      () =>
+        testing.activeSession()?.sessionId === sessionId && testing.activeSession()?.metadata.draftStep === undefined,
+      30_000,
+      "discarding the representative R Group By draft after capture"
+    );
   } finally {
+    await closeVisibleWorkbenchPart(workbench, ".part.panel", [
+      "workbench.action.closePanel",
+      "workbench.action.togglePanel"
+    ]);
     for (const { configuration, key, value } of previousSettings.reverse()) {
       await configuration.update(key, value, vscode.ConfigurationTarget.Global);
     }
@@ -6837,8 +7399,8 @@ async function captureReleasedRJupyterWorkbench(
       "the R screenshot renderer to complete its host handshake"
     );
     const revenue = columnReference(active.metadata, "revenue");
-    await applyReleasedRQuickSort(readyApp, testing, "revenue", "descending", ["revenue"]);
-    await applyReleasedRQuickSort(readyApp, testing, "priority", "ascending", ["priority", "revenue"]);
+    await applyReleasedRQuickSort(workbench, testing, "revenue", "descending", ["revenue"]);
+    await applyReleasedRQuickSort(workbench, testing, "priority", "ascending", ["priority", "revenue"]);
 
     let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
     let app = await exactSessionApp(target.frame, sessionId);
@@ -7003,15 +7565,22 @@ async function assertReleasedProfileStat(panel: Locator, label: string, expected
 }
 
 async function applyReleasedRQuickSort(
-  app: Locator,
+  workbench: Page,
   testing: TestApi,
   column: string,
   direction: "ascending" | "descending",
   expectedPriority: readonly string[]
 ): Promise<void> {
-  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  const sessionId = testing.activeSession()?.sessionId;
+  assert.ok(sessionId, "The R quick sort requires one active session.");
+  const columnId = testing.activeSession()?.metadata.schema.find((candidate) => candidate.name === column)?.id;
+  assert.ok(columnId, `The R quick sort requires the ${column} column.`);
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const currentApp = await exactSessionApp(target.frame, sessionId);
+  assert.ok(currentApp, `The R ${column} quick sort requires its exact renderer.`);
+  const columnSearch = currentApp.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill(column);
-  await app
+  await currentApp
     .getByRole("option", { name: new RegExp(`^${column},`, "u") })
     .first()
     .waitFor({
@@ -7019,11 +7588,17 @@ async function applyReleasedRQuickSort(
       timeout: 10_000
     });
   await columnSearch.press("Enter");
-  const header = app.locator(`th[data-column=${JSON.stringify(column)}]`).first();
-  const menu = header.locator("details.columnMenu").first();
-  await menu.getByLabel(`Column actions for ${column}`).click();
-  await menu.getByRole("button", { name: `Sort ${direction}`, exact: true }).click();
-  assert.equal(await menu.evaluate((element) => element.hasAttribute("open")), false);
+  await waitFor(
+    () =>
+      testing.activeSession()?.sessionId === sessionId &&
+      testing.activeSession()?.viewState.selectedColumnId === columnId,
+    10_000,
+    `selecting the R ${column} column before sorting`
+  );
+  const menu = await waitForReleasedRColumnMenu(workbench, sessionId, column);
+  await menu.summary.click();
+  await menu.menu.getByRole("button", { name: `Sort ${direction}`, exact: true }).click();
+  assert.equal(await menu.menu.evaluate((element) => element.hasAttribute("open")), false);
   await waitFor(
     () =>
       testing
@@ -7032,6 +7607,61 @@ async function applyReleasedRQuickSort(
         .join(",") === expectedPriority.join(","),
     10_000,
     `${column} to join the native R compound sort`
+  );
+}
+
+interface ReleasedRColumnMenu {
+  menu: Locator;
+  summary: Locator;
+}
+
+async function waitForReleasedRColumnMenu(
+  workbench: Page,
+  sessionId: string,
+  column: string
+): Promise<ReleasedRColumnMenu> {
+  const browser = workbench.context().browser();
+  const trialTimeoutMs = 250;
+  const prepared = await acquirePreparedAcceptanceAction({
+    timeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS,
+    intervalMs: 50,
+    acquire: async () => {
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
+        if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+        try {
+          const app = await exactSessionApp(target.frame, sessionId);
+          if (!app) continue;
+          const menu = app.locator(`th[data-column=${JSON.stringify(column)}] details.columnMenu`).first();
+          const summary = menu.getByLabel(`Column actions for ${column}`, { exact: true });
+          if ((await summary.count()) !== 1 || !(await summary.isVisible())) continue;
+          try {
+            await summary.click({ trial: true, timeout: trialTimeoutMs });
+          } catch (error) {
+            if (isReleasedRColumnMenuPreparationError(error)) continue;
+            throw error;
+          }
+          return { menu, summary };
+        } catch (error) {
+          ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+        }
+      }
+      return undefined;
+    },
+    prepare: ({ summary }) => summary.click({ trial: true, timeout: trialTimeoutMs }),
+    dispose: async () => undefined,
+    isRetryablePreparationError: isReleasedRColumnMenuPreparationError,
+    wait: (durationMs) => workbench.waitForTimeout(durationMs)
+  });
+  assert.ok(prepared, `The R ${column} menu must become pointer-ready in the exact session renderer.`);
+  return prepared;
+}
+
+function isReleasedRColumnMenuPreparationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    (error as { name?: unknown } | undefined)?.name === "TimeoutError" ||
+    /(?:element|node).*(?:detached|not attached|not connected)/iu.test(message)
   );
 }
 
@@ -12282,6 +12912,14 @@ async function exercisePackagedPlatformSmoke(
   assert.equal(extension.isActive, true);
 
   await exercisePackagedReopenAndUndoJourney(testing, page, fixture, sourceBytes, editorName);
+  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
+  assert.ok(workspace, "The interpolation journey requires the isolated acceptance workspace.");
+  await exercisePackagedLinearInterpolationJourney(
+    testing,
+    page,
+    ensurePackagedLinearInterpolationFixture(workspace),
+    editorName
+  );
 
   recordAcceptanceProgress("platform-smoke:cleanup");
   assertExactBytes(
@@ -13075,6 +13713,12 @@ async function exercisePackagedFirstUseInteractionJourney(
     "Closing Insights must restore focus to its toolbar toggle."
   );
 
+  recordAcceptanceProgress("platform-smoke:fill-previous");
+  app = await previewAndDiscardPreviousRevenue(app, workbench, testing, sessionId, revenue);
+
+  recordAcceptanceProgress("platform-smoke:fill-grouped-median");
+  app = await previewApplyAndUndoGroupedRevenue(app, workbench, testing, sessionId, revenue);
+
   recordAcceptanceProgress("platform-smoke:fill-most-common");
   await previewMostCommonAccountNote(app, testing);
   app = await rediscoverApp("Most-common fill validation");
@@ -13318,6 +13962,561 @@ async function previewMostCommonAccountNote(app: Locator, testing: TestApi): Pro
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 }
 
+async function previewAndDiscardPreviousRevenue(
+  app: Locator,
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  revenue: ColumnReference
+): Promise<Locator> {
+  const active = testing.activeSession();
+  assert.ok(active, "The previous-value fill preview requires one active dataframe session.");
+  const orderId = columnReference(active.metadata, "order_id");
+  const revenuePosition = active.metadata.schema.findIndex((column) => column.id === revenue.id);
+  assert.notEqual(revenuePosition, -1);
+  const revenueGapIndex = 84;
+  const sourceGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: "platform-smoke-fill-previous-source-gap",
+    offset: revenueGapIndex - 1,
+    limit: 3,
+    filterModel: active.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(sourceGap.kind, "page");
+  if (sourceGap.kind !== "page") throw new Error("The one-row revenue source gap did not resolve.");
+  assert.deepEqual(sourceGap.page.columnIds, [revenue.id]);
+  const previousRevenue = sourceGap.page.rows[0]?.values[0];
+  assert.equal(previousRevenue?.isNull, false);
+  assert.equal(sourceGap.page.rows[1]?.values[0]?.isNull, true);
+  assert.equal(sourceGap.page.rows[2]?.values[0]?.isNull, false);
+
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("fill missing");
+  await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  await dialog.getByLabel("Column", { exact: true }).selectOption(revenue.id);
+  const fillMode = dialog.getByLabel("Method", { exact: true });
+  await fillMode.waitFor({ state: "visible", timeout: 10_000 });
+  await fillMode.selectOption("directionalForward");
+  await dialog.getByLabel("Order column 1", { exact: true }).selectOption(orderId.id);
+  await dialog.getByLabel("Direction 1", { exact: true }).selectOption("asc");
+  await dialog.getByLabel("Order missing values 1", { exact: true }).selectOption("last");
+  await dialog.getByLabel("Maximum gap length (optional)", { exact: true }).fill("1");
+  await dialog
+    .getByText("Current view filters and sorts do not affect the calculation", { exact: false })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const draft = testing.activeSession()?.metadata.draftStep;
+      return (
+        draft?.kind === "fillMissingValues" &&
+        draft.params.column.id === revenue.id &&
+        isDeepStrictEqual(draft.params.replacement, {
+          kind: "directional",
+          direction: "forward",
+          orderBy: [{ column: orderId, direction: "asc", nulls: "last" }],
+          maxGap: 1
+        })
+      );
+    },
+    30_000,
+    "the ordered previous-value revenue preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+
+  const codePreview = await waitForCodePreview(workbench, "_ow_polars_fill_missing_directional");
+  const code = await codePreview.innerText();
+  assert.match(code, /import polars as pl/u);
+  assert.match(code, /_ow_polars_fill_missing_directional\(df, 'revenue'/u);
+  assert.match(code, /\{'column': 'order_id', 'direction': 'asc', 'nulls': 'last'\}/u);
+  assert.match(code, /'forward', 1\)/u);
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const refreshedApp = await exactSessionApp(target.frame, sessionId);
+  assert.ok(refreshedApp, "The previous-value preview must retain the exact Open Wrangler renderer.");
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
+  const previewGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: "platform-smoke-fill-previous-preview-gap",
+    offset: revenueGapIndex - 1,
+    limit: 3,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(previewGap.kind, "page");
+  if (previewGap.kind !== "page") throw new Error("The Previous value revenue preview did not resolve.");
+  assert.deepEqual(previewGap.page.columnIds, [revenue.id]);
+  assert.deepEqual(
+    previewGap.page.rows[1]?.values[0],
+    previousRevenue,
+    "Previous value must fill the isolated revenue gap from the earlier order_id row."
+  );
+  const review = refreshedApp.getByRole("region", { name: "Draft review" });
+  await review.getByText("Fill missing values", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await review
+    .locator('[aria-label="Data diff summary"]')
+    .getByText(/^[1-9][\d,]* existing cells? changed(?: in this block)?$/u)
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await review.getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      if (!current) return false;
+      return (
+        current.metadata.draftStep === undefined &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.schema.find((column) => column.id === revenue.id)?.nullable === true &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "discarding the previous-value fill preview"
+  );
+  await review.waitFor({ state: "hidden", timeout: 10_000 });
+  return refreshedApp;
+}
+
+async function previewApplyAndUndoGroupedRevenue(
+  app: Locator,
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  revenue: ColumnReference
+): Promise<Locator> {
+  const active = testing.activeSession();
+  assert.ok(active, "The grouped-median preview requires one active dataframe session.");
+  const market = columnReference(active.metadata, "market");
+  const segment = columnReference(active.metadata, "segment");
+  const revenuePosition = active.metadata.schema.findIndex((column) => column.id === revenue.id);
+  assert.notEqual(revenuePosition, -1);
+  const revenueGapIndex = 84;
+  const gapRow = packagedScreenshotRow(revenueGapIndex);
+  assert.equal(gapRow[2], "", "The installed-editor fixture must retain its grouped-fill revenue gap.");
+  const groupedRevenue = Array.from({ length: PACKAGED_FIRST_USE_ROW_COUNT }, (_, index) =>
+    packagedScreenshotRow(index)
+  )
+    .filter((row) => row[1] === gapRow[1] && row[5] === gapRow[5] && row[2] !== "")
+    .map((row) => Number(row[2]))
+    .sort((left, right) => left - right);
+  assert.ok(groupedRevenue.length > 0, "The grouped-fill fixture must have usable values in the target group.");
+  const midpoint = Math.floor(groupedRevenue.length / 2);
+  const expectedMedian =
+    groupedRevenue.length % 2 === 1
+      ? groupedRevenue[midpoint]!
+      : (groupedRevenue[midpoint - 1]! + groupedRevenue[midpoint]!) / 2;
+
+  const sourceGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: "platform-smoke-fill-grouped-source-gap",
+    offset: revenueGapIndex,
+    limit: 1,
+    filterModel: active.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(sourceGap.kind, "page");
+  if (sourceGap.kind !== "page") throw new Error("The grouped-median source gap did not resolve.");
+  assert.deepEqual(sourceGap.page.columnIds, [revenue.id]);
+  assert.equal(sourceGap.page.rows[0]?.values[0]?.isNull, true);
+  const sourceRowId = sourceGap.page.rows[0]?.id;
+
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("fill missing");
+  await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  await dialog.getByLabel("Column", { exact: true }).selectOption(revenue.id);
+  await dialog.getByLabel("Method", { exact: true }).selectOption("groupedMedian");
+  const groupBy = dialog.getByRole("group", { name: "Group by", exact: true });
+  const selectedKeys = groupBy.getByRole("checkbox", { checked: true });
+  for (let index = (await selectedKeys.count()) - 1; index >= 0; index -= 1) {
+    await selectedKeys.nth(index).uncheck();
+  }
+  await groupBy.getByRole("checkbox", { name: "market", exact: true }).check();
+  await groupBy.getByRole("checkbox", { name: "segment", exact: true }).check();
+  await dialog
+    .getByText("Filters and sorts in the current view are ignored", { exact: false })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const draft = testing.activeSession()?.metadata.draftStep;
+      return (
+        draft?.kind === "fillMissingValues" &&
+        draft.params.column.id === revenue.id &&
+        isDeepStrictEqual(draft.params.replacement, {
+          kind: "groupedStatistic",
+          statistic: "median",
+          keys: [market, segment]
+        })
+      );
+    },
+    30_000,
+    "the grouped-median revenue preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+
+  const codePreview = await waitForCodePreview(workbench, "grouped");
+  const code = await codePreview.innerText();
+  assert.match(code, /import polars as pl/u);
+  assert.match(
+    code,
+    /_ow_polars_fill_missing_grouped_statistic\(df, ['"]revenue['"], \[['"]market['"], ['"]segment['"]\], ['"]median['"]\)/u
+  );
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const refreshedApp = await exactSessionApp(target.frame, sessionId);
+  assert.ok(refreshedApp, "The grouped-median preview must retain the exact Open Wrangler renderer.");
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
+  const previewGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: "platform-smoke-fill-grouped-preview-gap",
+    offset: revenueGapIndex,
+    limit: 1,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(previewGap.kind, "page");
+  if (previewGap.kind !== "page") throw new Error("The grouped-median preview gap did not resolve.");
+  assert.deepEqual(previewGap.page.columnIds, [revenue.id]);
+  assert.equal(previewGap.page.rows[0]?.id, sourceRowId, "Grouped filling must not reorder the source rows.");
+  const previewValue = previewGap.page.rows[0]?.values[0];
+  assert.ok(previewValue?.kind === "number" && previewValue.isNull === false && previewValue.isNaN === false);
+  assert.ok(
+    Math.abs(Number(previewValue.raw) - expectedMedian) < 1e-9,
+    `Expected grouped median ${expectedMedian}, received ${String(previewValue.raw)}.`
+  );
+
+  const review = refreshedApp.getByRole("region", { name: "Draft review" });
+  await review.waitFor({ state: "visible", timeout: 10_000 });
+  await review
+    .locator('[aria-label="Data diff summary"]')
+    .getByText(/^[1-9][\d,]* existing cells? changed(?: in this block)?$/u)
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await review.getByRole("button", { name: "Apply step", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      const step = current?.metadata.steps[0];
+      return (
+        current?.metadata.draftStep === undefined &&
+        current?.metadata.steps.length === 1 &&
+        step?.kind === "fillMissingValues" &&
+        isDeepStrictEqual(step.params.replacement, {
+          kind: "groupedStatistic",
+          statistic: "median",
+          keys: [market, segment]
+        })
+      );
+    },
+    30_000,
+    "applying the grouped-median revenue fill"
+  );
+  const applied = testing.activeSession();
+  assert.ok(applied, "The applied grouped-median step must keep its session active.");
+  const appliedGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: applied.metadata.revision,
+    viewRequestId: "platform-smoke-fill-grouped-applied-gap",
+    offset: revenueGapIndex,
+    limit: 1,
+    filterModel: applied.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(appliedGap.kind, "page");
+  if (appliedGap.kind !== "page") throw new Error("The applied grouped-median gap did not resolve.");
+  assert.equal(appliedGap.page.rows[0]?.id, sourceRowId);
+  assert.ok(Math.abs(Number(appliedGap.page.rows[0]?.values[0]?.raw) - expectedMedian) < 1e-9);
+
+  await refreshedApp.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.schema.find((column) => column.id === revenue.id)?.nullable === true &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the grouped-median revenue fill"
+  );
+  const restored = testing.activeSession();
+  assert.ok(restored, "Undoing grouped median must keep its session active.");
+  const restoredGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: restored.metadata.revision,
+    viewRequestId: "platform-smoke-fill-grouped-restored-gap",
+    offset: revenueGapIndex,
+    limit: 1,
+    filterModel: restored.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(restoredGap.kind, "page");
+  if (restoredGap.kind !== "page") throw new Error("The undone grouped-median gap did not resolve.");
+  assert.equal(restoredGap.page.rows[0]?.id, sourceRowId);
+  assert.equal(restoredGap.page.rows[0]?.values[0]?.isNull, true);
+  return refreshedApp;
+}
+
+async function exercisePackagedLinearInterpolationJourney(
+  testing: TestApi,
+  workbench: Page,
+  fixture: vscode.Uri,
+  editorName: string
+): Promise<void> {
+  recordAcceptanceProgress("platform-smoke:fill-linear-interpolation");
+  const sourceBytes = await vscode.workspace.fs.readFile(fixture);
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    15_000,
+    `the ${editorName} session to close before linear interpolation`
+  );
+
+  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
+  await waitForAutomaticDelimitedImport(workbench, testing, fixture, "platform-smoke:fill-linear-import");
+  const opened = testing.activeSession();
+  assert.ok(opened, "The linear-interpolation fixture must open one dataframe session.");
+  assert.equal(opened.metadata.backend, "polars");
+  assert.deepEqual(opened.metadata.shape, { rows: 7, columns: 3 });
+  const sourceRow = columnReference(opened.metadata, "source_row");
+  const coordinate = columnReference(opened.metadata, "coordinate");
+  const measurement = columnReference(opened.metadata, "measurement");
+  const measurementPosition = opened.metadata.schema.findIndex((column) => column.id === measurement.id);
+  assert.equal(measurementPosition, 2);
+  assert.equal(opened.metadata.schema[measurementPosition]?.type, "float");
+
+  const sourcePage = await testing.request({
+    kind: "getPage",
+    sessionId: opened.sessionId,
+    revision: opened.metadata.revision,
+    viewRequestId: "platform-smoke-fill-linear-source",
+    offset: 0,
+    limit: 7,
+    filterModel: opened.viewState.filterModel,
+    columnOffset: 0,
+    columnLimit: 3
+  });
+  assert.equal(sourcePage.kind, "page");
+  if (sourcePage.kind !== "page") throw new Error("The linear-interpolation source page did not resolve.");
+  assert.deepEqual(sourcePage.page.columnIds, [sourceRow.id, coordinate.id, measurement.id]);
+  assert.deepEqual(
+    sourcePage.page.rows.map((row) => ({
+      sourceRow: row.values[0]?.display,
+      coordinate: Number(row.values[1]?.raw),
+      measurement: row.values[2]?.isNull ? null : Number(row.values[2]?.raw)
+    })),
+    [
+      { sourceRow: "r4", coordinate: 20, measurement: null },
+      { sourceRow: "r1", coordinate: 0, measurement: 10 },
+      { sourceRow: "r5", coordinate: 40, measurement: 50 },
+      { sourceRow: "r2", coordinate: 5, measurement: null },
+      { sourceRow: "r6", coordinate: 50, measurement: null },
+      { sourceRow: "r3", coordinate: 15, measurement: null },
+      { sourceRow: "r7", coordinate: 60, measurement: 70 }
+    ],
+    "The source must be shuffled while its interpolation coordinate remains irregular."
+  );
+  const sourceRowIds = sourcePage.page.rows.map((row) => row.id);
+
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, opened.sessionId);
+  let app = await exactSessionApp(target.frame, opened.sessionId);
+  assert.ok(app, "The linear-interpolation fixture must expose its exact Open Wrangler renderer.");
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("fill missing");
+  await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  await dialog.getByLabel("Column", { exact: true }).selectOption(measurement.id);
+  const method = dialog.getByLabel("Method", { exact: true });
+  await method.locator('option[value="linearInterpolation"]').waitFor({ state: "attached", timeout: 10_000 });
+  await method.selectOption("linearInterpolation");
+  await dialog.getByLabel("Coordinate column", { exact: true }).selectOption(coordinate.id);
+  await dialog.getByLabel("Maximum missing cells in a run (optional)", { exact: true }).fill("3");
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const draft = testing.activeSession()?.metadata.draftStep;
+      return (
+        draft?.kind === "fillMissingValues" &&
+        draft.params.column.id === measurement.id &&
+        isDeepStrictEqual(draft.params.replacement, {
+          kind: "linearInterpolation",
+          coordinate,
+          maxGap: 3
+        })
+      );
+    },
+    30_000,
+    "previewing linear interpolation through the installed operation form"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+
+  const codePreview = await waitForCodePreview(workbench, "_ow_polars_fill_missing_linear_interpolation");
+  const code = await codePreview.innerText();
+  assert.match(code, /^import polars as pl$/mu);
+  assert.ok(
+    code.includes("df = _ow_polars_fill_missing_linear_interpolation(df, 'measurement', 'coordinate', 3)"),
+    "Generated Polars code must call linear interpolation with the exact selected columns and gap limit."
+  );
+  assert.doesNotMatch(code, /\b(?:pandas|duckdb|Rscript)\b/iu);
+
+  const refreshedTarget = await waitForOpenWranglerGridTarget(workbench, testing, opened.sessionId);
+  app = await exactSessionApp(refreshedTarget.frame, opened.sessionId);
+  assert.ok(app, "The linear-interpolation preview must retain its exact renderer.");
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
+  const previewPage = await testing.request({
+    kind: "getPage",
+    sessionId: opened.sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: "platform-smoke-fill-linear-preview",
+    offset: 0,
+    limit: 7,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: measurementPosition,
+    columnLimit: 1
+  });
+  assert.equal(previewPage.kind, "page");
+  if (previewPage.kind !== "page") throw new Error("The linear-interpolation preview page did not resolve.");
+  assert.deepEqual(previewPage.page.columnIds, [measurement.id]);
+  assert.deepEqual(
+    previewPage.page.rows.map((row) => row.id),
+    sourceRowIds,
+    "Interpolation must preserve source order."
+  );
+  assert.deepEqual(
+    previewPage.page.rows.map((row) => Number(row.values[0]?.raw)),
+    [30, 10, 50, 15, 60, 25, 70],
+    "Interpolation must use coordinate distance rather than source-row distance."
+  );
+  assert.equal(
+    previewPage.page.rows.every(
+      (row) => row.values[0]?.kind === "number" && !row.values[0].isNull && !row.values[0].isNaN
+    ),
+    true
+  );
+  const review = app.getByRole("region", { name: "Draft review" });
+  await review.waitFor({ state: "visible", timeout: 10_000 });
+  await review
+    .locator('[aria-label="Data diff summary"]')
+    .getByText("4 existing cells changed", { exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+
+  await review.getByRole("button", { name: "Apply step", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      return (
+        active?.metadata.draftStep === undefined &&
+        active?.metadata.steps.length === 1 &&
+        step?.kind === "fillMissingValues" &&
+        isDeepStrictEqual(step.params.replacement, {
+          kind: "linearInterpolation",
+          coordinate,
+          maxGap: 3
+        })
+      );
+    },
+    30_000,
+    "applying linear interpolation through Draft review"
+  );
+  const applied = testing.activeSession();
+  assert.ok(applied, "Applying linear interpolation must retain the active session.");
+  const appliedPage = await testing.request({
+    kind: "getPage",
+    sessionId: opened.sessionId,
+    revision: applied.metadata.revision,
+    viewRequestId: "platform-smoke-fill-linear-applied",
+    offset: 0,
+    limit: 7,
+    filterModel: applied.viewState.filterModel,
+    columnOffset: measurementPosition,
+    columnLimit: 1
+  });
+  assert.equal(appliedPage.kind, "page");
+  if (appliedPage.kind !== "page") throw new Error("The applied linear-interpolation page did not resolve.");
+  assert.deepEqual(
+    appliedPage.page.rows.map((row) => row.id),
+    sourceRowIds
+  );
+  assert.deepEqual(
+    appliedPage.page.rows.map((row) => Number(row.values[0]?.raw)),
+    [30, 10, 50, 15, 60, 25, 70]
+  );
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "Applying linear interpolation must not modify the source CSV."
+  );
+
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.steps.length === 0 && active.metadata.draftStep === undefined && (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing linear interpolation through the installed editor"
+  );
+  const restored = testing.activeSession();
+  assert.ok(restored, "Undoing linear interpolation must retain the active session.");
+  const restoredPage = await testing.request({
+    kind: "getPage",
+    sessionId: opened.sessionId,
+    revision: restored.metadata.revision,
+    viewRequestId: "platform-smoke-fill-linear-restored",
+    offset: 0,
+    limit: 7,
+    filterModel: restored.viewState.filterModel,
+    columnOffset: 0,
+    columnLimit: 3
+  });
+  assert.equal(restoredPage.kind, "page");
+  if (restoredPage.kind !== "page") throw new Error("The undone linear-interpolation page did not resolve.");
+  assert.deepEqual(restoredPage.page.columnIds, sourcePage.page.columnIds);
+  assert.deepEqual(
+    restoredPage.page.rows,
+    sourcePage.page.rows,
+    "Undo must restore the exact source values and row order."
+  );
+  assertExactBytes(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "Previewing, applying, and undoing linear interpolation must preserve the source CSV bytes."
+  );
+
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    15_000,
+    `the ${editorName} linear-interpolation session and runtime to terminate`
+  );
+}
+
 async function previewUppercaseMarket(app: Locator, testing: TestApi, newColumn: string): Promise<void> {
   await app.getByRole("button", { name: "Add step", exact: true }).click();
   const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
@@ -13392,9 +14591,20 @@ async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, 
   await completeCleanedDataExportDialog(workbench, destination);
 }
 
-async function exportCleanedDataThroughCommand(workbench: Page, destination: string): Promise<void> {
+function assertParquetFile(filePath: string, label: string): void {
+  const bytes = readFileSync(filePath);
+  assert.ok(bytes.byteLength >= 8, `${label} must contain a complete Parquet file.`);
+  assert.equal(bytes.subarray(0, 4).toString("utf8"), "PAR1", `${label} has an invalid Parquet header.`);
+  assert.equal(bytes.subarray(-4).toString("utf8"), "PAR1", `${label} has an invalid Parquet footer.`);
+}
+
+async function exportCleanedDataThroughCommand(
+  workbench: Page,
+  destination: string,
+  format: "csv" | "parquet" = "csv"
+): Promise<void> {
   const completion = vscode.commands.executeCommand<boolean>("openWrangler.exportData");
-  await completeCleanedDataExportDialog(workbench, destination);
+  await completeCleanedDataExportDialog(workbench, destination, format);
   const outcome = await withBoundedAcceptancePromise(completion, 30_000, "the public cleaned-data export command");
   const notifications =
     outcome === true
@@ -13415,13 +14625,18 @@ async function exportCleanedDataThroughCommand(workbench: Page, destination: str
   );
 }
 
-async function completeCleanedDataExportDialog(workbench: Page, destination: string): Promise<void> {
+async function completeCleanedDataExportDialog(
+  workbench: Page,
+  destination: string,
+  format: "csv" | "parquet" = "csv"
+): Promise<void> {
   const formatPicker = workbench
     .locator(".quick-input-widget:visible")
     .filter({ hasText: "Export Cleaned Data" })
     .last();
   await formatPicker.waitFor({ state: "visible", timeout: 10_000 });
-  await formatPicker.getByRole("option").filter({ hasText: /^CSV/u }).first().click();
+  const label = format === "csv" ? /^CSV/u : /^Parquet/u;
+  await formatPicker.getByRole("option").filter({ hasText: label }).first().click();
   assert.equal(
     await pollAcceptanceCondition(
       async () =>
@@ -13432,22 +14647,29 @@ async function completeCleanedDataExportDialog(workbench: Page, destination: str
           .locator(".quick-input-box input")
           .first()
           .inputValue()
-          .then((value) => /\.cleaned\.csv$/u.test(value))
+          .then((value) => value.endsWith(`.cleaned.${format}`))
           .catch(() => false),
       { timeoutMs: 10_000, intervalMs: 50 }
     ),
     true,
-    "The cleaned-data Save dialog must retain the suggested .cleaned.csv destination."
+    `The cleaned-data Save dialog must retain the suggested .cleaned.${format} destination.`
   );
   const saveDialog = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Export Cleaned Data" }).last();
   const saveInput = saveDialog.locator(".quick-input-box input").first();
   await saveInput.fill(path.resolve(destination));
   await saveInput.press("Enter");
   await saveDialog.waitFor({ state: "hidden", timeout: 30_000 });
-  await workbench
+  const exportProgress = workbench
     .locator(".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible")
-    .filter({ hasText: "Exporting cleaned data…" })
-    .waitFor({ state: "hidden", timeout: 30_000 });
+    .filter({ hasText: "Exporting cleaned data…" });
+  assert.equal(
+    await pollAcceptanceCondition(async () => (await exportProgress.count()) === 0, {
+      timeoutMs: 30_000,
+      intervalMs: 50
+    }),
+    true,
+    "The cleaned-data export progress notification must close."
+  );
 }
 
 async function exercisePackagedReopenAndUndoJourney(
@@ -16814,6 +18036,83 @@ async function waitForCodePreview(
   throw new Error(`The generated code preview did not expose ${JSON.stringify(expectedCode)}.`);
 }
 
+async function revealCodePreviewOperationLine(
+  codePreview: Locator,
+  operationText: string,
+  resultText: string
+): Promise<void> {
+  const scroller = codePreview.locator("xpath=..");
+  assert.ok(
+    (await scroller.getAttribute("class"))?.split(/\s+/u).includes("cm-scroller"),
+    "The generated-code preview must expose its CodeMirror scroller."
+  );
+  await scroller.evaluate((element) => {
+    const target = element as unknown as { scrollHeight: number; scrollLeft: number; scrollTop: number };
+    target.scrollLeft = 0;
+    target.scrollTop = target.scrollHeight;
+  });
+  const operationLine = codePreview.locator(".cm-line").filter({ hasText: operationText }).last();
+  await operationLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  await operationLine.scrollIntoViewIfNeeded();
+  const resultLine = codePreview.locator(".cm-line").filter({ hasText: resultText }).last();
+  await resultLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  await resultLine.scrollIntoViewIfNeeded();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const [operationLineText, resultLineText, operationBounds, resultBounds, scrollerBounds] = await Promise.all([
+    operationLine.innerText(),
+    resultLine.innerText(),
+    operationLine.boundingBox(),
+    resultLine.boundingBox(),
+    scroller.boundingBox()
+  ]);
+  assert.ok(
+    operationLineText.includes(operationText),
+    "The visible generated-code line must contain the operation call."
+  );
+  assert.ok(resultLineText.includes(resultText), "The visible generated-code line must contain the operation result.");
+  assert.ok(operationBounds, "The generated-code operation line must have measurable geometry.");
+  assert.ok(resultBounds, "The generated-code result line must have measurable geometry.");
+  assert.ok(scrollerBounds, "The generated-code preview must have measurable geometry.");
+  for (const [subject, bounds] of [
+    ["operation", operationBounds],
+    ["result", resultBounds]
+  ] as const) {
+    assert.ok(
+      bounds.y >= scrollerBounds.y - 1 && bounds.y + bounds.height <= scrollerBounds.y + scrollerBounds.height + 1,
+      `The generated-code ${subject} line must be fully visible in the Code Preview panel.`
+    );
+  }
+}
+
+async function ensureCodePreviewHeight(workbench: Page, minimumHeight: number): Promise<void> {
+  assert.ok(
+    Number.isFinite(minimumHeight) && minimumHeight >= 120,
+    "The generated-code preview minimum height must be a useful finite CSS-pixel value."
+  );
+  const panel = workbench.locator(".part.panel:visible").first();
+  await panel.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  const commands = new Set(await vscode.commands.getCommands(true));
+  assert.ok(
+    commands.has("workbench.action.focusPanel") && commands.has("workbench.action.increaseViewSize"),
+    "The workbench must expose its native Code Preview focus and resize commands."
+  );
+  await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+  await vscode.commands.executeCommand("workbench.action.focusPanel");
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const bounds = await panel.boundingBox();
+    assert.ok(bounds, "The Code Preview panel must have measurable geometry.");
+    if (bounds.height >= minimumHeight) return;
+    await vscode.commands.executeCommand("workbench.action.increaseViewSize");
+    await workbench.waitForTimeout(100);
+  }
+  const bounds = await panel.boundingBox();
+  assert.ok(bounds, "The enlarged Code Preview panel must have measurable geometry.");
+  assert.ok(
+    bounds.height >= minimumHeight,
+    `The Code Preview panel must be at least ${minimumHeight} CSS pixels high; received ${bounds.height}.`
+  );
+}
+
 async function closeVisibleWorkbenchPart(
   workbench: Page,
   selector: string,
@@ -18520,15 +19819,27 @@ async function capturePackagedOperationDialogScenes(
 
     recordAcceptanceProgress("verify:screenshots:file-scenes:operation-configuration");
     const search = dialog.getByPlaceholder("Search operations");
-    await search.fill("formula");
-    await dialog.getByRole("button", { name: /^Formula column/u }).click();
+    await search.fill("fill missing");
+    await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+    const active = testing.activeSession();
+    assert.ok(active, "The missing-value configuration capture requires one active session.");
+    await dialog.getByLabel("Column", { exact: true }).selectOption(columnReference(active.metadata, "revenue").id);
+    await dialog.getByLabel("Method", { exact: true }).selectOption("groupedMean");
+    const groupBy = dialog.getByRole("group", { name: "Group by", exact: true });
+    const selectedKeys = groupBy.getByRole("checkbox", { checked: true });
+    for (let index = (await selectedKeys.count()) - 1; index >= 0; index -= 1) {
+      await selectedKeys.nth(index).uncheck();
+    }
+    await groupBy.getByRole("checkbox", { name: "market", exact: true }).check();
+    await groupBy.getByRole("checkbox", { name: "segment", exact: true }).check();
+    await groupBy.getByText("Selected (2): market, segment", { exact: true }).waitFor({ state: "visible" });
+    await dialog.getByLabel("Search group columns", { exact: true }).fill("market");
+    await groupBy.getByRole("checkbox", { name: "market", exact: true }).waitFor({ state: "visible" });
+    await groupBy.getByText("Selected (2): market, segment", { exact: true }).waitFor({ state: "visible" });
     await dialog
-      .getByLabel("Left column", { exact: true })
-      .selectOption(columnReference(testing.activeSession()!.metadata, "revenue").id);
-    await dialog.getByLabel("Operator", { exact: true }).selectOption("add");
-    await dialog.getByLabel("Numeric value", { exact: true }).fill("500");
-    await dialog.getByLabel("New column", { exact: true }).fill("projected_revenue");
-    await dialog.getByRole("heading", { name: "Formula column", exact: true }).waitFor({ state: "visible" });
+      .getByText("Filters and sorts in the current view are ignored", { exact: false })
+      .waitFor({ state: "visible" });
+    await dialog.getByRole("heading", { name: "Fill missing values", exact: true }).waitFor({ state: "visible" });
     await dialog.getByRole("button", { name: "Preview changes", exact: true }).waitFor({ state: "visible" });
     await assertPackagedOperationDialogGeometry(dialog, "configuration");
     await clearPackagedProductSceneTransientUi(workbench);
@@ -18567,14 +19878,28 @@ async function assertPackagedOperationDialogGeometry(
     const catalog = root.querySelector(".operationCatalog");
     const form = root.querySelector(".operationForm");
     const header = root.querySelector(".operationDialogHeader");
-    if (!body || !catalog || !form || !header) throw new Error("The operation dialog layout is incomplete.");
+    const searchIcon = root.querySelector(".operationSearch > span");
+    const searchInput = root.querySelector(".operationSearch input");
+    if (!body || !catalog || !form || !header || !searchIcon || !searchInput) {
+      throw new Error("The operation dialog layout is incomplete.");
+    }
     const bounds = root.getBoundingClientRect();
+    const searchIconBounds = searchIcon.getBoundingClientRect();
+    const searchInputBounds = searchInput.getBoundingClientRect();
     return {
       bounds: { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom },
       bodyOverflow: body.scrollWidth - body.clientWidth,
       headerOverflow: header.scrollWidth - header.clientWidth,
       catalogVisible: catalog.getBoundingClientRect().width > 0,
       formVisible: form.getBoundingClientRect().width > 0,
+      searchIconContained:
+        searchIconBounds.left >= searchInputBounds.left - 1 &&
+        searchIconBounds.right <= searchInputBounds.right + 1 &&
+        searchIconBounds.top >= searchInputBounds.top - 1 &&
+        searchIconBounds.bottom <= searchInputBounds.bottom + 1,
+      searchIconCenterDelta: Math.abs(
+        (searchIconBounds.top + searchIconBounds.bottom) / 2 - (searchInputBounds.top + searchInputBounds.bottom) / 2
+      ),
       viewport: {
         width: root.ownerDocument.defaultView.innerWidth,
         height: root.ownerDocument.defaultView.innerHeight
@@ -18590,6 +19915,8 @@ async function assertPackagedOperationDialogGeometry(
   assert.ok(geometry.headerOverflow <= 1, `${scene} operation dialog header must not clip.`);
   assert.equal(geometry.catalogVisible, true);
   assert.equal(geometry.formVisible, true);
+  assert.equal(geometry.searchIconContained, true, `${scene} search icon must stay inside its input.`);
+  assert.ok(geometry.searchIconCenterDelta <= 1, `${scene} search icon must be vertically centered in its input.`);
 }
 
 async function capturePackagedImportOptionsScene(

@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "Explore and clean dataframes in VS Code and Cursor with Pandas, Polars, DuckDB, or R. View local PySpark DataFrames in notebooks. Run R files and supported R Markdown/Quarto cells on macOS or Linux.",
-  "version": "1.99.1",
+  "version": "1.99.2",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": true,
@@ -497,7 +497,7 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Open files or live dataframe variables, inspect profiles, and preview cleaning steps. Pandas and Polars support cleaning and export. R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set. DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only.",
+        "description": "Open files or live dataframe variables, inspect profiles, and preview cleaning steps. Pandas and Polars support cleaning and export. R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set. DuckDB file sessions support cleaning and export; notebook relations are experimental and view-only. Local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only.",
         "steps": [
           {
             "id": "openData",
@@ -526,7 +526,7 @@
       "explorer/context": [
         {
           "command": "openWrangler.runRDocument",
-          "when": "!explorerResourceIsFolder && isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "!explorerResourceIsFolder && isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
           "group": "navigation@49"
         },
         {
@@ -543,7 +543,7 @@
       "editor/title": [
         {
           "command": "openWrangler.runRDocument",
-          "when": "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
           "group": "navigation@1"
         },
         {
@@ -565,7 +565,7 @@
       "editor/title/context": [
         {
           "command": "openWrangler.runRDocument",
-          "when": "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
           "group": "navigation@49"
         },
         {

@@ -879,6 +879,35 @@ describe("protocol-v2 response validation", () => {
     ).toBe(false);
   });
 
+  it("accepts remaining missing-value counts only for fill previews", () => {
+    const preview = responses.find((response) => response.kind === "stepPreview");
+    expect(preview?.kind).toBe("stepPreview");
+    if (preview?.kind !== "stepPreview") return;
+    const fillPreview = {
+      ...preview,
+      metadata: {
+        ...preview.metadata,
+        draftStep: {
+          id: "fill-1",
+          kind: "fillMissingValues",
+          params: { column: valueReference, replacement: { kind: "integer", value: "0" } }
+        }
+      },
+      remainingMissingCells: 1
+    };
+
+    expect(isOpenWranglerResponse(fillPreview)).toBe(true);
+    expect(isOpenWranglerResponse({ ...fillPreview, remainingMissingCells: undefined })).toBe(false);
+    expect(isOpenWranglerResponse({ ...fillPreview, remainingMissingCells: -1 })).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...fillPreview,
+        remainingMissingCells: fillPreview.metadata.shape.rows! + 1
+      })
+    ).toBe(false);
+    expect(isOpenWranglerResponse({ ...preview, remainingMissingCells: 0 })).toBe(false);
+  });
+
   it("rejects incomplete and cross-variant response payloads", () => {
     expect(isOpenWranglerResponse({ kind: "summary", revision: 1, viewRequestId: "view-1" })).toBe(false);
     expect(isOpenWranglerResponse({ kind: "datasetStats", revision: 1, viewRequestId: "view-1", stats: {} })).toBe(
@@ -1534,7 +1563,7 @@ describe("protocol-v2 request validation", () => {
     }
   );
 
-  it("validates aggregate, same-row fallback, and typed fill-missing replacements", () => {
+  it("validates aggregate, same-row, directional, and typed fill-missing replacements", () => {
     const fillStep = (replacement: unknown) => ({
       id: "fill-value",
       kind: "fillMissingValues",
@@ -1563,6 +1592,29 @@ describe("protocol-v2 request validation", () => {
         kind: "fallbackColumns",
         columns: [otherReference, { id: "column:2", name: "third" }]
       },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [
+          { column: otherReference, direction: "asc", nulls: "last" },
+          { column: { id: "column:2", name: "third" }, direction: "desc", nulls: "first" }
+        ],
+        maxGap: 1_000_000
+      },
+      {
+        kind: "directional",
+        direction: "backward",
+        orderBy: [{ column: otherReference, direction: "desc", nulls: "first" }]
+      },
+      { kind: "groupedStatistic", statistic: "median", keys: [otherReference] },
+      {
+        kind: "groupedStatistic",
+        statistic: "mean",
+        keys: [otherReference, { id: "column:2", name: "third" }]
+      },
+      { kind: "groupedStatistic", statistic: "mostFrequent", keys: [otherReference] },
+      { kind: "linearInterpolation", coordinate: otherReference },
+      { kind: "linearInterpolation", coordinate: otherReference, maxGap: 1_000_000 },
       { kind: "string", value: "" },
       { kind: "integer", value: "99999999999999999999999999999999999999" },
       { kind: "float", value: "-1.25e+3" },
@@ -1592,7 +1644,44 @@ describe("protocol-v2 request validation", () => {
       { kind: "string", value: "x", extra: true },
       { kind: "fallbackColumns", columns: [] },
       { kind: "fallbackColumns", columns: ["other"] },
-      { kind: "fallbackColumns", columns: [otherReference], extra: true }
+      { kind: "fallbackColumns", columns: [otherReference], extra: true },
+      { kind: "directional", direction: "sideways", orderBy: [] },
+      { kind: "directional", direction: "forward", orderBy: [] },
+      { kind: "directional", direction: "forward", orderBy: [otherReference] },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: otherReference, direction: "asc", nulls: "last" }],
+        maxGap: 0
+      },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: otherReference, direction: "asc", nulls: "last" }],
+        maxGap: 1.5
+      },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: otherReference, direction: "asc", nulls: "last" }],
+        maxGap: 1_000_001
+      },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: otherReference, direction: "asc", nulls: "last" }],
+        extra: true
+      },
+      { kind: "groupedStatistic", statistic: "median", keys: [] },
+      { kind: "groupedStatistic", statistic: "sum", keys: [otherReference] },
+      { kind: "groupedStatistic", statistic: "mean", keys: ["other"] },
+      { kind: "groupedStatistic", statistic: "mostFrequent", keys: [otherReference], extra: true },
+      { kind: "linearInterpolation" },
+      { kind: "linearInterpolation", coordinate: "other" },
+      { kind: "linearInterpolation", coordinate: otherReference, maxGap: 0 },
+      { kind: "linearInterpolation", coordinate: otherReference, maxGap: 1.5 },
+      { kind: "linearInterpolation", coordinate: otherReference, maxGap: 1_000_001 },
+      { kind: "linearInterpolation", coordinate: otherReference, extra: true }
     ]) {
       expect(isTransformStep(fillStep(replacement)), JSON.stringify(replacement)).toBe(false);
     }
@@ -1610,6 +1699,39 @@ describe("protocol-v2 request validation", () => {
       )
     ).toBe(false);
     expect(isTransformStep(fillStep({ kind: "fallbackColumns", columns: [valueReference] }))).toBe(false);
+
+    const duplicateGroupKeys = { kind: "groupedStatistic", statistic: "mean", keys: [otherReference, otherReference] };
+    expect(isTransformStep(fillStep(duplicateGroupKeys))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(duplicateGroupKeys))).toBe(false);
+    const targetGroupKey = { kind: "groupedStatistic", statistic: "median", keys: [valueReference] };
+    expect(isTransformStep(fillStep(targetGroupKey))).toBe(false);
+    expect(isRuntimeRequestEnvelope(previewEnvelope(targetGroupKey))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(targetGroupKey))).toBe(true);
+
+    const targetInterpolationCoordinate = { kind: "linearInterpolation", coordinate: valueReference };
+    expect(isTransformStep(fillStep(targetInterpolationCoordinate))).toBe(false);
+    expect(isRuntimeRequestEnvelope(previewEnvelope(targetInterpolationCoordinate))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(targetInterpolationCoordinate))).toBe(true);
+
+    const repeatedOrderColumn = {
+      kind: "directional",
+      direction: "forward",
+      orderBy: [
+        { column: otherReference, direction: "asc", nulls: "last" },
+        { column: otherReference, direction: "desc", nulls: "first" }
+      ]
+    };
+    expect(isTransformStep(fillStep(repeatedOrderColumn))).toBe(false);
+    expect(isRuntimeRequestEnvelope(previewEnvelope(repeatedOrderColumn))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(repeatedOrderColumn))).toBe(true);
+    const targetOrderColumn = {
+      kind: "directional",
+      direction: "backward",
+      orderBy: [{ column: valueReference, direction: "asc", nulls: "last" }]
+    };
+    expect(isTransformStep(fillStep(targetOrderColumn))).toBe(false);
+    expect(isRuntimeRequestEnvelope(previewEnvelope(targetOrderColumn))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(targetOrderColumn))).toBe(true);
 
     const tooManyFallbacks = {
       kind: "fallbackColumns",

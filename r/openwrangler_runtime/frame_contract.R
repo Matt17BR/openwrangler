@@ -10,6 +10,7 @@ openwrangler_r_frame_contract <- local({
   maximum_selected_values_per_filter <- 10000L
   maximum_sort_rules <- 64L
   maximum_fill_fallback_columns <- 64L
+  maximum_fill_directional_gap <- 1000000L
   maximum_profile_columns <- 64L
   maximum_profile_rows <- 1000000L
   maximum_profile_cells <- 5000000L
@@ -38,6 +39,7 @@ openwrangler_r_frame_contract <- local({
   row_fixed_bytes <- 96L
   cell_fixed_bytes <- 96L
   summary_fixed_bytes <- 1024L
+  minimum_nanoparquet_version <- "0.5.1"
 
   abort <- function(code, message) {
     condition <- structure(
@@ -2890,6 +2892,15 @@ openwrangler_r_frame_contract <- local({
     midpoint
   }
 
+  safe_float_midpoint <- function(lower, upper) {
+    if (lower == upper) return(lower)
+    if (is.finite(lower) && is.finite(upper)) {
+      if ((lower < 0) == (upper < 0)) return(lower + ((upper - lower) / 2))
+      return((lower / 2) + (upper / 2))
+    }
+    (lower + upper) / 2
+  }
+
   fill_missing_value <- function(column, descriptor, replacement) {
     replacement <- exact_named_list_optional(
       replacement,
@@ -3226,6 +3237,446 @@ openwrangler_r_frame_contract <- local({
           fallback_values[use]
         }
         result_values[use] <- converted
+      }
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = result_values)
+    } else {
+      result[[position]] <- result_values
+    }
+    result
+  }
+
+  fill_missing_directional_at <- function(
+    value,
+    position,
+    old_name,
+    order_positions,
+    order_names,
+    order_directions,
+    order_nulls,
+    direction,
+    max_gap = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the fill-missing column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    target_descriptor <- inspected$descriptor$schema[[position]]
+    if (!identical(target_descriptor$name, old_name)) {
+      abort("stale-column", "the fill-missing column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
+    }
+    if (
+      !is.numeric(order_positions) ||
+        anyNA(order_positions) ||
+        any(!is.finite(order_positions)) ||
+        any(order_positions != floor(order_positions)) ||
+        length(order_positions) == 0L ||
+        length(order_positions) > min(maximum_sort_rules, column_count) ||
+        any(order_positions < 1L) ||
+        any(order_positions > column_count) ||
+        anyDuplicated(order_positions) ||
+        any(order_positions == position) ||
+        !is.character(order_names) ||
+        anyNA(order_names) ||
+        length(order_names) != length(order_positions) ||
+        !is.character(order_directions) ||
+        anyNA(order_directions) ||
+        length(order_directions) != length(order_positions) ||
+        any(!order_directions %in% c("asc", "desc")) ||
+        !is.character(order_nulls) ||
+        anyNA(order_nulls) ||
+        length(order_nulls) != length(order_positions) ||
+        any(!order_nulls %in% c("first", "last"))
+    ) {
+      abort("invalid-view-query", "the directional ordering selection is invalid")
+    }
+    order_positions <- as.integer(order_positions)
+    order_names <- vapply(seq_along(order_names), function(index) {
+      name <- bounded_utf8(order_names[[index]], sprintf("order_names[[%d]]", index), maximum_name_bytes)
+      if (!identical(inspected$descriptor$schema[[order_positions[[index]]]]$name, name)) {
+        abort("stale-column", "a directional ordering column no longer matches the R dataframe")
+      }
+      name
+    }, character(1L), USE.NAMES = FALSE)
+    direction <- scalar_choice(direction, c("forward", "backward"), "direction")
+    if (!is.null(max_gap)) {
+      max_gap <- whole_number(max_gap, "max_gap", maximum_fill_directional_gap)
+      if (max_gap < 1L) abort("invalid-range", "max_gap must be positive")
+      max_gap <- as.integer(max_gap)
+    }
+
+    row_positions <- seq_len(inspected$descriptor$shape$rows)
+    for (rule_index in rev(seq_along(order_positions))) {
+      rule_position <- order_positions[[rule_index]]
+      column <- value[[rule_position]][row_positions]
+      missing <- is.na(column)
+      missing_positions <- row_positions[missing]
+      present_positions <- which(!missing)
+      present_order <- order_present_values(
+        column[present_positions],
+        inspected$descriptor$schema[[rule_position]]$semantics,
+        identical(order_directions[[rule_index]], "desc")
+      )
+      ordered_present <- row_positions[present_positions[present_order]]
+      row_positions <- if (identical(order_nulls[[rule_index]], "first")) {
+        c(missing_positions, ordered_present)
+      } else {
+        c(ordered_present, missing_positions)
+      }
+    }
+
+    result_values <- value[[position]]
+    ordered_missing <- is.na(result_values[row_positions])
+    if (length(ordered_missing) > 0L && any(ordered_missing)) {
+      runs <- rle(ordered_missing)
+      run_ends <- cumsum(runs$lengths)
+      run_starts <- run_ends - runs$lengths + 1L
+      missing_runs <- which(runs$values)
+      for (run_index in missing_runs) {
+        run_length <- runs$lengths[[run_index]]
+        if (!is.null(max_gap) && run_length > max_gap) next
+        start <- run_starts[[run_index]]
+        end <- run_ends[[run_index]]
+        donor <- if (identical(direction, "forward")) start - 1L else end + 1L
+        if (donor < 1L || donor > length(row_positions)) next
+        donor_position <- row_positions[[donor]]
+        if (is.na(result_values[donor_position])) next
+        result_values[row_positions[start:end]] <- result_values[donor_position]
+      }
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = result_values)
+    } else {
+      result[[position]] <- result_values
+    }
+    result
+  }
+
+  fill_missing_linear_interpolation_at <- function(
+    value,
+    position,
+    old_name,
+    coordinate_position,
+    coordinate_name,
+    max_gap = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    coordinate_position <- whole_number(coordinate_position, "coordinate column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the fill-missing column position no longer matches the R dataframe")
+    }
+    if (coordinate_position < 1L || coordinate_position > column_count) {
+      abort("stale-column", "the interpolation coordinate position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    coordinate_position <- as.integer(coordinate_position)
+    if (identical(position, coordinate_position)) {
+      abort("invalid-view-query", "the fill target cannot also be the interpolation coordinate")
+    }
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    coordinate_name <- bounded_utf8(coordinate_name, "coordinate_name", maximum_name_bytes)
+    target_descriptor <- inspected$descriptor$schema[[position]]
+    coordinate_descriptor <- inspected$descriptor$schema[[coordinate_position]]
+    if (!identical(target_descriptor$name, old_name)) {
+      abort("stale-column", "the fill-missing column name no longer matches the R dataframe")
+    }
+    if (!identical(coordinate_descriptor$name, coordinate_name)) {
+      abort("stale-column", "the interpolation coordinate name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name) || is_private_column_name(coordinate_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
+    }
+    if (!identical(target_descriptor$semantics$kind, "double")) {
+      abort("invalid-view-query", "linear interpolation requires a floating-point R target column")
+    }
+    coordinate_kind <- coordinate_descriptor$semantics$kind
+    if (!coordinate_kind %in% c("integer", "double", "date", "datetime")) {
+      abort("invalid-view-query", "linear interpolation requires a numeric, Date, or POSIXct coordinate column")
+    }
+    if (!is.null(max_gap)) {
+      max_gap <- whole_number(max_gap, "max_gap", maximum_fill_directional_gap)
+      if (max_gap < 1L) abort("invalid-range", "max_gap must be positive")
+      max_gap <- as.integer(max_gap)
+    }
+
+    coordinate_values <- as.double(value[[coordinate_position]])
+    if (anyNA(coordinate_values) || any(!is.finite(coordinate_values))) {
+      abort("invalid-view-value", "every interpolation coordinate must be present and finite")
+    }
+    if (anyDuplicated(coordinate_values)) {
+      abort("invalid-view-value", "interpolation coordinates must be unique")
+    }
+    row_positions <- order(coordinate_values, method = "radix")
+    result_values <- value[[position]]
+    ordered_values <- result_values[row_positions]
+    ordered_missing <- is.na(ordered_values)
+    if (length(ordered_missing) > 0L && any(ordered_missing)) {
+      runs <- rle(ordered_missing)
+      run_ends <- cumsum(runs$lengths)
+      run_starts <- run_ends - runs$lengths + 1L
+      for (run_index in which(runs$values)) {
+        run_length <- runs$lengths[[run_index]]
+        if (!is.null(max_gap) && run_length > max_gap) next
+        start <- run_starts[[run_index]]
+        end <- run_ends[[run_index]]
+        left <- start - 1L
+        right <- end + 1L
+        if (left < 1L || right > length(row_positions)) next
+        left_value <- ordered_values[[left]]
+        right_value <- ordered_values[[right]]
+        if (!is.finite(left_value) || !is.finite(right_value)) next
+
+        left_coordinate <- coordinate_values[[row_positions[[left]]]]
+        right_coordinate <- coordinate_values[[row_positions[[right]]]]
+        coordinate_width <- right_coordinate - left_coordinate
+        scaled <- !is.finite(coordinate_width)
+        if (scaled) {
+          coordinate_scale <- max(abs(left_coordinate), abs(right_coordinate))
+          scaled_left <- left_coordinate / coordinate_scale
+          scaled_right <- right_coordinate / coordinate_scale
+          coordinate_width <- scaled_right - scaled_left
+        }
+        if (!is.finite(coordinate_width) || coordinate_width <= 0) {
+          abort("invalid-view-value", "interpolation coordinates cannot be represented safely")
+        }
+        for (ordered_index in start:end) {
+          coordinate <- coordinate_values[[row_positions[[ordered_index]]]]
+          weight <- if (scaled) {
+            (coordinate / coordinate_scale - scaled_left) / coordinate_width
+          } else {
+            (coordinate - left_coordinate) / coordinate_width
+          }
+          if (!is.finite(weight) || weight <= 0 || weight >= 1) {
+            abort("invalid-view-value", "interpolation coordinates cannot be represented safely")
+          }
+          interpolated <- if (sign(left_value) == sign(right_value)) {
+            left_value + (right_value - left_value) * weight
+          } else {
+            left_value * (1 - weight) + right_value * weight
+          }
+          if (!is.finite(interpolated)) {
+            abort("invalid-view-value", "linear interpolation produced a non-finite value")
+          }
+          result_values[[row_positions[[ordered_index]]]] <- interpolated
+        }
+      }
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = result_values)
+    } else {
+      result[[position]] <- result_values
+    }
+    result
+  }
+
+  fill_missing_grouped_statistic_at <- function(
+    value,
+    position,
+    old_name,
+    key_positions,
+    key_names,
+    statistic
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the fill-missing column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    target_descriptor <- inspected$descriptor$schema[[position]]
+    if (!identical(target_descriptor$name, old_name)) {
+      abort("stale-column", "the fill-missing column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
+    }
+    if (
+      !is.numeric(key_positions) ||
+        anyNA(key_positions) ||
+        any(!is.finite(key_positions)) ||
+        any(key_positions != floor(key_positions)) ||
+        length(key_positions) == 0L ||
+        length(key_positions) > column_count ||
+        any(key_positions < 1L) ||
+        any(key_positions > column_count) ||
+        anyDuplicated(key_positions) ||
+        any(key_positions == position) ||
+        !is.character(key_names) ||
+        anyNA(key_names) ||
+        length(key_names) != length(key_positions)
+    ) {
+      abort("invalid-view-query", "the grouped-fill key selection is invalid")
+    }
+    key_positions <- as.integer(key_positions)
+    supported_key_kinds <- c(
+      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+    )
+    key_names <- vapply(seq_along(key_names), function(index) {
+      name <- bounded_utf8(key_names[[index]], sprintf("key_names[[%d]]", index), maximum_name_bytes)
+      if (is_private_column_name(name)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+      descriptor <- inspected$descriptor$schema[[key_positions[[index]]]]
+      if (!identical(descriptor$name, name)) {
+        abort("stale-column", "a grouped-fill key no longer matches the R dataframe")
+      }
+      if (!descriptor$semantics$kind %in% supported_key_kinds) {
+        abort("invalid-view-query", sprintf("R %s columns cannot be used as grouped-fill keys", descriptor$semantics$kind))
+      }
+      name
+    }, character(1L), USE.NAMES = FALSE)
+    statistic <- scalar_choice(statistic, c("median", "mean", "mostFrequent"), "statistic")
+    target_kind <- target_descriptor$semantics$kind
+    compatible <- switch(
+      statistic,
+      mean = identical(target_kind, "double"),
+      median = target_kind %in% c("integer", "integer64", "double"),
+      mostFrequent = target_kind %in% c("character", "factor", "logical"),
+      FALSE
+    )
+    if (!compatible) {
+      abort("invalid-view-query", "the grouped statistic is incompatible with the selected R column")
+    }
+
+    row_positions <- seq_len(inspected$descriptor$shape$rows)
+    for (key_index in rev(seq_along(key_positions))) {
+      key_position <- key_positions[[key_index]]
+      key_values <- value[[key_position]][row_positions]
+      key_missing <- is.na(key_values)
+      present_positions <- which(!key_missing)
+      present_order <- order_present_values(
+        key_values[present_positions],
+        inspected$descriptor$schema[[key_position]]$semantics,
+        FALSE
+      )
+      row_positions <- c(row_positions[key_missing], row_positions[present_positions[present_order]])
+    }
+
+    result_values <- value[[position]]
+    row_count <- length(row_positions)
+    if (row_count > 0L && anyNA(result_values)) {
+      same_group <- rep(TRUE, max(0L, row_count - 1L))
+      if (row_count > 1L) {
+        left_rows <- row_positions[-row_count]
+        right_rows <- row_positions[-1L]
+        for (key_position in key_positions) {
+          left <- value[[key_position]][left_rows]
+          right <- value[[key_position]][right_rows]
+          left_missing <- is.na(left)
+          right_missing <- is.na(right)
+          equal <- (left_missing & right_missing) | (!left_missing & !right_missing & left == right)
+          equal[is.na(equal)] <- FALSE
+          same_group <- same_group & equal
+        }
+      }
+      group_starts <- c(1L, which(!same_group) + 1L)
+      group_ends <- c(group_starts[-1L] - 1L, row_count)
+      for (group_index in seq_along(group_starts)) {
+        group_rows <- row_positions[group_starts[[group_index]]:group_ends[[group_index]]]
+        missing_rows <- group_rows[is.na(result_values[group_rows])]
+        if (length(missing_rows) == 0L) next
+        present <- result_values[group_rows[!is.na(result_values[group_rows])]]
+        if (length(present) == 0L) next
+
+        fill <- NULL
+        if (identical(statistic, "mean")) {
+          has_positive_infinity <- any(is.infinite(present) & present > 0)
+          has_negative_infinity <- any(is.infinite(present) & present < 0)
+          if (has_positive_infinity && has_negative_infinity) next
+          if (has_positive_infinity) {
+            fill <- Inf
+          } else if (has_negative_infinity) {
+            fill <- -Inf
+          } else {
+            scale <- max(abs(present))
+            fill <- if (scale == 0) 0 else max(-1, min(1, mean(present / scale))) * scale
+          }
+        } else if (identical(statistic, "median")) {
+          fill <- if (identical(target_kind, "integer64")) {
+            exact_integer64_median(present)
+          } else {
+            ordered <- sort(present)
+            count <- length(ordered)
+            lower <- ordered[[(count + 1L) %/% 2L]]
+            upper <- ordered[[(count + 2L) %/% 2L]]
+            midpoint <- if (count %% 2L == 1L) {
+              lower
+            } else if (identical(target_kind, "double")) {
+              safe_float_midpoint(lower, upper)
+            } else {
+              lower / 2 + upper / 2
+            }
+            if (is.nan(midpoint)) next
+            if (identical(target_kind, "integer")) {
+              if (!is.finite(midpoint) || midpoint != floor(midpoint)) {
+                abort("invalid-view-value", "a grouped integer median is not an integer")
+              }
+              midpoint <- as.integer(midpoint)
+              if (is.na(midpoint)) {
+                abort("invalid-view-value", "a grouped integer median is outside the R integer range")
+              }
+            }
+            midpoint
+          }
+        } else {
+          candidates <- unique(present)
+          counts <- tabulate(match(present, candidates), nbins = length(candidates))
+          winners <- which(counts == max(counts))
+          if (length(winners) != 1L) next
+          fill <- candidates[[winners[[1L]]]]
+        }
+        result_values[missing_rows] <- fill
       }
     }
 
@@ -3635,6 +4086,589 @@ openwrangler_r_frame_contract <- local({
     select_columns_at(value, positions, expected_names)
   }
 
+  compare_unsigned_decimal <- function(left, right) {
+    left <- sub("^0+(?=.)", "", left, perl = TRUE)
+    right <- sub("^0+(?=.)", "", right, perl = TRUE)
+    if (nchar(left, type = "bytes") != nchar(right, type = "bytes")) {
+      return(sign(nchar(left, type = "bytes") - nchar(right, type = "bytes")))
+    }
+    if (identical(left, right)) return(0L)
+    if (left < right) -1L else 1L
+  }
+
+  add_unsigned_decimal <- function(left, right) {
+    left_digits <- rev(utf8ToInt(left) - utf8ToInt("0"))
+    right_digits <- rev(utf8ToInt(right) - utf8ToInt("0"))
+    width <- max(length(left_digits), length(right_digits))
+    length(left_digits) <- width
+    length(right_digits) <- width
+    left_digits[is.na(left_digits)] <- 0L
+    right_digits[is.na(right_digits)] <- 0L
+    output <- integer(width + 1L)
+    carry <- 0L
+    for (index in seq_len(width)) {
+      total <- left_digits[[index]] + right_digits[[index]] + carry
+      output[[index]] <- total %% 10L
+      carry <- total %/% 10L
+    }
+    output[[width + 1L]] <- carry
+    while (length(output) > 1L && output[[length(output)]] == 0L) {
+      output <- output[-length(output)]
+    }
+    intToUtf8(rev(output) + utf8ToInt("0"), multiple = FALSE)
+  }
+
+  subtract_unsigned_decimal <- function(left, right) {
+    if (compare_unsigned_decimal(left, right) < 0L) {
+      abort("internal-error", "unsigned decimal subtraction underflowed")
+    }
+    left_digits <- rev(utf8ToInt(left) - utf8ToInt("0"))
+    right_digits <- rev(utf8ToInt(right) - utf8ToInt("0"))
+    length(right_digits) <- length(left_digits)
+    right_digits[is.na(right_digits)] <- 0L
+    output <- integer(length(left_digits))
+    borrow <- 0L
+    for (index in seq_along(left_digits)) {
+      digit <- left_digits[[index]] - right_digits[[index]] - borrow
+      if (digit < 0L) {
+        digit <- digit + 10L
+        borrow <- 1L
+      } else {
+        borrow <- 0L
+      }
+      output[[index]] <- digit
+    }
+    if (borrow != 0L) abort("internal-error", "unsigned decimal subtraction underflowed")
+    while (length(output) > 1L && output[[length(output)]] == 0L) {
+      output <- output[-length(output)]
+    }
+    intToUtf8(rev(output) + utf8ToInt("0"), multiple = FALSE)
+  }
+
+  add_signed_decimal <- function(left, right) {
+    split_sign <- function(value) {
+      negative <- startsWith(value, "-")
+      magnitude <- if (negative) substring(value, 2L) else value
+      magnitude <- sub("^0+(?=.)", "", magnitude, perl = TRUE)
+      list(negative = negative && !identical(magnitude, "0"), magnitude = magnitude)
+    }
+    left_parts <- split_sign(left)
+    right_parts <- split_sign(right)
+    if (identical(left_parts$negative, right_parts$negative)) {
+      magnitude <- add_unsigned_decimal(left_parts$magnitude, right_parts$magnitude)
+      return(if (left_parts$negative && !identical(magnitude, "0")) paste0("-", magnitude) else magnitude)
+    }
+    comparison <- compare_unsigned_decimal(left_parts$magnitude, right_parts$magnitude)
+    if (comparison == 0L) return("0")
+    if (comparison > 0L) {
+      magnitude <- subtract_unsigned_decimal(left_parts$magnitude, right_parts$magnitude)
+      negative <- left_parts$negative
+    } else {
+      magnitude <- subtract_unsigned_decimal(right_parts$magnitude, left_parts$magnitude)
+      negative <- right_parts$negative
+    }
+    if (negative) paste0("-", magnitude) else magnitude
+  }
+
+  exact_integer_sum_text <- function(values, kind) {
+    total <- "0"
+    if (identical(kind, "integer")) {
+      # Each batch stays below 2^53, so its double sum is still an exact
+      # integer. Only the small set of batch totals needs decimal folding.
+      batch_size <- 1000000L
+      starts <- seq.int(1L, length(values), by = batch_size)
+      for (start in starts) {
+        end <- min(length(values), start + batch_size - 1L)
+        batch <- sum(as.double(values[start:end]))
+        total <- add_signed_decimal(total, sprintf("%.0f", batch))
+      }
+      return(total)
+    }
+    for (value in as.character(values)) total <- add_signed_decimal(total, value)
+    total
+  }
+
+  signed_decimal_in_range <- function(value, minimum, maximum) {
+    if (startsWith(value, "-")) {
+      compare_unsigned_decimal(substring(value, 2L), substring(minimum, 2L)) <= 0L
+    } else {
+      compare_unsigned_decimal(value, maximum) <= 0L
+    }
+  }
+
+  group_rows <- function(value, key_positions, key_semantics) {
+    row_positions <- seq_len(nrow(value))
+    if (length(row_positions) == 0L) return(list())
+    for (key_index in rev(seq_along(key_positions))) {
+      key_position <- key_positions[[key_index]]
+      key_values <- value[[key_position]][row_positions]
+      missing <- is.na(key_values)
+      present_positions <- which(!missing)
+      present_order <- order_present_values(
+        key_values[present_positions],
+        key_semantics[[key_index]],
+        FALSE
+      )
+      row_positions <- c(row_positions[missing], row_positions[present_positions[present_order]])
+    }
+
+    same_group <- rep(TRUE, max(0L, length(row_positions) - 1L))
+    if (length(row_positions) > 1L) {
+      left_rows <- row_positions[-length(row_positions)]
+      right_rows <- row_positions[-1L]
+      for (key_position in key_positions) {
+        left <- value[[key_position]][left_rows]
+        right <- value[[key_position]][right_rows]
+        left_missing <- is.na(left)
+        right_missing <- is.na(right)
+        equal <- (left_missing & right_missing) | (!left_missing & !right_missing & left == right)
+        equal[is.na(equal)] <- FALSE
+        same_group <- same_group & equal
+      }
+    }
+    starts <- c(1L, which(!same_group) + 1L)
+    ends <- c(starts[-1L] - 1L, length(row_positions))
+    groups <- lapply(seq_along(starts), function(index) {
+      sort(row_positions[starts[[index]]:ends[[index]]], method = "radix")
+    })
+    first_rows <- vapply(groups, `[[`, integer(1L), 1L, USE.NAMES = FALSE)
+    groups[order(first_rows, method = "radix")]
+  }
+
+  safe_group_mean <- function(values, semantics) {
+    if (identical(semantics$kind, "integer64")) {
+      total <- exact_integer_sum_text(values, semantics$kind)
+      return(suppressWarnings(as.double(total)) / length(values))
+    }
+    values <- suppressWarnings(as.double(values))
+    positive_infinity <- any(is.infinite(values) & values > 0)
+    negative_infinity <- any(is.infinite(values) & values < 0)
+    if (positive_infinity && negative_infinity) return(NaN)
+    if (positive_infinity) return(Inf)
+    if (negative_infinity) return(-Inf)
+    scale <- max(abs(values))
+    if (scale == 0) return(0)
+    max(-1, min(1, mean(values / scale))) * scale
+  }
+
+  safe_group_median <- function(values, semantics) {
+    if (identical(semantics$kind, "integer64")) {
+      ordered <- values[order_integer64(values, FALSE)]
+      count <- length(ordered)
+      lower <- suppressWarnings(as.double(ordered[[(count + 1L) %/% 2L]]))
+      if (count %% 2L == 1L) return(lower)
+      total <- exact_integer_sum_text(
+        ordered[c((count + 1L) %/% 2L, (count + 2L) %/% 2L)],
+        semantics$kind
+      )
+      return(suppressWarnings(as.double(total)) / 2)
+    }
+    ordered <- sort(as.double(values), method = "radix")
+    count <- length(ordered)
+    lower <- ordered[[(count + 1L) %/% 2L]]
+    if (count %% 2L == 1L) return(lower)
+    safe_float_midpoint(lower, ordered[[(count + 2L) %/% 2L]])
+  }
+
+  aggregate_group_column <- function(column, semantics, groups, operation, alias) {
+    group_count <- length(groups)
+    output <- if (operation %in% c("count", "nUnique")) {
+      integer(group_count)
+    } else if (operation %in% c("mean", "median")) {
+      rep(NA_real_, group_count)
+    } else if (operation %in% c("min", "max") && identical(semantics$kind, "factor") && !semantics$ordered) {
+      rep(NA_character_, group_count)
+    } else if (identical(operation, "sum") && identical(semantics$kind, "integer")) {
+      integer(group_count)
+    } else if (identical(operation, "sum") && identical(semantics$kind, "integer64")) {
+      if (!requireNamespace("bit64", quietly = TRUE)) {
+        abort("missing-package", "bit64 is required to sum an integer64 column")
+      }
+      rep(bit64::as.integer64(0L), group_count)
+    } else if (identical(operation, "sum")) {
+      numeric(group_count)
+    } else {
+      column[rep(NA_integer_, group_count)]
+    }
+
+    for (group_index in seq_along(groups)) {
+      rows <- groups[[group_index]]
+      present_rows <- rows[!is.na(column[rows])]
+      if (identical(operation, "count")) {
+        output[[group_index]] <- as.integer(length(present_rows))
+        next
+      }
+      if (identical(operation, "nUnique")) {
+        output[[group_index]] <- as.integer(length(unique(column[present_rows])))
+        next
+      }
+      if (length(present_rows) == 0L) {
+        if (identical(operation, "sum")) {
+          if (identical(semantics$kind, "integer64")) {
+            output[[group_index]] <- bit64::as.integer64(0L)
+          } else if (identical(semantics$kind, "integer")) {
+            output[[group_index]] <- 0L
+          } else {
+            output[[group_index]] <- 0
+          }
+        }
+        next
+      }
+      present <- column[present_rows]
+      if (identical(operation, "sum")) {
+        if (identical(semantics$kind, "integer")) {
+          total <- exact_integer_sum_text(present, semantics$kind)
+          if (!signed_decimal_in_range(total, "-2147483647", "2147483647")) {
+            abort(
+              "operation-output-too-large",
+              sprintf("Group By sum for %s is outside R's integer range", alias)
+            )
+          }
+          output[[group_index]] <- as.integer(total)
+        } else if (identical(semantics$kind, "integer64")) {
+          total <- exact_integer_sum_text(present, semantics$kind)
+          if (!signed_decimal_in_range(total, "-9223372036854775807", "9223372036854775807")) {
+            abort(
+              "operation-output-too-large",
+              sprintf("Group By sum for %s is outside the integer64 range", alias)
+            )
+          }
+          output[[group_index]] <- bit64::as.integer64(total)
+        } else {
+          output[[group_index]] <- sum(present)
+        }
+      } else if (identical(operation, "mean")) {
+        output[[group_index]] <- safe_group_mean(present, semantics)
+      } else if (identical(operation, "median")) {
+        output[[group_index]] <- safe_group_median(present, semantics)
+      } else if (operation %in% c("min", "max")) {
+        if (identical(semantics$kind, "factor") && !semantics$ordered) {
+          reducer <- if (identical(operation, "min")) base::min else base::max
+          output[[group_index]] <- reducer(as.character(present))
+        } else if (identical(semantics$kind, "logical")) {
+          reducer <- if (identical(operation, "min")) base::min else base::max
+          output[[group_index]] <- as.logical(reducer(present))
+        } else if (identical(semantics$kind, "integer64")) {
+          ordered <- present[order_integer64(present, identical(operation, "max"))]
+          output[[group_index]] <- ordered[[1L]]
+        } else {
+          reducer <- if (identical(operation, "min")) base::min else base::max
+          output[[group_index]] <- reducer(present)
+        }
+      } else if (identical(operation, "first")) {
+        output[[group_index]] <- present[[1L]]
+      } else if (identical(operation, "last")) {
+        output[[group_index]] <- present[[length(present)]]
+      } else {
+        abort("internal-error", "unknown R Group By aggregation")
+      }
+    }
+    output
+  }
+
+  group_by_at <- function(
+    value,
+    key_positions,
+    key_names,
+    aggregation_positions,
+    aggregation_names,
+    operations,
+    aliases
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    valid_positions <- function(positions, allow_duplicates) {
+      is.numeric(positions) &&
+        !anyNA(positions) &&
+        all(is.finite(positions)) &&
+        all(positions == floor(positions)) &&
+        length(positions) > 0L &&
+        all(positions >= 1L) &&
+        all(positions <= column_count) &&
+        (allow_duplicates || !anyDuplicated(positions))
+    }
+    if (!valid_positions(key_positions, FALSE)) {
+      abort("stale-column", "the Group By key positions no longer match the R dataframe")
+    }
+    if (!valid_positions(aggregation_positions, TRUE)) {
+      abort("stale-column", "the Group By aggregation positions no longer match the R dataframe")
+    }
+    key_positions <- as.integer(key_positions)
+    aggregation_positions <- as.integer(aggregation_positions)
+    validate_names <- function(values, positions, label) {
+      if (!is.character(values) || anyNA(values) || length(values) != length(positions)) {
+        abort("stale-column", sprintf("the Group By %s names no longer match the R dataframe", label))
+      }
+      values <- vapply(seq_along(values), function(index) {
+        bounded_utf8(values[[index]], sprintf("%s_names[[%d]]", label, index), maximum_name_bytes)
+      }, character(1L), USE.NAMES = FALSE)
+      if (!identical(names(value)[positions], values)) {
+        abort("stale-column", sprintf("the Group By %s names no longer match the R dataframe", label))
+      }
+      if (any(vapply(values, is_private_column_name, logical(1L), USE.NAMES = FALSE))) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+      values
+    }
+    key_names <- validate_names(key_names, key_positions, "key")
+    aggregation_names <- validate_names(aggregation_names, aggregation_positions, "aggregation")
+    allowed_operations <- c("sum", "mean", "median", "min", "max", "count", "nUnique", "first", "last")
+    if (
+      !is.character(operations) ||
+        anyNA(operations) ||
+        length(operations) != length(aggregation_positions) ||
+        any(!operations %in% allowed_operations)
+    ) {
+      abort("invalid-view-query", "the Group By aggregation operations are invalid")
+    }
+    if (!is.character(aliases) || anyNA(aliases) || length(aliases) != length(aggregation_positions)) {
+      abort("invalid-view-query", "the Group By aliases are invalid")
+    }
+    aliases <- vapply(seq_along(aliases), function(index) {
+      alias <- bounded_utf8(aliases[[index]], sprintf("aliases[[%d]]", index), maximum_name_bytes)
+      if (identical(alias, "")) abort("invalid-column-name", "Group By aliases must not be empty")
+      if (is_private_column_name(alias)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+      alias
+    }, character(1L), USE.NAMES = FALSE)
+    if (anyDuplicated(aliases) || any(aliases %in% key_names)) {
+      abort("column-name-collision", "Group By aliases must be unique and must not collide with key columns")
+    }
+    if (length(key_positions) + length(aggregation_positions) > maximum_columns) {
+      abort("operation-output-too-large", sprintf("Group By may produce at most %d columns", maximum_columns))
+    }
+
+    supported_kinds <- c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime")
+    key_semantics <- lapply(key_positions, function(position) inspected$descriptor$schema[[position]]$semantics)
+    if (any(!vapply(key_semantics, function(semantics) semantics$kind %in% supported_kinds, logical(1L)))) {
+      abort("invalid-view-query", "an R Group By key uses an unsupported type")
+    }
+    aggregation_semantics <- lapply(
+      aggregation_positions,
+      function(position) inspected$descriptor$schema[[position]]$semantics
+    )
+    for (index in seq_along(aggregation_semantics)) {
+      kind <- aggregation_semantics[[index]]$kind
+      operation <- operations[[index]]
+      compatible <- kind %in% supported_kinds && (
+        operation %in% c("count", "nUnique", "first", "last", "min", "max") ||
+          (operation %in% c("sum", "mean", "median") && kind %in% c("integer", "integer64", "double"))
+      )
+      if (!compatible) {
+        abort(
+          "invalid-view-query",
+          sprintf("R %s columns do not support the %s Group By aggregation", kind, operation)
+        )
+      }
+    }
+
+    groups <- group_rows(value, key_positions, key_semantics)
+    first_rows <- if (length(groups) == 0L) integer() else {
+      vapply(groups, `[[`, integer(1L), 1L, USE.NAMES = FALSE)
+    }
+    key_columns <- lapply(key_positions, function(position) {
+      column <- value[[position]][first_rows]
+      if (is.double(column) && !is.object(column)) column[is.na(column)] <- NA_real_
+      column
+    })
+    aggregation_columns <- lapply(seq_along(aggregation_positions), function(index) {
+      aggregate_group_column(
+        value[[aggregation_positions[[index]]]],
+        aggregation_semantics[[index]],
+        groups,
+        operations[[index]],
+        aliases[[index]]
+      )
+    })
+    result_columns <- c(key_columns, aggregation_columns)
+    result_names <- c(key_names, aliases)
+    names(result_columns) <- result_names
+    result <- as.data.frame(result_columns, optional = TRUE, stringsAsFactors = FALSE)
+    names(result) <- result_names
+    row.names(result) <- NULL
+    if (identical(inspected$flavor, "r.tibble")) {
+      if (!requireNamespace("tibble", quietly = TRUE)) {
+        abort("missing-package", "tibble is required to preserve an R tibble")
+      }
+      result <- tibble::as_tibble(result, .name_repair = "minimal")
+    } else if (identical(inspected$flavor, "r.data.table")) {
+      if (!requireNamespace("data.table", quietly = TRUE)) {
+        abort("missing-package", "data.table is required to preserve an R data.table")
+      }
+      result <- data.table::as.data.table(result)
+      data.table::setkeyv(result, NULL)
+    }
+    result
+  }
+
+  capture_group_result <- function(
+    value,
+    source_capture,
+    key_positions,
+    aggregation_positions,
+    aggregation_operations,
+    output_ids
+  ) {
+    validate_capture(source_capture)
+    source_schema <- source_capture$descriptor$schema
+    source_column_count <- length(source_schema)
+    validate_positions <- function(positions, allow_duplicates, label) {
+      if (
+        !is.numeric(positions) ||
+          anyNA(positions) ||
+          any(!is.finite(positions)) ||
+          any(positions != floor(positions)) ||
+          length(positions) == 0L ||
+          any(positions < 1L) ||
+          any(positions > source_column_count) ||
+          (!allow_duplicates && anyDuplicated(positions))
+      ) {
+        abort("internal-error", sprintf("a grouped R frame has invalid %s positions", label))
+      }
+      as.integer(positions)
+    }
+    key_positions <- validate_positions(key_positions, FALSE, "key")
+    aggregation_positions <- validate_positions(aggregation_positions, TRUE, "aggregation")
+    if (
+      !is.character(aggregation_operations) ||
+        anyNA(aggregation_operations) ||
+        length(aggregation_operations) != length(aggregation_positions) ||
+        any(!aggregation_operations %in% c("sum", "mean", "median", "min", "max", "count", "nUnique", "first", "last"))
+    ) {
+      abort("internal-error", "a grouped R frame has invalid aggregation operations")
+    }
+    expected_columns <- length(key_positions) + length(aggregation_positions)
+    if (!is.character(output_ids) || anyNA(output_ids) || length(output_ids) != expected_columns) {
+      abort("internal-error", "a grouped R frame has invalid output identities")
+    }
+    output_ids <- vapply(seq_along(output_ids), function(index) {
+      bounded_utf8(output_ids[[index]], sprintf("output_ids[[%d]]", index), maximum_column_id_bytes)
+    }, character(1L), USE.NAMES = FALSE)
+    if (
+      any(output_ids == "") ||
+        anyDuplicated(output_ids) ||
+        !all(vapply(output_ids, is_canonical_column_id, logical(1L), USE.NAMES = FALSE))
+    ) {
+      abort("internal-error", "a grouped R frame has invalid output identities")
+    }
+    expected_key_ids <- vapply(key_positions, function(position) source_schema[[position]]$id, character(1L))
+    if (!identical(output_ids[seq_along(key_positions)], expected_key_ids)) {
+      abort("internal-error", "a grouped R frame changed a key column identity")
+    }
+    source_ids <- vapply(source_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    aggregation_ids <- output_ids[length(key_positions) + seq_along(aggregation_positions)]
+    if (any(aggregation_ids %in% source_ids)) {
+      abort("internal-error", "a grouped R frame reused a source identity for an aggregation")
+    }
+
+    captured <- capture_frame(value)
+    if (
+      !identical(captured$descriptor$dataframeFlavor, source_capture$descriptor$dataframeFlavor) ||
+        captured$descriptor$shape$columns != expected_columns
+    ) {
+      abort("internal-error", "a grouped R frame changed dataframe family or width")
+    }
+    output_schema <- captured$descriptor$schema
+    expected_key_names <- vapply(key_positions, function(position) source_schema[[position]]$name, character(1L))
+    if (!identical(vapply(output_schema[seq_along(key_positions)], `[[`, character(1L), "name"), expected_key_names)) {
+      abort("internal-error", "a grouped R frame changed a key column name")
+    }
+    for (index in seq_along(key_positions)) {
+      source_column <- source_schema[[key_positions[[index]]]]
+      output_column <- output_schema[[index]]
+      if (
+        !identical(output_column$rawType, source_column$rawType) ||
+          !identical(output_column$type, source_column$type) ||
+          !identical(output_column$semantics, source_column$semantics)
+      ) {
+        abort("internal-error", "a grouped R frame changed key column type metadata")
+      }
+      output_schema[[index]]$nullable <- source_column$nullable
+    }
+    for (aggregation_index in seq_along(aggregation_positions)) {
+      output_index <- length(key_positions) + aggregation_index
+      source_column <- source_schema[[aggregation_positions[[aggregation_index]]]]
+      output_column <- output_schema[[output_index]]
+      operation <- aggregation_operations[[aggregation_index]]
+      expected_kind <- if (operation %in% c("count", "nUnique")) {
+        "integer"
+      } else if (operation %in% c("mean", "median")) {
+        "double"
+      } else if (
+        operation %in% c("min", "max") &&
+          identical(source_column$semantics$kind, "factor") &&
+          !source_column$semantics$ordered
+      ) {
+        "character"
+      } else {
+        source_column$semantics$kind
+      }
+      if (!identical(output_column$semantics$kind, expected_kind)) {
+        abort("internal-error", "a grouped R frame produced an invalid aggregation type")
+      }
+      if (
+        expected_kind == source_column$semantics$kind &&
+          !identical(output_column$semantics, source_column$semantics)
+      ) {
+        abort("internal-error", "a grouped R frame changed aggregation type metadata")
+      }
+      output_schema[[output_index]]$nullable <- if (operation %in% c("sum", "count", "nUnique")) {
+        FALSE
+      } else {
+        source_column$nullable
+      }
+    }
+    generated_ids <- vapply(output_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    for (index in seq_along(output_schema)) {
+      output_schema[[index]]$id <- output_ids[[index]]
+      output_schema[[index]]$position <- index - 1L
+    }
+    descriptor <- captured$descriptor
+    descriptor$schema <- json_array(output_schema)
+    descriptor$frameSemantics$keyColumnIds <- json_array(character())
+    old_id_bytes <- sum(vapply(generated_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+    new_id_bytes <- sum(vapply(output_ids, json_string_bytes, double(1L), USE.NAMES = FALSE))
+    metadata_bytes <- captured$metadataBytes
+    if (new_id_bytes > old_id_bytes) {
+      budget <- new_payload_budget(metadata_bytes)
+      spend_payload_budget(budget, new_id_bytes - old_id_bytes, "grouped R column identities")
+      metadata_bytes <- budget$used
+    }
+
+    group_count <- as.double(descriptor$shape$rows)
+    source_identity_domain <- as.double(source_capture$rowIdentityDomain)
+    row_identity_domain <- source_identity_domain + group_count
+    if (!is.finite(row_identity_domain) || row_identity_domain > maximum_rows) {
+      abort(
+        "operation-output-too-large",
+        sprintf("Group By cannot expand the R row-identity domain beyond %s rows", format(maximum_rows))
+      )
+    }
+    row_origins <- if (group_count == 0) {
+      numeric()
+    } else {
+      seq.int(source_identity_domain + 1, length.out = as.integer(group_count))
+    }
+
+    result <- new.env(parent = emptyenv())
+    result$mode <- "isolated"
+    result$snapshot <- captured$snapshot
+    result$sourceReader <- NULL
+    result$descriptor <- descriptor
+    result$rowOrigins <- row_origins
+    result$rowIdentityDomain <- row_identity_domain
+    result$metadataBytes <- metadata_bytes
+    result$metrics <- captured$metrics
+    result$sortCache <- new_sort_cache()
+    finish_capture(result)
+  }
+
   resolve_row_operation_columns <- function(value, positions, expected_names, operation) {
     inspected <- inspect_frame(
       value,
@@ -3791,14 +4825,29 @@ openwrangler_r_frame_contract <- local({
     value
   }
 
-  write_csv <- function(capture, target_path) {
-    validate_capture(capture)
-    if (capture$descriptor$shape$columns == 0L) {
-      abort(
-        "export-write-failed",
-        "CSV export requires at least one column because CSV cannot preserve a zero-column dataframe's row count"
-      )
-    }
+  nanoparquet_version_supported <- function(version) {
+    if (is.null(version)) return(FALSE)
+    parsed <- tryCatch(
+      base::package_version(as.character(version)),
+      error = function(error) NULL
+    )
+    !is.null(parsed) && length(parsed) == 1L && !is.na(parsed) &&
+      parsed >= base::package_version(minimum_nanoparquet_version)
+  }
+
+  parquet_export_available <- function() {
+    if (!requireNamespace("nanoparquet", quietly = TRUE)) return(FALSE)
+    version <- tryCatch(utils::packageVersion("nanoparquet"), error = function(error) NULL)
+    nanoparquet_version_supported(version)
+  }
+
+  export_formats <- function() {
+    formats <- "csv"
+    if (parquet_export_available()) formats <- c(formats, "parquet")
+    unname(formats)
+  }
+
+  validate_export_target <- function(target_path) {
     target_path <- bounded_utf8(target_path, "target_path", 32768L)
     if (
       identical(target_path, "") ||
@@ -3813,6 +4862,18 @@ openwrangler_r_frame_contract <- local({
     if (file.exists(target_path)) {
       abort("export-target-changed", "the private R export artifact already exists")
     }
+    target_path
+  }
+
+  write_csv <- function(capture, target_path) {
+    validate_capture(capture)
+    if (capture$descriptor$shape$columns == 0L) {
+      abort(
+        "export-write-failed",
+        "CSV export requires at least one column because CSV cannot preserve a zero-column dataframe's row count"
+      )
+    }
+    target_path <- validate_export_target(target_path)
 
     frame <- read_capture_frame(capture)
     connection <- NULL
@@ -3858,6 +4919,60 @@ openwrangler_r_frame_contract <- local({
         isTRUE(details$isdir[[1L]])
     ) {
       abort("export-target-changed", "the private R export artifact could not be verified")
+    }
+    completed <- TRUE
+    list(
+      rows = capture$descriptor$shape$rows,
+      columns = capture$descriptor$shape$columns,
+      bytes = as.double(details$size[[1L]])
+    )
+  }
+
+  write_parquet <- function(capture, target_path) {
+    validate_capture(capture)
+    target_path <- validate_export_target(target_path)
+    if (!parquet_export_available()) {
+      abort(
+        "missing-package",
+        sprintf("Parquet export requires nanoparquet %s or newer in the selected R runtime", minimum_nanoparquet_version)
+      )
+    }
+
+    frame <- read_capture_frame(capture)
+    completed <- FALSE
+    connection <- NULL
+    on.exit({
+      if (!is.null(connection)) try(close(connection), silent = TRUE)
+      if (!completed && file.exists(target_path)) try(unlink(target_path, force = TRUE), silent = TRUE)
+    }, add = TRUE)
+    tryCatch(
+      nanoparquet::write_parquet(frame, target_path),
+      openwrangler_r_frame_error = function(error) stop(error),
+      error = function(error) {
+        abort("export-write-failed", "the R dataframe could not be written as Parquet")
+      }
+    )
+
+    invisible(read_capture_frame(capture))
+    details <- file.info(target_path)
+    if (
+      nrow(details) != 1L ||
+        is.na(details$size[[1L]]) ||
+        !is.finite(details$size[[1L]]) ||
+        details$size[[1L]] < 8L ||
+        isTRUE(details$isdir[[1L]])
+    ) {
+      abort("export-target-changed", "the private R Parquet artifact could not be verified")
+    }
+    connection <- file(target_path, open = "rb")
+    prefix <- readBin(connection, what = "raw", n = 4L)
+    seek(connection, where = -4L, origin = "end", rw = "read")
+    suffix <- readBin(connection, what = "raw", n = 4L)
+    close(connection)
+    connection <- NULL
+    parquet_magic <- charToRaw("PAR1")
+    if (!identical(prefix, parquet_magic) || !identical(suffix, parquet_magic)) {
+      abort("export-target-changed", "the private R Parquet artifact has invalid file markers")
     }
     completed <- TRUE
     list(
@@ -4127,6 +5242,22 @@ openwrangler_r_frame_contract <- local({
         rows = json_array(rows)
       ))
     )
+  }
+
+  count_missing_at <- function(capture, position, expected_name) {
+    validate_capture(capture)
+    column_count <- capture$descriptor$shape$columns
+    position <- whole_number(position, "missing-count column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the missing-count column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    expected_name <- bounded_utf8(expected_name, "missing-count column name", maximum_name_bytes)
+    if (!identical(capture$descriptor$schema[[position]]$name, expected_name)) {
+      abort("stale-column", "the missing-count column name no longer matches the R dataframe")
+    }
+    frame <- read_capture_frame(capture)
+    as.integer(sum(is.na(frame[[position]])))
   }
 
   materialize_summaries <- function(
@@ -4400,19 +5531,29 @@ openwrangler_r_frame_contract <- local({
     fill_missing_column = fill_missing_column,
     fill_missing_column_at = fill_missing_column_at,
     fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,
+    fill_missing_directional_at = fill_missing_directional_at,
+    fill_missing_linear_interpolation_at = fill_missing_linear_interpolation_at,
+    fill_missing_grouped_statistic_at = fill_missing_grouped_statistic_at,
     cast_column = cast_column,
     cast_column_at = cast_column_at,
     drop_columns = drop_columns,
     drop_columns_at = drop_columns_at,
     select_columns = select_columns,
     select_columns_at = select_columns_at,
+    group_by_at = group_by_at,
+    capture_group_result = capture_group_result,
     drop_missing_rows_at = drop_missing_rows_at,
     drop_duplicate_rows_at = drop_duplicate_rows_at,
     transform_rows = transform_rows,
+    nanoparquet_version_supported = nanoparquet_version_supported,
+    parquet_export_available = parquet_export_available,
+    export_formats = export_formats,
     write_csv = write_csv,
+    write_parquet = write_parquet,
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,
     materialize_view_page = materialize_view_page,
+    count_missing_at = count_missing_at,
     materialize_summaries = materialize_summaries,
     materialize_dataset_stats = materialize_dataset_stats,
     materialize_column_values = materialize_column_values,

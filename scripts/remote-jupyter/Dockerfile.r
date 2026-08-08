@@ -2,11 +2,14 @@ FROM rocker/r-ver:4.5.2@sha256:fd4ccdd3a4a6f7ef805e2daeee2a0fe3bf126bc231f363512
 
 ARG UBUNTU_SNAPSHOT=20260311T000000Z
 ARG R_REPOSITORY=https://p3m.dev/cran/__linux__/noble/2026-03-10
+ARG R_SUPPLEMENTAL_REPOSITORY=https://p3m.dev/cran/__linux__/noble/2026-06-01
 ARG IRKERNEL_VERSION=1.3.2
 ARG JSONLITE_VERSION=2.0.0
 ARG RLANG_VERSION=1.1.7
 ARG TIBBLE_VERSION=3.3.1
 ARG DATA_TABLE_VERSION=1.18.2.1
+ARG COLLAPSE_VERSION=2.1.7
+ARG NANOPARQUET_VERSION=0.5.1
 
 ENV PATH=/opt/openwrangler/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -14,11 +17,14 @@ ENV PATH=/opt/openwrangler/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/us
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     R_REPOSITORY=${R_REPOSITORY} \
+    R_SUPPLEMENTAL_REPOSITORY=${R_SUPPLEMENTAL_REPOSITORY} \
     IRKERNEL_VERSION=${IRKERNEL_VERSION} \
     JSONLITE_VERSION=${JSONLITE_VERSION} \
     RLANG_VERSION=${RLANG_VERSION} \
     TIBBLE_VERSION=${TIBBLE_VERSION} \
-    DATA_TABLE_VERSION=${DATA_TABLE_VERSION}
+    DATA_TABLE_VERSION=${DATA_TABLE_VERSION} \
+    COLLAPSE_VERSION=${COLLAPSE_VERSION} \
+    NANOPARQUET_VERSION=${NANOPARQUET_VERSION}
 
 RUN find /etc/apt -maxdepth 2 -type f \( -name sources.list -o -name '*.sources' \) \
       -exec sed -i "s|http://archive.ubuntu.com/ubuntu|https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}|g; s|http://security.ubuntu.com/ubuntu|https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}|g" {} + \
@@ -46,7 +52,7 @@ RUN python -I -m pip install \
       --require-hashes \
       --requirement /opt/openwrangler/requirements.r.txt \
     && python -I -m pip check \
-    && Rscript --vanilla -e 'repository <- Sys.getenv("R_REPOSITORY"); packages <- c("IRkernel", "jsonlite", "rlang", "tibble", "data.table"); install.packages(packages, repos = repository, Ncpus = 2L); expected <- c(IRkernel = Sys.getenv("IRKERNEL_VERSION"), jsonlite = Sys.getenv("JSONLITE_VERSION"), rlang = Sys.getenv("RLANG_VERSION"), tibble = Sys.getenv("TIBBLE_VERSION"), data.table = Sys.getenv("DATA_TABLE_VERSION")); actual <- vapply(names(expected), function(package) as.character(utils::packageVersion(package)), character(1)); stopifnot(as.character(getRversion()) == "4.5.2", identical(actual, expected)); IRkernel::installspec(user = FALSE, prefix = "/opt/openwrangler/venv", name = "openwrangler-r-remote-acceptance", displayname = "R (Open Wrangler Remote)")'
+    && Rscript --vanilla -e 'repository <- Sys.getenv("R_REPOSITORY"); supplemental_repository <- Sys.getenv("R_SUPPLEMENTAL_REPOSITORY"); packages <- c("IRkernel", "jsonlite", "rlang", "tibble", "data.table"); install.packages(packages, repos = repository, Ncpus = 2L); install.packages(c("collapse", "nanoparquet"), repos = supplemental_repository, Ncpus = 2L); expected <- c(IRkernel = Sys.getenv("IRKERNEL_VERSION"), jsonlite = Sys.getenv("JSONLITE_VERSION"), rlang = Sys.getenv("RLANG_VERSION"), tibble = Sys.getenv("TIBBLE_VERSION"), data.table = Sys.getenv("DATA_TABLE_VERSION"), collapse = Sys.getenv("COLLAPSE_VERSION"), nanoparquet = Sys.getenv("NANOPARQUET_VERSION")); actual <- vapply(names(expected), function(package) as.character(utils::packageVersion(package)), character(1)); stopifnot(as.character(getRversion()) == "4.5.2", identical(actual, expected)); IRkernel::installspec(user = FALSE, prefix = "/opt/openwrangler/venv", name = "openwrangler-r-remote-acceptance", displayname = "R (Open Wrangler Remote)")'
 
 COPY inject-token.py server.py /opt/openwrangler/
 RUN chmod 0555 /opt/openwrangler/inject-token.py /opt/openwrangler/server.py \

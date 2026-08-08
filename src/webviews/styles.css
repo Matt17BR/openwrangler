@@ -116,6 +116,15 @@ textarea {
   font-size: 12px;
 }
 
+.sessionModeChangeStatus {
+  background: var(--vscode-editorWidget-background);
+  border-top: 1px solid var(--vscode-panel-border);
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
 .toolbar {
   display: flex;
   justify-content: space-between;
@@ -1772,6 +1781,8 @@ dd {
 
 .operationSearch > span {
   color: var(--vscode-descriptionForeground);
+  grid-column: 1;
+  grid-row: 1;
   margin-left: 7px;
   pointer-events: none;
   position: relative;
@@ -2070,6 +2081,18 @@ dd {
 
   .operationDialogBody {
     grid-template-columns: minmax(220px, 0.7fr) minmax(340px, 1.3fr);
+  }
+}
+
+@media (max-width: 860px) {
+  .toolbarWithSessionModeAction {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .toolbarWithSessionModeAction .toolbarActions {
+    justify-content: flex-start;
   }
 }
 

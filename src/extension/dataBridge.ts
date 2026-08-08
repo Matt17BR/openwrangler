@@ -69,6 +69,7 @@ export interface SessionPresentation {
   code: string;
   draft?: {
     diff: DataDiff;
+    remainingMissingCells?: number;
     warnings: string[];
     beforeSchema: ColumnSchema[];
   };
@@ -95,6 +96,17 @@ export interface OpenWranglerBridge {
     sessionId: string,
     revision: number,
     source: SessionSource,
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse>;
+  /**
+   * Atomically replaces a live notebook-variable runtime with an Editing-mode
+   * runtime bound to the same captured notebook document. This is a host-only
+   * lifecycle operation and is intentionally absent from protocol v2.
+   */
+  reconfigureNotebookSessionForEditing?(
+    sessionId: string,
+    revision: number,
+    viewState: GridViewState,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse>;
   /**

@@ -8,7 +8,7 @@ export interface ColumnTypePresentation {
 export function columnTypePresentation(column: Pick<ColumnSchema, "rawType" | "type">): ColumnTypePresentation {
   const rawType = column.rawType.toLowerCase();
 
-  if (/(?:category|categorical|enum)/u.test(rawType)) {
+  if (/(?:^|[^a-z])(?:category|categorical|enum|factor)(?:$|[^a-z])/u.test(rawType)) {
     return { icon: "codicon-symbol-enum", label: "Category" };
   }
   if (column.type === "duration" || /(?:duration|timedelta|interval)/u.test(rawType)) {

@@ -11,6 +11,7 @@ import {
 } from "../extension/notebooks/kernelBridge";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { buildKernelBootstrapCode } from "../extension/notebooks/kernelRuntimeBundle";
+import { SessionCoordinator } from "../extension/sessionCoordinator";
 import type { OpenSessionRequest, OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
 
 const HANG = Symbol("hang kernel request");
@@ -370,6 +371,76 @@ describe("kernel retry classification", () => {
 
     expect(requestsA.map((request) => request.kind)).toEqual(["openSession"]);
     expect(requestsB).toEqual([]);
+  });
+
+  it("keeps a Viewing session when Editing mode would open on a newly selected Python kernel", async () => {
+    const document = notebookDocument("/workspace/editing-kernel.ipynb");
+    setOpenNotebookDocuments(document);
+    const requestsA: OpenWranglerRequest[] = [];
+    const requestsB: OpenWranglerRequest[] = [];
+    const respond =
+      (requests: OpenWranglerRequest[]) =>
+      (request: OpenWranglerRequest): OpenWranglerResponse => {
+        requests.push(request);
+        if (request.kind === "openSession") {
+          const opened = openedResponse(request.requestedSessionId!, "pandas");
+          if (opened.kind !== "sessionOpened") throw new Error("Expected a session-opened fixture.");
+          return {
+            ...opened,
+            metadata: {
+              ...opened.metadata,
+              source: request.source,
+              mode: request.mode ?? "viewing",
+              capabilities: {
+                ...opened.metadata.capabilities,
+                notebookInsert: true,
+                supportedOperations: ["sortRows"]
+              }
+            }
+          };
+        }
+        if (request.kind === "closeSession") {
+          return { kind: "sessionClosed", sessionId: request.sessionId };
+        }
+        return initializedResponse;
+      };
+    const kernelA = controlledFakeKernel(respond(requestsA));
+    const kernelB = controlledFakeKernel(respond(requestsB));
+    let currentKernel = kernelA.kernel;
+    vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel: async () => currentKernel } })
+    } as never);
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(createKernelBridge(document), document);
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "orders",
+      variableName: "orders",
+      uri: document.uri.toString()
+    };
+
+    try {
+      const opened = await bridge.request({ ...openRequest(undefined, "pandas"), source });
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the Viewing session to open.");
+      currentKernel = kernelB.kernel;
+      kernelA.setStatus("restarting");
+
+      await expect(
+        bridge.reconfigureNotebookSessionForEditing?.(opened.metadata.sessionId, opened.metadata.revision, {
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "editing_mode_open_failed" });
+
+      expect(requestsA.map((request) => request.kind)).toEqual(["openSession"]);
+      expect(requestsB).toEqual([]);
+      expect(coordinator.activeSession()).toMatchObject({
+        sessionId: opened.metadata.sessionId,
+        metadata: { mode: "viewing" }
+      });
+    } finally {
+      await coordinator.shutdown();
+    }
   });
 
   it("assigns a stable host-known identity to kernel session opens", () => {

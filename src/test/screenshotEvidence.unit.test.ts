@@ -232,7 +232,8 @@ describe("packaged editor screenshot evidence", () => {
       "notebook-pyspark",
       "notebook-r",
       "notebook-r-editing",
-      "notebook-r-code-insertion"
+      "notebook-r-code-insertion",
+      "r-quarto-variable-picker"
     ]);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
@@ -272,6 +273,9 @@ describe("packaged editor screenshot evidence", () => {
     expect(packagedScreenshotFileName("vscode", "notebook-r-code-insertion", "dark")).toBe(
       "vscode-notebook-r-code-insertion-dark.png"
     );
+    expect(packagedScreenshotFileName("vscode", "r-quarto-variable-picker", "dark")).toBe(
+      "vscode-r-quarto-variable-picker-dark.png"
+    );
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
   });
 
@@ -295,6 +299,9 @@ describe("packaged editor screenshot evidence", () => {
     expect(rJourney).toContain(
       "captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput)"
     );
+    expect(rJourney).toContain(
+      "captureReleasedRNotebookGroupByDraft(workbench, testing, mediaSession.sessionId, screenshotOutput)"
+    );
     expect(extensionHost).toContain('"regional_orders <- data.frame("');
     expect(extensionHost).toContain('"  order_id = 2400000L + media_index,"');
     expect(extensionHost).toContain("\"  market = rep(c('DACH', 'Nordics', 'France', 'Iberia')");
@@ -310,6 +317,7 @@ describe("packaged editor screenshot evidence", () => {
     );
     expect(extensionHost).toContain('scene: "notebook-r-code-insertion"');
     expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:editing")');
+    expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:quarto-picker")');
     expect(extensionHost).toContain('progress: "jupyter-r:screenshot:code-insertion"');
     expect(extensionHost).toContain("PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT");
     expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:variable-picker")');

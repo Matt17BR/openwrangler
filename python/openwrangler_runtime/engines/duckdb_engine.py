@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -573,6 +573,22 @@ class DuckDBEngine(DataFrameEngine):
                 summaries.append(summary)
         return summaries
 
+    def missing_count(self, frame: Any, column_position: int) -> int:
+        columns = self._visible_columns(frame)
+        if (
+            not isinstance(column_position, int)
+            or isinstance(column_position, bool)
+            or column_position < 0
+            or column_position >= len(columns)
+        ):
+            raise EngineError("The selected column is unavailable for missing-value counting.")
+        column = columns[column_position]
+        raw_types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
+        identifier = _quote_ident(column)
+        valid = _valid_predicate(identifier, raw_types[column])
+        result = self._terminal_scalar(frame, f"SELECT count(*) FILTER (WHERE NOT ({valid})) FROM ow")
+        return int(result or 0)
+
     def header_stats(self, frame: Any) -> dict[str, Any]:
         frame = self.normalize(frame)
         visible = self._visible_columns(frame)
@@ -822,6 +838,37 @@ class DuckDBEngine(DataFrameEngine):
             if replacement.get("kind") == "fallbackColumns":
                 fallback_columns = [bound_column_name(fallback, kind) for fallback in replacement["columns"]]
                 return [(f"{prefix}df = _ow_fill_missing_from_columns(df, {column!r}, {fallback_columns!r})")]
+            if replacement.get("kind") == "directional":
+                order_rules = [
+                    {
+                        **rule,
+                        "column": bound_column_name(rule["column"], kind),
+                    }
+                    for rule in replacement["orderBy"]
+                ]
+                return [
+                    (
+                        f"{prefix}df = _ow_fill_missing_directional("
+                        f"df, {column!r}, {order_rules!r}, {replacement['direction']!r}, "
+                        f"{replacement.get('maxGap')!r})"
+                    )
+                ]
+            if replacement.get("kind") == "groupedStatistic":
+                keys = [bound_column_name(key, kind) for key in replacement["keys"]]
+                return [
+                    (
+                        f"{prefix}df = _ow_fill_missing_grouped_statistic("
+                        f"df, {column!r}, {keys!r}, {replacement['statistic']!r})"
+                    )
+                ]
+            if replacement.get("kind") == "linearInterpolation":
+                coordinate = bound_column_name(replacement["coordinate"], kind)
+                return [
+                    (
+                        f"{prefix}df = _ow_fill_missing_linear_interpolation("
+                        f"df, {column!r}, {coordinate!r}, {replacement.get('maxGap')!r})"
+                    )
+                ]
             if replacement.get("kind") in {"mean", "median", "mostFrequent"}:
                 return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, None)"]
             value = generated_fill_replacement_expression(replacement)
@@ -1040,6 +1087,35 @@ class DuckDBEngine(DataFrameEngine):
                 column,
                 [bound_column_name(fallback, "fillMissingValues") for fallback in replacement["columns"]],
             )
+        if replacement.get("kind") == "directional":
+            order_rules = [
+                {
+                    **rule,
+                    "column": bound_column_name(rule["column"], "fillMissingValues"),
+                }
+                for rule in replacement["orderBy"]
+            ]
+            return self._fill_missing_directional(
+                frame,
+                column,
+                order_rules,
+                replacement["direction"],
+                replacement.get("maxGap"),
+            )
+        if replacement.get("kind") == "groupedStatistic":
+            return self._fill_missing_grouped_statistic(
+                frame,
+                column,
+                [bound_column_name(key, "fillMissingValues") for key in replacement["keys"]],
+                replacement["statistic"],
+            )
+        if replacement.get("kind") == "linearInterpolation":
+            return self._fill_missing_linear_interpolation(
+                frame,
+                column,
+                bound_column_name(replacement["coordinate"], "fillMissingValues"),
+                replacement.get("maxGap"),
+            )
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         raw_type = types[column]
         semantic_type = _semantic_type(raw_type)
@@ -1251,6 +1327,410 @@ class DuckDBEngine(DataFrameEngine):
             raise EngineError(
                 f"A fallback column is incompatible with the selected DuckDB target column: {error}"
             ) from error
+
+    def _fill_missing_directional(
+        self,
+        frame: Any,
+        target: str,
+        order_rules: Sequence[Mapping[str, Any]],
+        direction: str,
+        max_gap: int | None,
+    ) -> Any:
+        columns = self._columns(frame)
+        types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
+        target_identifier = _quote_ident(target)
+        valid = _valid_predicate(target_identifier, types[target])
+
+        reserved = list(columns)
+        original_name = _unique_internal(reserved, "__ow_directional_original")
+        reserved.append(original_name)
+        calculation_name = _unique_internal(reserved, "__ow_directional_calculation")
+        reserved.append(calculation_name)
+        previous_name = _unique_internal(reserved, "__ow_directional_previous")
+        reserved.append(previous_name)
+        next_name = _unique_internal(reserved, "__ow_directional_next")
+        reserved.append(next_name)
+        total_name = _unique_internal(reserved, "__ow_directional_total")
+        reserved.append(total_name)
+        candidate_name = _unique_internal(reserved, "__ow_directional_candidate")
+
+        original = _quote_ident(original_name)
+        calculation = _quote_ident(calculation_name)
+        previous = _quote_ident(previous_name)
+        following = _quote_ident(next_name)
+        total = _quote_ident(total_name)
+        candidate = _quote_ident(candidate_name)
+        order_expressions = []
+        for rule in order_rules:
+            identifier = _quote_ident(rule["column"])
+            expression = (
+                f"CASE WHEN {_valid_predicate(identifier, types[rule['column']])} THEN {identifier} ELSE NULL END"
+                if _is_float_type(types[rule["column"]])
+                else identifier
+            )
+            order_expressions.append(
+                f"{expression} {str(rule['direction']).upper()} NULLS {str(rule['nulls']).upper()}"
+            )
+        order = ", ".join(order_expressions)
+        calculation_order = f"{order}, {original}"
+        present_value = f"CASE WHEN {valid} THEN {target_identifier} ELSE NULL END"
+        if direction == "forward":
+            candidate_expression = (
+                f"last_value({present_value} IGNORE NULLS) OVER (ORDER BY {calculation} "
+                "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+            )
+        else:
+            candidate_expression = (
+                f"first_value({present_value} IGNORE NULLS) OVER (ORDER BY {calculation} "
+                "ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)"
+            )
+        gap_size = f"coalesce({following}, {total} + 1) - coalesce({previous}, 0) - 1"
+        eligible = f"NOT ({valid}) AND {candidate} IS NOT NULL"
+        if max_gap is not None:
+            eligible += f" AND ({gap_size}) <= {int(max_gap)}"
+        replacement = f"CASE WHEN {eligible} THEN {candidate} ELSE {target_identifier} END"
+        temporary_names = [
+            original_name,
+            calculation_name,
+            previous_name,
+            next_name,
+            total_name,
+            candidate_name,
+        ]
+        query = (
+            f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), "
+            f"ordered AS (SELECT *, row_number() OVER (ORDER BY {calculation_order}) AS {calculation} "
+            "FROM numbered), "
+            f"context AS (SELECT *, max(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY "
+            f"{calculation} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {previous}, "
+            f"min(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY {calculation} "
+            f"ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS {following}, "
+            f"count(*) OVER () AS {total}, {candidate_expression} AS {candidate} FROM ordered) "
+            f"SELECT * EXCLUDE ({_identifier_list(temporary_names)}) REPLACE ("
+            f"{replacement} AS {target_identifier}) FROM context ORDER BY {original}"
+        )
+        return self._relation(frame, query)
+
+    def _fill_missing_linear_interpolation(
+        self,
+        frame: Any,
+        target: str,
+        coordinate: str,
+        max_gap: int | None,
+    ) -> Any:
+        columns = self._columns(frame)
+        types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
+        target_type = types[target]
+        coordinate_type = types[coordinate]
+        if _semantic_type(target_type) != "float":
+            raise EngineError("Linear interpolation requires a floating-point target column.")
+        if "hugeint" in coordinate_type.lower():
+            raise EngineError(
+                "Linear interpolation does not support HUGEINT coordinates; "
+                "convert the coordinate to a narrower exact type first."
+            )
+        if _semantic_type(coordinate_type) not in {"integer", "float", "decimal", "date", "datetime"}:
+            raise EngineError("Linear interpolation coordinates must be numeric, dates, or datetimes.")
+        coordinate_identifier = _quote_ident(coordinate)
+        minimum_coordinate = f"min({coordinate_identifier}) OVER ()"
+        numeric_coordinate, coordinate_roundtrip = _duckdb_interpolation_coordinate_projection(
+            coordinate_identifier,
+            coordinate_type,
+            minimum_coordinate,
+        )
+        coordinate_finite = _finite_predicate(coordinate_identifier, coordinate_type)
+        validation_name = _unique_internal(columns, "__ow_interpolation_validation_coordinate")
+        validation_exact_name = _unique_internal([*columns, validation_name], "__ow_interpolation_validation_exact")
+        validation_identifier = _quote_ident(validation_name)
+        validation_exact = _quote_ident(validation_exact_name)
+        try:
+            validation = self._terminal_rows(
+                frame,
+                (
+                    f"WITH projected AS (SELECT *, {numeric_coordinate} AS {validation_identifier}, "
+                    f"{coordinate_roundtrip} AS {validation_exact} FROM ow) "
+                    "SELECT count(*), "
+                    f"count(*) FILTER (WHERE NOT ({coordinate_finite})), "
+                    f"count(DISTINCT {coordinate_identifier}), "
+                    f"count(DISTINCT {validation_identifier}), "
+                    f"coalesce(bool_and(isfinite({validation_identifier})), TRUE), "
+                    f"coalesce(bool_and({validation_exact}), TRUE) FROM projected"
+                ),
+            )[0]
+        except Exception as error:
+            raise EngineError(
+                "Linear interpolation cannot represent the selected coordinate distances exactly."
+            ) from error
+        count = int(validation[0])
+        if int(validation[1]):
+            raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+        if int(validation[2]) != count:
+            raise EngineError("Linear interpolation requires unique coordinate values.")
+        if int(validation[3]) != count or not bool(validation[4]) or not bool(validation[5]):
+            raise EngineError(
+                "Linear interpolation cannot preserve the selected coordinate distances exactly enough; "
+                "choose a lower-precision coordinate column."
+            )
+
+        target_identifier = _quote_ident(target)
+        target_present = _valid_predicate(target_identifier, target_type)
+        target_missing = f"NOT ({target_present})"
+        present_target = f"CASE WHEN {target_present} THEN {target_identifier} ELSE NULL END"
+
+        reserved = list(columns)
+        temporary_names = []
+        for base in (
+            "__ow_interpolation_original",
+            "__ow_interpolation_calculation",
+            "__ow_interpolation_coordinate",
+            "__ow_interpolation_previous",
+            "__ow_interpolation_next",
+            "__ow_interpolation_left_value",
+            "__ow_interpolation_right_value",
+            "__ow_interpolation_left_coordinate",
+            "__ow_interpolation_right_coordinate",
+            "__ow_interpolation_weight",
+        ):
+            name = _unique_internal(reserved, base)
+            reserved.append(name)
+            temporary_names.append(name)
+        (
+            original_name,
+            calculation_name,
+            numeric_name,
+            previous_name,
+            next_name,
+            left_value_name,
+            right_value_name,
+            left_coordinate_name,
+            right_coordinate_name,
+            weight_name,
+        ) = temporary_names
+        original = _quote_ident(original_name)
+        calculation = _quote_ident(calculation_name)
+        numeric = _quote_ident(numeric_name)
+        previous = _quote_ident(previous_name)
+        following = _quote_ident(next_name)
+        left_value = _quote_ident(left_value_name)
+        right_value = _quote_ident(right_value_name)
+        left_coordinate = _quote_ident(left_coordinate_name)
+        right_coordinate = _quote_ident(right_coordinate_name)
+        weight = _quote_ident(weight_name)
+        calculation_order = f"{coordinate_identifier} ASC, {original}"
+        numeric_coordinate, _coordinate_roundtrip = _duckdb_interpolation_coordinate_projection(
+            coordinate_identifier,
+            coordinate_type,
+            f"min({coordinate_identifier}) OVER ()",
+        )
+        left_value_expression = (
+            f"last_value({present_target} IGNORE NULLS) OVER (ORDER BY {calculation} "
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)"
+        )
+        right_value_expression = (
+            f"first_value({present_target} IGNORE NULLS) OVER (ORDER BY {calculation} "
+            "ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)"
+        )
+        present_coordinate = f"CASE WHEN {target_present} THEN {numeric} ELSE NULL END"
+        left_coordinate_expression = (
+            f"last_value({present_coordinate} IGNORE NULLS) OVER (ORDER BY {calculation} "
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)"
+        )
+        right_coordinate_expression = (
+            f"first_value({present_coordinate} IGNORE NULLS) OVER (ORDER BY {calculation} "
+            "ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)"
+        )
+        span = f"({right_coordinate} - {left_coordinate})"
+        direct_weight = f"(({numeric} - {left_coordinate}) / {span})"
+        scaled_weight = (
+            f"(({numeric} / 2.0 - {left_coordinate} / 2.0) / ({right_coordinate} / 2.0 - {left_coordinate} / 2.0))"
+        )
+        weight_expression = f"CASE WHEN isfinite({span}) THEN {direct_weight} ELSE {scaled_weight} END"
+        gap_size = f"{following} - {previous} - 1"
+        eligible = (
+            f"{target_missing} AND isfinite({left_value}) AND isfinite({right_value}) "
+            f"AND isfinite({weight}) AND {weight} BETWEEN 0.0 AND 1.0"
+        )
+        if max_gap is not None:
+            eligible += f" AND {gap_size} <= {int(max_gap)}"
+        interpolated = f"((1.0 - {weight}) * {left_value} + {weight} * {right_value})"
+        replacement = f"CASE WHEN {eligible} THEN CAST({interpolated} AS {target_type}) ELSE {target_identifier} END"
+        query = (
+            f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), "
+            f"ordered AS (SELECT *, row_number() OVER (ORDER BY {calculation_order}) AS {calculation}, "
+            f"{numeric_coordinate} AS {numeric} FROM numbered), "
+            f"context AS (SELECT *, max(CASE WHEN {target_present} THEN {calculation} END) OVER "
+            f"(ORDER BY {calculation} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {previous}, "
+            f"min(CASE WHEN {target_present} THEN {calculation} END) OVER "
+            f"(ORDER BY {calculation} ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS {following}, "
+            f"{left_value_expression} AS {left_value}, {right_value_expression} AS {right_value}, "
+            f"{left_coordinate_expression} AS {left_coordinate}, "
+            f"{right_coordinate_expression} AS {right_coordinate} FROM ordered), "
+            f"weighted AS (SELECT *, {weight_expression} AS {weight} FROM context) "
+            f"SELECT * EXCLUDE ({_identifier_list(temporary_names)}) REPLACE ("
+            f"{replacement} AS {target_identifier}) FROM weighted ORDER BY {original}"
+        )
+        return self._relation(frame, query)
+
+    def _fill_missing_grouped_statistic(
+        self,
+        frame: Any,
+        target: str,
+        keys: list[str],
+        statistic: str,
+    ) -> Any:
+        columns = self._columns(frame)
+        types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
+        target_type = types[target]
+        target_identifier = _quote_ident(target)
+        target_valid = _valid_predicate(target_identifier, target_type)
+        target_missing = f"NOT ({target_valid})"
+
+        reserved = list(columns)
+        original_name = _unique_internal(reserved, "__ow_grouped_original")
+        reserved.append(original_name)
+        key_names = []
+        for index, _key in enumerate(keys):
+            name = _unique_internal(reserved, f"__ow_grouped_key_{index}")
+            reserved.append(name)
+            key_names.append(name)
+        fill_name = _unique_internal(reserved, "__ow_grouped_fill")
+        reserved.append(fill_name)
+        count_name = _unique_internal(reserved, "__ow_grouped_count")
+        reserved.append(count_name)
+        maximum_name = _unique_internal(reserved, "__ow_grouped_maximum")
+        reserved.append(maximum_name)
+
+        original = _quote_ident(original_name)
+        normalized_key_expressions = []
+        for key, name in zip(keys, key_names, strict=True):
+            identifier = _quote_ident(key)
+            key_value = _case_sensitive_group_value(identifier, types[key])
+            normalized_key_expressions.append(
+                f"CASE WHEN {_valid_predicate(identifier, types[key])} THEN {key_value} ELSE NULL END "
+                f"AS {_quote_ident(name)}"
+            )
+        normalized_keys = _identifier_list(key_names)
+        partition = normalized_keys
+        normalized = (
+            f"normalized AS (SELECT *, row_number() OVER () AS {original}, "
+            f"{', '.join(normalized_key_expressions)} FROM ow)"
+        )
+
+        if statistic == "mostFrequent":
+            value_name = _unique_internal(reserved, "__ow_grouped_value")
+            reserved.append(value_name)
+            token_name = _unique_internal(reserved, "__ow_grouped_token")
+            reserved.append(token_name)
+            ties_name = _unique_internal(reserved, "__ow_grouped_ties")
+            value = _quote_ident(value_name)
+            token = _quote_ident(token_name)
+            count = _quote_ident(count_name)
+            maximum = _quote_ident(maximum_name)
+            ties = _quote_ident(ties_name)
+            fill = _quote_ident(fill_name)
+            grouped_target = _case_sensitive_group_value(target_identifier, target_type)
+            summary_ctes = (
+                f"counts AS (SELECT {normalized_keys}, {grouped_target} AS {token}, "
+                f"any_value({target_identifier}) AS {value}, count(*) AS {count} FROM normalized "
+                f"WHERE {target_valid} GROUP BY {normalized_keys}, {grouped_target}), "
+                f"ranked AS (SELECT *, max({count}) OVER (PARTITION BY {partition}) AS {maximum} FROM counts), "
+                f"summary AS (SELECT {normalized_keys}, count(*) FILTER (WHERE {count} = {maximum}) AS {ties}, "
+                f"CASE WHEN {ties} = 1 THEN any_value({value}) FILTER (WHERE {count} = {maximum}) "
+                f"ELSE NULL END AS {fill} FROM ranked GROUP BY {normalized_keys})"
+            )
+        elif statistic == "mean":
+            positive_name = _unique_internal(reserved, "__ow_grouped_positive")
+            reserved.append(positive_name)
+            negative_name = _unique_internal(reserved, "__ow_grouped_negative")
+            reserved.append(negative_name)
+            scale_name = _unique_internal(reserved, "__ow_grouped_scale")
+            reserved.append(scale_name)
+            scaled_name = _unique_internal(reserved, "__ow_grouped_scaled")
+            positive = _quote_ident(positive_name)
+            negative = _quote_ident(negative_name)
+            scale = _quote_ident(scale_name)
+            scaled = _quote_ident(scaled_name)
+            fill = _quote_ident(fill_name)
+            summary_ctes = (
+                f"annotated AS (SELECT *, count(*) FILTER (WHERE {target_valid} AND {target_identifier} = "
+                f"CAST('Infinity' AS DOUBLE)) OVER (PARTITION BY {partition}) AS {positive}, "
+                f"count(*) FILTER (WHERE {target_valid} AND {target_identifier} = CAST('-Infinity' AS DOUBLE)) "
+                f"OVER (PARTITION BY {partition}) AS {negative}, max(abs({target_identifier})) FILTER "
+                f"(WHERE {target_valid} AND isfinite({target_identifier})) OVER (PARTITION BY {partition}) "
+                f"AS {scale} FROM normalized), "
+                f"scaled_rows AS (SELECT *, avg({target_identifier} / nullif({scale}, 0)) FILTER "
+                f"(WHERE {target_valid} AND isfinite({target_identifier})) OVER (PARTITION BY {partition}) "
+                f"AS {scaled} FROM annotated), "
+                f"summary AS (SELECT DISTINCT {normalized_keys}, CASE WHEN {positive} > 0 AND {negative} > 0 "
+                f"THEN NULL WHEN {positive} > 0 THEN CAST('Infinity' AS DOUBLE) WHEN {negative} > 0 THEN "
+                f"CAST('-Infinity' AS DOUBLE) WHEN {scale} IS NULL THEN NULL WHEN {scale} = 0 THEN 0.0 "
+                f"ELSE greatest(-1.0, least(1.0, {scaled})) * {scale} END AS {fill} FROM scaled_rows)"
+            )
+        else:
+            lower_name = _unique_internal(reserved, "__ow_grouped_lower")
+            reserved.append(lower_name)
+            upper_name = _unique_internal(reserved, "__ow_grouped_upper")
+            reserved.append(upper_name)
+            missing_name = _unique_internal(reserved, "__ow_grouped_missing")
+            lower = _quote_ident(lower_name)
+            upper = _quote_ident(upper_name)
+            missing_count = _quote_ident(missing_name)
+            fill = _quote_ident(fill_name)
+            semantic_type = _semantic_type(target_type)
+            lower_aggregate = (
+                f"quantile_disc({target_identifier}, 0.5 ORDER BY {target_identifier}) FILTER (WHERE {target_valid})"
+            )
+            upper_aggregate = (
+                f"quantile_disc({target_identifier}, 0.5 ORDER BY {target_identifier} DESC) "
+                f"FILTER (WHERE {target_valid})"
+            )
+            if semantic_type == "integer":
+                fill_expression = (
+                    f"CAST(({lower} // 2) + ({upper} // 2) + ((({lower} % 2) + ({upper} % 2)) // 2) AS {target_type})"
+                )
+                invalid = f"{missing_count} > 0 AND ((({lower} % 2) + ({upper} % 2)) % 2) <> 0"
+            elif semantic_type == "decimal":
+                fill_expression = f"median({target_identifier}) FILTER (WHERE {target_valid})"
+                invalid = f"{missing_count} > 0 AND {fill} IS NOT NULL AND ({fill} - {lower}) <> ({upper} - {fill})"
+            else:
+                raw_median = f"median({target_identifier}) FILTER (WHERE {target_valid})"
+                fill_expression = f"CASE WHEN isnan({raw_median}) THEN NULL ELSE {raw_median} END"
+                invalid = "FALSE"
+            summary_select = (
+                f"SELECT {normalized_keys}, count(*) FILTER (WHERE {target_missing}) AS {missing_count}, "
+                f"{lower_aggregate} AS {lower}, {upper_aggregate} AS {upper}, {fill_expression} AS {fill} "
+                f"FROM normalized GROUP BY {normalized_keys}"
+            )
+            if invalid == "FALSE":
+                summary_ctes = f"summary AS ({summary_select})"
+            else:
+                label = "integer" if semantic_type == "integer" else "decimal"
+                message = (
+                    f"A grouped {label} median cannot be represented exactly in the selected column. "
+                    "Cast the column to a wider type before filling missing values."
+                )
+                checked_fill = f"CASE WHEN {invalid} THEN error({_sql_literal(message)}) ELSE {fill} END"
+                summary_ctes = (
+                    f"raw_summary AS ({summary_select}), summary AS (SELECT {normalized_keys}, "
+                    f"{checked_fill} AS {fill} FROM raw_summary)"
+                )
+
+        normalized_join = " AND ".join(
+            f"n.{_quote_ident(name)} IS NOT DISTINCT FROM s.{_quote_ident(name)}" for name in key_names
+        )
+        fill = f"s.{_quote_ident(fill_name)}"
+        qualified_target = f"n.{target_identifier}"
+        qualified_missing = target_missing.replace(target_identifier, qualified_target)
+        replacement = (
+            f"CASE WHEN {qualified_missing} AND {fill} IS NOT NULL THEN CAST({fill} AS {target_type}) "
+            f"ELSE {qualified_target} END"
+        )
+        query = (
+            f"WITH {normalized}, {summary_ctes} SELECT n.* EXCLUDE ({_identifier_list([original_name, *key_names])}) "
+            f"REPLACE ({replacement} AS {target_identifier}) FROM normalized n LEFT JOIN summary s ON "
+            f"{normalized_join} ORDER BY n.{original}"
+        )
+        return self._relation(frame, query)
 
     def _drop_duplicates(self, frame: Any, columns: Any, keep: str) -> Any:
         selected = list(columns) if columns else self._visible_columns(frame)
@@ -1675,6 +2155,14 @@ def _is_integer_type(raw_type: str) -> bool:
     return _semantic_type(raw_type) == "integer"
 
 
+def _case_sensitive_group_value(identifier: str, raw_type: str) -> str:
+    """Return a collation-free value for public exact grouping semantics."""
+    lowered = raw_type.strip().lower()
+    if lowered in {"varchar", "char"} or lowered.startswith(("varchar(", "char(")):
+        return f"encode({identifier})"
+    return identifier
+
+
 def _nan_predicate(identifier: str, raw_type: str) -> str:
     return f"({identifier} IS NOT NULL AND isnan({identifier}))" if _is_float_type(raw_type) else "FALSE"
 
@@ -1689,6 +2177,32 @@ def _finite_predicate(identifier: str, raw_type: str) -> str:
     if _is_float_type(raw_type):
         return f"({identifier} IS NOT NULL AND isfinite({identifier}))"
     return f"{identifier} IS NOT NULL"
+
+
+def _duckdb_interpolation_coordinate_projection(
+    identifier: str,
+    raw_type: str,
+    minimum: str,
+) -> tuple[str, str]:
+    semantic_type = _semantic_type(raw_type)
+    if semantic_type == "float":
+        return f"CAST({identifier} AS DOUBLE)", "TRUE"
+    if semantic_type == "integer":
+        exact = f"(CAST({identifier} AS HUGEINT) - CAST({minimum} AS HUGEINT))"
+        projected = f"CAST({exact} AS DOUBLE)"
+        return projected, f"CAST({projected} AS HUGEINT) = {exact}"
+    if semantic_type == "decimal":
+        exact = f"({identifier} - {minimum})"
+        projected = f"CAST({exact} AS DOUBLE)"
+        return projected, f"CAST({projected} AS {raw_type}) = {exact}"
+    if semantic_type == "date":
+        exact = f"date_diff('day', {minimum}, {identifier})"
+    elif raw_type.strip().lower().startswith("timestamp_ns"):
+        exact = f"(epoch_ns({identifier}) - epoch_ns({minimum}))"
+    else:
+        exact = f"date_diff('microsecond', {minimum}, {identifier})"
+    projected = f"CAST({exact} AS DOUBLE)"
+    return projected, f"CAST({projected} AS BIGINT) = {exact}"
 
 
 def _numeric_visualization(
@@ -1748,10 +2262,10 @@ def _finite_float(value: Any) -> float | None:
 
 
 def _unique_internal(existing: Iterable[str], base: str) -> str:
-    names = set(existing)
+    names = {str(name).casefold() for name in existing}
     candidate = base
     index = 0
-    while candidate in names:
+    while candidate.casefold() in names:
         index += 1
         candidate = f"{base}_{index}"
     return candidate
@@ -2169,7 +2683,8 @@ def _ow_select(df, columns):
 def _ow_unique(existing, base):
     candidate = base
     index = 0
-    while candidate in set(existing):
+    names = {str(name).casefold() for name in existing}
+    while candidate.casefold() in names:
         index += 1
         candidate = base + "_" + str(index)
     return candidate
@@ -2189,6 +2704,35 @@ def _ow_is_integer(raw_type):
             "utinyint", "usmallint", "uinteger", "ubigint",
         )
     )
+
+
+def _ow_interpolation_coordinate_projection(identifier, raw_type, minimum):
+    lowered = str(raw_type).lower()
+    if _ow_is_float(raw_type):
+        return "CAST(" + identifier + " AS DOUBLE)", "TRUE"
+    if _ow_is_integer(raw_type):
+        exact = "(CAST(" + identifier + " AS HUGEINT) - CAST(" + minimum + " AS HUGEINT))"
+        projected = "CAST(" + exact + " AS DOUBLE)"
+        return projected, "CAST(" + projected + " AS HUGEINT) = " + exact
+    if "decimal" in lowered:
+        exact = "(" + identifier + " - " + minimum + ")"
+        projected = "CAST(" + exact + " AS DOUBLE)"
+        return projected, "CAST(" + projected + " AS " + str(raw_type) + ") = " + exact
+    if lowered == "date":
+        exact = "date_diff('day', " + minimum + ", " + identifier + ")"
+    elif lowered.startswith("timestamp_ns"):
+        exact = "(epoch_ns(" + identifier + ") - epoch_ns(" + minimum + "))"
+    else:
+        exact = "date_diff('microsecond', " + minimum + ", " + identifier + ")"
+    projected = "CAST(" + exact + " AS DOUBLE)"
+    return projected, "CAST(" + projected + " AS BIGINT) = " + exact
+
+
+def _ow_case_sensitive_group_value(identifier, raw_type):
+    lowered = str(raw_type).strip().lower()
+    if lowered in {"varchar", "char"} or lowered.startswith(("varchar(", "char(")):
+        return "encode(" + identifier + ")"
+    return identifier
 
 
 def _ow_checked_integer_result(expression):
@@ -2367,6 +2911,405 @@ def _ow_fill_missing_from_columns(df, target, fallbacks):
         + fallback_value + " ELSE CAST(" + target_identifier + " AS " + output_type + ") END"
     )
     return _ow_assign(df, target, expression)
+
+
+def _ow_fill_missing_directional(df, target, order_rules, direction, max_gap):
+    columns = _ow_columns(df)
+    types = dict(zip(columns, map(str, df.types)))
+    target_identifier = _ow_ident(target)
+    valid = _ow_valid(target_identifier, types[target])
+    reserved = list(columns)
+    original_name = _ow_unique(reserved, "__ow_directional_original")
+    reserved.append(original_name)
+    calculation_name = _ow_unique(reserved, "__ow_directional_calculation")
+    reserved.append(calculation_name)
+    previous_name = _ow_unique(reserved, "__ow_directional_previous")
+    reserved.append(previous_name)
+    next_name = _ow_unique(reserved, "__ow_directional_next")
+    reserved.append(next_name)
+    total_name = _ow_unique(reserved, "__ow_directional_total")
+    reserved.append(total_name)
+    candidate_name = _ow_unique(reserved, "__ow_directional_candidate")
+    original = _ow_ident(original_name)
+    calculation = _ow_ident(calculation_name)
+    previous = _ow_ident(previous_name)
+    following = _ow_ident(next_name)
+    total = _ow_ident(total_name)
+    candidate = _ow_ident(candidate_name)
+    order_expressions = []
+    for rule in order_rules:
+        identifier = _ow_ident(rule["column"])
+        expression = (
+            "CASE WHEN " + _ow_valid(identifier, types[rule["column"]]) + " THEN "
+            + identifier + " ELSE NULL END"
+            if _ow_is_float(types[rule["column"]])
+            else identifier
+        )
+        order_expressions.append(
+            expression + " " + str(rule["direction"]).upper()
+            + " NULLS " + str(rule["nulls"]).upper()
+        )
+    order = ", ".join(order_expressions)
+    calculation_order = order + ", " + original
+    present_value = "CASE WHEN " + valid + " THEN " + target_identifier + " ELSE NULL END"
+    if direction == "forward":
+        candidate_expression = (
+            "last_value(" + present_value + " IGNORE NULLS) OVER (ORDER BY " + calculation
+            + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+        )
+    else:
+        candidate_expression = (
+            "first_value(" + present_value + " IGNORE NULLS) OVER (ORDER BY " + calculation
+            + " ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)"
+        )
+    gap_size = "coalesce(" + following + ", " + total + " + 1) - coalesce(" + previous + ", 0) - 1"
+    eligible = "NOT (" + valid + ") AND " + candidate + " IS NOT NULL"
+    if max_gap is not None:
+        eligible += " AND (" + gap_size + ") <= " + str(int(max_gap))
+    replacement = "CASE WHEN " + eligible + " THEN " + candidate + " ELSE " + target_identifier + " END"
+    temporary_names = [
+        original_name,
+        calculation_name,
+        previous_name,
+        next_name,
+        total_name,
+        candidate_name,
+    ]
+    query = (
+        "WITH numbered AS (SELECT *, row_number() OVER () AS " + original + " FROM ow), "
+        "ordered AS (SELECT *, row_number() OVER (ORDER BY " + calculation_order + ") AS "
+        + calculation + " FROM numbered), "
+        "context AS (SELECT *, max(CASE WHEN " + valid + " THEN " + calculation
+        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS "
+        + previous + ", min(CASE WHEN " + valid + " THEN " + calculation
+        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS "
+        + following + ", count(*) OVER () AS " + total + ", " + candidate_expression + " AS " + candidate
+        + " FROM ordered) SELECT * EXCLUDE (" + _ow_identifiers(temporary_names) + ") REPLACE ("
+        + replacement + " AS " + target_identifier + ") FROM context ORDER BY " + original
+    )
+    return _ow_query(df, query)
+
+
+def _ow_fill_missing_linear_interpolation(df, target, coordinate, max_gap):
+    columns = _ow_columns(df)
+    types = dict(zip(columns, map(str, df.types)))
+    target_type = types[target]
+    coordinate_type = types[coordinate]
+    lowered_coordinate = coordinate_type.lower()
+    if "hugeint" in lowered_coordinate:
+        raise ValueError(
+            "Linear interpolation does not support HUGEINT coordinates; "
+            "convert the coordinate to a narrower exact type first."
+        )
+    coordinate_supported = (
+        _ow_is_integer(coordinate_type)
+        or _ow_is_float(coordinate_type)
+        or "decimal" in lowered_coordinate
+        or lowered_coordinate == "date"
+        or "timestamp" in lowered_coordinate
+    )
+    if not _ow_is_float(target_type):
+        raise ValueError("Linear interpolation requires a floating-point target column.")
+    if not coordinate_supported:
+        raise ValueError("Linear interpolation coordinates must be numeric, dates, or datetimes.")
+    coordinate_identifier = _ow_ident(coordinate)
+    minimum_coordinate = "min(" + coordinate_identifier + ") OVER ()"
+    numeric_coordinate, coordinate_roundtrip = _ow_interpolation_coordinate_projection(
+        coordinate_identifier, coordinate_type, minimum_coordinate
+    )
+    coordinate_finite = (
+        "(" + coordinate_identifier + " IS NOT NULL AND isfinite(" + coordinate_identifier + "))"
+        if _ow_is_float(coordinate_type)
+        else coordinate_identifier + " IS NOT NULL"
+    )
+    validation_name = _ow_unique(columns, "__ow_interpolation_validation_coordinate")
+    validation_exact_name = _ow_unique(
+        columns + [validation_name], "__ow_interpolation_validation_exact"
+    )
+    validation_identifier = _ow_ident(validation_name)
+    validation_exact = _ow_ident(validation_exact_name)
+    try:
+        validation = _ow_query(
+            df,
+            "WITH projected AS (SELECT *, " + numeric_coordinate + " AS " + validation_identifier
+            + ", " + coordinate_roundtrip + " AS " + validation_exact + " FROM ow) "
+            + "SELECT count(*), count(*) FILTER (WHERE NOT (" + coordinate_finite
+            + ")), count(DISTINCT " + coordinate_identifier + "), count(DISTINCT "
+            + validation_identifier + "), coalesce(bool_and(isfinite(" + validation_identifier
+            + ")), TRUE), coalesce(bool_and(" + validation_exact + "), TRUE) FROM projected",
+        ).fetchone()
+    except Exception as error:
+        raise ValueError(
+            "Linear interpolation cannot represent the selected coordinate distances exactly."
+        ) from error
+    count = int(validation[0])
+    if int(validation[1]):
+        raise ValueError("Linear interpolation requires every coordinate value to be present and finite.")
+    if int(validation[2]) != count:
+        raise ValueError("Linear interpolation requires unique coordinate values.")
+    if int(validation[3]) != count or not bool(validation[4]) or not bool(validation[5]):
+        raise ValueError(
+            "Linear interpolation cannot preserve the selected coordinate distances exactly enough; "
+            "choose a lower-precision coordinate column."
+        )
+    target_identifier = _ow_ident(target)
+    target_present = _ow_valid(target_identifier, target_type)
+    target_missing = "NOT (" + target_present + ")"
+    present_target = "CASE WHEN " + target_present + " THEN " + target_identifier + " ELSE NULL END"
+    reserved = list(columns)
+    temporary_names = []
+    for base in (
+        "__ow_interpolation_original",
+        "__ow_interpolation_calculation",
+        "__ow_interpolation_coordinate",
+        "__ow_interpolation_previous",
+        "__ow_interpolation_next",
+        "__ow_interpolation_left_value",
+        "__ow_interpolation_right_value",
+        "__ow_interpolation_left_coordinate",
+        "__ow_interpolation_right_coordinate",
+        "__ow_interpolation_weight",
+    ):
+        name = _ow_unique(reserved, base)
+        reserved.append(name)
+        temporary_names.append(name)
+    (
+        original_name, calculation_name, numeric_name, previous_name, next_name,
+        left_value_name, right_value_name, left_coordinate_name, right_coordinate_name,
+        weight_name,
+    ) = temporary_names
+    original = _ow_ident(original_name)
+    calculation = _ow_ident(calculation_name)
+    numeric = _ow_ident(numeric_name)
+    previous = _ow_ident(previous_name)
+    following = _ow_ident(next_name)
+    left_value = _ow_ident(left_value_name)
+    right_value = _ow_ident(right_value_name)
+    left_coordinate = _ow_ident(left_coordinate_name)
+    right_coordinate = _ow_ident(right_coordinate_name)
+    weight = _ow_ident(weight_name)
+    calculation_order = coordinate_identifier + " ASC, " + original
+    numeric_coordinate, _coordinate_roundtrip = _ow_interpolation_coordinate_projection(
+        coordinate_identifier,
+        coordinate_type,
+        "min(" + coordinate_identifier + ") OVER ()",
+    )
+    left_value_expression = (
+        "last_value(" + present_target + " IGNORE NULLS) OVER (ORDER BY " + calculation
+        + " ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)"
+    )
+    right_value_expression = (
+        "first_value(" + present_target + " IGNORE NULLS) OVER (ORDER BY " + calculation
+        + " ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)"
+    )
+    present_coordinate = "CASE WHEN " + target_present + " THEN " + numeric + " ELSE NULL END"
+    left_coordinate_expression = (
+        "last_value(" + present_coordinate + " IGNORE NULLS) OVER (ORDER BY " + calculation
+        + " ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)"
+    )
+    right_coordinate_expression = (
+        "first_value(" + present_coordinate + " IGNORE NULLS) OVER (ORDER BY " + calculation
+        + " ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)"
+    )
+    span = "(" + right_coordinate + " - " + left_coordinate + ")"
+    direct_weight = "((" + numeric + " - " + left_coordinate + ") / " + span + ")"
+    scaled_weight = (
+        "((" + numeric + " / 2.0 - " + left_coordinate + " / 2.0) / ("
+        + right_coordinate + " / 2.0 - " + left_coordinate + " / 2.0))"
+    )
+    weight_expression = "CASE WHEN isfinite(" + span + ") THEN " + direct_weight + " ELSE " + scaled_weight + " END"
+    eligible = (
+        target_missing + " AND isfinite(" + left_value + ") AND isfinite(" + right_value
+        + ") AND isfinite(" + weight + ") AND " + weight + " BETWEEN 0.0 AND 1.0"
+    )
+    if max_gap is not None:
+        eligible += " AND " + following + " - " + previous + " - 1 <= " + str(int(max_gap))
+    interpolated = "((1.0 - " + weight + ") * " + left_value + " + " + weight + " * " + right_value + ")"
+    replacement = (
+        "CASE WHEN " + eligible + " THEN CAST(" + interpolated + " AS " + target_type
+        + ") ELSE " + target_identifier + " END"
+    )
+    query = (
+        "WITH numbered AS (SELECT *, row_number() OVER () AS " + original + " FROM ow), "
+        "ordered AS (SELECT *, row_number() OVER (ORDER BY " + calculation_order + ") AS "
+        + calculation + ", " + numeric_coordinate + " AS " + numeric + " FROM numbered), "
+        "context AS (SELECT *, max(CASE WHEN " + target_present + " THEN " + calculation
+        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS "
+        + previous + ", min(CASE WHEN " + target_present + " THEN " + calculation
+        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS "
+        + following + ", " + left_value_expression + " AS " + left_value + ", "
+        + right_value_expression + " AS " + right_value + ", "
+        + left_coordinate_expression + " AS " + left_coordinate + ", "
+        + right_coordinate_expression + " AS " + right_coordinate + " FROM ordered), "
+        "weighted AS (SELECT *, " + weight_expression + " AS " + weight + " FROM context) "
+        "SELECT * EXCLUDE (" + _ow_identifiers(temporary_names) + ") REPLACE ("
+        + replacement + " AS " + target_identifier + ") FROM weighted ORDER BY " + original
+    )
+    return _ow_query(df, query)
+
+
+def _ow_fill_missing_grouped_statistic(df, target, keys, statistic):
+    columns = _ow_columns(df)
+    types = dict(zip(columns, map(str, df.types)))
+    target_type = types[target]
+    target_identifier = _ow_ident(target)
+    target_valid = _ow_valid(target_identifier, target_type)
+    target_missing = "NOT (" + target_valid + ")"
+    reserved = list(columns)
+    original_name = _ow_unique(reserved, "__ow_grouped_original")
+    reserved.append(original_name)
+    key_names = []
+    for index, key in enumerate(keys):
+        name = _ow_unique(reserved, "__ow_grouped_key_" + str(index))
+        reserved.append(name)
+        key_names.append(name)
+    fill_name = _ow_unique(reserved, "__ow_grouped_fill")
+    reserved.append(fill_name)
+    count_name = _ow_unique(reserved, "__ow_grouped_count")
+    reserved.append(count_name)
+    maximum_name = _ow_unique(reserved, "__ow_grouped_maximum")
+    reserved.append(maximum_name)
+    original = _ow_ident(original_name)
+    normalized_key_expressions = []
+    for key, name in zip(keys, key_names):
+        identifier = _ow_ident(key)
+        key_value = _ow_case_sensitive_group_value(identifier, types[key])
+        normalized_key_expressions.append(
+            "CASE WHEN " + _ow_valid(identifier, types[key]) + " THEN " + key_value
+            + " ELSE NULL END AS " + _ow_ident(name)
+        )
+    normalized_keys = _ow_identifiers(key_names)
+    partition = normalized_keys
+    normalized = (
+        "normalized AS (SELECT *, row_number() OVER () AS " + original + ", "
+        + ", ".join(normalized_key_expressions) + " FROM ow)"
+    )
+    if statistic == "mostFrequent":
+        value_name = _ow_unique(reserved, "__ow_grouped_value")
+        reserved.append(value_name)
+        token_name = _ow_unique(reserved, "__ow_grouped_token")
+        reserved.append(token_name)
+        ties_name = _ow_unique(reserved, "__ow_grouped_ties")
+        value = _ow_ident(value_name)
+        token = _ow_ident(token_name)
+        count = _ow_ident(count_name)
+        maximum = _ow_ident(maximum_name)
+        ties = _ow_ident(ties_name)
+        fill = _ow_ident(fill_name)
+        grouped_target = _ow_case_sensitive_group_value(target_identifier, target_type)
+        summary_ctes = (
+            "counts AS (SELECT " + normalized_keys + ", " + grouped_target + " AS " + token
+            + ", any_value(" + target_identifier + ") AS " + value + ", count(*) AS " + count
+            + " FROM normalized WHERE " + target_valid + " GROUP BY " + normalized_keys + ", "
+            + grouped_target + "), ranked AS (SELECT *, max(" + count
+            + ") OVER (PARTITION BY " + partition + ") AS " + maximum + " FROM counts), summary AS (SELECT "
+            + normalized_keys + ", count(*) FILTER (WHERE " + count + " = " + maximum + ") AS " + ties
+            + ", CASE WHEN " + ties + " = 1 THEN any_value(" + value + ") FILTER (WHERE " + count + " = "
+            + maximum + ") ELSE NULL END AS " + fill + " FROM ranked GROUP BY " + normalized_keys + ")"
+        )
+    elif statistic == "mean":
+        positive_name = _ow_unique(reserved, "__ow_grouped_positive")
+        reserved.append(positive_name)
+        negative_name = _ow_unique(reserved, "__ow_grouped_negative")
+        reserved.append(negative_name)
+        scale_name = _ow_unique(reserved, "__ow_grouped_scale")
+        reserved.append(scale_name)
+        scaled_name = _ow_unique(reserved, "__ow_grouped_scaled")
+        positive = _ow_ident(positive_name)
+        negative = _ow_ident(negative_name)
+        scale = _ow_ident(scale_name)
+        scaled = _ow_ident(scaled_name)
+        fill = _ow_ident(fill_name)
+        summary_ctes = (
+            "annotated AS (SELECT *, count(*) FILTER (WHERE " + target_valid + " AND " + target_identifier
+            + " = CAST('Infinity' AS DOUBLE)) OVER (PARTITION BY " + partition + ") AS " + positive
+            + ", count(*) FILTER (WHERE " + target_valid + " AND " + target_identifier
+            + " = CAST('-Infinity' AS DOUBLE)) OVER (PARTITION BY " + partition + ") AS " + negative
+            + ", max(abs(" + target_identifier + ")) FILTER (WHERE " + target_valid + " AND isfinite("
+            + target_identifier + ")) OVER (PARTITION BY " + partition + ") AS " + scale
+            + " FROM normalized), scaled_rows AS (SELECT *, avg(" + target_identifier + " / nullif(" + scale
+            + ", 0)) FILTER (WHERE " + target_valid + " AND isfinite(" + target_identifier
+            + ")) OVER (PARTITION BY " + partition + ") AS " + scaled + " FROM annotated), summary AS (SELECT "
+            + "DISTINCT " + normalized_keys + ", CASE WHEN " + positive + " > 0 AND " + negative
+            + " > 0 THEN NULL WHEN " + positive + " > 0 THEN CAST('Infinity' AS DOUBLE) WHEN " + negative
+            + " > 0 THEN CAST('-Infinity' AS DOUBLE) WHEN " + scale + " IS NULL THEN NULL WHEN " + scale
+            + " = 0 THEN 0.0 ELSE greatest(-1.0, least(1.0, " + scaled + ")) * " + scale + " END AS "
+            + fill + " FROM scaled_rows)"
+        )
+    else:
+        lower_name = _ow_unique(reserved, "__ow_grouped_lower")
+        reserved.append(lower_name)
+        upper_name = _ow_unique(reserved, "__ow_grouped_upper")
+        reserved.append(upper_name)
+        missing_name = _ow_unique(reserved, "__ow_grouped_missing")
+        lower = _ow_ident(lower_name)
+        upper = _ow_ident(upper_name)
+        missing_count = _ow_ident(missing_name)
+        fill = _ow_ident(fill_name)
+        lower_aggregate = (
+            "quantile_disc(" + target_identifier + ", 0.5 ORDER BY " + target_identifier
+            + ") FILTER (WHERE " + target_valid + ")"
+        )
+        upper_aggregate = (
+            "quantile_disc(" + target_identifier + ", 0.5 ORDER BY " + target_identifier
+            + " DESC) FILTER (WHERE " + target_valid + ")"
+        )
+        if _ow_is_integer(target_type):
+            fill_expression = (
+                "CAST((" + lower + " // 2) + (" + upper + " // 2) + ((" + lower + " % 2 + "
+                + upper + " % 2) // 2) AS " + target_type + ")"
+            )
+            invalid = (
+                missing_count + " > 0 AND ((" + lower + " % 2 + " + upper + " % 2) % 2) <> 0"
+            )
+            label = "integer"
+        elif "decimal" in target_type.lower():
+            fill_expression = "median(" + target_identifier + ") FILTER (WHERE " + target_valid + ")"
+            invalid = (
+                missing_count + " > 0 AND " + fill + " IS NOT NULL AND (" + fill + " - " + lower
+                + ") <> (" + upper + " - " + fill + ")"
+            )
+            label = "decimal"
+        else:
+            raw_median = "median(" + target_identifier + ") FILTER (WHERE " + target_valid + ")"
+            fill_expression = "CASE WHEN isnan(" + raw_median + ") THEN NULL ELSE " + raw_median + " END"
+            invalid = "FALSE"
+            label = "numeric"
+        summary_select = (
+            "SELECT " + normalized_keys + ", count(*) FILTER (WHERE " + target_missing + ") AS "
+            + missing_count + ", " + lower_aggregate + " AS " + lower + ", " + upper_aggregate
+            + " AS " + upper + ", " + fill_expression + " AS " + fill + " FROM normalized GROUP BY "
+            + normalized_keys
+        )
+        if invalid == "FALSE":
+            summary_ctes = "summary AS (" + summary_select + ")"
+        else:
+            message = (
+                "A grouped " + label + " median cannot be represented exactly in the selected column. "
+                "Cast the column to a wider type before filling missing values."
+            )
+            checked_fill = "CASE WHEN " + invalid + " THEN error(" + _ow_literal(message) + ") ELSE " + fill + " END"
+            summary_ctes = (
+                "raw_summary AS (" + summary_select + "), summary AS (SELECT " + normalized_keys + ", "
+                + checked_fill + " AS " + fill + " FROM raw_summary)"
+            )
+    normalized_join = " AND ".join(
+        "n." + _ow_ident(name) + " IS NOT DISTINCT FROM s." + _ow_ident(name) for name in key_names
+    )
+    fill = "s." + _ow_ident(fill_name)
+    qualified_target = "n." + target_identifier
+    qualified_missing = target_missing.replace(target_identifier, qualified_target)
+    replacement = (
+        "CASE WHEN " + qualified_missing + " AND " + fill + " IS NOT NULL THEN CAST(" + fill + " AS "
+        + target_type + ") ELSE " + qualified_target + " END"
+    )
+    query = (
+        "WITH " + normalized + ", " + summary_ctes + " SELECT n.* EXCLUDE ("
+        + _ow_identifiers([original_name] + key_names) + ") REPLACE (" + replacement + " AS "
+        + target_identifier + ") FROM normalized n LEFT JOIN summary s ON " + normalized_join
+        + " ORDER BY n." + original
+    )
+    return _ow_query(df, query)
 
 
 def _ow_fill_missing(df, column, replacement_kind, value):

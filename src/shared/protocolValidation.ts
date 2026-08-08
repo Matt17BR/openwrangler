@@ -422,7 +422,11 @@ function isValuesResponse(value: unknown): boolean {
 }
 
 function isStepPreviewResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "revision", "metadata", "page", "diff", "code"], ["warnings"]);
+  const candidate = exactRecord(
+    value,
+    ["kind", "revision", "metadata", "page", "diff", "code"],
+    ["remainingMissingCells", "warnings"]
+  );
   return (
     candidate !== undefined &&
     candidate.kind === "stepPreview" &&
@@ -431,6 +435,12 @@ function isStepPreviewResponse(value: unknown): boolean {
     isGridPage(candidate.page, candidate.metadata.schema) &&
     isDataDiff(candidate.diff, candidate.metadata.schema) &&
     isString(candidate.code) &&
+    optional(candidate, "remainingMissingCells", isNonNegativeInteger) &&
+    (candidate.remainingMissingCells === undefined ||
+      (isNonNegativeInteger(candidate.remainingMissingCells) &&
+        (candidate.metadata.shape.rows === null ||
+          candidate.remainingMissingCells <= candidate.metadata.shape.rows))) &&
+    (candidate.metadata.draftStep?.kind === "fillMissingValues") === (candidate.remainingMissingCells !== undefined) &&
     optional(candidate, "warnings", (warnings) => isArrayOf(warnings, isString))
   );
 }
@@ -861,6 +871,7 @@ const FILL_DATETIME_TEXT =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?$/u;
 const MAX_FILL_INTEGER = 10n ** 38n - 1n;
 const MAX_FILL_FALLBACK_COLUMNS = 64;
+const MAX_FILL_DIRECTIONAL_GAP = 1_000_000;
 
 function isFillMissingReplacement(value: unknown): boolean {
   if (!isRecord(value)) return false;
@@ -874,6 +885,31 @@ function isFillMissingReplacement(value: unknown): boolean {
       Array.isArray(decoded.columns) &&
       decoded.columns.length <= MAX_FILL_FALLBACK_COLUMNS &&
       isUniqueColumnReferenceArray(decoded.columns, false)
+    );
+  }
+  if (value.kind === "directional") {
+    const decoded = exactRecord(value, ["kind", "direction", "orderBy"], ["maxGap"]);
+    return (
+      decoded !== undefined &&
+      isOneOf(decoded.direction, ["forward", "backward"]) &&
+      isUniqueTransformSortRuleArray(decoded.orderBy, false) &&
+      optional(decoded, "maxGap", (maxGap) => isPositiveInteger(maxGap) && maxGap <= MAX_FILL_DIRECTIONAL_GAP)
+    );
+  }
+  if (value.kind === "groupedStatistic") {
+    const decoded = exactRecord(value, ["kind", "statistic", "keys"]);
+    return (
+      decoded !== undefined &&
+      isOneOf(decoded.statistic, ["median", "mean", "mostFrequent"]) &&
+      isUniqueColumnReferenceArray(decoded.keys, false)
+    );
+  }
+  if (value.kind === "linearInterpolation") {
+    const decoded = exactRecord(value, ["kind", "coordinate"], ["maxGap"]);
+    return (
+      decoded !== undefined &&
+      isColumnReference(decoded.coordinate) &&
+      optional(decoded, "maxGap", (maxGap) => isPositiveInteger(maxGap) && maxGap <= MAX_FILL_DIRECTIONAL_GAP)
     );
   }
   const decoded = exactRecord(value, ["kind", "value"]);
@@ -996,11 +1032,34 @@ export function isTransformStep(value: unknown): value is TransformStep {
         return false;
       }
       const targetColumnId = decoded.column.id;
-      return !(
-        isRecord(decoded.replacement) &&
+      if (!isRecord(decoded.replacement)) return true;
+      if (
         decoded.replacement.kind === "fallbackColumns" &&
         Array.isArray(decoded.replacement.columns) &&
         decoded.replacement.columns.some((reference) => isRecord(reference) && reference.id === targetColumnId)
+      ) {
+        return false;
+      }
+      if (
+        decoded.replacement.kind === "groupedStatistic" &&
+        Array.isArray(decoded.replacement.keys) &&
+        decoded.replacement.keys.some((reference) => isRecord(reference) && reference.id === targetColumnId)
+      ) {
+        return false;
+      }
+      if (
+        decoded.replacement.kind === "linearInterpolation" &&
+        isRecord(decoded.replacement.coordinate) &&
+        decoded.replacement.coordinate.id === targetColumnId
+      ) {
+        return false;
+      }
+      return !(
+        decoded.replacement.kind === "directional" &&
+        Array.isArray(decoded.replacement.orderBy) &&
+        decoded.replacement.orderBy.some(
+          (rule) => isRecord(rule) && isRecord(rule.column) && rule.column.id === targetColumnId
+        )
       );
     }
     case "dropDuplicates": {

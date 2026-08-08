@@ -10,6 +10,7 @@ import type {
   DatasetStats,
   FillMissingValuesTransformStep,
   FloorNumberTransformStep,
+  GroupByTransformStep,
   OpenSessionRequest,
   OpenWranglerRequest,
   RoundNumberTransformStep,
@@ -653,7 +654,59 @@ describe("canonical R kernel bridge", () => {
     expect(atomic.abandon).not.toHaveBeenCalled();
   });
 
-  it("advertises R CSV export only for eligible local notebook and document sessions", async () => {
+  it("advertises and atomically exports Parquet only when the selected R runtime supports it", async () => {
+    const contract = frameContract();
+    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
+      await args[3](new TextEncoder().encode("PAR1native-r-parquetPAR1"));
+      return {
+        sessionId: args[0],
+        revision: args[1],
+        format: "parquet",
+        rows: contract.shape.rows,
+        columns: contract.shape.columns
+      };
+    });
+    const transport = {
+      ...fakeTransport(contract, sessionId, ["csv", "parquet"]),
+      exportData
+    };
+    const atomic = fakeAtomicTransaction();
+    const beginTransaction = vi.fn(async () => atomic.transaction);
+    const bridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
+
+    await expect(bridge.request(documentOpenRequest("editing"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { capabilities: { exportCsv: true, exportParquet: true } }
+    });
+    await expect(
+      bridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/orders.cleaned.parquet",
+        format: "parquet"
+      })
+    ).resolves.toEqual({
+      kind: "dataExported",
+      revision: 0,
+      path: "/workspace/orders.cleaned.parquet",
+      format: "parquet",
+      shape: { rows: 1, columns: 8 }
+    });
+
+    expect(exportData).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      "parquet",
+      expect.any(Function),
+      expect.objectContaining({ timeoutMs: 30 * 60_000 })
+    );
+    expect(atomic.write).toHaveBeenCalledWith(new TextEncoder().encode("PAR1native-r-parquetPAR1"));
+    expect(atomic.commit).toHaveBeenCalledOnce();
+    expect(atomic.rollback).not.toHaveBeenCalled();
+  });
+
+  it("advertises R export formats only for eligible local notebook and document sessions", async () => {
     const contract = frameContract();
     const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
       await args[3](new TextEncoder().encode("value\n12.5\n"));
@@ -684,7 +737,23 @@ describe("canonical R kernel bridge", () => {
     const notebookTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
     const notebookBridge = createBridge(notebookTransport, undefined, undefined, undefined, { beginTransaction });
     const notebook = await notebookBridge.request(openRequest("editing"));
-    expect(notebook).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: true } } });
+    expect(notebook).toMatchObject({
+      kind: "sessionOpened",
+      metadata: { capabilities: { exportCsv: true, exportParquet: false } }
+    });
+    await expect(
+      notebookBridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/out.parquet",
+        format: "parquet"
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "unsupported_operation",
+      message: expect.stringContaining("nanoparquet 0.5.1")
+    });
     await expect(
       notebookBridge.request({
         kind: "exportData",
@@ -1709,6 +1778,512 @@ describe("canonical R kernel bridge", () => {
     }
   });
 
+  it("keeps native R Group By lineage, replacement diffs, inspection, replay, and undo atomic", async () => {
+    const source = rowOrderContract(frameContract({ totalRows: 4 }), ["r:r:0", "r:r:1", "r:r:2", "r:r:3"], 4);
+    const step: GroupByTransformStep = {
+      id: "r-group-1",
+      kind: "groupBy",
+      params: {
+        keys: [{ id: "r:c:5", name: "flag" }],
+        aggregations: [
+          { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
+          { column: { id: "r:c:0", name: "value" }, operation: "mean", alias: "average_value" },
+          { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
+        ]
+      }
+    };
+    const grouped = groupContract(source, step, 2);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: grouped,
+      diff: groupDiff(source, grouped, step),
+      code: "open_wrangler_result <- grouped_orders"
+    });
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+
+    expect(transport.previewStep).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      {
+        id: "r-group-1",
+        kind: "groupBy",
+        params: {
+          keys: [{ id: "r:c:5", name: "flag" }],
+          aggregations: [
+            { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
+            { column: { id: "r:c:0", name: "value" }, operation: "mean", alias: "average_value" },
+            { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
+          ]
+        }
+      },
+      expect.objectContaining({ view: { filters: [], sorts: [] } }),
+      expect.any(Array),
+      undefined,
+      expect.any(Object)
+    );
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      diff: {
+        addedRows: 2,
+        removedRows: 4,
+        addedColumns: ["rows_present", "average_value", "first_label"],
+        removedColumns: ["value", "count", "date", "when", "elapsed", "missing", "infinite"],
+        changedCells: 0
+      },
+      metadata: {
+        schema: [
+          expect.objectContaining({ id: "r:c:5", name: "flag", position: 0 }),
+          expect.objectContaining({ id: "c:step:r-group-1:0", name: "rows_present", type: "integer" }),
+          expect.objectContaining({ id: "c:step:r-group-1:1", name: "average_value", type: "float" }),
+          expect.objectContaining({ id: "c:step:r-group-1:2", name: "first_label", type: "string" })
+        ],
+        draftStep: { id: "r-group-1", kind: "groupBy" }
+      }
+    });
+
+    step.params.aggregations[0]!.alias = "tampered after preview";
+    expect(preview).toMatchObject({
+      metadata: {
+        draftStep: {
+          params: {
+            aggregations: [{ alias: "rows_present" }, { alias: "average_value" }, { alias: "first_label" }]
+          }
+        }
+      }
+    });
+
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 2,
+      page: grouped,
+      code: "open_wrangler_result <- grouped_orders"
+    });
+    const applied = await bridge.request(planRequest("applyDraft", 1));
+    expect(applied).toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      metadata: {
+        steps: [{ id: "r-group-1", kind: "groupBy" }],
+        latestStepInputSchema: expect.arrayContaining([expect.objectContaining({ id: "r:c:5", name: "flag" })])
+      }
+    });
+
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 2,
+      stepId: "r-group-1",
+      stepIndex: 0,
+      inputPage: source,
+      outputPage: grouped,
+      inputSchema: source.schema,
+      outputSchema: grouped.schema,
+      code: "open_wrangler_result <- grouped_orders"
+    });
+    await expect(
+      bridge.request({
+        kind: "inspectStep",
+        sessionId,
+        revision: 2,
+        stepId: "r-group-1",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepInspection",
+      diff: { addedRows: 2, removedRows: 4, changedCells: 0 },
+      outputSchema: expect.arrayContaining([expect.objectContaining({ id: "c:step:r-group-1:0" })])
+    });
+
+    transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 3, page: source, code: "" });
+    await expect(bridge.request(planRequest("undoStep", 2))).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "undo",
+      metadata: { steps: [], schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:5" })]) }
+    });
+  });
+
+  it.each([true, false])(
+    "requires a Group By diff to cover both its input and output row windows (truncated: %s)",
+    async (truncated) => {
+      const source = frameContract({ totalRows: 25 });
+      const step: GroupByTransformStep = {
+        id: "r-group-bounded-diff",
+        kind: "groupBy",
+        params: {
+          keys: [{ id: "r:c:5", name: "flag" }],
+          aggregations: [
+            { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
+            { column: { id: "r:c:0", name: "value" }, operation: "mean", alias: "average_value" },
+            { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
+          ]
+        }
+      };
+      const grouped = groupContract(source, step, 2);
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: grouped,
+        diff: { ...groupDiff(source, grouped, step), truncated },
+        code: "open_wrangler_result <- grouped_orders"
+      });
+      const request = {
+        kind: "previewStep" as const,
+        sessionId,
+        revision: 0,
+        step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      };
+
+      if (truncated) {
+        await expect(bridge.request(request)).resolves.toMatchObject({
+          kind: "stepPreview",
+          diff: { addedRows: 2, removedRows: 25, truncated: true }
+        });
+      } else {
+        await expect(bridge.request(request)).rejects.toThrow("invalid Group and aggregate diff");
+      }
+    }
+  );
+
+  it("tracks explicit R row names across the complete Group By lifecycle", async () => {
+    const source = frameContract({ explicitRowLabel: "source-row", totalRows: 1 });
+    const step: GroupByTransformStep = {
+      id: "r-group-row-names",
+      kind: "groupBy",
+      params: {
+        keys: [{ id: "r:c:5", name: "flag" }],
+        aggregations: [
+          { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
+          { column: { id: "r:c:0", name: "value" }, operation: "mean", alias: "average_value" },
+          { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
+        ]
+      }
+    };
+    const grouped = groupContract(source, step, 1);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    const previewRequest = {
+      kind: "previewStep" as const,
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    };
+
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: grouped,
+      diff: groupDiff(source, grouped, step),
+      code: "open_wrangler_result <- grouped_orders"
+    });
+    await expect(bridge.request(previewRequest)).resolves.toMatchObject({
+      kind: "stepPreview",
+      page: { rows: [expect.not.objectContaining({ rowLabel: expect.anything() })] }
+    });
+
+    transport.discardDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "discard",
+      revision: 2,
+      page: source,
+      code: ""
+    });
+    await expect(bridge.request(planRequest("discardDraft", 1))).resolves.toMatchObject({
+      kind: "planUpdated",
+      page: { rows: [expect.objectContaining({ rowLabel: "source-row" })] }
+    });
+
+    transport.queuePreview({
+      sessionId,
+      revision: 3,
+      page: grouped,
+      diff: groupDiff(source, grouped, step),
+      code: "open_wrangler_result <- grouped_orders"
+    });
+    await bridge.request({ ...previewRequest, revision: 2 });
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 4,
+      page: grouped,
+      code: "open_wrangler_result <- grouped_orders"
+    });
+    await expect(bridge.request(planRequest("applyDraft", 3))).resolves.toMatchObject({ kind: "planUpdated" });
+
+    transport.inspectStep.mockResolvedValueOnce({
+      sessionId,
+      revision: 4,
+      stepId: step.id,
+      stepIndex: 0,
+      inputPage: source,
+      outputPage: grouped,
+      inputSchema: source.schema,
+      outputSchema: grouped.schema,
+      code: "open_wrangler_result <- grouped_orders"
+    });
+    await expect(
+      bridge.request({
+        kind: "inspectStep",
+        sessionId,
+        revision: 4,
+        stepId: step.id,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepInspection",
+      inputPage: { rows: [expect.objectContaining({ rowLabel: "source-row" })] },
+      outputPage: { rows: [expect.not.objectContaining({ rowLabel: expect.anything() })] }
+    });
+
+    transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 5, page: source, code: "" });
+    await expect(bridge.request(planRequest("undoStep", 4))).resolves.toMatchObject({
+      kind: "planUpdated",
+      page: { rows: [expect.objectContaining({ rowLabel: "source-row" })] }
+    });
+  });
+
+  it.each(["filter", "sort"] as const)(
+    "retains an aggregation-output %s while replacing and undoing the latest R Group By",
+    async (viewKind) => {
+      const source = frameContract({ totalRows: 2 });
+      const step: GroupByTransformStep = {
+        id: "r-group-retained-view",
+        kind: "groupBy",
+        params: {
+          keys: [{ id: "r:c:5", name: "flag" }],
+          aggregations: [
+            { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
+            { column: { id: "r:c:0", name: "value" }, operation: "mean", alias: "value" },
+            { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
+          ]
+        }
+      };
+      const replacement: GroupByTransformStep = {
+        id: step.id,
+        kind: "groupBy",
+        params: {
+          keys: [{ id: "r:c:5", name: "flag" }],
+          aggregations: [
+            { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
+            { column: { id: "r:c:0", name: "value" }, operation: "median", alias: "value" },
+            { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
+          ]
+        }
+      };
+      const grouped = groupContract(source, step, 2);
+      const viewedGrouped =
+        viewKind === "filter"
+          ? ({
+              ...grouped,
+              page: { ...grouped.page, totalRows: 1, rows: grouped.page.rows.slice(0, 1) }
+            } satisfies RFramePageContract)
+          : grouped;
+      const transport = fakeTransport(source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: grouped,
+        diff: groupDiff(source, grouped, step),
+        code: "open_wrangler_result <- grouped_orders"
+      });
+      await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      });
+      transport.applyDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "apply",
+        revision: 2,
+        page: grouped,
+        code: "open_wrangler_result <- grouped_orders"
+      });
+      await bridge.request(planRequest("applyDraft", 1));
+
+      transport.getPage.mockResolvedValueOnce(viewedGrouped);
+      const filterModel =
+        viewKind === "filter"
+          ? {
+              filters: [
+                {
+                  column: "value",
+                  type: "float" as const,
+                  predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 2 }]
+                },
+                {
+                  column: "flag",
+                  type: "boolean" as const,
+                  predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: true }]
+                }
+              ],
+              sort: []
+            }
+          : {
+              filters: [],
+              sort: [
+                { column: "value", direction: "desc" as const, nulls: "last" as const },
+                { column: "flag", direction: "asc" as const, nulls: "last" as const }
+              ]
+            };
+      await bridge.request({
+        kind: "getPage",
+        sessionId,
+        revision: 2,
+        viewRequestId: "group-output-view",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8,
+        filterModel
+      });
+
+      transport.queuePreview({
+        sessionId,
+        revision: 3,
+        page: viewedGrouped,
+        diff: { ...groupDiff(source, grouped, replacement), truncated: viewKind === "filter" },
+        code: "open_wrangler_result <- grouped_orders_with_median"
+      });
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 2,
+          replaceStepId: step.id,
+          step: replacement,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({
+        kind: "stepPreview",
+        metadata: { filterModel },
+        page: { totalRows: viewKind === "filter" ? 1 : 2 }
+      });
+      expect(transport.previewStep).toHaveBeenLastCalledWith(
+        sessionId,
+        2,
+        expect.objectContaining({ id: step.id, kind: "groupBy" }),
+        expect.objectContaining({
+          view: {
+            filters:
+              viewKind === "filter"
+                ? [
+                    expect.objectContaining({ column: { id: `c:step:${step.id}:1`, name: "value" } }),
+                    expect.objectContaining({ column: { id: "r:c:5", name: "flag" } })
+                  ]
+                : [],
+            sorts:
+              viewKind === "sort"
+                ? [
+                    expect.objectContaining({ column: { id: `c:step:${step.id}:1`, name: "value" } }),
+                    expect.objectContaining({ column: { id: "r:c:5", name: "flag" } })
+                  ]
+                : []
+          }
+        }),
+        expect.any(Array),
+        step.id,
+        expect.any(Object)
+      );
+
+      transport.applyDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "apply",
+        revision: 4,
+        page: viewedGrouped,
+        code: "open_wrangler_result <- grouped_orders_with_median"
+      });
+      await expect(bridge.request(planRequest("applyDraft", 3))).resolves.toMatchObject({
+        kind: "planUpdated",
+        action: "apply",
+        metadata: {
+          filterModel,
+          steps: [
+            {
+              id: step.id,
+              kind: "groupBy",
+              params: {
+                aggregations: expect.arrayContaining([expect.objectContaining({ operation: "median" })])
+              }
+            }
+          ]
+        }
+      });
+
+      transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 5, page: source, code: "" });
+      await expect(bridge.request(planRequest("undoStep", 4))).resolves.toMatchObject({
+        kind: "planUpdated",
+        action: "undo",
+        metadata: {
+          filterModel:
+            viewKind === "filter"
+              ? { filters: [expect.objectContaining({ column: "flag" })], sort: [] }
+              : { filters: [], sort: [expect.objectContaining({ column: "flag" })] },
+          steps: []
+        }
+      });
+      expect(transport.undoStep).toHaveBeenLastCalledWith(
+        sessionId,
+        4,
+        expect.objectContaining({
+          view:
+            viewKind === "filter"
+              ? {
+                  filters: [expect.objectContaining({ column: { id: "r:c:5", name: "flag" } })],
+                  sorts: []
+                }
+              : {
+                  filters: [],
+                  sorts: [expect.objectContaining({ column: { id: "r:c:5", name: "flag" } })]
+                }
+        }),
+        expect.any(Object)
+      );
+    }
+  );
+
   it("publishes one native R rename draft, applied plan, inspection, and undo atomically", async () => {
     const source = frameContract();
     const renamed = renameContract(source, "r:c:0", "amount");
@@ -1741,7 +2316,8 @@ describe("canonical R kernel bridge", () => {
             "upperText",
             "roundNumber",
             "floorNumber",
-            "ceilNumber"
+            "ceilNumber",
+            "groupBy"
           ]
         }
       }
@@ -2928,7 +3504,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: firstOutput,
       diff: fillMissingDiff("r:c:6", "missing", firstValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
     const preview = await bridge.request({
       kind: "previewStep",
@@ -2973,7 +3550,8 @@ describe("canonical R kernel bridge", () => {
             after: expect.objectContaining({ kind: "string", raw: "unknown" })
           })
         ]
-      }
+      },
+      remainingMissingCells: 0
     });
 
     if (step.params.replacement.kind !== "string") throw new Error("expected a string replacement");
@@ -3057,7 +3635,8 @@ describe("canonical R kernel bridge", () => {
       revision: 3,
       page: fillMissingContract(source, "r:c:6", editedValue),
       diff: fillMissingDiff("r:c:6", "missing", editedValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
     const edited = await bridge.request({
       kind: "previewStep",
@@ -3088,6 +3667,49 @@ describe("canonical R kernel bridge", () => {
     });
   });
 
+  it("rejects an impossible missing-value count from the R runtime", async () => {
+    const source = frameContract();
+    const firstValue: RFrameCell = {
+      kind: "string",
+      raw: "unknown",
+      display: "unknown",
+      isNull: false,
+      isNaN: false
+    };
+    const output = fillMissingContract(source, "r:c:6", firstValue);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: output,
+      diff: fillMissingDiff("r:c:6", "missing", firstValue),
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: output.shape.rows + 1
+    });
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: {
+          id: "r-fill-invalid-count",
+          kind: "fillMissingValues",
+          params: {
+            column: { id: "r:c:6", name: "missing" },
+            replacement: { kind: "string", value: "unknown" }
+          }
+        },
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).rejects.toThrow("more missing values than rows");
+  });
+
   it("previews a native R mean fill for a floating-point column", async () => {
     const source = replaceContractCell(frameContract(), "r:c:0", {
       kind: "null",
@@ -3114,7 +3736,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: output,
       diff: fillMissingDiff("r:c:0", "value", meanValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
 
     await expect(
@@ -3177,7 +3800,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: unresolved,
       diff: renameDiff(),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 1
     });
     const partialPreview = await bridge.request({
       kind: "previewStep",
@@ -3236,7 +3860,8 @@ describe("canonical R kernel bridge", () => {
       revision: 3,
       page: complete,
       diff: fillMissingDiff("r:c:6", "missing", fallbackValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
     await expect(
       bridge.request({
@@ -3264,6 +3889,421 @@ describe("canonical R kernel bridge", () => {
       metadata: { schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: false })]) },
       warnings: []
     });
+  });
+
+  it("dispatches directional R fills with explicit stable ordering and conservative nullability", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-directional",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:6", name: "missing" },
+        replacement: {
+          kind: "directional",
+          direction: "forward",
+          orderBy: [
+            {
+              column: { id: "r:c:0", name: "value" },
+              direction: "asc",
+              nulls: "last"
+            }
+          ],
+          maxGap: 2
+        }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: source,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 1
+    });
+
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: true })]),
+        draftStep: {
+          params: {
+            replacement: {
+              kind: "directional",
+              direction: "forward",
+              orderBy: [{ column: { id: "r:c:0", name: "value" } }],
+              maxGap: 2
+            }
+          }
+        }
+      }
+    });
+
+    const dispatched = transport.previewStep.mock.calls[0]?.[2] as RKernelTransformStep | undefined;
+    if (!dispatched || dispatched.kind !== "fillMissingValues") throw new Error("expected a dispatched fill step");
+    if (dispatched.params.replacement.kind !== "directional") throw new Error("expected a directional fill");
+    expect(Object.isFrozen(dispatched.params.replacement)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.orderBy)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.orderBy[0])).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.orderBy[0].column)).toBe(true);
+
+    if (step.params.replacement.kind !== "directional") throw new Error("expected a directional fill");
+    step.params.replacement.orderBy[0].column.name = "caller mutation";
+    expect(preview).toMatchObject({
+      metadata: {
+        draftStep: {
+          params: { replacement: { orderBy: [{ column: { id: "r:c:0", name: "value" } }] } }
+        }
+      }
+    });
+  });
+
+  it("rejects invalid directional R ordering before dispatch", async () => {
+    const invalidReplacements = [
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: { id: "r:c:6", name: "missing" }, direction: "asc", nulls: "last" }]
+      },
+      {
+        kind: "directional",
+        direction: "backward",
+        orderBy: [{ column: { id: "r:c:0", name: "stale" }, direction: "asc", nulls: "last" }]
+      },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" }],
+        maxGap: 0
+      },
+      {
+        kind: "directional",
+        direction: "sideways",
+        orderBy: [{ column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" }]
+      }
+    ] as const;
+
+    for (const [index, replacement] of invalidReplacements.entries()) {
+      const transport = fakeTransport(frameContract());
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step: {
+            id: `r-fill-invalid-directional-${index}`,
+            kind: "fillMissingValues",
+            params: {
+              column: { id: "r:c:6", name: "missing" },
+              replacement
+            }
+          } as unknown as FillMissingValuesTransformStep,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+    }
+  });
+
+  it("dispatches R linear interpolation with one stable coordinate and conservative nullability", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-linear",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:2", name: "date" },
+          maxGap: 3
+        }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: source,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
+    });
+
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:7", nullable: true })]),
+        draftStep: {
+          params: {
+            replacement: {
+              kind: "linearInterpolation",
+              coordinate: { id: "r:c:2", name: "date" },
+              maxGap: 3
+            }
+          }
+        }
+      }
+    });
+
+    const dispatched = transport.previewStep.mock.calls[0]?.[2] as RKernelTransformStep | undefined;
+    if (!dispatched || dispatched.kind !== "fillMissingValues") throw new Error("expected a dispatched fill step");
+    if (dispatched.params.replacement.kind !== "linearInterpolation") {
+      throw new Error("expected linear interpolation");
+    }
+    expect(Object.isFrozen(dispatched.params.replacement)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.coordinate)).toBe(true);
+
+    if (step.params.replacement.kind !== "linearInterpolation") throw new Error("expected linear interpolation");
+    step.params.replacement.coordinate.name = "caller mutation";
+    expect(preview).toMatchObject({
+      metadata: {
+        draftStep: {
+          params: { replacement: { coordinate: { id: "r:c:2", name: "date" } } }
+        }
+      }
+    });
+  });
+
+  it("rejects invalid R linear interpolation before dispatch", async () => {
+    const invalidSteps = [
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:7", name: "infinite" }
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:1", name: "count" }
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:2", name: "stale" }
+        }
+      },
+      {
+        column: { id: "r:c:6", name: "missing" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:2", name: "date" }
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "r:c:2", name: "date" },
+          maxGap: 0
+        }
+      }
+    ] as const;
+
+    for (const [index, params] of invalidSteps.entries()) {
+      const transport = fakeTransport(frameContract());
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step: {
+            id: `r-fill-invalid-linear-${index}`,
+            kind: "fillMissingValues",
+            params
+          } as unknown as FillMissingValuesTransformStep,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+    }
+  });
+
+  it("dispatches grouped R fills with stable keys and conservative nullability", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-grouped",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [
+            { id: "r:c:2", name: "date" },
+            { id: "r:c:5", name: "flag" }
+          ]
+        }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: source,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
+    });
+
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:7", nullable: true })]),
+        draftStep: {
+          params: {
+            replacement: {
+              kind: "groupedStatistic",
+              statistic: "mean",
+              keys: [
+                { id: "r:c:2", name: "date" },
+                { id: "r:c:5", name: "flag" }
+              ]
+            }
+          }
+        }
+      }
+    });
+
+    const dispatched = transport.previewStep.mock.calls[0]?.[2] as RKernelTransformStep | undefined;
+    if (!dispatched || dispatched.kind !== "fillMissingValues") throw new Error("expected a dispatched fill step");
+    if (dispatched.params.replacement.kind !== "groupedStatistic") throw new Error("expected a grouped fill");
+    expect(Object.isFrozen(dispatched.params.replacement)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.keys)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.keys[0])).toBe(true);
+
+    if (step.params.replacement.kind !== "groupedStatistic") throw new Error("expected a grouped fill");
+    step.params.replacement.keys[0].name = "caller mutation";
+    expect(preview).toMatchObject({
+      metadata: {
+        draftStep: {
+          params: {
+            replacement: {
+              keys: [
+                { id: "r:c:2", name: "date" },
+                { id: "r:c:5", name: "flag" }
+              ]
+            }
+          }
+        }
+      }
+    });
+  });
+
+  it("rejects invalid grouped R fills before dispatch", async () => {
+    const invalidSteps = [
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [{ id: "r:c:7", name: "infinite" }]
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [
+            { id: "r:c:2", name: "date" },
+            { id: "r:c:2", name: "date" }
+          ]
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [{ id: "r:c:2", name: "stale" }]
+        }
+      },
+      {
+        column: { id: "r:c:6", name: "missing" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [{ id: "r:c:2", name: "date" }]
+        }
+      }
+    ] as const;
+
+    for (const [index, params] of invalidSteps.entries()) {
+      const transport = fakeTransport(frameContract());
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step: {
+            id: `r-fill-invalid-grouped-${index}`,
+            kind: "fillMissingValues",
+            params
+          } as unknown as FillMissingValuesTransformStep,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+    }
   });
 
   it("rejects invalid R fallback-column references before dispatch and accepts a keyed fallback", async () => {
@@ -3320,7 +4360,8 @@ describe("canonical R kernel bridge", () => {
       revision: 1,
       page: fillMissingContract(keyedSource, "r:c:6", fallbackValue),
       diff: fillMissingDiff("r:c:6", "missing", fallbackValue),
-      code: "open_wrangler_result <- orders"
+      code: "open_wrangler_result <- orders",
+      remainingMissingCells: 0
     });
     await expect(
       keyedBridge.request({
@@ -3369,7 +4410,8 @@ describe("canonical R kernel bridge", () => {
         revision: 1,
         page: fillMissingContract(source, testCase.column.id, testCase.value),
         diff: fillMissingDiff(testCase.column.id, testCase.column.name, testCase.value),
-        code: "open_wrangler_result <- orders"
+        code: "open_wrangler_result <- orders",
+        remainingMissingCells: 0
       });
 
       await expect(
@@ -5155,12 +6197,16 @@ interface FakeRTransport extends RKernelBridgeTransport {
   invalidate(): void;
 }
 
-function fakeTransport(contract: RFramePageContract, openedSessionId = sessionId): FakeRTransport {
+function fakeTransport(
+  contract: RFramePageContract,
+  openedSessionId = sessionId,
+  exportFormats: readonly ("csv" | "parquet")[] = ["csv"]
+): FakeRTransport {
   const emitter = new vscode.EventEmitter<void>();
   const previewQueue: RKernelStepPreviewResult[] = [];
   return {
     onDidInvalidateKernel: emitter.event,
-    open: vi.fn(async () => ({ sessionId: openedSessionId, page: contract })),
+    open: vi.fn(async () => ({ sessionId: openedSessionId, page: contract, exportFormats })),
     getPage: vi.fn(async () => contract),
     getSummary: vi.fn(async (_sessionId, columns) => columns.map((column) => summaryFor(contract, column))),
     getDatasetStats: vi.fn(async () => ({ totalRows: contract.shape.rows, stats: datasetStatsFor(contract) })),
@@ -5766,6 +6812,98 @@ function numericRoundingDiff(columnId: string, column: string, before: RFrameCel
   return castDiff(columnId, column, before, after);
 }
 
+function groupContract(source: RFramePageContract, step: GroupByTransformStep, rows: number): RFramePageContract {
+  const key = source.schema.find(
+    (column) => column.id === step.params.keys[0].id && column.name === step.params.keys[0].name
+  );
+  if (!key) throw new Error("Unknown fake R Group By key.");
+  const schema: RColumnSchema[] = [
+    { ...key, position: 0 },
+    {
+      id: `c:step:${step.id}:0`,
+      name: step.params.aggregations[0].alias,
+      position: 1,
+      rawType: "integer",
+      type: "integer",
+      nullable: false,
+      semantics: { kind: "integer", storageMode: "integer", classes: ["integer"] }
+    },
+    {
+      id: `c:step:${step.id}:1`,
+      name: step.params.aggregations[1].alias,
+      position: 2,
+      rawType: "double",
+      type: "float",
+      nullable: true,
+      semantics: { kind: "double", storageMode: "double", classes: ["numeric"] }
+    },
+    {
+      id: `c:step:${step.id}:2`,
+      name: step.params.aggregations[2].alias,
+      position: 3,
+      rawType: "character",
+      type: "string",
+      nullable: true,
+      semantics: { kind: "character", storageMode: "character", classes: ["character"] }
+    }
+  ];
+  const identityRows = source.shape.rows + rows;
+  const pageRows: RFramePageContract["page"]["rows"] = [
+    {
+      id: `r:r:${source.shape.rows}`,
+      rowNumber: 0,
+      values: [
+        rCell("boolean", true, "TRUE"),
+        rCell("integer", "2", "2"),
+        rCell("number", "12.5", "12.5"),
+        { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false }
+      ]
+    },
+    {
+      id: `r:r:${source.shape.rows + 1}`,
+      rowNumber: 1,
+      values: [
+        rCell("boolean", false, "FALSE"),
+        rCell("integer", "1", "1"),
+        rCell("number", "8", "8"),
+        { kind: "string", raw: "ready", display: "ready", isNull: false, isNaN: false }
+      ]
+    }
+  ];
+  return {
+    contractVersion: source.contractVersion,
+    dataframeFlavor: source.dataframeFlavor,
+    shape: { rows: identityRows, columns: schema.length },
+    frameSemantics: { ...source.frameSemantics, rowNames: "positional", keyColumnIds: [] },
+    schema,
+    page: {
+      offset: 0,
+      limit: 20,
+      totalRows: rows,
+      columnOffset: 0,
+      columnLimit: 8,
+      columnIds: schema.map((column) => column.id),
+      rows: pageRows.slice(0, rows)
+    }
+  };
+}
+
+function groupDiff(source: RFramePageContract, output: RFramePageContract, step: GroupByTransformStep): DataDiff {
+  const keyIds = new Set(step.params.keys.map((column) => column.id));
+  return {
+    addedRows: output.page.totalRows,
+    removedRows: source.page.totalRows,
+    addedColumns: step.params.aggregations.map((aggregation) => aggregation.alias),
+    removedColumns: source.schema.filter((column) => !keyIds.has(column.id)).map((column) => column.name),
+    changedCells: 0,
+    cells: [],
+    truncated:
+      output.page.offset !== 0 ||
+      output.page.limit < source.page.totalRows ||
+      output.page.totalRows !== output.page.rows.length
+  };
+}
+
 function column(
   position: number,
   name: string,
@@ -5836,7 +6974,8 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "upperText",
       "roundNumber",
       "floorNumber",
-      "ceilNumber"
+      "ceilNumber",
+      "groupBy"
     ]
   };
 }

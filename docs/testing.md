@@ -23,9 +23,13 @@ matrix for release candidates or changes that cross all of its boundaries.
   whole-row comparison, source order, stable row identities, and R's treatment of `NA` and `NaN`. Both cover duplicate and
   non-syntactic names, base data frames, tibbles, keyed data tables, stale references, source isolation, and executable
   generated R. Fill Missing Values tests cover `NA` and `NaN`, typed replacements, exact integer and `integer64`
-  medians, scaled floating-point means, ordered same-row fallback priority, unresolved values, factor levels and no-op
-  levels, dates, DST gaps, current-source timezones, the 8 KiB R text limit, nullable metadata, key safety, and
-  executable generated R. Rename, Drop,
+  medians, scaled floating-point means, ordered same-row fallback priority, stable previous/next fills, whole-run gap
+  limits, grouped median/mean/mode fills, missing grouping keys, linear interpolation by numeric, Date, and POSIXct
+  coordinates, restored row order, unresolved boundary and over-limit runs, factor levels and no-op levels, dates,
+  DST gaps, current-source timezones, the 8 KiB R text limit, exact remaining-missing counts, nullable metadata, key
+  safety, and executable generated R. The shared protocol and webview tests require the count only on fill previews,
+  reject impossible values, announce it to assistive technology, restore it with a draft, and clear it after the draft
+  ends. Rename, Drop,
   Select, Clone, Convert type, Text Length, Lowercase, Uppercase, and Find and replace tests resolve duplicate and
   non-syntactic names by stable identity, preserve base, tibble, and keyed `data.table` semantics, and prove that
   drafts and generated R leave the source unchanged.
@@ -59,7 +63,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
   Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor,
-  and Ceiling lifecycles, variable replacement, native CSV export, malformed requests, and close cases. The export
+  Ceiling, and Group and aggregate lifecycles, variable replacement, native CSV export, malformed requests, and close
+  cases. The export
   checks a pending draft and stale revision, full committed rows despite an active view, duplicate names and R types,
   repeated offset reads, explicit close, and session-close cleanup.
   The R tests check the fixed diagnostics for unsupported frames,
@@ -74,7 +79,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   `jsonlite` or `rlang`, malformed output, and notebook/kernel replacement. Host and webview tests cover the native
   picker, coordinator route, R runtime identity,
   Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type,
-  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling
+  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and
+  Group and aggregate
   capabilities, generated-code commands, bounded two-dimensional pages, and enabled viewing filters, sorts,
   profiles, and value selection. The
   production-browser accessibility journey covers explicit row labels,
@@ -110,9 +116,9 @@ still publish their required contexts through the existing no-work cells for thi
   Generated-column navigation retains its logical target through that renderer publication barrier but always receives a fresh reveal request identity afterward, including when the first DataGrid attempt remained pending and dormant during the Code Preview layout transition. A focused component regression withholds the first completion, delivers the matching barrier, requires the new identity, and then consumes only that retry.
   Sorting interaction coverage requires header actions to close their menu, promote the newest column to priority 1 without losing the remaining tie-breakers, avoid duplicate rules when that column was already sorted, expose `aria-sort` only on priority 1, label every lower-priority key, keep a clear action for every active key, and leave the cleaning plan untouched. Filters / Sorts tests separately require ordered multi-sort drafts, explicit apply/discard, move-up/down priority changes, independent direction and null placement, individual removal, clear-all/clear-column cleanup of uncommitted edits, and preservation of the active filter model. Native Activity Bar tests require literal priority labels, row-click navigation into the Filters drawer, real view transactions for inline reorder/removal, inspection-safe passive controls, structurally cloned standard TreeItem fields in VS Code forks, provider-handle stability across unrelated profile or selection updates, and rejection of stale or malformed tree-node payloads including an A → B → A sort-model transition. The physical editor journey additionally proves that opening the Activity Bar retains the exact hydrated dataframe session; a failed reorder records the host dispatch status, active and retained sort models, plus bounded tree state instead of collapsing into an opaque timeout. Protocol and persistence tests reject repeated viewing-sort columns before they can produce ambiguous priority. Production browser acceptance also measures the complete 140-pixel summary-family headers at normal and 200% zoom: each realistic name must retain at least 72% of the cell width, fit without truncation, and stay above the compact type/action rail.
   Progressive-summary interaction coverage starts with more than six columns, explicitly opens one disclosure, adds a later profile response, and requires that disclosure to remain open. Selecting a numeric grid column must promote and expand its summary with exact min/max/mean/median values and the same exact histogram shown in **Column profiles**. Histogram bins must expose their interval and exact row count through an immediate theme-aware tooltip, keyboard focus, and accessible names; every bin owns an equal-width, full-chart-height hit target even when its proportional visible bar is only two pixels tall. Production-browser interaction enters that transparent lane above a two-pixel bar, requires an immediate visible highlight and tooltip, preserves the focused bin after pointer exit, advances through bins in keyboard order, and maps resting/active bars to `CanvasText`/`Highlight` in forced-color mode without duplicating the accessible name as a description.
-  Operation-builder coverage uses the real accessible checkbox lists without keyboard modifiers, preserves explicit selection order, moves and removes individual sort/aggregation rows without losing retained values, and verifies schema-type filtering for text, numeric, datetime, group-key, by-example, and per-calculation aggregation inputs. Fill-missing tests choose the column before the method, offer median only for numeric columns and most common only for text or boolean columns, retain stable references while methods change, restore saved steps, keep an empty text value, and normalize `.5`, `1.`, and `+1` before protocol validation.
+  Operation-builder coverage uses the real accessible checkbox lists without keyboard modifiers, preserves explicit selection order, moves and removes individual sort/aggregation rows without losing retained values, and verifies schema-type filtering for text, numeric, datetime, group-key, by-example, and per-calculation aggregation inputs. Fill-missing tests choose the column before the method, offer median only for numeric columns and most common only for text or boolean columns, restrict interpolation to floating-point targets and safe coordinate types, retain stable references while methods change, restore saved steps, keep an empty text value, and normalize `.5`, `1.`, and `+1` before protocol validation.
 - `npm run test:python-environment-smoke` runs real system-interpreter discovery alone, with one worker and no override or Python-extension API. It must return a fully qualified supported `source: system` interpreter inside the 30-second aggregate resolution bound. The required CI Python 3.10 cell owns the Linux smoke; the cross-platform workflow adds independent macOS/Python 3.12 and Windows/Python 3.14 evidence. Failures retain only stable classification, stage, process-count, and candidate-limit metadata, never interpreter paths, subprocess output, causes, or inherited environment values.
-- `npm run test:python` covers the Pandas/Polars parity engines plus the file-backed DuckDB preview, transformations, code generation, exports, and runtime dispatch. Fill-missing coverage runs the live and generated Pandas, Polars, and DuckDB paths, including null versus float or Decimal NaN, exact wide-integer and 38-digit decimal medians, unique most-common text and boolean values, tie and all-missing errors, categorical and enum no-ops, high-magnitude finite floats, decimal-scale rejection, matching and mismatched datetime timezones, DuckDB UUID text fills, duplicate or non-string Pandas labels, type binding, and the normal draft/apply/undo lifecycle. Spark-dependent PySpark cases skip only when their optional runtime is absent from an ordinary developer environment. Required CI coverage installs and verifies exact PySpark 4.2 Connect extras, compatible Pandas, and Java 17 before running the complete instrumented Python corpus, so those cases cannot disappear behind that local-only skip.
+- `npm run test:python` covers the Pandas/Polars parity engines plus the file-backed DuckDB preview, transformations, code generation, exports, and runtime dispatch. Fill-missing coverage runs the live and generated Pandas, Polars, and DuckDB paths, including null versus float or Decimal NaN, exact wide-integer and 38-digit decimal medians, unique most-common text and boolean values, grouped median/mean/mode with multiple keys and unresolved ties, previous/next fills, linear interpolation by irregular numeric and date-time coordinates, high-offset coordinate distances, typed empty frames, categorical and enum no-ops, high-magnitude finite floats, decimal-scale rejection, matching and mismatched datetime timezones, DuckDB UUID text fills, duplicate or non-string Pandas labels, type binding, and the normal draft/apply/undo lifecycle. Spark-dependent PySpark cases skip only when their optional runtime is absent from an ordinary developer environment. Required CI coverage installs and verifies exact PySpark 4.2 Connect extras, compatible Pandas, and Java 17 before running the complete instrumented Python corpus, so those cases cannot disappear behind that local-only skip.
 - Focused Spark Connect tests use PySpark's structured conditions and gRPC status instead of matching error text. They cover temporary endpoint failure, lost server session or DataFrame state, exact session/view correlation, cache handling, and preservation of the last confirmed host view. Message-only lookalikes and unrelated reattach conditions must remain ordinary engine errors. Request cancellation stays disabled.
 - `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and a copied private workspace, then uses separate zero-window seed/verify editor processes to validate workspace-state replay and injected runtime recovery in the rendered grid. The fresh verify process physically proves the committed output column, two-sort priority, selected column, distinctive width, nonzero row/column viewport, and visible-row status; a renderer-originated **Header profiles** request then restarts the runtime and must preserve that complete state. Actual Explorer-row, editor-title, and editor-tab file-launch clicks run through a private Electron debugging port. Each context action must appear exactly once, open the exact copied source without import prompts, render its grid, and leave its bytes unchanged. Multi-megabyte fixture-preservation checks compare exact bytes with bounded size/first-difference diagnostics; they never pass complete buffers to Node's assertion formatter. Runtime-selection commands may write workspace configuration only inside that per-run copy, so an interrupted editor phase cannot leave a stale disposable interpreter configured in the repository. A same-URI session-to-custom-editor reload waits for the prior public tab model to become empty before dispatch, then requires the exact fresh `TabInputCustom`; runtime cleanup alone is not treated as editor-input disposal. Stable VS Code defaults to native context menus on macOS, which are outside the renderer debugging protocol, so the disposable profile selects VS Code's built-in custom menu style for these physical assertions.
 - `npm run test:packaged-editors -- openwrangler.vsix` installs the release artifact into isolated VS Code/Cursor profiles and runs zero-window Restricted Mode, seed, and verify acceptance from a separately packaged and installed acceptance-only helper, so checkout code cannot shadow the product. It can additionally run the opt-in real Python-environment phase or released-Jupyter allow/deny pair documented below. The Restricted Mode phase uses no development extension, a fresh trust-enabled user-data profile, suppresses only the startup prompt, omits `--disable-workspace-trust`, proves `workspace.isTrusted === false`, and verifies the installed package cannot activate, create a dataframe tab, expose its coordinator, or start a runtime. Its verify process exercises the installed file-launch toolbar plus physical Explorer-row and tab context-menu contributions, and repeats the rendered fresh-process persistence/recovery assertions against the installed package. Native webview discovery has a fixed 30-second bound, checks workbench/CDP liveness, ignores only proven retired targets (including a Code Preview iframe replaced during provider refresh), and reports structural frame diagnostics without retaining dataframe text. Cursor hides third-party editor-title actions by default, so manifest and installed-editor tests require the package's declarative `cursor.general.pinnedTitleActions` default and prove the primary icon is visible without writing a setting into the disposable profile.
@@ -125,8 +131,8 @@ still publish their required contexts through the existing no-work cells for thi
 - `npm run docs:check` enforces required documentation and release/version alignment, including the PEP 440 runtime version in `python/openwrangler_runtime/version.py` against `package.json`.
 - `npm run check:remote-jupyter-lock` validates the remote-server fixture's canonical exact pins, complete sorted hash closure, and Jupyter Server security floor without network access. `npm run audit:python` audits both the active development environment and that lock against the live advisory database without suppressions; this gate is network-dependent by design so later disclosures fail an unchanged commit.
 - Release metadata tests bind numeric versions to channels before any build: only `0.<odd-minor>.x` may set `preview: true`, those versions must do so, and the canonical preview author/validator requires one immutable VSIX/checksum/provenance triple with exact source, package, runtime, tag, commit, candidate-byte, and pre-release metadata binding. The preview workflow is a manual protected-`main` candidate transaction whose default `publish: false` run packages once, gives the complete Linux suite one owner, and fans the same artifact out to cross-platform, installed-performance, released-Jupyter, and Remote SSH consumers. Its semantic inspector rejects a second package or complete-suite owner, artifact-name downloads, omitted fan-in results, unpinned actions, a write-capable validation job, and any release path that is not immediately bound to the reverified candidate triple. It also proves that `publish: false` has no publication environment, write permission, tag mutation, registry step, or secret-bearing publisher command; this structural result does not claim that protected-environment configuration, workload identity, registry credentials, or public propagation have been exercised. The opt-in release job is pinned to `prerelease: true`, enters the global non-cancelling publication queue, uses the generic exact-tag transaction through the protected-main preview wrapper, and invokes Open VSX through the explicit reusable workflow. Stable and preview publication now require GitHub's exact `immutable: true` response; false or missing state blocks registry promotion. Stable behavior remains independently covered. The candidate author tests reject symlink/hard-link candidates, replace the staging path after its pinned read, and prove archive inspection, final read-only bytes, and SHA-256 remain bound to the one owned snapshot. Content tests cover active top-level Markdown rather than fenced/commented decoys; exactly one complete ordered parity scope with substantive evidence; fixed package/publisher identity; duplicate-key and malformed JSON; complete source/packaged manifest equality with no currently allowed transformation; tag/source/packaged/Python/VSIX identity drift; preview metadata; real unfenced changelog dates; the exact positive README release/install section; and ambiguous XML identity.
-  Open Wrangler 2 previews also run the R 4.5.2 contract tests and install the candidate VSIX in VS Code and Cursor
-  for the R notebook and document tests.
+  Open Wrangler 2 preview and stable candidates also run the R 4.5.2 contract tests and install the exact candidate
+  VSIX in VS Code and Cursor for the R notebook journey.
 - Microsoft Marketplace tests parse and pin the complete Azure Pipeline, require its WIF service connection and
   protected environment, and reject PATs, rebuilds, mutable artifact paths, channel omissions, and intervening
   commands. The trigger accepts path-independent `v*` tags and unbatched `main` events with no YAML path filter.
@@ -138,6 +144,9 @@ still publish their required contexts through the existing no-work cells for thi
 - `npm run test:coverage` enforces TypeScript/webview and Python regression floors and produces HTML/JSON/XML reports.
 - `npm run license:check` verifies every bundled production dependency against the approved SPDX policy and third-party notice groups.
 - `npm run verify:vsix -- <file>` rejects development, user, secret, test, and source-map content before packaged files are read. Archive names must be portable: absolute paths, backslashes, dot/empty segments, Windows-invalid names, non-NFC spellings, and case-folded or file/directory collisions fail closed. The verifier parses `extension.vsixmanifest` as strict XML; malformed XML, duplicate attributes, document types, ambiguous container arrays, and wrong-namespace lookalikes fail closed. It recognizes only one exact `PackageManifest > Metadata > Properties > Property` chain in the canonical VSIX namespace with unnamespaced `Id="Microsoft.VisualStudio.Code.PreRelease"` and `Value="true"` when the packaged `package.json` has `preview: true`; stable packages forbid that property.
+
+The platform-smoke fill sequence also previews a previous-value revenue fill, then previews, applies, and undoes a
+median calculated separately by market and segment.
 
 ## CI gate ownership
 
@@ -469,9 +478,9 @@ npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --ver
 The check rejects a mutable GitHub branch, source/version mismatch, undeclared media series, missing or orphaned
 inventory entries, stale registry versions or README content, and any displayed image whose rendered `src` or
 `currentSrc` is not the exact immutable raw URL in the reviewed README. Before reading a PNG, traversal caps the
-inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 46
+inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 48
 declared PNGs then require valid chunk CRCs, one ordered IHDR/sRGB/IDAT/IEND structure, a successful full decode,
-reviewed natural dimensions, sRGB, and immutable remote equality. All 19 README images are checked at DPR 2 on each
+reviewed natural dimensions, sRGB, and immutable remote equality. All 20 README images are checked at DPR 2 on each
 of the three public surfaces. They must stay within their declared width, rendered container, and viewport, preserve their
 natural aspect ratio within one CSS pixel of height rounding, and retain at least two natural pixels per rendered CSS
 pixel. The hero, histogram, PySpark workbench, and R editing scene repeat those checks near 760px and 1400px viewport
@@ -504,7 +513,7 @@ Released-Jupyter integration is a separate opt-in packaged matrix. Set `OPEN_WRA
 
 In Cursor's remote-kernel phase, the harness restores the captured notebook once if focus moved before waiting for the Variables row action. It does not reopen the Variables view or repeat the action. Timeout output includes only bounded loading state and element counts; it excludes webview URLs and table text.
 
-For affected pull requests, the released-Jupyter CI job downloads and revalidates the same checksum-bound VSIX produced by `canonical-vsix`; it never rebuilds the extension. Documentation-only, package-only, and draft pull requests require that conditional job to be skipped. The draft aggregate still fails deliberately; every ready full-matrix pull request requires the job to succeed through the fail-closed `validate` aggregate. Protected-branch pushes run only `Fast feedback`, so neither this job nor the aggregate runs after merge. The standalone Released Jupyter workflow is manual and self-packages its selected source because it has no caller artifact. Stable-release acceptance continues to consume its canonical release artifact in both VS Code and Cursor.
+For affected pull requests, the released-Jupyter CI job downloads and revalidates the same checksum-bound VSIX produced by `canonical-vsix`; it never rebuilds the extension. Documentation-only, package-only, and draft pull requests require that conditional job to be skipped. The draft aggregate still fails deliberately; every ready full-matrix pull request requires the job to succeed through the fail-closed `validate` aggregate. Protected-branch pushes run only `Fast feedback`, so neither this job nor the aggregate runs after merge. The standalone Released Jupyter workflow is manual and self-packages its selected source because it has no caller artifact. Preview and stable release jobs consume their canonical artifact in both VS Code and Cursor. Both release jobs run the exact R 4.5.2 contract and repeat artifact verification immediately before the packaged R notebook journey.
 
 The packaged Classic and Connect PySpark fixtures arm class-level `toPandas`, `toArrow`, `mapInPandas`, and
 `mapInArrow` traps before Open Wrangler launches. Any accidental dataframe conversion must therefore fail inside
@@ -528,13 +537,20 @@ Python real-kernel tests require Pandas and Polars to emit MIME v2 with a `text/
 
 Generated-code insertion tests cover Python and R cells, the 10-second observation bound, event-driven exact-document success, sole-open-document ownership, exact language and unique-marker proof, rejected and indeterminate edits, and suppression of queued dispatch behind an unresolved indeterminate edit. VSIX tests parse the exact packaged `media/notebookRenderer.js` bytes and reject an empty or invalid bundle, static or dynamic imports, dependency re-exports, and a missing named `activate` export.
 
-R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. The manually
-dispatched Released Jupyter workflow uses exact R 4.5.2. It runs the local journey in VS Code and Cursor and the
-remote journey in VS Code. The local kernel installs missing packages into a temporary library from
-`https://p3m.dev/cran/__linux__/noble/2026-03-10`, then records and checks these versions: IRkernel 1.3.2,
-jsonlite 2.0.0, rlang 1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Tests cover projected paging, row labels,
+R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. Every path uses R
+4.5.2. Linux runs the local journey in VS Code and Cursor and the remote journey in VS Code. Preview and stable
+release candidates also run the complete local journey in VS Code on macOS and Windows. The cross-platform jobs reuse
+the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the complete Python suite or the
+standalone R contract suite.
+The local kernel installs missing packages into a temporary library. Linux uses
+`https://p3m.dev/cran/__linux__/noble/2026-03-10`; macOS and Windows use
+`https://p3m.dev/cran/2026-03-10`. The test records and checks these versions: IRkernel 1.3.2, jsonlite 2.0.0, rlang
+1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Collapse 2.1.7 and nanoparquet 0.5.1 come from the matching reviewed
+`2026-06-01` snapshot. Tests cover projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
-and cleanup. They also check that header profiles start off; the journey does not turn them on. The temporary R
+and cleanup. The base dataframe starts in Viewing mode, keeps its exact notebook, public session, and compound sort
+through the visible **Switch to Editing** action, then continues through the cleaning journey on that same session.
+They also check that header profiles start off; the journey does not turn them on. The temporary R
 library is deleted with the run.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed from commit
@@ -545,7 +561,7 @@ generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R`
 
 The 1.99 preview test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase,
-Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling in
+Find and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate in
 Editing mode. They
 exercise draft preview, executable generated R, mixed plans, apply, discard, inspection, latest-step editing, undo,
 revision errors, exact-kernel correlation, stable retained-column identities, and source isolation for base data
@@ -565,8 +581,22 @@ generated R, and exact typed diffs. Drop Missing Rows covers the Any and All mod
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites contain cases for all twenty operations. The packaged editor run covers all twenty in both editors. Round,
-Floor, and Ceiling use their visible forms and check derived values from positive and negative fractional inputs.
+suites and packaged editor run cover all twenty-one operations in both editors.
+Group and aggregate has direct frame, kernel-agent, protocol, and host-bridge coverage for all nine aggregations,
+first-seen group order, missing keys, type preservation, overflow, generated code, inspection, replacement, and undo.
+Separate kernel-agent cases run it on a tibble and a keyed data table. They check the live result, generated R,
+unchanged inputs, cleared result keys, and key restoration after undo.
+The R tests cover exact integer64 cancellation, odd-count medians, and same-sign boundary pairs for live and generated
+mean and median. Sum tests retain ordinary integer and integer64 output and reject overflow before publication because
+base R and `bit64` have no exact 38-digit integer type. The bridge tests also cover explicit row names becoming
+positional after grouping and returning after discard or undo. Filter-only and sort-only views containing an
+aggregation result plus a group key survive latest-step replacement and apply. Undo retains the group-key rule and
+drops the aggregation-output rule by stable ID, even when its alias matches a source column name and type. The
+kernel-agent test checks that replacement-diff truncation does not materialize the pre-group frame and exports a
+committed grouped result through native R Parquet. The packaged Group and aggregate journey selects a key, sums a
+numeric column, checks the two exact grouped totals and generated R, applies the draft, and undoes it back to the
+source schema. Round, Floor, and Ceiling use their visible forms and check derived values from positive and negative
+fractional inputs.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact
@@ -575,49 +605,61 @@ again after editing. Separate tibble and keyed-data-table sessions preview and d
 R tests also check class and key behavior for both dataframe types.
 
 The notebook journey also applies Rename to a 1,205-row, 25-column frame, adds a viewing filter and two sort keys,
-and exports through the public command and real Save dialog. The saved CSV contains every committed row, not just the
-filtered view. The test checks the renamed header, representative values, unchanged notebook bytes and view state,
-and zero remaining host or kernel export artifacts. A local packaged run on 2026-08-07 passed this journey in VS Code
+and exports CSV and Parquet through the public command and real Save dialog. The saved CSV contains every committed
+row, not just the filtered view, and the Parquet file must have complete `PAR1` markers. The test checks the renamed
+CSV header, representative values, unchanged notebook bytes and view state, and zero remaining host or kernel export
+artifacts. A local packaged run on 2026-08-07 passed the earlier CSV-only journey in VS Code
 1.132.0 and Cursor 3.14.7 on the pinned private Xvfb display.
 
-On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start another VS Code or Cursor process.
+On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start
+another editor process. Windows skips that document subjourney. For local Windows files, the package manifest hides
+the Explorer and editor actions. Remote-resource actions and the Command Palette stay available because the client
+cannot identify the extension-host platform through static menu keys. The existing `process.platform` check rejects
+a Windows extension host. Remote R-document execution is experimental and is not part of this release matrix.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public
 **Run R Document in Open Wrangler…** command and real variable picker. The plain-R test checks an editing session, paging, an exact
 numeric profile, a filter, two sort keys, Rename preview/apply/undo, and generated R. It keeps a different `.R` editor
 active while inserting the generated code, proving that only the captured unsaved source document changes. Both files
 on disk remain byte-for-byte unchanged. After applying Rename, the test also runs the public zero-argument data-export
-command, completes the real Save dialog, and compares the full 240-row CSV with the expected cleaned result. It checks
-that the open source stays clean, the process export directory is empty, and the private process root disappears when
-the session closes. Neither R path advertises Parquet.
+command for CSV and Parquet and completes the real Save dialog for each. It compares the full 240-row CSV with the
+expected cleaned result and checks the Parquet file markers. It checks that the open source stays clean, the process
+export directory is empty, and the private process root disappears when the session closes. Parquet is advertised
+only when the exact R process has nanoparquet 0.5.1 or newer.
 The modified in-memory source is then run again and its generated result is opened before the final panel and R process are closed. The phase uses the
-exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite` and `rlang`.
+exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite`, `rlang`, and
+`nanoparquet`.
 
-The R Markdown and Quarto fixtures each contain first-line YAML, prose, a non-R cell, a disabled R cell, and one
-top-level backtick-fenced `{r}` cell that reads a relative CSV. The journey opens the dataframe, checks its full schema
-and page, applies Rename, inserts generated R as a new fenced cell, and proves the source file on disk is unchanged.
+The R Markdown and Quarto fixtures each contain first-line YAML, prose, and one top-level backtick-fenced `{r}` cell
+that reads a relative CSV. The R Markdown parser fixture also contains a non-R cell and a disabled R cell. The journey
+opens the dataframe, checks its full schema and page, applies Rename, inserts generated R as a new fenced cell, and
+proves the source file on disk is unchanged.
 Parser tests reject later metadata blocks, raw HTML/TeX containers, indented or tilde R fences, alternate engines,
 ambiguous options, cross-cell syntax joining, and R Markdown fence-length mismatches. These are lexical R-cell runs;
 the test does not claim knitr or Quarto rendering behavior.
 
-`collapse` is not a runtime or test dependency. A local check with collapse 2.1.7 confirmed that `qDF()`, `qTBL()`,
-and `qDT()` use the base-data-frame, tibble, and data-table paths covered above. Grouped `GRP_df` and indexed
-`indexed_frame` objects remain outside the accepted class contract.
+`collapse` is not a runtime dependency. Packaged R/Jupyter acceptance installs collapse 2.1.7 in its private test
+library. It creates real `qDF()`, `qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms
+that grouped `GRP_df` and indexed `indexed_frame` objects stay out of the picker. The direct R contract tests cover the
+same accepted and rejected classes.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
-viewing workbench, a separate 1,205-row Rename draft in Editing mode, and the generated R inserted into its notebook.
+viewing workbench, a Group and aggregate draft after switching that same session to Editing mode, the generated R
+inserted into its notebook, and the dataframe picker opened from a real Quarto document.
 The viewing image shows two filters, two
-ordered sorts, and exact revenue statistics. The editing image shows the native R code preview beside the draft,
-cleaning history, and Apply/Discard controls.
-The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 881
+ordered sorts, and exact revenue statistics. The editing image groups the orders by market and channel and shows the
+native R code preview beside the draft, cleaning history, and Apply/Discard controls.
+The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 874
 logical pixels so the grid ends on a complete row. Both are captured at 2× physical density. Capture fails if setup
 cells or private markers are visible, if a grid row or column is clipped, or if the source R object changes. The
 accepted files are
 `docs/images/editor-acceptance/vscode-notebook-r-picker-dark.png` and
 `docs/images/editor-acceptance/vscode-notebook-r-dark.png`,
 `docs/images/editor-acceptance/vscode-notebook-r-editing-dark.png`, and
-`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png`; the gallery uses lossless crops at
+`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png`, plus
+`docs/images/editor-acceptance/vscode-r-quarto-variable-picker-dark.png`; the gallery uses lossless crops at
 `docs/images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png` and
-`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png`.
+`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png`, while the README Quarto crop is
+composed from the accepted full source.
 
 ```bash
 npm run build:test-extension &&
@@ -643,7 +685,11 @@ On Linux, `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=1` adds a container-isolated remote
 
 The Python fixture starts from a digest-pinned Python 3.12 image. Its complete hash-locked `requirements.txt` installs Jupyter Server 2.20.0, IPykernel 6.30.1, Pandas 2.3.3, Polars 1.35.2, and DuckDB 1.5.4 with their Python dependencies. It repeats the Pandas/Polars/DuckDB runtime-transfer, renderer, insertion, restart, replay, and cleanup checks.
 
-The R fixture starts from digest-pinned Rocker R 4.5.2 and uses Ubuntu snapshot `20260311T000000Z` plus the dated P3M repository above. It checks the same five fixed R package versions used by the local journey. Its separate `requirements.r.txt` contains Jupyter Server 2.20.0 and the minimum Python closure needed to host it; it does not install Pandas, Polars, DuckDB, or IPykernel. The journey covers native R discovery, paging, sorting, profiles, restart, runtime transfer, and cleanup.
+The R fixture starts from digest-pinned Rocker R 4.5.2 and uses Ubuntu snapshot `20260311T000000Z`. Its existing R
+packages stay on the March P3M snapshot. Collapse 2.1.7 and nanoparquet 0.5.1 come from the reviewed June snapshot.
+The image checks all seven versions before installing its kernelspec. Its separate `requirements.r.txt` contains
+Jupyter Server 2.20.0 and the minimum Python closure needed to host it; it does not install Pandas, Polars, DuckDB, or
+IPykernel. The journey covers native R discovery, paging, sorting, profiles, restart, runtime transfer, and cleanup.
 
 Both containers are unprivileged and read-only, with private tmpfs storage, no host mounts, a random loopback-only port, dropped capabilities, no-new-privileges, and explicit resource limits. The per-run credential enters only through bounded stdin to a private file and reaches the editor through an owned mode-0400 descriptor. Before importing Jupyter, the server creates private work, configuration, data, runtime, and IPython directories. Container identity is checked before and after the journey, and cleanup removes only the labelled container and image. If Docker identity or ownership becomes uncertain, the test publishes no evidence path and leaves its private root in place. This is a container test, not a claim about WAN TLS, JupyterHub, SSH, or arbitrary hosted providers.
 
