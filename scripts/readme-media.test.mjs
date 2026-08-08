@@ -85,10 +85,10 @@ const nativeAssets = [
     height: 605
   }),
   nativeCrop("gallery/r-quarto-variable-picker-detail.png", "vscode-r-quarto-variable-picker-dark.png", 1_440, 900, {
-    x: 80,
+    x: 0,
     y: 20,
-    width: 1_280,
-    height: 520
+    width: 1_440,
+    height: 760
   }),
   nativeCrop("gallery/applied-step-inspection-detail.png", "vscode-applied-step-inspection-dark.png", 1_440, 870, {
     x: 445,
@@ -624,7 +624,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const performanceSection = readme.slice(readme.indexOf("## Performance"), readme.indexOf("## Roadmap"));
   assert.match(performanceSection, /Microsoft Data\s+Wrangler/u);
   assert.match(performanceSection, /faster in\s+the notebook-preview and CSV-profiling runs/u);
-  assert.match(performanceSection, /closest Parquet workbench and profiling results were similar/u);
+  assert.match(performanceSection, /For Parquet, workbench-open and profiling times were close/u);
   assert.match(
     performanceSection,
     /Data Wrangler converted the dataframe to Pandas while Open Wrangler stayed in Polars/u
@@ -668,7 +668,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(readme, /#263/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   const v2Roadmap = readme.slice(readme.indexOf("- **1.99 previews:**"), readme.indexOf("## Contributing and support"));
-  assert.match(v2Roadmap, /finish testing the 21 R operations, notebooks, documents, and Parquet export/u);
+  assert.match(v2Roadmap, /complete the R operation set, notebook and document workflows, and Parquet export/u);
   assert.match(v2Roadmap, /ship stable R support after release testing and an updated performance comparison/u);
   assert.match(
     v2Roadmap,

@@ -89,8 +89,8 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
   PySpark badges, representative native rows, exact statistics, and distribution.
 - `gallery/notebook-r-editing.png`: complete R notebook workbench with a Group and aggregate draft, generated R, and
   the native cleaning history.
-- `gallery/r-quarto-variable-picker.png`: complete Quarto source document behind its native dataframe picker; its
-  1280 × 520 detail keeps the source cell and picker readable in the README.
+- `gallery/r-quarto-variable-picker.png`: complete Quarto source document beside its rendered preview and native
+  dataframe picker; its 1440 × 760 detail keeps all three parts readable in the README.
 
 The cropped notebook and Quarto images use exact source pixels rather than resized workbenches. Each links to its
 complete accepted source scene.
