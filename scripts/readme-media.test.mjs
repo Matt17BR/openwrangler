@@ -552,7 +552,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(readme, /The R workbench supports[\s\S]{0,180}cleaning steps for rows/u);
   assert.match(readme, /Missing values can use a typed value, median, mean,\s+mode/u);
-  assert.match(readme, /\[generated reference\]\(docs\/reference\.md#transformation-operations\)/u);
+  assert.match(
+    readme,
+    /\[generated reference\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/reference\.md#transformation-operations\)/u
+  );
   assert.doesNotMatch(readme, /21(?: cleaning|-operation)|\*\*Split text\*\*, \*\*Round\*\*/u);
   assert.match(
     readme,
