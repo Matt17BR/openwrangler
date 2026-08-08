@@ -659,9 +659,10 @@ user's editor profile or R library.
 
 The packaged journey activates all three extensions, checks their exact versions and public commands, and confirms
 that `.Rmd` and `.qmd` have the expected editor language modes. It asks the Quarto extension to render the real `.qmd`
-fixture, opens Quarto's internal HTML preview, and verifies the rendered table before invoking **Run R Document in
-Open Wrangler…**. Open Wrangler then runs the supported R cells in its own process and presents the dataframe picker.
-This proves that the two extensions work together without claiming that they share an R session. Offline runs may
+fixture and verifies the rendered table before invoking **Run R Document in Open Wrangler…**. Open Wrangler then runs
+the supported R cells in its own process and presents the dataframe picker. Screenshot mode also requires Quarto's
+internal preview to be visible. This proves that the two extensions work together without claiming that they share an
+R session. Offline runs may
 supply the same verified artifacts through `OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSIX`,
 `OPEN_WRANGLER_R_EXTENSION_VSIX`, `OPEN_WRANGLER_QUARTO_EXTENSION_VSIX`, and
 `OPEN_WRANGLER_QUARTO_CLI_ARCHIVE`.

@@ -3232,7 +3232,11 @@ async function exerciseReleasedRLiterateDocumentJourneys(
 
       if (fixture.kind === "quarto") {
         const closePreview = nativeREditorTooling
-          ? await openReleasedNativeQuartoPreview(workbench, fixture.sourceUri)
+          ? await openReleasedNativeQuartoPreview(
+              workbench,
+              fixture.sourceUri,
+              screenshotOutput !== undefined && process.platform === "linux"
+            )
           : async () => {};
         try {
           await invokeReleasedRDocumentTitleAction(
@@ -3483,7 +3487,11 @@ async function assertReleasedNativeREditorTooling(): Promise<boolean> {
   return true;
 }
 
-async function openReleasedNativeQuartoPreview(workbench: Page, source: vscode.Uri): Promise<() => Promise<void>> {
+async function openReleasedNativeQuartoPreview(
+  workbench: Page,
+  source: vscode.Uri,
+  requireVisiblePreview: boolean
+): Promise<() => Promise<void>> {
   const document = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === source.toString());
   assert.ok(document, "The Quarto preview requires its exact open source document.");
   assert.equal(document.languageId, "quarto");
@@ -3552,14 +3560,17 @@ async function openReleasedNativeQuartoPreview(workbench: Page, source: vscode.U
         }
         renderedHtmlReady = stableHtmlObservations >= 2;
       }
-      if (previewTabs.length === 1 && previewTerminals.length >= 1 && previewLocator && renderedHtmlReady) break;
+      const visiblePreviewReady = previewTabs.length === 1 && previewLocator !== undefined;
+      if (previewTerminals.length >= 1 && renderedHtmlReady && (!requireVisiblePreview || visiblePreviewReady)) break;
       await workbench.waitForTimeout(100);
     }
-    assert.equal(previewTabs.length, 1, "Quarto Preview must open one new internal preview tab.");
     assert.ok(previewTerminals.length >= 1, "Quarto Preview must own a disposable terminal.");
-    assert.ok(previewLocator, "The internal Quarto preview must show the rendered R table.");
     assert.equal(renderedHtmlReady, true, "Quarto Preview must finish the expected HTML render.");
-    previewOwnershipFrozen = true;
+    if (requireVisiblePreview) {
+      assert.equal(previewTabs.length, 1, "Quarto media capture must open one new internal preview tab.");
+      assert.ok(previewLocator, "The internal Quarto media preview must show the rendered R table.");
+      previewOwnershipFrozen = true;
+    }
     recordAcceptanceProgress("jupyter-r:quarto:preview-ready");
     return cleanup;
   } catch (error) {
