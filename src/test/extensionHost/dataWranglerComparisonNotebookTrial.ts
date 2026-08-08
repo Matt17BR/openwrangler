@@ -1441,7 +1441,7 @@ export function openWranglerProfileTextReady(input: {
   const text = input.text.replace(/\s+/gu, " ").trim();
   return (
     !/Preparing column summary|Profiling selected column/iu.test(text) &&
-    ["Exact statistics", "Rows", "Null", "Distinct"].every((label) => text.includes(label)) &&
+    ["Rows", "Null", "Distinct"].every((label) => text.includes(label)) &&
     (!input.requireExtrema || ["Min", "Max"].every((label) => text.includes(label)))
   );
 }

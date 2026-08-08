@@ -339,7 +339,7 @@ describe("public readiness oracles", () => {
   });
 
   it("accepts non-numeric Open Wrangler summaries in the local mixed-data study", () => {
-    const text = "c02 Boolean Exact statistics Rows 1,000,000 Null 0 Distinct 2";
+    const text = "c02 Boolean Rows 1,000,000 Null 0 Distinct 2";
     expect(openWranglerProfileTextReady({ text, requireExtrema: false })).toBe(true);
     expect(openWranglerProfileTextReady({ text, requireExtrema: true })).toBe(false);
     expect(openWranglerProfileTextReady({ text: `${text} Profiling selected column`, requireExtrema: false })).toBe(
