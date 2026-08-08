@@ -3703,54 +3703,141 @@ describe("SessionCoordinator", () => {
     expect(executionOrder).toEqual(["stats", "promoted", "background"]);
   });
 
-  it("promotes one queued profile without repeating active work", async () => {
+  it("runs a promoted selected summary beside passive profiling while keeping mutations exclusive", async () => {
     const activeProfile = deferred<OpenWranglerResponse>();
+    const selectedProfile = deferred<OpenWranglerResponse>();
+    const activeMutation = deferred<OpenWranglerResponse>();
     const executionOrder: string[] = [];
-    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-      if (request.kind === "openSession") return openedResponse();
-      if (request.kind === "getDatasetStats") {
-        executionOrder.push("active");
-        return activeProfile.promise;
+    const selectedOptions: Array<BridgeRequestOptions | undefined> = [];
+    const delegateRequest = vi.fn(
+      async (request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") return openedResponse();
+        if (request.kind === "getDatasetStats") {
+          executionOrder.push("active");
+          return activeProfile.promise;
+        }
+        if (request.kind === "getSummary") {
+          executionOrder.push(request.viewRequestId.includes("selected") ? "selected" : "other");
+          if (request.viewRequestId === "promote-selected") {
+            selectedOptions.push(options);
+            return selectedProfile.promise;
+          }
+          return summaryResponse(request.viewRequestId);
+        }
+        if (request.kind === "previewStep") {
+          executionOrder.push("mutation");
+          return activeMutation.promise;
+        }
+        throw new Error(`Unexpected delegate request: ${request.kind}`);
       }
-      if (request.kind === "getSummary") {
-        executionOrder.push(request.viewRequestId.includes("selected") ? "selected" : "other");
-        return summaryResponse(request.viewRequestId);
-      }
-      throw new Error(`Unexpected delegate request: ${request.kind}`);
-    });
+    );
     const coordinator = new SessionCoordinator();
     const bridge = coordinator.createBridge({ request: delegateRequest });
     const opened = await bridge.request(openRequest);
     if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    const sessionId = opened.metadata.sessionId;
 
     const stats = bridge.request({
       kind: "getDatasetStats",
-      sessionId: opened.metadata.sessionId,
+      sessionId,
       revision: opened.metadata.revision,
       viewRequestId: "promote-active",
       filterModel: opened.metadata.filterModel
     });
     await vi.waitFor(() => expect(executionOrder).toEqual(["active"]));
-    bridge.prioritizeViewRequest?.(opened.metadata.sessionId, "promote-active");
-    const selected = bridge.request({
-      kind: "getSummary",
-      sessionId: opened.metadata.sessionId,
-      revision: opened.metadata.revision,
-      viewRequestId: "promote-selected",
-      filterModel: opened.metadata.filterModel
-    });
+    bridge.prioritizeViewRequest?.(sessionId, "promote-active");
+    const selected = bridge.request(
+      {
+        kind: "getSummary",
+        sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "promote-selected",
+        filterModel: opened.metadata.filterModel
+      },
+      { priority: "background", timeoutMs: 12_000 }
+    );
     const other = bridge.request({
       kind: "getSummary",
-      sessionId: opened.metadata.sessionId,
+      sessionId,
       revision: opened.metadata.revision,
       viewRequestId: "promote-other",
       filterModel: opened.metadata.filterModel
     });
-    bridge.prioritizeViewRequest?.(opened.metadata.sessionId, "promote-selected");
+    bridge.prioritizeViewRequest?.(sessionId, "promote-selected");
+
+    await vi.waitFor(() => expect(executionOrder).toEqual(["active", "selected"]));
+    expect(selectedOptions).toEqual([{ priority: "interactive", timeoutMs: 12_000 }]);
+    expect(coordinator.testingRequestExecutionCheckpoint(sessionId, "getSummary", "promote-selected")).toEqual({
+      sessionId,
+      state: "active",
+      lane: "foreground",
+      requestKind: "getSummary",
+      viewRequestId: "promote-selected"
+    });
+    expect(coordinator.testingRequestExecutionCheckpoint(sessionId, "getSummary", "promote-other")).toEqual({
+      sessionId,
+      state: "queued",
+      lane: "background",
+      requestKind: "getSummary",
+      viewRequestId: "promote-other"
+    });
+    expect(
+      delegateRequest.mock.calls.filter(
+        ([request]) => request.kind === "getSummary" && request.viewRequestId === "promote-selected"
+      )
+    ).toHaveLength(1);
+
+    const step: TransformStep = {
+      id: "queued-behind-profile",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:source:0", name: "sales" }] }
+    };
+    const mutation = bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: opened.metadata.revision,
+      step,
+      offset: 0,
+      limit: 100,
+      ...columnWindow
+    });
+    expect(coordinator.testingSessionSchedulerState(sessionId)).toMatchObject({
+      activeForegroundOperation: true,
+      activeBackgroundOperation: true,
+      interactiveQueueLength: 1,
+      backgroundQueueLength: 1
+    });
+
+    selectedProfile.resolve(summaryResponse("promote-selected"));
+    await expect(selected).resolves.toMatchObject({ kind: "summary", viewRequestId: "promote-selected" });
+    await vi.waitFor(() =>
+      expect(coordinator.testingSessionSchedulerState(sessionId)).toMatchObject({
+        activeForegroundOperation: false,
+        activeBackgroundOperation: true,
+        interactiveQueueLength: 1,
+        backgroundQueueLength: 1
+      })
+    );
+    expect(executionOrder).toEqual(["active", "selected"]);
 
     activeProfile.resolve(datasetStatsResponse("promote-active"));
-    await Promise.all([stats, selected, other]);
-    expect(executionOrder).toEqual(["active", "selected", "other"]);
+    await expect(stats).resolves.toMatchObject({ kind: "datasetStats", viewRequestId: "promote-active" });
+    await vi.waitFor(() => expect(executionOrder).toEqual(["active", "selected", "mutation"]));
+    expect(coordinator.testingSessionSchedulerState(sessionId)).toMatchObject({
+      activeForegroundOperation: true,
+      activeBackgroundOperation: false,
+      interactiveQueueLength: 0,
+      backgroundQueueLength: 1
+    });
+
+    activeMutation.resolve(stepPreviewResponse(1, step));
+    await expect(mutation).resolves.toMatchObject({ kind: "stepPreview", revision: 1 });
+    await expect(other).resolves.toMatchObject({
+      kind: "error",
+      code: "stale_request",
+      viewRequestId: "promote-other"
+    });
+    expect(executionOrder).toEqual(["active", "selected", "mutation"]);
   });
 
   it("drops only obsolete queued background view requests", async () => {
@@ -5669,22 +5756,20 @@ describe("SessionCoordinator", () => {
       filterModel: opened.metadata.filterModel
     });
     await vi.waitFor(() => expect(executionOrder).toEqual(["profile"]));
-    const queuedInteractive = bridge.request(
-      {
-        kind: "getSummary",
-        sessionId: opened.metadata.sessionId,
-        revision: opened.metadata.revision,
-        viewRequestId: "timeout-promoted-profile",
-        filterModel: opened.metadata.filterModel
-      },
-      { priority: "interactive" }
-    );
+    const queuedInteractive = bridge.request({
+      kind: "previewStep",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      step: inspectionStep,
+      offset: 0,
+      limit: 100,
+      ...columnWindow
+    });
 
     await coordinator.shutdown(0);
     await expect(queuedInteractive).resolves.toEqual({
       kind: "cancelled",
-      targetRequestId: "session-queue:getSummary",
-      viewRequestId: "timeout-promoted-profile"
+      targetRequestId: "session-queue:previewStep"
     });
     expect(executionOrder).toEqual(["profile"]);
     expect(coordinator.diagnostics().sessionCount).toBe(0);

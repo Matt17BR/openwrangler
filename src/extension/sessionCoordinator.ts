@@ -1439,7 +1439,11 @@ export class SessionCoordinator implements vscode.Disposable {
   private startNextSessionOperation(session: CoordinatedSession): void {
     if (!session.activeForegroundOperation && session.interactiveQueue.length > 0) {
       const next = session.interactiveQueue[0];
-      if (!session.activeBackgroundOperation || canRunAlongsideBackground(next.request)) {
+      if (
+        !session.activeBackgroundOperation ||
+        (session.activeBackgroundRequest &&
+          canRunAlongsideBackground(next.request, next.options, session.activeBackgroundRequest))
+      ) {
         session.interactiveQueue.shift();
         this.startSessionOperation(session, next, "foreground");
       }
@@ -1545,8 +1549,9 @@ export class SessionCoordinator implements vscode.Disposable {
     if (index < 0) return;
     const [operation] = session.backgroundQueue.splice(index, 1);
     if (!operation) return;
-    // Change scheduling order without changing background-read freshness,
-    // cancellation, or recovery semantics for the original request.
+    operation.options = { ...operation.options, priority: "interactive" };
+    // Keep the original request and correlation ID while moving the selected
+    // profile onto the foreground lane.
     session.interactiveQueue.push(operation);
     this.startNextSessionOperation(session);
   }
@@ -2822,8 +2827,19 @@ function isSessionIdle(session: CoordinatedSession): boolean {
   );
 }
 
-function canRunAlongsideBackground(request: SessionBoundRequest): boolean {
-  return request.kind === "getPage" || request.kind === "getColumnValues";
+function canRunAlongsideBackground(
+  request: SessionBoundRequest,
+  options: BridgeRequestOptions | undefined,
+  activeBackgroundRequest: SessionBoundRequest
+): boolean {
+  if (activeBackgroundRequest.kind !== "getSummary" && activeBackgroundRequest.kind !== "getDatasetStats") {
+    return false;
+  }
+  return (
+    request.kind === "getPage" ||
+    request.kind === "getColumnValues" ||
+    (request.kind === "getSummary" && options?.priority === "interactive")
+  );
 }
 
 function isIdempotentReadRequest(request: SessionBoundRequest): boolean {

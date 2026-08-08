@@ -364,6 +364,10 @@ PySpark summaries check and collect their ten displayed values in one Spark job.
 
 Optional `filter`, `sort`, `profile`, and `columnValues` wire flags can disable one viewing feature without hiding the others. Omitted flags keep the protocol-v2 behavior and mean supported.
 
+An explicitly prioritized selected-column summary may use the session's single foreground read beside an active
+passive profile. It keeps its original request ID, while unrelated profiles stay queued and mutations remain
+exclusive.
+
 ## UI composition
 
 When the selected-column drawer claims a summary that is still in the background queue, the webview asks the
