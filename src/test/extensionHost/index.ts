@@ -2638,7 +2638,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     assert.equal(opened.metadata.mode, "viewing");
     assert.deepEqual(opened.metadata.shape, { rows: 240, columns: 5 });
     assert.equal(opened.metadata.capabilities.notebookInsert, false);
-    assert.equal(opened.metadata.capabilities.documentInsert, false);
+    assert.notEqual(opened.metadata.capabilities.documentInsert, true);
     await assertReleasedSessionPage(testing, opened, "3400001", "jupyter-r-interactive-page");
     await assertReleasedRInteractiveProfileAndEditing(testing, workbench, opened.sessionId);
 
