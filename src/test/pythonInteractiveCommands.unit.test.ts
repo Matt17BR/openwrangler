@@ -29,7 +29,8 @@ const pythonMocks = vi.hoisted(() => ({
   closeNotebookListeners: new Set<Listener<NotebookDocument>>(),
   changeNotebookListeners: new Set<Listener<NotebookDocumentChangeEvent>>(),
   discover: vi.fn<(notebook: NotebookDocument) => Promise<NotebookVariableDiscovery>>(),
-  openVariable: vi.fn(async () => undefined)
+  openVariable: vi.fn(async () => undefined),
+  restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined)
 }));
 
 vi.mock("vscode", () => {
@@ -122,6 +123,10 @@ vi.mock("../extension/notebooks/jupyterBridge", () => ({
   openDiscoveredPythonNotebookVariable: pythonMocks.openVariable
 }));
 
+vi.mock("../extension/webviewPanel", () => ({
+  restoreEditorGroupAfterQuickPick: pythonMocks.restoreEditorGroupAfterQuickPick
+}));
+
 import * as vscode from "vscode";
 import {
   registerPythonInteractiveCommands,
@@ -157,6 +162,8 @@ describe("Python Interactive Window entry points", () => {
     pythonMocks.discover.mockReset();
     pythonMocks.discover.mockResolvedValue({ variables: [], truncated: false });
     pythonMocks.openVariable.mockClear();
+    pythonMocks.restoreEditorGroupAfterQuickPick.mockReset();
+    pythonMocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
     context = { subscriptions: [], extensionPath: "/extension" } as unknown as ExtensionContext;
     provider = registerPythonInteractiveCommands(context, coordinator);
   });
@@ -223,6 +230,42 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runcurrentcell");
     expect(pythonMocks.showQuickPick).toHaveBeenCalledOnce();
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, second);
+    expect(pythonMocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
+    expect(pythonMocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
+      pythonMocks.openVariable.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it("rechecks the Python source after returning focus from its dataframe picker", async () => {
+    const source = textDocument("file:///workspace/analysis.py", "# %%\nfirst = make_frame()\n");
+    const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
+    interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 0, "old", true));
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.notebookDocuments.push(interactive.document);
+    pythonMocks.activeTextEditor = textEditor(source, 1);
+    fire(pythonMocks.activeTextListeners, pythonMocks.activeTextEditor);
+    pythonMocks.discover.mockResolvedValue({
+      variables: [pandasFrame("first"), polarsFrame("second")],
+      truncated: false
+    });
+    pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+      if (id === "jupyter.runcurrentcell") {
+        interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 0, "rerun", true));
+      }
+      return undefined;
+    });
+    pythonMocks.restoreEditorGroupAfterQuickPick.mockImplementationOnce(async () => {
+      source.isClosed = true;
+      pythonMocks.textDocuments.length = 0;
+    });
+
+    await command("openWrangler.runPythonCellAndOpenVariable")();
+
+    expect(pythonMocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
+    expect(pythonMocks.openVariable).not.toHaveBeenCalled();
+    expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The Python file or Interactive Window changed while focus returned from the picker. Try again."
+    );
   });
 
   it("does not choose when one cell execution appears in duplicate Interactive Windows", async () => {

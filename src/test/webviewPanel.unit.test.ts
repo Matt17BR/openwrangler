@@ -3,7 +3,7 @@ import type * as vscode from "vscode";
 import { commands, Uri, window, workspace } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY } from "../extension/files/confirmedFileConfigurations";
-import { OpenWranglerPanel } from "../extension/webviewPanel";
+import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../extension/webviewPanel";
 import type {
   ColumnSummary,
   DataBackend,
@@ -110,6 +110,23 @@ describe("OpenWranglerPanel retained view state", () => {
         value: panelPromptMocks.showWarningMessage
       }
     });
+  });
+
+  it("returns focus to the editor group after a Quick Pick", async () => {
+    const executeCommand = vi.spyOn(commands, "executeCommand").mockResolvedValue(undefined);
+
+    await restoreEditorGroupAfterQuickPick();
+
+    expect(executeCommand).toHaveBeenCalledOnce();
+    expect(executeCommand).toHaveBeenCalledWith("workbench.action.focusActiveEditorGroup");
+  });
+
+  it("keeps the native Quick Pick fallback when a fork lacks the focus command", async () => {
+    const executeCommand = vi.spyOn(commands, "executeCommand").mockRejectedValue(new Error("command unavailable"));
+
+    await expect(restoreEditorGroupAfterQuickPick()).resolves.toBeUndefined();
+
+    expect(executeCommand).toHaveBeenCalledWith("workbench.action.focusActiveEditorGroup");
   });
   afterEach(() => {
     while (liveHarnesses.length) liveHarnesses.pop()?.dispose();

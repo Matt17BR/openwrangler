@@ -27,6 +27,15 @@ const RENDERER_PUBLICATION_TIMEOUT_MS = 5_000;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
 export const SESSION_BOUND_EXPORT_DATA_COMMAND = "openWrangler.internal.exportSessionData";
 
+export async function restoreEditorGroupAfterQuickPick(): Promise<void> {
+  try {
+    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+  } catch {
+    // Experimental forks may not expose this workbench command. Creating the
+    // panel still works with their native Quick Input focus behavior.
+  }
+}
+
 export class OpenWranglerPanel {
   private static activePanel: OpenWranglerPanel | undefined;
   private static readonly panels = new Set<OpenWranglerPanel>();

@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   transportConstructorError: undefined as Error | undefined,
   bridgeDispose: vi.fn(async () => undefined),
   panelCreate: vi.fn(),
+  restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined),
   resolveExecutable: vi.fn(() => "/usr/bin/Rscript")
 }));
 
@@ -100,7 +101,8 @@ vi.mock("../extension/r/rKernelBridge", () => ({
 }));
 
 vi.mock("../extension/webviewPanel", () => ({
-  OpenWranglerPanel: { create: mocks.panelCreate }
+  OpenWranglerPanel: { create: mocks.panelCreate },
+  restoreEditorGroupAfterQuickPick: mocks.restoreEditorGroupAfterQuickPick
 }));
 
 import * as vscode from "vscode";
@@ -131,6 +133,8 @@ describe("R document command", () => {
     mocks.transportConstructorError = undefined;
     mocks.bridgeDispose.mockClear();
     mocks.panelCreate.mockReset();
+    mocks.restoreEditorGroupAfterQuickPick.mockReset();
+    mocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
     mocks.resolveExecutable.mockClear();
     mocks.resolveExecutable.mockReturnValue("/usr/bin/Rscript");
   });
@@ -169,7 +173,30 @@ describe("R document command", () => {
       },
       "r"
     );
+    expect(mocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
+    expect(mocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.panelCreate.mock.invocationCallOrder[0]!
+    );
     expect(mocks.transportDispose).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the R document after returning focus from its picker", async () => {
+    const document = rDocument("/workspace/orders.R", "orders <- data.frame(id = 1:3)\n");
+    mocks.textDocuments.push(document);
+    mocks.openTextDocument.mockResolvedValue(document);
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    mocks.restoreEditorGroupAfterQuickPick.mockImplementationOnce(async () => {
+      (document as { version: number }).version = 2;
+    });
+    const coordinator = coordinatorMock();
+    register(coordinator);
+
+    await expect(command()(vscode.Uri.file("/workspace/orders.R"))).resolves.toBe(false);
+
+    expect(mocks.transportDispose).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+    expect(mocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("changed"));
   });
 
   it("disposes the R process if the source changes while the picker is open", async () => {

@@ -6,7 +6,7 @@ import { getSetting } from "../configuration";
 import { DetachedBridgeRequestError } from "../dataBridge";
 import { resolveExecutableCommand } from "../pythonPath";
 import { type TextDocumentSessionOrigin, SessionCoordinator } from "../sessionCoordinator";
-import { OpenWranglerPanel } from "../webviewPanel";
+import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { prepareRDocumentSource, rDocumentKind, rDocumentLabel } from "./rDocumentSource";
 import { RKernelBridge } from "./rKernelBridge";
 import { RProcessSessionTransport, type RProcessVariableDescriptor } from "./rProcessTransport";
@@ -157,6 +157,7 @@ export function registerRDocumentCommands(context: vscode.ExtensionContext, coor
         if (cleanupError) showCleanupError(cleanupError);
         return false;
       }
+      await restoreEditorGroupAfterQuickPick();
       if (!isCurrentRDocumentOrigin(origin)) {
         const cleanupError = await disposeTransport(transport);
         if (cleanupError) {

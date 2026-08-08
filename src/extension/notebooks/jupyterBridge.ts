@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { DataBackend, SessionSource } from "../../shared/protocol";
-import { OpenWranglerPanel } from "../webviewPanel";
+import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
@@ -125,6 +125,12 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
           );
           return;
         }
+      }
+      await restoreEditorGroupAfterQuickPick();
+      if (!isExactOpenNotebook(notebook)) {
+        if (verifiedRSelection) disposeVerifiedRNotebookVariableSelection(verifiedRSelection);
+        vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
+        return;
       }
       await openLiveNotebookVariable(
         context,
