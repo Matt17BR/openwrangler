@@ -88,7 +88,7 @@ Inline MIME v2 output shows every captured column and pages the captured rows at
 ## Native R preview
 
 Open Wrangler 1.99 previews can open base `data.frame`, tibble, and `data.table` variables through IRkernel. A
-trusted `.R`, `.Rmd`, or `.qmd` document can also run in an
+trusted local `.R`, `.Rmd`, or `.qmd` document on macOS or Linux can also run in an
 Open Wrangler-owned R process, after which the user chooses one of the dataframes it created. R Markdown and Quarto
 use top-level lexical `{r}` cells rather than a document render. Pages, compound filters, ordered sorts,
 value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Editing mode
@@ -178,9 +178,18 @@ without changing a decoy editor or either source file on disk.
 The same acceptance phase now includes realistic `.Rmd` and `.qmd` fixtures with first-line YAML, ignored prose and
 non-R cells, a disabled R cell, a relative CSV read, native editing, and a generated fenced R cell. Focused tests prove
 that cells are parsed separately and unsupported document syntax fails before R starts. The installed VS Code and
-Cursor runs cover all three document types, including cleaned CSV export from the local `.R` session. Direct
-document execution is disabled on Windows until the extension can own the complete spawned process tree. Operations
+Cursor runs locally on Linux cover all three document types, including cleaned CSV export from the local `.R` session.
+The macOS preview and stable release cells must pass the same local document subjourney in packaged VS Code. Their Windows
+counterparts run the complete local IRkernel journey but skip direct documents. Local Windows file menus are hidden;
+remote-resource actions and the Command Palette remain reachable because static client keys cannot identify the
+extension-host platform. The runtime platform check is authoritative. Remote R-document execution is experimental
+and is not part of the release matrix. Direct document execution is disabled on a Windows extension host until the
+extension can own the complete spawned process tree. Operations
 outside the listed 21-operation set are not available in R yet.
+
+Before a 2.0 tag can be published, both release workflows must pass the local `r-jupyter` journey in packaged VS Code
+on hosted macOS and Windows. The freshly verified candidate VSIX is used directly; these jobs do not rebuild it or
+substitute a smaller R smoke test.
 
 | Surface                                       | Availability                    | Status  | Current checks                                                                                                                                       | Release check   |
 | --------------------------------------------- | ------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
@@ -190,9 +199,9 @@ outside the listed 21-operation set are not available in R yet.
 | Native R ordered viewing sorts                | 1.99 preview                    | Partial | Pure-R tests and local/remote packaged tests                                                                                                         | Preview release |
 | Native R column and dataset profiles          | 1.99 preview                    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts                                                                                                 | Preview release |
 | Base `data.frame`, tibble, and `data.table`   | 1.99 preview                    | Partial | Native discovery, paging, queries, and profile tests                                                                                                 | Preview release |
-| Exact IRkernel session transport              | 1.99 preview                    | Done    | Local VS Code/Cursor and remote VS Code restart test                                                                                                 | —               |
-| Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts and packaged VS Code/Cursor path                                                                                              | Preview release |
-| Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser, real R, and installed VS Code/Cursor run                                                                                                     | Preview release |
+| Exact IRkernel session transport              | 1.99 preview                    | Done    | Linux local VS Code/Cursor and remote VS Code; macOS/Windows VS Code gate                                                                            | Preview release |
+| Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                                              | Preview release |
+| Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser and real R; local Linux VS Code/Cursor; local macOS VS Code                                                                                   | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                                                | Preview release |
 | R cleaning operations and generated code      | 21 operations                   | Partial | All 21 pass in native runtime and packaged IRkernel journeys; compatible Group By views survive replacement/apply and reconcile by stable ID on undo | Preview release |
 | Copy or save generated R                      | 21 operations                   | Partial | Rename uses packaged save; all 21 generate executable code                                                                                           | Preview release |

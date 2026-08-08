@@ -526,7 +526,7 @@
       "explorer/context": [
         {
           "command": "openWrangler.runRDocument",
-          "when": "!explorerResourceIsFolder && isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "!explorerResourceIsFolder && isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
           "group": "navigation@49"
         },
         {
@@ -543,7 +543,7 @@
       "editor/title": [
         {
           "command": "openWrangler.runRDocument",
-          "when": "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
           "group": "navigation@1"
         },
         {
@@ -565,7 +565,7 @@
       "editor/title/context": [
         {
           "command": "openWrangler.runRDocument",
-          "when": "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
           "group": "navigation@49"
         },
         {

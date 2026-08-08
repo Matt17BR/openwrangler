@@ -54,6 +54,17 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 <!-- open-wrangler-release-status:end -->
 
+The v2 release checks cover these R paths:
+
+| R workflow         | Linux                                  | macOS          | Windows               |
+| ------------------ | -------------------------------------- | -------------- | --------------------- |
+| IRkernel notebook  | VS Code (local/remote), Cursor (local) | VS Code; local | VS Code; local        |
+| `.R`/`.Rmd`/`.qmd` | VS Code and Cursor; local              | VS Code; local | Not available locally |
+
+Direct R-document support follows the machine running the extension host. The release matrix covers local Linux and
+macOS documents only. Remote document execution is experimental and a Windows extension host is rejected. Other
+combinations may work, but they are not part of the release test matrix yet.
+
 ## Why Open Wrangler
 
 - View and clean Pandas, Polars, or file-backed DuckDB data without conversion. DuckDB notebook relations and local PySpark 4.2 Classic/Connect dataframes are view-only.
@@ -193,10 +204,11 @@ grid stays visible unless that reconnect works.
 Closing the view leaves Spark work that has already started alone, so Open Wrangler cannot cancel unrelated notebook
 jobs.
 
-Open Wrangler opens base R `data.frame`, tibble, and `data.table` variables from IRkernel. On macOS and Linux, it can
-also run a trusted `.R` file or the supported top-level R cells in `.Rmd` and `.qmd` documents, including unsaved
-editor changes. Document runs use a separate R process; they do not render Quarto or R Markdown or attach to another
-R session. Choose **Run R Document in Open Wrangler…** from Explorer or the editor.
+Open Wrangler opens base R `data.frame`, tibble, and `data.table` variables from IRkernel. In local macOS and Linux
+workspaces, it can also run a trusted `.R` file or the supported top-level R cells in `.Rmd` and `.qmd` documents,
+including unsaved editor changes. Document runs use a separate R process; they do not render Quarto or R Markdown or
+attach to another R session. Choose **Run R Document in Open Wrangler…** from Explorer or the editor. Remote R-document
+execution is experimental and is not part of the release test matrix.
 
 Notebook variables open in Viewing mode by default. Use **Switch to Editing** in the dataframe toolbar when you want
 to clean the live variable; the current filters, sorts, column widths, and grid position carry over.
@@ -245,13 +257,13 @@ also shows the variable picker, profiles, and generated code inserted into a not
 
 ## Engines and formats
 
-| Engine               | Files                                  | Notebook data                         | How it runs                                               |
-| -------------------- | -------------------------------------- | ------------------------------------- | --------------------------------------------------------- |
-| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series          | Native; lazy scans for CSV, TSV, Parquet, and JSONL       |
-| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series                     | Native, including duplicate column labels                 |
-| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation                      | Native; notebook relations are viewing-only               |
-| PySpark 4.2.x        | No                                     | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles |
-| R (1.99 preview)     | `.R`, `.Rmd`, `.qmd` on macOS/Linux    | `data.frame`, tibble, `data.table`    | IRkernel for notebooks; separate Rscript for documents    |
+| Engine               | Files                                     | Notebook data                         | How it runs                                               |
+| -------------------- | ----------------------------------------- | ------------------------------------- | --------------------------------------------------------- |
+| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, LazyFrame, Series          | Native; lazy scans for CSV, TSV, Parquet, and JSONL       |
+| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, Series                     | Native, including duplicate column labels                 |
+| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON           | DuckDBPyRelation                      | Native; notebook relations are viewing-only               |
+| PySpark 4.2.x        | No                                        | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles |
+| R (1.99 preview)     | Local `.R`, `.Rmd`, `.qmd` on macOS/Linux | `data.frame`, tibble, `data.table`    | IRkernel for notebooks; separate Rscript for documents    |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local

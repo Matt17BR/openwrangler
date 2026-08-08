@@ -58,8 +58,10 @@ const REMOTE_JUPYTER_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
 const REMOTE_JUPYTER_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const REMOTE_JUPYTER_TOKEN = /^owr_[A-Za-z0-9_-]{39}$/u;
 const REMOTE_JUPYTER_DESCRIPTOR_MAX_BYTES = 2_048;
-export const R_ACCEPTANCE_REPOSITORY = "https://p3m.dev/cran/__linux__/noble/2026-03-10";
-export const R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY = "https://p3m.dev/cran/__linux__/noble/2026-06-01";
+const R_ACCEPTANCE_PRIMARY_SNAPSHOT = "2026-03-10";
+const R_ACCEPTANCE_SUPPLEMENTAL_SNAPSHOT = "2026-06-01";
+export const R_ACCEPTANCE_REPOSITORY = `https://p3m.dev/cran/__linux__/noble/${R_ACCEPTANCE_PRIMARY_SNAPSHOT}`;
+export const R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY = `https://p3m.dev/cran/__linux__/noble/${R_ACCEPTANCE_SUPPLEMENTAL_SNAPSHOT}`;
 export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   IRkernel: "1.3.2",
   jsonlite: "2.0.0",
@@ -98,24 +100,42 @@ const R_ACCEPTANCE_PROBE = [
   'if (!identical(.ow_versions, unname(.ow_expected))) quit(save = "no", status = 11L)',
   'cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'
 ].join("\n");
-const R_ACCEPTANCE_INSTALL = [
-  `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
-  '.ow_supplemental_packages <- c("collapse", "nanoparquet")',
-  ".ow_core_packages <- setdiff(.ow_packages, .ow_supplemental_packages)",
-  '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
-  "utils::install.packages(",
-  "  .ow_core_packages,",
-  "  lib = .ow_library,",
-  `  repos = ${JSON.stringify(R_ACCEPTANCE_REPOSITORY)},`,
-  "  dependencies = NA",
-  ")",
-  "utils::install.packages(",
-  "  .ow_supplemental_packages,",
-  "  lib = .ow_library,",
-  `  repos = ${JSON.stringify(R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY)},`,
-  "  dependencies = NA",
-  ")"
-].join("\n");
+export function rAcceptanceRepositories(platform = process.platform) {
+  if (platform === "linux") {
+    return Object.freeze({
+      repository: R_ACCEPTANCE_REPOSITORY,
+      supplementalRepository: R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY
+    });
+  }
+  if (platform === "darwin" || platform === "win32") {
+    return Object.freeze({
+      repository: `https://p3m.dev/cran/${R_ACCEPTANCE_PRIMARY_SNAPSHOT}`,
+      supplementalRepository: `https://p3m.dev/cran/${R_ACCEPTANCE_SUPPLEMENTAL_SNAPSHOT}`
+    });
+  }
+  throw new Error(`Released-Jupyter R acceptance does not support ${JSON.stringify(platform)}.`);
+}
+
+function rAcceptanceInstall({ repository, supplementalRepository }) {
+  return [
+    `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
+    '.ow_supplemental_packages <- c("collapse", "nanoparquet")',
+    ".ow_core_packages <- setdiff(.ow_packages, .ow_supplemental_packages)",
+    '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
+    "utils::install.packages(",
+    "  .ow_core_packages,",
+    "  lib = .ow_library,",
+    `  repos = ${JSON.stringify(repository)},`,
+    "  dependencies = NA",
+    ")",
+    "utils::install.packages(",
+    "  .ow_supplemental_packages,",
+    "  lib = .ow_library,",
+    `  repos = ${JSON.stringify(supplementalRepository)},`,
+    "  dependencies = NA",
+    ")"
+  ].join("\n");
+}
 
 export function createRemoteJupyterAcceptanceToken(randomBytesImpl = randomBytes) {
   if (typeof randomBytesImpl !== "function") {
@@ -338,7 +358,12 @@ function javaSpecificationMajor(specificationVersion) {
 export async function prepareJupyterAcceptanceREnvironment(
   directory,
   rscript,
-  { containedBy, environment = createEditorAcceptanceEnvironment(), runCommand = runBoundedEditorCommand } = {}
+  {
+    containedBy,
+    environment = createEditorAcceptanceEnvironment(),
+    platform = process.platform,
+    runCommand = runBoundedEditorCommand
+  } = {}
 ) {
   if (
     typeof directory !== "string" ||
@@ -362,6 +387,7 @@ export async function prepareJupyterAcceptanceREnvironment(
     );
   }
 
+  const repositories = rAcceptanceRepositories(platform);
   const canonicalRscript = validateRExecutable(rscript, "Rscript");
   const root = validateNewContainedRDirectory(directory, containedBy);
   const rExecutable = await resolveJupyterAcceptanceRExecutable(canonicalRscript, {
@@ -417,7 +443,7 @@ export async function prepareJupyterAcceptanceREnvironment(
   const dependencyInstall = freezeRCommandInvocation(
     {
       executable: canonicalRscript,
-      args: ["--vanilla", "-e", R_ACCEPTANCE_INSTALL],
+      args: ["--vanilla", "-e", rAcceptanceInstall(repositories)],
       environment: commandEnvironment,
       label: "Released-Jupyter private R dependency installation"
     },
@@ -434,8 +460,8 @@ export async function prepareJupyterAcceptanceREnvironment(
     packages: R_ACCEPTANCE_PACKAGES,
     packageVersions: R_ACCEPTANCE_PACKAGE_VERSIONS,
     packageRecord: R_ACCEPTANCE_PACKAGE_RECORD,
-    repository: R_ACCEPTANCE_REPOSITORY,
-    supplementalRepository: R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY,
+    repository: repositories.repository,
+    supplementalRepository: repositories.supplementalRepository,
     jupyterEnvironment: Object.freeze({
       dataDir,
       runtimeDir,

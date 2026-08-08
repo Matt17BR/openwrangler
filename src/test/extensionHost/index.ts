@@ -39,6 +39,7 @@ import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
+import { supportsRDocumentExecution } from "../../extension/r/rDocumentCommands";
 import { R_KERNEL_RUNTIME_BINDING } from "../../extension/r/rKernelRuntimeBundle";
 import type { SessionSchedulerState } from "../../extension/sessionCoordinator";
 import {
@@ -643,7 +644,7 @@ export async function run(): Promise<void> {
   const fileResourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const rDocumentPredicate =
-    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+    "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
@@ -718,6 +719,11 @@ export async function run(): Promise<void> {
         item.group === "navigation@49"
     ),
     "R document tabs must expose Run in Open Wrangler in their context menu."
+  );
+  assert.equal(
+    contributions.menus?.commandPalette?.some((item) => item.command === "openWrangler.runRDocument"),
+    false,
+    "The R document command must remain available from the Command Palette for supported remote hosts."
   );
   assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
@@ -2203,7 +2209,7 @@ async function exerciseReleasedRJupyterExtension(
       await disposePackagedSessionPanel(testing, session.sessionId, `the collapse::${expected.factory}() session`);
     }
 
-    if (phase === "jupyter-r") {
+    if (phase === "jupyter-r" && supportsRDocumentExecution(process.platform)) {
       await exerciseReleasedRDocumentJourney(testing, workbench, directory);
       assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
     }
