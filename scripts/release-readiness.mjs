@@ -25,7 +25,7 @@ import {
   PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
   STABLE_README_RELEASE_SECTION
 } from "./release-documents.mjs";
-import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
+import { classifyNumericReleaseVersion, NUMERIC_RELEASE_VERSION } from "./release-metadata.mjs";
 import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 import { inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
@@ -117,9 +117,17 @@ function inspectStablePerformanceEvidence(readme, label, version, trackedEvidenc
   }
 
   const problems = [];
-  if (report.version !== version) {
+  const sourceMatch = NUMERIC_RELEASE_VERSION.exec(version);
+  const reportMatch = NUMERIC_RELEASE_VERSION.exec(report.version);
+  const sameReleaseLine =
+    sourceMatch !== null &&
+    reportMatch !== null &&
+    sourceMatch.groups?.major === reportMatch.groups?.major &&
+    sourceMatch.groups?.minor === reportMatch.groups?.minor &&
+    BigInt(reportMatch.groups?.patch ?? "") <= BigInt(sourceMatch.groups?.patch ?? "");
+  if (!sameReleaseLine) {
     problems.push(
-      `${label} Performance report version ${report.version} does not match source package version ${version}.`
+      `${label} Performance report version ${report.version} does not cover source release line ${sourceMatch?.groups?.major}.${sourceMatch?.groups?.minor}.x at ${version}.`
     );
   }
   if (!trackedEvidencePaths.has(report.path)) {
