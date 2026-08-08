@@ -2234,6 +2234,25 @@ function schemaAfterFillMissing(
     throw new TypeError("Fill Missing Values cannot replace a data.table key column. Clone the column first.");
   }
   const replacement = step.params.replacement;
+  if (replacement.kind === "linearInterpolation") {
+    if (source.type !== "float") {
+      throw new TypeError(`Linear interpolation cannot fill R ${source.rawType}.`);
+    }
+    if (
+      replacement.maxGap !== undefined &&
+      (!Number.isSafeInteger(replacement.maxGap) || replacement.maxGap < 1 || replacement.maxGap > 1_000_000)
+    ) {
+      throw new TypeError("Linear interpolation requires a maximum gap between 1 and 1,000,000 when supplied.");
+    }
+    const coordinate = requireTransformColumn(replacement.coordinate, inputSchema, "Linear interpolation");
+    if (coordinate.id === source.id) {
+      throw new TypeError("The fill target cannot also be the interpolation coordinate.");
+    }
+    if (coordinate.rawType === "integer64" || !new Set(["integer", "float", "date", "datetime"]).has(coordinate.type)) {
+      throw new TypeError(`R ${coordinate.rawType} columns cannot be used as interpolation coordinates.`);
+    }
+    return Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })));
+  }
   if (replacement.kind === "groupedStatistic") {
     const compatible =
       (replacement.statistic === "mean" && source.type === "float") ||
@@ -2724,8 +2743,16 @@ function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, Colum
 type FallbackFillMissingReplacement = Extract<FillMissingReplacement, { kind: "fallbackColumns" }>;
 type DirectionalFillMissingReplacement = Extract<FillMissingReplacement, { kind: "directional" }>;
 type GroupedFillMissingReplacement = Extract<FillMissingReplacement, { kind: "groupedStatistic" }>;
+type LinearInterpolationFillMissingReplacement = Extract<FillMissingReplacement, { kind: "linearInterpolation" }>;
 
 function copyFillMissingReplacement(replacement: FillMissingReplacement): FillMissingReplacement {
+  if (replacement.kind === "linearInterpolation") {
+    return {
+      kind: "linearInterpolation",
+      coordinate: { ...replacement.coordinate },
+      ...(replacement.maxGap === undefined ? {} : { maxGap: replacement.maxGap })
+    };
+  }
   if (replacement.kind === "groupedStatistic") {
     const keys = replacement.keys.map((key) => ({ ...key }));
     if (!keys[0]) throw new TypeError("Grouped fill requires at least one grouping column.");
@@ -2760,6 +2787,17 @@ function freezeFillMissingReplacement(
   targetColumnId: string
 ): RKernelFillMissingReplacement {
   const copied = copyFillMissingReplacement(replacement);
+  if (copied.kind === "linearInterpolation") {
+    const coordinate = requireTransformColumn(copied.coordinate, inputSchema, "Linear interpolation");
+    if (coordinate.id === targetColumnId) {
+      throw new TypeError("The fill target cannot also be the interpolation coordinate.");
+    }
+    return Object.freeze({
+      kind: "linearInterpolation",
+      coordinate: Object.freeze({ id: coordinate.id, name: coordinate.name }),
+      ...(copied.maxGap === undefined ? {} : { maxGap: copied.maxGap })
+    } satisfies LinearInterpolationFillMissingReplacement);
+  }
   if (copied.kind === "groupedStatistic") {
     const seen = new Set<string>();
     const keys = copied.keys.map((reference) => {

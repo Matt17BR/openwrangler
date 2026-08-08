@@ -186,7 +186,8 @@ common non-missing character, factor, or logical value, or a value entered by th
 list of same-type columns and use the first present value in each row. Previous- and next-value fills take their own
 explicit sort order and can leave complete missing runs above an optional limit untouched. Median, mean, and most
 common value can also be calculated within selected groups. These methods ignore `NA` and `NaN`. Dates, datetimes,
-and `integer64` keep their R types; a new factor value is added as a level.
+and `integer64` keep their R types; a new factor value is added as a level. Double columns can also interpolate
+missing runs along an ordinary numeric, `Date`, or `POSIXct` coordinate.
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's
 ties-to-even rule. A keyed `data.table` column can be written to a new output column but cannot be changed in place.

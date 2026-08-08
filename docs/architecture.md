@@ -137,7 +137,10 @@ Fill Missing Values offers a typed value, an exact numeric median, a mean for do
 non-missing value for character, factor, and logical columns. It also accepts an ordered list of same-type fallback
 columns and takes the first present value in each row. Directional fills use an explicit stable sort, restore the
 original row order, and may reject a whole missing run above a chosen limit. Forward fill leaves leading gaps
-unresolved; backward fill leaves trailing gaps unresolved. Calculated replacements ignore `NA` and `NaN`. When
+unresolved; backward fill leaves trailing gaps unresolved. A double column can instead interpolate between finite
+anchors along an ordinary numeric, `Date`, or `POSIXct` coordinate. Coordinates must be complete, finite, and unique.
+The calculation uses their actual distance, fills only bracketed runs, and restores source order. `integer64` is not a
+supported coordinate. Calculated replacements ignore `NA` and `NaN`. When
 missing cells need filling, ties, all-missing columns, and undefined means fail before a draft is published. Factors,
 ordered factors, dates, datetimes, and `integer64` keep their native types. A no-op returns the unchanged column. Key
 columns are blocked because replacing a key value can invalidate the data-table order. R text replacements use the

@@ -554,6 +554,121 @@ describe("OperationBuilder", () => {
     expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
   });
 
+  it("builds linear interpolation from a typed coordinate and ignores the current view", () => {
+    const onPreview = vi.fn();
+    const columns = [
+      { id: "c:0", name: "amount", position: 0, rawType: "Float64", type: "float", nullable: true },
+      { id: "c:1", name: "event_date", position: 1, rawType: "Date", type: "date", nullable: false },
+      { id: "c:2", name: "sequence", position: 2, rawType: "Int64", type: "integer", nullable: false },
+      { id: "c:3", name: "r_wide", position: 3, rawType: "integer64", type: "integer", nullable: false },
+      { id: "c:4", name: "duckdb_wide", position: 4, rawType: "UHUGEINT", type: "integer", nullable: false },
+      { id: "c:5", name: "label", position: 5, rawType: "String", type: "string", nullable: false }
+    ] satisfies SessionMetadata["schema"];
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          shape: { rows: 5, columns: columns.length },
+          filteredShape: { rows: 2, columns: columns.length },
+          schema: columns
+        }}
+        filterModel={{
+          filters: [],
+          sort: [{ column: "sequence", direction: "desc", nulls: "first" }]
+        }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const method = screen.getByLabelText("Method");
+    expect(within(method).getByRole("option", { name: "Linear interpolation" })).toBeInTheDocument();
+    fireEvent.change(method, { target: { value: "linearInterpolation" } });
+
+    const coordinate = screen.getByLabelText("Coordinate column");
+    expect(coordinate).toHaveValue("c:1");
+    expect(within(coordinate).getByRole("option", { name: "event_date" })).toBeInTheDocument();
+    expect(within(coordinate).getByRole("option", { name: "sequence" })).toBeInTheDocument();
+    expect(within(coordinate).queryByRole("option", { name: "amount" })).toBeNull();
+    expect(within(coordinate).queryByRole("option", { name: "r_wide" })).toBeNull();
+    expect(within(coordinate).queryByRole("option", { name: "duckdb_wide" })).toBeNull();
+    expect(within(coordinate).queryByRole("option", { name: "label" })).toBeNull();
+    fireEvent.change(coordinate, { target: { value: "c:2" } });
+
+    const maximumGap = screen.getByLabelText("Maximum missing cells in a run (optional)");
+    expect(maximumGap).toHaveAccessibleDescription(
+      "Leave this blank to interpolate runs of any length. A longer run stays missing."
+    );
+    fireEvent.change(maximumGap, { target: { value: "4" } });
+    expect(screen.getByText(/finite values exist on both sides/u)).toBeInTheDocument();
+    expect(screen.getByText(/Current view filters and sorts are ignored/u)).toBeInTheDocument();
+    expect(screen.getByText(/row order does not change/u)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      column: { id: "c:0", name: "amount" },
+      replacement: {
+        kind: "linearInterpolation",
+        coordinate: { id: "c:2", name: "sequence" },
+        maxGap: 4
+      }
+    });
+  });
+
+  it("restores interpolation settings and rejects an invalid maximum run", () => {
+    const columns = [
+      { id: "c:0", name: "amount", position: 0, rawType: "Float64", type: "float", nullable: true },
+      { id: "c:1", name: "event_time", position: 1, rawType: "Datetime", type: "datetime", nullable: false }
+    ] satisfies SessionMetadata["schema"];
+    const initialStep = {
+      id: "interpolate-amount",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "c:0", name: "amount" },
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate: { id: "c:1", name: "event_time" },
+          maxGap: 8
+        }
+      }
+    } satisfies TransformStep;
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          shape: { rows: 5, columns: columns.length },
+          filteredShape: { rows: 5, columns: columns.length },
+          schema: columns,
+          latestStepInputSchema: columns,
+          steps: [initialStep]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Method")).toHaveValue("linearInterpolation");
+    expect(screen.getByLabelText("Coordinate column")).toHaveValue("c:1");
+    const maximumGap = screen.getByLabelText("Maximum missing cells in a run (optional)");
+    expect(maximumGap).toHaveValue(8);
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+
+    const form = screen.getByRole("button", { name: "Preview changes" }).closest("form") as HTMLFormElement;
+    for (const invalid of ["0", "1.5", "1000001"]) {
+      fireEvent.change(maximumGap, { target: { value: invalid } });
+      fireEvent.submit(form);
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Maximum missing cells in a run must be a whole number from 1 to 1,000,000."
+      );
+    }
+    expect(onPreview).toHaveBeenCalledOnce();
+  });
+
   it("builds a grouped numeric fill with multiple compatible keys", () => {
     const onPreview = vi.fn();
     const columns = [

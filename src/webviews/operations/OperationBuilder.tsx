@@ -44,6 +44,7 @@ type FillMode =
   | "groupedMedian"
   | "groupedMean"
   | "groupedMostFrequent"
+  | "linearInterpolation"
   | "directionalForward"
   | "directionalBackward"
   | "fallbackColumns"
@@ -53,6 +54,7 @@ type FillValueKind = Exclude<
   | { kind: "median" }
   | { kind: "mean" }
   | { kind: "mostFrequent" }
+  | { kind: "linearInterpolation" }
   | { kind: "directional" }
   | { kind: "groupedStatistic" }
   | { kind: "fallbackColumns" }
@@ -68,6 +70,13 @@ const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "unknown"
 ]);
 const mostFrequentColumnTypes: ReadonlySet<ColumnType> = new Set(["string", "boolean"]);
+const interpolationCoordinateColumnTypes: ReadonlySet<ColumnType> = new Set([
+  "integer",
+  "float",
+  "decimal",
+  "date",
+  "datetime"
+]);
 const maxFillFallbackColumns = 64;
 const maxFillDirectionalGap = 1_000_000;
 interface FillFallbackRow {
@@ -283,7 +292,9 @@ function savedReferenceGroups(step: TransformStep): SavedReferenceGroup[] {
                       label: `calculation order ${index + 1}`,
                       reference: rule.column
                     }))
-                  : [])
+                  : step.params.replacement.kind === "linearInterpolation"
+                    ? [{ label: "interpolation coordinate", reference: step.params.replacement.coordinate }]
+                    : [])
           ],
           rejectRepeatedIds: true
         }
@@ -413,6 +424,16 @@ function savedStepEditError(step: TransformStep, inputSchema: ColumnSchema[] | u
     });
     if (incompatible) {
       return `The saved calculation-order column “${incompatible.column.name}” cannot be ordered safely. ${recovery}`;
+    }
+  }
+  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "linearInterpolation") {
+    const target = columnsById.get(step.params.column.id);
+    const coordinate = columnsById.get(step.params.replacement.coordinate.id);
+    if (target?.type !== "float") {
+      return `The saved interpolation target is not a floating-point column. ${recovery}`;
+    }
+    if (!coordinate || !isInterpolationCoordinateColumn(coordinate)) {
+      return `The saved interpolation coordinate cannot be used safely. ${recovery}`;
     }
   }
   if (step.kind === "fillMissingValues" && step.params.replacement.kind === "groupedStatistic") {
@@ -1194,6 +1215,15 @@ function FillMissingFields({
       : (availableColumns.find((column) => column.nullable)?.id ?? availableColumns[0]?.id ?? "")
   );
   const selectedColumn = availableColumns.find((column) => column.id === selectedColumnId);
+  const savedInterpolationCoordinateId =
+    initialReplacement?.kind === "linearInterpolation" ? initialReplacement.coordinate.id : undefined;
+  const initialInterpolationCoordinates = interpolationCoordinateColumnsForTarget(selectedColumn, columns);
+  const [interpolationCoordinateId, setInterpolationCoordinateId] = useState(() =>
+    savedInterpolationCoordinateId &&
+    initialInterpolationCoordinates.some((column) => column.id === savedInterpolationCoordinateId)
+      ? savedInterpolationCoordinateId
+      : (initialInterpolationCoordinates[0]?.id ?? "")
+  );
   const savedFallbackColumnIds =
     initialReplacement?.kind === "fallbackColumns" ? initialReplacement.columns.map((column) => column.id) : [];
   const initialFallbackColumns = fallbackColumnsForTarget(selectedColumn, columns);
@@ -1264,11 +1294,13 @@ function FillMissingFields({
           : initialReplacement.statistic === "mean"
             ? "groupedMean"
             : "groupedMostFrequent"
-        : initialReplacement.kind === "directional"
-          ? initialReplacement.direction === "forward"
-            ? "directionalForward"
-            : "directionalBackward"
-          : "value"
+        : initialReplacement.kind === "linearInterpolation"
+          ? "linearInterpolation"
+          : initialReplacement.kind === "directional"
+            ? initialReplacement.direction === "forward"
+              ? "directionalForward"
+              : "directionalBackward"
+            : "value"
     : undefined;
   const fallbackColumns = fallbackColumnsForTarget(selectedColumn, columns);
   const [mode, setMode] = useState<FillMode>(() =>
@@ -1281,6 +1313,7 @@ function FillMissingFields({
     initialReplacement?.kind !== "mean" &&
     initialReplacement?.kind !== "mostFrequent" &&
     initialReplacement?.kind !== "groupedStatistic" &&
+    initialReplacement?.kind !== "linearInterpolation" &&
     initialReplacement?.kind !== "directional" &&
     initialReplacement?.kind !== "fallbackColumns"
       ? initialReplacement?.kind
@@ -1315,6 +1348,12 @@ function FillMissingFields({
       if (retained.length > 0) return retained;
       return nextGroupedKeyColumns[0] ? [nextGroupedKeyColumns[0].id] : [];
     });
+    const nextInterpolationCoordinates = interpolationCoordinateColumnsForTarget(column, columns);
+    setInterpolationCoordinateId((current) =>
+      nextInterpolationCoordinates.some((candidate) => candidate.id === current)
+        ? current
+        : (nextInterpolationCoordinates[0]?.id ?? "")
+    );
     const nextOrderColumns = directionalOrderColumnsForTarget(column, columns);
     const nextOrderIds = new Set(nextOrderColumns.map((candidate) => candidate.id));
     setOrderRows((current) => {
@@ -1349,11 +1388,13 @@ function FillMissingFields({
     initialReplacement?.kind !== "mean" &&
     initialReplacement?.kind !== "mostFrequent" &&
     initialReplacement?.kind !== "groupedStatistic" &&
+    initialReplacement?.kind !== "linearInterpolation" &&
     initialReplacement?.kind !== "directional" &&
     initialReplacement?.kind !== "fallbackColumns"
       ? String(initialReplacement?.value)
       : "";
   const fillModes = fillModesForColumn(selectedColumn, columns);
+  const interpolationCoordinates = interpolationCoordinateColumnsForTarget(selectedColumn, columns);
   const groupedKeyColumns = groupedKeyColumnsForTarget(selectedColumn, columns);
   const orderColumns = directionalOrderColumnsForTarget(selectedColumn, columns);
   const selectedOrderIds = new Set(orderRows.map((row) => row.columnId));
@@ -1384,6 +1425,9 @@ function FillMissingFields({
         >
           {fillModes.includes("median") && <option value="median">Median</option>}
           {fillModes.includes("mean") && <option value="mean">Mean</option>}
+          {fillModes.includes("linearInterpolation") && (
+            <option value="linearInterpolation">Linear interpolation</option>
+          )}
           {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
           {fillModes.includes("groupedMedian") && <option value="groupedMedian">Median within groups</option>}
           {fillModes.includes("groupedMean") && <option value="groupedMean">Mean within groups</option>}
@@ -1408,6 +1452,37 @@ function FillMissingFields({
           Uses the mean of all non-missing values after earlier cleaning steps. Filters in the current view do not
           affect this calculation. If every cell is missing, choose a specific value.
         </p>
+      ) : mode === "linearInterpolation" ? (
+        <>
+          <ColumnReferenceSelect
+            name="fillInterpolationCoordinate"
+            label="Coordinate column"
+            columns={interpolationCoordinates}
+            value={interpolationCoordinateId}
+            onChange={setInterpolationCoordinateId}
+            emptyMessage="No numeric, date, or date-time coordinate is available."
+          />
+          <TextField
+            name="fillInterpolationMaxGap"
+            label="Maximum missing cells in a run (optional)"
+            defaultValue={
+              initialReplacement?.kind === "linearInterpolation" && initialReplacement.maxGap !== undefined
+                ? String(initialReplacement.maxGap)
+                : ""
+            }
+            type="number"
+            min={1}
+            max={maxFillDirectionalGap}
+            step={1}
+            inputMode="numeric"
+            description="Leave this blank to interpolate runs of any length. A longer run stays missing."
+          />
+          <p className="panelNote">
+            Fills a missing run only when finite values exist on both sides. The coordinate must contain unique,
+            non-missing numeric, date, or date-time values. Leading and trailing gaps stay missing. Current view filters
+            and sorts are ignored, and row order does not change.
+          </p>
+        </>
       ) : mode === "mostFrequent" ? (
         <p className="panelNote">
           Uses the most common non-missing value in this column after earlier cleaning steps. Filters in the current
@@ -1657,6 +1732,8 @@ function FillMissingFields({
 function fillModesForColumn(column: ColumnSchema | undefined, columns: readonly ColumnSchema[]): FillMode[] {
   const fallback = fallbackColumnsForTarget(column, columns).length > 0 ? (["fallbackColumns"] as const) : [];
   const grouped = groupedKeyColumnsForTarget(column, columns).length > 0;
+  const interpolation =
+    interpolationCoordinateColumnsForTarget(column, columns).length > 0 ? (["linearInterpolation"] as const) : [];
   const directional =
     directionalOrderColumnsForTarget(column, columns).length > 0
       ? (["directionalForward", "directionalBackward"] as const)
@@ -1665,6 +1742,7 @@ function fillModesForColumn(column: ColumnSchema | undefined, columns: readonly 
     return [
       "median",
       "mean",
+      ...interpolation,
       ...(grouped ? (["groupedMedian", "groupedMean"] as const) : []),
       ...directional,
       ...fallback,
@@ -1683,6 +1761,20 @@ function fillModesForColumn(column: ColumnSchema | undefined, columns: readonly 
   if (column && (column.type === "date" || column.type === "datetime")) return [...directional, ...fallback, "value"];
   if (column && portableScalarColumnTypes.has(column.type)) return [...directional];
   return ["value"];
+}
+
+function isInterpolationCoordinateColumn(column: ColumnSchema): boolean {
+  if (!interpolationCoordinateColumnTypes.has(column.type)) return false;
+  const rawType = column.rawType.toLowerCase();
+  return rawType !== "integer64" && !rawType.includes("int128") && !rawType.includes("hugeint");
+}
+
+function interpolationCoordinateColumnsForTarget(
+  target: ColumnSchema | undefined,
+  columns: readonly ColumnSchema[]
+): ColumnSchema[] {
+  if (target?.type !== "float") return [];
+  return columns.filter((column) => column.id !== target.id && isInterpolationCoordinateColumn(column));
 }
 
 function defaultFillModeForColumn(column: ColumnSchema | undefined, columns: readonly ColumnSchema[]): FillMode {
@@ -1841,6 +1933,27 @@ function buildParams(
     const fillMode = value("fillMode");
     if (fillMode === "median" || fillMode === "mean" || fillMode === "mostFrequent") {
       return { column: columnReference("column"), replacement: { kind: fillMode } };
+    }
+    if (fillMode === "linearInterpolation") {
+      const column = columnReference("column");
+      const coordinate = columnReference("fillInterpolationCoordinate");
+      if (coordinate.id === column.id) {
+        throw new Error("The fill target and interpolation coordinate must be different columns.");
+      }
+      const maxGap = value("fillInterpolationMaxGap").trim();
+      if (maxGap !== "" && (!/^[1-9][0-9]*$/u.test(maxGap) || Number(maxGap) > maxFillDirectionalGap)) {
+        throw new Error(
+          `Maximum missing cells in a run must be a whole number from 1 to ${maxFillDirectionalGap.toLocaleString()}.`
+        );
+      }
+      return {
+        column,
+        replacement: {
+          kind: "linearInterpolation",
+          coordinate,
+          ...(maxGap === "" ? {} : { maxGap: Number(maxGap) })
+        }
+      };
     }
     if (fillMode === "directionalForward" || fillMode === "directionalBackward") {
       const column = columnReference("column");

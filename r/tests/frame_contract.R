@@ -1727,6 +1727,196 @@ assert_error(
   "max_gap must be positive"
 )
 
+interpolation_frame <- data.frame(
+  coordinate = c(12, 0, 5, 20, 8, 30, 3),
+  target = c(NA_real_, 0, NaN, Inf, 80, NA_real_, NA_real_),
+  row.names = paste0("interpolation-", 1:7),
+  check.names = FALSE
+)
+interpolation_before <- unserialize(serialize(interpolation_frame, NULL, version = 3L))
+interpolation_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_frame,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+assert_identical(
+  interpolation_result$target,
+  c(NA_real_, 0, 50, Inf, 80, NA_real_, 30),
+  "linear interpolation did not use coordinate distance or preserve unresolved gaps"
+)
+assert_identical(
+  row.names(interpolation_result),
+  row.names(interpolation_frame),
+  "linear interpolation changed source row order or row names"
+)
+assert_identical(interpolation_frame, interpolation_before, "linear interpolation mutated its source data.frame")
+
+empty_interpolation_frame <- data.frame(coordinate = integer(), target = double(), check.names = FALSE)
+empty_interpolation_before <- unserialize(serialize(empty_interpolation_frame, NULL, version = 3L))
+empty_interpolation_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  empty_interpolation_frame,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+empty_interpolation_capture <- openwrangler_r_frame_contract$capture_frame(empty_interpolation_result)
+assert_identical(class(empty_interpolation_result), "data.frame", "empty interpolation changed the base frame flavor")
+assert_identical(typeof(empty_interpolation_result$target), "double", "empty interpolation changed target storage")
+assert_identical(
+  empty_interpolation_capture$descriptor$schema[[2L]]$type,
+  "float",
+  "empty interpolation published the wrong target type"
+)
+assert_identical(
+  empty_interpolation_capture$descriptor$schema[[2L]]$rawType,
+  "double",
+  "empty interpolation published the wrong raw target type"
+)
+assert_identical(
+  empty_interpolation_capture$descriptor$schema[[2L]]$semantics$kind,
+  "double",
+  "empty interpolation published the wrong target semantics"
+)
+assert_identical(empty_interpolation_frame, empty_interpolation_before, "empty interpolation mutated its source")
+
+interpolation_limited <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_frame,
+  2L,
+  "target",
+  1L,
+  "coordinate",
+  1L
+)
+assert_identical(
+  interpolation_limited$target,
+  interpolation_frame$target,
+  "max_gap partially interpolated a run that exceeded the whole-run threshold"
+)
+
+interpolation_huge <- data.frame(
+  coordinate = c(-.Machine$double.xmax, 0, .Machine$double.xmax),
+  target = c(.Machine$double.xmax, NA_real_, -.Machine$double.xmax)
+)
+interpolation_huge_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_huge,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+assert_identical(
+  interpolation_huge_result$target,
+  c(.Machine$double.xmax, 0, -.Machine$double.xmax),
+  "linear interpolation overflowed finite opposite-sign endpoints"
+)
+
+interpolation_date <- data.frame(
+  coordinate = as.Date(c("2026-01-01", "2026-01-03", "2026-01-11")),
+  target = c(0, NA_real_, 100)
+)
+interpolation_date_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_date,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+assert_identical(
+  interpolation_date_result$target,
+  c(0, 20, 100),
+  "Date interpolation did not use elapsed days"
+)
+
+interpolation_instant <- data.frame(
+  coordinate = as.POSIXct(
+    c("2026-03-29 00:00:00", "2026-03-29 03:00:00", "2026-03-29 04:00:00"),
+    tz = "Europe/Berlin"
+  ),
+  target = c(0, NA_real_, 30)
+)
+interpolation_instant_result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+  interpolation_instant,
+  2L,
+  "target",
+  1L,
+  "coordinate"
+)
+assert_identical(
+  interpolation_instant_result$target,
+  c(0, 20, 30),
+  "POSIXct interpolation did not use elapsed instants across DST"
+)
+
+interpolation_flavors <- list(
+  list(frame = tibble::tibble(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8))),
+  list(frame = data.table::data.table(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8))),
+  list(frame = collapse::qDF(data.frame(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8)))),
+  list(frame = collapse::qTBL(data.frame(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8)))),
+  list(frame = collapse::qDT(data.frame(coordinate = c(0, 2, 4), target = c(0, NA_real_, 8))))
+)
+for (case in interpolation_flavors) {
+  frame <- case$frame
+  if (inherits(frame, "data.table")) data.table::setkey(frame, coordinate)
+  before <- if (inherits(frame, "data.table")) data.table::copy(frame) else unserialize(serialize(frame, NULL, version = 3L))
+  result <- openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+    frame,
+    2L,
+    "target",
+    1L,
+    "coordinate"
+  )
+  assert_identical(class(result), class(frame), "linear interpolation changed the R dataframe flavor")
+  assert_identical(result$target, c(0, 4, 8), "linear interpolation changed floating-point target dtype")
+  assert_identical(typeof(result$target), "double", "linear interpolation changed target storage")
+  if (inherits(frame, "data.table")) {
+    assert_identical(data.table::key(result), "coordinate", "linear interpolation dropped an unaffected data.table key")
+  }
+  assert_identical(frame, before, "linear interpolation mutated an R dataframe flavor source")
+}
+
+invalid_interpolation_coordinates <- list(
+  data.frame(coordinate = c(0, NA_real_, 2), target = c(0, NA_real_, 2)),
+  data.frame(coordinate = c(0, Inf, 2), target = c(0, NA_real_, 2)),
+  data.frame(coordinate = c(0, 0, 2), target = c(0, NA_real_, 2)),
+  data.frame(coordinate = c("a", "b", "c"), target = c(0, NA_real_, 2)),
+  data.frame(coordinate = bit64::as.integer64(c(0, 1, 2)), target = c(0, NA_real_, 2))
+)
+for (invalid_frame in invalid_interpolation_coordinates) {
+  assert_error(
+    openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+      invalid_frame,
+      2L,
+      "target",
+      1L,
+      "coordinate"
+    ),
+    "interpolation"
+  )
+}
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+    data.frame(coordinate = c(0, 1, 2), target = c(0L, NA_integer_, 2L)),
+    2L,
+    "target",
+    1L,
+    "coordinate"
+  ),
+  "floating-point"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_linear_interpolation_at(
+    interpolation_frame,
+    2L,
+    "target",
+    2L,
+    "target"
+  ),
+  "fill target"
+)
+
 grouped_mean_frame <- data.frame(
   group = c(NA_real_, NaN, 1, 1, 2, 2, 3, 3, 3),
   day = as.Date(rep("2026-01-01", 9L)),

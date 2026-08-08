@@ -457,6 +457,17 @@ class PandasEngine(DataFrameEngine):
                         replacement["statistic"],
                     ),
                 )
+            elif replacement.get("kind") == "linearInterpolation":
+                coordinate_position = self._bound_frame_position(df, replacement["coordinate"], kind)
+                df.isetitem(
+                    position,
+                    _pandas_fill_missing_linear_interpolation(
+                        df,
+                        position,
+                        coordinate_position,
+                        replacement.get("maxGap"),
+                    ),
+                )
             else:
                 df.isetitem(position, _pandas_fill_missing(df.iloc[:, position], replacement))
             return df
@@ -1160,6 +1171,14 @@ class PandasEngine(DataFrameEngine):
                     (
                         f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_grouped_statistic("
                         f"df, {position}, {key_positions!r}, {replacement['statistic']!r}))"
+                    )
+                ]
+            if replacement.get("kind") == "linearInterpolation":
+                coordinate_position = bound_column_position(replacement["coordinate"], kind)
+                return [
+                    (
+                        f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_linear_interpolation("
+                        f"df, {position}, {coordinate_position}, {replacement.get('maxGap')!r}))"
                     )
                 ]
             lines = [
@@ -2541,6 +2560,138 @@ def _pandas_fill_missing_directional(
     return restored
 
 
+def _pandas_fill_missing_linear_interpolation(
+    frame: Any,
+    target_position: int,
+    coordinate_position: int,
+    max_gap: int | None,
+) -> Any:
+    """Interpolate bracketed missing runs by coordinate distance and restore row order."""
+
+    import numpy as np
+
+    series = frame.iloc[:, target_position]
+    if _pandas_semantic_type(series) != "float":
+        raise EngineError("Linear interpolation requires a floating-point target column.")
+    coordinates = _pandas_linear_coordinate_values(frame.iloc[:, coordinate_position])
+    if len(set(coordinates)) != len(coordinates):
+        raise EngineError("Linear interpolation requires unique coordinate values.")
+    try:
+        order = np.asarray(sorted(range(len(coordinates)), key=coordinates.__getitem__), dtype=np.int64)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise EngineError(f"Linear interpolation coordinates cannot be ordered: {error}") from error
+
+    ordered = series.iloc[order].reset_index(drop=True)
+    ordered_coordinates = [coordinates[int(position)] for position in order]
+    ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
+    result = ordered.copy()
+    cursor = 0
+    while cursor < len(result):
+        if not ordered_missing[cursor]:
+            cursor += 1
+            continue
+        start = cursor
+        while cursor < len(result) and ordered_missing[cursor]:
+            cursor += 1
+        end = cursor
+        if start == 0 or end == len(result) or (max_gap is not None and end - start > max_gap):
+            continue
+        left_value = ordered.iloc[start - 1]
+        right_value = ordered.iloc[end]
+        if not _pandas_finite_interpolation_anchor(left_value) or not _pandas_finite_interpolation_anchor(right_value):
+            continue
+        left_coordinate = ordered_coordinates[start - 1]
+        right_coordinate = ordered_coordinates[end]
+        try:
+            for position in range(start, end):
+                weight = _pandas_linear_interpolation_weight(
+                    ordered_coordinates[position],
+                    left_coordinate,
+                    right_coordinate,
+                )
+                if not isfinite(weight) or not 0.0 <= weight <= 1.0:
+                    raise ValueError("coordinate distance produced a non-finite interpolation weight")
+                # This convex form avoids overflowing ``right - left`` for
+                # finite endpoints with opposite signs.
+                result.iloc[position] = (1.0 - weight) * float(left_value) + weight * float(right_value)
+        except (ArithmeticError, TypeError, ValueError, OverflowError) as error:
+            raise EngineError(f"Linear interpolation failed for the selected coordinates: {error}") from error
+
+    try:
+        result = result.astype(series.dtype)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise EngineError(f"Linear interpolation cannot preserve the Pandas target type: {error}") from error
+    inverse = np.empty(len(order), dtype=np.int64)
+    inverse[order] = np.arange(len(order), dtype=np.int64)
+    restored = result.iloc[inverse].copy()
+    restored.index = series.index
+    restored.name = series.name
+    return restored
+
+
+def _pandas_linear_interpolation_weight(current: Any, left: Any, right: Any) -> float:
+    if any(isinstance(value, Decimal) for value in (current, left, right)) or all(
+        isinstance(value, Integral) for value in (current, left, right)
+    ):
+        with localcontext() as context:
+            context.prec = 80
+            return float((Decimal(current) - Decimal(left)) / (Decimal(right) - Decimal(left)))
+    current_float = float(current)
+    left_float = float(left)
+    right_float = float(right)
+    denominator = right_float - left_float
+    if isfinite(denominator):
+        return (current_float - left_float) / denominator
+    return ((current_float / 2.0) - (left_float / 2.0)) / ((right_float / 2.0) - (left_float / 2.0))
+
+
+def _pandas_linear_coordinate_values(series: Any) -> list[Any]:
+    import numpy as np
+    import pandas as pd
+
+    result = []
+    for value in series.array:
+        if _is_null_value(value) or _is_nan_value(value):
+            raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+        if isinstance(value, (pd.Timestamp, datetime, np.datetime64)):
+            try:
+                timestamp = pd.Timestamp(value)
+                if pd.isna(timestamp):
+                    raise ValueError("missing datetime")
+                result.append(int(timestamp.value))
+            except (TypeError, ValueError, OverflowError) as error:
+                raise EngineError(f"Linear interpolation has an invalid datetime coordinate: {error}") from error
+            continue
+        if isinstance(value, date):
+            result.append(value.toordinal())
+            continue
+        if isinstance(value, Decimal):
+            if not value.is_finite():
+                raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+            result.append(value)
+            continue
+        if isinstance(value, Integral) and not isinstance(value, (bool, np.bool_)):
+            result.append(int(value))
+            continue
+        if isinstance(value, Real) and not isinstance(value, (bool, np.bool_)):
+            numeric = float(value)
+            if not isfinite(numeric):
+                raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+            result.append(numeric)
+            continue
+        raise EngineError("Linear interpolation coordinates must contain only numeric, date, or datetime values.")
+    return result
+
+
+def _pandas_finite_interpolation_anchor(value: Any) -> bool:
+    if _is_null_value(value) or _is_nan_value(value):
+        return False
+    try:
+        return isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _pandas_fill_missing_grouped_statistic(
     frame: Any,
     target_position: int,
@@ -3068,6 +3219,149 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "            except (TypeError, ValueError, OverflowError) as error:",
         (
             "                raise ValueError('Directional fill is incompatible with the selected Pandas column: ' "
+            "+ str(error)) from error"
+        ),
+        "    inverse = np.empty(len(order), dtype=np.int64)",
+        "    inverse[order] = np.arange(len(order), dtype=np.int64)",
+        "    restored = result.iloc[inverse].copy()",
+        "    restored.index = series.index",
+        "    restored.name = series.name",
+        "    return restored",
+        "",
+        "",
+        "def _open_wrangler_linear_interpolation_weight(current, left, right):",
+        "    if any(isinstance(value, Decimal) for value in (current, left, right)) or all(",
+        "        isinstance(value, Integral) for value in (current, left, right)",
+        "    ):",
+        "        with localcontext() as context:",
+        "            context.prec = 80",
+        ("            return float((Decimal(current) - Decimal(left)) / (Decimal(right) - Decimal(left)))"),
+        "    current_float = float(current)",
+        "    left_float = float(left)",
+        "    right_float = float(right)",
+        "    denominator = right_float - left_float",
+        "    if np.isfinite(denominator):",
+        "        return (current_float - left_float) / denominator",
+        "    return ((current_float / 2.0) - (left_float / 2.0)) / (",
+        "        (right_float / 2.0) - (left_float / 2.0)",
+        "    )",
+        "",
+        "",
+        "def _open_wrangler_linear_coordinate_values(series):",
+        "    result = []",
+        "    for value in series.array:",
+        ("        if _open_wrangler_is_null(value) or _open_wrangler_is_nan(value):"),
+        (
+            "            raise ValueError('Linear interpolation requires every coordinate value to be "
+            "present and finite.')"
+        ),
+        "        if isinstance(value, (pd.Timestamp, datetime, np.datetime64)):",
+        "            try:",
+        "                timestamp = pd.Timestamp(value)",
+        "                if pd.isna(timestamp):",
+        "                    raise ValueError('missing datetime')",
+        "                result.append(int(timestamp.value))",
+        "            except (TypeError, ValueError, OverflowError) as error:",
+        (
+            "                raise ValueError('Linear interpolation has an invalid datetime coordinate: ' "
+            "+ str(error)) from error"
+        ),
+        "            continue",
+        "        if isinstance(value, date):",
+        "            result.append(value.toordinal())",
+        "            continue",
+        "        if isinstance(value, Decimal):",
+        "            if not value.is_finite():",
+        (
+            "                raise ValueError('Linear interpolation requires every coordinate value to be "
+            "present and finite.')"
+        ),
+        "            result.append(value)",
+        "            continue",
+        "        if isinstance(value, Integral) and not isinstance(value, (bool, np.bool_)):",
+        "            result.append(int(value))",
+        "            continue",
+        "        if isinstance(value, Real) and not isinstance(value, (bool, np.bool_)):",
+        "            numeric = float(value)",
+        "            if not np.isfinite(numeric):",
+        (
+            "                raise ValueError('Linear interpolation requires every coordinate value to be "
+            "present and finite.')"
+        ),
+        "            result.append(numeric)",
+        "            continue",
+        (
+            "        raise ValueError('Linear interpolation coordinates must contain only numeric, date, "
+            "or datetime values.')"
+        ),
+        "    return result",
+        "",
+        "",
+        "def _open_wrangler_finite_interpolation_anchor(value):",
+        "    if _open_wrangler_is_null(value) or _open_wrangler_is_nan(value):",
+        "        return False",
+        "    try:",
+        "        return bool(np.isfinite(float(value)))",
+        "    except (TypeError, ValueError, OverflowError):",
+        "        return False",
+        "",
+        "",
+        "def _open_wrangler_fill_missing_linear_interpolation(df, target_position, coordinate_position, max_gap):",
+        "    series = df.iloc[:, target_position]",
+        "    if _open_wrangler_fill_semantic_type(series) != 'float':",
+        "        raise ValueError('Linear interpolation requires a floating-point target column.')",
+        "    coordinates = _open_wrangler_linear_coordinate_values(df.iloc[:, coordinate_position])",
+        "    if len(set(coordinates)) != len(coordinates):",
+        "        raise ValueError('Linear interpolation requires unique coordinate values.')",
+        "    try:",
+        "        order = np.asarray(sorted(range(len(coordinates)), key=coordinates.__getitem__), dtype=np.int64)",
+        "    except (TypeError, ValueError, OverflowError) as error:",
+        ("        raise ValueError('Linear interpolation coordinates cannot be ordered: ' + str(error)) from error"),
+        "    ordered = series.iloc[order].reset_index(drop=True)",
+        "    ordered_coordinates = [coordinates[int(position)] for position in order]",
+        (
+            "    ordered_missing = (_open_wrangler_mask(ordered, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
+        ),
+        "    result = ordered.copy()",
+        "    cursor = 0",
+        "    while cursor < len(result):",
+        "        if not ordered_missing[cursor]:",
+        "            cursor += 1",
+        "            continue",
+        "        start = cursor",
+        "        while cursor < len(result) and ordered_missing[cursor]:",
+        "            cursor += 1",
+        "        end = cursor",
+        ("        if start == 0 or end == len(result) or (max_gap is not None and end - start > max_gap):"),
+        "            continue",
+        "        left_value = ordered.iloc[start - 1]",
+        "        right_value = ordered.iloc[end]",
+        (
+            "        if not _open_wrangler_finite_interpolation_anchor(left_value) or not "
+            "_open_wrangler_finite_interpolation_anchor(right_value):"
+        ),
+        "            continue",
+        "        left_coordinate = ordered_coordinates[start - 1]",
+        "        right_coordinate = ordered_coordinates[end]",
+        "        try:",
+        "            for position in range(start, end):",
+        "                weight = _open_wrangler_linear_interpolation_weight(",
+        "                    ordered_coordinates[position], left_coordinate, right_coordinate",
+        "                )",
+        "                if not np.isfinite(weight) or not 0.0 <= weight <= 1.0:",
+        ("                    raise ValueError('coordinate distance produced a non-finite interpolation weight')"),
+        ("                result.iloc[position] = (1.0 - weight) * float(left_value) + weight * float(right_value)"),
+        "        except (ArithmeticError, TypeError, ValueError, OverflowError) as error:",
+        (
+            "            raise ValueError('Linear interpolation failed for the selected coordinates: ' "
+            "+ str(error)) from error"
+        ),
+        "    try:",
+        "        result = result.astype(series.dtype)",
+        "    except (TypeError, ValueError, OverflowError) as error:",
+        (
+            "        raise ValueError('Linear interpolation cannot preserve the Pandas target type: ' "
             "+ str(error)) from error"
         ),
         "    inverse = np.empty(len(order), dtype=np.int64)",

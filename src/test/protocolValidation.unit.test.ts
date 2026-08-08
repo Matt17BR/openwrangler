@@ -1584,6 +1584,8 @@ describe("protocol-v2 request validation", () => {
         keys: [otherReference, { id: "column:2", name: "third" }]
       },
       { kind: "groupedStatistic", statistic: "mostFrequent", keys: [otherReference] },
+      { kind: "linearInterpolation", coordinate: otherReference },
+      { kind: "linearInterpolation", coordinate: otherReference, maxGap: 1_000_000 },
       { kind: "string", value: "" },
       { kind: "integer", value: "99999999999999999999999999999999999999" },
       { kind: "float", value: "-1.25e+3" },
@@ -1644,7 +1646,13 @@ describe("protocol-v2 request validation", () => {
       { kind: "groupedStatistic", statistic: "median", keys: [] },
       { kind: "groupedStatistic", statistic: "sum", keys: [otherReference] },
       { kind: "groupedStatistic", statistic: "mean", keys: ["other"] },
-      { kind: "groupedStatistic", statistic: "mostFrequent", keys: [otherReference], extra: true }
+      { kind: "groupedStatistic", statistic: "mostFrequent", keys: [otherReference], extra: true },
+      { kind: "linearInterpolation" },
+      { kind: "linearInterpolation", coordinate: "other" },
+      { kind: "linearInterpolation", coordinate: otherReference, maxGap: 0 },
+      { kind: "linearInterpolation", coordinate: otherReference, maxGap: 1.5 },
+      { kind: "linearInterpolation", coordinate: otherReference, maxGap: 1_000_001 },
+      { kind: "linearInterpolation", coordinate: otherReference, extra: true }
     ]) {
       expect(isTransformStep(fillStep(replacement)), JSON.stringify(replacement)).toBe(false);
     }
@@ -1670,6 +1678,11 @@ describe("protocol-v2 request validation", () => {
     expect(isTransformStep(fillStep(targetGroupKey))).toBe(false);
     expect(isRuntimeRequestEnvelope(previewEnvelope(targetGroupKey))).toBe(false);
     expect(validateTransportSchema(previewEnvelope(targetGroupKey))).toBe(true);
+
+    const targetInterpolationCoordinate = { kind: "linearInterpolation", coordinate: valueReference };
+    expect(isTransformStep(fillStep(targetInterpolationCoordinate))).toBe(false);
+    expect(isRuntimeRequestEnvelope(previewEnvelope(targetInterpolationCoordinate))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(targetInterpolationCoordinate))).toBe(true);
 
     const repeatedOrderColumn = {
       kind: "directional",

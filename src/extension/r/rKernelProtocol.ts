@@ -211,7 +211,10 @@ export interface RKernelFillMissingValuesStep {
 export type RKernelFillMissingReplacement =
   | Exclude<
       FillMissingReplacement,
-      { kind: "fallbackColumns" } | { kind: "directional" } | { kind: "groupedStatistic" }
+      | { kind: "fallbackColumns" }
+      | { kind: "directional" }
+      | { kind: "groupedStatistic" }
+      | { kind: "linearInterpolation" }
     >
   | Readonly<{
       kind: "fallbackColumns";
@@ -227,6 +230,11 @@ export type RKernelFillMissingReplacement =
       kind: "groupedStatistic";
       statistic: "median" | "mean" | "mostFrequent";
       keys: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    }>
+  | Readonly<{
+      kind: "linearInterpolation";
+      coordinate: RKernelColumnReference;
+      maxGap?: number;
     }>;
 
 export interface RKernelRoundNumberStep {
@@ -1267,7 +1275,7 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
   const replacement = exactRecord(
     value,
     ["kind"],
-    ["value", "columns", "direction", "orderBy", "maxGap", "statistic", "keys"],
+    ["value", "columns", "direction", "orderBy", "maxGap", "statistic", "keys", "coordinate"],
     "R kernel fill-missing replacement"
   );
   if (replacement.kind === "mean" || replacement.kind === "median" || replacement.kind === "mostFrequent") {
@@ -1278,7 +1286,8 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
       replacement.orderBy !== undefined ||
       replacement.maxGap !== undefined ||
       replacement.statistic !== undefined ||
-      replacement.keys !== undefined
+      replacement.keys !== undefined ||
+      replacement.coordinate !== undefined
     ) {
       fail("A calculated replacement may not contain a value or fallback columns.");
     }
@@ -1291,7 +1300,8 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
       replacement.orderBy !== undefined ||
       replacement.maxGap !== undefined ||
       replacement.statistic !== undefined ||
-      replacement.keys !== undefined
+      replacement.keys !== undefined ||
+      replacement.coordinate !== undefined
     ) {
       fail("A fallback-column replacement may not contain a value.");
     }
@@ -1316,7 +1326,8 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
       replacement.value !== undefined ||
       replacement.columns !== undefined ||
       replacement.statistic !== undefined ||
-      replacement.keys !== undefined
+      replacement.keys !== undefined ||
+      replacement.coordinate !== undefined
     ) {
       fail("A directional replacement may not contain a value or fallback columns.");
     }
@@ -1348,7 +1359,8 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
       replacement.columns !== undefined ||
       replacement.direction !== undefined ||
       replacement.orderBy !== undefined ||
-      replacement.maxGap !== undefined
+      replacement.maxGap !== undefined ||
+      replacement.coordinate !== undefined
     ) {
       fail("A grouped-statistic replacement may contain only a statistic and grouping columns.");
     }
@@ -1375,6 +1387,37 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
     }
     return;
   }
+  if (replacement.kind === "linearInterpolation") {
+    if (
+      replacement.value !== undefined ||
+      replacement.columns !== undefined ||
+      replacement.direction !== undefined ||
+      replacement.orderBy !== undefined ||
+      replacement.statistic !== undefined ||
+      replacement.keys !== undefined
+    ) {
+      fail("Linear interpolation may contain only one coordinate column and an optional maximum gap.");
+    }
+    const coordinate = validateColumnReference(
+      replacement.coordinate,
+      "request.payload.step.params.replacement.coordinate"
+    );
+    if (coordinate.id === targetColumnId) {
+      fail("The fill target cannot also be the interpolation coordinate.");
+    }
+    if (replacement.maxGap !== undefined) {
+      if (
+        boundedInteger(
+          replacement.maxGap,
+          "request.payload.step.params.replacement.maxGap",
+          maximumFillDirectionalGap
+        ) < 1
+      ) {
+        fail("request.payload.step.params.replacement.maxGap must be positive.");
+      }
+    }
+    return;
+  }
   if (
     replacement.value === undefined ||
     replacement.columns !== undefined ||
@@ -1382,7 +1425,8 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
     replacement.orderBy !== undefined ||
     replacement.maxGap !== undefined ||
     replacement.statistic !== undefined ||
-    replacement.keys !== undefined
+    replacement.keys !== undefined ||
+    replacement.coordinate !== undefined
   ) {
     fail("A typed fill-missing replacement requires a value and may not contain fallback columns.");
   }

@@ -52,6 +52,7 @@ _FILL_VALUE_KINDS_BY_COLUMN = {
 }
 _MAX_FILL_FALLBACK_COLUMNS = 64
 _MAX_DIRECTIONAL_FILL_GAP = 1_000_000
+_MAX_LINEAR_INTERPOLATION_GAP = 1_000_000
 _BY_EXAMPLE_TEXT_KINDS = {
     "slice",
     "split",
@@ -319,6 +320,33 @@ class _BindingContext:
                         f"Grouped fill keys require portable scalar columns; {key.name!r} is {key.semantic_type!r}."
                     )
             return
+        if kind == "linearInterpolation":
+            if column.semantic_type != "float":
+                raise ColumnBindingError(
+                    f"{label} cannot use linear interpolation for {column.semantic_type!r}; "
+                    "choose a floating-point column."
+                )
+            coordinate_reference = replacement.get("coordinate")
+            if not isinstance(coordinate_reference, Mapping):
+                raise ColumnBindingError("fillMissingValues.replacement.coordinate must be a column reference.")
+            coordinate = self._column_for(
+                coordinate_reference,
+                "fillMissingValues.replacement.coordinate",
+            )
+            if coordinate.identifier == column.identifier:
+                raise ColumnBindingError("A linear interpolation target cannot also be its coordinate column.")
+            if coordinate.semantic_type not in {"integer", "float", "decimal", "date", "datetime"}:
+                raise ColumnBindingError(
+                    "Linear interpolation coordinates must be numeric, dates, or datetimes; "
+                    f"{coordinate.name!r} is {coordinate.semantic_type!r}."
+                )
+            if "maxGap" in replacement:
+                max_gap = replacement.get("maxGap")
+                if type(max_gap) is not int or not 1 <= max_gap <= _MAX_LINEAR_INTERPOLATION_GAP:
+                    raise ColumnBindingError(
+                        f"A linear interpolation maxGap must be an integer from 1 to {_MAX_LINEAR_INTERPOLATION_GAP:,}."
+                    )
+            return
         allowed = _FILL_VALUE_KINDS_BY_COLUMN.get(column.semantic_type, set())
         if kind not in allowed:
             raise ColumnBindingError(
@@ -536,6 +564,19 @@ def bind_step(
             replacement["keys"] = context.bind_many(
                 replacement.get("keys"),
                 "fillMissingValues.replacement.keys",
+            )
+            params["replacement"] = replacement
+        elif isinstance(replacement, Mapping) and replacement.get("kind") == "linearInterpolation":
+            fields = set(replacement)
+            required = {"kind", "coordinate"}
+            if not required.issubset(fields) or fields - {*required, "maxGap"}:
+                raise ColumnBindingError(
+                    "A linear-interpolation replacement must contain kind, coordinate, and optional maxGap."
+                )
+            replacement = dict(replacement)
+            replacement["coordinate"] = context.bind(
+                replacement.get("coordinate"),
+                "fillMissingValues.replacement.coordinate",
             )
             params["replacement"] = replacement
         context.require_fill_replacement(

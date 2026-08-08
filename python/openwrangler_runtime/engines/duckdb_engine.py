@@ -845,6 +845,14 @@ class DuckDBEngine(DataFrameEngine):
                         f"df, {column!r}, {keys!r}, {replacement['statistic']!r})"
                     )
                 ]
+            if replacement.get("kind") == "linearInterpolation":
+                coordinate = bound_column_name(replacement["coordinate"], kind)
+                return [
+                    (
+                        f"{prefix}df = _ow_fill_missing_linear_interpolation("
+                        f"df, {column!r}, {coordinate!r}, {replacement.get('maxGap')!r})"
+                    )
+                ]
             if replacement.get("kind") in {"mean", "median", "mostFrequent"}:
                 return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, None)"]
             value = generated_fill_replacement_expression(replacement)
@@ -1084,6 +1092,13 @@ class DuckDBEngine(DataFrameEngine):
                 column,
                 [bound_column_name(key, "fillMissingValues") for key in replacement["keys"]],
                 replacement["statistic"],
+            )
+        if replacement.get("kind") == "linearInterpolation":
+            return self._fill_missing_linear_interpolation(
+                frame,
+                column,
+                bound_column_name(replacement["coordinate"], "fillMissingValues"),
+                replacement.get("maxGap"),
             )
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         raw_type = types[column]
@@ -1377,6 +1392,166 @@ class DuckDBEngine(DataFrameEngine):
             f"count(*) OVER () AS {total}, {candidate_expression} AS {candidate} FROM ordered) "
             f"SELECT * EXCLUDE ({_identifier_list(temporary_names)}) REPLACE ("
             f"{replacement} AS {target_identifier}) FROM context ORDER BY {original}"
+        )
+        return self._relation(frame, query)
+
+    def _fill_missing_linear_interpolation(
+        self,
+        frame: Any,
+        target: str,
+        coordinate: str,
+        max_gap: int | None,
+    ) -> Any:
+        columns = self._columns(frame)
+        types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
+        target_type = types[target]
+        coordinate_type = types[coordinate]
+        if _semantic_type(target_type) != "float":
+            raise EngineError("Linear interpolation requires a floating-point target column.")
+        if "hugeint" in coordinate_type.lower():
+            raise EngineError(
+                "Linear interpolation does not support HUGEINT coordinates; "
+                "convert the coordinate to a narrower exact type first."
+            )
+        if _semantic_type(coordinate_type) not in {"integer", "float", "decimal", "date", "datetime"}:
+            raise EngineError("Linear interpolation coordinates must be numeric, dates, or datetimes.")
+        coordinate_identifier = _quote_ident(coordinate)
+        minimum_coordinate = f"min({coordinate_identifier}) OVER ()"
+        numeric_coordinate, coordinate_roundtrip = _duckdb_interpolation_coordinate_projection(
+            coordinate_identifier,
+            coordinate_type,
+            minimum_coordinate,
+        )
+        coordinate_finite = _finite_predicate(coordinate_identifier, coordinate_type)
+        validation_name = _unique_internal(columns, "__ow_interpolation_validation_coordinate")
+        validation_exact_name = _unique_internal([*columns, validation_name], "__ow_interpolation_validation_exact")
+        validation_identifier = _quote_ident(validation_name)
+        validation_exact = _quote_ident(validation_exact_name)
+        try:
+            validation = self._terminal_rows(
+                frame,
+                (
+                    f"WITH projected AS (SELECT *, {numeric_coordinate} AS {validation_identifier}, "
+                    f"{coordinate_roundtrip} AS {validation_exact} FROM ow) "
+                    "SELECT count(*), "
+                    f"count(*) FILTER (WHERE NOT ({coordinate_finite})), "
+                    f"count(DISTINCT {coordinate_identifier}), "
+                    f"count(DISTINCT {validation_identifier}), "
+                    f"coalesce(bool_and(isfinite({validation_identifier})), TRUE), "
+                    f"coalesce(bool_and({validation_exact}), TRUE) FROM projected"
+                ),
+            )[0]
+        except Exception as error:
+            raise EngineError(
+                "Linear interpolation cannot represent the selected coordinate distances exactly."
+            ) from error
+        count = int(validation[0])
+        if int(validation[1]):
+            raise EngineError("Linear interpolation requires every coordinate value to be present and finite.")
+        if int(validation[2]) != count:
+            raise EngineError("Linear interpolation requires unique coordinate values.")
+        if int(validation[3]) != count or not bool(validation[4]) or not bool(validation[5]):
+            raise EngineError(
+                "Linear interpolation cannot preserve the selected coordinate distances exactly enough; "
+                "choose a lower-precision coordinate column."
+            )
+
+        target_identifier = _quote_ident(target)
+        target_present = _valid_predicate(target_identifier, target_type)
+        target_missing = f"NOT ({target_present})"
+        present_target = f"CASE WHEN {target_present} THEN {target_identifier} ELSE NULL END"
+
+        reserved = list(columns)
+        temporary_names = []
+        for base in (
+            "__ow_interpolation_original",
+            "__ow_interpolation_calculation",
+            "__ow_interpolation_coordinate",
+            "__ow_interpolation_previous",
+            "__ow_interpolation_next",
+            "__ow_interpolation_left_value",
+            "__ow_interpolation_right_value",
+            "__ow_interpolation_left_coordinate",
+            "__ow_interpolation_right_coordinate",
+            "__ow_interpolation_weight",
+        ):
+            name = _unique_internal(reserved, base)
+            reserved.append(name)
+            temporary_names.append(name)
+        (
+            original_name,
+            calculation_name,
+            numeric_name,
+            previous_name,
+            next_name,
+            left_value_name,
+            right_value_name,
+            left_coordinate_name,
+            right_coordinate_name,
+            weight_name,
+        ) = temporary_names
+        original = _quote_ident(original_name)
+        calculation = _quote_ident(calculation_name)
+        numeric = _quote_ident(numeric_name)
+        previous = _quote_ident(previous_name)
+        following = _quote_ident(next_name)
+        left_value = _quote_ident(left_value_name)
+        right_value = _quote_ident(right_value_name)
+        left_coordinate = _quote_ident(left_coordinate_name)
+        right_coordinate = _quote_ident(right_coordinate_name)
+        weight = _quote_ident(weight_name)
+        calculation_order = f"{coordinate_identifier} ASC, {original}"
+        numeric_coordinate, _coordinate_roundtrip = _duckdb_interpolation_coordinate_projection(
+            coordinate_identifier,
+            coordinate_type,
+            f"min({coordinate_identifier}) OVER ()",
+        )
+        left_value_expression = (
+            f"last_value({present_target} IGNORE NULLS) OVER (ORDER BY {calculation} "
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)"
+        )
+        right_value_expression = (
+            f"first_value({present_target} IGNORE NULLS) OVER (ORDER BY {calculation} "
+            "ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)"
+        )
+        present_coordinate = f"CASE WHEN {target_present} THEN {numeric} ELSE NULL END"
+        left_coordinate_expression = (
+            f"last_value({present_coordinate} IGNORE NULLS) OVER (ORDER BY {calculation} "
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)"
+        )
+        right_coordinate_expression = (
+            f"first_value({present_coordinate} IGNORE NULLS) OVER (ORDER BY {calculation} "
+            "ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)"
+        )
+        span = f"({right_coordinate} - {left_coordinate})"
+        direct_weight = f"(({numeric} - {left_coordinate}) / {span})"
+        scaled_weight = (
+            f"(({numeric} / 2.0 - {left_coordinate} / 2.0) / ({right_coordinate} / 2.0 - {left_coordinate} / 2.0))"
+        )
+        weight_expression = f"CASE WHEN isfinite({span}) THEN {direct_weight} ELSE {scaled_weight} END"
+        gap_size = f"{following} - {previous} - 1"
+        eligible = (
+            f"{target_missing} AND isfinite({left_value}) AND isfinite({right_value}) "
+            f"AND isfinite({weight}) AND {weight} BETWEEN 0.0 AND 1.0"
+        )
+        if max_gap is not None:
+            eligible += f" AND {gap_size} <= {int(max_gap)}"
+        interpolated = f"((1.0 - {weight}) * {left_value} + {weight} * {right_value})"
+        replacement = f"CASE WHEN {eligible} THEN CAST({interpolated} AS {target_type}) ELSE {target_identifier} END"
+        query = (
+            f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), "
+            f"ordered AS (SELECT *, row_number() OVER (ORDER BY {calculation_order}) AS {calculation}, "
+            f"{numeric_coordinate} AS {numeric} FROM numbered), "
+            f"context AS (SELECT *, max(CASE WHEN {target_present} THEN {calculation} END) OVER "
+            f"(ORDER BY {calculation} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {previous}, "
+            f"min(CASE WHEN {target_present} THEN {calculation} END) OVER "
+            f"(ORDER BY {calculation} ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS {following}, "
+            f"{left_value_expression} AS {left_value}, {right_value_expression} AS {right_value}, "
+            f"{left_coordinate_expression} AS {left_coordinate}, "
+            f"{right_coordinate_expression} AS {right_coordinate} FROM ordered), "
+            f"weighted AS (SELECT *, {weight_expression} AS {weight} FROM context) "
+            f"SELECT * EXCLUDE ({_identifier_list(temporary_names)}) REPLACE ("
+            f"{replacement} AS {target_identifier}) FROM weighted ORDER BY {original}"
         )
         return self._relation(frame, query)
 
@@ -1988,6 +2163,32 @@ def _finite_predicate(identifier: str, raw_type: str) -> str:
     return f"{identifier} IS NOT NULL"
 
 
+def _duckdb_interpolation_coordinate_projection(
+    identifier: str,
+    raw_type: str,
+    minimum: str,
+) -> tuple[str, str]:
+    semantic_type = _semantic_type(raw_type)
+    if semantic_type == "float":
+        return f"CAST({identifier} AS DOUBLE)", "TRUE"
+    if semantic_type == "integer":
+        exact = f"(CAST({identifier} AS HUGEINT) - CAST({minimum} AS HUGEINT))"
+        projected = f"CAST({exact} AS DOUBLE)"
+        return projected, f"CAST({projected} AS HUGEINT) = {exact}"
+    if semantic_type == "decimal":
+        exact = f"({identifier} - {minimum})"
+        projected = f"CAST({exact} AS DOUBLE)"
+        return projected, f"CAST({projected} AS {raw_type}) = {exact}"
+    if semantic_type == "date":
+        exact = f"date_diff('day', {minimum}, {identifier})"
+    elif raw_type.strip().lower().startswith("timestamp_ns"):
+        exact = f"(epoch_ns({identifier}) - epoch_ns({minimum}))"
+    else:
+        exact = f"date_diff('microsecond', {minimum}, {identifier})"
+    projected = f"CAST({exact} AS DOUBLE)"
+    return projected, f"CAST({projected} AS BIGINT) = {exact}"
+
+
 def _numeric_visualization(
     connection: Any,
     source_sql: str,
@@ -2489,6 +2690,28 @@ def _ow_is_integer(raw_type):
     )
 
 
+def _ow_interpolation_coordinate_projection(identifier, raw_type, minimum):
+    lowered = str(raw_type).lower()
+    if _ow_is_float(raw_type):
+        return "CAST(" + identifier + " AS DOUBLE)", "TRUE"
+    if _ow_is_integer(raw_type):
+        exact = "(CAST(" + identifier + " AS HUGEINT) - CAST(" + minimum + " AS HUGEINT))"
+        projected = "CAST(" + exact + " AS DOUBLE)"
+        return projected, "CAST(" + projected + " AS HUGEINT) = " + exact
+    if "decimal" in lowered:
+        exact = "(" + identifier + " - " + minimum + ")"
+        projected = "CAST(" + exact + " AS DOUBLE)"
+        return projected, "CAST(" + projected + " AS " + str(raw_type) + ") = " + exact
+    if lowered == "date":
+        exact = "date_diff('day', " + minimum + ", " + identifier + ")"
+    elif lowered.startswith("timestamp_ns"):
+        exact = "(epoch_ns(" + identifier + ") - epoch_ns(" + minimum + "))"
+    else:
+        exact = "date_diff('microsecond', " + minimum + ", " + identifier + ")"
+    projected = "CAST(" + exact + " AS DOUBLE)"
+    return projected, "CAST(" + projected + " AS BIGINT) = " + exact
+
+
 def _ow_case_sensitive_group_value(identifier, raw_type):
     lowered = str(raw_type).strip().lower()
     if lowered in {"varchar", "char"} or lowered.startswith(("varchar(", "char(")):
@@ -2747,6 +2970,164 @@ def _ow_fill_missing_directional(df, target, order_rules, direction, max_gap):
         + following + ", count(*) OVER () AS " + total + ", " + candidate_expression + " AS " + candidate
         + " FROM ordered) SELECT * EXCLUDE (" + _ow_identifiers(temporary_names) + ") REPLACE ("
         + replacement + " AS " + target_identifier + ") FROM context ORDER BY " + original
+    )
+    return _ow_query(df, query)
+
+
+def _ow_fill_missing_linear_interpolation(df, target, coordinate, max_gap):
+    columns = _ow_columns(df)
+    types = dict(zip(columns, map(str, df.types)))
+    target_type = types[target]
+    coordinate_type = types[coordinate]
+    lowered_coordinate = coordinate_type.lower()
+    if "hugeint" in lowered_coordinate:
+        raise ValueError(
+            "Linear interpolation does not support HUGEINT coordinates; "
+            "convert the coordinate to a narrower exact type first."
+        )
+    coordinate_supported = (
+        _ow_is_integer(coordinate_type)
+        or _ow_is_float(coordinate_type)
+        or "decimal" in lowered_coordinate
+        or lowered_coordinate == "date"
+        or "timestamp" in lowered_coordinate
+    )
+    if not _ow_is_float(target_type):
+        raise ValueError("Linear interpolation requires a floating-point target column.")
+    if not coordinate_supported:
+        raise ValueError("Linear interpolation coordinates must be numeric, dates, or datetimes.")
+    coordinate_identifier = _ow_ident(coordinate)
+    minimum_coordinate = "min(" + coordinate_identifier + ") OVER ()"
+    numeric_coordinate, coordinate_roundtrip = _ow_interpolation_coordinate_projection(
+        coordinate_identifier, coordinate_type, minimum_coordinate
+    )
+    coordinate_finite = (
+        "(" + coordinate_identifier + " IS NOT NULL AND isfinite(" + coordinate_identifier + "))"
+        if _ow_is_float(coordinate_type)
+        else coordinate_identifier + " IS NOT NULL"
+    )
+    validation_name = _ow_unique(columns, "__ow_interpolation_validation_coordinate")
+    validation_exact_name = _ow_unique(
+        columns + [validation_name], "__ow_interpolation_validation_exact"
+    )
+    validation_identifier = _ow_ident(validation_name)
+    validation_exact = _ow_ident(validation_exact_name)
+    try:
+        validation = _ow_query(
+            df,
+            "WITH projected AS (SELECT *, " + numeric_coordinate + " AS " + validation_identifier
+            + ", " + coordinate_roundtrip + " AS " + validation_exact + " FROM ow) "
+            + "SELECT count(*), count(*) FILTER (WHERE NOT (" + coordinate_finite
+            + ")), count(DISTINCT " + coordinate_identifier + "), count(DISTINCT "
+            + validation_identifier + "), coalesce(bool_and(isfinite(" + validation_identifier
+            + ")), TRUE), coalesce(bool_and(" + validation_exact + "), TRUE) FROM projected",
+        ).fetchone()
+    except Exception as error:
+        raise ValueError(
+            "Linear interpolation cannot represent the selected coordinate distances exactly."
+        ) from error
+    count = int(validation[0])
+    if int(validation[1]):
+        raise ValueError("Linear interpolation requires every coordinate value to be present and finite.")
+    if int(validation[2]) != count:
+        raise ValueError("Linear interpolation requires unique coordinate values.")
+    if int(validation[3]) != count or not bool(validation[4]) or not bool(validation[5]):
+        raise ValueError(
+            "Linear interpolation cannot preserve the selected coordinate distances exactly enough; "
+            "choose a lower-precision coordinate column."
+        )
+    target_identifier = _ow_ident(target)
+    target_present = _ow_valid(target_identifier, target_type)
+    target_missing = "NOT (" + target_present + ")"
+    present_target = "CASE WHEN " + target_present + " THEN " + target_identifier + " ELSE NULL END"
+    reserved = list(columns)
+    temporary_names = []
+    for base in (
+        "__ow_interpolation_original",
+        "__ow_interpolation_calculation",
+        "__ow_interpolation_coordinate",
+        "__ow_interpolation_previous",
+        "__ow_interpolation_next",
+        "__ow_interpolation_left_value",
+        "__ow_interpolation_right_value",
+        "__ow_interpolation_left_coordinate",
+        "__ow_interpolation_right_coordinate",
+        "__ow_interpolation_weight",
+    ):
+        name = _ow_unique(reserved, base)
+        reserved.append(name)
+        temporary_names.append(name)
+    (
+        original_name, calculation_name, numeric_name, previous_name, next_name,
+        left_value_name, right_value_name, left_coordinate_name, right_coordinate_name,
+        weight_name,
+    ) = temporary_names
+    original = _ow_ident(original_name)
+    calculation = _ow_ident(calculation_name)
+    numeric = _ow_ident(numeric_name)
+    previous = _ow_ident(previous_name)
+    following = _ow_ident(next_name)
+    left_value = _ow_ident(left_value_name)
+    right_value = _ow_ident(right_value_name)
+    left_coordinate = _ow_ident(left_coordinate_name)
+    right_coordinate = _ow_ident(right_coordinate_name)
+    weight = _ow_ident(weight_name)
+    calculation_order = coordinate_identifier + " ASC, " + original
+    numeric_coordinate, _coordinate_roundtrip = _ow_interpolation_coordinate_projection(
+        coordinate_identifier,
+        coordinate_type,
+        "min(" + coordinate_identifier + ") OVER ()",
+    )
+    left_value_expression = (
+        "last_value(" + present_target + " IGNORE NULLS) OVER (ORDER BY " + calculation
+        + " ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)"
+    )
+    right_value_expression = (
+        "first_value(" + present_target + " IGNORE NULLS) OVER (ORDER BY " + calculation
+        + " ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)"
+    )
+    present_coordinate = "CASE WHEN " + target_present + " THEN " + numeric + " ELSE NULL END"
+    left_coordinate_expression = (
+        "last_value(" + present_coordinate + " IGNORE NULLS) OVER (ORDER BY " + calculation
+        + " ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)"
+    )
+    right_coordinate_expression = (
+        "first_value(" + present_coordinate + " IGNORE NULLS) OVER (ORDER BY " + calculation
+        + " ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING)"
+    )
+    span = "(" + right_coordinate + " - " + left_coordinate + ")"
+    direct_weight = "((" + numeric + " - " + left_coordinate + ") / " + span + ")"
+    scaled_weight = (
+        "((" + numeric + " / 2.0 - " + left_coordinate + " / 2.0) / ("
+        + right_coordinate + " / 2.0 - " + left_coordinate + " / 2.0))"
+    )
+    weight_expression = "CASE WHEN isfinite(" + span + ") THEN " + direct_weight + " ELSE " + scaled_weight + " END"
+    eligible = (
+        target_missing + " AND isfinite(" + left_value + ") AND isfinite(" + right_value
+        + ") AND isfinite(" + weight + ") AND " + weight + " BETWEEN 0.0 AND 1.0"
+    )
+    if max_gap is not None:
+        eligible += " AND " + following + " - " + previous + " - 1 <= " + str(int(max_gap))
+    interpolated = "((1.0 - " + weight + ") * " + left_value + " + " + weight + " * " + right_value + ")"
+    replacement = (
+        "CASE WHEN " + eligible + " THEN CAST(" + interpolated + " AS " + target_type
+        + ") ELSE " + target_identifier + " END"
+    )
+    query = (
+        "WITH numbered AS (SELECT *, row_number() OVER () AS " + original + " FROM ow), "
+        "ordered AS (SELECT *, row_number() OVER (ORDER BY " + calculation_order + ") AS "
+        + calculation + ", " + numeric_coordinate + " AS " + numeric + " FROM numbered), "
+        "context AS (SELECT *, max(CASE WHEN " + target_present + " THEN " + calculation
+        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS "
+        + previous + ", min(CASE WHEN " + target_present + " THEN " + calculation
+        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS "
+        + following + ", " + left_value_expression + " AS " + left_value + ", "
+        + right_value_expression + " AS " + right_value + ", "
+        + left_coordinate_expression + " AS " + left_coordinate + ", "
+        + right_coordinate_expression + " AS " + right_coordinate + " FROM ordered), "
+        "weighted AS (SELECT *, " + weight_expression + " AS " + weight + " FROM context) "
+        "SELECT * EXCLUDE (" + _ow_identifiers(temporary_names) + ") REPLACE ("
+        + replacement + " AS " + target_identifier + ") FROM weighted ORDER BY " + original
     )
     return _ow_query(df, query)
 
