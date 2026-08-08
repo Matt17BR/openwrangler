@@ -20,6 +20,7 @@ import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./not
 import { exportFileSafely } from "./files/safeFileExport";
 import { insertGeneratedRDocumentCode } from "./r/rDocumentInsertion";
 import type { PythonLiveVariableProvider, PythonLiveVariableSnapshot } from "./notebooks/pythonInteractiveCommands";
+import type { RLiveVariableProvider, RLiveVariableSnapshot } from "./r/rInteractiveCommands";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 type ViewSortAction = "moveUp" | "moveDown" | "remove";
@@ -57,7 +58,8 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
   constructor(
     private readonly kind: ViewKind,
     coordinator: SessionCoordinator,
-    private readonly pythonVariables?: PythonLiveVariableProvider
+    private readonly pythonVariables?: PythonLiveVariableProvider,
+    private readonly rVariables?: RLiveVariableProvider
   ) {
     this.snapshot = coordinator.activeSession();
     this.sortRegistryContext = viewSortRegistryContext(this.snapshot);
@@ -77,16 +79,22 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
         this.changeEmitter.fire(undefined)
       );
     }
+    if (this.kind === "operations" && this.rVariables) {
+      this.rVariableSubscription = this.rVariables.onDidChangeVariables(() => this.changeEmitter.fire(undefined));
+    }
   }
 
   private pythonVariableSubscription: vscode.Disposable | undefined;
+  private rVariableSubscription: vscode.Disposable | undefined;
 
   getTreeItem(element: ViewNode): vscode.TreeItem {
     return element;
   }
 
   getChildren(): ViewNode[] {
-    if (this.kind === "operations") return operationNodes(this.snapshot?.metadata, this.pythonVariables?.snapshot());
+    if (this.kind === "operations") {
+      return operationNodes(this.snapshot?.metadata, this.pythonVariables?.snapshot(), this.rVariables?.snapshot());
+    }
     if (!this.snapshot) return [new ViewNode("No active dataframe", "Open a data file or notebook variable", "info")];
     if (this.kind === "summary") return summaryNodes(this.snapshot);
     if (this.kind === "filters") {
@@ -107,6 +115,7 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     this.sortTokens.clear();
     this.subscription.dispose();
     this.pythonVariableSubscription?.dispose();
+    this.rVariableSubscription?.dispose();
     this.changeEmitter.dispose();
   }
 
@@ -311,7 +320,8 @@ export interface NativeViewsTestController {
 export function registerNativeViews(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
-  pythonVariables?: PythonLiveVariableProvider
+  pythonVariables?: PythonLiveVariableProvider,
+  rVariables?: RLiveVariableProvider
 ): NativeViewsTestController {
   const updatePlanContexts = (snapshot: ActiveSessionSnapshot | undefined) => {
     const hasDraft = Boolean(snapshot?.metadata.draftStep);
@@ -333,7 +343,7 @@ export function registerNativeViews(
   const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
   const filterProvider = new OpenWranglerTreeProvider("filters", coordinator);
   const providers = {
-    "openWrangler.operations": new OpenWranglerTreeProvider("operations", coordinator, pythonVariables),
+    "openWrangler.operations": new OpenWranglerTreeProvider("operations", coordinator, pythonVariables, rVariables),
     "openWrangler.summary": new OpenWranglerTreeProvider("summary", coordinator),
     "openWrangler.filters": filterProvider,
     "openWrangler.cleaningSteps": new OpenWranglerTreeProvider("steps", coordinator)
@@ -790,9 +800,10 @@ export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefin
 
 function operationNodes(
   metadata: SessionMetadata | undefined,
-  pythonVariables: PythonLiveVariableSnapshot | undefined
+  pythonVariables: PythonLiveVariableSnapshot | undefined,
+  rVariables: RLiveVariableSnapshot | undefined
 ): ViewNode[] {
-  const liveVariables = pythonLiveVariableNodes(pythonVariables);
+  const liveVariables = [...pythonLiveVariableNodes(pythonVariables), ...rLiveVariableNodes(rVariables)];
   if (!metadata) {
     return [
       ...liveVariables,
@@ -832,9 +843,9 @@ function operationNodes(
 
 function pythonLiveVariableNodes(snapshot: PythonLiveVariableSnapshot | undefined): ViewNode[] {
   if (!snapshot) return [];
-  const refresh = new ViewNode("Refresh live dataframes", snapshot.notebookLabel, "refresh", {
+  const refresh = new ViewNode("Refresh Python dataframes", snapshot.notebookLabel, "refresh", {
     command: "openWrangler.refreshNotebookVariables",
-    title: "Refresh live dataframes"
+    title: "Refresh Python dataframes"
   });
   if (snapshot.state !== "ready") {
     return [
@@ -847,6 +858,32 @@ function pythonLiveVariableNodes(snapshot: PythonLiveVariableSnapshot | undefine
       (variable) =>
         new ViewNode(variable.label, variable.description, "symbol-variable", {
           command: "openWrangler.openCachedNotebookVariable",
+          title: `Open ${variable.label}`,
+          arguments: [variable.handle]
+        })
+    ),
+    refresh
+  ];
+}
+
+function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNode[] {
+  if (!snapshot) return [];
+  const refresh = new ViewNode("Refresh R dataframes", snapshot.message, "refresh", {
+    command: "openWrangler.refreshRInteractiveVariables",
+    title: "Refresh R dataframes"
+  });
+  if (snapshot.state === "idle") return [refresh];
+  if (snapshot.state !== "ready") {
+    return [
+      new ViewNode(snapshot.message, snapshot.terminalLabel, snapshot.state === "error" ? "warning" : "info"),
+      ...(snapshot.state === "loading" ? [] : [refresh])
+    ];
+  }
+  return [
+    ...snapshot.variables.map(
+      (variable) =>
+        new ViewNode(variable.label, variable.description, "symbol-variable", {
+          command: "openWrangler.openCachedRInteractiveVariable",
           title: `Open ${variable.label}`,
           arguments: [variable.handle]
         })

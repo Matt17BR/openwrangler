@@ -19,6 +19,16 @@ const lifecycle = vi.hoisted(() => ({
   pickleWorkers: {
     run: vi.fn(),
     shutdown: vi.fn()
+  },
+  pythonVariables: {
+    onDidChangeVariables: () => ({ dispose: vi.fn() }),
+    snapshot: () => undefined,
+    dispose: vi.fn()
+  },
+  rVariables: {
+    onDidChangeVariables: () => ({ dispose: vi.fn() }),
+    snapshot: () => undefined,
+    dispose: vi.fn()
   }
 }));
 
@@ -43,11 +53,7 @@ vi.mock("../extension/files/trustedPickleWorker", () => ({
 }));
 vi.mock("../extension/notebooks/jupyterBridge", () => ({ registerNotebookCommands: vi.fn() }));
 vi.mock("../extension/notebooks/pythonInteractiveCommands", () => ({
-  registerPythonInteractiveCommands: vi.fn(() => ({
-    onDidChangeVariables: () => ({ dispose: vi.fn() }),
-    snapshot: () => undefined,
-    dispose: vi.fn()
-  }))
+  registerPythonInteractiveCommands: vi.fn(() => lifecycle.pythonVariables)
 }));
 vi.mock("../extension/notebooks/rendererMessaging", () => ({ registerNotebookRendererMessaging: vi.fn() }));
 vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
@@ -57,12 +63,17 @@ vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
 }));
 vi.mock("../extension/runtimeCommands", () => ({ registerRuntimeCommands: vi.fn() }));
 vi.mock("../extension/r/rDocumentCommands", () => ({ registerRDocumentCommands: vi.fn() }));
+vi.mock("../extension/r/rInteractiveCommands", () => ({
+  registerRInteractiveCommands: vi.fn(() => lifecycle.rVariables)
+}));
 vi.mock("../extension/nativeViews", () => ({ registerNativeViews: vi.fn(() => ({})) }));
 vi.mock("../extension/webviewPanel", () => ({
   OpenWranglerPanel: { disposePanelForSession: vi.fn() }
 }));
 
 import { activate, deactivate, isCursorAppName } from "../extension/activate";
+import { registerNativeViews } from "../extension/nativeViews";
+import { registerRInteractiveCommands } from "../extension/r/rInteractiveCommands";
 
 describe("extension deactivation", () => {
   const originalExtensionTests = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
@@ -80,6 +91,8 @@ describe("extension deactivation", () => {
     lifecycle.coordinatedBridge.request.mockReset();
     lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
     lifecycle.coordinator.createBridge.mockReset().mockReturnValue(lifecycle.coordinatedBridge);
+    vi.mocked(registerRInteractiveCommands).mockClear();
+    vi.mocked(registerNativeViews).mockClear();
     await activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext);
   });
 
@@ -106,6 +119,18 @@ describe("extension deactivation", () => {
     coordinatorGate.resolve();
     await expect(deactivation).resolves.toBeUndefined();
     expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("passes the registered active-R provider to the native Operations view", () => {
+    expect(registerRInteractiveCommands).toHaveBeenCalledOnce();
+    expect(registerRInteractiveCommands).toHaveBeenCalledWith(expect.anything(), lifecycle.coordinator);
+    expect(registerNativeViews).toHaveBeenCalledOnce();
+    expect(registerNativeViews).toHaveBeenCalledWith(
+      expect.anything(),
+      lifecycle.coordinator,
+      lifecycle.pythonVariables,
+      lifecycle.rVariables
+    );
   });
 
   it("waits for active pickle workers before starting coordinator or bridge shutdown", async () => {

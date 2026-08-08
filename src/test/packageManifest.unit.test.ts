@@ -216,7 +216,7 @@ describe("file launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.runRDocument",
-      when: rSourcePredicate,
+      when: rSourcePredicate.replace("isWorkspaceTrusted &&", "isWorkspaceTrusted && !rSessionActive &&"),
       group: "navigation@1"
     });
     expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
@@ -227,6 +227,60 @@ describe("file launch contributions", () => {
     expect(manifest.contributes?.menus?.commandPalette).not.toContainEqual(
       expect.objectContaining({ command: "openWrangler.runRDocument" })
     );
+  });
+
+  it("opens existing dataframes from the official R Workspace without claiming private tree nodes", () => {
+    expect(manifest.activationEvents).toEqual(
+      expect.arrayContaining([
+        "onCommand:openWrangler.openRInteractiveVariable",
+        "onCommand:openWrangler.refreshRInteractiveVariables",
+        "onCommand:openWrangler.openCachedRInteractiveVariable"
+      ])
+    );
+    expect(manifest.contributes?.commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          command: "openWrangler.openRInteractiveVariable",
+          title: "Open Wrangler: Open Dataframe from Active R Session…",
+          shortTitle: "Open in Open Wrangler"
+        }),
+        expect.objectContaining({
+          command: "openWrangler.refreshRInteractiveVariables",
+          title: "Open Wrangler: Refresh R Dataframes",
+          shortTitle: "Refresh R Dataframes",
+          icon: "$(refresh)"
+        }),
+        expect.objectContaining({
+          command: "openWrangler.openCachedRInteractiveVariable",
+          title: "Open Wrangler: Open R Dataframe"
+        })
+      ])
+    );
+    const allMenuEntries = Object.values(manifest.contributes?.menus ?? {}).flat();
+    expect(allMenuEntries.some((entry) => entry.when?.includes("view == workspaceViewer"))).toBe(false);
+    const activeRSourcePredicate =
+      "isWorkspaceTrusted && rSessionActive && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
+      command: "openWrangler.openRInteractiveVariable",
+      when: activeRSourcePredicate,
+      group: "navigation@1"
+    });
+    expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
+      command: "openWrangler.openRInteractiveVariable",
+      when: activeRSourcePredicate,
+      group: "navigation@48"
+    });
+    expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
+      command: "openWrangler.openCachedRInteractiveVariable",
+      when: "false"
+    });
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
+      command: "openWrangler.runRDocument",
+      when:
+        "isWorkspaceTrusted && !rSessionActive && (resourceScheme == vscode-remote || isLinux || isMac) && " +
+        "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+      group: "navigation@1"
+    });
   });
 
   it("keeps the supported extension predicate case-insensitive and closed to unrelated files", () => {
