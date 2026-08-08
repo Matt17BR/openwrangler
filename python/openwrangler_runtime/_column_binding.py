@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any
 
-from .engines.base import is_internal_row_id_label
+from .engines.base import VIEW_COMPARABLE_TYPES, is_internal_row_id_label
 
 _GROUP_KEY_TYPES = {
     "string",
@@ -50,6 +50,7 @@ _FILL_VALUE_KINDS_BY_COLUMN = {
     "unknown": {"string", "integer", "float", "decimal", "boolean", "date", "datetime"},
 }
 _MAX_FILL_FALLBACK_COLUMNS = 64
+_MAX_DIRECTIONAL_FILL_GAP = 1_000_000
 _BY_EXAMPLE_TEXT_KINDS = {
     "slice",
     "split",
@@ -249,6 +250,46 @@ class _BindingContext:
                         f"{fallback.name!r} is {fallback.semantic_type!r}, not {column.semantic_type!r}."
                     )
             return
+        if kind == "directional":
+            if column.semantic_type not in _GROUP_KEY_TYPES:
+                raise ColumnBindingError(
+                    f"{label} cannot use directional fill for {column.semantic_type!r}; choose a scalar column."
+                )
+            direction = replacement.get("direction")
+            if direction not in {"forward", "backward"}:
+                raise ColumnBindingError("A directional fill direction must be forward or backward.")
+            if "maxGap" in replacement:
+                max_gap = replacement.get("maxGap")
+                if type(max_gap) is not int or not 1 <= max_gap <= _MAX_DIRECTIONAL_FILL_GAP:
+                    raise ColumnBindingError(
+                        f"A directional fill maxGap must be an integer from 1 to {_MAX_DIRECTIONAL_FILL_GAP:,}."
+                    )
+            order_by = replacement.get("orderBy")
+            if not isinstance(order_by, list) or not order_by:
+                raise ColumnBindingError("fillMissingValues.replacement.orderBy must be a non-empty array.")
+            for index, rule in enumerate(order_by):
+                if not isinstance(rule, Mapping):
+                    raise ColumnBindingError(f"fillMissingValues.replacement.orderBy[{index}] must be an object.")
+                fields = set(rule)
+                if fields != {"column", "direction", "nulls"}:
+                    raise ColumnBindingError(
+                        f"fillMissingValues.replacement.orderBy[{index}] must contain exactly "
+                        "column, direction, and nulls."
+                    )
+                if rule.get("direction") not in {"asc", "desc"} or rule.get("nulls") not in {"first", "last"}:
+                    raise ColumnBindingError("Directional fill sort directions and null ordering are invalid.")
+                order_column = self._column_for(
+                    rule["column"],
+                    f"fillMissingValues.replacement.orderBy[{index}].column",
+                )
+                if order_column.identifier == column.identifier:
+                    raise ColumnBindingError("A directional fill target cannot also be one of its ordering columns.")
+                if order_column.semantic_type not in VIEW_COMPARABLE_TYPES:
+                    raise ColumnBindingError(
+                        "Directional fill ordering requires portable comparable columns; "
+                        f"{order_column.name!r} is {order_column.semantic_type!r}."
+                    )
+            return
         allowed = _FILL_VALUE_KINDS_BY_COLUMN.get(column.semantic_type, set())
         if kind not in allowed:
             raise ColumnBindingError(
@@ -437,6 +478,25 @@ def bind_step(
                 replacement.get("columns"),
                 "fillMissingValues.replacement.columns",
             )
+            params["replacement"] = replacement
+        elif isinstance(replacement, Mapping) and replacement.get("kind") == "directional":
+            replacement_fields = set(replacement)
+            required = {"kind", "direction", "orderBy"}
+            if not required.issubset(replacement_fields) or replacement_fields - {*required, "maxGap"}:
+                raise ColumnBindingError(
+                    "A directional fill replacement must contain kind, direction, orderBy, and optional maxGap."
+                )
+            order_by = replacement.get("orderBy")
+            if not isinstance(order_by, list) or not order_by:
+                raise ColumnBindingError("fillMissingValues.replacement.orderBy must be a non-empty array.")
+            bound_order_columns = context.bind_many(
+                _member_references(order_by, "fillMissingValues.replacement.orderBy"),
+                "fillMissingValues.replacement.orderBy",
+            )
+            replacement = dict(replacement)
+            replacement["orderBy"] = [
+                {**rule, "column": reference} for rule, reference in zip(order_by, bound_order_columns, strict=True)
+            ]
             params["replacement"] = replacement
         context.require_fill_replacement(
             params["column"],

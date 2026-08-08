@@ -107,9 +107,10 @@ Choose from 28 operations, including filling missing values, custom Pandas or Po
 from examples. A draft stays separate until you apply it, and applied steps can be inspected, edited, or undone.
 Fill Missing Values offers a median for numeric columns, a mean for floating-point columns, the most common value for
 text, categorical, and boolean columns, or a specific value of the right type. It can also check an ordered list of
-same-type columns and use the first present value from each row. Categorical columns keep their type when possible;
-the preview shows when a specific value or fallback requires ordinary text. The most common value always keeps its
-category type.
+same-type columns and use the first present value from each row. For ordered data, **Previous value** and **Next
+value** fill in a chosen sort order, with an optional maximum missing-run length. Categorical columns keep their type
+when possible; the preview shows when a specific value or fallback requires ordinary text. The most common value
+always keeps its category type.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/workflow.png" width="960"></a>
 
@@ -195,8 +196,9 @@ shows its data changes and generated R before it is applied. Applied steps can b
 
 Fill Missing Values uses the median of all non-missing numeric values, the mean of a floating-point column, the most
 common non-missing character, factor, or logical value, a value entered by the user, or the first present value from
-an ordered list of same-type columns. It keeps `integer64`, date, and datetime types. A new factor value is added as a
-level when needed.
+an ordered list of same-type columns. It can also take the previous or next value in an explicit sort order and leave
+runs longer than an optional limit untouched. It keeps `integer64`, date, and datetime types. A new factor value is
+added as a level when needed.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Rename Column draft in Open Wrangler with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 

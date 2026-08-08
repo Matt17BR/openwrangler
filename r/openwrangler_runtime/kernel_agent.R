@@ -7,6 +7,7 @@ openwrangler_r_kernel_agent <- local({
   maximum_response_bytes <- 17L * 1024L * 1024L
   maximum_generated_code_bytes <- 4L * 1024L * 1024L
   maximum_export_chunk_bytes <- 1L * 1024L * 1024L
+  maximum_fill_directional_gap <- 1000000L
   maximum_revision <- .Machine$integer.max
   default_strip_characters <- paste0(
     " \t\n\r\v\f",
@@ -172,7 +173,12 @@ openwrangler_r_kernel_agent <- local({
   }
 
   decode_sort_rules <- function(value, limits) {
-    if (!is.list(value) || is.object(value) || length(value) > limits$sortRules) {
+    if (
+      !is.list(value) ||
+        is.object(value) ||
+        !is.null(names(value)) ||
+        length(value) > limits$sortRules
+    ) {
       abort("invalid_request", "request.page.sorts must be a bounded array")
     }
     rules <- lapply(seq_along(value), function(index) {
@@ -182,13 +188,15 @@ openwrangler_r_kernel_agent <- local({
         sprintf("sort[%d].column", index),
         limits$columnIdBytes
       )
-      if (!rule$direction %in% c("asc", "desc") || !rule$nulls %in% c("first", "last")) {
+      direction <- bounded_text(rule$direction, sprintf("sort[%d].direction", index), 4L)
+      nulls <- bounded_text(rule$nulls, sprintf("sort[%d].nulls", index), 5L)
+      if (!direction %in% c("asc", "desc") || !nulls %in% c("first", "last")) {
         abort("invalid_request", sprintf("sort[%d] has an unsupported order", index))
       }
       list(
         column = column,
-        direction = rule$direction,
-        nulls = rule$nulls
+        direction = direction,
+        nulls = nulls
       )
     })
     ids <- vapply(rules, function(rule) rule$column$id, character(1L), USE.NAMES = FALSE)
@@ -470,7 +478,7 @@ openwrangler_r_kernel_agent <- local({
       value,
       "kind",
       "request.payload.step.params.replacement",
-      optional_fields = c("value", "columns")
+      optional_fields = c("value", "columns", "direction", "orderBy", "maxGap")
     )
     kind <- bounded_text(
       replacement$kind,
@@ -482,6 +490,7 @@ openwrangler_r_kernel_agent <- local({
       "median",
       "mostFrequent",
       "fallbackColumns",
+      "directional",
       "string",
       "integer",
       "float",
@@ -525,11 +534,49 @@ openwrangler_r_kernel_agent <- local({
       if (target_column$id %in% ids) abort("invalid_request", "the fill target cannot also be a fallback column")
       return(list(kind = kind, columns = columns))
     }
+    if (identical(kind, "directional")) {
+      required <- c("kind", "direction", "orderBy")
+      optional <- "maxGap"
+      if (!all(required %in% names(replacement)) || any(!names(replacement) %in% c(required, optional))) {
+        abort("invalid_request", "a directional replacement requires kind, direction, and orderBy")
+      }
+      direction <- bounded_text(
+        replacement$direction,
+        "request.payload.step.params.replacement.direction",
+        16L
+      )
+      if (!direction %in% c("forward", "backward")) {
+        abort("invalid_request", "a directional replacement must specify forward or backward")
+      }
+      order_by <- decode_sort_rules(replacement$orderBy, limits)
+      if (length(order_by) == 0L) {
+        abort("invalid_request", "a directional replacement requires at least one ordering column")
+      }
+      order_ids <- vapply(order_by, function(rule) rule$column$id, character(1L), USE.NAMES = FALSE)
+      if (target_column$id %in% order_ids) {
+        abort("invalid_request", "the fill target cannot also be a directional ordering column")
+      }
+      max_gap <- NULL
+      if ("maxGap" %in% names(replacement)) {
+        max_gap <- whole_number(
+          replacement$maxGap,
+          "request.payload.step.params.replacement.maxGap",
+          maximum_fill_directional_gap
+        )
+        if (max_gap < 1) {
+          abort("invalid_request", "request.payload.step.params.replacement.maxGap must be positive")
+        }
+        max_gap <- as.integer(max_gap)
+      }
+      result <- list(kind = kind, direction = direction, orderBy = order_by)
+      if (!is.null(max_gap)) result$maxGap <- max_gap
+      return(result)
+    }
     if (!"value" %in% names(replacement)) {
       abort("invalid_request", "a typed replacement requires a value")
     }
-    if ("columns" %in% names(replacement)) {
-      abort("invalid_request", "a typed replacement may not contain fallback columns")
+    if (!setequal(names(replacement), c("kind", "value"))) {
+      abort("invalid_request", "a typed replacement may contain only kind and value")
     }
     if (identical(kind, "boolean")) {
       if (!is.logical(replacement$value) || length(replacement$value) != 1L || is.na(replacement$value)) {
@@ -1156,7 +1203,11 @@ openwrangler_r_kernel_agent <- local({
     column <- schema[[position]]
     semantic_kind <- column$semantics$kind
     replacement_kind <- step$params$replacement$kind
-    compatible <- if (identical(replacement_kind, "fallbackColumns")) {
+    compatible <- if (identical(replacement_kind, "directional")) {
+      semantic_kind %in% c(
+        "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+      )
+    } else if (identical(replacement_kind, "fallbackColumns")) {
       semantic_kind %in% c("character", "factor", "integer", "integer64", "double", "logical", "date", "datetime")
     } else {
       switch(
@@ -1216,6 +1267,34 @@ openwrangler_r_kernel_agent <- local({
         )
       })
     }
+    order_by <- list()
+    if (identical(replacement_kind, "directional")) {
+      order_by <- lapply(seq_along(step$params$replacement$orderBy), function(index) {
+        rule <- step$params$replacement$orderBy[[index]]
+        reference <- rule$column
+        order_matches <- which(vapply(schema, function(candidate) identical(candidate$id, reference$id), logical(1L)))
+        if (
+          length(order_matches) != 1L ||
+            !identical(schema[[order_matches[[1L]]]]$name, reference$name)
+        ) {
+          abort("stale_column", "A directional ordering column no longer matches the active R dataframe", TRUE)
+        }
+        order_position <- as.integer(order_matches[[1L]])
+        order_column <- schema[[order_position]]
+        if (identical(order_column$id, column$id)) {
+          abort("invalid_request", "The fill target cannot also be a directional ordering column", TRUE)
+        }
+        list(
+          id = order_column$id,
+          position = order_position,
+          name = order_column$name,
+          semanticsKind = order_column$semantics$kind,
+          units = order_column$semantics$units,
+          direction = rule$direction,
+          nulls = rule$nulls
+        )
+      })
+    }
     list(
       id = step$id,
       kind = step$kind,
@@ -1229,7 +1308,8 @@ openwrangler_r_kernel_agent <- local({
       ordered = isTRUE(column$semantics$ordered),
       levels = if (is.null(column$semantics$levels)) character() else column$semantics$levels,
       replacement = step$params$replacement,
-      fallbackColumns = fallback_columns
+      fallbackColumns = fallback_columns,
+      orderBy = order_by
     )
   }
 
@@ -1589,6 +1669,7 @@ openwrangler_r_kernel_agent <- local({
     if (identical(step$kind, "fillMissingValues")) {
       bound <- bind_fill_missing_step(capture, step)
       fallback_fill <- identical(bound$replacement$kind, "fallbackColumns")
+      directional_fill <- identical(bound$replacement$kind, "directional")
       result <- if (fallback_fill) {
         frame_contract$fill_missing_from_fallback_columns_at(
           source,
@@ -1596,6 +1677,18 @@ openwrangler_r_kernel_agent <- local({
           bound$oldName,
           vapply(bound$fallbackColumns, `[[`, integer(1L), "position", USE.NAMES = FALSE),
           vapply(bound$fallbackColumns, `[[`, character(1L), "oldName", USE.NAMES = FALSE)
+        )
+      } else if (directional_fill) {
+        frame_contract$fill_missing_directional_at(
+          source,
+          bound$position,
+          bound$oldName,
+          vapply(bound$orderBy, `[[`, integer(1L), "position", USE.NAMES = FALSE),
+          vapply(bound$orderBy, `[[`, character(1L), "name", USE.NAMES = FALSE),
+          vapply(bound$orderBy, `[[`, character(1L), "direction", USE.NAMES = FALSE),
+          vapply(bound$orderBy, `[[`, character(1L), "nulls", USE.NAMES = FALSE),
+          bound$replacement$direction,
+          bound$replacement$maxGap
         )
       } else {
         frame_contract$fill_missing_column_at(
@@ -1610,7 +1703,7 @@ openwrangler_r_kernel_agent <- local({
           result,
           nullability_source = capture,
           source_positions = seq_along(capture$descriptor$schema),
-          fill_missing_positions = if (fallback_fill) NULL else bound$position,
+          fill_missing_positions = if (fallback_fill || directional_fill) NULL else bound$position,
           fallback_fill_positions = if (fallback_fill) bound$position else NULL
         ),
         bound = bound
@@ -2189,8 +2282,8 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_fill_replacement <- function(replacement) {
-    if (identical(replacement$kind, "fallbackColumns")) {
-      abort("runtime_error", "Generated R code received fallback columns through the scalar fill path")
+    if (replacement$kind %in% c("fallbackColumns", "directional")) {
+      abort("runtime_error", "Generated R code received a non-scalar replacement through the scalar fill path")
     }
     if (replacement$kind %in% c("mean", "median", "mostFrequent")) {
       return(sprintf("list(kind = %s)", r_string(replacement$kind)))
@@ -2205,6 +2298,27 @@ openwrangler_r_kernel_agent <- local({
 
   fill_missing_code_helper_lines <- function() {
     c(
+      "  .ow_fill_directional <- function(.ow_values, .ow_rows, .ow_direction, .ow_max_gap = NULL) {",
+      "    if (!.ow_direction %in% c(\"forward\", \"backward\")) stop(\"Open Wrangler received an invalid directional fill\", call. = FALSE)",
+      "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
+      "    .ow_result_values <- .ow_values",
+      "    .ow_missing <- is.na(.ow_values[.ow_rows])",
+      "    if (length(.ow_missing) == 0L || !any(.ow_missing)) return(.ow_result_values)",
+      "    .ow_runs <- rle(.ow_missing)",
+      "    .ow_run_ends <- cumsum(.ow_runs$lengths)",
+      "    .ow_run_starts <- .ow_run_ends - .ow_runs$lengths + 1L",
+      "    for (.ow_run_index in which(.ow_runs$values)) {",
+      "      .ow_run_length <- .ow_runs$lengths[[.ow_run_index]]",
+      "      if (!is.null(.ow_max_gap) && .ow_run_length > .ow_max_gap) next",
+      "      .ow_start <- .ow_run_starts[[.ow_run_index]]; .ow_end <- .ow_run_ends[[.ow_run_index]]",
+      "      .ow_donor <- if (.ow_direction == \"forward\") .ow_start - 1L else .ow_end + 1L",
+      "      if (.ow_donor < 1L || .ow_donor > length(.ow_rows)) next",
+      "      .ow_donor_position <- .ow_rows[[.ow_donor]]",
+      "      if (is.na(.ow_result_values[.ow_donor_position])) next",
+      "      .ow_result_values[.ow_rows[.ow_start:.ow_end]] <- .ow_result_values[.ow_donor_position]",
+      "    }",
+      "    .ow_result_values",
+      "  }",
       "  .ow_fill_datetime <- function(.ow_text, .ow_timezone) {",
       "    .ow_match <- regexec(\"^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(\\\\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?$\", .ow_text, perl = TRUE)",
       "    .ow_parts <- regmatches(.ow_text, .ow_match)[[1L]]",
@@ -2790,6 +2904,7 @@ openwrangler_r_kernel_agent <- local({
         }
       } else if (identical(step$kind, "fillMissingValues")) {
         fallback_fill <- identical(step$replacement$kind, "fallbackColumns")
+        directional_fill <- identical(step$replacement$kind, "directional")
         lines <- c(
           lines,
           sprintf("  .ow_fill_position <- %dL", step$position),
@@ -2828,6 +2943,27 @@ openwrangler_r_kernel_agent <- local({
               fallback_list,
               fallback_kinds,
               maximum_factor_levels
+            )
+          )
+        } else if (directional_fill) {
+          if (any(vapply(
+            step$orderBy,
+            function(specification) identical(specification$semanticsKind, "integer64"),
+            logical(1L),
+            USE.NAMES = FALSE
+          ))) {
+            lines <- c(
+              lines,
+              "  if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required for this directional fill\", call. = FALSE)"
+            )
+          }
+          lines <- c(
+            lines,
+            row_sort_code_lines(step$orderBy),
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_directional(.ow_fill_source, .ow_rows, %s, %s)",
+              r_string(step$replacement$direction),
+              if (is.null(step$replacement$maxGap)) "NULL" else sprintf("%dL", step$replacement$maxGap)
             )
           )
         } else {
@@ -3099,6 +3235,7 @@ openwrangler_r_kernel_agent <- local({
       "ceil_number_column_at",
       "fill_missing_column_at",
       "fill_missing_from_fallback_columns_at",
+      "fill_missing_directional_at",
       "cast_column_at",
       "drop_columns_at",
       "select_columns_at",

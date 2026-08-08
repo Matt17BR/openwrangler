@@ -707,7 +707,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     gallery,
     /Fill Missing Values can use[\s\S]{0,160}mean of a double column[\s\S]{0,240}ordered\s+list of same-type columns/u
   );
-  assert.match(gallery, /These methods ignore `NA` and `NaN`\./u);
+  assert.match(gallery, /These methods ignore `NA`\s+and `NaN`\./u);
   assert.match(
     gallery,
     /R notebook and local R document sessions opened in Editing mode can export their cleaned result as CSV\./u

@@ -49,6 +49,7 @@ mean_fill_session_id <- "60606060-6060-4060-8060-606060606060"
 fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
 most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
 fallback_fill_session_id <- "40404040-4040-4040-8040-404040404040"
+directional_fill_session_id <- "45454545-4545-4545-8545-454545454545"
 export_session_id <- "41414141-4141-4141-8141-414141414141"
 export_id <- "42424242-4242-4242-8242-424242424242"
 cleanup_export_id <- "43434343-4343-4343-8343-434343434343"
@@ -3242,6 +3243,206 @@ assert_identical(
 fallback_fill_closed <- dispatch("closeSession", list(sessionId = fallback_fill_session_id))
 assert_identical(fallback_fill_closed$kind, "closed", "the R fallback-fill session did not close")
 
+source_environment$directional_fill_frame <- data.frame(
+  sequence = c(4L, 1L, 3L, 2L, 6L, 5L),
+  target = c(NA_character_, "start", NA_character_, NA_character_, NA_character_, "end"),
+  row.names = paste0("directional-", 1:6),
+  check.names = FALSE
+)
+directional_fill_before <- unserialize(serialize(source_environment$directional_fill_frame, NULL, version = 3L))
+directional_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = directional_fill_session_id, variableName = "directional_fill_frame", page = page_window())
+)
+assert_identical(directional_fill_open$kind, "page", "the R directional-fill session did not open")
+
+directional_target_order <- dispatch(
+  "previewStep",
+  list(
+    sessionId = directional_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "directional-target-order",
+      "r:c:1",
+      "target",
+      list(
+        kind = "directional",
+        direction = "forward",
+        orderBy = I(list(list(
+          column = list(id = "r:c:1", name = "target"),
+          direction = "asc",
+          nulls = "last"
+        )))
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(directional_target_order$kind, "error", "R directional fill accepted its target as ordering input")
+assert_identical(directional_target_order$code, "invalid_request", "the directional target-order diagnostic changed")
+
+directional_malformed_orders <- list(
+  list(
+    label = "object-shaped ordering",
+    orderBy = list(notAnArray = list(
+      column = list(id = "r:c:0", name = "sequence"),
+      direction = "asc",
+      nulls = "last"
+    ))
+  ),
+  list(
+    label = "array-valued direction",
+    orderBy = I(list(list(
+      column = list(id = "r:c:0", name = "sequence"),
+      direction = I(c("asc", "desc")),
+      nulls = "last"
+    )))
+  ),
+  list(
+    label = "array-valued null placement",
+    orderBy = I(list(list(
+      column = list(id = "r:c:0", name = "sequence"),
+      direction = "asc",
+      nulls = I(c("last", "first"))
+    )))
+  )
+)
+for (malformed_index in seq_along(directional_malformed_orders)) {
+  malformed <- directional_malformed_orders[[malformed_index]]
+  malformed_result <- dispatch(
+    "previewStep",
+    list(
+      sessionId = directional_fill_session_id,
+      revision = 0L,
+      step = fill_step(
+        sprintf("directional-malformed-%d", malformed_index),
+        "r:c:1",
+        "target",
+        list(
+          kind = "directional",
+          direction = "forward",
+          orderBy = malformed$orderBy
+        )
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(
+    malformed_result$kind,
+    "error",
+    sprintf("R directional fill accepted %s", malformed$label)
+  )
+  assert_identical(
+    malformed_result$code,
+    "invalid_request",
+    sprintf("the %s diagnostic changed", malformed$label)
+  )
+}
+
+directional_limited_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = directional_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "directional-limited",
+      "r:c:1",
+      "target",
+      list(
+        kind = "directional",
+        direction = "forward",
+        orderBy = I(list(list(
+          column = list(id = "r:c:0", name = "sequence"),
+          direction = "asc",
+          nulls = "last"
+        ))),
+        maxGap = 2L
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(directional_limited_preview$kind, "stepPreview", "R bounded directional fill did not preview")
+assert_identical(
+  directional_limited_preview$diff$changedCells,
+  1L,
+  "R maxGap partially filled a run exceeding the whole-run threshold"
+)
+assert_identical(
+  directional_limited_preview$page$schema[[2L]]$nullable,
+  TRUE,
+  "R directional fill published optimistic nullability"
+)
+directional_limited_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = directional_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(directional_limited_discard$action, "discard", "the bounded directional draft did not discard")
+
+directional_complete_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = directional_fill_session_id,
+    revision = 2L,
+    step = fill_step(
+      "directional-complete",
+      "r:c:1",
+      "target",
+      list(
+        kind = "directional",
+        direction = "forward",
+        orderBy = I(list(list(
+          column = list(id = "r:c:0", name = "sequence"),
+          direction = "asc",
+          nulls = "last"
+        )))
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(directional_complete_preview$kind, "stepPreview", "R directional fill did not preview")
+assert_identical(directional_complete_preview$diff$changedCells, 4L, "R directional fill returned an inexact diff")
+assert_identical(
+  directional_complete_preview$page$schema[[2L]]$nullable,
+  TRUE,
+  "R directional fill did not retain conservative nullability"
+)
+directional_complete_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = directional_fill_session_id, revision = 3L, page = page_window())
+)
+assert_identical(directional_complete_apply$action, "apply", "R directional fill did not apply")
+if (!grepl(".ow_fill_directional", directional_complete_apply$code, fixed = TRUE)) {
+  stop("generated R directional fill lost its native helper", call. = FALSE)
+}
+assign("directional_fill_frame", source_environment$directional_fill_frame, envir = .GlobalEnv)
+eval(parse(text = directional_complete_apply$code), envir = .GlobalEnv)
+directional_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  directional_fill_generated$target,
+  c("start", "start", "start", "start", "end", "end"),
+  "generated R directional fill changed explicit ordering or source row order"
+)
+assert_identical(
+  row.names(directional_fill_generated),
+  row.names(directional_fill_before),
+  "generated R directional fill changed row names"
+)
+assert_identical(
+  get("directional_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  directional_fill_before,
+  "generated R directional fill mutated its source"
+)
+assert_identical(
+  source_environment$directional_fill_frame,
+  directional_fill_before,
+  "the R directional-fill lifecycle mutated its source"
+)
+rm("directional_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+directional_fill_closed <- dispatch("closeSession", list(sessionId = directional_fill_session_id))
+assert_identical(directional_fill_closed$kind, "closed", "the R directional-fill session did not close")
+
 source_environment$most_fill_frame <- data.frame(
   label = ordered(c("high", NA, "high", "low"), levels = c("low", "high")),
   row.names = c("most-a", "most-b", "most-c", "most-d")
@@ -5221,6 +5422,7 @@ missing_package_contract <- list(
   ceil_number_column_at = function(...) stop("unexpected ceiling", call. = FALSE),
   fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
   fill_missing_from_fallback_columns_at = function(...) stop("unexpected fallback fill", call. = FALSE),
+  fill_missing_directional_at = function(...) stop("unexpected directional fill", call. = FALSE),
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
@@ -5380,6 +5582,21 @@ if (
     !identical(conditionMessage(missing_fallback_fill_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without fallback-column fill support", call. = FALSE)
+}
+missing_directional_fill_contract <- missing_package_contract
+missing_directional_fill_contract$fill_missing_directional_at <- NULL
+missing_directional_fill_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_directional_fill_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_directional_fill_error) ||
+    !identical(conditionMessage(missing_directional_fill_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without directional fill support", call. = FALSE)
 }
 missing_cast_contract <- missing_package_contract
 missing_cast_contract$cast_column_at <- NULL

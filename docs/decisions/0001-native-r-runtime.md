@@ -97,9 +97,10 @@ stable row identities, explicit row names, and compatible data-table keys.
 
 Fill Missing Values offers a typed value, an exact numeric median, the mean of a double column, or the most common
 non-missing value for character, factor, and logical columns. It also accepts an ordered list of same-type fallback
-columns and takes the first present value from each row. Automatic methods ignore `NA` and `NaN`. When a fill is
-needed, the most-common method requires one unambiguous result. Factors, ordered factors, `integer64`, dates, and
-datetimes stay in their native R types.
+columns and takes the first present value from each row. Directional fills use an explicit stable sort, restore the
+original row order, and optionally leave missing runs above a chosen length untouched. Automatic methods ignore `NA`
+and `NaN`. When a fill is needed, the most-common method requires one unambiguous result. Factors, ordered factors,
+`integer64`, dates, and datetimes stay in their native R types.
 Active data-table key columns are rejected because changing a key value could invalidate the stored order.
 
 Dropping columns keeps retained IDs stable and refuses to remove the final column. Selecting columns preserves the

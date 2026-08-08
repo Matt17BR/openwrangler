@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -822,6 +822,21 @@ class DuckDBEngine(DataFrameEngine):
             if replacement.get("kind") == "fallbackColumns":
                 fallback_columns = [bound_column_name(fallback, kind) for fallback in replacement["columns"]]
                 return [(f"{prefix}df = _ow_fill_missing_from_columns(df, {column!r}, {fallback_columns!r})")]
+            if replacement.get("kind") == "directional":
+                order_rules = [
+                    {
+                        **rule,
+                        "column": bound_column_name(rule["column"], kind),
+                    }
+                    for rule in replacement["orderBy"]
+                ]
+                return [
+                    (
+                        f"{prefix}df = _ow_fill_missing_directional("
+                        f"df, {column!r}, {order_rules!r}, {replacement['direction']!r}, "
+                        f"{replacement.get('maxGap')!r})"
+                    )
+                ]
             if replacement.get("kind") in {"mean", "median", "mostFrequent"}:
                 return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, None)"]
             value = generated_fill_replacement_expression(replacement)
@@ -1040,6 +1055,21 @@ class DuckDBEngine(DataFrameEngine):
                 column,
                 [bound_column_name(fallback, "fillMissingValues") for fallback in replacement["columns"]],
             )
+        if replacement.get("kind") == "directional":
+            order_rules = [
+                {
+                    **rule,
+                    "column": bound_column_name(rule["column"], "fillMissingValues"),
+                }
+                for rule in replacement["orderBy"]
+            ]
+            return self._fill_missing_directional(
+                frame,
+                column,
+                order_rules,
+                replacement["direction"],
+                replacement.get("maxGap"),
+            )
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         raw_type = types[column]
         semantic_type = _semantic_type(raw_type)
@@ -1251,6 +1281,89 @@ class DuckDBEngine(DataFrameEngine):
             raise EngineError(
                 f"A fallback column is incompatible with the selected DuckDB target column: {error}"
             ) from error
+
+    def _fill_missing_directional(
+        self,
+        frame: Any,
+        target: str,
+        order_rules: Sequence[Mapping[str, Any]],
+        direction: str,
+        max_gap: int | None,
+    ) -> Any:
+        columns = self._columns(frame)
+        types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
+        target_identifier = _quote_ident(target)
+        valid = _valid_predicate(target_identifier, types[target])
+
+        reserved = list(columns)
+        original_name = _unique_internal(reserved, "__ow_directional_original")
+        reserved.append(original_name)
+        calculation_name = _unique_internal(reserved, "__ow_directional_calculation")
+        reserved.append(calculation_name)
+        previous_name = _unique_internal(reserved, "__ow_directional_previous")
+        reserved.append(previous_name)
+        next_name = _unique_internal(reserved, "__ow_directional_next")
+        reserved.append(next_name)
+        total_name = _unique_internal(reserved, "__ow_directional_total")
+        reserved.append(total_name)
+        candidate_name = _unique_internal(reserved, "__ow_directional_candidate")
+
+        original = _quote_ident(original_name)
+        calculation = _quote_ident(calculation_name)
+        previous = _quote_ident(previous_name)
+        following = _quote_ident(next_name)
+        total = _quote_ident(total_name)
+        candidate = _quote_ident(candidate_name)
+        order_expressions = []
+        for rule in order_rules:
+            identifier = _quote_ident(rule["column"])
+            expression = (
+                f"CASE WHEN {_valid_predicate(identifier, types[rule['column']])} THEN {identifier} ELSE NULL END"
+                if _is_float_type(types[rule["column"]])
+                else identifier
+            )
+            order_expressions.append(
+                f"{expression} {str(rule['direction']).upper()} NULLS {str(rule['nulls']).upper()}"
+            )
+        order = ", ".join(order_expressions)
+        calculation_order = f"{order}, {original}"
+        present_value = f"CASE WHEN {valid} THEN {target_identifier} ELSE NULL END"
+        if direction == "forward":
+            candidate_expression = (
+                f"last_value({present_value} IGNORE NULLS) OVER (ORDER BY {calculation} "
+                "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+            )
+        else:
+            candidate_expression = (
+                f"first_value({present_value} IGNORE NULLS) OVER (ORDER BY {calculation} "
+                "ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)"
+            )
+        gap_size = f"coalesce({following}, {total} + 1) - coalesce({previous}, 0) - 1"
+        eligible = f"NOT ({valid}) AND {candidate} IS NOT NULL"
+        if max_gap is not None:
+            eligible += f" AND ({gap_size}) <= {int(max_gap)}"
+        replacement = f"CASE WHEN {eligible} THEN {candidate} ELSE {target_identifier} END"
+        temporary_names = [
+            original_name,
+            calculation_name,
+            previous_name,
+            next_name,
+            total_name,
+            candidate_name,
+        ]
+        query = (
+            f"WITH numbered AS (SELECT *, row_number() OVER () AS {original} FROM ow), "
+            f"ordered AS (SELECT *, row_number() OVER (ORDER BY {calculation_order}) AS {calculation} "
+            "FROM numbered), "
+            f"context AS (SELECT *, max(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY "
+            f"{calculation} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {previous}, "
+            f"min(CASE WHEN {valid} THEN {calculation} END) OVER (ORDER BY {calculation} "
+            f"ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS {following}, "
+            f"count(*) OVER () AS {total}, {candidate_expression} AS {candidate} FROM ordered) "
+            f"SELECT * EXCLUDE ({_identifier_list(temporary_names)}) REPLACE ("
+            f"{replacement} AS {target_identifier}) FROM context ORDER BY {original}"
+        )
+        return self._relation(frame, query)
 
     def _drop_duplicates(self, frame: Any, columns: Any, keep: str) -> Any:
         selected = list(columns) if columns else self._visible_columns(frame)
@@ -1748,10 +1861,10 @@ def _finite_float(value: Any) -> float | None:
 
 
 def _unique_internal(existing: Iterable[str], base: str) -> str:
-    names = set(existing)
+    names = {str(name).casefold() for name in existing}
     candidate = base
     index = 0
-    while candidate in names:
+    while candidate.casefold() in names:
         index += 1
         candidate = f"{base}_{index}"
     return candidate
@@ -2169,7 +2282,8 @@ def _ow_select(df, columns):
 def _ow_unique(existing, base):
     candidate = base
     index = 0
-    while candidate in set(existing):
+    names = {str(name).casefold() for name in existing}
+    while candidate.casefold() in names:
         index += 1
         candidate = base + "_" + str(index)
     return candidate
@@ -2367,6 +2481,83 @@ def _ow_fill_missing_from_columns(df, target, fallbacks):
         + fallback_value + " ELSE CAST(" + target_identifier + " AS " + output_type + ") END"
     )
     return _ow_assign(df, target, expression)
+
+
+def _ow_fill_missing_directional(df, target, order_rules, direction, max_gap):
+    columns = _ow_columns(df)
+    types = dict(zip(columns, map(str, df.types)))
+    target_identifier = _ow_ident(target)
+    valid = _ow_valid(target_identifier, types[target])
+    reserved = list(columns)
+    original_name = _ow_unique(reserved, "__ow_directional_original")
+    reserved.append(original_name)
+    calculation_name = _ow_unique(reserved, "__ow_directional_calculation")
+    reserved.append(calculation_name)
+    previous_name = _ow_unique(reserved, "__ow_directional_previous")
+    reserved.append(previous_name)
+    next_name = _ow_unique(reserved, "__ow_directional_next")
+    reserved.append(next_name)
+    total_name = _ow_unique(reserved, "__ow_directional_total")
+    reserved.append(total_name)
+    candidate_name = _ow_unique(reserved, "__ow_directional_candidate")
+    original = _ow_ident(original_name)
+    calculation = _ow_ident(calculation_name)
+    previous = _ow_ident(previous_name)
+    following = _ow_ident(next_name)
+    total = _ow_ident(total_name)
+    candidate = _ow_ident(candidate_name)
+    order_expressions = []
+    for rule in order_rules:
+        identifier = _ow_ident(rule["column"])
+        expression = (
+            "CASE WHEN " + _ow_valid(identifier, types[rule["column"]]) + " THEN "
+            + identifier + " ELSE NULL END"
+            if _ow_is_float(types[rule["column"]])
+            else identifier
+        )
+        order_expressions.append(
+            expression + " " + str(rule["direction"]).upper()
+            + " NULLS " + str(rule["nulls"]).upper()
+        )
+    order = ", ".join(order_expressions)
+    calculation_order = order + ", " + original
+    present_value = "CASE WHEN " + valid + " THEN " + target_identifier + " ELSE NULL END"
+    if direction == "forward":
+        candidate_expression = (
+            "last_value(" + present_value + " IGNORE NULLS) OVER (ORDER BY " + calculation
+            + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+        )
+    else:
+        candidate_expression = (
+            "first_value(" + present_value + " IGNORE NULLS) OVER (ORDER BY " + calculation
+            + " ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)"
+        )
+    gap_size = "coalesce(" + following + ", " + total + " + 1) - coalesce(" + previous + ", 0) - 1"
+    eligible = "NOT (" + valid + ") AND " + candidate + " IS NOT NULL"
+    if max_gap is not None:
+        eligible += " AND (" + gap_size + ") <= " + str(int(max_gap))
+    replacement = "CASE WHEN " + eligible + " THEN " + candidate + " ELSE " + target_identifier + " END"
+    temporary_names = [
+        original_name,
+        calculation_name,
+        previous_name,
+        next_name,
+        total_name,
+        candidate_name,
+    ]
+    query = (
+        "WITH numbered AS (SELECT *, row_number() OVER () AS " + original + " FROM ow), "
+        "ordered AS (SELECT *, row_number() OVER (ORDER BY " + calculation_order + ") AS "
+        + calculation + " FROM numbered), "
+        "context AS (SELECT *, max(CASE WHEN " + valid + " THEN " + calculation
+        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS "
+        + previous + ", min(CASE WHEN " + valid + " THEN " + calculation
+        + " END) OVER (ORDER BY " + calculation + " ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS "
+        + following + ", count(*) OVER () AS " + total + ", " + candidate_expression + " AS " + candidate
+        + " FROM ordered) SELECT * EXCLUDE (" + _ow_identifiers(temporary_names) + ") REPLACE ("
+        + replacement + " AS " + target_identifier + ") FROM context ORDER BY " + original
+    )
+    return _ow_query(df, query)
 
 
 def _ow_fill_missing(df, column, replacement_kind, value):

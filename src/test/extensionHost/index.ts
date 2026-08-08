@@ -13137,6 +13137,9 @@ async function exercisePackagedFirstUseInteractionJourney(
     "Closing Insights must restore focus to its toolbar toggle."
   );
 
+  recordAcceptanceProgress("platform-smoke:fill-previous");
+  app = await previewAndDiscardPreviousRevenue(app, workbench, testing, sessionId, revenue);
+
   recordAcceptanceProgress("platform-smoke:fill-most-common");
   await previewMostCommonAccountNote(app, testing);
   app = await rediscoverApp("Most-common fill validation");
@@ -13378,6 +13381,129 @@ async function previewMostCommonAccountNote(app: Locator, testing: TestApi): Pro
     "the most-common text fill preview"
   );
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+}
+
+async function previewAndDiscardPreviousRevenue(
+  app: Locator,
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  revenue: ColumnReference
+): Promise<Locator> {
+  const active = testing.activeSession();
+  assert.ok(active, "The previous-value fill preview requires one active dataframe session.");
+  const orderId = columnReference(active.metadata, "order_id");
+  const revenuePosition = active.metadata.schema.findIndex((column) => column.id === revenue.id);
+  assert.notEqual(revenuePosition, -1);
+  const revenueGapIndex = 84;
+  const sourceGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: "platform-smoke-fill-previous-source-gap",
+    offset: revenueGapIndex - 1,
+    limit: 3,
+    filterModel: active.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(sourceGap.kind, "page");
+  if (sourceGap.kind !== "page") throw new Error("The one-row revenue source gap did not resolve.");
+  assert.deepEqual(sourceGap.page.columnIds, [revenue.id]);
+  const previousRevenue = sourceGap.page.rows[0]?.values[0];
+  assert.equal(previousRevenue?.isNull, false);
+  assert.equal(sourceGap.page.rows[1]?.values[0]?.isNull, true);
+  assert.equal(sourceGap.page.rows[2]?.values[0]?.isNull, false);
+
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("fill missing");
+  await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  await dialog.getByLabel("Column", { exact: true }).selectOption(revenue.id);
+  const fillMode = dialog.getByLabel("Method", { exact: true });
+  await fillMode.waitFor({ state: "visible", timeout: 10_000 });
+  await fillMode.selectOption("directionalForward");
+  await dialog.getByLabel("Order column 1", { exact: true }).selectOption(orderId.id);
+  await dialog.getByLabel("Direction 1", { exact: true }).selectOption("asc");
+  await dialog.getByLabel("Order missing values 1", { exact: true }).selectOption("last");
+  await dialog.getByLabel("Maximum gap length (optional)", { exact: true }).fill("1");
+  await dialog
+    .getByText("Current view filters and sorts do not affect the calculation", { exact: false })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const draft = testing.activeSession()?.metadata.draftStep;
+      return (
+        draft?.kind === "fillMissingValues" &&
+        draft.params.column.id === revenue.id &&
+        isDeepStrictEqual(draft.params.replacement, {
+          kind: "directional",
+          direction: "forward",
+          orderBy: [{ column: orderId, direction: "asc", nulls: "last" }],
+          maxGap: 1
+        })
+      );
+    },
+    30_000,
+    "the ordered previous-value revenue preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+
+  const codePreview = await waitForCodePreview(workbench, "_ow_polars_fill_missing_directional");
+  const code = await codePreview.innerText();
+  assert.match(code, /import polars as pl/u);
+  assert.match(code, /_ow_polars_fill_missing_directional\(df, 'revenue'/u);
+  assert.match(code, /\{'column': 'order_id', 'direction': 'asc', 'nulls': 'last'\}/u);
+  assert.match(code, /'forward', 1\)/u);
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const refreshedApp = await exactSessionApp(target.frame, sessionId);
+  assert.ok(refreshedApp, "The previous-value preview must retain the exact Open Wrangler renderer.");
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
+  const previewGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: "platform-smoke-fill-previous-preview-gap",
+    offset: revenueGapIndex - 1,
+    limit: 3,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(previewGap.kind, "page");
+  if (previewGap.kind !== "page") throw new Error("The Previous value revenue preview did not resolve.");
+  assert.deepEqual(previewGap.page.columnIds, [revenue.id]);
+  assert.deepEqual(
+    previewGap.page.rows[1]?.values[0],
+    previousRevenue,
+    "Previous value must fill the isolated revenue gap from the earlier order_id row."
+  );
+  const review = refreshedApp.getByRole("region", { name: "Draft review" });
+  await review.getByText("Fill missing values", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await review
+    .locator('[aria-label="Data diff summary"]')
+    .getByText(/^[1-9][\d,]* existing cells? changed(?: in this block)?$/u)
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await review.getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      if (!current) return false;
+      return (
+        current.metadata.draftStep === undefined &&
+        current.metadata.steps.length === 0 &&
+        current.metadata.schema.find((column) => column.id === revenue.id)?.nullable === true &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "discarding the previous-value fill preview"
+  );
+  await review.waitFor({ state: "hidden", timeout: 10_000 });
+  return refreshedApp;
 }
 
 async function previewUppercaseMarket(app: Locator, testing: TestApi, newColumn: string): Promise<void> {

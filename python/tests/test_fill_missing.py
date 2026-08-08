@@ -154,6 +154,405 @@ def schema_column(metadata: dict[str, Any], name: str) -> dict[str, Any]:
     return next(column for column in metadata["schema"] if column["name"] == name)
 
 
+_DIRECTIONAL_SOURCE = [
+    (4, 0, 4, 20.0),
+    (0, 0, 0, None),
+    (8, 1, 3, 30.0),
+    (3, 0, 3, float("nan")),
+    (6, 1, 1, None),
+    (1, 0, 1, 10.0),
+    (9, 1, 4, None),
+    (2, 0, 2, None),
+    (7, 1, 2, float("nan")),
+    (5, 1, 0, None),
+]
+
+
+def directional_frame(engine: Any) -> Any:
+    columns = ["row", "priority", "sequence", "value"]
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame(_DIRECTIONAL_SOURCE, columns=columns)
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame(_DIRECTIONAL_SOURCE, schema=columns, orient="row")
+
+    def value_sql(value: float | None) -> str:
+        if value is None:
+            return "NULL::DOUBLE"
+        if isnan(value):
+            return "'NaN'::DOUBLE"
+        return f"{value!r}::DOUBLE"
+
+    values = ", ".join(
+        f"({row}::INTEGER, {priority}::INTEGER, {sequence}::INTEGER, {value_sql(value)})"
+        for row, priority, sequence, value in _DIRECTIONAL_SOURCE
+    )
+    return duckdb.sql(f'SELECT * FROM (VALUES {values}) AS source("row", "priority", "sequence", "value")')
+
+
+def directional_step(direction: str, max_gap: int | None = 2) -> dict[str, Any]:
+    replacement: dict[str, Any] = {
+        "kind": "directional",
+        "direction": direction,
+        "orderBy": [
+            {
+                "column": bound_ref("c:source:1", "priority", 1),
+                "direction": "asc",
+                "nulls": "last",
+            },
+            {
+                "column": bound_ref("c:source:2", "sequence", 2),
+                "direction": "asc",
+                "nulls": "last",
+            },
+        ],
+    }
+    if max_gap is not None:
+        replacement["maxGap"] = max_gap
+    return fill_step(bound_ref("c:source:3", "value", 3), replacement, step_id=f"{direction}-fill")
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected_by_row"),
+    [
+        (
+            "forward",
+            {0: None, 1: 10.0, 2: 10.0, 3: 10.0, 4: 20.0, 5: None, 6: None, 7: None, 8: 30.0, 9: 30.0},
+        ),
+        (
+            "backward",
+            {0: 10.0, 1: 10.0, 2: 20.0, 3: 20.0, 4: 20.0, 5: None, 6: None, 7: None, 8: 30.0, 9: None},
+        ),
+    ],
+)
+def test_directional_fill_respects_stable_multi_sort_whole_gap_limit_and_source_order(
+    engine_and_frame,
+    direction: str,
+    expected_by_row: dict[int, float | None],
+) -> None:
+    engine, _unused = engine_and_frame
+    source = directional_frame(engine)
+    operation = directional_step(direction, max_gap=2)
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        (row, priority, sequence, expected_by_row[row]) for row, priority, sequence, _value in _DIRECTIONAL_SOURCE
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def test_directional_fill_without_max_gap_fills_every_anchored_run(engine_and_frame) -> None:
+    engine, _unused = engine_and_frame
+    source = directional_frame(engine)
+    operation = directional_step("forward", max_gap=None)
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected_by_row = {
+        0: None,
+        1: 10.0,
+        2: 10.0,
+        3: 10.0,
+        4: 20.0,
+        5: 20.0,
+        6: 20.0,
+        7: 20.0,
+        8: 30.0,
+        9: 30.0,
+    }
+    expected = [
+        (row, priority, sequence, expected_by_row[row]) for row, priority, sequence, _value in _DIRECTIONAL_SOURCE
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def string_tie_frame(engine: Any) -> Any:
+    records = [
+        (0, 1, "alpha"),
+        (1, 1, None),
+        (2, 1, "beta"),
+        (3, 2, None),
+        (4, 2, "omega"),
+    ]
+    columns = ["row", "order", "value"]
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame(records, columns=columns)
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame(records, schema=columns, orient="row")
+    return duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (0::INTEGER, 1::INTEGER, 'alpha'::VARCHAR),
+            (1::INTEGER, 1::INTEGER, NULL::VARCHAR),
+            (2::INTEGER, 1::INTEGER, 'beta'::VARCHAR),
+            (3::INTEGER, 2::INTEGER, NULL::VARCHAR),
+            (4::INTEGER, 2::INTEGER, 'omega'::VARCHAR)
+        ) AS source("row", "order", "value")
+        """
+    )
+
+
+def test_directional_fill_breaks_identical_order_keys_by_stable_source_order(engine_and_frame) -> None:
+    engine, _unused = engine_and_frame
+    source = string_tie_frame(engine)
+    operation = fill_step(
+        bound_ref("c:source:2", "value", 2),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:1", "order", 1),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        step_id="stable-tie-fill",
+    )
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        (0, 1, "alpha"),
+        (1, 1, "alpha"),
+        (2, 1, "beta"),
+        (3, 2, "beta"),
+        (4, 2, "omega"),
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def float_missing_order_frame(engine: Any) -> Any:
+    if isinstance(engine, PandasEngine):
+        return pd.DataFrame(
+            {
+                "row": [0, 1, 2],
+                "order": [None, float("nan"), 1.0],
+                "value": ["missing-anchor", None, "finite-anchor"],
+            }
+        )
+    if isinstance(engine, PolarsEngine):
+        return pl.DataFrame(
+            {
+                "row": pl.Series([0, 1, 2], dtype=pl.Int64),
+                "order": pl.Series([None, float("nan"), 1.0], dtype=pl.Float64),
+                "value": pl.Series(["missing-anchor", None, "finite-anchor"], dtype=pl.String),
+            }
+        )
+    return duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (0::INTEGER, NULL::DOUBLE, 'missing-anchor'::VARCHAR),
+            (1::INTEGER, 'NaN'::DOUBLE, NULL::VARCHAR),
+            (2::INTEGER, 1.0::DOUBLE, 'finite-anchor'::VARCHAR)
+        ) AS source("row", "order", "value")
+        """
+    )
+
+
+@pytest.mark.parametrize("nulls", ["first", "last"])
+def test_directional_float_order_treats_null_and_nan_as_one_stable_missing_group(
+    engine_and_frame,
+    nulls: str,
+) -> None:
+    engine, _unused = engine_and_frame
+    source = float_missing_order_frame(engine)
+    operation = fill_step(
+        bound_ref("c:source:2", "value", 2),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:1", "order", 1),
+                    "direction": "asc",
+                    "nulls": nulls,
+                }
+            ],
+        },
+        step_id=f"float-missing-order-{nulls}",
+    )
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        (0, None, "missing-anchor"),
+        (1, None, "missing-anchor"),
+        (2, 1.0, "finite-anchor"),
+    ]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def test_polars_directional_fill_stays_lazy_until_the_result_is_collected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        pl.DataFrame,
+        "to_pandas",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars must stay native")),
+        raising=False,
+    )
+    engine = PolarsEngine()
+    source = pl.DataFrame({"order": [2, 1, 3], "value": [None, "seed", None]}).lazy()
+    operation = fill_step(
+        bound_ref("c:source:1", "value", 1),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:0", "order", 0),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        step_id="lazy-directional-fill",
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        assert isinstance(live, pl.LazyFrame)
+        assert isinstance(generated, pl.LazyFrame)
+        assert rows(live) == [(2, "seed"), (1, "seed"), (3, "seed")]
+        assert rows(generated) == rows(live)
+    finally:
+        engine.close()
+
+
+def test_pandas_directional_fill_uses_exact_duplicate_label_positions_in_live_and_generated_code() -> None:
+    engine = PandasEngine()
+    source = pd.DataFrame(
+        [
+            [9, 2, "decoy-0", None],
+            [8, 1, "decoy-1", "seed"],
+            [7, 3, "decoy-2", None],
+            [6, 4, "decoy-3", "end"],
+        ],
+        columns=["order", "order", "value", "value"],
+    )
+    operation = fill_step(
+        bound_ref("c:source:3", "value", 3),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:1", "order", 1),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        step_id="duplicate-position-directional-fill",
+    )
+
+    live = engine.apply_transform(source, operation)
+    generated = execute_generated(engine, source, [operation])
+
+    expected = [
+        (9, 2, "decoy-0", "seed"),
+        (8, 1, "decoy-1", "seed"),
+        (7, 3, "decoy-2", "seed"),
+        (6, 4, "decoy-3", "end"),
+    ]
+    assert list(live.columns) == ["order", "order", "value", "value"]
+    assert normalized_rows(live) == expected
+    assert normalized_rows(generated) == expected
+
+
+def test_duckdb_directional_fill_preserves_case_variant_internal_name_columns() -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (101::INTEGER, 1::INTEGER, 'seed'::VARCHAR),
+            (102::INTEGER, 2::INTEGER, NULL::VARCHAR),
+            (103::INTEGER, 3::INTEGER, NULL::VARCHAR)
+        ) AS source("__OW_DIRECTIONAL_ORIGINAL", "order", "value")
+        """
+    )
+    operation = fill_step(
+        bound_ref("c:source:2", "value", 2),
+        {
+            "kind": "directional",
+            "direction": "forward",
+            "orderBy": [
+                {
+                    "column": bound_ref("c:source:1", "order", 1),
+                    "direction": "asc",
+                    "nulls": "last",
+                }
+            ],
+        },
+        step_id="duckdb-casefolded-temporary-fill",
+    )
+
+    try:
+        live = engine.apply_transform(source, operation)
+        generated = execute_generated(engine, source, [operation])
+
+        expected = [(101, 1, "seed"), (102, 2, "seed"), (103, 3, "seed")]
+        assert list(live.columns) == ["__OW_DIRECTIONAL_ORIGINAL", "order", "value"]
+        assert normalized_rows(live) == expected
+        assert normalized_rows(generated) == expected
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
+def test_session_directional_fill_keeps_nullable_metadata(
+    backend: str,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / f"directional-nullability-{backend}.csv"
+    path.write_text("order,target\n1,\n2,present\n3,\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    operation = {
+        "id": "directional-fill",
+        "kind": "fillMissingValues",
+        "params": {
+            "column": {"id": "c:source:1", "name": "target"},
+            "replacement": {
+                "kind": "directional",
+                "direction": "forward",
+                "orderBy": [
+                    {
+                        "column": {"id": "c:source:0", "name": "order"},
+                        "direction": "asc",
+                        "nulls": "last",
+                    }
+                ],
+            },
+        },
+    }
+
+    try:
+        preview = manager.preview_step(session_id, 0, operation, 0, 10)
+        assert schema_column(preview["metadata"], "target")["nullable"] is True
+        applied = manager.apply_draft(session_id, 1, 0, 10)
+        assert schema_column(applied["metadata"], "target")["nullable"] is True
+    finally:
+        manager.close_session(session_id, 2)
+
+
 @pytest.mark.parametrize("backend", ["pandas", "polars", "duckdb"])
 def test_session_fill_metadata_stays_consistent_through_preview_apply_and_replay(
     backend: str,

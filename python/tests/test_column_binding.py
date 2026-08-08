@@ -174,6 +174,122 @@ def test_fill_missing_binds_ordered_fallback_columns_by_identity() -> None:
     ]
 
 
+def test_fill_missing_binds_directional_order_by_identity() -> None:
+    public = step(
+        "fillMissingValues",
+        column=ref("c:source:2", "value"),
+        replacement={
+            "kind": "directional",
+            "direction": "backward",
+            "orderBy": [
+                {
+                    "column": ref("c:source:1", "duplicate"),
+                    "direction": "desc",
+                    "nulls": "first",
+                },
+                {
+                    "column": ref("c:source:0", "duplicate"),
+                    "direction": "asc",
+                    "nulls": "last",
+                },
+            ],
+            "maxGap": 3,
+        },
+    )
+
+    bound = bind_step(public, SCHEMA, LINEAGE)
+
+    assert bound["params"]["replacement"] == {
+        "kind": "directional",
+        "direction": "backward",
+        "orderBy": [
+            {
+                "column": {"id": "c:source:1", "name": "duplicate", "position": 1},
+                "direction": "desc",
+                "nulls": "first",
+            },
+            {
+                "column": {"id": "c:source:0", "name": "duplicate", "position": 0},
+                "direction": "asc",
+                "nulls": "last",
+            },
+        ],
+        "maxGap": 3,
+    }
+    assert public["params"]["replacement"]["orderBy"][0]["column"] == ref("c:source:1", "duplicate")
+
+
+def test_fill_missing_binding_rejects_invalid_directional_columns_and_shape() -> None:
+    target = ref("c:source:2", "value")
+    target_rule = {"column": target, "direction": "asc", "nulls": "last"}
+    with pytest.raises(ColumnBindingError, match="target cannot also be"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=target,
+                replacement={"kind": "directional", "direction": "forward", "orderBy": [target_rule]},
+            ),
+            SCHEMA,
+            LINEAGE,
+        )
+
+    typed_schema = [{"name": "target", "type": "integer"}, {"name": "order", "type": "binary"}]
+    typed_lineage = [{"id": "c:target", "name": "target"}, {"id": "c:order", "name": "order"}]
+    with pytest.raises(ColumnBindingError, match="portable comparable"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:target", "target"),
+                replacement={
+                    "kind": "directional",
+                    "direction": "forward",
+                    "orderBy": [
+                        {
+                            "column": ref("c:order", "order"),
+                            "direction": "asc",
+                            "nulls": "last",
+                        }
+                    ],
+                },
+            ),
+            typed_schema,
+            typed_lineage,
+        )
+
+    unsupported_schema = [{"name": "target", "type": "list"}, {"name": "order", "type": "integer"}]
+    with pytest.raises(ColumnBindingError, match="choose a scalar column"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:target", "target"),
+                replacement={
+                    "kind": "directional",
+                    "direction": "forward",
+                    "orderBy": [
+                        {
+                            "column": ref("c:order", "order"),
+                            "direction": "asc",
+                            "nulls": "last",
+                        }
+                    ],
+                },
+            ),
+            unsupported_schema,
+            typed_lineage,
+        )
+
+    with pytest.raises(ColumnBindingError, match="optional maxGap"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:source:2", "value"),
+                replacement={"kind": "directional", "direction": "forward", "orderBy": [], "extra": True},
+            ),
+            SCHEMA,
+            LINEAGE,
+        )
+
+
 def test_fill_missing_binding_rejects_target_cross_type_and_oversized_fallbacks() -> None:
     with pytest.raises(ColumnBindingError, match="target cannot also be"):
         bind_step(

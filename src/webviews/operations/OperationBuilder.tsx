@@ -11,6 +11,7 @@ import type {
   OperationKind,
   SessionMetadata,
   TransformFilterModel,
+  TransformSortRule,
   TransformStep
 } from "../../shared/protocol";
 import {
@@ -36,10 +37,15 @@ const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "
 const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
 const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
 const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
-type FillMode = "median" | "mean" | "mostFrequent" | "fallbackColumns" | "value";
+type FillMode =
+  "median" | "mean" | "mostFrequent" | "directionalForward" | "directionalBackward" | "fallbackColumns" | "value";
 type FillValueKind = Exclude<
   FillMissingReplacement,
-  { kind: "median" } | { kind: "mean" } | { kind: "mostFrequent" } | { kind: "fallbackColumns" }
+  | { kind: "median" }
+  | { kind: "mean" }
+  | { kind: "mostFrequent" }
+  | { kind: "directional" }
+  | { kind: "fallbackColumns" }
 >["kind"];
 const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
@@ -53,9 +59,16 @@ const fillValueColumnTypes: ReadonlySet<ColumnType> = new Set([
 ]);
 const mostFrequentColumnTypes: ReadonlySet<ColumnType> = new Set(["string", "boolean"]);
 const maxFillFallbackColumns = 64;
+const maxFillDirectionalGap = 1_000_000;
 interface FillFallbackRow {
   readonly key: string;
   readonly columnId: string;
+}
+interface FillOrderRow {
+  readonly key: string;
+  readonly columnId: string;
+  readonly direction: TransformSortRule["direction"];
+  readonly nulls: TransformSortRule["nulls"];
 }
 const fillValueKindOptions: readonly [FillValueKind, string][] = [
   ["string", "Text"],
@@ -250,7 +263,12 @@ function savedReferenceGroups(step: TransformStep): SavedReferenceGroup[] {
                   label: `fallback column ${index + 1}`,
                   reference
                 }))
-              : [])
+              : step.params.replacement.kind === "directional"
+                ? step.params.replacement.orderBy.map((rule, index) => ({
+                    label: `calculation order ${index + 1}`,
+                    reference: rule.column
+                  }))
+                : [])
           ],
           rejectRepeatedIds: true
         }
@@ -371,6 +389,15 @@ function savedStepEditError(step: TransformStep, inputSchema: ColumnSchema[] | u
     );
     if (incompatible) {
       return `The saved fallback column “${incompatible.name}” is not compatible with the recorded ${target.type} target. ${recovery}`;
+    }
+  }
+  if (step.kind === "fillMissingValues" && step.params.replacement.kind === "directional") {
+    const incompatible = step.params.replacement.orderBy.find((rule) => {
+      const column = columnsById.get(rule.column.id);
+      return !column || !orderedAggregationColumnTypes.has(column.type);
+    });
+    if (incompatible) {
+      return `The saved calculation-order column “${incompatible.column.name}” cannot be ordered safely. ${recovery}`;
     }
   }
   if (step.kind === "byExample") {
@@ -1135,7 +1162,7 @@ function FillMissingFields({
 }) {
   const initialParams = initialStep?.kind === "fillMissingValues" ? initialStep.params : undefined;
   const initialReplacement = initialParams?.replacement;
-  const availableColumns = compatibleColumns(columns, fillValueColumnTypes);
+  const availableColumns = fillTargetColumns(columns);
   const savedColumnId = columnReferenceId(initialParams?.column);
   const [selectedColumnId, setSelectedColumnId] = useState(() =>
     savedColumnId && availableColumns.some((column) => column.id === savedColumnId)
@@ -1161,13 +1188,42 @@ function FillMissingFields({
   const [fallbackRows, setFallbackRows] = useState<FillFallbackRow[]>(() =>
     initialFallbackIds.map((columnId, index) => ({ key: `fill-fallback-${index}`, columnId }))
   );
+  const savedDirectionalRules = initialReplacement?.kind === "directional" ? initialReplacement.orderBy : ([] as const);
+  const initialOrderColumns = directionalOrderColumnsForTarget(selectedColumn, columns);
+  const initialOrderRows = (() => {
+    const availableIds = new Set(initialOrderColumns.map((column) => column.id));
+    const seen = new Set<string>();
+    const restored = savedDirectionalRules.flatMap((rule, index): FillOrderRow[] => {
+      if (!availableIds.has(rule.column.id) || seen.has(rule.column.id)) return [];
+      seen.add(rule.column.id);
+      return [
+        {
+          key: `fill-order-${index}`,
+          columnId: rule.column.id,
+          direction: rule.direction,
+          nulls: rule.nulls
+        }
+      ];
+    });
+    if (restored.length > 0) return restored;
+    const first = initialOrderColumns[0];
+    return first
+      ? [{ key: "fill-order-0", columnId: first.id, direction: "asc" as const, nulls: "last" as const }]
+      : [];
+  })();
+  const nextOrderRowId = useRef(Math.max(1, initialOrderRows.length));
+  const [orderRows, setOrderRows] = useState<FillOrderRow[]>(initialOrderRows);
   const savedMode: FillMode | undefined = initialReplacement
     ? initialReplacement.kind === "median" ||
       initialReplacement.kind === "mean" ||
       initialReplacement.kind === "mostFrequent" ||
       initialReplacement.kind === "fallbackColumns"
       ? initialReplacement.kind
-      : "value"
+      : initialReplacement.kind === "directional"
+        ? initialReplacement.direction === "forward"
+          ? "directionalForward"
+          : "directionalBackward"
+        : "value"
     : undefined;
   const fallbackColumns = fallbackColumnsForTarget(selectedColumn, columns);
   const [mode, setMode] = useState<FillMode>(() =>
@@ -1179,6 +1235,7 @@ function FillMissingFields({
     initialReplacement?.kind !== "median" &&
     initialReplacement?.kind !== "mean" &&
     initialReplacement?.kind !== "mostFrequent" &&
+    initialReplacement?.kind !== "directional" &&
     initialReplacement?.kind !== "fallbackColumns"
       ? initialReplacement?.kind
       : undefined;
@@ -1200,6 +1257,28 @@ function FillMissingFields({
       const first = nextFallbackColumns[0];
       return first ? [{ key: `fill-fallback-${nextFallbackRowId.current++}`, columnId: first.id }] : [];
     });
+    const nextOrderColumns = directionalOrderColumnsForTarget(column, columns);
+    const nextOrderIds = new Set(nextOrderColumns.map((candidate) => candidate.id));
+    setOrderRows((current) => {
+      const seen = new Set<string>();
+      const retained = current.filter((row) => {
+        if (!nextOrderIds.has(row.columnId) || seen.has(row.columnId)) return false;
+        seen.add(row.columnId);
+        return true;
+      });
+      if (retained.length > 0) return retained;
+      const first = nextOrderColumns[0];
+      return first
+        ? [
+            {
+              key: `fill-order-${nextOrderRowId.current++}`,
+              columnId: first.id,
+              direction: "asc",
+              nulls: "last"
+            }
+          ]
+        : [];
+    });
     setUnknownValueKind(column?.type === "unknown" ? "string" : fillValueKindForColumn(column?.type));
     setMode((current) =>
       fillModesForColumn(column, columns).includes(current) ? current : defaultFillModeForColumn(column, columns)
@@ -1211,10 +1290,14 @@ function FillMissingFields({
     initialReplacement?.kind !== "median" &&
     initialReplacement?.kind !== "mean" &&
     initialReplacement?.kind !== "mostFrequent" &&
+    initialReplacement?.kind !== "directional" &&
     initialReplacement?.kind !== "fallbackColumns"
       ? String(initialReplacement?.value)
       : "";
   const fillModes = fillModesForColumn(selectedColumn, columns);
+  const orderColumns = directionalOrderColumnsForTarget(selectedColumn, columns);
+  const selectedOrderIds = new Set(orderRows.map((row) => row.columnId));
+  const nextUnusedOrder = orderColumns.find((column) => !selectedOrderIds.has(column.id));
   const selectedFallbackIds = new Set(fallbackRows.map((row) => row.columnId));
   const nextUnusedFallback = fallbackColumns.find((column) => !selectedFallbackIds.has(column.id));
   const incompatibleFallbackCount = selectedColumn
@@ -1242,10 +1325,12 @@ function FillMissingFields({
           {fillModes.includes("median") && <option value="median">Median</option>}
           {fillModes.includes("mean") && <option value="mean">Mean</option>}
           {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
+          {fillModes.includes("directionalForward") && <option value="directionalForward">Previous value</option>}
+          {fillModes.includes("directionalBackward") && <option value="directionalBackward">Next value</option>}
           {fillModes.includes("fallbackColumns") && (
             <option value="fallbackColumns">Other columns (first available)</option>
           )}
-          <option value="value">Specific value</option>
+          {fillModes.includes("value") && <option value="value">Specific value</option>}
         </select>
       </label>
       {mode === "median" ? (
@@ -1264,6 +1349,130 @@ function FillMissingFields({
           view do not affect this calculation. If there is no non-missing value or several values tie, choose a specific
           value.
         </p>
+      ) : mode === "directionalForward" || mode === "directionalBackward" ? (
+        <>
+          <Fieldset legend="Calculation order">
+            {orderRows.map((row, index) => {
+              const rowColumns = orderColumns.filter(
+                (column) => column.id === row.columnId || !selectedOrderIds.has(column.id)
+              );
+              return (
+                <div className="compoundRow operationInputRow" key={row.key}>
+                  <ColumnReferenceSelect
+                    name="fillOrderColumn"
+                    label={`Order column ${index + 1}`}
+                    columns={rowColumns}
+                    value={row.columnId}
+                    onChange={(columnId) =>
+                      setOrderRows((current) =>
+                        current.map((candidate) =>
+                          candidate.key === row.key &&
+                          !current.some((other) => other.key !== row.key && other.columnId === columnId)
+                            ? { ...candidate, columnId }
+                            : candidate
+                        )
+                      )
+                    }
+                  />
+                  <label className="formField">
+                    <span>Direction</span>
+                    <select
+                      name="fillOrderDirection"
+                      aria-label={`Direction ${index + 1}`}
+                      value={row.direction}
+                      onChange={(event) =>
+                        setOrderRows((current) =>
+                          current.map((candidate) =>
+                            candidate.key === row.key
+                              ? { ...candidate, direction: event.target.value as TransformSortRule["direction"] }
+                              : candidate
+                          )
+                        )
+                      }
+                    >
+                      <option value="asc">Ascending</option>
+                      <option value="desc">Descending</option>
+                    </select>
+                  </label>
+                  <label className="formField">
+                    <span>Order missing values</span>
+                    <select
+                      name="fillOrderNulls"
+                      aria-label={`Order missing values ${index + 1}`}
+                      value={row.nulls}
+                      onChange={(event) =>
+                        setOrderRows((current) =>
+                          current.map((candidate) =>
+                            candidate.key === row.key
+                              ? { ...candidate, nulls: event.target.value as TransformSortRule["nulls"] }
+                              : candidate
+                          )
+                        )
+                      }
+                    >
+                      <option value="last">Last</option>
+                      <option value="first">First</option>
+                    </select>
+                  </label>
+                  <RowActions
+                    label={`fill order rule ${index + 1}`}
+                    canRemove={orderRows.length > 1}
+                    canMoveUp={index > 0}
+                    canMoveDown={index < orderRows.length - 1}
+                    onRemove={() => setOrderRows((current) => current.filter((candidate) => candidate.key !== row.key))}
+                    onMoveUp={() => setOrderRows((current) => moveItem(current, index, index - 1))}
+                    onMoveDown={() => setOrderRows((current) => moveItem(current, index, index + 1))}
+                  />
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              className="secondaryButton"
+              disabled={!nextUnusedOrder}
+              onClick={() => {
+                if (!nextUnusedOrder) return;
+                setOrderRows((current) => [
+                  ...current,
+                  {
+                    key: `fill-order-${nextOrderRowId.current++}`,
+                    columnId: nextUnusedOrder.id,
+                    direction: "asc",
+                    nulls: "last"
+                  }
+                ]);
+              }}
+            >
+              Add order column
+            </button>
+            <small>
+              Order column 1 has the highest priority. Move rows to change the priority; each column can appear once.
+            </small>
+          </Fieldset>
+          <TextField
+            name="fillMaxGap"
+            label="Maximum gap length (optional)"
+            defaultValue={
+              initialReplacement?.kind === "directional" && initialReplacement.maxGap !== undefined
+                ? String(initialReplacement.maxGap)
+                : ""
+            }
+            type="number"
+            min={1}
+            max={maxFillDirectionalGap}
+            step={1}
+            inputMode="numeric"
+            description="Leave this blank to fill runs of any length. If a missing run is longer than the limit, the whole run stays missing."
+          />
+          <p className="panelNote">
+            {mode === "directionalForward"
+              ? "Previous value uses the nearest earlier non-missing value in this calculation order. A missing run at the start can stay missing."
+              : "Next value uses the nearest later non-missing value in this calculation order. A missing run at the end can stay missing."}
+            {
+              " Current view filters and sorts do not affect the calculation, and the displayed row order does not change."
+            }
+          </p>
+        </>
       ) : mode === "fallbackColumns" ? (
         <>
           <Fieldset legend="Fallback order">
@@ -1360,10 +1569,15 @@ function FillMissingFields({
 
 function fillModesForColumn(column: ColumnSchema | undefined, columns: readonly ColumnSchema[]): FillMode[] {
   const fallback = fallbackColumnsForTarget(column, columns).length > 0 ? (["fallbackColumns"] as const) : [];
-  if (column?.type === "float") return ["median", "mean", ...fallback, "value"];
-  if (column && numericColumnTypes.has(column.type)) return ["median", ...fallback, "value"];
-  if (column && mostFrequentColumnTypes.has(column.type)) return ["mostFrequent", ...fallback, "value"];
-  if (column && (column.type === "date" || column.type === "datetime")) return [...fallback, "value"];
+  const directional =
+    directionalOrderColumnsForTarget(column, columns).length > 0
+      ? (["directionalForward", "directionalBackward"] as const)
+      : [];
+  if (column?.type === "float") return ["median", "mean", ...directional, ...fallback, "value"];
+  if (column && numericColumnTypes.has(column.type)) return ["median", ...directional, ...fallback, "value"];
+  if (column && mostFrequentColumnTypes.has(column.type)) return ["mostFrequent", ...directional, ...fallback, "value"];
+  if (column && (column.type === "date" || column.type === "datetime")) return [...directional, ...fallback, "value"];
+  if (column && portableScalarColumnTypes.has(column.type)) return [...directional];
   return ["value"];
 }
 
@@ -1374,6 +1588,22 @@ function defaultFillModeForColumn(column: ColumnSchema | undefined, columns: rea
 function fallbackColumnsForTarget(target: ColumnSchema | undefined, columns: readonly ColumnSchema[]): ColumnSchema[] {
   if (!target || target.type === "unknown") return [];
   return columns.filter((column) => column.id !== target.id && column.type === target.type);
+}
+
+function directionalOrderColumnsForTarget(
+  target: ColumnSchema | undefined,
+  columns: readonly ColumnSchema[]
+): ColumnSchema[] {
+  if (!target || !portableScalarColumnTypes.has(target.type)) return [];
+  return columns.filter((column) => column.id !== target.id && orderedAggregationColumnTypes.has(column.type));
+}
+
+function fillTargetColumns(columns: readonly ColumnSchema[]): ColumnSchema[] {
+  return columns.filter(
+    (column) =>
+      fillValueColumnTypes.has(column.type) ||
+      (portableScalarColumnTypes.has(column.type) && directionalOrderColumnsForTarget(column, columns).length > 0)
+  );
 }
 
 function fillValueKindForColumn(type: ColumnType | undefined): FillValueKind {
@@ -1499,6 +1729,34 @@ function buildParams(
     const fillMode = value("fillMode");
     if (fillMode === "median" || fillMode === "mean" || fillMode === "mostFrequent") {
       return { column: columnReference("column"), replacement: { kind: fillMode } };
+    }
+    if (fillMode === "directionalForward" || fillMode === "directionalBackward") {
+      const column = columnReference("column");
+      const orderColumns = requiredColumnReferences("fillOrderColumn", "Directional fill order");
+      if (orderColumns.some((orderColumn) => orderColumn.id === column.id)) {
+        throw new Error("A fill target cannot also be one of its calculation-order columns.");
+      }
+      const directions = form.getAll("fillOrderDirection").map(String);
+      const nulls = form.getAll("fillOrderNulls").map(String);
+      const maxGap = value("fillMaxGap").trim();
+      if (maxGap !== "" && (!/^[1-9][0-9]*$/u.test(maxGap) || Number(maxGap) > maxFillDirectionalGap)) {
+        throw new Error(
+          `Maximum gap length must be a whole number from 1 to ${maxFillDirectionalGap.toLocaleString()}.`
+        );
+      }
+      return {
+        column,
+        replacement: {
+          kind: "directional",
+          direction: fillMode === "directionalForward" ? "forward" : "backward",
+          orderBy: orderColumns.map((orderColumn, index) => ({
+            column: orderColumn,
+            direction: directions[index],
+            nulls: nulls[index]
+          })),
+          ...(maxGap === "" ? {} : { maxGap: Number(maxGap) })
+        }
+      };
     }
     if (fillMode === "fallbackColumns") {
       const column = columnReference("column");
@@ -2043,10 +2301,12 @@ function TextField({
   required = false,
   type = "text",
   min,
+  max,
   step,
   inputMode,
   maxLength,
   maxUtf8Bytes,
+  description,
   normalizeOnBlur
 }: {
   name: string;
@@ -2055,10 +2315,12 @@ function TextField({
   required?: boolean;
   type?: string;
   min?: number;
+  max?: number;
   step?: number | "any";
   inputMode?: "numeric" | "decimal";
   maxLength?: number;
   maxUtf8Bytes?: number;
+  description?: ReactNode;
   normalizeOnBlur?: (value: string) => string;
 }) {
   const helpId = useId();
@@ -2077,12 +2339,13 @@ function TextField({
         name={name}
         type={type}
         min={min}
+        max={max}
         step={step}
         inputMode={inputMode}
         maxLength={maxLength}
         defaultValue={defaultValue}
         required={required}
-        aria-describedby={maxUtf8Bytes === undefined ? undefined : helpId}
+        aria-describedby={maxUtf8Bytes === undefined && description === undefined ? undefined : helpId}
         onInput={(event) => validateByteLength(event.currentTarget)}
         onBlur={
           normalizeOnBlur || maxUtf8Bytes !== undefined
@@ -2093,7 +2356,11 @@ function TextField({
             : undefined
         }
       />
-      {maxUtf8Bytes !== undefined && <small id={helpId}>R text replacements can use up to 8,192 UTF-8 bytes.</small>}
+      {(description !== undefined || maxUtf8Bytes !== undefined) && (
+        <small id={helpId}>
+          {description ?? `R text replacements can use up to ${maxUtf8Bytes?.toLocaleString()} UTF-8 bytes.`}
+        </small>
+      )}
     </label>
   );
 }

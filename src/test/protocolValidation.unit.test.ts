@@ -1534,7 +1534,7 @@ describe("protocol-v2 request validation", () => {
     }
   );
 
-  it("validates aggregate, same-row fallback, and typed fill-missing replacements", () => {
+  it("validates aggregate, same-row, directional, and typed fill-missing replacements", () => {
     const fillStep = (replacement: unknown) => ({
       id: "fill-value",
       kind: "fillMissingValues",
@@ -1562,6 +1562,20 @@ describe("protocol-v2 request validation", () => {
       {
         kind: "fallbackColumns",
         columns: [otherReference, { id: "column:2", name: "third" }]
+      },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [
+          { column: otherReference, direction: "asc", nulls: "last" },
+          { column: { id: "column:2", name: "third" }, direction: "desc", nulls: "first" }
+        ],
+        maxGap: 1_000_000
+      },
+      {
+        kind: "directional",
+        direction: "backward",
+        orderBy: [{ column: otherReference, direction: "desc", nulls: "first" }]
       },
       { kind: "string", value: "" },
       { kind: "integer", value: "99999999999999999999999999999999999999" },
@@ -1592,7 +1606,34 @@ describe("protocol-v2 request validation", () => {
       { kind: "string", value: "x", extra: true },
       { kind: "fallbackColumns", columns: [] },
       { kind: "fallbackColumns", columns: ["other"] },
-      { kind: "fallbackColumns", columns: [otherReference], extra: true }
+      { kind: "fallbackColumns", columns: [otherReference], extra: true },
+      { kind: "directional", direction: "sideways", orderBy: [] },
+      { kind: "directional", direction: "forward", orderBy: [] },
+      { kind: "directional", direction: "forward", orderBy: [otherReference] },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: otherReference, direction: "asc", nulls: "last" }],
+        maxGap: 0
+      },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: otherReference, direction: "asc", nulls: "last" }],
+        maxGap: 1.5
+      },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: otherReference, direction: "asc", nulls: "last" }],
+        maxGap: 1_000_001
+      },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: otherReference, direction: "asc", nulls: "last" }],
+        extra: true
+      }
     ]) {
       expect(isTransformStep(fillStep(replacement)), JSON.stringify(replacement)).toBe(false);
     }
@@ -1610,6 +1651,26 @@ describe("protocol-v2 request validation", () => {
       )
     ).toBe(false);
     expect(isTransformStep(fillStep({ kind: "fallbackColumns", columns: [valueReference] }))).toBe(false);
+
+    const repeatedOrderColumn = {
+      kind: "directional",
+      direction: "forward",
+      orderBy: [
+        { column: otherReference, direction: "asc", nulls: "last" },
+        { column: otherReference, direction: "desc", nulls: "first" }
+      ]
+    };
+    expect(isTransformStep(fillStep(repeatedOrderColumn))).toBe(false);
+    expect(isRuntimeRequestEnvelope(previewEnvelope(repeatedOrderColumn))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(repeatedOrderColumn))).toBe(true);
+    const targetOrderColumn = {
+      kind: "directional",
+      direction: "backward",
+      orderBy: [{ column: valueReference, direction: "asc", nulls: "last" }]
+    };
+    expect(isTransformStep(fillStep(targetOrderColumn))).toBe(false);
+    expect(isRuntimeRequestEnvelope(previewEnvelope(targetOrderColumn))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(targetOrderColumn))).toBe(true);
 
     const tooManyFallbacks = {
       kind: "fallbackColumns",

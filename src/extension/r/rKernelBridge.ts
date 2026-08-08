@@ -66,6 +66,7 @@ import type {
   RKernelDatasetStatsResult,
   RKernelPageWindow,
   RKernelPlanUpdatedResult,
+  RKernelFillMissingReplacement,
   RKernelTransformStep,
   RKernelSortRule,
   RKernelStepInspectionResult,
@@ -2233,6 +2234,24 @@ function schemaAfterFillMissing(
     throw new TypeError("Fill Missing Values cannot replace a data.table key column. Clone the column first.");
   }
   const replacement = step.params.replacement;
+  if (replacement.kind === "directional") {
+    if (replacement.direction !== "forward" && replacement.direction !== "backward") {
+      throw new TypeError("Directional fill requires a forward or backward direction.");
+    }
+    if (
+      !Number.isSafeInteger(replacement.maxGap ?? 1) ||
+      (replacement.maxGap ?? 1) < 1 ||
+      (replacement.maxGap ?? 1) > 1_000_000
+    ) {
+      throw new TypeError("Directional fill requires a maximum gap between 1 and 1,000,000 when supplied.");
+    }
+    const orderBy = resolveTransformSortRules(replacement.orderBy, inputSchema, "Directional fill");
+    if (orderBy.length === 0) throw new TypeError("Directional fill requires at least one ordering column.");
+    if (orderBy.some((rule) => rule.column.id === source.id)) {
+      throw new TypeError("The fill target cannot also be a directional ordering column.");
+    }
+    return Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })));
+  }
   if (replacement.kind === "fallbackColumns") {
     if (replacement.columns.length === 0 || replacement.columns.length > 64) {
       throw new TypeError("Fill Missing Values requires between 1 and 64 fallback columns.");
@@ -2679,8 +2698,19 @@ function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, Colum
 }
 
 type FallbackFillMissingReplacement = Extract<FillMissingReplacement, { kind: "fallbackColumns" }>;
+type DirectionalFillMissingReplacement = Extract<FillMissingReplacement, { kind: "directional" }>;
 
 function copyFillMissingReplacement(replacement: FillMissingReplacement): FillMissingReplacement {
+  if (replacement.kind === "directional") {
+    const orderBy = replacement.orderBy.map((rule) => ({ ...rule, column: { ...rule.column } }));
+    if (!orderBy[0]) throw new TypeError("Directional fill requires at least one ordering column.");
+    return {
+      kind: "directional",
+      direction: replacement.direction,
+      orderBy: orderBy as DirectionalFillMissingReplacement["orderBy"],
+      ...(replacement.maxGap === undefined ? {} : { maxGap: replacement.maxGap })
+    };
+  }
   if (replacement.kind !== "fallbackColumns") return { ...replacement };
   const columns = replacement.columns.map((column) => ({ ...column }));
   if (!columns[0]) throw new TypeError("Fill Missing Values requires at least one fallback column.");
@@ -2690,11 +2720,29 @@ function copyFillMissingReplacement(replacement: FillMissingReplacement): FillMi
   };
 }
 
-function freezeFillMissingReplacement(replacement: FillMissingReplacement): FillMissingReplacement {
+function freezeFillMissingReplacement(
+  replacement: FillMissingReplacement,
+  inputSchema: readonly ColumnSchema[],
+  targetColumnId: string
+): RKernelFillMissingReplacement {
   const copied = copyFillMissingReplacement(replacement);
-  if (copied.kind !== "fallbackColumns") return Object.freeze(copied);
-  for (const column of copied.columns) Object.freeze(column);
-  Object.freeze(copied.columns);
+  if (copied.kind === "directional") {
+    const orderBy = resolveTransformSortRules(copied.orderBy, inputSchema, "Directional fill");
+    if (orderBy.length === 0) throw new TypeError("Directional fill requires at least one ordering column.");
+    if (orderBy.some((rule) => rule.column.id === targetColumnId)) {
+      throw new TypeError("The fill target cannot also be a directional ordering column.");
+    }
+    return Object.freeze({
+      kind: "directional",
+      direction: copied.direction,
+      orderBy: orderBy as readonly [RKernelSortRule, ...RKernelSortRule[]],
+      ...(copied.maxGap === undefined ? {} : { maxGap: copied.maxGap })
+    });
+  }
+  if (copied.kind === "fallbackColumns") {
+    for (const column of copied.columns) Object.freeze(column);
+    Object.freeze(copied.columns);
+  }
   return Object.freeze(copied);
 }
 
@@ -2777,7 +2825,7 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       kind: "fillMissingValues" as const,
       params: Object.freeze({
         column: Object.freeze({ ...step.params.column }),
-        replacement: freezeFillMissingReplacement(step.params.replacement)
+        replacement: freezeFillMissingReplacement(step.params.replacement, inputSchema, step.params.column.id)
       })
     });
   }

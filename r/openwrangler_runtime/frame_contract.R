@@ -10,6 +10,7 @@ openwrangler_r_frame_contract <- local({
   maximum_selected_values_per_filter <- 10000L
   maximum_sort_rules <- 64L
   maximum_fill_fallback_columns <- 64L
+  maximum_fill_directional_gap <- 1000000L
   maximum_profile_columns <- 64L
   maximum_profile_rows <- 1000000L
   maximum_profile_cells <- 5000000L
@@ -3238,6 +3239,132 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
+  fill_missing_directional_at <- function(
+    value,
+    position,
+    old_name,
+    order_positions,
+    order_names,
+    order_directions,
+    order_nulls,
+    direction,
+    max_gap = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the fill-missing column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    target_descriptor <- inspected$descriptor$schema[[position]]
+    if (!identical(target_descriptor$name, old_name)) {
+      abort("stale-column", "the fill-missing column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
+    }
+    if (
+      !is.numeric(order_positions) ||
+        anyNA(order_positions) ||
+        any(!is.finite(order_positions)) ||
+        any(order_positions != floor(order_positions)) ||
+        length(order_positions) == 0L ||
+        length(order_positions) > min(maximum_sort_rules, column_count) ||
+        any(order_positions < 1L) ||
+        any(order_positions > column_count) ||
+        anyDuplicated(order_positions) ||
+        any(order_positions == position) ||
+        !is.character(order_names) ||
+        anyNA(order_names) ||
+        length(order_names) != length(order_positions) ||
+        !is.character(order_directions) ||
+        anyNA(order_directions) ||
+        length(order_directions) != length(order_positions) ||
+        any(!order_directions %in% c("asc", "desc")) ||
+        !is.character(order_nulls) ||
+        anyNA(order_nulls) ||
+        length(order_nulls) != length(order_positions) ||
+        any(!order_nulls %in% c("first", "last"))
+    ) {
+      abort("invalid-view-query", "the directional ordering selection is invalid")
+    }
+    order_positions <- as.integer(order_positions)
+    order_names <- vapply(seq_along(order_names), function(index) {
+      name <- bounded_utf8(order_names[[index]], sprintf("order_names[[%d]]", index), maximum_name_bytes)
+      if (!identical(inspected$descriptor$schema[[order_positions[[index]]]]$name, name)) {
+        abort("stale-column", "a directional ordering column no longer matches the R dataframe")
+      }
+      name
+    }, character(1L), USE.NAMES = FALSE)
+    direction <- scalar_choice(direction, c("forward", "backward"), "direction")
+    if (!is.null(max_gap)) {
+      max_gap <- whole_number(max_gap, "max_gap", maximum_fill_directional_gap)
+      if (max_gap < 1L) abort("invalid-range", "max_gap must be positive")
+      max_gap <- as.integer(max_gap)
+    }
+
+    row_positions <- seq_len(inspected$descriptor$shape$rows)
+    for (rule_index in rev(seq_along(order_positions))) {
+      rule_position <- order_positions[[rule_index]]
+      column <- value[[rule_position]][row_positions]
+      missing <- is.na(column)
+      missing_positions <- row_positions[missing]
+      present_positions <- which(!missing)
+      present_order <- order_present_values(
+        column[present_positions],
+        inspected$descriptor$schema[[rule_position]]$semantics,
+        identical(order_directions[[rule_index]], "desc")
+      )
+      ordered_present <- row_positions[present_positions[present_order]]
+      row_positions <- if (identical(order_nulls[[rule_index]], "first")) {
+        c(missing_positions, ordered_present)
+      } else {
+        c(ordered_present, missing_positions)
+      }
+    }
+
+    result_values <- value[[position]]
+    ordered_missing <- is.na(result_values[row_positions])
+    if (length(ordered_missing) > 0L && any(ordered_missing)) {
+      runs <- rle(ordered_missing)
+      run_ends <- cumsum(runs$lengths)
+      run_starts <- run_ends - runs$lengths + 1L
+      missing_runs <- which(runs$values)
+      for (run_index in missing_runs) {
+        run_length <- runs$lengths[[run_index]]
+        if (!is.null(max_gap) && run_length > max_gap) next
+        start <- run_starts[[run_index]]
+        end <- run_ends[[run_index]]
+        donor <- if (identical(direction, "forward")) start - 1L else end + 1L
+        if (donor < 1L || donor > length(row_positions)) next
+        donor_position <- row_positions[[donor]]
+        if (is.na(result_values[donor_position])) next
+        result_values[row_positions[start:end]] <- result_values[donor_position]
+      }
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = result_values)
+    } else {
+      result[[position]] <- result_values
+    }
+    result
+  }
+
   cast_text_source <- function(column, kind, label) {
     values <- if (identical(kind, "factor")) as.character(column) else column
     if (!is.character(values)) {
@@ -4400,6 +4527,7 @@ openwrangler_r_frame_contract <- local({
     fill_missing_column = fill_missing_column,
     fill_missing_column_at = fill_missing_column_at,
     fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,
+    fill_missing_directional_at = fill_missing_directional_at,
     cast_column = cast_column,
     cast_column_at = cast_column_at,
     drop_columns = drop_columns,
