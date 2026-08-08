@@ -478,9 +478,9 @@ npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --ver
 The check rejects a mutable GitHub branch, source/version mismatch, undeclared media series, missing or orphaned
 inventory entries, stale registry versions or README content, and any displayed image whose rendered `src` or
 `currentSrc` is not the exact immutable raw URL in the reviewed README. Before reading a PNG, traversal caps the
-inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 46
+inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 48
 declared PNGs then require valid chunk CRCs, one ordered IHDR/sRGB/IDAT/IEND structure, a successful full decode,
-reviewed natural dimensions, sRGB, and immutable remote equality. All 19 README images are checked at DPR 2 on each
+reviewed natural dimensions, sRGB, and immutable remote equality. All 20 README images are checked at DPR 2 on each
 of the three public surfaces. They must stay within their declared width, rendered container, and viewport, preserve their
 natural aspect ratio within one CSS pixel of height rounding, and retain at least two natural pixels per rendered CSS
 pixel. The hero, histogram, PySpark workbench, and R editing scene repeat those checks near 760px and 1400px viewport
@@ -648,7 +648,7 @@ inserted into its notebook, and the dataframe picker opened from a real Quarto d
 The viewing image shows two filters, two
 ordered sorts, and exact revenue statistics. The editing image groups the orders by market and channel and shows the
 native R code preview beside the draft, cleaning history, and Apply/Discard controls.
-The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 881
+The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 874
 logical pixels so the grid ends on a complete row. Both are captured at 2× physical density. Capture fails if setup
 cells or private markers are visible, if a grid row or column is clipped, or if the source R object changes. The
 accepted files are

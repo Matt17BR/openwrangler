@@ -111,7 +111,7 @@ The verifier requires the remote README at that exact commit to byte-match the r
 `package.json` version to match the supplied version. Before reading any PNG, it bounds the inventory's entry count,
 depth, relative-path bytes, individual file size, and cumulative size. Every declared file must then pass chunk CRC,
 IHDR/IDAT ordering, complete decode, reviewed natural dimensions, standard sRGB, and immutable-byte checks. The two
-registries must show the exact version, all three surfaces must render the expected README content, and all 19
+registries must show the exact version, all three surfaces must render the expected README content, and all 20
 displayed images must retain the reviewed raw URL and natural dimensions. Screenshot markup is width-only and capped
 at 960 CSS pixels; rendered images must stay inside that cap, their container, and the viewport, preserve their aspect ratio, and
 retain at least two natural pixels per CSS pixel. Four representative images are rechecked near 760px and 1400px
@@ -266,7 +266,7 @@ For releases from `1.2.1` onward, after Open VSX and the immutable tag pass, the
 from the reviewed lockfile and runs the media verifier against the exact release source. This keeps a historical
 release tied to its own screenshot inventory when `main` has moved on. All declared
 PNGs must retain their reviewed natural dimensions, standard sRGB declaration, file and aggregate budgets, valid
-chunk/decode structure, and immutable remote bytes. Every one of the 19 README images must then render from its exact
+chunk/decode structure, and immutable remote bytes. Every one of the 20 README images must then render from its exact
 reviewed URL without upscaling, aspect distortion, container overflow, or viewport overflow on GitHub, Visual Studio Marketplace, and
 Open VSX; representative images are rechecked near 760px and 1400px viewport widths. Registry observations receive at most
 forty fresh browser contexts at thirty-second intervals inside one thirty-minute propagation deadline; network fetches

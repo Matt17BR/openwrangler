@@ -65,8 +65,8 @@ const root = resolve(import.meta.dirname, "..");
 
 test("public media inventory declares one exact bounded series", () => {
   assert.equal(PUBLIC_MEDIA_SERIES_PATH, "docs/images/readme/v1.2/");
-  assert.equal(PUBLIC_MEDIA_ASSETS.length, 46);
-  assert.equal(PUBLIC_README_IMAGE_COUNT, 19);
+  assert.equal(PUBLIC_MEDIA_ASSETS.length, 48);
+  assert.equal(PUBLIC_README_IMAGE_COUNT, 20);
   assert.equal(PUBLIC_MEDIA_MAX_INVENTORY_ENTRIES, 64);
   assert.equal(PUBLIC_MEDIA_MAX_DIRECTORY_DEPTH, 4);
   assert.equal(PUBLIC_MEDIA_MAX_RELATIVE_PATH_BYTES, 240);

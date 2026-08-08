@@ -154,9 +154,9 @@ After GitHub and both registries have rendered a release README, install the loc
 `npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"` from the
 exact released source checkout. The SHA must be lowercase 40-hex and the version must be semantic without a leading
 `v`. Starting with `1.2.1`, the verifier byte-compares the exact source README and package version; rejects an
-undeclared media series; pre-stats a bounded inventory before any full file read; checks all 46 PNGs for chunk CRC,
+undeclared media series; pre-stats a bounded inventory before any full file read; checks all 48 PNGs for chunk CRC,
 ordered structure, complete decode, reviewed natural dimensions, standard sRGB, per-file and total budgets, and
-immutable remote bytes; and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. Every one of the 19
+immutable remote bytes; and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. Every one of the 20
 rendered README images must retain its exact reviewed `src`/`currentSrc` and natural dimensions. Their width-only
 presentation may not exceed 960 CSS pixels, its container, or the viewport, must preserve the natural aspect ratio, and must retain
 at least two natural pixels per rendered CSS pixel. Four representative images repeat those checks near 760px and
