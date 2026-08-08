@@ -107,7 +107,8 @@ changing the source._
 Choose from 28 operations, including filling missing values, custom Pandas or Polars code, and transformations inferred
 from examples. A draft stays separate until you apply it, and applied steps can be inspected, edited, or undone.
 
-Fill Missing Values shows only methods that work with the selected column:
+Fill Missing Values shows only methods that work with the selected column. Choices that need a group, coordinate,
+sort key, or fallback column appear only when the dataframe has a compatible column.
 
 | Column type                | Methods                                                                                                           |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -115,6 +116,8 @@ Fill Missing Values shows only methods that work with the selected column:
 | Integer or decimal         | Median, grouped median, previous or next value, fallback columns, fixed value                                     |
 | Text, category, or boolean | Most common value across the column or within groups, previous or next value, fallback columns, fixed value       |
 | Date or date-time          | Previous or next value, fallback columns, fixed value                                                             |
+| Duration or binary         | Previous or next value                                                                                            |
+| Unknown scalar type        | Fixed typed value                                                                                                 |
 
 Ordered fills use sort keys you choose and can leave long gaps untouched. Fallback columns are checked in your chosen
 order on the same row. Every preview reports how many values are still missing before you apply the step.

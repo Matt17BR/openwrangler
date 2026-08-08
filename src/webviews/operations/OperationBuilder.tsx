@@ -1406,7 +1406,9 @@ function FillMissingFields({
     ? columns.filter((column) => column.id !== selectedColumn.id && column.type !== selectedColumn.type).length
     : 0;
   const methodHelpId = useId();
-  const selectedTypeLabel = selectedColumn ? columnTypePresentation(selectedColumn).label.toLowerCase() : "selected";
+  const methodDescription = selectedColumn
+    ? `Available methods are based on the selected ${columnTypePresentation(selectedColumn).label.toLowerCase()} column.`
+    : "Choose a supported column to see its available methods.";
 
   return (
     <>
@@ -1467,7 +1469,7 @@ function FillMissingFields({
             </optgroup>
           )}
         </select>
-        <small id={methodHelpId}>Available methods are based on the selected {selectedTypeLabel} column.</small>
+        <small id={methodHelpId}>{methodDescription}</small>
       </label>
       {mode === "median" ? (
         <p className="panelNote">

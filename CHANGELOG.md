@@ -29,7 +29,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Changed
 
 - The Fill Missing Values method menu now groups column statistics, grouped statistics, ordered data, fallback
-  columns, and manual replacement. It also states which selected column type the available choices apply to.
+  columns, and manual replacement. The menu also names the selected column type so it is clear why options appear or
+  disappear.
 
 ### Fixed
 

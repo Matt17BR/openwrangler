@@ -75,6 +75,19 @@ describe("ColumnSearch", () => {
     expect(screen.getByRole("option", { name: "amount, Number column, column 3" })).toBeVisible();
   });
 
+  it.each(["factor", "ordered factor"])("presents R %s columns as categories", (rawType) => {
+    render(
+      <ColumnSearch
+        columns={[{ id: "r:c:0", name: "segment", position: 0, rawType, type: "string", nullable: true }]}
+        onSelect={() => undefined}
+      />
+    );
+
+    fireEvent.focus(screen.getByRole("combobox", { name: "Column" }));
+    expect(screen.getByRole("option", { name: "segment, Category column" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "Category column type" })).toHaveClass("codicon-symbol-enum");
+  });
+
   it("keeps the controlled listbox available when no column matches", () => {
     render(<ColumnSearch columns={columns} onSelect={() => undefined} />);
     const input = screen.getByRole("combobox", { name: "Column" });

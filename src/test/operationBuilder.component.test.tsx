@@ -741,7 +741,7 @@ describe("OperationBuilder", () => {
     const columns = [
       { id: "c:0", name: "units", position: 0, rawType: "Int64", type: "integer", nullable: true },
       { id: "c:1", name: "ratio", position: 1, rawType: "Float64", type: "float", nullable: true },
-      { id: "c:2", name: "label", position: 2, rawType: "String", type: "string", nullable: true },
+      { id: "c:2", name: "label", position: 2, rawType: "factor", type: "string", nullable: true },
       { id: "c:3", name: "active", position: 3, rawType: "Boolean", type: "boolean", nullable: true },
       { id: "c:4", name: "group", position: 4, rawType: "Date", type: "date", nullable: false }
     ] satisfies SessionMetadata["schema"];
@@ -777,7 +777,7 @@ describe("OperationBuilder", () => {
     expect(method).toHaveAccessibleDescription("Available methods are based on the selected number column.");
     expect(within(method).getByRole("option", { name: "Mean within groups" })).toBeInTheDocument();
     fireEvent.change(column, { target: { value: "c:2" } });
-    expect(method).toHaveAccessibleDescription("Available methods are based on the selected text column.");
+    expect(method).toHaveAccessibleDescription("Available methods are based on the selected category column.");
     expect(within(method).getByRole("option", { name: "Most common value within groups" })).toBeInTheDocument();
     expect(within(method).queryByRole("option", { name: "Median within groups" })).toBeNull();
     fireEvent.change(method, { target: { value: "groupedMostFrequent" } });
