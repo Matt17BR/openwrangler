@@ -19823,8 +19823,7 @@ async function assertPackagedOperationDialogGeometry(
         searchIconBounds.top >= searchInputBounds.top - 1 &&
         searchIconBounds.bottom <= searchInputBounds.bottom + 1,
       searchIconCenterDelta: Math.abs(
-        (searchIconBounds.top + searchIconBounds.bottom) / 2 -
-          (searchInputBounds.top + searchInputBounds.bottom) / 2
+        (searchIconBounds.top + searchIconBounds.bottom) / 2 - (searchInputBounds.top + searchInputBounds.bottom) / 2
       ),
       viewport: {
         width: root.ownerDocument.defaultView.innerWidth,
