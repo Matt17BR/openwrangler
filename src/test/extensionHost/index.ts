@@ -19758,16 +19758,14 @@ async function capturePackagedOperationDialogScenes(
     await groupBy.getByRole("checkbox", { name: "market", exact: true }).check();
     await groupBy.getByRole("checkbox", { name: "segment", exact: true }).check();
     await groupBy.getByText("Selected (2): market, segment", { exact: true }).waitFor({ state: "visible" });
+    await dialog.getByLabel("Search group columns", { exact: true }).fill("m");
+    await groupBy.getByRole("checkbox", { name: "market", exact: true }).waitFor({ state: "visible" });
+    await groupBy.getByRole("checkbox", { name: "segment", exact: true }).waitFor({ state: "visible" });
     await dialog
       .getByText("Filters and sorts in the current view are ignored", { exact: false })
       .waitFor({ state: "visible" });
     await dialog.getByRole("heading", { name: "Fill missing values", exact: true }).waitFor({ state: "visible" });
     await dialog.getByRole("button", { name: "Preview changes", exact: true }).waitFor({ state: "visible" });
-    await dialog.locator(".operationForm").evaluate((element) => {
-      const form = element as unknown as { clientHeight: number; scrollHeight: number; scrollTop: number };
-      form.scrollTop = Math.min(48, Math.max(0, form.scrollHeight - form.clientHeight));
-    });
-    await workbench.waitForTimeout(100);
     await assertPackagedOperationDialogGeometry(dialog, "configuration");
     await clearPackagedProductSceneTransientUi(workbench);
     await captureWorkbenchScreenshot(
