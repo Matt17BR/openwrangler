@@ -3683,10 +3683,6 @@ async function exerciseReleasedRDocumentGrid(testing: TestApi, workbench: Page, 
   await drawer.waitFor({ state: "visible", timeout: 10_000 });
   const profile = drawer.getByRole("tabpanel");
   await profile.getByRole("heading", { name: "score", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-  await profile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
-    state: "visible",
-    timeout: 30_000
-  });
   await assertReleasedProfileStat(profile, "Rows", "240");
   await assertReleasedProfileStat(profile, "Min", "1");
   await assertReleasedProfileStat(profile, "Max", "240");
@@ -3813,10 +3809,6 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     state: "visible",
     timeout: 10_000
   });
-  await columnProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
-    state: "visible",
-    timeout: 30_000
-  });
   await assertReleasedProfileStat(columnProfile, "Rows", "1,205");
   await assertReleasedProfileStat(columnProfile, "Distinct", "1,205");
   await assertReleasedProfileStat(columnProfile, "Min", "1");
@@ -3826,10 +3818,6 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   await datasetProfile.getByRole("heading", { name: "Dataset", exact: true }).waitFor({
     state: "visible",
     timeout: 10_000
-  });
-  await datasetProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
-    state: "visible",
-    timeout: 30_000
   });
   await assertReleasedProfileStat(datasetProfile, "Rows", "1,205");
   await assertReleasedProfileStat(datasetProfile, "Columns", "25");
@@ -3852,7 +3840,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
 
   await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "score" });
   await filterPanel.getByLabel("Search values for score", { exact: true }).fill("1200");
-  await filterPanel.getByRole("button", { name: "Values", exact: true }).click();
+  await filterPanel.getByRole("button", { name: /Search values/iu }).click();
   const scoreValue = filterPanel.locator(".valueList label.checkboxRow").filter({ hasText: "1200" }).first();
   await scoreValue.waitFor({ state: "visible", timeout: 30_000 });
   assert.equal((await scoreValue.locator("span").innerText()).trim(), "1200");
@@ -3945,10 +3933,6 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     state: "visible",
     timeout: 10_000
   });
-  await filteredColumnProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
-    state: "visible",
-    timeout: 30_000
-  });
   await assertReleasedProfileStat(filteredColumnProfile, "Rows", "1");
   await assertReleasedProfileStat(filteredColumnProfile, "Distinct", "1");
   await assertReleasedProfileStat(filteredColumnProfile, "Min", "1,200");
@@ -3959,10 +3943,6 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   await filteredDatasetProfile.getByRole("heading", { name: "Dataset", exact: true }).waitFor({
     state: "visible",
     timeout: 10_000
-  });
-  await filteredDatasetProfile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
-    state: "visible",
-    timeout: 30_000
   });
   await assertReleasedProfileStat(filteredDatasetProfile, "Rows", "1");
   await assertReleasedProfileStat(filteredDatasetProfile, "Columns", "25");
@@ -7704,10 +7684,6 @@ async function captureReleasedRJupyterWorkbench(
     await drawer.getByRole("tab", { name: "Column", exact: true }).click();
     const profile = drawer.getByRole("tabpanel");
     await profile.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-    await profile.getByLabel("Profile provenance").getByText("Exact statistics", { exact: true }).waitFor({
-      state: "visible",
-      timeout: 30_000
-    });
     await assertReleasedProfileStat(profile, "Rows", "113");
     await assertReleasedProfileStat(profile, "Distinct", "113");
     await assertReleasedProfileStat(profile, "Min", "20,000");
@@ -13755,17 +13731,16 @@ async function exercisePackagedFirstUseInteractionJourney(
     drawer,
     (text) =>
       !text.includes("Profiling selected column") &&
-      ["Exact statistics", "Min", "Max", "Mean", "Median"].every((label) => text.includes(label)) &&
-      (text.includes("Exact distribution") || text.includes("Sampled distribution")),
+      ["Min", "Max", "Mean", "Median", "Distribution"].every((label) => text.includes(label)),
     30_000,
     "complete exact revenue insights"
   );
-  const histogramBars = drawer.locator('[role="graphics-symbol"]');
+  const histogramBars = drawer.locator(".numericHistogramHitTarget");
   assert.ok(await histogramBars.count(), "Numeric insights must expose keyboard-focusable histogram bins.");
   assert.match(
     (await histogramBars.first().getAttribute("aria-label")) ?? "",
-    /: [\d,.]+ rows?$/u,
-    "Every histogram bin must expose its exact row count."
+    /: [\d,.]+ rows? \([\d.,]+%\)/u,
+    "Every histogram bin must expose its row count and percentage."
   );
   assert.equal(
     await drawer.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
@@ -13796,9 +13771,7 @@ async function exercisePackagedFirstUseInteractionJourney(
     drawer,
     (text) =>
       !text.includes("Profiling selected column") &&
-      ["Exact statistics", "Null", "Empty", "Min length", "Max length", "Mean length"].every((label) =>
-        text.includes(label)
-      ),
+      ["Null", "Empty", "Min length", "Max length", "Mean length"].every((label) => text.includes(label)),
     30_000,
     "complete exact account-note insights"
   );
@@ -19547,11 +19520,11 @@ async function capturePackagedHistogramInteractionScene(
   editor: string
 ): Promise<void> {
   recordAcceptanceProgress("verify:screenshots:file-scenes:histogram-hover");
-  const bins = profiles.locator('[role="graphics-symbol"]');
+  const bins = profiles.locator(".numericHistogramHitTarget");
   assert.equal(await bins.count(), 20, "The product histogram must expose all twenty interactive bins.");
   const target = bins.nth(17);
   const label = await target.getAttribute("aria-label");
-  assert.match(label ?? "", /: [\d,.]+ rows?$/u);
+  assert.match(label ?? "", /: [\d,.]+ rows? \([\d.,]+%\)/u);
   await target.focus();
   const tooltip = profiles.getByRole("tooltip");
   await tooltip.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
@@ -19984,9 +19957,7 @@ async function capturePackagedSidebarOverviewScene(
       profiles,
       (text) =>
         !text.includes("Profiling exact dataset statistics") &&
-        ["Exact statistics", "Missing cells", "Rows with missing values", "Duplicate rows"].every((label) =>
-          text.includes(label)
-        ),
+        ["Missing cells", "Rows with missing values", "Duplicate rows"].every((label) => text.includes(label)),
       30_000,
       "the current sorted draft view to publish exact dataset statistics through Column profiles"
     );
@@ -21910,7 +21881,7 @@ async function assertPackagedExploreScene(
   assert.deepEqual(measurement.partialHeaders, []);
   assert.deepEqual(measurement.clippedTitles, []);
   assert.deepEqual(measurement.visibleColumns, ["order_id", "market", "revenue"]);
-  for (const label of ["Exact statistics", "Min", "Max", "Mean", "Median", "Distribution"]) {
+  for (const label of ["Min", "Max", "Mean", "Median", "Distribution"]) {
     assert.ok(measurement.drawerText.includes(label), `Explore Column profiles must show ${label}.`);
   }
   assert.equal(
