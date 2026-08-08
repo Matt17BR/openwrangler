@@ -719,6 +719,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/push-stable-release-tag.mjs
+      - name: Prepare the exact local release tag for registry verification
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/prepare-stable-candidate-tag.mjs
       - name: Publish or verify the exact GitHub stable release
         env:
           EXPECTED_SHA: ${{ github.sha }}
