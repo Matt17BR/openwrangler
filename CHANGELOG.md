@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
+- R can now group by one or more columns and calculate sum, mean, median, minimum, maximum, count, distinct count,
+  first, or last. The result keeps the source dataframe family, creates new row identities, and uses the same
+  preview, code, history, edit, and undo flow as other cleaning steps.
 - Stable release candidates now run the R 4.5.2 contract and the packaged R notebook journey in VS Code and Cursor
   before publication. Preview candidates already used this gate.
 - Local R notebook and R document sessions can now export committed cleaning results as Parquet with `nanoparquet`

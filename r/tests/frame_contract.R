@@ -254,6 +254,61 @@ for (case in collapse_cases) {
   )
 }
 
+group_identity_source <- data.frame(
+  group = c("b", "a", "b"),
+  value = c(1L, 2L, 3L),
+  stringsAsFactors = FALSE
+)
+group_identity_source_capture <- openwrangler_r_frame_contract$capture_frame(group_identity_source)
+group_identity_result <- openwrangler_r_frame_contract$group_by_at(
+  group_identity_source,
+  1L,
+  "group",
+  2L,
+  "value",
+  "sum",
+  "total"
+)
+group_identity_capture <- openwrangler_r_frame_contract$capture_group_result(
+  group_identity_result,
+  group_identity_source_capture,
+  1L,
+  2L,
+  "sum",
+  c("r:c:0", "c:step:group-identity:0")
+)
+group_identity_page <- openwrangler_r_frame_contract$materialize_page(
+  group_identity_capture,
+  row_limit = 10L,
+  column_limit = 10L
+)
+assert_identical(
+  group_identity_capture$descriptor$shape$rows,
+  2L,
+  "a grouped capture lost its actual row count"
+)
+assert_identical(
+  group_identity_capture$rowOrigins,
+  c(4L, 5L),
+  "grouped rows reused identities from their source capture"
+)
+assert_identical(
+  group_identity_capture$rowIdentityDomain,
+  5,
+  "a grouped capture did not expand the source identity domain"
+)
+assert_identical(
+  group_identity_page$shape$rows,
+  5,
+  "a grouped page did not publish the expanded identity domain"
+)
+assert_identical(group_identity_page$page$totalRows, 2L, "a grouped page lost its actual visible row count")
+assert_identical(
+  vapply(group_identity_page$page$rows, `[[`, character(1L), "id"),
+  c("r:r:3", "r:r:4"),
+  "a grouped page published overlapping row identities"
+)
+
 rename_frame <- data.frame(
   duplicate = c(1L, 2L),
   duplicate = c(3L, 4L),

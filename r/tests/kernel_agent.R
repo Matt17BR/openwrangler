@@ -72,6 +72,8 @@ text_failure_session_id <- "36363636-3636-4636-8636-363636363636"
 numeric_session_id <- "37373737-3737-4737-8737-373737373737"
 numeric_table_session_id <- "38383838-3838-4838-8838-383838383838"
 numeric_integer64_session_id <- "39393939-3939-4939-8939-393939393939"
+group_by_session_id <- "61616161-6161-4161-8161-616161616161"
+group_by_overflow_session_id <- "62626262-6262-4262-8262-626262626262"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -121,7 +123,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 8L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 9L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -6178,6 +6180,191 @@ if (
 ) {
   stop("the R agent accepted a frame contract without Drop Duplicates support", call. = FALSE)
 }
+
+source_environment$group_by_frame <- data.frame(
+  group = c(2, 1, 2, NA_real_, NaN, 1),
+  number = c(1L, 2L, 3L, NA_integer_, NA_integer_, 4L),
+  label = factor(c("z", "b", NA, "c", "a", "a"), levels = c("z", "a", "b", "c")),
+  ordered_label = ordered(c("medium", "low", "high", NA, "medium", "high"), levels = c("low", "medium", "high")),
+  when = as.Date("2026-01-01") + c(0, 1, 2, NA, 4, 5),
+  flag = c(TRUE, NA, FALSE, FALSE, NA, TRUE),
+  check.names = FALSE
+)
+group_by_source_before <- unserialize(serialize(source_environment$group_by_frame, NULL, version = 3L))
+group_by_open <- dispatch(
+  "openSession",
+  list(sessionId = group_by_session_id, variableName = "group_by_frame", page = page_window())
+)
+assert_identical(group_by_open$kind, "page", "the R Group By session did not open")
+group_by_aggregations <- list(
+  list(column = list(id = "r:c:1", name = "number"), operation = "sum", alias = "number_sum"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "mean", alias = "number_mean"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "median", alias = "number_median"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "min", alias = "number_min"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "max", alias = "number_max"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "count", alias = "number_count"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "nUnique", alias = "number_unique"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "first", alias = "number_first"),
+  list(column = list(id = "r:c:1", name = "number"), operation = "last", alias = "number_last"),
+  list(column = list(id = "r:c:2", name = "label"), operation = "min", alias = "label_min"),
+  list(column = list(id = "r:c:2", name = "label"), operation = "max", alias = "label_max"),
+  list(column = list(id = "r:c:3", name = "ordered_label"), operation = "min", alias = "ordered_min"),
+  list(column = list(id = "r:c:3", name = "ordered_label"), operation = "max", alias = "ordered_max"),
+  list(column = list(id = "r:c:4", name = "when"), operation = "min", alias = "date_min"),
+  list(column = list(id = "r:c:4", name = "when"), operation = "max", alias = "date_max"),
+  list(column = list(id = "r:c:5", name = "flag"), operation = "min", alias = "flag_min"),
+  list(column = list(id = "r:c:5", name = "flag"), operation = "max", alias = "flag_max")
+)
+group_by_step <- list(
+  id = "group-by-step",
+  kind = "groupBy",
+  params = list(
+    keys = I(list(list(id = "r:c:0", name = "group"))),
+    aggregations = I(group_by_aggregations)
+  )
+)
+group_by_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = group_by_session_id,
+    revision = 0L,
+    step = group_by_step,
+    page = page_window()
+  )
+)
+assert_identical(group_by_preview$kind, "stepPreview", "R Group By did not preview")
+assert_identical(group_by_preview$page$shape$rows, 3L, "R Group By returned the wrong group count")
+assert_identical(group_by_preview$diff$addedRows, 3L, "R Group By did not report its replacement rows")
+assert_identical(group_by_preview$diff$removedRows, 6L, "R Group By did not report all replaced source rows")
+assert_identical(
+  unlist(group_by_preview$diff$addedColumns, use.names = FALSE),
+  vapply(group_by_aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE),
+  "R Group By reported the wrong added columns"
+)
+assert_identical(
+  unlist(group_by_preview$diff$removedColumns, use.names = FALSE),
+  c("number", "label", "ordered_label", "when", "flag"),
+  "R Group By reported the wrong removed columns"
+)
+assert_identical(group_by_preview$diff$changedCells, 0L, "R Group By reported cell-level changes")
+assert_identical(group_by_preview$diff$truncated, FALSE, "a complete R Group By diff was marked truncated")
+assert_identical(
+  unlist(group_by_preview$page$page$columnIds, use.names = FALSE),
+  c("r:c:0", paste0("c:step:group-by-step:", 0:16)),
+  "R Group By returned unstable output identities"
+)
+assert_identical(
+  vapply(group_by_preview$page$schema, `[[`, character(1L), "rawType", USE.NAMES = FALSE),
+  c(
+    "double", "integer", "double", "double", "integer", "integer", "integer", "integer", "integer",
+    "integer", "character", "character", "ordered factor", "ordered factor", "Date", "Date", "logical", "logical"
+  ),
+  "R Group By returned the wrong output types"
+)
+group_cells <- lapply(group_by_preview$page$page$rows, function(row) row$values[[1L]])
+assert_identical(
+  vapply(group_cells[1:2], function(cell) as.double(cell$raw), double(1L)),
+  c(2, 1),
+  "R Group By did not retain first-seen group order"
+)
+assert_identical(group_cells[[3L]]$isNull, TRUE, "R Group By did not combine NA and NaN into one missing group")
+missing_group_values <- group_by_preview$page$page$rows[[3L]]$values
+assert_identical(as.integer(missing_group_values[[2L]]$raw), 0L, "an all-missing integer group did not sum to zero")
+assert_identical(missing_group_values[[3L]]$isNull, TRUE, "an all-missing group mean was not missing")
+assert_identical(missing_group_values[[4L]]$isNull, TRUE, "an all-missing group median was not missing")
+assert_identical(as.integer(missing_group_values[[7L]]$raw), 0L, "an all-missing group count was not zero")
+assert_identical(as.integer(missing_group_values[[8L]]$raw), 0L, "an all-missing distinct count was not zero")
+
+group_by_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = group_by_session_id, revision = 1L, page = page_window())
+)
+assert_identical(group_by_apply$action, "apply", "the R Group By draft did not apply")
+if (!grepl(".ow_group_by", group_by_apply$code, fixed = TRUE)) {
+  stop("generated R Group By code omitted its native reducer", call. = FALSE)
+}
+assign("group_by_frame", source_environment$group_by_frame, envir = .GlobalEnv)
+eval(parse(text = group_by_apply$code), envir = .GlobalEnv)
+group_by_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(group_by_generated$group[1:2], c(2, 1), "generated R Group By changed group order")
+assert_identical(is.na(group_by_generated$group[[3L]]), TRUE, "generated R Group By split the missing group")
+assert_identical(group_by_generated$number_sum, c(4L, 6L, 0L), "generated R Group By changed integer sums")
+assert_identical(group_by_generated$number_mean, c(2, 3, NA_real_), "generated R Group By changed means")
+assert_identical(group_by_generated$number_median, c(2, 3, NA_real_), "generated R Group By changed medians")
+assert_identical(group_by_generated$number_min, c(1L, 2L, NA_integer_), "generated R Group By changed minima")
+assert_identical(group_by_generated$number_max, c(3L, 4L, NA_integer_), "generated R Group By changed maxima")
+assert_identical(group_by_generated$number_count, c(2L, 2L, 0L), "generated R Group By changed counts")
+assert_identical(group_by_generated$number_unique, c(2L, 2L, 0L), "generated R Group By changed distinct counts")
+assert_identical(group_by_generated$number_first, c(1L, 2L, NA_integer_), "generated R Group By changed first values")
+assert_identical(group_by_generated$number_last, c(3L, 4L, NA_integer_), "generated R Group By changed last values")
+assert_identical(group_by_generated$label_min, c("z", "a", "a"), "generated R Group By changed factor minima")
+assert_identical(group_by_generated$label_max, c("z", "b", "c"), "generated R Group By changed factor maxima")
+assert_identical(is.ordered(group_by_generated$ordered_min), TRUE, "generated R Group By lost ordered factors")
+assert_identical(inherits(group_by_generated$date_min, "Date"), TRUE, "generated R Group By lost Date extrema")
+assert_identical(is.logical(group_by_generated$flag_min), TRUE, "generated R Group By lost logical extrema")
+assert_identical(
+  get("group_by_frame", envir = .GlobalEnv, inherits = FALSE),
+  group_by_source_before,
+  "generated R Group By mutated its source dataframe"
+)
+rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+group_by_inspection <- inspect_step(
+  group_by_session_id,
+  group_by_apply$revision,
+  "group-by-step",
+  page_window(),
+  input_row_count = 6L,
+  output_row_count = 3L
+)
+assert_schema_less_inspection(group_by_inspection, "R Group By inspection")
+assert_identical(group_by_inspection$outputPage$page$totalRows, 3L, "R Group By inspection lost its output groups")
+group_by_undo <- dispatch(
+  "undoStep",
+  list(sessionId = group_by_session_id, revision = group_by_apply$revision, page = page_window())
+)
+assert_identical(group_by_undo$action, "undo", "R Group By did not undo")
+assert_identical(group_by_undo$page$shape$rows, 6L, "undoing R Group By did not restore the source rows")
+assert_identical(group_by_undo$code, "", "undoing the final R Group By step retained generated code")
+assert_identical(source_environment$group_by_frame, group_by_source_before, "R Group By mutated its live source")
+group_by_closed <- dispatch("closeSession", list(sessionId = group_by_session_id))
+assert_identical(group_by_closed$kind, "closed", "the R Group By session did not close")
+
+source_environment$group_by_overflow <- data.frame(group = c("a", "a"), value = c(2147483647L, 1L))
+group_by_overflow_open <- dispatch(
+  "openSession",
+  list(sessionId = group_by_overflow_session_id, variableName = "group_by_overflow", page = page_window())
+)
+assert_identical(group_by_overflow_open$kind, "page", "the R Group By overflow session did not open")
+group_by_overflow <- dispatch(
+  "previewStep",
+  list(
+    sessionId = group_by_overflow_session_id,
+    revision = 0L,
+    step = list(
+      id = "group-overflow",
+      kind = "groupBy",
+      params = list(
+        keys = I(list(list(id = "r:c:0", name = "group"))),
+        aggregations = I(list(list(
+          column = list(id = "r:c:1", name = "value"),
+          operation = "sum",
+          alias = "total"
+        )))
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(group_by_overflow$kind, "error", "R Group By accepted an overflowing integer sum")
+assert_identical(group_by_overflow$code, "invalid_request", "R Group By normalized overflow incorrectly")
+assert_identical(
+  source_environment$group_by_overflow,
+  data.frame(group = c("a", "a"), value = c(2147483647L, 1L)),
+  "a failed R Group By mutated its source"
+)
+group_by_overflow_closed <- dispatch("closeSession", list(sessionId = group_by_overflow_session_id))
+assert_identical(group_by_overflow_closed$kind, "closed", "the failed R Group By session did not close")
 
 source_environment$export_frame <- data.frame(
   "order id" = c(3L, 1L, 2L),

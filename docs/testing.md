@@ -554,7 +554,7 @@ generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R`
 
 The 1.99 preview test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase,
-Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling in
+Find and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate in
 Editing mode. They
 exercise draft preview, executable generated R, mixed plans, apply, discard, inspection, latest-step editing, undo,
 revision errors, exact-kernel correlation, stable retained-column identities, and source isolation for base data
@@ -574,7 +574,10 @@ generated R, and exact typed diffs. Drop Missing Rows covers the Any and All mod
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites contain cases for all twenty operations. The packaged editor run covers all twenty in both editors. Round,
+suites contain cases for all twenty-one operations. The packaged editor run covers the first twenty in both editors.
+Group and aggregate has direct frame, kernel-agent, protocol, and host-bridge coverage for all nine aggregations,
+first-seen group order, missing keys, type preservation, overflow, generated code, inspection, replacement, and undo.
+Its packaged editor journey remains a stable-2.0 gate. Round,
 Floor, and Ceiling use their visible forms and check derived values from positive and negative fractional inputs.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
