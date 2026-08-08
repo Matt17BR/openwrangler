@@ -1,6 +1,17 @@
+import { useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ColumnSchema, ColumnSummary, SessionMetadata, ValueCount } from "../../shared/protocol";
 import { formatSessionRowCount } from "../../shared/protocol";
+import type { ColumnFilter, FilterModel } from "../../shared/filterModel";
+import {
+  countViewColumnNames,
+  isActiveColumnFilter,
+  removeViewColumnFilter,
+  replaceViewColumnFilter,
+  supportsTypedViewComparison,
+  viewNumericBinFilter,
+  viewValueSelectionFilter
+} from "../../shared/filterModel";
 import { formatNumericSummaryNumber, numericExtremumDisplay } from "../numericSummary";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
 
@@ -14,8 +25,12 @@ interface SummaryPanelProps {
   activeView: SummaryPanelView;
   profileSupported?: boolean;
   filtersSupported?: boolean;
+  viewFiltersSupported?: boolean;
+  filtersDisabled?: boolean;
   filtersLabel?: string;
+  filterModel?: FilterModel;
   onSelectView(view: SummaryPanelView): void;
+  onApplyFilterModel?(model: FilterModel): void;
 }
 
 const summaryViews: readonly SummaryPanelView[] = ["column", "dataset", "filters"];
@@ -29,8 +44,12 @@ export function SummaryPanel({
   activeView,
   profileSupported = true,
   filtersSupported = true,
+  viewFiltersSupported = true,
+  filtersDisabled = false,
   filtersLabel = "Filters",
-  onSelectView
+  filterModel,
+  onSelectView,
+  onApplyFilterModel
 }: SummaryPanelProps) {
   const resolvedColumnId =
     selectedColumnId && schemaById.has(selectedColumnId) ? selectedColumnId : metadata?.schema[0]?.id;
@@ -74,7 +93,15 @@ export function SummaryPanel({
           role="tabpanel"
           aria-labelledby={summaryTabId("column")}
         >
-          <SelectedColumnSummary metadata={metadata} schema={selectedSchema} summary={selectedSummary} />
+          <SelectedColumnSummary
+            metadata={metadata}
+            schema={selectedSchema}
+            summary={selectedSummary}
+            filterModel={filterModel ?? metadata?.filterModel ?? { filters: [], sort: [] }}
+            filtersSupported={viewFiltersSupported}
+            filtersDisabled={filtersDisabled}
+            onApplyFilterModel={onApplyFilterModel}
+          />
         </div>
       )}
 
@@ -103,12 +130,21 @@ export function summaryPanelId(view: SummaryPanelView): string {
 function SelectedColumnSummary({
   metadata,
   schema,
-  summary
+  summary,
+  filterModel,
+  filtersSupported,
+  filtersDisabled,
+  onApplyFilterModel
 }: {
   metadata: SessionMetadata | undefined;
   schema: ColumnSchema | undefined;
   summary: ColumnSummary | undefined;
+  filterModel: FilterModel;
+  filtersSupported: boolean;
+  filtersDisabled: boolean;
+  onApplyFilterModel?: (model: FilterModel) => void;
 }) {
+  const [distributionMode, setDistributionMode] = useState<"count" | "percent">("count");
   if (!metadata) {
     return (
       <p className="summaryPlaceholder" role="status">
@@ -121,6 +157,31 @@ function SelectedColumnSummary({
   }
 
   const displayName = schemaDisplayName(schema, metadata.schema);
+  const duplicateNameCount = countViewColumnNames(metadata.schema).get(schema.name) ?? 0;
+  const activeFilter = filterModel.filters.find(
+    (filter) => filter.column === schema.name && isActiveColumnFilter(filter)
+  );
+  const canFilter =
+    filtersSupported &&
+    !filtersDisabled &&
+    duplicateNameCount === 1 &&
+    supportsTypedViewComparison(schema.type) &&
+    onApplyFilterModel !== undefined;
+  const applyProfileFilter = (filter: ColumnFilter) => {
+    if (!canFilter || !onApplyFilterModel) return;
+    onApplyFilterModel(replaceViewColumnFilter(filterModel, filter));
+  };
+  const clearProfileFilter = () => {
+    if (!filtersSupported || filtersDisabled || !onApplyFilterModel) return;
+    onApplyFilterModel(removeViewColumnFilter(filterModel, schema.name));
+  };
+  const distributionDenominator = summary ? profileDistributionDenominator(summary) : 0;
+  const numericVisualization = summary?.visualization?.kind === "numeric" ? summary.visualization : undefined;
+  const hasDistribution = Boolean(
+    summary?.visualization?.kind === "numeric" ||
+    summary?.visualization?.kind === "categorical" ||
+    (summary?.type === "string" && summary.topValues.length > 0)
+  );
 
   return (
     <>
@@ -140,14 +201,29 @@ function SelectedColumnSummary({
         </p>
       ) : (
         <>
-          <div className="summaryEvidence" aria-label="Profile provenance">
-            <span>Exact statistics</span>
-            {summary.visualization && (
-              <span className={summary.visualization.sampled ? "sampled" : undefined}>
-                {summary.visualization.sampled ? "Sampled distribution" : "Exact distribution"}
-              </span>
-            )}
-          </div>
+          {summary.visualization?.sampled && (
+            <div
+              className="summarySampleNotice"
+              title="The chart uses a sample. The statistics above it use all visible rows."
+            >
+              Distribution based on a sample
+            </div>
+          )}
+
+          {activeFilter && (
+            <div className="profileFilterStatus" role="status" aria-live="polite">
+              <span className="codicon codicon-filter" aria-hidden="true" />
+              <span title={describeProfileFilter(activeFilter)}>{describeProfileFilter(activeFilter)}</span>
+              <button
+                type="button"
+                className="profileFilterClear codicon codicon-close"
+                aria-label={`Clear filter for ${displayName}`}
+                title={`Clear filter for ${displayName}`}
+                disabled={filtersDisabled || !filtersSupported || !onApplyFilterModel}
+                onClick={clearProfileFilter}
+              />
+            </div>
+          )}
 
           <dl className="summaryStatGrid">
             <dt>Rows</dt>
@@ -165,14 +241,44 @@ function SelectedColumnSummary({
             <TypeSpecificStats summary={summary} />
           </dl>
 
-          {summary.visualization?.kind === "numeric" && (
+          {hasDistribution && (
+            <DistributionValueToggle
+              mode={distributionMode}
+              denominator={distributionDenominator}
+              sampled={summary.visualization?.sampled === true}
+              onChange={setDistributionMode}
+            />
+          )}
+
+          {numericVisualization && (
             <section className="summaryDistributionChart" aria-labelledby={`summary-distribution-${summary.columnId}`}>
               <h3 id={`summary-distribution-${summary.columnId}`}>Distribution</h3>
-              <NumericHistogram visualization={summary.visualization} />
+              <NumericHistogram
+                visualization={numericVisualization}
+                valueMode={distributionMode}
+                percentDenominator={distributionDenominator}
+                onSelectBin={
+                  canFilter
+                    ? (bin, index) =>
+                        applyProfileFilter(
+                          viewNumericBinFilter(schema, bin, index === numericVisualization.bins.length - 1)
+                        )
+                    : undefined
+                }
+              />
             </section>
           )}
 
-          <TopValues summary={summary} />
+          <TopValues
+            summary={summary}
+            mode={distributionMode}
+            denominator={distributionDenominator}
+            onSelectValue={
+              canFilter
+                ? (item) => applyProfileFilter(viewValueSelectionFilter(schema, item.selectionValue ?? item.value))
+                : undefined
+            }
+          />
         </>
       )}
     </>
@@ -281,7 +387,46 @@ function boundedExactExtremumText(value: string): string {
   return `${value.slice(0, leadingCharacters)}…${value.slice(-trailingCharacters)}`;
 }
 
-function TopValues({ summary }: { summary: ColumnSummary }) {
+function DistributionValueToggle({
+  mode,
+  denominator,
+  sampled,
+  onChange
+}: {
+  mode: "count" | "percent";
+  denominator: number;
+  sampled: boolean;
+  onChange: (mode: "count" | "percent") => void;
+}) {
+  const denominatorLabel = sampled
+    ? `${denominator.toLocaleString()} sampled non-missing ${denominator === 1 ? "row" : "rows"}`
+    : `${denominator.toLocaleString()} non-missing visible ${denominator === 1 ? "row" : "rows"}`;
+  return (
+    <div className="distributionValueControls">
+      <div className="segmentedControl" role="group" aria-label="Distribution values">
+        <button type="button" aria-pressed={mode === "count"} onClick={() => onChange("count")}>
+          Counts
+        </button>
+        <button type="button" aria-pressed={mode === "percent"} onClick={() => onChange("percent")}>
+          %
+        </button>
+      </div>
+      <small>Percent uses {denominatorLabel}.</small>
+    </div>
+  );
+}
+
+function TopValues({
+  summary,
+  mode,
+  denominator,
+  onSelectValue
+}: {
+  summary: ColumnSummary;
+  mode: "count" | "percent";
+  denominator: number;
+  onSelectValue?: (item: ValueCount) => void;
+}) {
   const categorical = summary.visualization?.kind === "categorical" ? summary.visualization : undefined;
   const values = categorical?.categories ?? (summary.type === "string" ? summary.topValues : []);
   const otherCount = categorical?.otherCount ?? 0;
@@ -293,22 +438,69 @@ function TopValues({ summary }: { summary: ColumnSummary }) {
       <h3 id={`summary-top-values-${summary.columnId}`}>Top values</h3>
       <div className="topValues">
         {values.map((item, index) => (
-          <TopValueRow key={topValueKey(item, index)} item={item} maximum={maximum} />
+          <TopValueRow
+            key={topValueKey(item, index)}
+            item={item}
+            maximum={maximum}
+            denominator={denominator}
+            mode={mode}
+            onSelect={onSelectValue ? () => onSelectValue(item) : undefined}
+          />
         ))}
-        {otherCount > 0 && <TopValueRow item={{ value: "Other", count: otherCount }} maximum={maximum} />}
+        {otherCount > 0 && (
+          <TopValueRow
+            item={{ value: "Other", count: otherCount }}
+            maximum={maximum}
+            denominator={denominator}
+            mode={mode}
+          />
+        )}
       </div>
     </section>
   );
 }
 
-function TopValueRow({ item, maximum }: { item: ValueCount; maximum: number }) {
+function TopValueRow({
+  item,
+  maximum,
+  denominator,
+  mode,
+  onSelect
+}: {
+  item: ValueCount;
+  maximum: number;
+  denominator: number;
+  mode: "count" | "percent";
+  onSelect?: () => void;
+}) {
   const label = item.value.length === 0 ? "Empty string" : item.value;
-  return (
-    <div className="barRow">
+  const count = `${item.count.toLocaleString()} ${item.count === 1 ? "row" : "rows"}`;
+  const percent = formatDistributionPercent(item.count, denominator);
+  const displayedValue = mode === "count" ? item.count.toLocaleString() : percent;
+  const contents = (
+    <>
       <span title={label}>{label}</span>
-      <meter min={0} max={maximum} value={item.count} aria-label={`${label}: ${item.count.toLocaleString()}`} />
-      <small>{item.count.toLocaleString()}</small>
-    </div>
+      <meter min={0} max={maximum} value={item.count} aria-label={`${label}: ${count}, ${percent}`} />
+      <small>{displayedValue}</small>
+    </>
+  );
+  if (!onSelect) {
+    return (
+      <div className="barRow" title={`${count} · ${percent}`}>
+        {contents}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="barRow profileDistributionRow"
+      aria-label={`Filter to ${label}; ${count}, ${percent}`}
+      title={`Filter to ${label} · ${count} · ${percent}`}
+      onClick={onSelect}
+    >
+      {contents}
+    </button>
   );
 }
 
@@ -341,9 +533,6 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
         </p>
       ) : (
         <>
-          <div className="summaryEvidence" aria-label="Profile provenance">
-            <span>Exact statistics</span>
-          </div>
           <dl className="summaryStatGrid">
             <dt>Missing cells</dt>
             <dd>{stats.missingCells.toLocaleString()}</dd>
@@ -408,6 +597,61 @@ function schemaDisplayName(schema: ColumnSchema, allColumns: readonly ColumnSche
 
 function topValueKey(item: ValueCount, index: number): string {
   return `${item.value}-${item.count}-${index}`;
+}
+
+function profileDistributionDenominator(summary: ColumnSummary): number {
+  if (summary.visualization?.sampled) {
+    if (summary.visualization.kind === "numeric") {
+      return summary.visualization.bins.reduce((total, bin) => total + bin.count, 0);
+    }
+    if (summary.visualization.kind === "categorical") {
+      return (
+        summary.visualization.categories.reduce((total, category) => total + category.count, 0) +
+        summary.visualization.otherCount
+      );
+    }
+    if (summary.visualization.kind === "boolean") {
+      return summary.visualization.trueCount + summary.visualization.falseCount;
+    }
+  }
+  return Math.max(0, summary.totalCount - summary.nullCount - summary.nanCount);
+}
+
+function formatDistributionPercent(count: number, denominator: number): string {
+  if (denominator <= 0) return "0%";
+  return new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 }).format(count / denominator);
+}
+
+function describeProfileFilter(filter: ColumnFilter): string {
+  if (filter.valueFilter?.selectedValues.length === 1 && filter.predicates.length === 0) {
+    return `Filter: ${displayFilterValue(filter.valueFilter.selectedValues[0])}`;
+  }
+  if (filter.predicates.length === 2) {
+    const lower = filter.predicates.find((predicate) => predicate.operator === "gte");
+    const upper = filter.predicates.find((predicate) => predicate.operator === "lt" || predicate.operator === "lte");
+    if (lower?.value !== undefined && upper?.value !== undefined) {
+      return `Filter: ${displayFilterValue(lower.value)}–${displayFilterValue(upper.value)}`;
+    }
+  }
+  return "Filter active";
+}
+
+function displayFilterValue(value: unknown): string {
+  if (
+    value &&
+    typeof value === "object" &&
+    "kind" in value &&
+    value.kind === "typedSelection" &&
+    "cell" in value &&
+    value.cell &&
+    typeof value.cell === "object" &&
+    "display" in value.cell &&
+    typeof value.cell.display === "string"
+  ) {
+    return value.cell.display.length === 0 ? "Empty string" : value.cell.display;
+  }
+  if (typeof value === "string") return value.length === 0 ? "Empty string" : value;
+  return String(value);
 }
 
 function viewLabel(view: SummaryPanelView, filtersLabel: string): string {

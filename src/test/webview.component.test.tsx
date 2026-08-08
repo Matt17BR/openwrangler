@@ -131,6 +131,39 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "58px" });
   });
 
+  it("selects a profile column from the header without stealing column controls", () => {
+    const onViewStateChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+        onViewStateChange={onViewStateChange}
+      />
+    );
+    onViewStateChange.mockClear();
+
+    const salesHeader = screen.getByRole("columnheader", { name: /^sales/u });
+    fireEvent.click(salesHeader);
+    expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:1" }));
+
+    onViewStateChange.mockClear();
+    const cityMenu = screen.getByLabelText("Column actions for city");
+    fireEvent.click(cityMenu);
+    expect(onViewStateChange).not.toHaveBeenCalled();
+
+    const cityHeader = screen.getByRole("columnheader", { name: /^city/u });
+    fireEvent.keyDown(cityHeader, { key: "Enter" });
+    expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:0" }));
+  });
+
   it("keeps explicit row labels readable without hiding keyboard-focused columns in a narrow grid", async () => {
     const labeledPage: GridPage = {
       ...page,
@@ -664,8 +697,8 @@ describe("DataGrid", () => {
     ).toBeVisible();
     const bins = within(numericHeader).getAllByRole("graphics-symbol");
     expect(bins).toHaveLength(2);
-    expect(bins[0]).toHaveAccessibleName("1-2.5: 100 rows");
-    expect(bins[1]).toHaveAccessibleName("2.5-4: 1 row");
+    expect(bins[0]).toHaveAccessibleName("1-2.5: 100 rows (99%); lower bound included, upper bound excluded");
+    expect(bins[1]).toHaveAccessibleName("2.5-4: 1 row (1%); both bounds included");
     expect(bins[1]).toHaveAttribute("tabindex", "0");
     expect(bins[1]).toHaveAttribute("height", "36");
     expect(numericHeader.querySelectorAll(".numericHistogramBar")[1]).toHaveAttribute("height", "2");
@@ -691,6 +724,100 @@ describe("DataGrid", () => {
         name: "datetime distribution: minimum 2024-01-01, maximum 2024-04-01."
       })
     ).toHaveTextContent("Min 2024-01-01Max 2024-04-01");
+  });
+
+  it("applies compact categorical and numeric profile filters through the shared filter model", () => {
+    const onApplyProfileFilter = vi.fn();
+    const onViewStateChange = vi.fn();
+    const summaries: ColumnSummary[] = [
+      {
+        columnId: "c:0",
+        column: "city",
+        type: "string",
+        rawType: "String",
+        totalCount: 2,
+        nullCount: 0,
+        nanCount: 0,
+        distinctCount: 2,
+        topValues: [],
+        visualization: {
+          kind: "categorical",
+          categories: [
+            { value: "Milan", count: 1 },
+            { value: "Paris", count: 1 }
+          ],
+          otherCount: 0
+        }
+      },
+      {
+        columnId: "c:1",
+        column: "sales",
+        type: "float",
+        rawType: "Float64",
+        totalCount: 2,
+        nullCount: 0,
+        nanCount: 0,
+        distinctCount: 2,
+        topValues: [],
+        numeric: { min: 0, max: 20 },
+        visualization: {
+          kind: "numeric",
+          bins: [
+            { min: 0, max: 10, count: 1 },
+            { min: 10, max: 20, count: 1 }
+          ]
+        }
+      }
+    ];
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={summaries}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onApplyProfileFilter={onApplyProfileFilter}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+        onViewStateChange={onViewStateChange}
+      />
+    );
+    onViewStateChange.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter city to Milan; 1 row" }));
+    expect(onApplyProfileFilter).toHaveBeenLastCalledWith({
+      column: "city",
+      type: "string",
+      logic: "and",
+      valueFilter: {
+        kind: "values",
+        selectedValues: ["Milan"],
+        includeNulls: false,
+        includeNaN: false
+      },
+      predicates: []
+    });
+    expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:0" }));
+
+    fireEvent.keyDown(
+      screen.getByRole("button", {
+        name: "0-10: 1 row (50%); lower bound included, upper bound excluded"
+      }),
+      { key: "Enter" }
+    );
+    expect(onApplyProfileFilter).toHaveBeenLastCalledWith({
+      column: "sales",
+      type: "float",
+      logic: "and",
+      predicates: [
+        { kind: "predicate", operator: "gte", value: 0 },
+        { kind: "predicate", operator: "lt", value: 10 }
+      ]
+    });
+    expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:1" }));
   });
 
   it("bounds very long cell text before it reaches the DOM", () => {

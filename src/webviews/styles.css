@@ -917,6 +917,16 @@ td.selectedColumn {
   color: var(--vscode-list-inactiveSelectionForeground);
 }
 
+th[data-grid-column]:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
+}
+
+th[data-grid-column]:hover .columnTitle,
+th[data-grid-column]:focus-visible .columnTitle {
+  color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+}
+
 tbody tr:hover td.selectedColumn {
   background: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
@@ -1249,6 +1259,10 @@ th:hover .columnResizeHandle,
   stroke: transparent;
 }
 
+.numericHistogram.interactive .numericHistogramHitTarget {
+  cursor: pointer;
+}
+
 .miniChart .numericHistogramHitTarget:focus {
   outline: none;
   stroke: var(--vscode-focusBorder);
@@ -1340,6 +1354,22 @@ th:hover .columnResizeHandle,
   gap: 4px;
   grid-template-columns: minmax(48px, 0.9fr) minmax(24px, 1.1fr) auto;
   min-width: 0;
+}
+
+button.categoryMiniRow.interactive {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: inherit;
+  padding: 1px 2px;
+  text-align: left;
+  width: 100%;
+}
+
+button.categoryMiniRow.interactive:hover,
+button.categoryMiniRow.interactive:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
 }
 
 .categoryMiniLabel {
@@ -1540,26 +1570,45 @@ th.rowHeader {
   white-space: nowrap;
 }
 
-.summaryEvidence {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin: 0 0 10px;
-}
-
-.summaryEvidence span {
-  background: var(--vscode-badge-background);
-  border: 1px solid transparent;
-  border-radius: 999px;
-  color: var(--vscode-badge-foreground);
+.summarySampleNotice {
+  color: var(--vscode-descriptionForeground);
   font-size: 10px;
-  padding: 2px 7px;
+  margin: 0 0 8px;
 }
 
-.summaryEvidence span.sampled {
+.profileFilterStatus {
+  align-items: center;
+  background: var(--vscode-editorWidget-background, transparent);
+  border: 1px solid var(--vscode-focusBorder, var(--vscode-panel-border));
+  border-radius: 999px;
+  display: grid;
+  font-size: 11px;
+  gap: 5px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin: 0 0 8px;
+  padding: 2px 3px 2px 8px;
+}
+
+.profileFilterStatus > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profileFilterClear {
+  align-items: center;
   background: transparent;
-  border-color: var(--vscode-editorWarning-foreground, var(--vscode-panel-border));
-  color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+  color: var(--vscode-foreground);
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+
+.profileFilterClear:hover,
+.profileFilterClear:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
 }
 
 .summaryStatGrid {
@@ -1602,6 +1651,49 @@ th.rowHeader {
   padding: 8px 10px;
 }
 
+.distributionValueControls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.distributionValueControls > small {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+}
+
+.segmentedControl {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  display: inline-flex;
+  overflow: hidden;
+}
+
+.segmentedControl button {
+  background: transparent;
+  border-radius: 0;
+  color: var(--vscode-foreground);
+  min-width: 38px;
+  padding: 2px 7px;
+}
+
+.segmentedControl button + button {
+  border-left: 1px solid var(--vscode-panel-border);
+}
+
+.segmentedControl button:hover,
+.segmentedControl button:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.segmentedControl button[aria-pressed="true"] {
+  background: var(--vscode-button-secondaryBackground, var(--vscode-list-activeSelectionBackground));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-list-activeSelectionForeground));
+}
+
 .summaryTopValues .barRow,
 .summaryPanel .missingList .barRow {
   grid-template-columns: minmax(0, 1fr) minmax(48px, 80px) auto;
@@ -1610,6 +1702,22 @@ th.rowHeader {
 .summaryTopValues small,
 .summaryPanel .missingList small {
   font-variant-numeric: tabular-nums;
+}
+
+.profileDistributionRow {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--vscode-foreground);
+  padding: 3px 4px;
+  text-align: left;
+  width: 100%;
+}
+
+.profileDistributionRow:hover,
+.profileDistributionRow:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
 }
 
 .summaryPlaceholder {

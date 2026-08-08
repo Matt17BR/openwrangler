@@ -1059,6 +1059,7 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await screen.findByText("Berlin");
+    expect(screen.getByRole("columnheader", { name: "city" })).toHaveAttribute("tabindex", "0");
     postMessage.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: "Next block" }));
