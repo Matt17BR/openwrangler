@@ -3655,7 +3655,9 @@ async function releasedQuartoPreviewLocator(workbench: Page): Promise<Locator | 
     if ((await caption.count().catch(() => 0)) > 0 && (await caption.isVisible().catch(() => false))) {
       const knownOrder = frame.getByText(/^(?:2400001|2,400,001)$/u).first();
       if ((await knownOrder.count().catch(() => 0)) > 0 && (await knownOrder.isVisible().catch(() => false))) {
-        return caption;
+        // A table caption spans the table's scroll width. Use the visible first
+        // cell as the compact geometry anchor for the captured preview instead.
+        return knownOrder;
       }
     }
   }
