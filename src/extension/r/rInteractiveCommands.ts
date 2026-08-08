@@ -41,6 +41,7 @@ export type RLiveVariableSnapshot =
 export interface RLiveVariableProvider extends vscode.Disposable {
   readonly onDidChangeVariables: vscode.Event<void>;
   snapshot(): RLiveVariableSnapshot;
+  shutdown(): Promise<void>;
 }
 
 export interface RInteractiveCommandTransport extends RKernelBridgeTransport {
@@ -90,11 +91,13 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
   private readonly subscriptions: vscode.Disposable[];
   private currentSnapshot: RLiveVariableSnapshot;
   private readonly variablesByHandle = new Map<string, CachedRVariable>();
+  private readonly managedTransports = new Set<RInteractiveCommandTransport>();
   private ownedTransport: RInteractiveCommandTransport | undefined;
   private ownedTerminal: vscode.Terminal | undefined;
   private transportInvalidationSubscription: vscode.Disposable | undefined;
   private generation = 0;
   private disposed = false;
+  private shutdownPromise: Promise<void> | undefined;
 
   readonly onDidChangeVariables = this.changeEmitter.event;
 
@@ -115,14 +118,23 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
   }
 
   dispose(): void {
-    if (this.disposed) return;
+    void this.shutdown().catch((error: unknown) => {
+      console.error("Open Wrangler could not shut down its active R session provider.", error);
+    });
+  }
+
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
     this.disposed = true;
     this.generation += 1;
-    const transport = this.releaseOwnedTransport();
+    this.releaseOwnedTransport();
     this.variablesByHandle.clear();
     for (const subscription of this.subscriptions.splice(0)) subscription.dispose();
     this.changeEmitter.dispose();
-    if (transport) void disposeTransport(transport).then((error) => error && showCleanupError(error));
+    const transports = [...this.managedTransports];
+    this.managedTransports.clear();
+    this.shutdownPromise = disposeTransports(transports);
+    return this.shutdownPromise;
   }
 
   async refreshFromCommand(): Promise<boolean> {
@@ -139,21 +151,34 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       return false;
     }
 
+    const prepared = this.prepareRefresh(terminal);
+    if (!prepared) return false;
+
     return vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
         title: "Refreshing R dataframes",
         cancellable: true
       },
-      (_progress, cancellation) => this.refreshExactTerminal(terminal, cancellation)
+      (_progress, cancellation) =>
+        this.refreshExactTerminal(
+          terminal,
+          prepared.transport,
+          prepared.generation,
+          prepared.previousCleanup,
+          cancellation
+        )
     );
   }
 
   async chooseAndOpen(): Promise<boolean> {
     if (!requireTrustedRSession()) return false;
+    if (this.disposed) return false;
+    const generation = this.generation;
     let transport: RInteractiveCommandTransport;
     try {
       transport = this.transportFactory.create(this.context, { terminalMode: "activeOrCreate" });
+      this.managedTransports.add(transport);
     } catch (error) {
       void vscode.window.showErrorMessage(`Could not connect to the active R session: ${errorMessage(error)}`);
       return false;
@@ -163,7 +188,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     try {
       discovery = await discoverWithProgress(transport);
     } catch (error) {
-      const cleanupError = await disposeTransport(transport);
+      const cleanupError = await this.disposeManagedTransport(transport);
+      if (!this.isCurrent(generation)) return false;
       if (error instanceof DetachedBridgeRequestError && error.reason === "cancellation" && !cleanupError) return false;
       void vscode.window.showErrorMessage(
         `Could not inspect the active R session: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
@@ -171,8 +197,14 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       return false;
     }
 
+    if (!this.isCurrent(generation)) {
+      const cleanupError = await this.disposeManagedTransport(transport);
+      if (cleanupError) showCleanupError(cleanupError);
+      return false;
+    }
+
     if (discovery.variables.length === 0) {
-      const cleanupError = await disposeTransport(transport);
+      const cleanupError = await this.disposeManagedTransport(transport);
       if (cleanupError) {
         showCleanupError(cleanupError);
         return false;
@@ -196,17 +228,24 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
         ignoreFocusOut: true
       });
     } catch (error) {
-      const cleanupError = await disposeTransport(transport);
+      const cleanupError = await this.disposeManagedTransport(transport);
+      if (!this.isCurrent(generation)) return false;
       void vscode.window.showErrorMessage(
         `Could not choose an R dataframe: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
       );
       return false;
     }
-    if (!picked || !items.includes(picked)) {
-      const cleanupError = await disposeTransport(transport);
+    if (!this.isCurrent(generation)) {
+      const cleanupError = await this.disposeManagedTransport(transport);
       if (cleanupError) showCleanupError(cleanupError);
       return false;
     }
+    if (!picked || !items.includes(picked)) {
+      const cleanupError = await this.disposeManagedTransport(transport);
+      if (cleanupError) showCleanupError(cleanupError);
+      return false;
+    }
+    if (!this.managedTransports.delete(transport)) return false;
     return this.openWithTransport(transport, picked.variable);
   }
 
@@ -232,22 +271,32 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
       return false;
     }
+    if (!this.managedTransports.delete(transport)) {
+      void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
+      return false;
+    }
     this.generation += 1;
     this.replaceSnapshot(idleSnapshot(terminal));
     return this.openWithTransport(transport, cached.variable);
   }
 
-  private async refreshExactTerminal(
-    terminal: vscode.Terminal,
-    cancellation: vscode.CancellationToken
-  ): Promise<boolean> {
-    if (this.disposed) return false;
+  private prepareRefresh(terminal: vscode.Terminal):
+    | Readonly<{
+        generation: number;
+        transport: RInteractiveCommandTransport;
+        previousCleanup: Promise<unknown | undefined>;
+      }>
+    | undefined {
+    if (this.disposed) return undefined;
     const generation = ++this.generation;
     let transport = this.ownedTerminal === terminal ? this.ownedTransport : undefined;
+    let previousCleanup = Promise.resolve<unknown | undefined>(undefined);
     if (!transport) {
+      if (vscode.window.activeTerminal !== terminal) return undefined;
       try {
-        // Construction captures the exact active Terminal object before the first await.
+        // Construction captures this exact active Terminal before withProgress can yield control.
         transport = this.transportFactory.create(this.context, { terminalMode: "active" });
+        this.managedTransports.add(transport);
       } catch (error) {
         this.replaceSnapshot({
           state: "error",
@@ -255,7 +304,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
           message: errorMessage(error),
           variables: []
         });
-        return false;
+        return undefined;
       }
       const previous = this.releaseOwnedTransport();
       this.ownedTransport = transport;
@@ -264,51 +313,37 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
         if (this.ownedTransport === transport)
           this.invalidateOwnedTransport("The R session changed. Refresh it again.");
       });
-      if (previous) {
-        const cleanupError = await disposeTransport(previous);
-        if (cleanupError) showCleanupError(cleanupError);
-      }
+      if (previous) previousCleanup = this.disposeManagedTransport(previous);
     }
-
-    if (
-      this.disposed ||
-      generation !== this.generation ||
-      this.ownedTransport !== transport ||
-      this.ownedTerminal !== terminal
-    ) {
-      return false;
-    }
-
     this.replaceSnapshot({
       state: "loading",
       terminalLabel: terminal.name,
       message: "Finding dataframes…",
       variables: []
     });
+    return Object.freeze({ generation, transport, previousCleanup });
+  }
+
+  private async refreshExactTerminal(
+    terminal: vscode.Terminal,
+    transport: RInteractiveCommandTransport,
+    generation: number,
+    previousCleanup: Promise<unknown | undefined>,
+    cancellation: vscode.CancellationToken
+  ): Promise<boolean> {
+    const cleanupError = await previousCleanup;
+    if (cleanupError) showCleanupError(cleanupError);
+    if (!this.isCurrentRefresh(terminal, transport, generation)) return false;
     try {
       const discovery = await transport.discoverVariables({
         cancellation,
         timeoutMs: getSetting<number>("sessionOpenTimeoutMs", 60_000)
       });
-      if (
-        this.disposed ||
-        generation !== this.generation ||
-        this.ownedTransport !== transport ||
-        this.ownedTerminal !== terminal
-      ) {
-        return false;
-      }
+      if (!this.isCurrentRefresh(terminal, transport, generation)) return false;
       this.publishDiscovery(terminal, discovery);
       return discovery.variables.length > 0;
     } catch (error) {
-      if (
-        this.disposed ||
-        generation !== this.generation ||
-        this.ownedTransport !== transport ||
-        this.ownedTerminal !== terminal
-      ) {
-        return false;
-      }
+      if (!this.isCurrentRefresh(terminal, transport, generation)) return false;
       if (error instanceof DetachedBridgeRequestError && error.reason === "cancellation") {
         this.replaceSnapshot(idleSnapshot(terminal));
         return false;
@@ -403,7 +438,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     this.generation += 1;
     const transport = this.releaseOwnedTransport();
     this.replaceSnapshot({ state: "idle", terminalLabel: "R session", message, variables: [] });
-    if (transport) void disposeTransport(transport).then((error) => error && showCleanupError(error));
+    if (transport) void this.disposeManagedTransport(transport).then((error) => error && showCleanupError(error));
   }
 
   private releaseOwnedTransport(): RInteractiveCommandTransport | undefined {
@@ -421,6 +456,25 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     this.currentSnapshot = snapshot;
     if (snapshot.state !== "ready") this.variablesByHandle.clear();
     this.changeEmitter.fire();
+  }
+
+  private isCurrent(generation: number): boolean {
+    return !this.disposed && generation === this.generation;
+  }
+
+  private isCurrentRefresh(
+    terminal: vscode.Terminal,
+    transport: RInteractiveCommandTransport,
+    generation: number
+  ): boolean {
+    return this.isCurrent(generation) && this.ownedTransport === transport && this.ownedTerminal === terminal;
+  }
+
+  private async disposeManagedTransport(transport: RInteractiveCommandTransport): Promise<unknown | undefined> {
+    if (!this.managedTransports.has(transport)) return undefined;
+    const error = await disposeTransport(transport);
+    this.managedTransports.delete(transport);
+    return error;
   }
 }
 
@@ -485,6 +539,15 @@ async function disposeTransport(transport: RInteractiveCommandTransport): Promis
     return undefined;
   } catch (error) {
     return error;
+  }
+}
+
+async function disposeTransports(transports: readonly RInteractiveCommandTransport[]): Promise<void> {
+  const results = await Promise.allSettled(transports.map((transport) => transport.dispose()));
+  const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Open Wrangler could not release all active R session bridges.");
   }
 }
 

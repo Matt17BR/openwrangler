@@ -28,6 +28,7 @@ const lifecycle = vi.hoisted(() => ({
   rVariables: {
     onDidChangeVariables: () => ({ dispose: vi.fn() }),
     snapshot: () => undefined,
+    shutdown: vi.fn(),
     dispose: vi.fn()
   }
 }));
@@ -87,6 +88,7 @@ describe("extension deactivation", () => {
     lifecycle.coordinator.shutdown.mockReset().mockResolvedValue(undefined);
     lifecycle.pickleWorkers.run.mockReset();
     lifecycle.pickleWorkers.shutdown.mockReset().mockResolvedValue(undefined);
+    lifecycle.rVariables.shutdown.mockReset().mockResolvedValue(undefined);
     lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReset();
     lifecycle.coordinatedBridge.request.mockReset();
     lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
@@ -113,8 +115,7 @@ describe("extension deactivation", () => {
     const deactivation = deactivate();
     expect(lifecycle.pickleWorkers.shutdown).toHaveBeenCalledOnce();
     expect(lifecycle.bridge.shutdown).not.toHaveBeenCalled();
-    await Promise.resolve();
-    expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce());
 
     coordinatorGate.resolve();
     await expect(deactivation).resolves.toBeUndefined();
@@ -143,6 +144,22 @@ describe("extension deactivation", () => {
     expect(lifecycle.bridge.shutdown).not.toHaveBeenCalled();
 
     workerGate.resolve();
+    await expect(deactivation).resolves.toBeUndefined();
+    expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce();
+    expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("waits for active R cleanup before starting coordinator or bridge shutdown", async () => {
+    const rGate = deferred<void>();
+    lifecycle.rVariables.shutdown.mockReturnValue(rGate.promise);
+
+    const deactivation = deactivate();
+    await Promise.resolve();
+    expect(lifecycle.rVariables.shutdown).toHaveBeenCalledOnce();
+    expect(lifecycle.coordinator.shutdown).not.toHaveBeenCalled();
+    expect(lifecycle.bridge.shutdown).not.toHaveBeenCalled();
+
+    rGate.resolve();
     await expect(deactivation).resolves.toBeUndefined();
     expect(lifecycle.coordinator.shutdown).toHaveBeenCalledOnce();
     expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();

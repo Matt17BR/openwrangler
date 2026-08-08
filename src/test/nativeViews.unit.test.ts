@@ -287,6 +287,7 @@ describe("native operation commands", () => {
           }
         ]
       }),
+      shutdown: async () => undefined,
       dispose: () => undefined
     };
     const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);

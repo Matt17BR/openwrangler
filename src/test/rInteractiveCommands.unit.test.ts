@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   showInformationMessage: vi.fn(),
   showWarningMessage: vi.fn(),
   showErrorMessage: vi.fn(),
+  withProgress: vi.fn(),
   panelCreate: vi.fn(),
   bridgeArguments: [] as unknown[][],
   bridgeDispose: vi.fn(async () => undefined)
@@ -69,8 +70,7 @@ vi.mock("vscode", () => {
         mocks.closeTerminalListeners.add(listener);
         return { dispose: () => mocks.closeTerminalListeners.delete(listener) };
       },
-      withProgress: async (_options: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) =>
-        task(undefined, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }),
+      withProgress: mocks.withProgress,
       showQuickPick: mocks.showQuickPick,
       showInformationMessage: mocks.showInformationMessage,
       showWarningMessage: mocks.showWarningMessage,
@@ -121,6 +121,11 @@ describe("active R session commands", () => {
     mocks.showInformationMessage.mockReset();
     mocks.showWarningMessage.mockReset();
     mocks.showErrorMessage.mockReset();
+    mocks.withProgress.mockReset();
+    mocks.withProgress.mockImplementation(
+      async (_options: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) =>
+        task(undefined, cancellationToken())
+    );
     mocks.panelCreate.mockReset();
     mocks.bridgeArguments.length = 0;
     mocks.bridgeDispose.mockClear();
@@ -172,6 +177,80 @@ describe("active R session commands", () => {
     expect(mocks.bridgeArguments[0]?.[4]).toEqual(tibble);
     expect(transport.dispose).not.toHaveBeenCalled();
     expect(provider.snapshot().state).toBe("idle");
+  });
+
+  it("binds the active R terminal before progress can yield to a focus change", async () => {
+    const first = rTerminal("R");
+    const second = rTerminal("R Interactive");
+    setActiveTerminal(first);
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    let runProgress: (() => Promise<unknown>) | undefined;
+    mocks.withProgress.mockImplementationOnce(
+      (_options: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) =>
+        new Promise((resolve, reject) => {
+          runProgress = () => task(undefined, cancellationToken()).then(resolve, reject);
+        })
+    );
+    const { provider, factory } = registerWith([transport]);
+
+    const refresh = command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)();
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active" });
+    expect(provider.snapshot()).toMatchObject({ state: "loading", terminalLabel: "R" });
+
+    emitActiveTerminal(second);
+    await runProgress?.();
+    await expect(refresh).resolves.toBe(false);
+
+    expect(transport.discoverVariables).not.toHaveBeenCalled();
+    expect(provider.snapshot()).toMatchObject({
+      state: "idle",
+      message: "A different R terminal is active. Refresh to list its dataframes."
+    });
+    await vi.waitFor(() => expect(transport.dispose).toHaveBeenCalledOnce());
+  });
+
+  it("awaits and invalidates a picker transport during shutdown", async () => {
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    const quickPick = deferred<"first">();
+    const disposal = deferred<undefined>();
+    transport.dispose.mockReturnValue(disposal.promise);
+    mocks.showQuickPick.mockImplementationOnce(async (items) => {
+      await quickPick.promise;
+      return items[0];
+    });
+    const { provider } = registerWith([transport]);
+
+    const opening = command(OPEN_R_INTERACTIVE_VARIABLE_COMMAND)();
+    await vi.waitFor(() => expect(mocks.showQuickPick).toHaveBeenCalledOnce());
+
+    const shutdown = provider.shutdown();
+    expect(transport.dispose).toHaveBeenCalledOnce();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+    disposal.resolve(undefined);
+    await expect(shutdown).resolves.toBeUndefined();
+
+    quickPick.resolve("first");
+    await expect(opening).resolves.toBe(false);
+    expect(transport.dispose).toHaveBeenCalledOnce();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+  });
+
+  it("shuts down a cached-list transport exactly once", async () => {
+    const terminal = rTerminal("R");
+    setActiveTerminal(terminal);
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    const { provider } = registerWith([transport]);
+    await command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)();
+
+    const first = provider.shutdown();
+    const second = provider.shutdown();
+    expect(second).toBe(first);
+    await expect(first).resolves.toBeUndefined();
+
+    expect(transport.dispose).toHaveBeenCalledOnce();
   });
 
   it("does not guess an R session when a shell terminal is active", async () => {
@@ -297,4 +376,16 @@ function discovery(
   variable: typeof tibble | { readonly name: string; readonly backend: "r"; readonly dataframeFlavor: "r.data.table" }
 ) {
   return { variables: [variable], truncated: false };
+}
+
+function cancellationToken() {
+  return { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }
