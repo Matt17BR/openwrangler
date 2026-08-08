@@ -4283,9 +4283,9 @@ async function exerciseReleasedRFillMissingJourney(
   assert.deepEqual(await fillMode.locator("option").allTextContents(), [
     "Median",
     "Mean",
-    "Linear interpolation",
     "Median within groups",
     "Mean within groups",
+    "Linear interpolation",
     "Previous value",
     "Next value",
     "Other columns (first available)",
