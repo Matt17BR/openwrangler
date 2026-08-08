@@ -33,6 +33,12 @@ then the parsed cells share one private R environment in document order. This is
 a knitr/Quarto render or an attachment to a terminal or editor extension. Syntax that can change code ownership,
 including alternate chunk engines, indented cells, later metadata blocks, and raw HTML/TeX containers, is rejected.
 
+The active-R path is separate from document execution. It activates the official R extension, captures one exact `R`
+or `R Interactive` terminal, and uses VS Code's public terminal API to load the bundled dispatcher into that session.
+The Operations view can then refresh and open supported dataframes from that terminal. A terminal switch or close
+invalidates the list and bridge; discovery, requests, cleanup, and reopening never retarget another terminal. The
+integration does not read vscode-R extension storage or private process details.
+
 The notebook launch command uses the same **Open in Open Wrangler** primary and compact title. VS Code can render the compact title in its global notebook toolbar while Cursor renders the primary title for its pinned editor action; keeping the accessible names identical prevents host-specific command drift without adding aliases or editor-specific activation logic.
 
 ## Runtime and engines

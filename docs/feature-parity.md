@@ -87,10 +87,14 @@ Inline MIME v2 output shows every captured column and pages the captured rows at
 
 ## Native R preview
 
-Open Wrangler 1.99 previews can open base `data.frame`, tibble, and `data.table` variables through IRkernel. A
-trusted local `.R`, `.Rmd`, or `.qmd` document on macOS or Linux can also run in an
-Open Wrangler-owned R process, after which the user chooses one of the dataframes it created. R Markdown and Quarto
-use top-level lexical `{r}` cells rather than a document render. Pages, compound filters, ordered sorts,
+Open Wrangler 1.99 previews can open base `data.frame`, tibble, and `data.table` variables through IRkernel or from
+the exact active terminal owned by the official R extension. The Operations view refreshes that terminal's loaded
+dataframes and opens the selected object without converting it through Python. Changing or closing the R terminal
+invalidates the list instead of retargeting another session.
+
+A trusted local `.R`, `.Rmd`, or `.qmd` document on macOS or Linux can also run in an Open Wrangler-owned R process,
+after which the user chooses one of the dataframes it created. R Markdown and Quarto use supported top-level `{r}`
+cells rather than a document render. Pages, compound filters, ordered sorts,
 value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Editing mode
 currently supports twenty-one cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
@@ -201,6 +205,7 @@ substitute a smaller R smoke test.
 | Native R column and dataset profiles          | 1.99 preview                    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts                                                                                                 | Preview release |
 | Base `data.frame`, tibble, and `data.table`   | 1.99 preview                    | Partial | Native discovery, paging, queries, and profile tests                                                                                                 | Preview release |
 | Exact IRkernel session transport              | 1.99 preview                    | Done    | Linux local VS Code/Cursor and remote VS Code; macOS/Windows VS Code gate                                                                            | Preview release |
+| Exact active R-terminal transport             | 1.99 preview                    | Partial | Public VS Code terminal API, Operations refresh/list, native request and cleanup tests; packaged VS Code/Cursor journey pending                      | Preview release |
 | Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                                              | Preview release |
 | Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser and real R; local Linux VS Code/Cursor; local macOS VS Code                                                                                   | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                                                | Preview release |

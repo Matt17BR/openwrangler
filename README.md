@@ -204,11 +204,14 @@ grid stays visible unless that reconnect works.
 Closing the view leaves Spark work that has already started alone, so Open Wrangler cannot cancel unrelated notebook
 jobs.
 
-Open Wrangler opens base R `data.frame`, tibble, and `data.table` variables from IRkernel. In local macOS and Linux
-workspaces, it can also run a trusted `.R` file or the supported top-level R cells in `.Rmd` and `.qmd` documents,
-including unsaved editor changes. Document runs use a separate R process; they do not render Quarto or R Markdown or
-attach to another R session. Choose **Run R Document in Open Wrangler…** from Explorer or the editor. Remote R-document
-execution is experimental and is not part of the release test matrix.
+Open Wrangler opens base R `data.frame`, tibble, and `data.table` variables from IRkernel notebooks. It can also list
+dataframes that are already loaded in the official R extension: select the R terminal, then choose **Refresh R
+dataframes** in the Operations sidebar. Each item opens from that exact live R session.
+
+On local macOS and Linux workspaces, **Run R Document in Open Wrangler…** runs a trusted `.R` file or the supported
+top-level R cells in an `.Rmd` or `.qmd` document, including unsaved changes. This command uses its own R process. It
+does not replace Quarto or R Markdown rendering. Remote R-document execution is experimental and is not part of the
+release test matrix.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/r-quarto-variable-picker.png"><img alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
 
