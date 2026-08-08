@@ -153,11 +153,20 @@ Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` colum
 outputs are R doubles. `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and `-Inf`,
 and Round follows R's ties-to-even rule. An in-place change to an active `data.table` key is rejected; writing to a
 new output column is allowed and leaves the key alone.
+Group and aggregate binds every key and input by stable ID and name. It keeps groups in first-seen order, treats
+`NA` and `NaN` keys as the same missing group, and supports sum, mean, median, minimum, maximum, count, distinct
+count, first, and last. The result stays a base data frame, tibble, or data table to match its input. A data-table
+key is cleared because the grouped output does not promise keyed order. Grouped rows receive new identities after
+the input identity domain, so page diffs cannot mistake an aggregate row for a source row. Exact integer and
+`integer64` sums keep their native R type. Base R and `bit64` do not provide an exact 38-digit integer type, so a
+sum outside that native type's range fails before publication instead of being converted to text or another engine.
+Integer64 mean and median use exact decimal addition before their final double result, including cancellation and
+same-sign boundary pairs. First and last use source order.
 A live session reports nullability conservatively; isolating it for editing or changing the schema keeps retained
 nullability metadata unless Fill Missing Values has removed every missing value. Preview, apply, discard, latest-step replacement,
 undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
 response before publishing the candidate state. Generated code repeats the positional and stale-name checks for all
-twenty operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
+twenty-one operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
 for the chosen rules instead of embedding a generic interpreter in every preview.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
@@ -205,7 +214,7 @@ code. Native variable discovery requires `jsonlite` and `rlang` in the selected 
 commands enable native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Round, Floor, and Ceiling. Operations outside this 20-operation set are not
+Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate. Other operations are not
 supported in R yet.
 Generated R can be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session. Notebook
 insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the complete
@@ -216,13 +225,13 @@ and the profile drawer still loads the selected column or dataset on request. Th
 checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
-frame, and final session cleanup. The packaged VS Code and Cursor runs cover all twenty operations, including the
+frame, and final session cleanup. The packaged VS Code and Cursor runs cover the first twenty operations, including the
 visible forms for Find and replace, Uppercase, Round, Floor, and Ceiling. The
 base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
 applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,
 and undo. The run checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed
 data tables additionally cover editable open plus Rename and Drop preview/discard. The direct R suites cover all
-twenty operations, plus class and key behavior for tibbles and data tables. The packaged run opens the Round, Floor,
+twenty-one operations, plus class and key behavior for tibbles and data tables. The packaged run opens the Round, Floor,
 and Ceiling forms and checks their derived values before applying or discarding the draft. An applied-step
 inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
 retained input and output schemas and calculates the public diff only after all three responses agree.

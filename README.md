@@ -192,11 +192,12 @@ also run a trusted `.R` file or the supported top-level R cells in `.Rmd` and `.
 editor changes. Document runs use a separate R process; they do not render Quarto or R Markdown or attach to another
 R session. Choose **Run R Document in Open Wrangler…** from Explorer or the editor.
 
-The R workbench supports paging, filters, multi-column sorts, value search, profiles, and 20 cleaning operations:
+The R workbench supports paging, filters, multi-column sorts, value search, profiles, and 21 cleaning operations:
 **Filter Rows**, **Sort Rows**, **Drop Missing Rows**, **Fill Missing Values**, **Drop Duplicates**, **Rename Column**,
 **Drop Columns**, **Select Columns**, **Clone Column**, **Convert type**, **Text Length**, **Lowercase**, **Uppercase**,
-**Find and replace**, **Capitalize**, **Strip text**, **Split text**, **Round**, **Floor**, and **Ceiling**. Every draft
-shows its data changes and generated R before it is applied. Applied steps can be inspected, edited, or undone.
+**Find and replace**, **Capitalize**, **Strip text**, **Split text**, **Round**, **Floor**, **Ceiling**, and **Group and
+aggregate**. Grouping supports sum, mean, median, minimum, maximum, count, distinct count, first, and last. Every
+draft shows its data changes and generated R before it is applied. Applied steps can be inspected, edited, or undone.
 
 Fill Missing Values uses the median of all non-missing numeric values, the mean of a floating-point column, the most
 common non-missing character, factor, or logical value, a value entered by the user, or the first present value from
@@ -212,7 +213,7 @@ _R editing uses the same grid, draft review, cleaning history, and code preview 
 Generated R can be copied, saved as a script, or inserted into the notebook or document that opened the dataframe.
 Local R notebook and R document sessions opened in Editing mode can export cleaned CSV files. They can also export
 Parquet when `nanoparquet` 0.5.1 or newer is installed in the selected R environment. Reopen the dataframe after
-installing the package so Open Wrangler can refresh its export choices. Operations outside the current 20-operation
+installing the package so Open Wrangler can refresh its export choices. Operations outside the current 21-operation
 set are not available in R yet.
 
 Ordinary frames created with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing dataframe, tibble, and
@@ -295,8 +296,8 @@ These results are from stable 1.2.1. We will rerun the comparison before stable 
 ## Roadmap
 
 - **1.x:** keep improving performance, DuckDB, the Python engines, and support for other desktop VS Code forks.
-- **1.99 previews:** test native R notebooks and documents, add R Parquet export, and expand the
-  current 20-operation R catalog. Progress is tracked in [#87](https://github.com/Matt17BR/openwrangler/issues/87).
+- **1.99 previews:** finish testing the 21 R operations, notebooks, documents, and Parquet export in packaged
+  VS Code and Cursor. Progress is tracked in [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 - **2.0:** ship stable R support after release testing and an updated performance comparison. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   explains the runtime boundary.

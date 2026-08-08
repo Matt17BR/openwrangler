@@ -20,7 +20,7 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 8 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 9 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -315,11 +315,35 @@ export interface RKernelDropDuplicatesStep {
   }>;
 }
 
+export type RKernelAggregationOperation =
+  "sum" | "mean" | "min" | "max" | "median" | "count" | "nUnique" | "first" | "last";
+
+export interface RKernelGroupByStep {
+  readonly id: string;
+  readonly kind: "groupBy";
+  readonly params: Readonly<{
+    readonly keys: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    readonly aggregations: readonly [
+      Readonly<{
+        column: RKernelColumnReference;
+        operation: RKernelAggregationOperation;
+        alias: string;
+      }>,
+      ...Readonly<{
+        column: RKernelColumnReference;
+        operation: RKernelAggregationOperation;
+        alias: string;
+      }>[]
+    ];
+  }>;
+}
+
 export type RKernelTransformStep =
   | RKernelSortRowsStep
   | RKernelFilterRowsStep
   | RKernelDropMissingRowsStep
   | RKernelDropDuplicatesStep
+  | RKernelGroupByStep
   | RKernelRenameColumnStep
   | RKernelCloneColumnStep
   | RKernelCastColumnStep
@@ -1192,6 +1216,65 @@ function validateTransformStep(value: unknown): void {
     }
     if (params.keep !== undefined && params.keep !== "first" && params.keep !== "last" && params.keep !== "none") {
       fail("R kernel drop-duplicates parameters contain an invalid keep mode.");
+    }
+    return;
+  }
+  if (step.kind === "groupBy") {
+    const params = exactRecord(step.params, ["keys", "aggregations"], "R kernel group-by parameters");
+    if (
+      !Array.isArray(params.keys) ||
+      params.keys.length === 0 ||
+      params.keys.length > R_FRAME_CONTRACT_LIMITS.columns
+    ) {
+      fail("R kernel group-by keys must be a bounded non-empty array.");
+    }
+    const keyIds = new Set<string>();
+    const keyNames = new Set<string>();
+    for (const [index, candidate] of params.keys.entries()) {
+      const reference = validateColumnReference(candidate, `request.payload.step.params.keys[${index}]`);
+      if (keyIds.has(reference.id)) fail("R kernel group-by keys contain a repeated identity.");
+      keyIds.add(reference.id);
+      keyNames.add(reference.name);
+    }
+    if (
+      !Array.isArray(params.aggregations) ||
+      params.aggregations.length === 0 ||
+      params.keys.length + params.aggregations.length > R_FRAME_CONTRACT_LIMITS.columns
+    ) {
+      fail("R kernel group-by aggregations exceed the output-column limit.");
+    }
+    const operations = new Set<RKernelAggregationOperation>([
+      "sum",
+      "mean",
+      "min",
+      "max",
+      "median",
+      "count",
+      "nUnique",
+      "first",
+      "last"
+    ]);
+    const aliases = new Set<string>();
+    for (const [index, candidate] of params.aggregations.entries()) {
+      const aggregation = exactRecord(
+        candidate,
+        ["column", "operation", "alias"],
+        `request.payload.step.params.aggregations[${index}]`
+      );
+      validateColumnReference(aggregation.column, `request.payload.step.params.aggregations[${index}].column`);
+      if (!operations.has(aggregation.operation as RKernelAggregationOperation)) {
+        fail("R kernel group-by aggregation contains an unsupported operation.");
+      }
+      const alias = boundedText(
+        aggregation.alias,
+        `request.payload.step.params.aggregations[${index}].alias`,
+        maximumVariableNameBytes,
+        false
+      );
+      if (aliases.has(alias) || keyNames.has(alias)) {
+        fail("R kernel group-by aliases must be unique and cannot duplicate a key name.");
+      }
+      aliases.add(alias);
     }
     return;
   }

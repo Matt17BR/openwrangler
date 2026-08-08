@@ -529,8 +529,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /do not render Quarto or R Markdown or attach to another\s+R session/u);
   assert.match(readme, /including unsaved\s+editor changes/u);
   assert.match(readme, /To export Parquet, install `nanoparquet` 0\.5\.1 or newer[\s\S]{0,100}reopen the dataframe/u);
-  assert.match(readme, /The R workbench supports[\s\S]{0,180}20 cleaning operations/u);
-  assert.match(readme, /\*\*Split text\*\*, \*\*Round\*\*, \*\*Floor\*\*, and \*\*Ceiling\*\*/u);
+  assert.match(readme, /The R workbench supports[\s\S]{0,180}21 cleaning operations/u);
+  assert.match(
+    readme,
+    /\*\*Split text\*\*, \*\*Round\*\*, \*\*Floor\*\*, \*\*Ceiling\*\*, and \*\*Group and\s+aggregate\*\*/u
+  );
   assert.match(readme, /inserted into the notebook or document that opened the dataframe/u);
   assert.match(readme, /Ordinary frames created with `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
   assert.match(readme, /Grouped `GRP_df` and indexed `indexed_frame` objects are\s+not\s+supported/u);
@@ -625,8 +628,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(readme, /#263/u);
   assert.doesNotMatch(readme, /publish a reproducible Data Wrangler performance comparison/u);
   const v2Roadmap = readme.slice(readme.indexOf("- **1.99 previews:**"), readme.indexOf("## Contributing and support"));
-  assert.match(v2Roadmap, /test native R notebooks and documents/u);
-  assert.match(v2Roadmap, /current 20-operation R catalog/u);
+  assert.match(v2Roadmap, /finish testing the 21 R operations, notebooks, documents, and Parquet export/u);
   assert.match(v2Roadmap, /ship stable R support after release testing and an updated performance comparison/u);
   assert.match(
     v2Roadmap,
@@ -702,8 +704,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(gallery, /Unsaved editor changes are included\./u);
   assert.match(gallery, /Direct R-document execution currently requires macOS or Linux/u);
-  assert.match(gallery, /Editing mode currently supports[\s\S]{0,420}Round, Floor, and Ceiling/u);
-  assert.match(gallery, /All twenty operations use draft preview, generated R, apply, discard, inspection/u);
+  assert.match(gallery, /Editing mode currently supports[\s\S]{0,440}Round, Floor, Ceiling, and Group and aggregate/u);
+  assert.match(gallery, /All twenty-one operations use draft preview, generated R, apply, discard, inspection/u);
   assert.match(
     gallery,
     /Fill Missing Values can use[\s\S]{0,160}mean of a double column[\s\S]{0,240}ordered\s+list of same-type columns/u

@@ -173,8 +173,9 @@ Each variable stays in R.
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
 Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates,
 Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, and Find
-and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling. A viewing filter or sort can be copied
-into a cleaning draft. Drop Missing Rows can check any or all selected columns and treats `NA` and `NaN` as missing.
+and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate. A viewing filter or
+sort can be copied into a cleaning draft. Drop Missing Rows can check any or all selected columns and treats `NA` and
+`NaN` as missing.
 Drop Duplicates can compare selected columns or the whole row and keep the first, last, or none of the repeated rows.
 Select keeps the order in which the columns were chosen. Text Length counts Unicode characters. The text operations
 convert factors to character and keep `NA`. Capitalize changes the first character to uppercase and the rest to
@@ -191,7 +192,7 @@ missing runs along an ordinary numeric, `Date`, or `POSIXct` coordinate.
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's
 ties-to-even rule. A keyed `data.table` column can be written to a new output column but cannot be changed in place.
-All twenty operations use draft preview, generated R, apply, discard, inspection, latest-step editing, and undo.
+All twenty-one operations use draft preview, generated R, apply, discard, inspection, latest-step editing, and undo.
 Generated R can be copied, saved as a `.R` script, or inserted into the notebook or R document that opened the
 dataframe. Local R notebook and R document sessions opened in Editing mode can export their cleaned result as CSV.
 They can also export Parquet when `nanoparquet` 0.5.1 or newer is installed in the selected R environment. Reopen the
@@ -209,7 +210,7 @@ Convert type does not replace an active `data.table` key column. Clone that colu
 
 Default frames made with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing base-data-frame, tibble, and
 data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
-not supported. Operations outside the current 20-operation set are not supported in R yet.
+not supported. Other cleaning operations are not supported in R yet.
 
 Direct R-document execution currently requires macOS or Linux. R notebooks remain available on Windows.
 

@@ -7,6 +7,7 @@ import {
   R_KERNEL_TRANSPORT_VERSION,
   decodeRKernelResponseJson,
   encodeRKernelRequest,
+  type RKernelGroupByStep,
   type RKernelRequest
 } from "../extension/r/rKernelProtocol";
 import { R_FRAME_CONTRACT_LIMITS } from "../extension/r/rFrameContract";
@@ -1550,6 +1551,91 @@ describe("native R kernel protocol", () => {
       }
     };
     expect(() => encodeRKernelRequest(extraParameter as RKernelRequest)).toThrow("invalid fields");
+  });
+
+  it("strictly validates native R Group By payloads", () => {
+    const aggregation = (
+      operation: RKernelGroupByStep["params"]["aggregations"][number]["operation"],
+      index: number
+    ) => ({
+      column: { id: "r:c:0", name: "value" },
+      operation,
+      alias: `${operation}_${index}`
+    });
+    const step: RKernelGroupByStep = {
+      id: "group-step",
+      kind: "groupBy",
+      params: {
+        keys: [{ id: "r:c:1", name: "group" }],
+        aggregations: [
+          aggregation("sum", 0),
+          aggregation("mean", 1),
+          aggregation("median", 2),
+          aggregation("min", 3),
+          aggregation("max", 4),
+          aggregation("count", 5),
+          aggregation("nUnique", 6),
+          aggregation("first", 7),
+          aggregation("last", 8)
+        ]
+      }
+    };
+    const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: previewRequestId,
+      kind: "previewStep",
+      payload: { sessionId, revision: 0, step, page: pageWindow() }
+    };
+    expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+
+    const expectRejected = (candidate: unknown, message: string) => {
+      expect(() =>
+        encodeRKernelRequest({
+          ...request,
+          payload: { ...request.payload, step: candidate }
+        } as RKernelRequest)
+      ).toThrow(message);
+    };
+    expectRejected({ ...step, params: { ...step.params, keys: [] } }, "bounded non-empty array");
+    expectRejected(
+      { ...step, params: { ...step.params, keys: [step.params.keys[0], step.params.keys[0]] } },
+      "repeated identity"
+    );
+    expectRejected({ ...step, params: { ...step.params, aggregations: [] } }, "output-column limit");
+    expectRejected(
+      {
+        ...step,
+        params: {
+          ...step.params,
+          aggregations: [{ ...step.params.aggregations[0], operation: "variance" }]
+        }
+      },
+      "unsupported operation"
+    );
+    expectRejected(
+      {
+        ...step,
+        params: {
+          ...step.params,
+          aggregations: [
+            step.params.aggregations[0],
+            { ...step.params.aggregations[1], alias: step.params.aggregations[0]!.alias }
+          ]
+        }
+      },
+      "aliases must be unique"
+    );
+    expectRejected(
+      {
+        ...step,
+        params: {
+          ...step.params,
+          aggregations: [{ ...step.params.aggregations[0], alias: "group" }]
+        }
+      },
+      "cannot duplicate a key name"
+    );
+    expectRejected({ ...step, params: { ...step.params, extra: true } }, "invalid fields");
   });
 
   it("strictly validates native R Round, Floor, and Ceiling payloads", () => {
