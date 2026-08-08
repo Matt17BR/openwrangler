@@ -8,6 +8,7 @@ import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 import { inspectPublicWriting } from "./public-writing.mjs";
+import { inspectPublicRepositoryMetadata } from "./public-repository-metadata.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const required = [
@@ -16,6 +17,7 @@ const required = [
   "CONTRIBUTING.md",
   "SECURITY.md",
   "THIRD_PARTY_NOTICES.md",
+  ".github/repository-metadata.json",
   "docs/architecture.md",
   "docs/feature-parity.md",
   "docs/reference.md",
@@ -32,6 +34,13 @@ if (missing.length > 0) {
 const packageJsonSource = readFileSync(resolve(root, "package.json"), "utf8");
 const packageLockSource = readFileSync(resolve(root, "package-lock.json"), "utf8");
 const packageJson = JSON.parse(packageJsonSource);
+const repositoryMetadataProblems = inspectPublicRepositoryMetadata({
+  contractSource: readFileSync(resolve(root, ".github/repository-metadata.json"), "utf8"),
+  packageSource: packageJsonSource
+});
+if (repositoryMetadataProblems.length > 0) {
+  throw new Error(`Public repository metadata is stale:\n- ${repositoryMetadataProblems.join("\n- ")}`);
+}
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
 const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
 const publicWritingProblems = inspectPublicWriting({
