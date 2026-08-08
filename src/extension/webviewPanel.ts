@@ -40,6 +40,7 @@ export class OpenWranglerPanel {
   private currentImportChangeTask: Promise<void> | undefined;
   private nativeImportCommand: Promise<boolean> | undefined;
   private runtimeDependencyInstallTask: Promise<void> | undefined;
+  private sessionModeChangeTask: Promise<void> | undefined;
   private reconnectingLiveSource = false;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
   private sessionOpenCancellation: vscode.CancellationTokenSource | undefined;
@@ -488,16 +489,21 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "switchSessionToEditing") {
+      await this.switchSessionToEditing(decoded.state);
+      return;
+    }
+
     if (decoded.kind === "reconnectLiveSource") {
       await this.reconnectLiveSource();
       return;
     }
 
-    if (this.changingImportOptions) {
+    if (this.changingImportOptions || this.sessionModeChangeTask) {
       await this.post({
         kind: "error",
         code: "session_reconfiguring",
-        message: "Wait for the current import-options change to finish.",
+        message: "Wait for the current session change to finish.",
         recoverable: true,
         ...viewRequestIdProperty(decoded.request)
       });
@@ -526,6 +532,89 @@ export class OpenWranglerPanel {
       return;
     }
     await this.forward(request, decoded.viewContextId);
+  }
+
+  private switchSessionToEditing(viewState: GridViewState): Promise<void> {
+    if (this.sessionModeChangeTask) return this.sessionModeChangeTask;
+    const task = (async () => {
+      const sessionId = this.sessionId;
+      const revision = this.sessionRevision;
+      const metadata = this.snapshot?.metadata;
+      if (!sessionId || !metadata || !canSwitchNotebookSessionToEditing(metadata) || this.disposed) return;
+      if (!this.bridge.reconfigureNotebookSessionForEditing) {
+        await this.post({
+          kind: "error",
+          code: "editing_mode_unavailable",
+          message: "This Open Wrangler session cannot switch to Editing mode.",
+          recoverable: true,
+          sessionId
+        });
+        return;
+      }
+
+      await this.postRendererMessage({ kind: "sessionModeChangeState", busy: true });
+      try {
+        const response = await this.bridge.reconfigureNotebookSessionForEditing(sessionId, revision, viewState, {
+          priority: "interactive",
+          backendPreference: this.backendPreference
+        });
+        if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
+        if (response.kind === "sessionOpened") {
+          if (
+            response.metadata.sessionId !== sessionId ||
+            response.metadata.revision <= revision ||
+            response.metadata.mode !== "editing" ||
+            response.metadata.source.kind !== "notebookVariable"
+          ) {
+            await this.post({
+              kind: "error",
+              code: "invalid_runtime_response",
+              message: "Open Wrangler rejected an invalid Editing-mode response.",
+              recoverable: true,
+              sessionId
+            });
+            return;
+          }
+          this.invalidateRendererSynchronization();
+          this.source = response.metadata.source;
+          this.openResponse = response;
+          this.sessionId = response.metadata.sessionId;
+          this.sessionRevision = response.metadata.revision;
+          this.snapshot = response;
+          this.snapshotViewContextId = undefined;
+          this.latestPageViewRequestId = undefined;
+          await this.post(response);
+          await this.postSessionPresentation();
+          await this.postViewState();
+          if (this.rendererReady) this.scheduleRendererSynchronization(false);
+          return;
+        }
+        await this.post(response);
+      } catch (error) {
+        if (this.disposed || this.sessionId !== sessionId || this.sessionRevision !== revision) return;
+        await this.post({
+          kind: "error",
+          code: "editing_mode_open_failed",
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: true,
+          sessionId
+        });
+      } finally {
+        if (!this.disposed) {
+          await this.postRendererMessage({ kind: "sessionModeChangeState", busy: false });
+        }
+      }
+    })();
+    this.sessionModeChangeTask = task;
+    void task.then(
+      () => {
+        if (this.sessionModeChangeTask === task) this.sessionModeChangeTask = undefined;
+      },
+      () => {
+        if (this.sessionModeChangeTask === task) this.sessionModeChangeTask = undefined;
+      }
+    );
+    return task;
   }
 
   private async reconnectLiveSource(): Promise<void> {
@@ -1530,6 +1619,11 @@ export class OpenWranglerPanel {
     if (message.kind === "exportData") {
       return hasExactKeys(message, ["kind"]) ? { kind: "exportData" } : undefined;
     }
+    if (message.kind === "switchSessionToEditing") {
+      if (!hasExactKeys(message, ["kind", "state"])) return undefined;
+      const state = decodeGridViewState(message.state);
+      return state ? { kind: "switchSessionToEditing", state } : undefined;
+    }
     if (message.kind === "reconnectLiveSource") {
       return hasExactKeys(message, ["kind"]) ? { kind: "reconnectLiveSource" } : undefined;
     }
@@ -1650,6 +1744,7 @@ type WebviewRequest =
   | { kind: "changeImportOptions"; actionId?: string }
   | { kind: "installRuntimeDependencies" }
   | { kind: "exportData" }
+  | { kind: "switchSessionToEditing"; state: GridViewState }
   | { kind: "reconnectLiveSource" }
   | {
       kind: "runtimeRequest";
@@ -1689,6 +1784,15 @@ function canChangeImportOptions(source: SessionSource): boolean {
   if (source.kind !== "file") return false;
   const extension = path.extname(source.path ?? source.uri ?? "").toLowerCase();
   return extension === ".csv" || extension === ".tsv" || extension === ".xlsx" || extension === ".xls";
+}
+
+function canSwitchNotebookSessionToEditing(metadata: SessionMetadata): boolean {
+  return (
+    metadata.mode === "viewing" &&
+    metadata.source.kind === "notebookVariable" &&
+    metadata.backend !== "pyspark" &&
+    metadata.capabilities.notebookInsert
+  );
 }
 
 function fileSourceUri(source: SessionSource): vscode.Uri | undefined {

@@ -2310,6 +2310,94 @@ describe("App file import options", () => {
     expect(orderingBadge).toHaveFocus();
     expect(screen.getByText("Viewing only")).toBeVisible();
     expect(screen.queryByText(/^viewing$/iu)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Switch to Editing" })).not.toBeInTheDocument();
+  });
+
+  it("carries the latest grid state into Editing mode and restores keyboard focus", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      render(<App />);
+      const source = {
+        kind: "notebookVariable" as const,
+        label: "orders_frame",
+        variableName: "orders_frame",
+        uri: "file:///workspace/orders.ipynb"
+      };
+      const viewingMetadata: SessionMetadata = {
+        ...metadata,
+        backend: "r",
+        rDataframeFlavor: "r.data.frame",
+        mode: "viewing",
+        source,
+        capabilities: {
+          ...metadata.capabilities,
+          lazy: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: true,
+          supportedOperations: ["sortRows", "fillMissingValues"]
+        }
+      };
+      dispatchAppMessage({ kind: "sessionOpened", metadata: viewingMetadata, page, summaries: [] });
+
+      const action = await screen.findByRole("button", { name: "Switch to Editing" });
+      expect(action).toHaveAttribute("title", "Reopen this live notebook variable in Editing mode");
+      webviewPostMessage.mockClear();
+      fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+      action.focus();
+      fireEvent.click(action);
+      const stateMessages = webviewPostMessage.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message?.kind === "updateViewState" || message?.kind === "switchSessionToEditing");
+      expect(stateMessages).toEqual([
+        {
+          kind: "switchSessionToEditing",
+          state: {
+            columnWidths: { "c:0": 200 },
+            viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+          }
+        }
+      ]);
+
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: true });
+      expect(action).toBeDisabled();
+      expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
+      expect(screen.getByText("Opening Editing mode…")).toHaveAttribute("role", "status");
+
+      dispatchAppMessage({
+        kind: "error",
+        code: "editing_mode_open_failed",
+        message: "The selected kernel changed.",
+        recoverable: true,
+        sessionId: viewingMetadata.sessionId
+      });
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: false });
+      expect(frames).toHaveLength(1);
+      act(() => frames.shift()!(performance.now()));
+      expect(action).toHaveFocus();
+
+      fireEvent.click(action);
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: true });
+      dispatchAppMessage({
+        kind: "sessionOpened",
+        metadata: { ...viewingMetadata, revision: 1, mode: "editing" },
+        page,
+        summaries: []
+      });
+      dispatchAppMessage({ kind: "sessionModeChangeState", busy: false });
+      expect(frames).toHaveLength(1);
+      act(() => frames.shift()!(performance.now()));
+      expect(screen.queryByRole("button", { name: "Switch to Editing" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus();
+    } finally {
+      hasFocus.mockRestore();
+      requestFrame.mockRestore();
+    }
   });
 
   it("does not issue unsupported viewing requests when capabilities are explicitly disabled", async () => {

@@ -543,7 +543,9 @@ missing packages into a temporary library from
 jsonlite 2.0.0, rlang 1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Collapse 2.1.7 and nanoparquet 0.5.1 come
 from the reviewed `2026-06-01` snapshot. Tests cover projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
-and cleanup. They also check that header profiles start off; the journey does not turn them on. The temporary R
+and cleanup. The base dataframe starts in Viewing mode, keeps its exact notebook, public session, and compound sort
+through the visible **Switch to Editing** action, then continues through the cleaning journey on that same session.
+They also check that header profiles start off; the journey does not turn them on. The temporary R
 library is deleted with the run.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed from commit
@@ -625,7 +627,8 @@ that grouped `GRP_df` and indexed `indexed_frame` objects stay out of the picker
 same accepted and rejected classes.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
-viewing workbench, a separate 1,205-row Rename draft in Editing mode, and the generated R inserted into its notebook.
+viewing workbench, a 1,205-row Rename draft after switching that notebook session to Editing mode, and the generated R
+inserted into its notebook.
 The viewing image shows two filters, two
 ordered sorts, and exact revenue statistics. The editing image shows the native R code preview beside the draft,
 cleaning history, and Apply/Discard controls.
