@@ -49,6 +49,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- The editor-title action for `.R`, `.Rmd`, and `.qmd` always runs the current document. An active official R
+  terminal no longer replaces it with a different command; terminal dataframes remain available in Operations and
+  the editor-tab menu.
 - **Open in Open Wrangler** now appears immediately in trusted Python `.py` editors, including before Jupyter has
   detected the file's cells. The action still runs only the `# %%` cell under the cursor, never the whole file.
 - The operation search icon now stays inside the search field.
