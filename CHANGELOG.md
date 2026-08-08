@@ -38,6 +38,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Numeric histograms now use one full-chart control instead of a separate tab stop for every bin. Moving the pointer
+  still selects the exact bin, while arrow keys choose a bin and Enter or Space applies its filter. Category values
+  also keep a usable click target at reduced zoom.
 - The Fill Missing Values method menu now groups column statistics, grouped statistics, ordered data, fallback
   columns, and manual replacement. The fallback choice is labeled **Fallback columns (same row)**, and the menu names
   the selected column type so it is clear why options appear or disappear.

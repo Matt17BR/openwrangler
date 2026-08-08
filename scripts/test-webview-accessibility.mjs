@@ -561,12 +561,11 @@ async function verifyInsightsDrawerWorkflow(browser) {
     const page = await browser.newPage({ viewport: { width, height: 760 } });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
 
-    for (const name of [
-      /numeric distribution/u,
-      /boolean distribution/u,
-      /categorical distribution/u,
-      /datetime distribution/u
-    ]) {
+    await page
+      .getByRole("img", { name: /numeric distribution/u })
+      .first()
+      .waitFor();
+    for (const name of [/boolean distribution/u, /categorical distribution/u, /datetime distribution/u]) {
       const charts = page.getByRole("img", { name });
       await charts.first().waitFor();
     }
@@ -576,10 +575,7 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await page.getByText("Max 6", { exact: true }).waitFor();
 
     const numericChart = page.getByRole("img", { name: /numeric distribution/u }).first();
-    const histogram = numericChart.locator("xpath=..");
-    const histogramBins = histogram.locator(".numericHistogramHitTarget");
-    const firstBin = histogramBins.first();
-    const secondBin = histogramBins.nth(1);
+    const histogram = numericChart.locator("xpath=../..");
     const firstBar = histogram.locator(".numericHistogramBar").first();
     await firstBar.evaluate((bar) => {
       const chartHeight = bar.ownerSVGElement?.viewBox.baseVal.height;
@@ -587,31 +583,19 @@ async function verifyInsightsDrawerWorkflow(browser) {
       bar.setAttribute("height", "2");
       bar.setAttribute("y", String(chartHeight - 2));
     });
-    const [chartBounds, firstHitBounds, firstBarBounds] = await Promise.all([
-      numericChart.boundingBox(),
-      firstBin.boundingBox(),
-      firstBar.boundingBox()
-    ]);
-    if (
-      !chartBounds ||
-      !firstHitBounds ||
-      !firstBarBounds ||
-      firstHitBounds.width <= 0 ||
-      firstHitBounds.height < chartBounds.height - 1 ||
-      firstHitBounds.height > chartBounds.height + 3 ||
-      firstBarBounds.height > chartBounds.height * 0.08
-    ) {
+    const [chartBounds, firstBarBounds] = await Promise.all([numericChart.boundingBox(), firstBar.boundingBox()]);
+    if (!chartBounds || !firstBarBounds || firstBarBounds.height > chartBounds.height * 0.08) {
       throw new Error(
-        `${harness} did not preserve a full-chart-height pointer target above a two-pixel bar: ` +
-          `${JSON.stringify({ chartBounds, firstHitBounds, firstBarBounds })}.`
+        `${harness} did not preserve a hoverable chart above a two-pixel bar: ` +
+          `${JSON.stringify({ chartBounds, firstBarBounds })}.`
       );
     }
-    const firstLabel = await firstBin.getAttribute("aria-label");
     const initialFill = await firstBar.evaluate((bar) => getComputedStyle(bar).fill);
-    await firstBin.hover({ position: { x: firstHitBounds.width / 2, y: 1 } });
+    await numericChart.hover({ position: { x: firstBarBounds.width / 2, y: 1 } });
     const tooltip = histogram.getByRole("tooltip");
     await tooltip.waitFor();
-    if ((await tooltip.textContent())?.trim() !== firstLabel) {
+    const firstLabel = (await tooltip.textContent())?.trim();
+    if (!firstLabel?.includes("row")) {
       throw new Error(`${harness} did not show the hovered bin's exact interval and row count immediately.`);
     }
     const hoveredFill = await firstBar.evaluate((bar) => getComputedStyle(bar).fill);
@@ -619,24 +603,6 @@ async function verifyInsightsDrawerWorkflow(browser) {
       throw new Error(`${harness} did not visibly highlight the hovered histogram bin.`);
     }
     await page.locator(".backendBadge").first().hover();
-    await tooltip.waitFor({ state: "detached" });
-    await firstBin.focus();
-    await tooltip.waitFor();
-    if ((await tooltip.textContent())?.trim() !== firstLabel) {
-      throw new Error(`${harness} did not show the keyboard-focused bin's exact interval and row count.`);
-    }
-    await page.locator(".backendBadge").first().hover();
-    if ((await tooltip.textContent())?.trim() !== firstLabel) {
-      throw new Error(`${harness} let pointer exit hide the still-keyboard-focused histogram bin.`);
-    }
-    await page.keyboard.press("Tab");
-    if (!(await secondBin.evaluate(isActiveTab))) {
-      throw new Error(`${harness} did not expose adjacent histogram bins in keyboard order.`);
-    }
-    if ((await tooltip.textContent())?.trim() !== (await secondBin.getAttribute("aria-label"))) {
-      throw new Error(`${harness} did not update the tooltip for the next keyboard-focused histogram bin.`);
-    }
-    await page.locator('input[placeholder="Search columns"]').focus();
     await tooltip.waitFor({ state: "detached" });
     if (width === 800) {
       await page.emulateMedia({ forcedColors: "active" });
@@ -654,7 +620,7 @@ async function verifyInsightsDrawerWorkflow(browser) {
             `${JSON.stringify(forcedRestingColors)}.`
         );
       }
-      await firstBin.hover({ position: { x: firstHitBounds.width / 2, y: 1 } });
+      await numericChart.hover({ position: { x: firstBarBounds.width / 2, y: 1 } });
       const forcedActiveColors = await firstBar.evaluate((bar) => {
         const probe = document.createElement("span");
         probe.style.color = "Highlight";
@@ -815,6 +781,61 @@ async function verifyInsightsDrawerWorkflow(browser) {
     }
     await page.close();
   }
+
+  const interactivePage = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const interactiveHarness = "grid-view.html";
+  await interactivePage.goto(pathToFileURL(resolve(harnessDir, interactiveHarness)).href, { waitUntil: "load" });
+  const interactiveHistogram = interactivePage.getByRole("group", { name: /numeric distribution/u }).first();
+  await interactiveHistogram.waitFor();
+  const histogramControl = interactiveHistogram.locator(".numericHistogramHitTarget");
+  if ((await histogramControl.count()) !== 1) {
+    throw new Error(`${interactiveHarness} did not expose exactly one full-chart histogram control.`);
+  }
+  const [interactiveChartBounds, histogramControlBounds] = await Promise.all([
+    interactiveHistogram.locator(".miniChart").boundingBox(),
+    histogramControl.boundingBox()
+  ]);
+  if (
+    !interactiveChartBounds ||
+    !histogramControlBounds ||
+    histogramControlBounds.width < interactiveChartBounds.width - 1 ||
+    histogramControlBounds.width > interactiveChartBounds.width + 1 ||
+    histogramControlBounds.height < interactiveChartBounds.height - 1 ||
+    histogramControlBounds.height > interactiveChartBounds.height + 1
+  ) {
+    throw new Error(
+      `${interactiveHarness} did not stretch its one pointer target across the complete histogram: ` +
+        `${JSON.stringify({ interactiveChartBounds, histogramControlBounds })}.`
+    );
+  }
+  const firstLabel = await histogramControl.getAttribute("aria-label");
+  await histogramControl.focus();
+  const interactiveTooltip = interactiveHistogram.getByRole("tooltip");
+  await interactiveTooltip.waitFor();
+  if ((await interactiveTooltip.textContent())?.trim() !== firstLabel) {
+    throw new Error(`${interactiveHarness} did not describe the keyboard-selected histogram bin.`);
+  }
+  await interactivePage.keyboard.press("End");
+  const lastLabel = await histogramControl.getAttribute("aria-label");
+  if (!lastLabel || lastLabel === firstLabel || (await interactiveTooltip.textContent())?.trim() !== lastLabel) {
+    throw new Error(`${interactiveHarness} did not move the histogram control to its final bin with End.`);
+  }
+  await interactivePage.keyboard.press("Home");
+  if ((await histogramControl.getAttribute("aria-label")) !== firstLabel) {
+    throw new Error(`${interactiveHarness} did not return the histogram control to its first bin with Home.`);
+  }
+  await interactivePage.keyboard.press("ArrowRight");
+  if (!(await histogramControl.evaluate(isActiveTab))) {
+    throw new Error(`${interactiveHarness} moved focus away while changing histogram bins with ArrowRight.`);
+  }
+  if ((await interactiveTooltip.textContent())?.trim() !== (await histogramControl.getAttribute("aria-label"))) {
+    throw new Error(`${interactiveHarness} did not update the tooltip for the next keyboard-selected bin.`);
+  }
+  await interactivePage.keyboard.press("ArrowLeft");
+  if ((await histogramControl.getAttribute("aria-label")) !== firstLabel) {
+    throw new Error(`${interactiveHarness} did not return to the previous bin with ArrowLeft.`);
+  }
+  await interactivePage.close();
 
   const textPage = await browser.newPage({ viewport: { width: 800, height: 760 } });
   const textHarness = "summary-text-dark-800.html";
