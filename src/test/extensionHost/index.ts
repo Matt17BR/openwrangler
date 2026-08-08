@@ -682,7 +682,7 @@ export async function run(): Promise<void> {
     contributions.menus?.["editor/title"]?.some(
       (item) =>
         item.command === "openWrangler.runRDocument" &&
-        item.when === rDocumentPredicate &&
+        item.when === rDocumentPredicate.replace("isWorkspaceTrusted &&", "isWorkspaceTrusted && !rSessionActive &&") &&
         item.group === "navigation@1"
     ),
     "R document editors must expose the Open Wrangler title action."
