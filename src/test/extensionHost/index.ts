@@ -2590,7 +2590,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
       "Closing the terminal must invalidate its cached Operations rows."
     );
     await operations
-      .getByRole("treeitem", { name: /^Refresh R dataframes\b/u })
+      .getByRole("treeitem", { name: /^Show R dataframes\b/u })
       .waitFor({ state: "visible", timeout: 10_000 });
     await waitFor(
       () => isDeepStrictEqual(releasedRInteractiveMailboxRoots(), initialMailboxes),

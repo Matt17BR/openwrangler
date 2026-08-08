@@ -302,6 +302,25 @@ describe("active R session commands", () => {
     await vi.waitFor(() => expect(transport.dispose).toHaveBeenCalledOnce());
   });
 
+  it("clears a refreshed list when its exact R terminal closes", async () => {
+    const terminal = rTerminal("R");
+    setActiveTerminal(terminal);
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    const { provider } = registerWith([transport]);
+    await command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)();
+
+    emitClosedTerminal(terminal);
+
+    expect(provider.snapshot()).toMatchObject({
+      state: "idle",
+      terminalLabel: "R session",
+      message: "The R terminal closed. Start or select another R session.",
+      variables: []
+    });
+    await vi.waitFor(() => expect(transport.dispose).toHaveBeenCalledOnce());
+  });
+
   it("releases the transport when the dataframe picker is dismissed", async () => {
     const transport = transportMock();
     transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
@@ -388,6 +407,12 @@ function emitActiveTerminal(terminal: { name: string; sendText: ReturnType<typeo
   if (!mocks.terminals.includes(terminal)) mocks.terminals.push(terminal);
   mocks.activeTerminal = terminal;
   for (const listener of mocks.activeTerminalListeners) listener(terminal);
+}
+
+function emitClosedTerminal(terminal: { name: string; sendText: ReturnType<typeof vi.fn> }): void {
+  mocks.terminals = mocks.terminals.filter((candidate) => candidate !== terminal);
+  if (mocks.activeTerminal === terminal) mocks.activeTerminal = undefined;
+  for (const listener of mocks.closeTerminalListeners) listener(terminal);
 }
 
 function discovery(
