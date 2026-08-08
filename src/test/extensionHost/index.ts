@@ -6000,10 +6000,6 @@ async function exerciseReleasedREditingJourney(
     assert.equal(uppercaseUndo.kind, "planUpdated", "Packaged native R Uppercase must undo.");
     if (uppercaseUndo.kind !== "planUpdated") throw new Error("The packaged R Uppercase undo failed.");
     assert.equal(uppercaseUndo.page.rows[0]?.values[0]?.display, "row-0001");
-    // These direct coordinator checks intentionally follow the final Open Wrangler
-    // renderer mutation so their newer revisions cannot leave a later UI action stale.
-    await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
-    await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
 
     recordAcceptanceProgress(`${phase}:editing:group-by-preview-apply-undo`);
     const groupBase = testing.activeSession();
@@ -6107,6 +6103,11 @@ async function exerciseReleasedREditingJourney(
       30_000,
       "undoing native R Group and aggregate"
     );
+
+    // These direct coordinator checks intentionally follow the final Open Wrangler
+    // renderer mutation so their newer revisions cannot leave a later UI action stale.
+    await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
+    await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
   }
 
   if (phase === "jupyter-r" && screenshotOutput) {
