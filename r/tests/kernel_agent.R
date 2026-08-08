@@ -76,6 +76,8 @@ group_by_session_id <- "61616161-6161-4161-8161-616161616161"
 group_by_overflow_session_id <- "62626262-6262-4262-8262-626262626262"
 group_by_precision_session_id <- "63636363-6363-4363-8363-636363636363"
 group_by_export_id <- "64646464-6464-4464-8464-646464646464"
+group_by_tibble_session_id <- "65656565-6565-4565-8565-656565656565"
+group_by_table_session_id <- "67676767-6767-4767-8767-676767676767"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -6201,6 +6203,162 @@ if (
 ) {
   stop("the R agent accepted a frame contract without Drop Duplicates support", call. = FALSE)
 }
+
+assert_group_by_flavor_case <- function(
+  case_session_id,
+  variable_name,
+  source,
+  expected_flavor,
+  expected_classes,
+  expected_source_key_ids,
+  expected_groups,
+  expected_totals
+) {
+  source_environment[[variable_name]] <- source
+  before <- if (inherits(source, "data.table")) {
+    data.table::copy(source)
+  } else {
+    unserialize(serialize(source, NULL, version = 3L))
+  }
+  invisible(dispatch(
+    "openSession",
+    list(sessionId = case_session_id, variableName = variable_name, page = page_window())
+  ))
+
+  step_id <- paste0(variable_name, "-group-by")
+  previewed <- dispatch(
+    "previewStep",
+    list(
+      sessionId = case_session_id,
+      revision = 0L,
+      step = list(
+        id = step_id,
+        kind = "groupBy",
+        params = list(
+          keys = I(list(list(id = "r:c:0", name = "group"))),
+          aggregations = I(list(list(
+            column = list(id = "r:c:1", name = "value"),
+            operation = "sum",
+            alias = "total"
+          )))
+        )
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(
+    list(
+      kind = previewed$kind,
+      flavor = previewed$page$dataframeFlavor,
+      classes = previewed$page$frameSemantics$classes,
+      keyColumnIds = previewed$page$frameSemantics$keyColumnIds,
+      groups = vapply(
+        previewed$page$page$rows,
+        function(row) as.character(row$values[[1L]]$raw),
+        character(1L),
+        USE.NAMES = FALSE
+      ),
+      totals = vapply(
+        previewed$page$page$rows,
+        function(row) as.integer(row$values[[2L]]$raw),
+        integer(1L),
+        USE.NAMES = FALSE
+      )
+    ),
+    list(
+      kind = "stepPreview",
+      flavor = expected_flavor,
+      classes = as.list(expected_classes),
+      keyColumnIds = list(),
+      groups = expected_groups,
+      totals = expected_totals
+    ),
+    sprintf("the %s Group By preview changed its dataframe family or result", variable_name)
+  )
+
+  applied <- dispatch(
+    "applyDraft",
+    list(sessionId = case_session_id, revision = previewed$revision, page = page_window())
+  )
+  assert_identical(applied$action, "apply", sprintf("the %s Group By did not apply", variable_name))
+
+  assign(variable_name, source_environment[[variable_name]], envir = .GlobalEnv)
+  eval(parse(text = applied$code), envir = .GlobalEnv)
+  generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_identical(
+    list(
+      classes = class(generated),
+      groups = as.character(generated$group),
+      totals = as.integer(generated$total),
+      key = if (inherits(generated, "data.table")) data.table::key(generated) else NULL,
+      generatedSource = get(variable_name, envir = .GlobalEnv, inherits = FALSE),
+      liveSource = source_environment[[variable_name]]
+    ),
+    list(
+      classes = expected_classes,
+      groups = expected_groups,
+      totals = expected_totals,
+      key = NULL,
+      generatedSource = before,
+      liveSource = before
+    ),
+    sprintf("generated %s Group By changed its dataframe family, result, or source", variable_name)
+  )
+  rm(list = c(variable_name, "open_wrangler_result"), envir = .GlobalEnv)
+
+  undone <- dispatch(
+    "undoStep",
+    list(sessionId = case_session_id, revision = applied$revision, page = page_window())
+  )
+  assert_identical(
+    list(
+      action = undone$action,
+      flavor = undone$page$dataframeFlavor,
+      classes = undone$page$frameSemantics$classes,
+      keyColumnIds = undone$page$frameSemantics$keyColumnIds,
+      source = source_environment[[variable_name]]
+    ),
+    list(
+      action = "undo",
+      flavor = expected_flavor,
+      classes = as.list(expected_classes),
+      keyColumnIds = expected_source_key_ids,
+      source = before
+    ),
+    sprintf("undoing the %s Group By did not restore its dataframe family or source", variable_name)
+  )
+
+  invisible(dispatch("closeSession", list(sessionId = case_session_id)))
+  rm(list = variable_name, envir = source_environment)
+}
+
+assert_group_by_flavor_case(
+  group_by_tibble_session_id,
+  "group_by_tibble",
+  tibble::tibble(group = c("b", "a", "b"), value = c(1L, 2L, 3L)),
+  "r.tibble",
+  c("tbl_df", "tbl", "data.frame"),
+  list(),
+  c("b", "a"),
+  c(4L, 2L)
+)
+
+group_by_table_source <- data.table::data.table(
+  group = c("b", "a", "c", "b"),
+  value = c(1L, 2L, 3L, 4L),
+  source_order = c(30L, 20L, 10L, 40L)
+)
+data.table::setkey(group_by_table_source, source_order)
+assert_group_by_flavor_case(
+  group_by_table_session_id,
+  "group_by_table",
+  group_by_table_source,
+  "r.data.table",
+  c("data.table", "data.frame"),
+  list("r:c:2"),
+  c("c", "a", "b"),
+  c(3L, 2L, 5L)
+)
 
 source_environment$group_by_frame <- data.frame(
   group = c(2, 1, 2, NA_real_, NaN, 1),

@@ -581,6 +581,8 @@ regression checks two pages that are valid separately but exceed the kernel resp
 suites and packaged editor run cover all twenty-one operations in both editors.
 Group and aggregate has direct frame, kernel-agent, protocol, and host-bridge coverage for all nine aggregations,
 first-seen group order, missing keys, type preservation, overflow, generated code, inspection, replacement, and undo.
+Separate kernel-agent cases run it on a tibble and a keyed data table. They check the live result, generated R,
+unchanged inputs, cleared result keys, and key restoration after undo.
 The R tests cover exact integer64 cancellation, odd-count medians, and same-sign boundary pairs for live and generated
 mean and median. Sum tests retain ordinary integer and integer64 output and reject overflow before publication because
 base R and `bit64` have no exact 38-digit integer type. The bridge tests also cover explicit row names becoming
