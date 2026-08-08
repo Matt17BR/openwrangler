@@ -9,8 +9,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Added
 
 - R can now group by one or more columns and calculate sum, mean, median, minimum, maximum, count, distinct count,
-  first, or last. The result keeps the source dataframe family, creates new row identities, and uses the same
-  preview, code, history, edit, and undo flow as other cleaning steps.
+  first, or last. Results stay a base data frame, tibble, or data.table to match the input and use the usual preview,
+  code, history, edit, and undo flow.
 - Live notebook variables that open in Viewing mode now have a **Switch to Editing** button in the dataframe toolbar.
   The session keeps its filters, sorts, column widths, selection, and scroll position when the editing runtime opens.
 - Stable release candidates now run the R 4.5.2 contract and the packaged R notebook journey in VS Code and Cursor
@@ -44,6 +44,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- The operation search icon now stays inside the search field.
 - Editing the latest R Group and aggregate step now keeps filters and sorts on its aggregation results. Applying the
   replacement and then undoing it also clears view rules that no longer exist in the restored source schema.
 - Preview and stable release jobs now create the exact local release tag before registry checks. Previously the tag
