@@ -1,6 +1,6 @@
 # Native R runtime for Open Wrangler 2
 
-- Status: Accepted; amended for owned R-document processes
+- Status: Accepted; amended for owned R-document processes and active R terminals
 - Date: 2026-08-03
 
 ## Context
@@ -10,10 +10,10 @@ package semantics, including `data.frame`, tibble, and `data.table`. Sending tho
 categorical behavior, and generated code. It would also make a Python environment an unnecessary requirement for an R
 workflow.
 
-R notebooks already have a well-defined execution owner: the selected IRkernel. An ordinary `.R` file can use an
-Open Wrangler-owned process. R Markdown and Quarto use that same ownership model for a deliberately smaller feature:
-Open Wrangler runs their lexical R cells in a new process. It does not attach to a rendering process, terminal, or
-editor extension.
+R notebooks already have a well-defined execution owner: the selected IRkernel. The official VS Code R extension can
+own a second kind of live session in its R terminal. Ordinary `.R` files can instead use an Open Wrangler-owned
+process. R Markdown and Quarto use that same process model for a smaller feature: Open Wrangler runs their supported R
+cells without taking over either extension's render process.
 
 ## Decision
 
@@ -58,6 +58,12 @@ private R transport.
 IRkernel is the first supported R transport. A notebook launch must stay bound to the exact `NotebookDocument` and
 kernel captured when the user starts it. Kernel lookup, dispatch, recovery, and cleanup may not retarget through the
 active editor, a matching URI, a replacement document, or another R session.
+
+The active-terminal transport connects to the exact official R terminal selected before discovery starts. Open
+Wrangler sends its bundled dispatcher through VS Code's public terminal API, uses private response files for bounded
+requests, and lists supported dataframes in the Operations view. Opening an item transfers that same transport to the
+workbench. Changing or closing the terminal invalidates the list and session; Open Wrangler never searches for a
+replacement terminal or reads vscode-R's private storage, sockets, or process state.
 
 The host creates the candidate session ID before dispatch and maps it to that kernel. A malformed, cancelled, timed
 out, or stale open keeps a continuation on the original operation. When that operation settles, the host makes one
@@ -154,9 +160,10 @@ line that knitr would interpret as the end of the cell.
 Direct `.R` execution remains disabled on Windows until the extension can own and stop every descendant process;
 IRkernel notebook support remains available there.
 
-Open Wrangler will not infer document ownership from the active terminal, global R state, or a document path. A future
-live-render attachment may use only a documented public broker API. It may not inspect private Quarto or vscode-R
-sockets, temporary state, extension storage, or process-discovery details.
+The document command never infers ownership from a terminal, global R state, or a document path. The separate active-R
+command works only with an exact official R terminal captured before it yields. Open Wrangler does not attach to a
+Quarto or R Markdown render process and does not inspect private Quarto or vscode-R sockets, temporary state,
+extension storage, or process-discovery details.
 
 Public R builds use the `1.99.x` preview channel. A preview may ship only after `data.frame`, tibble, and
 `data.table` viewing plus the advertised editing workflow pass real IRkernel tests and packaged VS Code and Cursor
@@ -184,6 +191,8 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
   double result.
 - Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
   data-table paths. Grouped `GRP_df` and indexed `indexed_frame` objects are outside the supported class contract.
+- Dataframes from the active official R terminal use the same native R contract and workbench. Refresh and open stay
+  pinned to that terminal, while **Run R Document** continues to own a separate process.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
 - R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and
