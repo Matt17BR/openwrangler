@@ -45,6 +45,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Fixed
 
 - The operation search icon now stays inside the search field.
+- The getting-started walkthrough now distinguishes editable DuckDB file sessions from view-only notebook
+  relations.
 - Editing the latest R Group and aggregate step now keeps filters and sorts on its aggregation results. Applying the
   replacement and then undoing it also clears view rules that no longer exist in the restored source schema.
 - Preview and stable release jobs now create the exact local release tag before registry checks. Previously the tag

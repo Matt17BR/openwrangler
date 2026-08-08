@@ -497,7 +497,7 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Open files or live dataframe variables, inspect profiles, and preview cleaning steps. Pandas and Polars support cleaning and export. R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set. DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only.",
+        "description": "Open files or live dataframe variables, inspect profiles, and preview cleaning steps. Pandas and Polars support cleaning and export. R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set. DuckDB file sessions support cleaning and export; notebook relations are experimental and view-only. Local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only.",
         "steps": [
           {
             "id": "openData",

@@ -76,7 +76,10 @@ describe("Marketplace and walkthrough copy", () => {
       "R notebooks and trusted .R, .Rmd, and .qmd documents support the current R cleaning set."
     );
     expect(walkthrough?.description).toContain(
-      "DuckDB viewing is experimental; local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only."
+      "DuckDB file sessions support cleaning and export; notebook relations are experimental and view-only."
+    );
+    expect(walkthrough?.description).toContain(
+      "Local PySpark 4.2 Classic/Connect batch DataFrames are notebook-only and view-only."
     );
     expect(walkthrough?.steps?.find((step) => step.id === "openData")?.description).toContain(
       "Use the notebook toolbar for live Python or R dataframes."
