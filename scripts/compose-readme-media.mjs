@@ -93,9 +93,9 @@ const assets = [
     height: 605
   }),
   nativeCrop("gallery/r-quarto-variable-picker-detail.png", "vscode-r-quarto-variable-picker-dark.png", 1_440, 900, {
-    x: 120,
+    x: 80,
     y: 20,
-    width: 1_200,
+    width: 1_280,
     height: 520
   }),
   nativeCrop("gallery/applied-step-inspection-detail.png", "vscode-applied-step-inspection-dark.png", 1_440, 870, {

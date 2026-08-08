@@ -1206,7 +1206,7 @@ interface ReleasedRDocumentFixture {
 interface ReleasedRLiterateDocumentFixture {
   readonly kind: "rmarkdown" | "quarto";
   readonly sourceUri: vscode.Uri;
-  readonly processIdPath: string;
+  readonly processIdPath?: string;
   readonly variableName: string;
   readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
 }
@@ -1817,48 +1817,62 @@ function writeReleasedRLiterateDocumentFixture(
   const sourcePath = path.join(fixtureDirectory, `orders-analysis.${extension}`);
   const csvPath = path.join(fixtureDirectory, "orders.csv");
   const processIdPath = path.join(fixtureDirectory, "open-wrangler-r.pid");
-  const variableName = "literate_orders";
-  const frontMatter =
+  const variableName = kind === "quarto" ? "regional_orders" : "literate_orders";
+  const loadCell = [
+    "```{r load-orders, echo=FALSE}",
+    ...(kind === "quarto" ? ["#| label: load-regional-orders"] : []),
+    `${variableName} <- utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE)`,
+    `${variableName}$order_date <- as.Date(${variableName}$order_date)`,
+    `${variableName}$score[2L] <- NA_real_`,
+    ...(kind === "rmarkdown" ? ['writeLines(as.character(Sys.getpid()), "open-wrangler-r.pid", useBytes = TRUE)'] : []),
+    "```",
+    ""
+  ];
+  const sourceLines =
     kind === "quarto"
-      ? ["---", "title: Regional orders", "format: html", "payload: |"]
-      : ["---", "title: Regional orders", "output: html_document", "payload: |"];
-  const sourceBytes = Buffer.from(
-    [
-      ...frontMatter,
-      "  ```{r}",
-      "  stop('A YAML block scalar is not an executable cell')",
-      "  ```",
-      "---",
-      "",
-      "# Regional orders",
-      "",
-      "This prose contains `data.frame(id = 0L)` but is not R code.",
-      "",
-      "<!--",
-      "```{r}",
-      "stop('An HTML comment is not an executable cell')",
-      "```",
-      "-->",
-      "",
-      "```{python}",
-      "raise RuntimeError('A Python cell must not run in the R document process')",
-      "```",
-      "",
-      "```{r disabled, eval=FALSE}",
-      "stop('A disabled R cell must not run')",
-      "```",
-      "",
-      "```{r load-orders, echo=FALSE}",
-      ...(kind === "quarto" ? ["#| label: load-regional-orders"] : []),
-      `${variableName} <- utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE)`,
-      `${variableName}$order_date <- as.Date(${variableName}$order_date)`,
-      `${variableName}$score[2L] <- NA_real_`,
-      'writeLines(as.character(Sys.getpid()), "open-wrangler-r.pid", useBytes = TRUE)',
-      "```",
-      ""
-    ].join("\n"),
-    "utf8"
-  );
+      ? [
+          "---",
+          "title: Regional orders",
+          "format: html",
+          "---",
+          "",
+          "# Regional orders",
+          "",
+          "Load the latest regional order export and inspect it in Open Wrangler.",
+          "",
+          ...loadCell
+        ]
+      : [
+          "---",
+          "title: Regional orders",
+          "output: html_document",
+          "payload: |",
+          "  ```{r}",
+          "  stop('A YAML block scalar is not an executable cell')",
+          "  ```",
+          "---",
+          "",
+          "# Regional orders",
+          "",
+          "This prose contains `data.frame(id = 0L)` but is not R code.",
+          "",
+          ...loadCell,
+          "<!--",
+          "```{r}",
+          "stop('An HTML comment is not an executable cell')",
+          "```",
+          "-->",
+          "",
+          "```{python}",
+          "raise RuntimeError('A Python cell must not run in the R document process')",
+          "```",
+          "",
+          "```{r disabled, eval=FALSE}",
+          "stop('A disabled R cell must not run')",
+          "```",
+          ""
+        ];
+  const sourceBytes = Buffer.from(sourceLines.join("\n"), "utf8");
   const csvBytes = Buffer.from(
     [
       "order_id,market,score,order_date",
@@ -1877,7 +1891,7 @@ function writeReleasedRLiterateDocumentFixture(
   return {
     kind,
     sourceUri: vscode.Uri.file(sourcePath),
-    processIdPath,
+    ...(kind === "rmarkdown" ? { processIdPath } : {}),
     variableName,
     immutableFiles: [
       { path: sourcePath, bytes: sourceBytes },
@@ -2898,9 +2912,11 @@ async function exerciseReleasedRLiterateDocumentJourneys(
         `jupyter-r-document-${fixture.kind}-page`
       );
       assert.equal(page.metadata.backend, "r");
-      const processId = readReleasedRDocumentProcessId(fixture.processIdPath);
-      liveProcessIds.add(processId);
-      assert.equal(acceptanceProcessIsAlive(processId), true);
+      const processId = fixture.processIdPath ? readReleasedRDocumentProcessId(fixture.processIdPath) : undefined;
+      if (processId !== undefined) {
+        liveProcessIds.add(processId);
+        assert.equal(acceptanceProcessIsAlive(processId), true);
+      }
 
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:hydrate-panel`);
       await requireFreshExactSessionPanelHydration(
@@ -2993,8 +3009,10 @@ async function exerciseReleasedRLiterateDocumentJourneys(
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:close`);
       await disposePackagedSessionPanel(testing, opened.sessionId, `the ${fixture.kind} document session`);
       openSessionIds.delete(opened.sessionId);
-      await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, `the ${fixture.kind} R process to stop`);
-      liveProcessIds.delete(processId);
+      if (processId !== undefined) {
+        await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, `the ${fixture.kind} R process to stop`);
+        liveProcessIds.delete(processId);
+      }
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:revert`);
       await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
       await withBoundedAcceptancePromise(
@@ -3078,7 +3096,8 @@ async function exerciseReleasedRLiterateDocumentJourneys(
 
 async function prepareReleasedRDocumentScreenshotWorkbench(
   workbench: Page,
-  source: vscode.Uri
+  source: vscode.Uri,
+  variableName: string
 ): Promise<() => Promise<void>> {
   if (process.platform !== "linux") return async () => {};
   const previousViewport = await workbench.evaluate(() => {
@@ -3103,57 +3122,8 @@ async function prepareReleasedRDocumentScreenshotWorkbench(
     key,
     value: configuration.inspect(key)?.globalValue
   }));
-
-  await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
-  await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
-  await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
-  await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
-  await windowConfiguration.update(
-    "title",
-    "${activeEditorShort}${separator}Open Wrangler",
-    vscode.ConfigurationTarget.Global
-  );
-  await workbenchConfiguration.update(
-    "colorTheme",
-    releasedJupyterScreenshotTheme(),
-    vscode.ConfigurationTarget.Global
-  );
-  await workbenchConfiguration.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
-  await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
-  await waitFor(
-    () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
-    10_000,
-    "the dark Quarto screenshot theme"
-  );
-  await closeVisibleWorkbenchPart(workbench, ".part.sidebar", [
-    "workbench.action.closeSidebar",
-    "workbench.action.toggleSidebarVisibility"
-  ]);
-  await closeVisibleWorkbenchPart(workbench, ".part.auxiliarybar", [
-    "workbench.action.closeAuxiliaryBar",
-    "workbench.action.toggleAuxiliaryBar"
-  ]);
-  await closeVisibleWorkbenchPart(workbench, ".part.panel", [
-    "workbench.action.closePanel",
-    "workbench.action.togglePanel"
-  ]);
-  await clearReleasedJupyterScreenshotTransientUi(workbench);
-
-  const matches = vscode.workspace.textDocuments.filter((document) => document.uri.toString() === source.toString());
-  assert.equal(matches.length, 1, "Quarto media capture requires one exact open source document.");
-  const document = matches[0]!;
-  const editor = await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
-  const dataLine = document
-    .getText()
-    .split("\n")
-    .findIndex((line) => line.includes("literate_orders <-"));
-  assert.ok(dataLine >= 0, "The Quarto media fixture must contain its dataframe construction line.");
-  editor.selection = new vscode.Selection(dataLine, 0, dataLine, 0);
-  editor.revealRange(new vscode.Range(dataLine - 4, 0, dataLine + 3, 0), vscode.TextEditorRevealType.InCenter);
-  await workbench.waitForTimeout(500);
-
-  return async () => {
-    for (const { configuration, key, value } of previousSettings.reverse()) {
+  const restore = async () => {
+    for (const { configuration, key, value } of [...previousSettings].reverse()) {
       await configuration.update(key, value, vscode.ConfigurationTarget.Global);
     }
     await workbench.setViewportSize(previousViewport);
@@ -3164,6 +3134,74 @@ async function prepareReleasedRDocumentScreenshotWorkbench(
     );
     await workbench.waitForTimeout(500);
   };
+
+  try {
+    await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    assert.deepEqual(
+      await workbench.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+      "The Quarto picker scene requires the standard 1440 by 900 editor viewport."
+    );
+    await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update(
+      "title",
+      "${activeEditorShort}${separator}Open Wrangler",
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update(
+      "colorTheme",
+      releasedJupyterScreenshotTheme(),
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+      10_000,
+      "the dark Quarto screenshot theme"
+    );
+    await closeVisibleWorkbenchPart(workbench, ".part.sidebar", [
+      "workbench.action.closeSidebar",
+      "workbench.action.toggleSidebarVisibility"
+    ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.auxiliarybar", [
+      "workbench.action.closeAuxiliaryBar",
+      "workbench.action.toggleAuxiliaryBar"
+    ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.panel", [
+      "workbench.action.closePanel",
+      "workbench.action.togglePanel"
+    ]);
+    await clearReleasedJupyterScreenshotTransientUi(workbench);
+
+    const matches = vscode.workspace.textDocuments.filter((document) => document.uri.toString() === source.toString());
+    assert.equal(matches.length, 1, "Quarto media capture requires one exact open source document.");
+    const document = matches[0]!;
+    const editor = await vscode.window.showTextDocument(document, {
+      preview: false,
+      viewColumn: vscode.ViewColumn.One
+    });
+    const dataLine = document
+      .getText()
+      .split("\n")
+      .findIndex((line) => line.includes(`${variableName} <-`));
+    assert.ok(dataLine >= 0, "The Quarto media fixture must contain its dataframe construction line.");
+    editor.selection = new vscode.Selection(dataLine, 0, dataLine, 0);
+    editor.revealRange(
+      new vscode.Range(Math.max(0, dataLine - 4), 0, dataLine + 3, 0),
+      vscode.TextEditorRevealType.InCenter
+    );
+    await workbench.waitForTimeout(500);
+    return restore;
+  } catch (error) {
+    await restore();
+    throw error;
+  }
 }
 
 async function invokeReleasedRDocumentTitleAction(
@@ -3172,8 +3210,9 @@ async function invokeReleasedRDocumentTitleAction(
   variableName: string,
   screenshotOutput?: string
 ): Promise<void> {
-  const restore = screenshotOutput
-    ? await prepareReleasedRDocumentScreenshotWorkbench(workbench, source)
+  const captureScreenshot = screenshotOutput !== undefined && process.platform === "linux";
+  const restore = captureScreenshot
+    ? await prepareReleasedRDocumentScreenshotWorkbench(workbench, source, variableName)
     : async () => {};
   try {
     await workbench.bringToFront();
@@ -3198,7 +3237,16 @@ async function invokeReleasedRDocumentTitleAction(
     await input.fill(variableName);
     const row = await releasedJupyterQuickPickRow(picker, variableName);
     assert.ok(row, `The R document title action did not expose ${JSON.stringify(variableName)}.`);
-    if (screenshotOutput) {
+    if (captureScreenshot) {
+      const commands = new Set(await vscode.commands.getCommands(true));
+      assert.ok(commands.has("notifications.hideToasts"), "Quarto media capture requires toast hiding support.");
+      await vscode.commands.executeCommand("notifications.hideToasts");
+      await workbench
+        .locator(".notifications-toasts .notification-toast:visible")
+        .first()
+        .waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+      await assertReleasedNotebookVariablePickerGeometry(picker, [variableName]);
+      await assertReleasedRDocumentPickerMediaGeometry(workbench, picker, variableName);
       mkdirSync(screenshotOutput, { recursive: true });
       recordAcceptanceProgress("jupyter-r:screenshot:quarto-picker");
       await captureNotebookWorkbenchScreenshot(
@@ -3217,6 +3265,39 @@ async function invokeReleasedRDocumentTitleAction(
     await picker.waitFor({ state: "hidden", timeout: 10_000 });
   } finally {
     await restore();
+  }
+}
+
+async function assertReleasedRDocumentPickerMediaGeometry(
+  workbench: Page,
+  picker: Locator,
+  variableName: string
+): Promise<void> {
+  const sourceLine = workbench
+    .locator(".part.editor .editor-group-container.active .view-lines .view-line:visible")
+    .filter({ hasText: `${variableName} <-` })
+    .first();
+  await sourceLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  const [lineText, lineBounds, pickerBounds] = await Promise.all([
+    sourceLine.innerText(),
+    sourceLine.boundingBox(),
+    picker.boundingBox()
+  ]);
+  assert.match(lineText, new RegExp(`${variableName}\\s*<-\\s*utils::read\\.csv`, "u"));
+  assert.ok(lineBounds, "The Quarto picker scene requires a measurable dataframe source line.");
+  assert.ok(pickerBounds, "The Quarto picker scene requires a measurable picker.");
+  const crop = { left: 80, top: 20, right: 1_360, bottom: 540 };
+  for (const [subject, bounds] of [
+    ["source line", lineBounds],
+    ["picker", pickerBounds]
+  ] as const) {
+    assert.ok(
+      bounds.x >= crop.left &&
+        bounds.y >= crop.top &&
+        bounds.x + bounds.width <= crop.right &&
+        bounds.y + bounds.height <= crop.bottom,
+      `The Quarto ${subject} must fit inside the README detail crop: ${JSON.stringify(bounds)}.`
+    );
   }
 }
 
@@ -7111,16 +7192,18 @@ async function captureReleasedRNotebookGroupByDraft(
     assert.equal(await testing.synchronizePanel(sessionId), true);
 
     await vscode.commands.executeCommand("openWrangler.codePreview.focus");
-    const codePreview = await waitForCodePreview(workbench, "total_revenue", "R");
-    const code = await codePreview.innerText();
-    assert.match(code, /\.ow_group_by\b/u);
-    assert.match(code, /total_revenue/u);
-    assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+    const codePreview = await waitForCodePreview(workbench, "open_wrangler_result <- local", "R");
+    const generatedCode = active.code ?? "";
+    assert.match(generatedCode, /\.ow_group_by\b/u);
+    assert.match(generatedCode, /total_revenue/u);
+    assert.doesNotMatch(generatedCode, /\b(?:pandas|polars|python)\b/iu);
     const sidebar = await arrangePackagedProductSidebar(workbench, "workflow");
     await sidebar
       .getByRole("tree", { name: /Cleaning Steps/u })
       .getByRole("treeitem", { name: /^Draft · Group and aggregate/u })
       .waitFor({ state: "visible", timeout: 10_000 });
+    await ensureCodePreviewHeight(workbench, 220);
+    await revealCodePreviewOperationLine(codePreview, ".ow_result <- .ow_group_by", "total_revenue");
 
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R editing screenshot");
     assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
@@ -17854,6 +17937,82 @@ async function waitForCodePreview(
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
   throw new Error(`The generated code preview did not expose ${JSON.stringify(expectedCode)}.`);
+}
+
+async function revealCodePreviewOperationLine(
+  codePreview: Locator,
+  operationText: string,
+  resultText: string
+): Promise<void> {
+  const scroller = codePreview.locator("xpath=..");
+  assert.ok(
+    (await scroller.getAttribute("class"))?.split(/\s+/u).includes("cm-scroller"),
+    "The generated-code preview must expose its CodeMirror scroller."
+  );
+  await scroller.evaluate((element) => {
+    const target = element as unknown as { scrollHeight: number; scrollLeft: number; scrollTop: number };
+    target.scrollLeft = 0;
+    target.scrollTop = target.scrollHeight;
+  });
+  const operationLine = codePreview.locator(".cm-line").filter({ hasText: operationText }).last();
+  await operationLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  await operationLine.scrollIntoViewIfNeeded();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const resultLine = codePreview.locator(".cm-line").filter({ hasText: resultText }).last();
+  await resultLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  const [operationLineText, resultLineText, operationBounds, resultBounds, scrollerBounds] = await Promise.all([
+    operationLine.innerText(),
+    resultLine.innerText(),
+    operationLine.boundingBox(),
+    resultLine.boundingBox(),
+    scroller.boundingBox()
+  ]);
+  assert.ok(
+    operationLineText.includes(operationText),
+    "The visible generated-code line must contain the operation call."
+  );
+  assert.ok(resultLineText.includes(resultText), "The visible generated-code line must contain the operation result.");
+  assert.ok(operationBounds, "The generated-code operation line must have measurable geometry.");
+  assert.ok(resultBounds, "The generated-code result line must have measurable geometry.");
+  assert.ok(scrollerBounds, "The generated-code preview must have measurable geometry.");
+  for (const [subject, bounds] of [
+    ["operation", operationBounds],
+    ["result", resultBounds]
+  ] as const) {
+    assert.ok(
+      bounds.y >= scrollerBounds.y - 1 && bounds.y + bounds.height <= scrollerBounds.y + scrollerBounds.height + 1,
+      `The generated-code ${subject} line must be fully visible in the Code Preview panel.`
+    );
+  }
+}
+
+async function ensureCodePreviewHeight(workbench: Page, minimumHeight: number): Promise<void> {
+  assert.ok(
+    Number.isFinite(minimumHeight) && minimumHeight >= 120,
+    "The generated-code preview minimum height must be a useful finite CSS-pixel value."
+  );
+  const panel = workbench.locator(".part.panel:visible").first();
+  await panel.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  const commands = new Set(await vscode.commands.getCommands(true));
+  assert.ok(
+    commands.has("workbench.action.focusPanel") && commands.has("workbench.action.increaseViewHeight"),
+    "The workbench must expose its native Code Preview focus and resize commands."
+  );
+  await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+  await vscode.commands.executeCommand("workbench.action.focusPanel");
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const bounds = await panel.boundingBox();
+    assert.ok(bounds, "The Code Preview panel must have measurable geometry.");
+    if (bounds.height >= minimumHeight) return;
+    await vscode.commands.executeCommand("workbench.action.increaseViewHeight");
+    await workbench.waitForTimeout(50);
+  }
+  const bounds = await panel.boundingBox();
+  assert.ok(bounds, "The enlarged Code Preview panel must have measurable geometry.");
+  assert.ok(
+    bounds.height >= minimumHeight,
+    `The Code Preview panel must be at least ${minimumHeight} CSS pixels high; received ${bounds.height}.`
+  );
 }
 
 async function closeVisibleWorkbenchPart(

@@ -90,7 +90,7 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
 - `gallery/notebook-r-editing.png`: complete R notebook workbench with a Group and aggregate draft, generated R, and
   the native cleaning history.
 - `gallery/r-quarto-variable-picker.png`: complete Quarto source document behind its native dataframe picker; its
-  1200 × 520 detail keeps the source cell and picker readable in the README.
+  1280 × 520 detail keeps the source cell and picker readable in the README.
 
 The cropped notebook and Quarto images use exact source pixels rather than resized workbenches. Each links to its
 complete accepted source scene.

@@ -36,8 +36,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - The Fill Missing Values method menu now groups column statistics, grouped statistics, ordered data, fallback
   columns, and manual replacement. The fallback choice is labeled **Fallback columns (same row)**, and the menu names
   the selected column type so it is clear why options appear or disappear.
-- The R gallery now shows a Quarto dataframe picker and a Group and aggregate draft on a 2,400-row orders dataframe
-  instead of the earlier Rename Column example.
+- Generated R now lays out Group and aggregate calls across several lines so the selected keys and output names are
+  readable in Code Preview.
+- Updated the R gallery with a Quarto dataframe picker and a grouped revenue example.
 
 ### Fixed
 

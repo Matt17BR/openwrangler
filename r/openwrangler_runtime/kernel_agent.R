@@ -3216,19 +3216,19 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_group_spec <- function(specification, aggregation = FALSE) {
-    fields <- c(
+    source_fields <- c(
       sprintf("position = %dL", specification$position),
       sprintf("name = %s", r_string(specification$name)),
       sprintf("kind = %s", r_string(specification$semanticsKind)),
       sprintf("ordered = %s", if (isTRUE(specification$ordered)) "TRUE" else "FALSE")
     )
-    if (aggregation) {
-      fields <- c(
-        fields,
+    fields <- if (aggregation) {
+      c(
+        sprintf("alias = %s", r_string(specification$alias)),
         sprintf("operation = %s", r_string(specification$operation)),
-        sprintf("alias = %s", r_string(specification$alias))
+        source_fields
       )
-    }
+    } else source_fields
     sprintf("list(%s)", paste(fields, collapse = ", "))
   }
 
@@ -3272,19 +3272,19 @@ openwrangler_r_kernel_agent <- local({
       } else if (step$kind %in% c("dropMissingRows", "dropDuplicates")) {
         lines <- c(lines, row_reduction_code_lines(step))
       } else if (identical(step$kind, "groupBy")) {
-        key_specs <- paste(
-          vapply(step$keys, r_group_spec, character(1L), USE.NAMES = FALSE),
-          collapse = ", "
+        key_specs <- vapply(step$keys, r_group_spec, character(1L), USE.NAMES = FALSE)
+        aggregation_specs <- vapply(
+          step$aggregations,
+          r_group_spec,
+          character(1L),
+          aggregation = TRUE,
+          USE.NAMES = FALSE
         )
-        aggregation_specs <- paste(
-          vapply(
-            step$aggregations,
-            r_group_spec,
-            character(1L),
-            aggregation = TRUE,
-            USE.NAMES = FALSE
-          ),
-          collapse = ", "
+        key_lines <- paste0("      ", key_specs, ifelse(seq_along(key_specs) < length(key_specs), ",", ""))
+        aggregation_lines <- paste0(
+          "      ",
+          aggregation_specs,
+          ifelse(seq_along(aggregation_specs) < length(aggregation_specs), ",", "")
         )
         guard_lines <- character()
         guarded <- c(step$keys, step$aggregations)
@@ -3297,11 +3297,15 @@ openwrangler_r_kernel_agent <- local({
         lines <- c(
           lines,
           guard_lines,
-          sprintf(
-            "  .ow_result <- .ow_group_by(.ow_result, list(%s), list(%s))",
-            key_specs,
-            aggregation_specs
-          )
+          "  .ow_result <- .ow_group_by(",
+          "    .ow_result,",
+          "    list(",
+          key_lines,
+          "    ),",
+          "    list(",
+          aggregation_lines,
+          "    )",
+          "  )"
         )
       } else if (identical(step$kind, "renameColumn")) {
         lines <- c(

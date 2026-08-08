@@ -1748,8 +1748,9 @@ function FillMissingFields({
           <FillReplacementInput backend={backend} kind={valueKind} defaultValue={savedValue} />
           {selectedColumn?.type === "string" && (
             <p className="panelNote">
-              For categorical columns, a specific value may convert the column to text. Most common value keeps the
-              category type.
+              {backend === "r"
+                ? "Character columns stay character. For factor columns, a new value is added as a level and the factor type is kept."
+                : "For categorical columns, a specific value may convert the column to text. Most common value keeps the category type."}
             </p>
           )}
         </>
