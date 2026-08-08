@@ -183,6 +183,9 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       "IRkernel",
       "jsonlite",
       "rlang",
+      "languageserver",
+      "rmarkdown",
+      "knitr",
       "tibble",
       "data.table",
       "collapse",
@@ -193,7 +196,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     assert.equal(prepared.supplementalRepository, selectedRepositories.supplementalRepository);
     assert.equal(
       prepared.packageRecord,
-      "IRkernel=1.3.2\njsonlite=2.0.0\nrlang=1.1.7\ntibble=3.3.1\ndata.table=1.18.2.1\ncollapse=2.1.7\nnanoparquet=0.5.1"
+      "IRkernel=1.3.2\njsonlite=2.0.0\nrlang=1.1.7\nlanguageserver=0.3.17\nrmarkdown=2.30\nknitr=1.51\ntibble=3.3.1\ndata.table=1.18.2.1\ncollapse=2.1.7\nnanoparquet=0.5.1"
     );
     assert.deepEqual(prepared.jupyterEnvironment, {
       dataDir: join(privateRoot, "d"),
@@ -291,7 +294,9 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     assert.match(prepared.dependencyInstall.input.args.at(-1), /repos = "[^"]+2026-06-01"/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /lib = \.ow_library/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /dependencies = NA/u);
-    assert.deepEqual(prepared.dependencyInstall.options, { timeoutMs: 240_000 });
+    assert.match(prepared.dependencyInstall.input.args.at(-1), /MAKEFLAGS = "-s"/u);
+    assert.equal((prepared.dependencyInstall.input.args.at(-1).match(/quiet = TRUE/gu) ?? []).length, 2);
+    assert.deepEqual(prepared.dependencyInstall.options, { timeoutMs: 600_000 });
     assert.equal(Object.isFrozen(prepared), true);
     assert.equal(Object.isFrozen(prepared.packages), true);
     assert.equal(Object.isFrozen(prepared.packageVersions), true);

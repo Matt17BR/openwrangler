@@ -66,6 +66,9 @@ export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   IRkernel: "1.3.2",
   jsonlite: "2.0.0",
   rlang: "1.1.7",
+  languageserver: "0.3.17",
+  rmarkdown: "2.30",
+  knitr: "1.51",
   tibble: "3.3.1",
   "data.table": "1.18.2.1",
   collapse: "2.1.7",
@@ -118,6 +121,7 @@ export function rAcceptanceRepositories(platform = process.platform) {
 
 function rAcceptanceInstall({ repository, supplementalRepository }) {
   return [
+    'Sys.setenv(MAKEFLAGS = "-s")',
     `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     '.ow_supplemental_packages <- c("collapse", "nanoparquet")',
     ".ow_core_packages <- setdiff(.ow_packages, .ow_supplemental_packages)",
@@ -126,13 +130,15 @@ function rAcceptanceInstall({ repository, supplementalRepository }) {
     "  .ow_core_packages,",
     "  lib = .ow_library,",
     `  repos = ${JSON.stringify(repository)},`,
-    "  dependencies = NA",
+    "  dependencies = NA,",
+    "  quiet = TRUE",
     ")",
     "utils::install.packages(",
     "  .ow_supplemental_packages,",
     "  lib = .ow_library,",
     `  repos = ${JSON.stringify(supplementalRepository)},`,
-    "  dependencies = NA",
+    "  dependencies = NA,",
+    "  quiet = TRUE",
     ")"
   ].join("\n");
 }
@@ -447,7 +453,7 @@ export async function prepareJupyterAcceptanceREnvironment(
       environment: commandEnvironment,
       label: "Released-Jupyter private R dependency installation"
     },
-    240_000
+    600_000
   );
 
   return Object.freeze({
