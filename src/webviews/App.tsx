@@ -970,7 +970,7 @@ export function App() {
               ? document.querySelector<HTMLElement>(
                   `[data-grid-row="${focusedCell.row}"][data-grid-column="${focusedCell.column}"]`
                 )
-              : document.querySelector<HTMLElement>('[data-testid="data-grid-scroller"] [tabindex="0"]');
+              : document.querySelector<HTMLElement>('[data-testid="data-grid-scroller"] [data-grid-row][tabindex="0"]');
             target?.focus({ preventScroll: true });
           });
         });
