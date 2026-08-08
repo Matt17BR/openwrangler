@@ -365,10 +365,12 @@ describe("App column projection", () => {
 
       expect(await screen.findByRole("alert")).toHaveTextContent("choose Reconnect");
       expect(screen.getByRole("cell", { name: "value-0-row-0" })).toBeVisible();
-      await waitFor(() => {
-        expect(document.activeElement).toHaveAttribute("data-grid-row", "0");
-        expect(document.activeElement).toHaveAttribute("data-grid-column", "0");
+      await act(async () => {
+        await animationFrame();
+        await animationFrame();
       });
+      expect(document.activeElement).toHaveAttribute("data-grid-row", "0");
+      expect(document.activeElement).toHaveAttribute("data-grid-column", "0");
     } finally {
       hasFocus.mockRestore();
     }
@@ -503,6 +505,10 @@ function dispatchMany(messages: HostMessage[]): void {
       window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin }));
     }
   });
+}
+
+function animationFrame(): Promise<void> {
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
 async function onlyRuntimeRequest(kind: string): Promise<Record<string, unknown>> {
