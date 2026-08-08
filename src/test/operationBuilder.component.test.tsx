@@ -1067,7 +1067,9 @@ describe("OperationBuilder", () => {
       />
     );
 
-    fireEvent.change(screen.getByLabelText("Method"), { target: { value: "fallbackColumns" } });
+    const method = screen.getByLabelText("Method");
+    expect(within(method).getByRole("option", { name: "Fallback columns (same row)" })).toBeInTheDocument();
+    fireEvent.change(method, { target: { value: "fallbackColumns" } });
     const first = screen.getByLabelText("Fallback 1");
     expect(first).toHaveValue("c:1");
     expect(within(first).queryByRole("option", { name: "value" })).toBeNull();

@@ -1460,7 +1460,7 @@ function FillMissingFields({
           )}
           {fillModes.includes("fallbackColumns") && (
             <optgroup label="Other columns">
-              <option value="fallbackColumns">Other columns (first available)</option>
+              <option value="fallbackColumns">Fallback columns (same row)</option>
             </optgroup>
           )}
           {fillModes.includes("value") && (

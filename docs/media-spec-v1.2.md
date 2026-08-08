@@ -62,7 +62,9 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
 - `filter-result.png`: 1440 × 861 with one exact viewing filter and synchronized sidebar state.
 - `gallery/histogram-hover.png` and `gallery/sort-priority.png`: 448 × 480 interaction details.
 - `gallery/column-search-wide.png`: 1440 × 865; `column-search-wide-detail.png`: 540 × 420.
-- `gallery/operation-catalog.png` and `gallery/operation-configuration.png`: complete selection/configuration.
+- `gallery/operation-catalog.png`: complete operation selection.
+- `gallery/operation-configuration.png`: grouped mean missing-value configuration for `revenue`, using `market` and
+  `segment` as group keys before preview.
 - `workflow.png`: 1440 × 870 draft, highlighted values, Apply / Discard, history, and native Polars code.
 - `gallery/applied-step-inspection.png`: 1440 × 870; detail: 995 × 320.
 - `gallery/latest-step-edited.png` and `gallery/latest-step-undone.png`: 1440 × 865; details: 448 × 440.

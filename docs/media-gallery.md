@@ -68,11 +68,11 @@ for very wide dataframes.
 <table>
   <tr>
     <td width="50%"><a href="images/readme/v1.2/gallery/operation-catalog.png"><img alt="The grouped Open Wrangler cleaning-operation catalog" src="images/readme/v1.2/gallery/operation-catalog.png" width="960"></a></td>
-    <td width="50%"><a href="images/readme/v1.2/gallery/operation-configuration.png"><img alt="Configuring a Formula column operation before preview" src="images/readme/v1.2/gallery/operation-configuration-detail.png" width="510"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/operation-configuration.png"><img alt="Filling missing revenue values with the mean for each market and segment" src="images/readme/v1.2/gallery/operation-configuration-detail.png" width="510"></a></td>
   </tr>
   <tr>
     <td>Search or browse 28 operations, including custom code and transformations inferred from examples.</td>
-    <td>Edit the operation parameters, then choose <strong>Preview changes</strong> to create a draft.</td>
+    <td>Choose methods that fit the column type, including statistics by group, interpolation, ordered fills, and same-row fallbacks.</td>
   </tr>
 </table>
 

@@ -4294,7 +4294,7 @@ async function exerciseReleasedRFillMissingJourney(
     "Linear interpolation",
     "Previous value",
     "Next value",
-    "Other columns (first available)",
+    "Fallback columns (same row)",
     "Specific value"
   ]);
   await fillMode.selectOption("mean");
@@ -19360,15 +19360,24 @@ async function capturePackagedOperationDialogScenes(
 
     recordAcceptanceProgress("verify:screenshots:file-scenes:operation-configuration");
     const search = dialog.getByPlaceholder("Search operations");
-    await search.fill("formula");
-    await dialog.getByRole("button", { name: /^Formula column/u }).click();
+    await search.fill("fill missing");
+    await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+    const active = testing.activeSession();
+    assert.ok(active, "The missing-value configuration capture requires one active session.");
+    await dialog.getByLabel("Column", { exact: true }).selectOption(columnReference(active.metadata, "revenue").id);
+    await dialog.getByLabel("Method", { exact: true }).selectOption("groupedMean");
+    const groupBy = dialog.getByRole("group", { name: "Group by", exact: true });
+    const selectedKeys = groupBy.getByRole("checkbox", { checked: true });
+    for (let index = (await selectedKeys.count()) - 1; index >= 0; index -= 1) {
+      await selectedKeys.nth(index).uncheck();
+    }
+    await groupBy.getByRole("checkbox", { name: "market", exact: true }).check();
+    await groupBy.getByRole("checkbox", { name: "segment", exact: true }).check();
+    await groupBy.getByText("Selected (2): market, segment", { exact: true }).waitFor({ state: "visible" });
     await dialog
-      .getByLabel("Left column", { exact: true })
-      .selectOption(columnReference(testing.activeSession()!.metadata, "revenue").id);
-    await dialog.getByLabel("Operator", { exact: true }).selectOption("add");
-    await dialog.getByLabel("Numeric value", { exact: true }).fill("500");
-    await dialog.getByLabel("New column", { exact: true }).fill("projected_revenue");
-    await dialog.getByRole("heading", { name: "Formula column", exact: true }).waitFor({ state: "visible" });
+      .getByText("Filters and sorts in the current view are ignored", { exact: false })
+      .waitFor({ state: "visible" });
+    await dialog.getByRole("heading", { name: "Fill missing values", exact: true }).waitFor({ state: "visible" });
     await dialog.getByRole("button", { name: "Preview changes", exact: true }).waitFor({ state: "visible" });
     await assertPackagedOperationDialogGeometry(dialog, "configuration");
     await clearPackagedProductSceneTransientUi(workbench);
