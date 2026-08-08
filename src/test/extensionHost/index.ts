@@ -3509,6 +3509,17 @@ async function assertReleasedNativeREditorTooling(): Promise<boolean> {
   }
   const quarto = vscode.workspace.getConfiguration("quarto").get<string>("path");
   assert.ok(quarto && path.isAbsolute(quarto) && existsSync(quarto), "Quarto must use the pinned private CLI.");
+  const quartoConfiguration = vscode.workspace.getConfiguration("quarto");
+  assert.equal(
+    quartoConfiguration.get<string>("render.previewType"),
+    "internal",
+    "The native editor journey must keep Quarto previews inside VS Code."
+  );
+  assert.equal(
+    quartoConfiguration.get<boolean>("render.previewReveal"),
+    true,
+    "The native editor journey must reveal the Quarto preview."
+  );
   assert.equal(
     execFileSync(quarto, ["--version"], { encoding: "utf8", timeout: 30_000 }).trim(),
     "1.10.18",
@@ -3528,7 +3539,7 @@ async function openReleasedNativeQuartoPreview(
   await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
   const outputPath = source.fsPath.replace(/\.qmd$/u, ".html");
   rmSync(outputPath, { force: true });
-  const priorTabs = new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs));
+  assert.deepEqual(releasedQuartoPreviewTabs(), [], "The Quarto journey must start without an existing preview tab.");
   const priorTerminals = new Set(vscode.window.terminals);
   let cleaned = false;
   let previewTabs: vscode.Tab[] = [];
@@ -3536,14 +3547,7 @@ async function openReleasedNativeQuartoPreview(
   let previewOwnershipFrozen = false;
   const captureOwnedUi = () => {
     if (previewOwnershipFrozen) return;
-    previewTabs = vscode.window.tabGroups.all
-      .flatMap((group) => group.tabs)
-      .filter(
-        (tab) =>
-          !priorTabs.has(tab) &&
-          tab.input instanceof vscode.TabInputWebview &&
-          tab.input.viewType === "quarto.previewView"
-      );
+    previewTabs = releasedQuartoPreviewTabs();
     previewTerminals = vscode.window.terminals.filter(
       (terminal) => !priorTerminals.has(terminal) && terminal.name === "Quarto Preview"
     );
@@ -3611,6 +3615,15 @@ async function openReleasedNativeQuartoPreview(
     }
     throw error;
   }
+}
+
+function releasedQuartoPreviewTabs(): vscode.Tab[] {
+  return vscode.window.tabGroups.all
+    .flatMap((group) => group.tabs)
+    .filter((tab) => {
+      const input = tab.input as { readonly viewType?: unknown };
+      return input.viewType === "quarto.previewView" || tab.label === "Quarto Preview";
+    });
 }
 
 function releasedRenderedHtmlSnapshot(

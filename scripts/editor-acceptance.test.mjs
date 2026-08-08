@@ -190,6 +190,18 @@ test("ordinary Quarto acceptance does not require a headless preview webview", a
   );
   assert.match(journey, /if \(requireVisiblePreview\) \{/u);
   assert.match(journey, /Quarto media capture must open one new internal preview tab/u);
+  assert.match(journey, /releasedQuartoPreviewTabs\(\)/u);
+  assert.doesNotMatch(journey, /priorTabs|instanceof vscode\.TabInputWebview/u);
+});
+
+test("native R tooling pins Quarto to an internal revealed preview", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const tooling = source.slice(
+    source.indexOf("async function assertReleasedNativeREditorTooling("),
+    source.indexOf("async function openReleasedNativeQuartoPreview(")
+  );
+  assert.match(tooling, /get<string>\("render\.previewType"\),\s*"internal"/u);
+  assert.match(tooling, /get<boolean>\("render\.previewReveal"\),\s*true/u);
 });
 
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
