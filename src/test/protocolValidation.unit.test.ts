@@ -879,6 +879,35 @@ describe("protocol-v2 response validation", () => {
     ).toBe(false);
   });
 
+  it("accepts remaining missing-value counts only for fill previews", () => {
+    const preview = responses.find((response) => response.kind === "stepPreview");
+    expect(preview?.kind).toBe("stepPreview");
+    if (preview?.kind !== "stepPreview") return;
+    const fillPreview = {
+      ...preview,
+      metadata: {
+        ...preview.metadata,
+        draftStep: {
+          id: "fill-1",
+          kind: "fillMissingValues",
+          params: { column: valueReference, replacement: { kind: "integer", value: "0" } }
+        }
+      },
+      remainingMissingCells: 1
+    };
+
+    expect(isOpenWranglerResponse(fillPreview)).toBe(true);
+    expect(isOpenWranglerResponse({ ...fillPreview, remainingMissingCells: undefined })).toBe(false);
+    expect(isOpenWranglerResponse({ ...fillPreview, remainingMissingCells: -1 })).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...fillPreview,
+        remainingMissingCells: fillPreview.metadata.shape.rows! + 1
+      })
+    ).toBe(false);
+    expect(isOpenWranglerResponse({ ...preview, remainingMissingCells: 0 })).toBe(false);
+  });
+
   it("rejects incomplete and cross-variant response payloads", () => {
     expect(isOpenWranglerResponse({ kind: "summary", revision: 1, viewRequestId: "view-1" })).toBe(false);
     expect(isOpenWranglerResponse({ kind: "datasetStats", revision: 1, viewRequestId: "view-1", stats: {} })).toBe(

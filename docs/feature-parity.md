@@ -59,7 +59,8 @@ group is missing, those cells stay missing; tied most-common values do too. Row 
 methods ignore both null and NaN. Floating-point columns can interpolate along one numeric, date, or date-time
 coordinate. The coordinate must be complete, finite, and unique. Only missing runs with finite values on both sides
 are filled; an optional limit leaves longer runs untouched. The calculation uses coordinate distance and returns rows
-to their original order. When a global fill needs a value, a tie, an all-missing column, or an undefined mean asks the
+to their original order. Every draft reports the exact number of target values that are still missing after the
+preview. When a global fill needs a value, a tie, an all-missing column, or an undefined mean asks the
 user for another method. A no-op keeps the exact native column type.
 On Python engines, a specific value or a fallback from a different categorical domain may widen the result to text;
 the preview shows that type change. The most-common method uses an existing value and keeps its category type. Integer

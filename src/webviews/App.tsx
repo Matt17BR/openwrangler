@@ -98,6 +98,7 @@ export function App() {
   const [operationKind, setOperationKind] = useState<OperationKind | undefined>();
   const [editingStep, setEditingStep] = useState<TransformStep | undefined>();
   const [diff, setDiff] = useState<DataDiff | undefined>();
+  const [remainingMissingCells, setRemainingMissingCells] = useState<number | undefined>();
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
   const [stepInspection, setStepInspection] = useState<StepInspectionResponse | undefined>();
   const [pendingStepInspection, setPendingStepInspection] = useState<PendingStepInspection | undefined>();
@@ -1018,6 +1019,7 @@ export function App() {
           return;
         }
         setDiff(response.presentation.draft?.diff);
+        setRemainingMissingCells(response.presentation.draft?.remainingMissingCells);
         setDraftBefore(response.presentation.draft ? { schema: response.presentation.draft.beforeSchema } : undefined);
         setDraftWarnings(response.presentation.draft?.warnings ?? []);
         return;
@@ -1345,6 +1347,7 @@ export function App() {
         setStepInspectionError(undefined);
         setDraftBefore(undefined);
         setDiff(undefined);
+        setRemainingMissingCells(undefined);
         setDraftWarnings([]);
         resetViewProfiling();
         summaryOwnersByColumnId.current.clear();
@@ -1468,6 +1471,7 @@ export function App() {
           storeGoToColumnRequest(undefined);
         }
         setDiff(response.kind === "stepPreview" ? response.diff : undefined);
+        setRemainingMissingCells(response.kind === "stepPreview" ? response.remainingMissingCells : undefined);
         setDraftBefore(
           response.kind === "stepPreview" && previous
             ? {
@@ -2485,6 +2489,11 @@ export function App() {
                 {draftDiffLabels(diff, displayPage?.rows.length ?? 0).map((label) => (
                   <span key={label}>{label}</span>
                 ))}
+                {remainingMissingCells !== undefined && (
+                  <span role="status" aria-live="polite" aria-atomic="true">
+                    {fillMissingResultLabel(remainingMissingCells, metadata.draftStep)}
+                  </span>
+                )}
               </div>
             )}
             {draftWarnings.length > 0 && (
@@ -2866,6 +2875,7 @@ interface SessionPresentationMessage {
     code: string;
     draft?: {
       diff: DataDiff;
+      remainingMissingCells?: number;
       warnings: string[];
       beforeSchema: ColumnSchema[];
     };
@@ -3095,6 +3105,16 @@ function draftDiffLabels(diff: DataDiff, displayedRowCount: number): string[] {
 
 function pluralize(value: number, singular: string): string {
   return value === 1 ? singular : `${singular}s`;
+}
+
+function fillMissingResultLabel(remaining: number, step: TransformStep): string {
+  if (step.kind !== "fillMissingValues") return "";
+  const column = step.params.column.name;
+  return remaining === 0
+    ? `No missing values remain in ${column}`
+    : `${remaining.toLocaleString()} missing ${pluralize(remaining, "value")} ${
+        remaining === 1 ? "remains" : "remain"
+      } in ${column}`;
 }
 
 function sessionOpenProgressHeading(stage: SessionOpenProgressStage): string {

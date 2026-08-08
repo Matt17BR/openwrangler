@@ -6,6 +6,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
+- Fill Missing Values previews now report the exact number of values that are still missing in the target column.
+  The count covers the complete cleaned dataframe, not just the visible grid block.
 - Fill Missing Values can now use the previous or next value after sorting by one or more explicit columns. An
   optional maximum gap leaves longer missing runs untouched. The calculation order is part of the cleaning step and
   does not reuse viewing sorts.

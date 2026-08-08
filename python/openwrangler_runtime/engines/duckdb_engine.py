@@ -573,6 +573,22 @@ class DuckDBEngine(DataFrameEngine):
                 summaries.append(summary)
         return summaries
 
+    def missing_count(self, frame: Any, column_position: int) -> int:
+        columns = self._visible_columns(frame)
+        if (
+            not isinstance(column_position, int)
+            or isinstance(column_position, bool)
+            or column_position < 0
+            or column_position >= len(columns)
+        ):
+            raise EngineError("The selected column is unavailable for missing-value counting.")
+        column = columns[column_position]
+        raw_types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
+        identifier = _quote_ident(column)
+        valid = _valid_predicate(identifier, raw_types[column])
+        result = self._terminal_scalar(frame, f"SELECT count(*) FILTER (WHERE NOT ({valid})) FROM ow")
+        return int(result or 0)
+
     def header_stats(self, frame: Any) -> dict[str, Any]:
         frame = self.normalize(frame)
         visible = self._visible_columns(frame)

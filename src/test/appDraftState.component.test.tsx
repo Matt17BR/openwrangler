@@ -106,6 +106,56 @@ describe("App draft state boundaries", () => {
     });
   });
 
+  it("shows the exact missing-value result for a fill draft and restores it with the session presentation", async () => {
+    const draft: TransformStep = {
+      id: "fill-a",
+      kind: "fillMissingValues",
+      params: { column: { id: "c:a", name: "a" }, replacement: { kind: "string", value: "unknown" } }
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({
+      kind: "stepPreview",
+      revision: 3,
+      metadata: { ...metadata, revision: 3, draftStep: draft },
+      page,
+      diff: emptyDiff(),
+      code: "def clean_data(df):\n    return df",
+      remainingMissingCells: 1
+    });
+
+    const review = await screen.findByRole("region", { name: "Draft review" });
+    expect(within(review).getByRole("status")).toHaveTextContent("1 missing value remains in a");
+
+    dispatch({
+      kind: "sessionPresentation",
+      presentation: {
+        sessionId: "session",
+        revision: 3,
+        code: "def clean_data(df):\n    return df",
+        draft: {
+          diff: emptyDiff(),
+          remainingMissingCells: 0,
+          warnings: [],
+          beforeSchema: committedSchema
+        }
+      }
+    });
+
+    expect(within(review).getByRole("status")).toHaveTextContent("No missing values remain in a");
+    expect(within(review).queryByText("1 missing value remains in a")).toBeNull();
+
+    dispatch({
+      kind: "planUpdated",
+      revision: 4,
+      metadata: { ...metadata, revision: 4 },
+      page,
+      code: "def clean_data(df):\n    return df"
+    });
+
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("keeps an empty cleaning plan out of the way and exposes cleaned-data export", async () => {
     render(<App />);
     dispatch({

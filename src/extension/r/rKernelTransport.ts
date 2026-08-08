@@ -423,7 +423,8 @@ export class RKernelSessionTransport {
       revision: response.revision,
       page: response.page,
       diff: response.diff,
-      code: response.code
+      code: response.code,
+      ...(response.remainingMissingCells === undefined ? {} : { remainingMissingCells: response.remainingMissingCells })
     });
   }
 

@@ -797,6 +797,12 @@ export class RKernelBridge implements OpenWranglerBridge {
               : undefined
       );
       assertMutationDiff(request.step, inputSchema, targetSchema, inputRows, targetRows, result.page, result.diff);
+      if ((request.step.kind === "fillMissingValues") !== (result.remainingMissingCells !== undefined)) {
+        throw new Error("The R kernel returned a missing-value count for the wrong draft operation.");
+      }
+      if (result.remainingMissingCells !== undefined && result.remainingMissingCells > result.page.shape.rows) {
+        throw new Error("The R kernel returned more missing values than rows in the dataframe.");
+      }
 
       confirmed.revision = result.revision;
       confirmed.schema = schemaFromContract(result.page);
@@ -823,6 +829,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         page: gridPageFromContract(result.page),
         diff: copyDiff(result.diff),
         code: result.code,
+        ...(result.remainingMissingCells === undefined ? {} : { remainingMissingCells: result.remainingMissingCells }),
         warnings:
           fallbackFillTargetId !== undefined &&
           result.page.schema.find((column) => column.id === fallbackFillTargetId)?.nullable === true

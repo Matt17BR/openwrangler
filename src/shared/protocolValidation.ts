@@ -422,7 +422,11 @@ function isValuesResponse(value: unknown): boolean {
 }
 
 function isStepPreviewResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "revision", "metadata", "page", "diff", "code"], ["warnings"]);
+  const candidate = exactRecord(
+    value,
+    ["kind", "revision", "metadata", "page", "diff", "code"],
+    ["remainingMissingCells", "warnings"]
+  );
   return (
     candidate !== undefined &&
     candidate.kind === "stepPreview" &&
@@ -431,6 +435,12 @@ function isStepPreviewResponse(value: unknown): boolean {
     isGridPage(candidate.page, candidate.metadata.schema) &&
     isDataDiff(candidate.diff, candidate.metadata.schema) &&
     isString(candidate.code) &&
+    optional(candidate, "remainingMissingCells", isNonNegativeInteger) &&
+    (candidate.remainingMissingCells === undefined ||
+      (isNonNegativeInteger(candidate.remainingMissingCells) &&
+        (candidate.metadata.shape.rows === null ||
+          candidate.remainingMissingCells <= candidate.metadata.shape.rows))) &&
+    (candidate.metadata.draftStep?.kind === "fillMissingValues") === (candidate.remainingMissingCells !== undefined) &&
     optional(candidate, "warnings", (warnings) => isArrayOf(warnings, isString))
   );
 }
