@@ -6,6 +6,7 @@ import type { ExtensionContext } from "vscode";
 import type { SessionCoordinator, ActiveSessionSnapshot } from "../extension/sessionCoordinator";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
 import type { PythonLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
+import type { RLiveVariableProvider } from "../extension/r/rInteractiveCommands";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 type NotebookInsertionStatus = "applied" | "stale" | "indeterminate" | "rejected";
@@ -259,9 +260,68 @@ describe("native operation commands", () => {
           arguments: ["live-frame-handle"]
         })
       ],
-      ["Refresh live dataframes", expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })],
+      ["Refresh Python dataframes", expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })],
       ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
     ]);
+  });
+
+  it("shows dataframes discovered in the exact active R terminal", () => {
+    const variableProvider: RLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "ready",
+        terminalLabel: "R",
+        message: "2 loaded",
+        variables: [
+          {
+            handle: "r-frame-handle",
+            label: "shots",
+            description: "R · tibble",
+            detail: "R"
+          },
+          {
+            handle: "r-table-handle",
+            label: "accounts",
+            description: "R · data.table",
+            detail: "R"
+          }
+        ]
+      }),
+      dispose: () => undefined
+    };
+    const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
+    registered.setActiveSession(undefined);
+
+    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
+      [
+        [
+          "shots",
+          "R · tibble",
+          expect.objectContaining({
+            command: "openWrangler.openCachedRInteractiveVariable",
+            arguments: ["r-frame-handle"]
+          })
+        ],
+        [
+          "accounts",
+          "R · data.table",
+          expect.objectContaining({
+            command: "openWrangler.openCachedRInteractiveVariable",
+            arguments: ["r-table-handle"]
+          })
+        ],
+        [
+          "Refresh R dataframes",
+          "2 loaded",
+          expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
+        ],
+        [
+          "Open a data file",
+          "Choose CSV, Parquet, Excel, or JSONL",
+          expect.objectContaining({ command: "openWrangler.openPath" })
+        ]
+      ]
+    );
   });
 
   it("routes cleaning-step selection through the exact active session and rejects stale steps", async () => {
@@ -1212,7 +1272,8 @@ function register(
   snapshot: ActiveSessionSnapshot,
   notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number },
   textDocumentOrigin?: unknown,
-  pythonVariables?: PythonLiveVariableProvider
+  pythonVariables?: PythonLiveVariableProvider,
+  rVariables?: RLiveVariableProvider
 ): {
   setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void;
   setSession(snapshot: ActiveSessionSnapshot): void;
@@ -1269,7 +1330,7 @@ function register(
     extensionPath: "/tmp/openwrangler",
     subscriptions: []
   } as unknown as ExtensionContext;
-  const nativeViews = registerNativeViews(context, coordinator, pythonVariables);
+  const nativeViews = registerNativeViews(context, coordinator, pythonVariables, rVariables);
   return {
     setActiveSession(nextSnapshot) {
       activeSnapshot = nextSnapshot;

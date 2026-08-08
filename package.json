@@ -155,6 +155,9 @@
     "onCommand:openWrangler.runPythonCellAndOpenVariable",
     "onCommand:openWrangler.refreshNotebookVariables",
     "onCommand:openWrangler.runRDocument",
+    "onCommand:openWrangler.openRInteractiveVariable",
+    "onCommand:openWrangler.refreshRInteractiveVariables",
+    "onCommand:openWrangler.openCachedRInteractiveVariable",
     "onCommand:openWrangler.chooseNotebookPreviewProvider",
     "onCommand:openWrangler.checkJupyterIntegration",
     "onCommand:openWrangler.changeRuntime",
@@ -249,8 +252,8 @@
       },
       {
         "command": "openWrangler.refreshNotebookVariables",
-        "title": "Open Wrangler: Refresh Live Dataframes",
-        "shortTitle": "Refresh Live Dataframes",
+        "title": "Open Wrangler: Refresh Python Dataframes",
+        "shortTitle": "Refresh Python Dataframes",
         "category": "Open Wrangler",
         "icon": "$(refresh)"
       },
@@ -267,6 +270,27 @@
           "light": "media/action-icon-light.svg",
           "dark": "media/action-icon-dark.svg"
         }
+      },
+      {
+        "command": "openWrangler.openRInteractiveVariable",
+        "title": "Open Wrangler: Open Dataframe from Active R Session…",
+        "shortTitle": "Open in Open Wrangler",
+        "category": "Open Wrangler",
+        "icon": {
+          "light": "media/action-icon-light.svg",
+          "dark": "media/action-icon-dark.svg"
+        }
+      },
+      {
+        "command": "openWrangler.refreshRInteractiveVariables",
+        "title": "Open Wrangler: Refresh R Dataframes",
+        "shortTitle": "Refresh R Dataframes",
+        "category": "Open Wrangler",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "openWrangler.openCachedRInteractiveVariable",
+        "title": "Open Wrangler: Open R Dataframe"
       },
       {
         "command": "openWrangler.checkJupyterIntegration",
@@ -458,7 +482,7 @@
     "viewsWelcome": [
       {
         "view": "openWrangler.operations",
-        "contents": "Open a data file, notebook dataframe, or trusted R document to start exploring.\n[Open a data file](command:openWrangler.openPath)"
+        "contents": "Open a data file or a dataframe already running in Python or R.\n[Open a data file](command:openWrangler.openPath)\n[Refresh R dataframes](command:openWrangler.refreshRInteractiveVariables)"
       }
     ],
     "jupyterVariableViewers": [
@@ -579,7 +603,12 @@
         },
         {
           "command": "openWrangler.runRDocument",
-          "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "isWorkspaceTrusted && !rSessionActive && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "group": "navigation@1"
+        },
+        {
+          "command": "openWrangler.openRInteractiveVariable",
+          "when": "isWorkspaceTrusted && rSessionActive && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
           "group": "navigation@1"
         },
         {
@@ -603,6 +632,11 @@
           "command": "openWrangler.runPythonCellAndOpenVariable",
           "when": "editorFocus && editorLangId == python && jupyter.hascodecells && !notebookEditorFocused && isWorkspaceTrusted",
           "group": "navigation@47"
+        },
+        {
+          "command": "openWrangler.openRInteractiveVariable",
+          "when": "isWorkspaceTrusted && rSessionActive && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "group": "navigation@48"
         },
         {
           "command": "openWrangler.runRDocument",
@@ -632,6 +666,10 @@
         },
         {
           "command": "openWrangler.openCachedNotebookVariable",
+          "when": "false"
+        },
+        {
+          "command": "openWrangler.openCachedRInteractiveVariable",
           "when": "false"
         },
         {
