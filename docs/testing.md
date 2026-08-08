@@ -63,7 +63,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
   Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor,
-  and Ceiling lifecycles, variable replacement, native CSV export, malformed requests, and close cases. The export
+  Ceiling, and Group and aggregate lifecycles, variable replacement, native CSV export, malformed requests, and close
+  cases. The export
   checks a pending draft and stale revision, full committed rows despite an active view, duplicate names and R types,
   repeated offset reads, explicit close, and session-close cleanup.
   The R tests check the fixed diagnostics for unsupported frames,
@@ -78,7 +79,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   `jsonlite` or `rlang`, malformed output, and notebook/kernel replacement. Host and webview tests cover the native
   picker, coordinator route, R runtime identity,
   Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type,
-  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling
+  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and
+  Group and aggregate
   capabilities, generated-code commands, bounded two-dimensional pages, and enabled viewing filters, sorts,
   profiles, and value selection. The
   production-browser accessibility journey covers explicit row labels,
