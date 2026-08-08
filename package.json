@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "Explore and clean dataframes in VS Code and Cursor with Pandas, Polars, DuckDB, or R. View local PySpark DataFrames in notebooks. Run R files and supported R Markdown/Quarto cells on macOS or Linux.",
-  "version": "1.99.1",
+  "version": "1.99.2",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": true,

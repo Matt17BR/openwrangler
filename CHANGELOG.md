@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.2] - 2026-08-08
+
 ### Added
 
 - R can now group by one or more columns and calculate sum, mean, median, minimum, maximum, count, distinct count,
