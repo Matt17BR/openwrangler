@@ -1590,6 +1590,143 @@ assert_error(
 )
 assert_identical(fallback_table, fallback_table_before, "fallback fill mutated its source data.table")
 
+directional_frame <- data.frame(
+  sequence = c(4L, 1L, 3L, 2L, 6L, 5L),
+  target = ordered(c(NA, "start", NA, NA, NA, "end"), levels = c("start", "end")),
+  row.names = paste0("directional-", 1:6),
+  check.names = FALSE
+)
+directional_before <- unserialize(serialize(directional_frame, NULL, version = 3L))
+directional_forward <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_frame,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "forward"
+)
+assert_identical(
+  directional_forward$target,
+  ordered(c("start", "start", "start", "start", "end", "end"), levels = c("start", "end")),
+  "forward directional fill ignored explicit order or failed to restore source row order"
+)
+assert_identical(
+  row.names(directional_forward),
+  row.names(directional_frame),
+  "directional fill changed explicit row names"
+)
+assert_identical(levels(directional_forward$target), levels(directional_frame$target), "directional fill changed factor levels")
+
+directional_limited <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_frame,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "forward",
+  2L
+)
+assert_identical(
+  directional_limited$target,
+  ordered(c(NA, "start", NA, NA, "end", "end"), levels = c("start", "end")),
+  "max_gap partially filled a missing run that exceeded the whole-run threshold"
+)
+
+directional_boundaries <- data.frame(
+  sequence = c(3L, 1L, 5L, 2L, 4L),
+  target = c("middle", NA_character_, NA_character_, NA_character_, NA_character_),
+  check.names = FALSE
+)
+directional_backward <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_boundaries,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "backward",
+  2L
+)
+assert_identical(
+  directional_backward$target,
+  c("middle", "middle", NA_character_, "middle", NA_character_),
+  "backward directional fill did not fill the leading boundary or incorrectly filled the trailing boundary"
+)
+
+directional_table <- data.table::data.table(
+  sequence = c(2L, 1L, 3L),
+  target = as.POSIXct(c(NA, "2026-01-01 12:00:00", NA), tz = "Europe/Berlin")
+)
+data.table::setkey(directional_table, sequence)
+directional_table_before <- data.table::copy(directional_table)
+directional_table_result <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_table,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "forward"
+)
+assert_identical(class(directional_table_result), c("data.table", "data.frame"), "directional fill changed data.table class")
+assert_identical(data.table::key(directional_table_result), "sequence", "directional fill dropped an unaffected data.table key")
+assert_identical(attr(directional_table_result$target, "tzone"), "Europe/Berlin", "directional fill changed timezone")
+assert_true(!anyNA(directional_table_result$target), "directional fill did not fill ordered datetime gaps")
+assert_identical(directional_table, directional_table_before, "directional fill mutated its source data.table")
+
+directional_collapse <- collapse::qTBL(data.frame(sequence = 1:3, target = c(1L, NA_integer_, 3L)))
+directional_collapse_result <- openwrangler_r_frame_contract$fill_missing_directional_at(
+  directional_collapse,
+  2L,
+  "target",
+  1L,
+  "sequence",
+  "asc",
+  "last",
+  "forward"
+)
+assert_identical(
+  class(directional_collapse_result),
+  c("tbl_df", "tbl", "data.frame"),
+  "directional fill changed collapse tibble flavor"
+)
+assert_identical(directional_collapse_result$target, c(1L, 1L, 3L), "directional fill changed integer dtype")
+assert_identical(directional_frame, directional_before, "directional fill mutated its source data.frame")
+
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_directional_at(
+    directional_frame,
+    2L,
+    "target",
+    2L,
+    "target",
+    "asc",
+    "last",
+    "forward"
+  ),
+  "directional ordering selection"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_directional_at(
+    directional_frame,
+    2L,
+    "target",
+    1L,
+    "sequence",
+    "asc",
+    "last",
+    "forward",
+    0L
+  ),
+  "max_gap must be positive"
+)
+
 cast_cases <- list(
   list(
     dtype = "string",

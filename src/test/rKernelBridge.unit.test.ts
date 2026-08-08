@@ -3266,6 +3266,137 @@ describe("canonical R kernel bridge", () => {
     });
   });
 
+  it("dispatches directional R fills with explicit stable ordering and conservative nullability", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-directional",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:6", name: "missing" },
+        replacement: {
+          kind: "directional",
+          direction: "forward",
+          orderBy: [
+            {
+              column: { id: "r:c:0", name: "value" },
+              direction: "asc",
+              nulls: "last"
+            }
+          ],
+          maxGap: 2
+        }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: source,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:6", nullable: true })]),
+        draftStep: {
+          params: {
+            replacement: {
+              kind: "directional",
+              direction: "forward",
+              orderBy: [{ column: { id: "r:c:0", name: "value" } }],
+              maxGap: 2
+            }
+          }
+        }
+      }
+    });
+
+    const dispatched = transport.previewStep.mock.calls[0]?.[2] as RKernelTransformStep | undefined;
+    if (!dispatched || dispatched.kind !== "fillMissingValues") throw new Error("expected a dispatched fill step");
+    if (dispatched.params.replacement.kind !== "directional") throw new Error("expected a directional fill");
+    expect(Object.isFrozen(dispatched.params.replacement)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.orderBy)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.orderBy[0])).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.orderBy[0].column)).toBe(true);
+
+    if (step.params.replacement.kind !== "directional") throw new Error("expected a directional fill");
+    step.params.replacement.orderBy[0].column.name = "caller mutation";
+    expect(preview).toMatchObject({
+      metadata: {
+        draftStep: {
+          params: { replacement: { orderBy: [{ column: { id: "r:c:0", name: "value" } }] } }
+        }
+      }
+    });
+  });
+
+  it("rejects invalid directional R ordering before dispatch", async () => {
+    const invalidReplacements = [
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: { id: "r:c:6", name: "missing" }, direction: "asc", nulls: "last" }]
+      },
+      {
+        kind: "directional",
+        direction: "backward",
+        orderBy: [{ column: { id: "r:c:0", name: "stale" }, direction: "asc", nulls: "last" }]
+      },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [{ column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" }],
+        maxGap: 0
+      },
+      {
+        kind: "directional",
+        direction: "sideways",
+        orderBy: [{ column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" }]
+      }
+    ] as const;
+
+    for (const [index, replacement] of invalidReplacements.entries()) {
+      const transport = fakeTransport(frameContract());
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step: {
+            id: `r-fill-invalid-directional-${index}`,
+            kind: "fillMissingValues",
+            params: {
+              column: { id: "r:c:6", name: "missing" },
+              replacement
+            }
+          } as unknown as FillMissingValuesTransformStep,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+    }
+  });
+
   it("rejects invalid R fallback-column references before dispatch and accepts a keyed fallback", async () => {
     const fallbackValue: RFrameCell = {
       kind: "string",

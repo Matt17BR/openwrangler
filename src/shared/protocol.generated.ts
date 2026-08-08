@@ -140,6 +140,15 @@ export type FillMissingReplacement =
       columns: FillMissingFallbackColumnReferenceArray;
     }
   | {
+      kind: "directional";
+      direction: "forward" | "backward";
+      /**
+       * @minItems 1
+       */
+      orderBy: [TransformSortRule, ...TransformSortRule[]];
+      maxGap?: number;
+    }
+  | {
       kind: "string";
       value: string;
     }

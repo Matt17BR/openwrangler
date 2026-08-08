@@ -795,6 +795,22 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "direction", "orderBy"],
+          "properties": {
+            "kind": { "const": "directional" },
+            "direction": { "type": "string", "enum": ["forward", "backward"] },
+            "orderBy": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/definitions/TransformSortRule" }
+            },
+            "maxGap": { "type": "integer", "minimum": 1, "maximum": 1000000 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "value"],
           "properties": {
             "kind": { "const": "string" },

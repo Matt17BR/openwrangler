@@ -427,6 +427,25 @@ class PandasEngine(DataFrameEngine):
                         [df.iloc[:, fallback_position] for fallback_position in fallback_positions],
                     ),
                 )
+            elif replacement.get("kind") == "directional":
+                order_rules = [
+                    (
+                        self._bound_frame_position(df, rule["column"], kind),
+                        rule["direction"] == "asc",
+                        rule["nulls"],
+                    )
+                    for rule in replacement["orderBy"]
+                ]
+                df.isetitem(
+                    position,
+                    _pandas_fill_missing_directional(
+                        df,
+                        position,
+                        order_rules,
+                        replacement["direction"],
+                        replacement.get("maxGap"),
+                    ),
+                )
             else:
                 df.isetitem(position, _pandas_fill_missing(df.iloc[:, position], replacement))
             return df
@@ -1101,6 +1120,22 @@ class PandasEngine(DataFrameEngine):
                         f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_from_columns("
                         f"{series}, [df.iloc[:, position] for position in {fallback_positions!r}]))"
                     ),
+                ]
+            if replacement.get("kind") == "directional":
+                order_rules = [
+                    (
+                        bound_column_position(rule["column"], kind),
+                        rule["direction"] == "asc",
+                        rule["nulls"],
+                    )
+                    for rule in replacement["orderBy"]
+                ]
+                return [
+                    (
+                        f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_directional("
+                        f"df, {position}, {order_rules!r}, {replacement['direction']!r}, "
+                        f"{replacement.get('maxGap')!r}))"
+                    )
                 ]
             lines = [
                 f"{prefix}{series} = df.iloc[:, {position}]",
@@ -2425,6 +2460,62 @@ def _pandas_fill_missing_from_columns(target: Any, fallbacks: Iterable[Any]) -> 
     return result
 
 
+def _pandas_fill_missing_directional(
+    frame: Any,
+    target_position: int,
+    order_rules: Sequence[tuple[int, bool, str]],
+    direction: str,
+    max_gap: int | None,
+) -> Any:
+    """Fill complete missing runs in calculation order, then restore source order."""
+
+    import numpy as np
+
+    series = frame.iloc[:, target_position]
+    missing = _null_mask(series) | _nan_mask(series)
+    if not bool(missing.any()):
+        return series.copy()
+
+    order = np.arange(len(frame), dtype=np.int64)
+    for position, ascending, nulls in reversed(order_rules):
+        relative_order = (
+            frame.iloc[order, position]
+            .reset_index(drop=True)
+            .sort_values(ascending=ascending, na_position=nulls, kind="stable")
+            .index.to_numpy(dtype=np.int64)
+        )
+        order = order[relative_order]
+
+    ordered = series.iloc[order].reset_index(drop=True)
+    ordered_missing = (_null_mask(ordered) | _nan_mask(ordered)).to_numpy(dtype=bool)
+    result = ordered.copy()
+    cursor = 0
+    while cursor < len(result):
+        if not ordered_missing[cursor]:
+            cursor += 1
+            continue
+        start = cursor
+        while cursor < len(result) and ordered_missing[cursor]:
+            cursor += 1
+        end = cursor
+        gap_size = end - start
+        anchor = start - 1 if direction == "forward" else end
+        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):
+            try:
+                result.iloc[start:end] = ordered.iloc[anchor]
+            except (TypeError, ValueError, OverflowError) as error:
+                raise EngineError(
+                    f"Directional fill is incompatible with the selected Pandas column: {error}"
+                ) from error
+
+    inverse = np.empty(len(order), dtype=np.int64)
+    inverse[order] = np.arange(len(order), dtype=np.int64)
+    restored = result.iloc[inverse].copy()
+    restored.index = series.index
+    restored.name = series.name
+    return restored
+
+
 def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     import pandas as pd
 
@@ -2760,6 +2851,56 @@ def _generated_pandas_fill_helpers() -> list[str]:
         ),
         "        result = updated",
         "    return result",
+        "",
+        "",
+        "def _open_wrangler_fill_missing_directional(df, target_position, order_rules, direction, max_gap):",
+        "    series = df.iloc[:, target_position]",
+        (
+            "    missing = _open_wrangler_mask(series, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(series, _open_wrangler_is_nan)"
+        ),
+        "    if not missing.any():",
+        "        return series.copy()",
+        "    order = np.arange(len(df), dtype=np.int64)",
+        "    for position, ascending, nulls in reversed(order_rules):",
+        "        relative_order = (",
+        "            df.iloc[order, position]",
+        "            .reset_index(drop=True)",
+        "            .sort_values(ascending=ascending, na_position=nulls, kind='stable')",
+        "            .index.to_numpy(dtype=np.int64)",
+        "        )",
+        "        order = order[relative_order]",
+        "    ordered = series.iloc[order].reset_index(drop=True)",
+        (
+            "    ordered_missing = (_open_wrangler_mask(ordered, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(ordered, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
+        ),
+        "    result = ordered.copy()",
+        "    cursor = 0",
+        "    while cursor < len(result):",
+        "        if not ordered_missing[cursor]:",
+        "            cursor += 1",
+        "            continue",
+        "        start = cursor",
+        "        while cursor < len(result) and ordered_missing[cursor]:",
+        "            cursor += 1",
+        "        end = cursor",
+        "        gap_size = end - start",
+        "        anchor = start - 1 if direction == 'forward' else end",
+        "        if (max_gap is None or gap_size <= max_gap) and 0 <= anchor < len(result):",
+        "            try:",
+        "                result.iloc[start:end] = ordered.iloc[anchor]",
+        "            except (TypeError, ValueError, OverflowError) as error:",
+        (
+            "                raise ValueError('Directional fill is incompatible with the selected Pandas column: ' "
+            "+ str(error)) from error"
+        ),
+        "    inverse = np.empty(len(order), dtype=np.int64)",
+        "    inverse[order] = np.arange(len(order), dtype=np.int64)",
+        "    restored = result.iloc[inverse].copy()",
+        "    restored.index = series.index",
+        "    restored.name = series.name",
+        "    return restored",
         "",
         "",
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",

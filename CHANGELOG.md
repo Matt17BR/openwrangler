@@ -4,6 +4,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- Fill Missing Values can now use the previous or next value after sorting by one or more explicit columns. An
+  optional maximum gap leaves longer missing runs untouched. The calculation order is part of the cleaning step and
+  does not reuse viewing sorts.
+
 ### Fixed
 
 - Preview and stable release jobs now create the exact local release tag before registry checks. Previously the tag

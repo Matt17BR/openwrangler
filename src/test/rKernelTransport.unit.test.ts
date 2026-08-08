@@ -1195,6 +1195,18 @@ describe("native R kernel protocol", () => {
       { kind: "mean" },
       { kind: "median" },
       { kind: "mostFrequent" },
+      {
+        kind: "directional",
+        direction: "forward",
+        orderBy: [
+          {
+            column: { id: "r:c:1", name: "sequence" },
+            direction: "asc",
+            nulls: "last"
+          }
+        ],
+        maxGap: 25
+      },
       { kind: "string", value: "unknown" },
       { kind: "integer", value: "-42" },
       { kind: "float", value: "1.25e+3" },
@@ -1275,6 +1287,60 @@ describe("native R kernel protocol", () => {
       [
         { kind: "fallbackColumns", columns: [{ id: "r:c:1", name: "first" }], value: "wrong" },
         "may not contain a value"
+      ],
+      [{ kind: "directional", direction: "forward", orderBy: [] }, "sorts exceed the supported limit"],
+      [
+        {
+          kind: "directional",
+          direction: "forward",
+          orderBy: [{ column: { id: "r:c:0", name: "value" }, direction: "asc", nulls: "last" }]
+        },
+        "cannot also be a directional ordering column"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "forward",
+          orderBy: [
+            { column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" },
+            { column: { id: "r:c:1", name: "sequence" }, direction: "desc", nulls: "first" }
+          ]
+        },
+        "repeated column identity"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "sideways",
+          orderBy: [{ column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" }]
+        },
+        "forward or backward"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "backward",
+          orderBy: [{ column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" }],
+          maxGap: 0
+        },
+        "must be positive"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "backward",
+          orderBy: [{ column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" }],
+          maxGap: 1_000_001
+        },
+        "outside its supported range"
+      ],
+      [
+        {
+          kind: "directional",
+          direction: "forward",
+          sortRules: [{ column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" }]
+        },
+        "invalid fields"
       ],
       [{ kind: "string" }, "requires a value"],
       [{ kind: "integer", value: "01" }, "canonical decimal text"],

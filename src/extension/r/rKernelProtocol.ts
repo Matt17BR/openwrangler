@@ -31,6 +31,7 @@ const maximumDiagnosticBytes = 4_096;
 const maximumGeneratedCodeBytes = 4 * 1_024 * 1_024;
 const maximumStepIdBytes = R_FRAME_CONTRACT_LIMITS.stepIdBytes;
 const maximumFillFallbackColumns = 64;
+const maximumFillDirectionalGap = 1_000_000;
 
 export const R_KERNEL_DIAGNOSTIC_CODES = Object.freeze([
   "duplicate_session",
@@ -203,9 +204,22 @@ export interface RKernelFillMissingValuesStep {
   readonly kind: "fillMissingValues";
   readonly params: Readonly<{
     column: RKernelColumnReference;
-    replacement: FillMissingReplacement;
+    replacement: RKernelFillMissingReplacement;
   }>;
 }
+
+export type RKernelFillMissingReplacement =
+  | Exclude<FillMissingReplacement, { kind: "fallbackColumns" } | { kind: "directional" }>
+  | Readonly<{
+      kind: "fallbackColumns";
+      columns: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
+    }>
+  | Readonly<{
+      kind: "directional";
+      direction: "forward" | "backward";
+      orderBy: readonly [RKernelSortRule, ...RKernelSortRule[]];
+      maxGap?: number;
+    }>;
 
 export interface RKernelRoundNumberStep {
   readonly id: string;
@@ -1242,15 +1256,33 @@ function validateTransformStep(value: unknown): void {
 }
 
 function validateFillMissingReplacement(value: unknown, targetColumnId: string): void {
-  const replacement = exactRecord(value, ["kind"], ["value", "columns"], "R kernel fill-missing replacement");
+  const replacement = exactRecord(
+    value,
+    ["kind"],
+    ["value", "columns", "direction", "orderBy", "maxGap"],
+    "R kernel fill-missing replacement"
+  );
   if (replacement.kind === "mean" || replacement.kind === "median" || replacement.kind === "mostFrequent") {
-    if (replacement.value !== undefined || replacement.columns !== undefined) {
+    if (
+      replacement.value !== undefined ||
+      replacement.columns !== undefined ||
+      replacement.direction !== undefined ||
+      replacement.orderBy !== undefined ||
+      replacement.maxGap !== undefined
+    ) {
       fail("A calculated replacement may not contain a value or fallback columns.");
     }
     return;
   }
   if (replacement.kind === "fallbackColumns") {
-    if (replacement.value !== undefined) fail("A fallback-column replacement may not contain a value.");
+    if (
+      replacement.value !== undefined ||
+      replacement.direction !== undefined ||
+      replacement.orderBy !== undefined ||
+      replacement.maxGap !== undefined
+    ) {
+      fail("A fallback-column replacement may not contain a value.");
+    }
     if (
       !Array.isArray(replacement.columns) ||
       replacement.columns.length === 0 ||
@@ -1267,7 +1299,39 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
     }
     return;
   }
-  if (replacement.value === undefined || replacement.columns !== undefined) {
+  if (replacement.kind === "directional") {
+    if (replacement.value !== undefined || replacement.columns !== undefined) {
+      fail("A directional replacement may not contain a value or fallback columns.");
+    }
+    if (replacement.direction !== "forward" && replacement.direction !== "backward") {
+      fail("A directional replacement must specify forward or backward.");
+    }
+    validateSorts(replacement.orderBy, "request.payload.step.params.replacement.orderBy", false);
+    for (const rule of replacement.orderBy as readonly RKernelSortRule[]) {
+      if (rule.column.id === targetColumnId) {
+        fail("The fill target cannot also be a directional ordering column.");
+      }
+    }
+    if (replacement.maxGap !== undefined) {
+      if (
+        boundedInteger(
+          replacement.maxGap,
+          "request.payload.step.params.replacement.maxGap",
+          maximumFillDirectionalGap
+        ) < 1
+      ) {
+        fail("request.payload.step.params.replacement.maxGap must be positive.");
+      }
+    }
+    return;
+  }
+  if (
+    replacement.value === undefined ||
+    replacement.columns !== undefined ||
+    replacement.direction !== undefined ||
+    replacement.orderBy !== undefined ||
+    replacement.maxGap !== undefined
+  ) {
     fail("A typed fill-missing replacement requires a value and may not contain fallback columns.");
   }
   if (replacement.kind === "boolean") {
