@@ -2891,6 +2891,15 @@ openwrangler_r_frame_contract <- local({
     midpoint
   }
 
+  safe_float_midpoint <- function(lower, upper) {
+    if (lower == upper) return(lower)
+    if (is.finite(lower) && is.finite(upper)) {
+      if ((lower < 0) == (upper < 0)) return(lower + ((upper - lower) / 2))
+      return((lower / 2) + (upper / 2))
+    }
+    (lower + upper) / 2
+  }
+
   fill_missing_value <- function(column, descriptor, replacement) {
     replacement <- exact_named_list_optional(
       replacement,
@@ -3353,6 +3362,188 @@ openwrangler_r_frame_contract <- local({
         donor_position <- row_positions[[donor]]
         if (is.na(result_values[donor_position])) next
         result_values[row_positions[start:end]] <- result_values[donor_position]
+      }
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    if (identical(inspected$flavor, "r.data.table")) {
+      data.table::set(result, j = position, value = result_values)
+    } else {
+      result[[position]] <- result_values
+    }
+    result
+  }
+
+  fill_missing_grouped_statistic_at <- function(
+    value,
+    position,
+    old_name,
+    key_positions,
+    key_names,
+    statistic
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the fill-missing column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    target_descriptor <- inspected$descriptor$schema[[position]]
+    if (!identical(target_descriptor$name, old_name)) {
+      abort("stale-column", "the fill-missing column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (
+      identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort("invalid-view-query", "Fill Missing Values cannot replace a data.table key column")
+    }
+    if (
+      !is.numeric(key_positions) ||
+        anyNA(key_positions) ||
+        any(!is.finite(key_positions)) ||
+        any(key_positions != floor(key_positions)) ||
+        length(key_positions) == 0L ||
+        length(key_positions) > column_count ||
+        any(key_positions < 1L) ||
+        any(key_positions > column_count) ||
+        anyDuplicated(key_positions) ||
+        any(key_positions == position) ||
+        !is.character(key_names) ||
+        anyNA(key_names) ||
+        length(key_names) != length(key_positions)
+    ) {
+      abort("invalid-view-query", "the grouped-fill key selection is invalid")
+    }
+    key_positions <- as.integer(key_positions)
+    supported_key_kinds <- c(
+      "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+    )
+    key_names <- vapply(seq_along(key_names), function(index) {
+      name <- bounded_utf8(key_names[[index]], sprintf("key_names[[%d]]", index), maximum_name_bytes)
+      if (is_private_column_name(name)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+      descriptor <- inspected$descriptor$schema[[key_positions[[index]]]]
+      if (!identical(descriptor$name, name)) {
+        abort("stale-column", "a grouped-fill key no longer matches the R dataframe")
+      }
+      if (!descriptor$semantics$kind %in% supported_key_kinds) {
+        abort("invalid-view-query", sprintf("R %s columns cannot be used as grouped-fill keys", descriptor$semantics$kind))
+      }
+      name
+    }, character(1L), USE.NAMES = FALSE)
+    statistic <- scalar_choice(statistic, c("median", "mean", "mostFrequent"), "statistic")
+    target_kind <- target_descriptor$semantics$kind
+    compatible <- switch(
+      statistic,
+      mean = identical(target_kind, "double"),
+      median = target_kind %in% c("integer", "integer64", "double"),
+      mostFrequent = target_kind %in% c("character", "factor", "logical"),
+      FALSE
+    )
+    if (!compatible) {
+      abort("invalid-view-query", "the grouped statistic is incompatible with the selected R column")
+    }
+
+    row_positions <- seq_len(inspected$descriptor$shape$rows)
+    for (key_index in rev(seq_along(key_positions))) {
+      key_position <- key_positions[[key_index]]
+      key_values <- value[[key_position]][row_positions]
+      key_missing <- is.na(key_values)
+      present_positions <- which(!key_missing)
+      present_order <- order_present_values(
+        key_values[present_positions],
+        inspected$descriptor$schema[[key_position]]$semantics,
+        FALSE
+      )
+      row_positions <- c(row_positions[key_missing], row_positions[present_positions[present_order]])
+    }
+
+    result_values <- value[[position]]
+    row_count <- length(row_positions)
+    if (row_count > 0L && anyNA(result_values)) {
+      same_group <- rep(TRUE, max(0L, row_count - 1L))
+      if (row_count > 1L) {
+        left_rows <- row_positions[-row_count]
+        right_rows <- row_positions[-1L]
+        for (key_position in key_positions) {
+          left <- value[[key_position]][left_rows]
+          right <- value[[key_position]][right_rows]
+          left_missing <- is.na(left)
+          right_missing <- is.na(right)
+          equal <- (left_missing & right_missing) | (!left_missing & !right_missing & left == right)
+          equal[is.na(equal)] <- FALSE
+          same_group <- same_group & equal
+        }
+      }
+      group_starts <- c(1L, which(!same_group) + 1L)
+      group_ends <- c(group_starts[-1L] - 1L, row_count)
+      for (group_index in seq_along(group_starts)) {
+        group_rows <- row_positions[group_starts[[group_index]]:group_ends[[group_index]]]
+        missing_rows <- group_rows[is.na(result_values[group_rows])]
+        if (length(missing_rows) == 0L) next
+        present <- result_values[group_rows[!is.na(result_values[group_rows])]]
+        if (length(present) == 0L) next
+
+        fill <- NULL
+        if (identical(statistic, "mean")) {
+          has_positive_infinity <- any(is.infinite(present) & present > 0)
+          has_negative_infinity <- any(is.infinite(present) & present < 0)
+          if (has_positive_infinity && has_negative_infinity) next
+          if (has_positive_infinity) {
+            fill <- Inf
+          } else if (has_negative_infinity) {
+            fill <- -Inf
+          } else {
+            scale <- max(abs(present))
+            fill <- if (scale == 0) 0 else max(-1, min(1, mean(present / scale))) * scale
+          }
+        } else if (identical(statistic, "median")) {
+          fill <- if (identical(target_kind, "integer64")) {
+            exact_integer64_median(present)
+          } else {
+            ordered <- sort(present)
+            count <- length(ordered)
+            lower <- ordered[[(count + 1L) %/% 2L]]
+            upper <- ordered[[(count + 2L) %/% 2L]]
+            midpoint <- if (count %% 2L == 1L) {
+              lower
+            } else if (identical(target_kind, "double")) {
+              safe_float_midpoint(lower, upper)
+            } else {
+              lower / 2 + upper / 2
+            }
+            if (is.nan(midpoint)) next
+            if (identical(target_kind, "integer")) {
+              if (!is.finite(midpoint) || midpoint != floor(midpoint)) {
+                abort("invalid-view-value", "a grouped integer median is not an integer")
+              }
+              midpoint <- as.integer(midpoint)
+              if (is.na(midpoint)) {
+                abort("invalid-view-value", "a grouped integer median is outside the R integer range")
+              }
+            }
+            midpoint
+          }
+        } else {
+          candidates <- unique(present)
+          counts <- tabulate(match(present, candidates), nbins = length(candidates))
+          winners <- which(counts == max(counts))
+          if (length(winners) != 1L) next
+          fill <- candidates[[winners[[1L]]]]
+        }
+        result_values[missing_rows] <- fill
       }
     }
 
@@ -4528,6 +4719,7 @@ openwrangler_r_frame_contract <- local({
     fill_missing_column_at = fill_missing_column_at,
     fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,
     fill_missing_directional_at = fill_missing_directional_at,
+    fill_missing_grouped_statistic_at = fill_missing_grouped_statistic_at,
     cast_column = cast_column,
     cast_column_at = cast_column_at,
     drop_columns = drop_columns,

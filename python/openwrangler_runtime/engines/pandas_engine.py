@@ -446,6 +446,17 @@ class PandasEngine(DataFrameEngine):
                         replacement.get("maxGap"),
                     ),
                 )
+            elif replacement.get("kind") == "groupedStatistic":
+                key_positions = [self._bound_frame_position(df, key, kind) for key in replacement["keys"]]
+                df.isetitem(
+                    position,
+                    _pandas_fill_missing_grouped_statistic(
+                        df,
+                        position,
+                        key_positions,
+                        replacement["statistic"],
+                    ),
+                )
             else:
                 df.isetitem(position, _pandas_fill_missing(df.iloc[:, position], replacement))
             return df
@@ -774,7 +785,13 @@ class PandasEngine(DataFrameEngine):
         needs_group_helpers = any(step["kind"] == "groupBy" for step in plan)
         needs_counter = any(
             step["kind"] in {"oneHotEncode", "multiLabelBinarize"}
-            or (step["kind"] == "fillMissingValues" and step["params"]["replacement"].get("kind") == "mostFrequent")
+            or (
+                step["kind"] == "fillMissingValues"
+                and (
+                    step["params"]["replacement"].get("kind") == "mostFrequent"
+                    or step["params"]["replacement"].get("statistic") == "mostFrequent"
+                )
+            )
             for step in plan
         )
         lines = ["from collections import Counter"] if needs_counter else []
@@ -1135,6 +1152,14 @@ class PandasEngine(DataFrameEngine):
                         f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_directional("
                         f"df, {position}, {order_rules!r}, {replacement['direction']!r}, "
                         f"{replacement.get('maxGap')!r}))"
+                    )
+                ]
+            if replacement.get("kind") == "groupedStatistic":
+                key_positions = [bound_column_position(key, kind) for key in replacement["keys"]]
+                return [
+                    (
+                        f"{prefix}df.isetitem({position}, _open_wrangler_fill_missing_grouped_statistic("
+                        f"df, {position}, {key_positions!r}, {replacement['statistic']!r}))"
                     )
                 ]
             lines = [
@@ -2516,6 +2541,156 @@ def _pandas_fill_missing_directional(
     return restored
 
 
+def _pandas_fill_missing_grouped_statistic(
+    frame: Any,
+    target_position: int,
+    key_positions: Sequence[int],
+    statistic: str,
+) -> Any:
+    import numpy as np
+    import pandas as pd
+
+    series = frame.iloc[:, target_position]
+    missing = (_null_mask(series) | _nan_mask(series)).to_numpy(dtype=bool)
+    if not missing.any():
+        return series.copy()
+
+    prepared_keys = []
+    for position in key_positions:
+        key_series = frame.iloc[:, position].reset_index(drop=True)
+        if isinstance(key_series.dtype, pd.CategoricalDtype):
+            # Pandas omits the missing group for an observed categorical even
+            # with dropna=False.  Group the values as objects so null category
+            # rows participate in the same missing-key group as every other
+            # nullable key dtype.
+            key_series = key_series.astype(object)
+        if _pandas_grouped_identity_required(key_series):
+            key_series = pd.Series(
+                [
+                    pd.NA if _is_null_value(value) or _is_nan_value(value) else _pandas_grouped_scalar_identity(value)
+                    for value in key_series.array
+                ],
+                dtype=object,
+            )
+        prepared_keys.append(key_series)
+    key_frame = pd.concat(prepared_keys, axis=1, ignore_index=True)
+    groups = key_frame.groupby(list(key_frame.columns), dropna=False, sort=False, observed=True).indices.values()
+
+    semantic_type = _pandas_semantic_type(series)
+    identity_mode = statistic == "mostFrequent" and _pandas_grouped_identity_required(series)
+
+    unresolved = object()
+
+    def calculate(values: list[Any]) -> Any:
+        if not values:
+            return unresolved
+        if statistic == "mostFrequent":
+            from collections import Counter
+
+            try:
+                if identity_mode:
+                    identities = [_pandas_grouped_scalar_identity(value) for value in values]
+                    counts = Counter(identities)
+                    originals = dict(zip(identities, values, strict=True))
+                else:
+                    counts = Counter(values)
+                    originals = {value: value for value in values}
+            except TypeError as error:
+                raise EngineError(
+                    "Grouped most-common fill is unavailable for values that cannot be compared exactly."
+                ) from error
+            highest = max(counts.values())
+            winners = [value for value, count in counts.items() if count == highest]
+            return originals[winners[0]] if len(winners) == 1 else unresolved
+        ordered = sorted(values)
+        if statistic == "median":
+            lower = ordered[(len(ordered) - 1) // 2]
+            upper = ordered[len(ordered) // 2]
+            if semantic_type == "integer":
+                return exact_integer_median(lower, upper)
+            if semantic_type == "decimal":
+                return exact_decimal_median(lower, upper, *_pandas_decimal_spec(series, values))
+            try:
+                result = safe_float_midpoint(lower, upper)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise EngineError(f"Cannot calculate a grouped numeric median: {error}") from error
+            return unresolved if isnan(result) else result
+
+        values_array = np.asarray(values, dtype=np.float64)
+        has_positive_infinity = bool(np.isposinf(values_array).any())
+        has_negative_infinity = bool(np.isneginf(values_array).any())
+        if has_positive_infinity and has_negative_infinity:
+            return unresolved
+        if has_positive_infinity:
+            return float("inf")
+        if has_negative_infinity:
+            return float("-inf")
+        scale = float(np.max(np.abs(values_array)))
+        if scale == 0:
+            return 0.0
+        scaled_mean = float(np.mean(values_array / scale))
+        return max(-1.0, min(1.0, scaled_mean)) * scale
+
+    result = series.copy()
+    try:
+        source = series.reset_index(drop=True)
+        for positions in groups:
+            missing_positions = positions[missing[positions]]
+            if not len(missing_positions):
+                continue
+            present_positions = positions[~missing[positions]]
+            fill_value = calculate(list(source.iloc[present_positions].array))
+            if fill_value is unresolved:
+                continue
+            result.iloc[missing_positions] = fill_value
+    except (TypeError, ValueError, OverflowError) as error:
+        raise EngineError(f"A grouped fill value is incompatible with the selected Pandas column: {error}") from error
+    return result
+
+
+def _pandas_grouped_identity_required(series: Any) -> bool:
+    import pandas as pd
+
+    if not pd.api.types.is_object_dtype(series.dtype):
+        return False
+    semantic_type = _pandas_semantic_type(series)
+    if semantic_type in {"list", "struct"}:
+        return True
+    return semantic_type == "string" and pd.api.types.infer_dtype(series, skipna=True) not in {
+        "string",
+        "unicode",
+        "empty",
+    }
+
+
+def _pandas_grouped_scalar_identity(value: Any) -> tuple[Any, ...]:
+    """Return exact, hashable identity for a public scalar stored in an object column."""
+
+    if isinstance(value, bool):
+        return ("boolean", bool(value))
+    if isinstance(value, Integral):
+        return ("integer", int(value))
+    if isinstance(value, Decimal):
+        return ("decimal", value)
+    if isinstance(value, Real):
+        return ("float", float(value))
+    if isinstance(value, str):
+        return ("string", value)
+    if isinstance(value, datetime):
+        return ("datetime", value)
+    if isinstance(value, date):
+        return ("date", value)
+    if isinstance(value, timedelta):
+        return ("duration", value)
+    if isinstance(value, bytes):
+        return ("binary", value)
+    try:
+        hash(value)
+    except TypeError as error:
+        raise EngineError("Grouped fills require scalar Pandas group keys and most-common values.") from error
+    return (type(value).__module__, type(value).__qualname__, value)
+
+
 def _pandas_fill_missing(series: Any, replacement: Mapping[str, Any]) -> Any:
     import pandas as pd
 
@@ -2901,6 +3076,159 @@ def _generated_pandas_fill_helpers() -> list[str]:
         "    restored.index = series.index",
         "    restored.name = series.name",
         "    return restored",
+        "",
+        "",
+        "def _open_wrangler_fill_missing_grouped_statistic(df, target_position, key_positions, statistic):",
+        "    series = df.iloc[:, target_position]",
+        (
+            "    missing = (_open_wrangler_mask(series, _open_wrangler_is_null) | "
+            "_open_wrangler_mask(series, _open_wrangler_is_nan)).to_numpy(dtype=bool)"
+        ),
+        "    if not missing.any():",
+        "        return series.copy()",
+        "    prepared_keys = []",
+        "    for position in key_positions:",
+        "        key_series = df.iloc[:, position].reset_index(drop=True)",
+        "        if isinstance(key_series.dtype, pd.CategoricalDtype):",
+        "            key_series = key_series.astype(object)",
+        "        if _open_wrangler_grouped_identity_required(key_series):",
+        "            key_series = pd.Series([",
+        "                pd.NA if (_open_wrangler_is_null(value) or _open_wrangler_is_nan(value))",
+        "                else _open_wrangler_grouped_scalar_identity(value)",
+        "                for value in key_series.array",
+        "            ], dtype=object)",
+        "        prepared_keys.append(key_series)",
+        "    key_frame = pd.concat(prepared_keys, axis=1, ignore_index=True)",
+        (
+            "    groups = key_frame.groupby(list(key_frame.columns), dropna=False, sort=False, "
+            "observed=True).indices.values()"
+        ),
+        "    semantic_type = _open_wrangler_fill_semantic_type(series)",
+        ("    identity_mode = statistic == 'mostFrequent' and _open_wrangler_grouped_identity_required(series)"),
+        "    unresolved = object()",
+        "    def calculate(values):",
+        "        if not values:",
+        "            return unresolved",
+        "        if statistic == 'mostFrequent':",
+        "            try:",
+        "                if identity_mode:",
+        "                    identities = [_open_wrangler_grouped_scalar_identity(value) for value in values]",
+        "                    counts = Counter(identities)",
+        "                    originals = dict(zip(identities, values))",
+        "                else:",
+        "                    counts = Counter(values)",
+        "                    originals = {value: value for value in values}",
+        "            except TypeError as error:",
+        (
+            "                raise ValueError('Grouped most-common fill is unavailable for values that cannot "
+            "be compared exactly.') from error"
+        ),
+        "            highest = max(counts.values())",
+        "            winners = [value for value, count in counts.items() if count == highest]",
+        "            return originals[winners[0]] if len(winners) == 1 else unresolved",
+        "        ordered = sorted(values)",
+        "        if statistic == 'median':",
+        "            lower = ordered[(len(ordered) - 1) // 2]",
+        "            upper = ordered[len(ordered) // 2]",
+        "            if semantic_type == 'integer':",
+        "                total = int(lower) + int(upper)",
+        "                if total % 2:",
+        (
+            "                    raise ValueError('The integer median is fractional. Cast the column to float "
+            "or decimal before filling missing values.')"
+        ),
+        "                return total // 2",
+        "            if semantic_type == 'decimal':",
+        "                precision, scale = _open_wrangler_decimal_spec(series, values)",
+        "                with localcontext() as context:",
+        (
+            "                    context.prec = max(80, precision + scale + 4, "
+            "len(lower.as_tuple().digits) + len(upper.as_tuple().digits) + scale + 4)"
+        ),
+        "                    value = (lower + upper) / Decimal(2)",
+        "                return _open_wrangler_decimal_at_scale(value, precision, scale)",
+        "            value = _open_wrangler_float_midpoint(lower, upper)",
+        "            return unresolved if np.isnan(value) else value",
+        "        values_array = np.asarray(values, dtype=np.float64)",
+        "        has_positive = bool(np.isposinf(values_array).any())",
+        "        has_negative = bool(np.isneginf(values_array).any())",
+        "        if has_positive and has_negative:",
+        "            return unresolved",
+        "        if has_positive:",
+        "            return float('inf')",
+        "        if has_negative:",
+        "            return float('-inf')",
+        "        scale = float(np.max(np.abs(values_array)))",
+        "        if scale == 0:",
+        "            return 0.0",
+        "        scaled_mean = float(np.mean(values_array / scale))",
+        "        return max(-1.0, min(1.0, scaled_mean)) * scale",
+        "    result = series.copy()",
+        "    source = series.reset_index(drop=True)",
+        "    for positions in groups:",
+        "        missing_positions = positions[missing[positions]]",
+        "        if not len(missing_positions):",
+        "            continue",
+        "        present_positions = positions[~missing[positions]]",
+        "        fill_value = calculate(list(source.iloc[present_positions].array))",
+        "        if fill_value is unresolved:",
+        "            continue",
+        "        result.iloc[missing_positions] = fill_value",
+        "    return result",
+        "",
+        "",
+        "def _open_wrangler_grouped_identity_required(series):",
+        "    if not pd.api.types.is_object_dtype(series.dtype):",
+        "        return False",
+        "    inferred = pd.api.types.infer_dtype(series, skipna=True)",
+        "    if inferred in {'string', 'unicode', 'empty'}:",
+        "        return False",
+        "    if inferred not in {'mixed', 'mixed-integer', 'date'}:",
+        "        return False",
+        "    present = [",
+        "        value for value in series.array",
+        "        if not (_open_wrangler_is_null(value) or _open_wrangler_is_nan(value))",
+        "    ]",
+        "    homogeneous_scalar = (",
+        "        all(isinstance(value, bool) for value in present)",
+        ("        or all(isinstance(value, Integral) and not isinstance(value, bool) for value in present)"),
+        "        or all(isinstance(value, Real) and not isinstance(value, bool) for value in present)",
+        "        or all(isinstance(value, Decimal) for value in present)",
+        "        or all(isinstance(value, datetime) for value in present)",
+        "        or all(isinstance(value, date) for value in present)",
+        "        or all(isinstance(value, timedelta) for value in present)",
+        "        or all(isinstance(value, bytes) for value in present)",
+        "    )",
+        "    return bool(present) and not homogeneous_scalar",
+        "",
+        "",
+        "def _open_wrangler_grouped_scalar_identity(value):",
+        "    if isinstance(value, bool):",
+        "        return ('boolean', bool(value))",
+        "    if isinstance(value, Integral):",
+        "        return ('integer', int(value))",
+        "    if isinstance(value, Decimal):",
+        "        return ('decimal', value)",
+        "    if isinstance(value, Real):",
+        "        return ('float', float(value))",
+        "    if isinstance(value, str):",
+        "        return ('string', value)",
+        "    if isinstance(value, datetime):",
+        "        return ('datetime', value)",
+        "    if isinstance(value, date):",
+        "        return ('date', value)",
+        "    if isinstance(value, timedelta):",
+        "        return ('duration', value)",
+        "    if isinstance(value, bytes):",
+        "        return ('binary', value)",
+        "    try:",
+        "        hash(value)",
+        "    except TypeError as error:",
+        (
+            "        raise ValueError('Grouped fills require scalar Pandas group keys and "
+            "most-common values.') from error"
+        ),
+        "    return (type(value).__module__, type(value).__qualname__, value)",
         "",
         "",
         "def _open_wrangler_fill_missing(series, missing, replacement_kind, replacement_value):",

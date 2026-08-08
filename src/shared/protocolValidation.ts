@@ -886,6 +886,14 @@ function isFillMissingReplacement(value: unknown): boolean {
       optional(decoded, "maxGap", (maxGap) => isPositiveInteger(maxGap) && maxGap <= MAX_FILL_DIRECTIONAL_GAP)
     );
   }
+  if (value.kind === "groupedStatistic") {
+    const decoded = exactRecord(value, ["kind", "statistic", "keys"]);
+    return (
+      decoded !== undefined &&
+      isOneOf(decoded.statistic, ["median", "mean", "mostFrequent"]) &&
+      isUniqueColumnReferenceArray(decoded.keys, false)
+    );
+  }
   const decoded = exactRecord(value, ["kind", "value"]);
   if (decoded === undefined) return false;
   switch (decoded.kind) {
@@ -1011,6 +1019,13 @@ export function isTransformStep(value: unknown): value is TransformStep {
         decoded.replacement.kind === "fallbackColumns" &&
         Array.isArray(decoded.replacement.columns) &&
         decoded.replacement.columns.some((reference) => isRecord(reference) && reference.id === targetColumnId)
+      ) {
+        return false;
+      }
+      if (
+        decoded.replacement.kind === "groupedStatistic" &&
+        Array.isArray(decoded.replacement.keys) &&
+        decoded.replacement.keys.some((reference) => isRecord(reference) && reference.id === targetColumnId)
       ) {
         return false;
       }

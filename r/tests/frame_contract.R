@@ -1727,6 +1727,185 @@ assert_error(
   "max_gap must be positive"
 )
 
+grouped_mean_frame <- data.frame(
+  group = c(NA_real_, NaN, 1, 1, 2, 2, 3, 3, 3),
+  day = as.Date(rep("2026-01-01", 9L)),
+  target = c(2, NA, 4, NaN, Inf, NA, Inf, -Inf, NA),
+  row.names = paste0("grouped-", 1:9),
+  check.names = FALSE
+)
+grouped_mean_before <- unserialize(serialize(grouped_mean_frame, NULL, version = 3L))
+grouped_mean_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_mean_frame,
+  3L,
+  "target",
+  c(1L, 2L),
+  c("group", "day"),
+  "mean"
+)
+assert_identical(
+  grouped_mean_result$target,
+  c(2, 2, 4, 4, Inf, Inf, Inf, -Inf, NA),
+  "grouped mean did not fill a target NaN, normalize NA/NaN keys, or preserve an unresolved null gap"
+)
+assert_identical(row.names(grouped_mean_result), row.names(grouped_mean_frame), "grouped mean changed row names")
+assert_identical(grouped_mean_frame, grouped_mean_before, "grouped mean mutated its source data.frame")
+
+smallest_positive_double <- 2^-1074
+grouped_float_median <- data.frame(
+  group = c("odd", "odd", "even", "even", "even"),
+  target = c(
+    smallest_positive_double,
+    NA_real_,
+    .Machine$double.xmax / 2,
+    .Machine$double.xmax,
+    NA_real_
+  )
+)
+grouped_float_median_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_float_median,
+  2L,
+  "target",
+  1L,
+  "group",
+  "median"
+)
+assert_identical(
+  grouped_float_median_result$target[[2L]],
+  smallest_positive_double,
+  "an odd grouped float median underflowed instead of returning its exact middle value"
+)
+assert_identical(
+  grouped_float_median_result$target[[5L]],
+  (.Machine$double.xmax / 2) + ((.Machine$double.xmax - (.Machine$double.xmax / 2)) / 2),
+  "an even grouped float median did not use the safe same-sign midpoint"
+)
+
+grouped_integer <- data.frame(group = c("a", "a", "a", "b", "b"), target = c(1L, 3L, NA_integer_, NA_integer_, NA_integer_))
+grouped_integer_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_integer,
+  2L,
+  "target",
+  1L,
+  "group",
+  "median"
+)
+assert_identical(
+  grouped_integer_result$target,
+  c(1L, 3L, 2L, NA_integer_, NA_integer_),
+  "grouped integer median did not fill exact groups or leave all-missing groups unresolved"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+    data.frame(group = c("a", "a", "a"), target = c(1L, 2L, NA_integer_)),
+    2L,
+    "target",
+    1L,
+    "group",
+    "median"
+  ),
+  "grouped integer median is not an integer"
+)
+
+grouped_wide <- data.frame(
+  group = c("a", "a", "a"),
+  target = bit64::as.integer64(c("9007199254740993", "9007199254740995", NA)),
+  check.names = FALSE
+)
+grouped_wide_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_wide,
+  2L,
+  "target",
+  1L,
+  "group",
+  "median"
+)
+assert_identical(
+  as.character(grouped_wide_result$target),
+  c("9007199254740993", "9007199254740995", "9007199254740994"),
+  "grouped integer64 median lost precision"
+)
+assert_error(
+  openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+    data.frame(group = c("a", "a", "a"), target = bit64::as.integer64(c("1", "2", NA))),
+    2L,
+    "target",
+    1L,
+    "group",
+    "median"
+  ),
+  "integer64 median is not an integer"
+)
+
+grouped_wide_keys <- data.frame(
+  group = bit64::as.integer64(c(
+    "9007199254740993", "9007199254740993", "9007199254740994", "9007199254740994"
+  )),
+  target = c(10, NA, 20, NA),
+  check.names = FALSE
+)
+grouped_wide_keys_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_wide_keys,
+  2L,
+  "target",
+  1L,
+  "group",
+  "mean"
+)
+assert_identical(
+  grouped_wide_keys_result$target,
+  c(10, 10, 20, 20),
+  "grouped fill collapsed distinct integer64 keys"
+)
+
+grouped_mode <- data.frame(
+  group = c("a", "a", "a", "b", "b", "b", "c"),
+  target = factor(c("x", "x", NA, "x", "y", NA, NA), levels = c("x", "y", "unused")),
+  check.names = FALSE
+)
+grouped_mode_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_mode,
+  2L,
+  "target",
+  1L,
+  "group",
+  "mostFrequent"
+)
+assert_identical(
+  as.character(grouped_mode_result$target),
+  c("x", "x", "x", "x", "y", NA_character_, NA_character_),
+  "grouped mode filled a tied or all-missing group"
+)
+assert_identical(levels(grouped_mode_result$target), levels(grouped_mode$target), "grouped mode changed factor levels")
+
+grouped_table <- data.table::data.table(group = c("a", "a", "b"), target = c(1, NA, NA))
+data.table::setkey(grouped_table, group)
+grouped_table_before <- data.table::copy(grouped_table)
+grouped_table_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_table,
+  2L,
+  "target",
+  1L,
+  "group",
+  "mean"
+)
+assert_identical(class(grouped_table_result), c("data.table", "data.frame"), "grouped fill changed data.table flavor")
+assert_identical(data.table::key(grouped_table_result), "group", "grouped fill dropped a compatible data.table key")
+assert_identical(grouped_table_result$target, c(1, 1, NA_real_), "grouped fill changed keyed data.table values")
+assert_identical(grouped_table, grouped_table_before, "grouped fill mutated its source data.table")
+
+grouped_collapse <- collapse::qTBL(data.frame(group = c("a", "a", "b"), target = c(TRUE, NA, NA)))
+grouped_collapse_result <- openwrangler_r_frame_contract$fill_missing_grouped_statistic_at(
+  grouped_collapse,
+  2L,
+  "target",
+  1L,
+  "group",
+  "mostFrequent"
+)
+assert_identical(class(grouped_collapse_result), class(grouped_collapse), "grouped fill changed collapse frame flavor")
+assert_identical(grouped_collapse_result$target, c(TRUE, TRUE, NA), "grouped fill changed collapse values")
+
 cast_cases <- list(
   list(
     dtype = "string",

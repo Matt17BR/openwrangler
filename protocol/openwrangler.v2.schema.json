@@ -811,6 +811,16 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "statistic", "keys"],
+          "properties": {
+            "kind": { "const": "groupedStatistic" },
+            "statistic": { "type": "string", "enum": ["median", "mean", "mostFrequent"] },
+            "keys": { "$ref": "#/definitions/NonEmptyColumnReferenceArray" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "value"],
           "properties": {
             "kind": { "const": "string" },

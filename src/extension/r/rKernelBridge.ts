@@ -2234,6 +2234,30 @@ function schemaAfterFillMissing(
     throw new TypeError("Fill Missing Values cannot replace a data.table key column. Clone the column first.");
   }
   const replacement = step.params.replacement;
+  if (replacement.kind === "groupedStatistic") {
+    const compatible =
+      (replacement.statistic === "mean" && source.type === "float") ||
+      (replacement.statistic === "median" && (source.type === "integer" || source.type === "float")) ||
+      (replacement.statistic === "mostFrequent" && (source.type === "string" || source.type === "boolean"));
+    if (!compatible) {
+      throw new TypeError(`Grouped ${replacement.statistic} cannot fill R ${source.rawType}.`);
+    }
+    if (replacement.keys.length === 0 || replacement.keys.length > R_FRAME_CONTRACT_LIMITS.columns) {
+      throw new TypeError("Grouped fill requires at least one grouping column.");
+    }
+    const supportedKeyTypes = new Set(["string", "integer", "float", "boolean", "date", "datetime", "duration"]);
+    const seen = new Set<string>();
+    for (const reference of replacement.keys) {
+      const key = requireTransformColumn(reference, inputSchema, "Grouped fill");
+      if (key.id === source.id) throw new TypeError("The fill target cannot also be a grouping column.");
+      if (seen.has(key.id)) throw new TypeError("Grouped fill repeats the same R column identity.");
+      if (!supportedKeyTypes.has(key.type)) {
+        throw new TypeError(`R ${key.rawType} columns cannot be used as grouped-fill keys.`);
+      }
+      seen.add(key.id);
+    }
+    return Object.freeze(inputSchema.map((column) => Object.freeze({ ...column })));
+  }
   if (replacement.kind === "directional") {
     if (replacement.direction !== "forward" && replacement.direction !== "backward") {
       throw new TypeError("Directional fill requires a forward or backward direction.");
@@ -2699,8 +2723,18 @@ function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, Colum
 
 type FallbackFillMissingReplacement = Extract<FillMissingReplacement, { kind: "fallbackColumns" }>;
 type DirectionalFillMissingReplacement = Extract<FillMissingReplacement, { kind: "directional" }>;
+type GroupedFillMissingReplacement = Extract<FillMissingReplacement, { kind: "groupedStatistic" }>;
 
 function copyFillMissingReplacement(replacement: FillMissingReplacement): FillMissingReplacement {
+  if (replacement.kind === "groupedStatistic") {
+    const keys = replacement.keys.map((key) => ({ ...key }));
+    if (!keys[0]) throw new TypeError("Grouped fill requires at least one grouping column.");
+    return {
+      kind: "groupedStatistic",
+      statistic: replacement.statistic,
+      keys: keys as GroupedFillMissingReplacement["keys"]
+    };
+  }
   if (replacement.kind === "directional") {
     const orderBy = replacement.orderBy.map((rule) => ({ ...rule, column: { ...rule.column } }));
     if (!orderBy[0]) throw new TypeError("Directional fill requires at least one ordering column.");
@@ -2726,6 +2760,22 @@ function freezeFillMissingReplacement(
   targetColumnId: string
 ): RKernelFillMissingReplacement {
   const copied = copyFillMissingReplacement(replacement);
+  if (copied.kind === "groupedStatistic") {
+    const seen = new Set<string>();
+    const keys = copied.keys.map((reference) => {
+      const key = requireTransformColumn(reference, inputSchema, "Grouped fill");
+      if (key.id === targetColumnId) throw new TypeError("The fill target cannot also be a grouping column.");
+      if (seen.has(key.id)) throw new TypeError("Grouped fill repeats the same R column identity.");
+      seen.add(key.id);
+      return Object.freeze({ id: key.id, name: key.name });
+    });
+    if (!keys[0]) throw new TypeError("Grouped fill requires at least one grouping column.");
+    return Object.freeze({
+      kind: "groupedStatistic",
+      statistic: copied.statistic,
+      keys: Object.freeze(keys) as readonly [RKernelColumnReference, ...RKernelColumnReference[]]
+    });
+  }
   if (copied.kind === "directional") {
     const orderBy = resolveTransformSortRules(copied.orderBy, inputSchema, "Directional fill");
     if (orderBy.length === 0) throw new TypeError("Directional fill requires at least one ordering column.");

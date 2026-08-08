@@ -1577,6 +1577,13 @@ describe("protocol-v2 request validation", () => {
         direction: "backward",
         orderBy: [{ column: otherReference, direction: "desc", nulls: "first" }]
       },
+      { kind: "groupedStatistic", statistic: "median", keys: [otherReference] },
+      {
+        kind: "groupedStatistic",
+        statistic: "mean",
+        keys: [otherReference, { id: "column:2", name: "third" }]
+      },
+      { kind: "groupedStatistic", statistic: "mostFrequent", keys: [otherReference] },
       { kind: "string", value: "" },
       { kind: "integer", value: "99999999999999999999999999999999999999" },
       { kind: "float", value: "-1.25e+3" },
@@ -1633,7 +1640,11 @@ describe("protocol-v2 request validation", () => {
         direction: "forward",
         orderBy: [{ column: otherReference, direction: "asc", nulls: "last" }],
         extra: true
-      }
+      },
+      { kind: "groupedStatistic", statistic: "median", keys: [] },
+      { kind: "groupedStatistic", statistic: "sum", keys: [otherReference] },
+      { kind: "groupedStatistic", statistic: "mean", keys: ["other"] },
+      { kind: "groupedStatistic", statistic: "mostFrequent", keys: [otherReference], extra: true }
     ]) {
       expect(isTransformStep(fillStep(replacement)), JSON.stringify(replacement)).toBe(false);
     }
@@ -1651,6 +1662,14 @@ describe("protocol-v2 request validation", () => {
       )
     ).toBe(false);
     expect(isTransformStep(fillStep({ kind: "fallbackColumns", columns: [valueReference] }))).toBe(false);
+
+    const duplicateGroupKeys = { kind: "groupedStatistic", statistic: "mean", keys: [otherReference, otherReference] };
+    expect(isTransformStep(fillStep(duplicateGroupKeys))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(duplicateGroupKeys))).toBe(false);
+    const targetGroupKey = { kind: "groupedStatistic", statistic: "median", keys: [valueReference] };
+    expect(isTransformStep(fillStep(targetGroupKey))).toBe(false);
+    expect(isRuntimeRequestEnvelope(previewEnvelope(targetGroupKey))).toBe(false);
+    expect(validateTransportSchema(previewEnvelope(targetGroupKey))).toBe(true);
 
     const repeatedOrderColumn = {
       kind: "directional",

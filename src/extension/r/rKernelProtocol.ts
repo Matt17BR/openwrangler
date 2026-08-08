@@ -20,7 +20,7 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 6 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 7 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -209,7 +209,10 @@ export interface RKernelFillMissingValuesStep {
 }
 
 export type RKernelFillMissingReplacement =
-  | Exclude<FillMissingReplacement, { kind: "fallbackColumns" } | { kind: "directional" }>
+  | Exclude<
+      FillMissingReplacement,
+      { kind: "fallbackColumns" } | { kind: "directional" } | { kind: "groupedStatistic" }
+    >
   | Readonly<{
       kind: "fallbackColumns";
       columns: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
@@ -219,6 +222,11 @@ export type RKernelFillMissingReplacement =
       direction: "forward" | "backward";
       orderBy: readonly [RKernelSortRule, ...RKernelSortRule[]];
       maxGap?: number;
+    }>
+  | Readonly<{
+      kind: "groupedStatistic";
+      statistic: "median" | "mean" | "mostFrequent";
+      keys: readonly [RKernelColumnReference, ...RKernelColumnReference[]];
     }>;
 
 export interface RKernelRoundNumberStep {
@@ -1259,7 +1267,7 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
   const replacement = exactRecord(
     value,
     ["kind"],
-    ["value", "columns", "direction", "orderBy", "maxGap"],
+    ["value", "columns", "direction", "orderBy", "maxGap", "statistic", "keys"],
     "R kernel fill-missing replacement"
   );
   if (replacement.kind === "mean" || replacement.kind === "median" || replacement.kind === "mostFrequent") {
@@ -1268,7 +1276,9 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
       replacement.columns !== undefined ||
       replacement.direction !== undefined ||
       replacement.orderBy !== undefined ||
-      replacement.maxGap !== undefined
+      replacement.maxGap !== undefined ||
+      replacement.statistic !== undefined ||
+      replacement.keys !== undefined
     ) {
       fail("A calculated replacement may not contain a value or fallback columns.");
     }
@@ -1279,7 +1289,9 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
       replacement.value !== undefined ||
       replacement.direction !== undefined ||
       replacement.orderBy !== undefined ||
-      replacement.maxGap !== undefined
+      replacement.maxGap !== undefined ||
+      replacement.statistic !== undefined ||
+      replacement.keys !== undefined
     ) {
       fail("A fallback-column replacement may not contain a value.");
     }
@@ -1300,7 +1312,12 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
     return;
   }
   if (replacement.kind === "directional") {
-    if (replacement.value !== undefined || replacement.columns !== undefined) {
+    if (
+      replacement.value !== undefined ||
+      replacement.columns !== undefined ||
+      replacement.statistic !== undefined ||
+      replacement.keys !== undefined
+    ) {
       fail("A directional replacement may not contain a value or fallback columns.");
     }
     if (replacement.direction !== "forward" && replacement.direction !== "backward") {
@@ -1325,12 +1342,47 @@ function validateFillMissingReplacement(value: unknown, targetColumnId: string):
     }
     return;
   }
+  if (replacement.kind === "groupedStatistic") {
+    if (
+      replacement.value !== undefined ||
+      replacement.columns !== undefined ||
+      replacement.direction !== undefined ||
+      replacement.orderBy !== undefined ||
+      replacement.maxGap !== undefined
+    ) {
+      fail("A grouped-statistic replacement may contain only a statistic and grouping columns.");
+    }
+    if (
+      replacement.statistic !== "median" &&
+      replacement.statistic !== "mean" &&
+      replacement.statistic !== "mostFrequent"
+    ) {
+      fail("A grouped-statistic replacement contains an unsupported statistic.");
+    }
+    if (
+      !Array.isArray(replacement.keys) ||
+      replacement.keys.length === 0 ||
+      replacement.keys.length > R_FRAME_CONTRACT_LIMITS.columns
+    ) {
+      fail("R kernel grouping columns must be a bounded non-empty array.");
+    }
+    const seen = new Set<string>();
+    for (const [index, candidate] of replacement.keys.entries()) {
+      const reference = validateColumnReference(candidate, `request.payload.step.params.replacement.keys[${index}]`);
+      if (reference.id === targetColumnId) fail("The fill target cannot also be a grouping column.");
+      if (seen.has(reference.id)) fail("R kernel grouping columns contain a repeated identity.");
+      seen.add(reference.id);
+    }
+    return;
+  }
   if (
     replacement.value === undefined ||
     replacement.columns !== undefined ||
     replacement.direction !== undefined ||
     replacement.orderBy !== undefined ||
-    replacement.maxGap !== undefined
+    replacement.maxGap !== undefined ||
+    replacement.statistic !== undefined ||
+    replacement.keys !== undefined
   ) {
     fail("A typed fill-missing replacement requires a value and may not contain fallback columns.");
   }

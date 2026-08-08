@@ -3397,6 +3397,152 @@ describe("canonical R kernel bridge", () => {
     }
   });
 
+  it("dispatches grouped R fills with stable keys and conservative nullability", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const step: FillMissingValuesTransformStep = {
+      id: "r-fill-grouped",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [
+            { id: "r:c:2", name: "date" },
+            { id: "r:c:5", name: "flag" }
+          ]
+        }
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: source,
+      diff: renameDiff(),
+      code: "open_wrangler_result <- orders"
+    });
+
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(preview).toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([expect.objectContaining({ id: "r:c:7", nullable: true })]),
+        draftStep: {
+          params: {
+            replacement: {
+              kind: "groupedStatistic",
+              statistic: "mean",
+              keys: [
+                { id: "r:c:2", name: "date" },
+                { id: "r:c:5", name: "flag" }
+              ]
+            }
+          }
+        }
+      }
+    });
+
+    const dispatched = transport.previewStep.mock.calls[0]?.[2] as RKernelTransformStep | undefined;
+    if (!dispatched || dispatched.kind !== "fillMissingValues") throw new Error("expected a dispatched fill step");
+    if (dispatched.params.replacement.kind !== "groupedStatistic") throw new Error("expected a grouped fill");
+    expect(Object.isFrozen(dispatched.params.replacement)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.keys)).toBe(true);
+    expect(Object.isFrozen(dispatched.params.replacement.keys[0])).toBe(true);
+
+    if (step.params.replacement.kind !== "groupedStatistic") throw new Error("expected a grouped fill");
+    step.params.replacement.keys[0].name = "caller mutation";
+    expect(preview).toMatchObject({
+      metadata: {
+        draftStep: {
+          params: {
+            replacement: {
+              keys: [
+                { id: "r:c:2", name: "date" },
+                { id: "r:c:5", name: "flag" }
+              ]
+            }
+          }
+        }
+      }
+    });
+  });
+
+  it("rejects invalid grouped R fills before dispatch", async () => {
+    const invalidSteps = [
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [{ id: "r:c:7", name: "infinite" }]
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [
+            { id: "r:c:2", name: "date" },
+            { id: "r:c:2", name: "date" }
+          ]
+        }
+      },
+      {
+        column: { id: "r:c:7", name: "infinite" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [{ id: "r:c:2", name: "stale" }]
+        }
+      },
+      {
+        column: { id: "r:c:6", name: "missing" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [{ id: "r:c:2", name: "date" }]
+        }
+      }
+    ] as const;
+
+    for (const [index, params] of invalidSteps.entries()) {
+      const transport = fakeTransport(frameContract());
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step: {
+            id: `r-fill-invalid-grouped-${index}`,
+            kind: "fillMissingValues",
+            params
+          } as unknown as FillMissingValuesTransformStep,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(transport.previewStep).not.toHaveBeenCalled();
+    }
+  });
+
   it("rejects invalid R fallback-column references before dispatch and accepts a keyed fallback", async () => {
     const fallbackValue: RFrameCell = {
       kind: "string",

@@ -554,6 +554,168 @@ describe("OperationBuilder", () => {
     expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
   });
 
+  it("builds a grouped numeric fill with multiple compatible keys", () => {
+    const onPreview = vi.fn();
+    const columns = [
+      { id: "c:0", name: "amount", position: 0, rawType: "Float64", type: "float", nullable: true },
+      { id: "c:1", name: "region", position: 1, rawType: "String", type: "string", nullable: false },
+      { id: "c:2", name: "cohort", position: 2, rawType: "Int64", type: "integer", nullable: false },
+      { id: "c:3", name: "payload", position: 3, rawType: "Binary", type: "binary", nullable: false }
+    ] satisfies SessionMetadata["schema"];
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          shape: { rows: 2, columns: columns.length },
+          filteredShape: { rows: 2, columns: columns.length },
+          schema: columns
+        }}
+        filterModel={{
+          filters: [],
+          sort: [{ column: "region", direction: "desc", nulls: "first" }]
+        }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const method = screen.getByLabelText("Method");
+    expect(within(method).getByRole("option", { name: "Median within groups" })).toBeInTheDocument();
+    expect(within(method).getByRole("option", { name: "Mean within groups" })).toBeInTheDocument();
+    fireEvent.change(method, { target: { value: "groupedMean" } });
+
+    const groupBy = screen.getByRole("group", { name: "Group by" });
+    expect(within(groupBy).queryByRole("checkbox", { name: "amount" })).toBeNull();
+    expect(within(groupBy).queryByRole("checkbox", { name: "payload" })).toBeNull();
+    expect(within(groupBy).getByRole("checkbox", { name: "region" })).toBeChecked();
+    expect(within(groupBy).getByRole("checkbox", { name: "cohort" })).not.toBeChecked();
+    const groupSearch = within(groupBy).getByRole("searchbox", { name: "Search group columns" });
+    fireEvent.change(groupSearch, { target: { value: "cohort" } });
+    expect(within(groupBy).queryByRole("checkbox", { name: "region" })).toBeNull();
+    expect(within(groupBy).getByRole("checkbox", { name: "cohort" })).toBeInTheDocument();
+    fireEvent.click(within(groupBy).getByRole("checkbox", { name: "cohort" }));
+    expect(within(groupBy).getByText("Selected (2): region, cohort", { exact: true })).toBeInTheDocument();
+    fireEvent.change(groupSearch, { target: { value: "" } });
+    expect(screen.getByText(/Uses data after earlier cleaning steps/u)).toBeInTheDocument();
+    expect(screen.getByText(/Filters and sorts in the current view are ignored/u)).toBeInTheDocument();
+    expect(screen.getByText(/row order stays unchanged/u)).toBeInTheDocument();
+    expect(screen.getByText(/Missing values in a grouping column match/u)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      column: { id: "c:0", name: "amount" },
+      replacement: {
+        kind: "groupedStatistic",
+        statistic: "mean",
+        keys: [
+          { id: "c:1", name: "region" },
+          { id: "c:2", name: "cohort" }
+        ]
+      }
+    });
+
+    fireEvent.click(within(groupBy).getByRole("checkbox", { name: "region" }));
+    fireEvent.click(within(groupBy).getByRole("checkbox", { name: "cohort" }));
+    fireEvent.submit(screen.getByRole("button", { name: "Preview changes" }).closest("form") as HTMLFormElement);
+    expect(screen.getByRole("alert")).toHaveTextContent("Grouped fill requires at least one compatible column.");
+    expect(onPreview).toHaveBeenCalledOnce();
+  });
+
+  it("offers grouped methods by target type and explains bounded medians", () => {
+    const columns = [
+      { id: "c:0", name: "units", position: 0, rawType: "Int64", type: "integer", nullable: true },
+      { id: "c:1", name: "ratio", position: 1, rawType: "Float64", type: "float", nullable: true },
+      { id: "c:2", name: "label", position: 2, rawType: "String", type: "string", nullable: true },
+      { id: "c:3", name: "active", position: 3, rawType: "Boolean", type: "boolean", nullable: true },
+      { id: "c:4", name: "group", position: 4, rawType: "Date", type: "date", nullable: false }
+    ] satisfies SessionMetadata["schema"];
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          shape: { rows: 2, columns: columns.length },
+          filteredShape: { rows: 2, columns: columns.length },
+          schema: columns
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="fillMissingValues"
+        onClose={() => undefined}
+        onPreview={() => undefined}
+      />
+    );
+
+    const column = screen.getByLabelText("Column");
+    const method = screen.getByLabelText("Method");
+    fireEvent.change(method, { target: { value: "groupedMedian" } });
+    expect(screen.getByText(/Preview fails if a group median cannot fit the column type/u)).toBeInTheDocument();
+    expect(within(method).queryByRole("option", { name: "Mean within groups" })).toBeNull();
+
+    fireEvent.change(column, { target: { value: "c:1" } });
+    expect(within(method).getByRole("option", { name: "Mean within groups" })).toBeInTheDocument();
+    fireEvent.change(column, { target: { value: "c:2" } });
+    expect(within(method).getByRole("option", { name: "Most common value within groups" })).toBeInTheDocument();
+    expect(within(method).queryByRole("option", { name: "Median within groups" })).toBeNull();
+    fireEvent.change(method, { target: { value: "groupedMostFrequent" } });
+    expect(screen.getByText(/no non-missing value or a tie stays missing/u)).toBeInTheDocument();
+    fireEvent.change(column, { target: { value: "c:3" } });
+    expect(within(method).getByRole("option", { name: "Most common value within groups" })).toBeInTheDocument();
+  });
+
+  it("restores grouped keys and prunes a key that becomes the target", () => {
+    const columns = [
+      { id: "c:0", name: "amount", position: 0, rawType: "Float64", type: "float", nullable: true },
+      { id: "c:1", name: "region", position: 1, rawType: "String", type: "string", nullable: false },
+      { id: "c:2", name: "segment", position: 2, rawType: "String", type: "string", nullable: true }
+    ] satisfies SessionMetadata["schema"];
+    const initialStep = {
+      id: "fill-amount-by-group",
+      kind: "fillMissingValues",
+      params: {
+        column: { id: "c:0", name: "amount" },
+        replacement: {
+          kind: "groupedStatistic",
+          statistic: "median",
+          keys: [
+            { id: "c:2", name: "segment" },
+            { id: "c:1", name: "region" }
+          ]
+        }
+      }
+    } satisfies TransformStep;
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          shape: { rows: 2, columns: columns.length },
+          filteredShape: { rows: 2, columns: columns.length },
+          schema: columns,
+          latestStepInputSchema: columns,
+          steps: [initialStep]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialStep={initialStep}
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByLabelText("Method")).toHaveValue("groupedMedian");
+    let groupBy = screen.getByRole("group", { name: "Group by" });
+    expect(within(groupBy).getByRole("checkbox", { name: "segment" })).toBeChecked();
+    expect(within(groupBy).getByRole("checkbox", { name: "region" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
+
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "c:2" } });
+    fireEvent.change(screen.getByLabelText("Method"), { target: { value: "groupedMostFrequent" } });
+    groupBy = screen.getByRole("group", { name: "Group by" });
+    expect(within(groupBy).queryByRole("checkbox", { name: "segment" })).toBeNull();
+    expect(within(groupBy).getByRole("checkbox", { name: "region" })).toBeChecked();
+    expect(within(groupBy).getByRole("checkbox", { name: "amount" })).not.toBeChecked();
+  });
+
   it("offers the most common value for text columns and uses their full-column method", () => {
     const onPreview = vi.fn();
     render(
@@ -1247,6 +1409,22 @@ describe("OperationBuilder", () => {
             kind: "directional",
             direction: "forward",
             orderBy: [{ column: { id: "c:0", name: "city" }, direction: "asc", nulls: "last" }]
+          }
+        }
+      },
+      message: "saved fill columns repeats column ID “c:0”"
+    },
+    {
+      caseName: "fill target repeated as a group key",
+      step: {
+        id: "fill-grouped-self",
+        kind: "fillMissingValues",
+        params: {
+          column: { id: "c:0", name: "city" },
+          replacement: {
+            kind: "groupedStatistic",
+            statistic: "mostFrequent",
+            keys: [{ id: "c:0", name: "city" }]
           }
         }
       },

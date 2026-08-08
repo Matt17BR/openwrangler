@@ -50,6 +50,12 @@ fill_table_session_id <- "31313131-3131-4131-8131-313131313131"
 most_fill_session_id <- "32323232-3232-4232-8232-323232323232"
 fallback_fill_session_id <- "40404040-4040-4040-8040-404040404040"
 directional_fill_session_id <- "45454545-4545-4545-8545-454545454545"
+grouped_fill_session_id <- "46464646-4646-4646-8646-464646464646"
+grouped_wide_session_id <- "47474747-4747-4747-8747-474747474747"
+grouped_float_session_id <- "51515151-5151-4151-8151-515151515151"
+grouped_factor_session_id <- "48484848-4848-4848-8848-484848484848"
+grouped_table_session_id <- "49494949-4949-4949-8949-494949494949"
+grouped_collapse_session_id <- "50505050-5050-4050-8050-505050505050"
 export_session_id <- "41414141-4141-4141-8141-414141414141"
 export_id <- "42424242-4242-4242-8242-424242424242"
 cleanup_export_id <- "43434343-4343-4343-8343-434343434343"
@@ -108,7 +114,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 6L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 7L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -3443,6 +3449,291 @@ rm("directional_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
 directional_fill_closed <- dispatch("closeSession", list(sessionId = directional_fill_session_id))
 assert_identical(directional_fill_closed$kind, "closed", "the R directional-fill session did not close")
 
+source_environment$grouped_fill_frame <- data.frame(
+  group = c(NA_real_, NaN, 1, 1, 2, 2, 3, 3, 3, 4, 4),
+  wide = bit64::as.integer64(c(
+    "9007199254740993", "9007199254740993", "9007199254740994", "9007199254740994",
+    "9007199254740995", "9007199254740995", "9007199254740996", "9007199254740996", "9007199254740996",
+    "9007199254740997", "9007199254740997"
+  )),
+  day = as.Date(rep("2026-01-01", 11L)),
+  target = c(2, NA, 4, NaN, Inf, NA, Inf, -Inf, NA, 2^-1074, NA),
+  row.names = paste0("grouped-", 1:11),
+  check.names = FALSE
+)
+grouped_fill_before <- unserialize(serialize(source_environment$grouped_fill_frame, NULL, version = 3L))
+grouped_fill_open <- dispatch(
+  "openSession",
+  list(sessionId = grouped_fill_session_id, variableName = "grouped_fill_frame", page = page_window())
+)
+assert_identical(grouped_fill_open$kind, "page", "the R grouped-fill session did not open")
+
+grouped_malformed_replacements <- list(
+  list(kind = "groupedStatistic", statistic = "mean", keys = list()),
+  list(
+    kind = "groupedStatistic",
+    statistic = "mean",
+    keys = list(list(id = "r:c:0", name = "group"), list(id = "r:c:0", name = "group"))
+  ),
+  list(kind = "groupedStatistic", statistic = "mean", keys = list(list(id = "r:c:3", name = "target"))),
+  list(kind = "groupedStatistic", statistic = "sum", keys = list(list(id = "r:c:0", name = "group")))
+)
+for (malformed_index in seq_along(grouped_malformed_replacements)) {
+  grouped_malformed <- dispatch(
+    "previewStep",
+    list(
+      sessionId = grouped_fill_session_id,
+      revision = 0L,
+      step = fill_step(
+        sprintf("grouped-malformed-%d", malformed_index),
+        "r:c:3",
+        "target",
+        grouped_malformed_replacements[[malformed_index]]
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(grouped_malformed$kind, "error", "R grouped fill accepted a malformed replacement")
+  assert_identical(grouped_malformed$code, "invalid_request", "the malformed grouped-fill diagnostic changed")
+}
+
+grouped_fill_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = grouped_fill_session_id,
+    revision = 0L,
+    step = fill_step(
+      "grouped-mean",
+      "r:c:3",
+      "target",
+      list(
+        kind = "groupedStatistic",
+        statistic = "mean",
+        keys = list(
+          list(id = "r:c:0", name = "group"),
+          list(id = "r:c:1", name = "wide"),
+          list(id = "r:c:2", name = "day")
+        )
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(grouped_fill_preview$kind, "stepPreview", "R grouped fill did not preview")
+assert_identical(grouped_fill_preview$diff$changedCells, 4L, "R grouped fill returned an inexact diff")
+assert_identical(
+  grouped_fill_preview$page$schema[[4L]]$nullable,
+  TRUE,
+  "R grouped fill published optimistic nullability"
+)
+grouped_fill_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = grouped_fill_session_id, revision = 1L, page = page_window())
+)
+assert_identical(grouped_fill_apply$action, "apply", "R grouped fill did not apply")
+if (!grepl(".ow_fill_grouped", grouped_fill_apply$code, fixed = TRUE)) {
+  stop("generated R grouped fill lost its native helper", call. = FALSE)
+}
+assign("grouped_fill_frame", source_environment$grouped_fill_frame, envir = .GlobalEnv)
+eval(parse(text = grouped_fill_apply$code), envir = .GlobalEnv)
+grouped_fill_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  grouped_fill_generated$target,
+  c(2, 2, 4, 4, Inf, Inf, Inf, -Inf, NA, 2^-1074, 2^-1074),
+  "generated R grouped fill changed grouped values"
+)
+assert_identical(row.names(grouped_fill_generated), row.names(grouped_fill_before), "generated grouped fill changed row names")
+assert_identical(
+  get("grouped_fill_frame", envir = .GlobalEnv, inherits = FALSE),
+  grouped_fill_before,
+  "generated R grouped fill mutated its source"
+)
+assert_identical(
+  source_environment$grouped_fill_frame,
+  grouped_fill_before,
+  "the R grouped-fill lifecycle mutated its source"
+)
+rm("grouped_fill_frame", "open_wrangler_result", envir = .GlobalEnv)
+grouped_fill_closed <- dispatch("closeSession", list(sessionId = grouped_fill_session_id))
+assert_identical(grouped_fill_closed$kind, "closed", "the R grouped-fill session did not close")
+
+assert_grouped_generated_case <- function(
+  case_session_id,
+  variable_name,
+  source,
+  statistic,
+  assert_result
+) {
+  source_environment[[variable_name]] <- source
+  before <- if (inherits(source, "data.table")) {
+    data.table::copy(source_environment[[variable_name]])
+  } else {
+    unserialize(serialize(source, NULL, version = 3L))
+  }
+  opened <- dispatch(
+    "openSession",
+    list(sessionId = case_session_id, variableName = variable_name, page = page_window())
+  )
+  assert_identical(opened$kind, "page", sprintf("the %s grouped-fill session did not open", variable_name))
+  preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = case_session_id,
+      revision = 0L,
+      step = fill_step(
+        paste0("grouped-", variable_name),
+        "r:c:1",
+        "target",
+        list(
+          kind = "groupedStatistic",
+          statistic = statistic,
+          keys = list(list(id = "r:c:0", name = "group"))
+        )
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(preview$kind, "stepPreview", sprintf("the %s grouped fill did not preview", variable_name))
+  applied <- dispatch(
+    "applyDraft",
+    list(sessionId = case_session_id, revision = 1L, page = page_window())
+  )
+  assert_identical(applied$action, "apply", sprintf("the %s grouped fill did not apply", variable_name))
+  if (!grepl(".ow_fill_grouped", applied$code, fixed = TRUE)) {
+    stop(sprintf("generated %s grouped fill lost its native helper", variable_name), call. = FALSE)
+  }
+  assign(variable_name, source_environment[[variable_name]], envir = .GlobalEnv)
+  eval(parse(text = applied$code), envir = .GlobalEnv)
+  result <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_result(result)
+  assert_identical(
+    get(variable_name, envir = .GlobalEnv, inherits = FALSE),
+    before,
+    sprintf("generated %s grouped fill mutated its source", variable_name)
+  )
+  assert_identical(
+    source_environment[[variable_name]],
+    before,
+    sprintf("the %s grouped-fill lifecycle mutated its source", variable_name)
+  )
+  rm(list = c(variable_name, "open_wrangler_result"), envir = .GlobalEnv)
+  closed <- dispatch("closeSession", list(sessionId = case_session_id))
+  assert_identical(closed$kind, "closed", sprintf("the %s grouped-fill session did not close", variable_name))
+  rm(list = variable_name, envir = source_environment)
+}
+
+if (requireNamespace("bit64", quietly = TRUE)) {
+  assert_grouped_generated_case(
+    grouped_wide_session_id,
+    "grouped_wide_frame",
+    data.frame(
+      group = c("a", "a", "a"),
+      target = bit64::as.integer64(c("9007199254740993", "9007199254740995", NA)),
+      check.names = FALSE
+    ),
+    "median",
+    function(result) {
+      assert_identical(class(result$target), "integer64", "generated grouped integer64 median changed type")
+      assert_identical(
+        as.character(result$target),
+        c("9007199254740993", "9007199254740995", "9007199254740994"),
+        "generated grouped integer64 median lost precision"
+      )
+    }
+  )
+}
+
+assert_grouped_generated_case(
+  grouped_float_session_id,
+  "grouped_float_frame",
+  data.frame(
+    group = c("odd", "odd", "even", "even", "even", "infinite", "infinite", "infinite"),
+    target = c(
+      2^-1074,
+      NA_real_,
+      .Machine$double.xmax / 2,
+      .Machine$double.xmax,
+      NA_real_,
+      -Inf,
+      Inf,
+      NA_real_
+    ),
+    check.names = FALSE
+  ),
+  "median",
+  function(result) {
+    expected_midpoint <- (.Machine$double.xmax / 2) +
+      ((.Machine$double.xmax - (.Machine$double.xmax / 2)) / 2)
+    assert_identical(
+      result$target,
+      c(
+        2^-1074,
+        2^-1074,
+        .Machine$double.xmax / 2,
+        .Machine$double.xmax,
+        expected_midpoint,
+        -Inf,
+        Inf,
+        NA_real_
+      ),
+      "generated grouped double median changed an exact, safe, or unresolved result"
+    )
+  }
+)
+
+assert_grouped_generated_case(
+  grouped_factor_session_id,
+  "grouped_factor_frame",
+  data.frame(
+    group = c("a", "a", "a", "b", "b", "b"),
+    target = factor(c("x", "x", NA, "x", "y", NA), levels = c("x", "y", "unused")),
+    check.names = FALSE
+  ),
+  "mostFrequent",
+  function(result) {
+    assert_identical(class(result$target), "factor", "generated grouped factor mode changed type")
+    assert_identical(
+      as.character(result$target),
+      c("x", "x", "x", "x", "y", NA_character_),
+      "generated grouped factor mode filled a tied group"
+    )
+    assert_identical(levels(result$target), c("x", "y", "unused"), "generated grouped factor mode changed levels")
+  }
+)
+
+if (requireNamespace("data.table", quietly = TRUE)) {
+  grouped_table_source <- data.table::data.table(group = c("a", "a", "b"), target = c(1, NA, NA))
+  data.table::setkey(grouped_table_source, group)
+  assert_grouped_generated_case(
+    grouped_table_session_id,
+    "grouped_table_frame",
+    grouped_table_source,
+    "mean",
+    function(result) {
+      assert_identical(class(result), c("data.table", "data.frame"), "generated grouped fill changed data.table flavor")
+      assert_identical(data.table::key(result), "group", "generated grouped fill dropped a data.table key")
+      assert_identical(result$target, c(1, 1, NA_real_), "generated grouped fill changed data.table values")
+    }
+  )
+}
+
+if (requireNamespace("collapse", quietly = TRUE)) {
+  assert_grouped_generated_case(
+    grouped_collapse_session_id,
+    "grouped_collapse_frame",
+    collapse::qTBL(data.frame(group = c("a", "a", "b"), target = c(TRUE, NA, NA))),
+    "mostFrequent",
+    function(result) {
+      assert_identical(
+        class(result),
+        c("tbl_df", "tbl", "data.frame"),
+        "generated grouped fill changed collapse frame flavor"
+      )
+      assert_identical(result$target, c(TRUE, TRUE, NA), "generated grouped fill changed collapse values")
+    }
+  )
+}
+
 source_environment$most_fill_frame <- data.frame(
   label = ordered(c("high", NA, "high", "low"), levels = c("low", "high")),
   row.names = c("most-a", "most-b", "most-c", "most-d")
@@ -5423,6 +5714,7 @@ missing_package_contract <- list(
   fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
   fill_missing_from_fallback_columns_at = function(...) stop("unexpected fallback fill", call. = FALSE),
   fill_missing_directional_at = function(...) stop("unexpected directional fill", call. = FALSE),
+  fill_missing_grouped_statistic_at = function(...) stop("unexpected grouped fill", call. = FALSE),
   cast_column_at = function(...) stop("unexpected cast", call. = FALSE),
   drop_columns_at = function(...) stop("unexpected drop", call. = FALSE),
   select_columns_at = function(...) stop("unexpected select", call. = FALSE),
@@ -5597,6 +5889,21 @@ if (
     !identical(conditionMessage(missing_directional_fill_error), "Open Wrangler received an invalid R frame contract.")
 ) {
   stop("the R agent accepted a frame contract without directional fill support", call. = FALSE)
+}
+missing_grouped_fill_contract <- missing_package_contract
+missing_grouped_fill_contract$fill_missing_grouped_statistic_at <- NULL
+missing_grouped_fill_error <- tryCatch(
+  {
+    openwrangler_r_kernel_agent$new_agent(missing_grouped_fill_contract, source_environment)
+    NULL
+  },
+  error = function(error) error
+)
+if (
+  is.null(missing_grouped_fill_error) ||
+    !identical(conditionMessage(missing_grouped_fill_error), "Open Wrangler received an invalid R frame contract.")
+) {
+  stop("the R agent accepted a frame contract without grouped fill support", call. = FALSE)
 }
 missing_cast_contract <- missing_package_contract
 missing_cast_contract$cast_column_at <- NULL

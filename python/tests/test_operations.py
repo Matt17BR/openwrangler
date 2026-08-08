@@ -217,6 +217,63 @@ def test_fill_missing_validation_preserves_directional_order_and_gap_limit() -> 
     assert validated["params"]["replacement"] == replacement
 
 
+def test_fill_missing_validation_preserves_grouped_statistic_keys() -> None:
+    replacement = {
+        "kind": "groupedStatistic",
+        "statistic": "median",
+        "keys": [
+            public_ref("c:source:0", "region"),
+            public_ref("c:source:1", "date"),
+        ],
+    }
+
+    validated = step(
+        "grouped-fill",
+        "fillMissingValues",
+        column=public_ref("c:source:3", "value"),
+        replacement=replacement,
+    )
+
+    assert validated["params"]["replacement"] == replacement
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {"kind": "groupedStatistic", "statistic": "median", "keys": []},
+        {
+            "kind": "groupedStatistic",
+            "statistic": "future",
+            "keys": [public_ref("c:source:0", "region")],
+        },
+        {
+            "kind": "groupedStatistic",
+            "statistic": "median",
+            "keys": [public_ref("c:source:0", "region"), public_ref("c:source:0", "region")],
+        },
+        {
+            "kind": "groupedStatistic",
+            "statistic": "median",
+            "keys": [public_ref("c:source:3", "value")],
+        },
+        {
+            "kind": "groupedStatistic",
+            "statistic": "median",
+            "keys": [public_ref("c:source:0", "region")],
+            "extra": True,
+        },
+    ],
+)
+def test_fill_missing_validation_rejects_invalid_grouped_statistics(replacement: dict[str, Any]) -> None:
+    with pytest.raises(OperationError):
+        step(
+            "bad-grouped-fill",
+            "fillMissingValues",
+            column=public_ref("c:source:3", "value"),
+            replacement=replacement,
+        )
+
+
 @pytest.mark.parametrize(
     "replacement",
     [

@@ -248,6 +248,10 @@ def _validate_common(kind: str, params: dict[str, Any]) -> None:
             rule["column"]["id"] == params["column"]["id"] for rule in params["replacement"]["orderBy"]
         ):
             raise OperationError("A directional fill target cannot also be one of its ordering columns.")
+        elif replacement_kind == "groupedStatistic" and any(
+            key["id"] == params["column"]["id"] for key in params["replacement"]["keys"]
+        ):
+            raise OperationError("A grouped fill target cannot also be one of its group keys.")
     elif kind == "dropDuplicates" and params.get("keep", "first") not in {"first", "last", "none"}:
         raise OperationError("dropDuplicates.keep must be first, last, or none.")
     elif kind == "castColumn" and params["dtype"] not in CAST_DTYPES:
@@ -389,6 +393,20 @@ def _normalize_fill_missing_replacement(value: Any) -> dict[str, Any]:
                 )
             result["maxGap"] = max_gap
         return result
+    if kind == "groupedStatistic":
+        if set(value) != {"kind", "statistic", "keys"}:
+            raise OperationError("A grouped-statistic replacement must contain exactly kind, statistic, and keys.")
+        statistic = value.get("statistic")
+        if statistic not in {"mean", "median", "mostFrequent"}:
+            raise OperationError("A grouped-statistic fill must use mean, median, or mostFrequent.")
+        return {
+            "kind": kind,
+            "statistic": statistic,
+            "keys": _normalize_column_reference_list(
+                value.get("keys"),
+                "fillMissingValues.replacement.keys",
+            ),
+        }
     if kind not in _FILL_REPLACEMENT_KINDS:
         raise OperationError(f"Unsupported fill replacement type: {kind!r}.")
     if set(value) != {"kind", "value"}:
@@ -666,6 +684,8 @@ def _reject_private_column_namespace(kind: str, params: Mapping[str, Any]) -> No
                 ("replacement.orderBy.column.name", rule["column"].get("name"))
                 for rule in params["replacement"]["orderBy"]
             )
+        elif kind == "fillMissingValues" and params["replacement"].get("kind") == "groupedStatistic":
+            references.extend(("replacement.keys.name", key.get("name")) for key in params["replacement"]["keys"])
     elif kind == "formula":
         references.append(("leftColumn.name", params["leftColumn"].get("name")))
         if "rightColumn" in params:

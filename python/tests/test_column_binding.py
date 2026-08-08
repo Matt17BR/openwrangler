@@ -1070,3 +1070,54 @@ def test_by_example_type_validation_recurses_through_nested_programs() -> None:
             [{"name": "value", "type": "decimal"}],
             [reference],
         )
+
+
+def test_fill_missing_binds_grouped_statistic_keys_by_identity() -> None:
+    schema = [
+        {"name": "group", "type": "string"},
+        {"name": "sequence", "type": "integer"},
+        {"name": "value", "type": "float"},
+    ]
+    lineage = [ref("c:group", "group"), ref("c:sequence", "sequence"), ref("c:value", "value")]
+    bound = bind_step(
+        step(
+            "fillMissingValues",
+            column=ref("c:value", "value"),
+            replacement={
+                "kind": "groupedStatistic",
+                "statistic": "mean",
+                "keys": [ref("c:group", "group"), ref("c:sequence", "sequence")],
+            },
+        ),
+        schema,
+        lineage,
+    )
+
+    assert bound["params"]["replacement"]["keys"] == [
+        {"id": "c:group", "name": "group", "position": 0},
+        {"id": "c:sequence", "name": "sequence", "position": 1},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target_type", "statistic"),
+    [("integer", "mean"), ("date", "median"), ("integer", "mostFrequent")],
+)
+def test_fill_missing_binding_rejects_incompatible_grouped_statistic_targets(target_type: str, statistic: str) -> None:
+    schema = [{"name": "key", "type": "string"}, {"name": "value", "type": target_type}]
+    lineage = [ref("c:key", "key"), ref("c:value", "value")]
+
+    with pytest.raises(ColumnBindingError, match="compatible target"):
+        bind_step(
+            step(
+                "fillMissingValues",
+                column=ref("c:value", "value"),
+                replacement={
+                    "kind": "groupedStatistic",
+                    "statistic": statistic,
+                    "keys": [ref("c:key", "key")],
+                },
+            ),
+            schema,
+            lineage,
+        )

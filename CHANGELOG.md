@@ -9,6 +9,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Fill Missing Values can now use the previous or next value after sorting by one or more explicit columns. An
   optional maximum gap leaves longer missing runs untouched. The calculation order is part of the cleaning step and
   does not reuse viewing sorts.
+- Missing numeric, text, categorical, and boolean values can now use a statistic calculated separately within one or
+  more grouping columns. All-missing groups and tied most-common values stay missing.
 
 ### Fixed
 
