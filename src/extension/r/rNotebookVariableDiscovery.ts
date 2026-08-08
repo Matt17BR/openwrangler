@@ -235,7 +235,10 @@ local({
     .ow_classes <- class(.ow_value)
     .ow_flavor <- if (identical(.ow_classes, c("data.table", "data.frame"))) {
       "r.data.table"
-    } else if (identical(.ow_classes, c("tbl_df", "tbl", "data.frame"))) {
+    } else if (
+      identical(.ow_classes, c("tbl_df", "tbl", "data.frame")) ||
+        identical(.ow_classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
+    ) {
       "r.tibble"
     } else if (identical(.ow_classes, "data.frame")) {
       "r.data.frame"
@@ -341,7 +344,10 @@ local({
         .ow_classes <- class(.ow_value)
         .ow_flavor <- if (identical(.ow_classes, c("data.table", "data.frame"))) {
           "r.data.table"
-        } else if (identical(.ow_classes, c("tbl_df", "tbl", "data.frame"))) {
+        } else if (
+          identical(.ow_classes, c("tbl_df", "tbl", "data.frame")) ||
+            identical(.ow_classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
+        ) {
           "r.tibble"
         } else if (identical(.ow_classes, "data.frame")) {
           "r.data.frame"

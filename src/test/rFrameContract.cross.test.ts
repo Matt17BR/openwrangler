@@ -6,7 +6,7 @@ import { decodeRFramePageJson, type RDataframeFlavor } from "../extension/r/rFra
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const rscript = process.env.RSCRIPT ?? "Rscript";
 
-function emitFrame(flavor: "data.frame" | "tibble" | "data.table", view?: "sorted") {
+function emitFrame(flavor: "data.frame" | "tibble" | "readr-tibble" | "data.table", view?: "sorted") {
   const args = ["--vanilla", "r/tests/emit_frame_contract.R", flavor];
   if (view) args.push(view);
   const result = spawnSync(rscript, args, {
@@ -35,6 +35,7 @@ describe.skipIf(!enabled)("R to TypeScript frame contract", () => {
   it.each([
     ["data.frame", "r.data.frame"],
     ["tibble", "r.tibble"],
+    ["readr-tibble", "r.tibble"],
     ["data.table", "r.data.table"]
   ] as const)("decodes a native %s page without a Python compatibility layer", (fixture, expectedFlavor) => {
     const frame = emitFrame(fixture);

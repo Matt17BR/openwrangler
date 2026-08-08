@@ -102,7 +102,7 @@ describe("R notebook variable discovery", () => {
     expect(code).toContain('requireNamespace("jsonlite", quietly = TRUE)');
     expect(code).toContain('requireNamespace("rlang", quietly = TRUE)');
     expect(code).toContain('identical(.ow_classes, c("data.table", "data.frame"))');
-    expect(code).toContain('identical(.ow_classes, c("tbl_df", "tbl", "data.frame"))');
+    expect(code).toContain('identical(.ow_classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))');
     expect(code).toContain('identical(.ow_classes, "data.frame")');
     expect(code).toContain(".GlobalEnv");
     expect(code.toLowerCase()).not.toContain("python");
@@ -112,6 +112,16 @@ describe("R notebook variable discovery", () => {
     const script = `
 .ow_forced <- FALSE
 ordinary_frame <- data.frame(value = 1L)
+readr_frame <- structure(
+  data.frame(value = 4L),
+  class = c("spec_tbl_df", "tbl_df", "tbl", "data.frame"),
+  spec = "ignored after discovery"
+)
+grouped_frame <- structure(
+  data.frame(value = 5L),
+  class = c("grouped_df", "tbl_df", "tbl", "data.frame"),
+  groups = data.frame(value = 5L, .rows = I(list(1L)))
+)
 delayedAssign(
   "lazy_frame",
   { .ow_forced <<- TRUE; data.frame(value = 2L) },
@@ -138,7 +148,10 @@ cat("__OPEN_WRANGLER_FORCED__", .ow_forced, "\\n", sep = "")
     expect(result.stdout).toContain("__OPEN_WRANGLER_FORCED__FALSE");
     expect(parseRNotebookVariableDiscoveryOutput(result.stdout, MARKER)).toEqual({
       truncated: false,
-      variables: [{ name: "ordinary_frame", backend: "r", dataframeFlavor: "r.data.frame" }]
+      variables: [
+        { name: "ordinary_frame", backend: "r", dataframeFlavor: "r.data.frame" },
+        { name: "readr_frame", backend: "r", dataframeFlavor: "r.tibble" }
+      ]
     });
   });
 

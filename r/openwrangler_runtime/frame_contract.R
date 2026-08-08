@@ -507,13 +507,28 @@ openwrangler_r_frame_contract <- local({
       return("r.data.table")
     }
     if (inherits(value, "tbl_df")) {
-      if (!identical(classes, c("tbl_df", "tbl", "data.frame"))) {
+      if (
+        !identical(classes, c("tbl_df", "tbl", "data.frame")) &&
+          !identical(classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
+      ) {
         abort("unsupported-frame-class", "the tibble has unsupported subclasses")
       }
       return("r.tibble")
     }
     if (identical(classes, "data.frame")) return("r.data.frame")
     abort("unsupported-frame-class", "the value must be a base data.frame, tibble, or data.table")
+  }
+
+  normalize_supported_frame <- function(value) {
+    frame_flavor(value)
+    if (identical(class(value), c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))) {
+      normalized <- value
+      attr(normalized, "spec") <- NULL
+      attr(normalized, "problems") <- NULL
+      class(normalized) <- c("tbl_df", "tbl", "data.frame")
+      return(normalized)
+    }
+    value
   }
 
   isolated_snapshot <- function(value, flavor) {
@@ -1540,6 +1555,7 @@ openwrangler_r_frame_contract <- local({
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
+    value <- normalize_supported_frame(value)
     flavor <- frame_flavor(value)
     assert_frame_attributes(value, flavor)
     row_count <- nrow(value)
@@ -1685,9 +1701,10 @@ openwrangler_r_frame_contract <- local({
     if (!is.null(cast_positions) && is.null(source_positions)) {
       abort("internal-error", "R cast outputs require explicit source mappings")
     }
+    value <- normalize_supported_frame(value)
     flavor <- frame_flavor(value)
-    assert_frame_attributes(value, flavor)
     snapshot <- isolated_snapshot(value, flavor)
+    assert_frame_attributes(snapshot, flavor)
     metrics <- new_capture_metrics()
     inspected <- inspect_frame(
       snapshot,
@@ -2079,7 +2096,7 @@ openwrangler_r_frame_contract <- local({
       abort("invalid-source-reader", "source_reader must be a function")
     }
     metrics <- new_capture_metrics()
-    value <- source_reader()
+    value <- normalize_supported_frame(source_reader())
     add_metric(metrics, "sourceReads")
     inspected <- inspect_frame(
       value,
@@ -4808,7 +4825,10 @@ openwrangler_r_frame_contract <- local({
     }
 
     add_metric(capture$metrics, "sourceReads")
-    value <- tryCatch(capture$sourceReader(), error = function(error) source_changed())
+    value <- tryCatch(
+      normalize_supported_frame(capture$sourceReader()),
+      error = function(error) source_changed()
+    )
     inspected <- tryCatch(
       inspect_frame(
         value,
