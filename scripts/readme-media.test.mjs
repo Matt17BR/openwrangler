@@ -738,35 +738,31 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /base `data\.frame`, tibble, and `data\.table` variables in the active\s+IRkernel\.[\s\S]{0,560}Each variable stays in R\./u
+    /base `data\.frame`, tibble, and `data\.table` objects in the active IRkernel[\s\S]{0,120}without\s+converting them to Python/u
   );
-  assert.match(
-    gallery,
-    /For a trusted `\.R`, `\.Rmd`, or `\.qmd` document, choose \*\*Run R Document in Open Wrangler…\*\*/u
-  );
+  assert.match(gallery, /For a trusted `\.R`, `\.Rmd`, or `\.qmd` file, \*\*Run R Document in Open Wrangler…\*\*/u);
+  assert.match(gallery, /Open Wrangler-managed R process/u);
+  assert.match(gallery, /Quarto rendering and Open Wrangler execution use separate R sessions/u);
   assert.match(gallery, /Unsaved editor changes are included\./u);
-  assert.match(gallery, /Direct R-document execution currently requires macOS or Linux/u);
-  assert.match(gallery, /Editing mode currently supports[\s\S]{0,440}Round, Floor, Ceiling, and Group and aggregate/u);
-  assert.match(gallery, /All twenty-one operations use draft preview, generated R, apply, discard, inspection/u);
   assert.match(
     gallery,
-    /Fill Missing Values can use[\s\S]{0,160}mean of a double column[\s\S]{0,240}ordered\s+list of same-type columns/u
+    /pages through the R object and supports filters, ordered sorts, value search, and column and dataset\s+profiles/u
   );
-  assert.match(gallery, /These methods ignore `NA`\s+and `NaN`\./u);
-  assert.match(
+  assert.match(gallery, /Editing follows the same draft, preview, code, and apply workflow as the Python engines/u);
+  assert.match(gallery, /\[operation and command reference\]\(reference\.md\)/u);
+  assert.match(gallery, /Frames created with `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
+  assert.match(gallery, /R notebooks work on Windows; direct document\s+runs currently require macOS or Linux/u);
+  assert.doesNotMatch(
     gallery,
-    /Local R notebook and R document sessions opened in Editing mode can export their cleaned result as CSV\./u
+    /Editing mode currently supports|All twenty-one operations|Fill Missing Values can use|These methods ignore/u
   );
-  assert.doesNotMatch(gallery, /R notebooks\s+cannot export cleaned data yet/u);
-  assert.match(gallery, /This draft groups regional orders by market and channel/u);
   assert.match(
     gallery,
-    /alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R"/u
+    /alt="[^"]*R[^"]*(?:draft|editing)[^"]*"[^>]*src="images\/readme\/v1\.2\/gallery\/notebook-r-editing\.png"/u
   );
-  assert.match(gallery, /The picker comes from a real `\.qmd` run/u);
   assert.match(
     gallery,
-    /alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders"/u
+    /alt="[^"]*Quarto[^"]*"[^>]*src="images\/readme\/v1\.2\/gallery\/r-quarto-variable-picker-detail\.png"/u
   );
   assert.match(gallery, /vscode-notebook-r-code-insertion-detail-dark\.png/u);
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
