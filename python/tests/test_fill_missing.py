@@ -171,7 +171,7 @@ _DIRECTIONAL_SOURCE = [
 def directional_frame(engine: Any) -> Any:
     columns = ["row", "priority", "sequence", "value"]
     if isinstance(engine, PandasEngine):
-        return pd.DataFrame(_DIRECTIONAL_SOURCE, columns=columns)
+        return pd.DataFrame(_DIRECTIONAL_SOURCE, columns=pd.Index(columns))
     if isinstance(engine, PolarsEngine):
         return pl.DataFrame(_DIRECTIONAL_SOURCE, schema=columns, orient="row")
 
@@ -236,7 +236,7 @@ def grouped_float_frame(engine: Any) -> Any:
         ("w", 3.0, None),
     ]
     if isinstance(engine, PandasEngine):
-        return pd.DataFrame(values, columns=["group", "bucket", "value"])
+        return pd.DataFrame(values, columns=pd.Index(["group", "bucket", "value"]))
     if isinstance(engine, PolarsEngine):
         return pl.DataFrame(values, schema=["group", "bucket", "value"], orient="row").lazy()
     sql_values = ", ".join(
@@ -271,7 +271,7 @@ def grouped_string_frame(engine: Any) -> Any:
         ("z", None),
     ]
     if isinstance(engine, PandasEngine):
-        return pd.DataFrame(values, columns=["group", "value"])
+        return pd.DataFrame(values, columns=pd.Index(["group", "value"]))
     if isinstance(engine, PolarsEngine):
         return pl.DataFrame(values, schema=["group", "value"], orient="row").lazy()
     sql_values = ", ".join(f"({group!r}, {('NULL' if value is None else repr(value))})" for group, value in values)
@@ -348,7 +348,7 @@ def test_grouped_mean_treats_target_nan_and_null_as_the_same_missing_value(engin
         ("undefined", float("inf")),
     ]
     if isinstance(engine, PandasEngine):
-        source = pd.DataFrame(values, columns=["group", "value"])
+        source = pd.DataFrame(values, columns=pd.Index(["group", "value"]))
     elif isinstance(engine, PolarsEngine):
         source = pl.DataFrame(values, schema=["group", "value"], orient="row").lazy()
     else:
@@ -453,7 +453,7 @@ def test_grouped_float_median_leaves_an_undefined_infinite_midpoint_missing(engi
     engine, _unused = engine_and_frame
     values = [("x", float("-inf")), ("x", None), ("x", float("inf"))]
     if isinstance(engine, PandasEngine):
-        source = pd.DataFrame(values, columns=["group", "value"])
+        source = pd.DataFrame(values, columns=pd.Index(["group", "value"]))
     elif isinstance(engine, PolarsEngine):
         source = pl.DataFrame(values, schema=["group", "value"], orient="row").lazy()
     else:
@@ -474,7 +474,7 @@ def test_grouped_float_median_avoids_opposite_sign_overflow(engine_and_frame) ->
     engine, _unused = engine_and_frame
     values = [("x", -1e308), ("x", None), ("x", 1e308)]
     if isinstance(engine, PandasEngine):
-        source = pd.DataFrame(values, columns=["group", "value"])
+        source = pd.DataFrame(values, columns=pd.Index(["group", "value"]))
     elif isinstance(engine, PolarsEngine):
         source = pl.DataFrame(values, schema=["group", "value"], orient="row").lazy()
     else:
@@ -672,7 +672,7 @@ def test_pandas_grouped_fill_addresses_duplicate_and_non_string_labels_by_positi
     engine = PandasEngine()
     source = pd.DataFrame(
         [["x", 1, "ignored"], ["x", None, "ignored"], ["x", 3, "ignored"]],
-        columns=[0, "value", "value"],
+        columns=pd.Index([0, "value", "value"]),
     )
     source.isetitem(1, pd.Series([1, None, 3], dtype="Int64"))
     operation = grouped_step("median", 1, [(0, "0")])
@@ -773,7 +773,7 @@ def string_tie_frame(engine: Any) -> Any:
     ]
     columns = ["row", "order", "value"]
     if isinstance(engine, PandasEngine):
-        return pd.DataFrame(records, columns=columns)
+        return pd.DataFrame(records, columns=pd.Index(columns))
     if isinstance(engine, PolarsEngine):
         return pl.DataFrame(records, schema=columns, orient="row")
     return duckdb.sql(
@@ -933,7 +933,7 @@ def test_pandas_directional_fill_uses_exact_duplicate_label_positions_in_live_an
             [7, 3, "decoy-2", None],
             [6, 4, "decoy-3", "end"],
         ],
-        columns=["order", "order", "value", "value"],
+        columns=pd.Index(["order", "order", "value", "value"]),
     )
     operation = fill_step(
         bound_ref("c:source:3", "value", 3),

@@ -7,7 +7,7 @@ from decimal import MAX_EMAX, MIN_EMIN, Decimal, localcontext
 from math import isfinite, isnan
 from numbers import Integral, Real
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
@@ -2670,7 +2670,7 @@ def _pandas_linear_coordinate_values(series: Any) -> list[Any]:
         if isinstance(value, (pd.Timestamp, datetime, np.datetime64)):
             try:
                 timestamp = pd.Timestamp(value)
-                if pd.isna(timestamp):
+                if cast(bool, pd.isna(timestamp)):
                     raise ValueError("missing datetime")
                 result.append(int(timestamp.value))
             except (TypeError, ValueError, OverflowError) as error:
