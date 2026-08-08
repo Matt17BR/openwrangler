@@ -526,7 +526,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Open Wrangler opens base R `data\.frame`, tibble, and `data\.table` variables from IRkernel/u);
   assert.match(readme, /\*\*Run R Document in Open Wrangler…\*\* from Explorer or the\s+editor/u);
   assert.match(readme, /supported top-level R cells in `\.Rmd` and `\.qmd` documents/u);
-  assert.match(readme, /do not render Quarto or R Markdown or attach to another\s+R session/u);
+  assert.match(readme, /do not render Quarto or R Markdown or\s+attach to another\s+R session/u);
   assert.match(readme, /including unsaved\s+editor changes/u);
   assert.match(readme, /To export Parquet, install `nanoparquet` 0\.5\.1 or newer[\s\S]{0,100}reopen the dataframe/u);
   assert.match(readme, /The R workbench supports[\s\S]{0,180}21 cleaning operations/u);
