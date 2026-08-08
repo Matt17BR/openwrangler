@@ -48,6 +48,7 @@ import { vscode } from "./vscodeApi";
 const webviewConfig = readWebviewConfig();
 const pageSize = webviewConfig.fetchBlockSize;
 const sessionSnapshotRetryDelaysMs = [250, 500, 1_000, 2_000, 4_000, 8_000] as const;
+const nonCancellableMutationProfileRestartDelayMs = 2_000;
 const viewRequestEpoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let lastViewRequestSequence = 0;
 
@@ -138,6 +139,7 @@ export function App() {
   const pendingStatsRequest = useRef<string | undefined>(undefined);
   const latestValuesByColumn = useRef(new Map<string, string>());
   const retryTimers = useRef(new Map<number, PendingBackgroundRequest>());
+  const mutationProfileRestartTimer = useRef<number | undefined>(undefined);
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
   const mutationSnapshot = useRef<ConfirmedViewState | undefined>(undefined);
   const importOptionsPendingRef = useRef(false);
@@ -490,14 +492,27 @@ export function App() {
     [storeColumnValues, storeSummaries]
   );
 
+  const cancelMutationProfileRestart = useCallback(() => {
+    if (mutationProfileRestartTimer.current === undefined) return;
+    window.clearTimeout(mutationProfileRestartTimer.current);
+    mutationProfileRestartTimer.current = undefined;
+  }, []);
+
   const resetViewProfiling = useCallback(
     (preserveColumnValues = false) => {
+      cancelMutationProfileRestart();
       cancelBackgroundRequests();
       clearDrawerSummaryScheduling();
       clearProgressiveData(preserveColumnValues);
       storeBackgroundDiagnostics(new Map());
     },
-    [cancelBackgroundRequests, clearDrawerSummaryScheduling, clearProgressiveData, storeBackgroundDiagnostics]
+    [
+      cancelBackgroundRequests,
+      cancelMutationProfileRestart,
+      clearDrawerSummaryScheduling,
+      clearProgressiveData,
+      storeBackgroundDiagnostics
+    ]
   );
 
   const confirmView = useCallback((next: SessionMetadata, viewContextId: string): ConfirmedView => {
@@ -602,7 +617,15 @@ export function App() {
       for (const [columnId, owners] of [...summaryOwnersByColumnId.current]) {
         if (owners.has("grid") && !next.has(columnId)) releaseSummaryOwner(columnId, "grid");
       }
-      for (const columnId of next) sendSummaryColumn(columnId, 1, "grid");
+      for (const columnId of next) {
+        if (mutationProfileRestartTimer.current !== undefined) {
+          const owners = summaryOwnersByColumnId.current.get(columnId) ?? new Set<SummaryRequestOwner>();
+          owners.add("grid");
+          summaryOwnersByColumnId.current.set(columnId, owners);
+          continue;
+        }
+        sendSummaryColumn(columnId, 1, "grid");
+      }
     },
     [releaseSummaryOwner, sendSummaryColumn]
   );
@@ -653,6 +676,21 @@ export function App() {
     restartOwnedSummaryProfiling();
     requestStatsForConfirmedView();
   }, [requestStatsForConfirmedView, restartOwnedSummaryProfiling]);
+
+  const restartProfilingAfterMutation = useCallback(() => {
+    cancelMutationProfileRestart();
+    if (metadataRef.current?.capabilities.cancel !== false) {
+      restartProfilingForConfirmedView();
+      return;
+    }
+    // A non-cancellable runtime may serialize profiles and cleaning actions on
+    // one worker or notebook kernel. Leave a quiet period for the next action;
+    // explicit drawer requests still call sendSummaryColumn immediately.
+    mutationProfileRestartTimer.current = window.setTimeout(() => {
+      mutationProfileRestartTimer.current = undefined;
+      restartProfilingForConfirmedView();
+    }, nonCancellableMutationProfileRestartDelayMs);
+  }, [cancelMutationProfileRestart, restartProfilingForConfirmedView]);
 
   useEffect(() => {
     importOptionsUiBusyRef.current = loading || mutationPending || projectionLoading;
@@ -1542,7 +1580,7 @@ export function App() {
         );
         setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
         if (response.kind === "stepPreview") setOperationOpen(false);
-        restartProfilingForConfirmedView();
+        restartProfilingAfterMutation();
         if (shouldRestoreUndoFocus) {
           scheduleWebviewFocusRestoration(() => {
             document.querySelector<HTMLButtonElement>("[data-cleaning-plan-focus-fallback]:not(:disabled)")?.focus();
@@ -1619,6 +1657,7 @@ export function App() {
     vscode.postMessage({ kind: "ready" });
     return () => {
       window.removeEventListener("message", listener);
+      cancelMutationProfileRestart();
       for (const timer of timers.keys()) window.clearTimeout(timer);
       timers.clear();
     };
@@ -1636,6 +1675,7 @@ export function App() {
     }
   }, [
     beginMutation,
+    cancelMutationProfileRestart,
     canProfileConfirmedView,
     clearBackgroundDiagnostic,
     clearStepInspection,
@@ -1650,6 +1690,7 @@ export function App() {
     requestStatsForConfirmedView,
     requestStepInspection,
     restoreSessionModeChangeFocus,
+    restartProfilingAfterMutation,
     restartProfilingForConfirmedView,
     restoreConfirmedViewState,
     restoreViewAfterPageFailure,
