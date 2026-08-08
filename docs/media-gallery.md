@@ -115,8 +115,8 @@ Select any applied step to inspect that point in history, then return to confirm
     <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="images/readme/v1.2/gallery/export-data-detail.png" width="960"></a></td>
   </tr>
   <tr>
-    <td>Copy generated code or save it as a Python or R script. Python and R notebook sessions can also insert it into the notebook that opened the dataframe.</td>
-    <td>Editing sessions backed by Pandas, Polars, or DuckDB can export a cleaned CSV or Parquet file without overwriting the source.</td>
+    <td>Copy generated code or save it as a Python or R script. Notebook sessions and Open Wrangler-managed R documents can also insert it into the source that opened the dataframe.</td>
+    <td>Pandas, Polars, DuckDB, and local R editing sessions can export cleaned data without overwriting the source. R uses nanoparquet for Parquet files.</td>
   </tr>
 </table>
 

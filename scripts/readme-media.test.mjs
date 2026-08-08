@@ -538,9 +538,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /interactive session from the official R extension[\s\S]{0,140}\*\*Operations → Refresh R\s+dataframes\*\*/u
+    /interactive session from the official R extension[\s\S]{0,140}\*\*Operations → Show R\s+dataframes…\*\*/u
   );
-  assert.match(readme, /The list and every opened dataframe stay tied to that terminal/u);
+  assert.match(readme, /\*\*Start R and show dataframes…\*\* opens one first/u);
+  assert.match(readme, /The list and every\s+opened dataframe stay tied to that terminal/u);
   assert.match(readme, /\*\*Run R Document in Open Wrangler…\*\* runs a trusted `\.R` file/u);
   assert.match(readme, /supported\s+top-level R cells in an `\.Rmd` or `\.qmd` document/u);
   assert.match(readme, /It uses its own R process[\s\S]{0,180}does not replace Quarto or R Markdown rendering/u);
@@ -549,11 +550,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /export Parquet when\s+`nanoparquet` 0\.5\.1 or newer is installed[\s\S]{0,160}Reopen the dataframe/u
   );
-  assert.match(readme, /The R workbench supports[\s\S]{0,180}21 cleaning operations/u);
-  assert.match(
-    readme,
-    /\*\*Split text\*\*, \*\*Round\*\*, \*\*Floor\*\*, \*\*Ceiling\*\*, and \*\*Group and\s+aggregate\*\*/u
-  );
+  assert.match(readme, /The R workbench supports[\s\S]{0,180}cleaning steps for rows/u);
+  assert.match(readme, /Missing values can use a typed value, median, mean,\s+mode/u);
+  assert.match(readme, /\[generated reference\]\(docs\/reference\.md#transformation-operations\)/u);
+  assert.doesNotMatch(readme, /21(?: cleaning|-operation)|\*\*Split text\*\*, \*\*Round\*\*/u);
   assert.match(
     readme,
     /Insertion is available only when the session came from an\s+IRkernel notebook or an Open Wrangler-managed R document/u
@@ -750,6 +750,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(gallery, /Editing follows the same draft, preview, code, and apply workflow as the Python engines/u);
   assert.match(gallery, /\[operation and command reference\]\(reference\.md\)/u);
+  assert.match(gallery, /Open Wrangler-managed R documents can also insert it into the source/u);
+  assert.match(gallery, /local R editing sessions can export cleaned data/u);
   assert.match(gallery, /Frames created with `collapse::qDF\(\)`, `qTBL\(\)`, and `qDT\(\)`/u);
   assert.match(gallery, /R notebooks work on Windows; direct document\s+runs currently require macOS or Linux/u);
   assert.doesNotMatch(
