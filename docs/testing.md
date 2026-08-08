@@ -612,8 +612,9 @@ artifacts. A local packaged run on 2026-08-07 passed the earlier CSV-only journe
 
 On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start
 another editor process. Windows skips that document subjourney. For local Windows files, the package manifest hides
-the Explorer and editor actions. Remote-resource actions and the Command Palette stay available because the extension
-host may be running on Linux or macOS; the existing `process.platform` check rejects a Windows extension host.
+the Explorer and editor actions. Remote-resource actions and the Command Palette stay available because the client
+cannot identify the extension-host platform through static menu keys. The existing `process.platform` check rejects
+a Windows extension host. Remote R-document execution is experimental and is not part of this release matrix.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public
 **Run R Document in Open Wrangler…** command and real variable picker. The plain-R test checks an editing session, paging, an exact
 numeric profile, a filter, two sort keys, Rename preview/apply/undo, and generated R. It keeps a different `.R` editor

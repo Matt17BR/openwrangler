@@ -15,7 +15,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   before publication. Preview candidates already used this gate.
 - Preview and stable release candidates now run the packaged local R notebook journey in VS Code on macOS and
   Windows. macOS also runs the `.R`, `.Rmd`, and `.qmd` document checks. Local Windows file actions are hidden, while
-  remote and Command Palette entry points remain available for supported Linux or macOS extension hosts.
+  remote and Command Palette entry points remain available. Remote R-document execution is still experimental and is
+  not part of the release matrix.
 - Local R notebook and R document sessions can now export committed cleaning results as Parquet with `nanoparquet`
   0.5.1 or newer. The R process writes the file directly, and the extension streams it through the same atomic Save
   path used by CSV.
