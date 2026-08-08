@@ -211,7 +211,7 @@ describe("App progressive profiling and view correlation", () => {
 
     fireEvent.click(within(drawer).getByRole("tab", { name: "Filters / Sorts" }));
     expect(within(drawer).getAllByText(duplicateRestriction).length).toBeGreaterThan(0);
-    expect(within(drawer).getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(within(drawer).getByRole("button", { name: "Search values in duplicate" })).toBeDisabled();
     expect(within(drawer).getByRole("button", { name: "Add to sort" })).toBeDisabled();
     expect(requestsOfKind("getColumnValues")).toHaveLength(0);
   });
@@ -1227,7 +1227,7 @@ describe("App progressive profiling and view correlation", () => {
       page
     });
     postMessage.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    fireEvent.click(screen.getByRole("button", { name: /Search values/iu }));
     expect((onlyRequest("getColumnValues").filterModel as FilterModel).filters).toEqual([]);
   });
 
@@ -1279,7 +1279,7 @@ describe("App progressive profiling and view correlation", () => {
     await screen.findByRole("button", { name: "Add step" });
     openCityFilter();
     const clearAll = screen.getByRole("button", { name: "Clear all" });
-    const values = screen.getByRole("button", { name: "Values" });
+    const values = screen.getByRole("button", { name: /Search values/iu });
     dispatch({ kind: "editorAction", action: "openOperation", operationKind: "customCode" });
     await screen.findByRole("dialog", { name: "Add cleaning step" });
     const code = await screen.findByLabelText(/Engine-native Python/);

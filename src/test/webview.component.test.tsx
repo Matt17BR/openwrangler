@@ -3548,6 +3548,9 @@ describe("App file import options", () => {
     expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
     expect(screen.getByRole("textbox", { name: "Search values for city" })).toBeEnabled();
+    const searchValues = screen.getByRole("button", { name: "Search values in city" });
+    expect(searchValues).toHaveTextContent("Search");
+    expect(searchValues.querySelector(".codicon-search")).not.toBeNull();
 
     dispatchAppMessage({ kind: "importOptionsState", busy: true });
 
