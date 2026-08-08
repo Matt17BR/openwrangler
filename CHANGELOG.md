@@ -54,8 +54,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Consecutive cleaning actions on non-cancellable runtimes no longer wait behind automatic profiling that restarted
   immediately after the previous step. Opening Column profiles still starts the selected profile right away.
-- Opening **Column profiles** now prioritizes the selected column over queued header profiles, so its statistics do not
-  wait behind unrelated columns on slower editors.
+- Opening **Column profiles** now lets the selected column run beside an active header profile. Its statistics no longer
+  wait for that passive scan or the unrelated profiles still queued behind it.
 - Dataframes opened from the active R terminal now show **Switch to Editing** in Viewing mode, matching the
   transition already available from live R notebook variables.
 - The editor-title action for `.R`, `.Rmd`, and `.qmd` always runs the current document. An active official R
