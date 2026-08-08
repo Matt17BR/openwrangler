@@ -20,7 +20,12 @@ import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./not
 import { exportFileSafely } from "./files/safeFileExport";
 import { insertGeneratedRDocumentCode } from "./r/rDocumentInsertion";
 import type { PythonLiveVariableProvider, PythonLiveVariableSnapshot } from "./notebooks/pythonInteractiveCommands";
-import type { RLiveVariableProvider, RLiveVariableSnapshot } from "./r/rInteractiveCommands";
+import {
+  OPEN_R_INTERACTIVE_VARIABLE_COMMAND,
+  REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
+  type RLiveVariableProvider,
+  type RLiveVariableSnapshot
+} from "./r/rInteractiveCommands";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 type ViewSortAction = "moveUp" | "moveDown" | "remove";
@@ -868,19 +873,31 @@ function pythonLiveVariableNodes(snapshot: PythonLiveVariableSnapshot | undefine
 
 function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNode[] {
   if (!snapshot) return [];
+  if (snapshot.state === "idle") {
+    const startsSession = snapshot.terminalLabel === "R session";
+    const label = startsSession ? "Start R and show dataframes…" : "Show R dataframes…";
+    return [
+      new ViewNode(label, snapshot.message, "database", {
+        command: OPEN_R_INTERACTIVE_VARIABLE_COMMAND,
+        title: label
+      })
+    ];
+  }
+  if (snapshot.state === "loading") {
+    return [new ViewNode(snapshot.message, snapshot.terminalLabel, "info")];
+  }
   const refresh = new ViewNode(
-    snapshot.state === "ready" ? "Refresh R dataframes" : "Show R dataframes",
+    "Refresh R dataframes",
     snapshot.state === "ready" ? `${snapshot.terminalLabel} · ${snapshot.message}` : snapshot.message,
-    snapshot.state === "ready" ? "refresh" : "database",
+    "refresh",
     {
-      command: "openWrangler.refreshRInteractiveVariables",
-      title: snapshot.state === "ready" ? "Refresh R dataframes" : "Show R dataframes"
+      command: REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
+      title: "Refresh R dataframes"
     }
   );
-  if (snapshot.state === "idle") return [refresh];
   if (snapshot.state !== "ready") {
     return [
-      ...(snapshot.state === "loading" ? [] : [refresh]),
+      refresh,
       new ViewNode(snapshot.message, snapshot.terminalLabel, snapshot.state === "error" ? "warning" : "info")
     ];
   }
