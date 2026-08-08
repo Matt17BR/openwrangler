@@ -190,6 +190,7 @@ export class SessionCoordinator implements vscode.Disposable {
       reconnectLiveSession: (sessionId, revision, options) =>
         this.reconnectLiveSession(delegate, sessionId, revision, options),
       cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
+      prioritizeViewRequest: (sessionId, viewRequestId) => this.prioritizeViewRequest(sessionId, viewRequestId),
       setViewContext: (sessionId, viewContextId) => this.setViewContext(sessionId, viewContextId),
       getViewState: (sessionId) => this.gridViewState(sessionId),
       getSessionPresentation: (sessionId) => this.sessionPresentation(sessionId),
@@ -1531,6 +1532,22 @@ export class SessionCoordinator implements vscode.Disposable {
     session.interactiveQueue = retainUncancelled(session.interactiveQueue);
     session.backgroundQueue = retainUncancelled(session.backgroundQueue);
     this.cancelOperations(discarded);
+    this.startNextSessionOperation(session);
+  }
+
+  private prioritizeViewRequest(sessionId: string, viewRequestId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closing || session.reconfiguring) return;
+    const index = session.backgroundQueue.findIndex(
+      (operation) =>
+        requestViewId(operation.request) === viewRequestId && isCancellableQueuedViewRequest(operation.request)
+    );
+    if (index < 0) return;
+    const [operation] = session.backgroundQueue.splice(index, 1);
+    if (!operation) return;
+    // Change scheduling order without changing background-read freshness,
+    // cancellation, or recovery semantics for the original request.
+    session.interactiveQueue.push(operation);
     this.startNextSessionOperation(session);
   }
 

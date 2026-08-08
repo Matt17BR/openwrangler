@@ -527,6 +527,10 @@ export function App() {
 
   const sendSummaryColumn = useCallback(
     (columnId: string, attempt = 1, owner?: SummaryRequestOwner) => {
+      const existingRequestId = pendingSummaryByColumnId.current.get(columnId);
+      const existingRequest = existingRequestId ? pendingBackgroundRequests.current.get(existingRequestId) : undefined;
+      const promoteForDrawer =
+        owner === "drawer" && existingRequest?.kind === "summary" && !existingRequest.owners.has("drawer");
       if (owner) {
         const owners = summaryOwnersByColumnId.current.get(columnId) ?? new Set<SummaryRequestOwner>();
         owners.add(owner);
@@ -546,10 +550,11 @@ export function App() {
       ) {
         return;
       }
-      const existingRequestId = pendingSummaryByColumnId.current.get(columnId);
       if (existingRequestId) {
-        const existing = pendingBackgroundRequests.current.get(existingRequestId);
-        if (existing?.kind === "summary") existing.owners = new Set(owners);
+        if (existingRequest?.kind === "summary" && promoteForDrawer) {
+          vscode.postMessage({ kind: "prioritizeViewRequest", viewRequestId: existingRequestId });
+        }
+        if (existingRequest?.kind === "summary") existingRequest.owners = new Set(owners);
         return;
       }
       const viewRequestId = nextViewRequestId();
@@ -563,6 +568,7 @@ export function App() {
       });
       vscode.postMessage({
         kind: "runtimeRequest",
+        priority: owners.has("drawer") ? "interactive" : "background",
         viewContextId: confirmed.viewContextId,
         request: {
           kind: "getSummary",

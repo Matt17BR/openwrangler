@@ -52,6 +52,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Opening **Column profiles** now prioritizes the selected column over queued header profiles, so its statistics do not
+  wait behind unrelated columns on slower editors.
 - Dataframes opened from the active R terminal now show **Switch to Editing** in Viewing mode, matching the
   transition already available from live R notebook variables.
 - The editor-title action for `.R`, `.Rmd`, and `.qmd` always runs the current document. An active official R

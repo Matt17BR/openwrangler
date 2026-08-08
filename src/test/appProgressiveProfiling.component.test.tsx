@@ -86,6 +86,49 @@ describe("App progressive profiling and view correlation", () => {
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
   });
 
+  it("promotes a pending header profile when its column opens in the drawer", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+
+    await waitFor(() => expect(runtimeEnvelopes("getSummary")).toHaveLength(2));
+    const initialEnvelopes = runtimeEnvelopes("getSummary");
+    expect(initialEnvelopes.every((envelope) => envelope.priority === "background")).toBe(true);
+    const cityEnvelope = initialEnvelopes.find((envelope) => envelope.request.columnIds?.[0] === "c:0");
+    const oldSalesEnvelope = initialEnvelopes.find((envelope) => envelope.request.columnIds?.[0] === "c:1");
+    if (!cityEnvelope || !oldSalesEnvelope) throw new Error("Expected both initial header profile requests.");
+
+    const salesCell = document.querySelector<HTMLElement>('[data-grid-row="0"][data-grid-column="1"]');
+    if (!salesCell) throw new Error("Expected the sales grid cell.");
+    act(() => salesCell.focus());
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
+
+    await waitFor(() => expect(prioritizationMessages()).toEqual([viewId(oldSalesEnvelope.request)]));
+    expect(runtimeEnvelopes("getSummary")).toHaveLength(2);
+    expect(cancellationMessages()).toHaveLength(0);
+
+    const salesSummary: ColumnSummary = {
+      columnId: "c:1",
+      column: "sales",
+      type: "float",
+      rawType: "Float64",
+      totalCount: 500,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 1,
+      numeric: { min: 12, max: 12, mean: 12, median: 12, std: 0 },
+      topValues: [{ value: "12", count: 500 }]
+    };
+    dispatch({
+      kind: "summary",
+      revision: metadata.revision,
+      viewRequestId: viewId(oldSalesEnvelope.request),
+      summaries: [salesSummary]
+    });
+    const columnPanel = screen.getByRole("tabpanel", { name: "Column" });
+    await waitFor(() => expect(within(columnPanel).getByText("Min").nextElementSibling).toHaveTextContent("12"));
+    expect(prioritizationMessages()).not.toContain(viewId(cityEnvelope.request));
+  });
+
   it("keeps duplicate labels distinct through out-of-order profiles and selected-column state", async () => {
     const duplicateMetadata: SessionMetadata = {
       ...metadata,
@@ -961,8 +1004,10 @@ describe("App progressive profiling and view correlation", () => {
     act(() => secondColumnCell.focus());
     fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
-    const selectedSummary = onlyRequest("getSummary");
+    const selectedSummaryEnvelope = onlyRuntimeEnvelope("getSummary");
+    const selectedSummary = selectedSummaryEnvelope.request;
     expect(selectedSummary.columnIds).toEqual(["c:1"]);
+    expect(selectedSummaryEnvelope.priority).toBe("interactive");
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
     expect(screen.getByRole("heading", { name: "column-1" })).toBeVisible();
 
@@ -1370,12 +1415,18 @@ interface RuntimeRequest {
 interface RuntimeEnvelope {
   kind: "runtimeRequest";
   viewContextId?: string;
+  priority?: "interactive" | "background";
   request: RuntimeRequest;
 }
 
 interface CancellationMessage {
   kind: "cancelViewRequests";
   viewRequestIds: string[];
+}
+
+interface PrioritizationMessage {
+  kind: "prioritizeViewRequest";
+  viewRequestId: string;
 }
 
 interface SetViewContextMessage {
@@ -1407,6 +1458,15 @@ function cancellationMessages(): CancellationMessage[] {
     const candidate = message as Partial<CancellationMessage>;
     return candidate.kind === "cancelViewRequests" && Array.isArray(candidate.viewRequestIds)
       ? [candidate as CancellationMessage]
+      : [];
+  });
+}
+
+function prioritizationMessages(): string[] {
+  return postMessage.mock.calls.flatMap(([message]) => {
+    const candidate = message as Partial<PrioritizationMessage>;
+    return candidate.kind === "prioritizeViewRequest" && typeof candidate.viewRequestId === "string"
+      ? [candidate.viewRequestId]
       : [];
   });
 }

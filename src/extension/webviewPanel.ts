@@ -446,6 +446,11 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "prioritizeViewRequest") {
+      if (this.sessionId) this.bridge.prioritizeViewRequest?.(this.sessionId, decoded.viewRequestId);
+      return;
+    }
+
     if (decoded.kind === "updateViewState") {
       if (this.changingImportOptions || this.rendererViewStateLocked) {
         await this.postViewState();
@@ -537,7 +542,11 @@ export class OpenWranglerPanel {
       });
       return;
     }
-    await this.forward(request, decoded.viewContextId);
+    await this.forward(
+      request,
+      decoded.viewContextId,
+      decoded.priority === undefined ? undefined : { priority: decoded.priority }
+    );
   }
 
   private switchSessionToEditing(viewState: GridViewState): Promise<void> {
@@ -1764,6 +1773,11 @@ export class OpenWranglerPanel {
         ? { kind: "cancelViewRequests", viewRequestIds: [...message.viewRequestIds] }
         : undefined;
     }
+    if (message.kind === "prioritizeViewRequest") {
+      return hasExactKeys(message, ["kind", "viewRequestId"]) && isNonEmptyString(message.viewRequestId)
+        ? { kind: "prioritizeViewRequest", viewRequestId: message.viewRequestId }
+        : undefined;
+    }
     if (message.kind === "updateViewState") {
       if (!hasExactKeys(message, ["kind", "state"])) return undefined;
       const state = decodeGridViewState(message.state);
@@ -1800,11 +1814,12 @@ export class OpenWranglerPanel {
     }
     if (
       message.kind !== "runtimeRequest" ||
-      !hasExactKeys(message, ["kind", "request"], ["viewContextId"]) ||
+      !hasExactKeys(message, ["kind", "request"], ["viewContextId", "priority"]) ||
       !isRecord(message.request) ||
       Object.prototype.hasOwnProperty.call(message.request, "sessionId") ||
       Object.prototype.hasOwnProperty.call(message.request, "revision") ||
-      (message.viewContextId !== undefined && !isNonEmptyString(message.viewContextId))
+      (message.viewContextId !== undefined && !isNonEmptyString(message.viewContextId)) ||
+      (message.priority !== undefined && message.priority !== "interactive" && message.priority !== "background")
     ) {
       return undefined;
     }
@@ -1814,6 +1829,9 @@ export class OpenWranglerPanel {
       revision: this.sessionRevision
     };
     if (!isOpenWranglerRequest(request) || !WEBVIEW_RUNTIME_REQUEST_KINDS.has(request.kind)) return undefined;
+    if (message.priority !== undefined && request.kind !== "getSummary" && request.kind !== "getDatasetStats") {
+      return undefined;
+    }
     if (
       request.kind === "previewStep" &&
       (!this.snapshot || !supportsOperation(this.snapshot.metadata.capabilities, request.step.kind))
@@ -1823,7 +1841,8 @@ export class OpenWranglerPanel {
     return {
       kind: "runtimeRequest",
       request,
-      ...(message.viewContextId === undefined ? {} : { viewContextId: message.viewContextId })
+      ...(message.viewContextId === undefined ? {} : { viewContextId: message.viewContextId }),
+      ...(message.priority === undefined ? {} : { priority: message.priority })
     };
   }
 
@@ -1910,6 +1929,7 @@ type WebviewRequest =
     }
   | { kind: "setViewContext"; viewContextId: string }
   | { kind: "cancelViewRequests"; viewRequestIds: string[] }
+  | { kind: "prioritizeViewRequest"; viewRequestId: string }
   | { kind: "updateViewState"; state: GridViewState }
   | { kind: "clearStepInspection" }
   | { kind: "changeImportOptions"; actionId?: string }
@@ -1922,6 +1942,7 @@ type WebviewRequest =
       kind: "runtimeRequest";
       request: OpenWranglerRequest;
       viewContextId?: string;
+      priority?: "interactive" | "background";
     };
 
 interface RendererImportPreparation {
