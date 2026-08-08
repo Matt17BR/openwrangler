@@ -4739,6 +4739,66 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(reconfigureNotebookSessionForEditing).toHaveBeenCalledOnce();
   });
 
+  it("offers the same Editing transition for an active R-session dataframe", async () => {
+    const source: SessionSource = {
+      kind: "rInteractiveVariable",
+      label: "r_frame",
+      variableName: "r_frame"
+    };
+    const viewing: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: {
+        ...metadata,
+        backend: "r",
+        rDataframeFlavor: "r.tibble",
+        mode: "viewing",
+        source,
+        capabilities: {
+          editable: true,
+          lazy: false,
+          cancel: false,
+          exportCsv: false,
+          exportParquet: false,
+          notebookInsert: false,
+          documentInsert: false,
+          supportedOperations: ["sortRows"]
+        }
+      }
+    };
+    const editing: SessionOpenedResponse = {
+      ...viewing,
+      metadata: {
+        ...viewing.metadata,
+        revision: 1,
+        mode: "editing",
+        capabilities: { ...viewing.metadata.capabilities, exportCsv: true }
+      }
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") return viewing;
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+    const reconfigureNotebookSessionForEditing = vi.fn(async (): Promise<OpenWranglerResponse> => editing);
+    const harness = createPanelHarness(
+      { request, reconfigureNotebookSessionForEditing },
+      { createViaFactory: true, delegateOpen: true, source, backend: "r", backendPreference: "r" }
+    );
+    await vi.waitFor(() => expect(harness.posted).toContainEqual(viewing));
+    harness.posted.length = 0;
+
+    await harness.receive({
+      kind: "switchSessionToEditing",
+      state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+    });
+
+    expect(reconfigureNotebookSessionForEditing).toHaveBeenCalledOnce();
+    expect(harness.posted).toEqual([
+      { kind: "sessionModeChangeState", busy: true },
+      editing,
+      { kind: "sessionModeChangeState", busy: false }
+    ]);
+  });
+
   it("honors an explicit editing-mode preference for an R notebook variable", async () => {
     vi.spyOn(workspace, "getConfiguration").mockImplementation(
       () =>

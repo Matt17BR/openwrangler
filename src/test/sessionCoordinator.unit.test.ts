@@ -1569,6 +1569,109 @@ describe("SessionCoordinator", () => {
     }
   });
 
+  it("reopens an active R-session dataframe in Editing mode without notebook provenance", async () => {
+    const source = {
+      kind: "rInteractiveVariable" as const,
+      label: "orders_frame",
+      variableName: "orders_frame"
+    };
+    const runtimeRequests: OpenWranglerRequest[] = [];
+    const metadataByRuntime = new Map<string, SessionMetadata>();
+    let openCount = 0;
+    const openedFor = (
+      request: Extract<OpenWranglerRequest, { kind: "openSession" }>,
+      runtimeId: string
+    ): ExactSessionOpenedResponse => {
+      const opened = openedResponse(runtimeId, "r");
+      return {
+        ...opened,
+        page: { ...opened.page, totalRows: 10, columnIds: ["c:value"] },
+        metadata: {
+          ...opened.metadata,
+          sessionId: runtimeId,
+          backend: "r",
+          rDataframeFlavor: "r.tibble",
+          mode: request.mode ?? "viewing",
+          source,
+          shape: { rows: 10, columns: 1 },
+          filteredShape: { rows: 10, columns: 1 },
+          schema: [
+            {
+              id: "c:value",
+              name: "value",
+              position: 0,
+              rawType: "double",
+              type: "float",
+              nullable: false
+            }
+          ],
+          capabilities: {
+            editable: true,
+            lazy: false,
+            cancel: false,
+            exportCsv: request.mode === "editing",
+            exportParquet: false,
+            notebookInsert: false,
+            documentInsert: false,
+            filter: true,
+            sort: true,
+            profile: true,
+            columnValues: true,
+            supportedOperations: ["sortRows"]
+          }
+        }
+      };
+    };
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      runtimeRequests.push(request);
+      if (request.kind === "openSession") {
+        openCount += 1;
+        const runtimeId = request.requestedSessionId ?? `r-interactive-${openCount}`;
+        const opened = openedFor(request, runtimeId);
+        metadataByRuntime.set(runtimeId, opened.metadata);
+        return opened;
+      }
+      if (request.kind === "getPage") {
+        const current = metadataByRuntime.get(request.sessionId);
+        if (!current) throw new Error(`Unknown interactive R runtime ${request.sessionId}`);
+        return pageResponseForMetadata(request, current);
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected interactive R mode-change request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    try {
+      const opened = await bridge.request({ ...openRequest, source, backend: "r", mode: "viewing" });
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the active R session to open.");
+
+      const editing = await bridge.reconfigureNotebookSessionForEditing?.(
+        opened.metadata.sessionId,
+        opened.metadata.revision,
+        { selectedColumnId: "c:value", columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 42 } }
+      );
+
+      expect(editing).toMatchObject({
+        kind: "sessionOpened",
+        metadata: {
+          sessionId: opened.metadata.sessionId,
+          revision: opened.metadata.revision + 1,
+          backend: "r",
+          mode: "editing",
+          source,
+          capabilities: { notebookInsert: false, documentInsert: false, exportCsv: true }
+        }
+      });
+      expect(runtimeRequests.filter((request) => request.kind === "openSession")).toHaveLength(2);
+      expect(runtimeRequests).toContainEqual(
+        expect.objectContaining({ kind: "getPage", filterModel: opened.metadata.filterModel })
+      );
+    } finally {
+      await coordinator.shutdown();
+    }
+  });
+
   it("keeps the confirmed Viewing session when its exact notebook is replaced while Editing opens", async () => {
     const notebook = {
       uri: vscode.Uri.parse("file:///workspace/r-replaced.ipynb"),

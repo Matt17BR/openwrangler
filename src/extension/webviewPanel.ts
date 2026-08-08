@@ -546,7 +546,7 @@ export class OpenWranglerPanel {
       const sessionId = this.sessionId;
       const revision = this.sessionRevision;
       const metadata = this.snapshot?.metadata;
-      if (!sessionId || !metadata || !canSwitchNotebookSessionToEditing(metadata) || this.disposed) return;
+      if (!sessionId || !metadata || !canSwitchLiveSessionToEditing(metadata) || this.disposed) return;
       if (!this.bridge.reconfigureNotebookSessionForEditing) {
         await this.post({
           kind: "error",
@@ -570,7 +570,7 @@ export class OpenWranglerPanel {
             response.metadata.sessionId !== sessionId ||
             response.metadata.revision <= revision ||
             response.metadata.mode !== "editing" ||
-            response.metadata.source.kind !== "notebookVariable"
+            response.metadata.source.kind !== metadata.source.kind
           ) {
             await this.post({
               kind: "error",
@@ -1966,12 +1966,14 @@ function backendDisplayName(backend: DataBackend): string {
   return "R";
 }
 
-function canSwitchNotebookSessionToEditing(metadata: SessionMetadata): boolean {
+function canSwitchLiveSessionToEditing(metadata: SessionMetadata): boolean {
+  if (metadata.mode !== "viewing" || metadata.backend === "pyspark") return false;
+  if (metadata.source.kind === "notebookVariable") return metadata.capabilities.notebookInsert;
   return (
-    metadata.mode === "viewing" &&
-    metadata.source.kind === "notebookVariable" &&
-    metadata.backend !== "pyspark" &&
-    metadata.capabilities.notebookInsert
+    metadata.source.kind === "rInteractiveVariable" &&
+    metadata.backend === "r" &&
+    !metadata.capabilities.notebookInsert &&
+    metadata.capabilities.documentInsert !== true
   );
 }
 
