@@ -178,6 +178,20 @@ test("released R Markdown fixture includes a real dataframe preview chunk", asyn
   );
 });
 
+test("ordinary Quarto acceptance does not require a headless preview webview", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const journey = source.slice(
+    source.indexOf("async function openReleasedNativeQuartoPreview("),
+    source.indexOf("function releasedRenderedHtmlSnapshot(")
+  );
+  assert.match(
+    journey,
+    /previewTerminals\.length >= 1 && renderedHtmlReady && \(!requireVisiblePreview \|\| visiblePreviewReady\)/u
+  );
+  assert.match(journey, /if \(requireVisiblePreview\) \{/u);
+  assert.match(journey, /Quarto media capture must open one new internal preview tab/u);
+});
+
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
   const zip = new ZipFile();
   const targetAttribute = targetPlatform === undefined ? "" : ` TargetPlatform="${targetPlatform}"`;
