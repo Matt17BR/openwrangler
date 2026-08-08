@@ -226,9 +226,7 @@ describe("Python Interactive Window entry points", () => {
     pythonMocks.executeCommand.mockImplementation(async (id: string) => {
       if (id === "jupyter.runcurrentcell") {
         for (const [index, interactive] of interactiveWindows.entries()) {
-          interactive.cells.push(
-            interactiveCell(interactive.document, source.uri.toString(), 0, `new-${index}`, true)
-          );
+          interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 0, `new-${index}`, true));
         }
       }
       return undefined;
@@ -239,7 +237,9 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runcurrentcell");
     expect(pythonMocks.discover).not.toHaveBeenCalled();
     expect(pythonMocks.openVariable).not.toHaveBeenCalled();
-    expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("identify one Interactive Window"));
+    expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining("identify one Interactive Window")
+    );
   });
 
   it("does not retarget after the originating Python document closes during execution", async () => {
