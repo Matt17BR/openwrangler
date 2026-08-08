@@ -6313,6 +6313,11 @@ group_by_apply <- dispatch(
   list(sessionId = group_by_session_id, revision = 1L, page = page_window())
 )
 assert_identical(group_by_apply$action, "apply", "the R Group By draft did not apply")
+assert_identical(
+  group_by_apply$page$frameSemantics$rowNames,
+  "positional",
+  "applying R Group By restored stale source row-name semantics"
+)
 if (!grepl(".ow_group_by", group_by_apply$code, fixed = TRUE)) {
   stop("generated R Group By code omitted its native reducer", call. = FALSE)
 }
@@ -6374,6 +6379,11 @@ assert_identical(
   "stepPreview",
   "editing R Group By applied an output-only view to its source input"
 )
+assert_identical(
+  group_by_edit_preview$page$frameSemantics$rowNames,
+  "positional",
+  "replacing R Group By restored stale source row-name semantics"
+)
 assert_identical(group_by_edit_preview$page$page$totalRows, 1L, "the edited R Group By lost its retained output view")
 assert_identical(group_by_edit_preview$diff$truncated, TRUE, "a filtered R Group By replacement diff was complete")
 group_by_edit_apply <- dispatch(
@@ -6385,6 +6395,11 @@ group_by_edit_apply <- dispatch(
   )
 )
 assert_identical(group_by_edit_apply$action, "apply", "the edited R Group By draft did not apply")
+assert_identical(
+  group_by_edit_apply$page$frameSemantics$rowNames,
+  "positional",
+  "applying a replacement R Group By restored stale source row-name semantics"
+)
 
 group_by_parquet_ready <- dispatch(
   "exportData",
@@ -6447,6 +6462,16 @@ group_by_inspection <- inspect_step(
 )
 assert_schema_less_inspection(group_by_inspection, "R Group By inspection")
 assert_identical(group_by_inspection$outputPage$page$totalRows, 3L, "R Group By inspection lost its output groups")
+assert_identical(
+  group_by_inspection$inputPage$frameSemantics$rowNames,
+  "explicit",
+  "R Group By inspection lost its explicit input row-name semantics"
+)
+assert_identical(
+  group_by_inspection$outputPage$frameSemantics$rowNames,
+  "positional",
+  "R Group By inspection restored stale source row-name semantics on output"
+)
 group_by_undo <- dispatch(
   "undoStep",
   list(sessionId = group_by_session_id, revision = group_by_edit_apply$revision, page = page_window())

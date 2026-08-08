@@ -28,6 +28,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Native R Group By now carries row-name mode through draft, replacement, inspection, apply, discard, and undo state.
+  Grouped base data frames use positional rows without losing explicit source labels when the step is discarded or
+  undone.
 - Preview and stable release jobs now create the exact local release tag before registry checks. Previously the tag
   was pushed to GitHub but remained absent from the runner, which stopped Open VSX publication after the GitHub
   release had already succeeded.

@@ -258,6 +258,7 @@ interface RBridgeSession {
   committedRows: number;
   committedIdentityRows: number;
   committedKeyColumnIds: readonly string[];
+  committedRowNames: RFramePageContract["frameSemantics"]["rowNames"];
   filterModel: FilterModel;
   rows: number;
   identityRows: number;
@@ -268,6 +269,7 @@ interface RBridgeSession {
   planInputRows: readonly number[];
   planInputIdentityRows: readonly number[];
   planInputKeyColumnIds: readonly (readonly string[])[];
+  planInputRowNames: readonly RFramePageContract["frameSemantics"]["rowNames"][];
   draftStep?: RTransformStep;
   draftReplacesStepId?: string;
   draftInputSchema?: readonly ColumnSchema[];
@@ -275,6 +277,7 @@ interface RBridgeSession {
   draftInputRows?: number;
   draftInputIdentityRows?: number;
   draftInputKeyColumnIds?: readonly string[];
+  draftInputRowNames?: RFramePageContract["frameSemantics"]["rowNames"];
   draftBaseFilterModel?: FilterModel;
   draftBaseViewChangeEpoch?: number;
   viewChangeEpoch: number;
@@ -751,7 +754,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       inputRows = confirmed.planInputRows.at(-1) ?? confirmed.committedRows;
       inputIdentityRows = confirmed.planInputIdentityRows.at(-1) ?? confirmed.committedIdentityRows;
       inputKeyColumnIds = confirmed.planInputKeyColumnIds.at(-1) ?? confirmed.committedKeyColumnIds;
-      inputRowNames = rowNamesAfterPlan(confirmed.sourceRowNames, confirmed.steps.slice(0, -1));
+      inputRowNames = confirmed.planInputRowNames.at(-1) ?? confirmed.committedRowNames;
     } else {
       if (confirmed.steps.some((step) => step.id === request.step.id)) {
         return errorResponse("invalid_request", "Applied R step IDs must be unique.", true, request.sessionId);
@@ -761,7 +764,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       inputRows = confirmed.committedRows;
       inputIdentityRows = confirmed.committedIdentityRows;
       inputKeyColumnIds = confirmed.committedKeyColumnIds;
-      inputRowNames = rowNamesAfterPlan(confirmed.sourceRowNames, confirmed.steps);
+      inputRowNames = confirmed.committedRowNames;
     }
 
     let targetSchema: readonly ColumnSchema[];
@@ -852,6 +855,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       confirmed.draftInputRows = inputRows;
       confirmed.draftInputIdentityRows = inputIdentityRows;
       confirmed.draftInputKeyColumnIds = Object.freeze([...inputKeyColumnIds]);
+      confirmed.draftInputRowNames = inputRowNames;
       confirmed.draftBaseFilterModel = draftBaseFilterModel;
       confirmed.draftBaseViewChangeEpoch = draftBaseViewChangeEpoch;
       const fallbackFillTargetId =
@@ -903,7 +907,8 @@ export class RKernelBridge implements OpenWranglerBridge {
         !confirmed.draftInputRSchema ||
         confirmed.draftInputRows === undefined ||
         confirmed.draftInputIdentityRows === undefined ||
-        !confirmed.draftInputKeyColumnIds
+        !confirmed.draftInputKeyColumnIds ||
+        confirmed.draftInputRowNames === undefined
       ) {
         return errorResponse("invalid_request", "There is no R draft step to apply.", true, request.sessionId);
       }
@@ -921,7 +926,8 @@ export class RKernelBridge implements OpenWranglerBridge {
         !confirmed.draftInputRSchema ||
         confirmed.draftInputRows === undefined ||
         confirmed.draftInputIdentityRows === undefined ||
-        !confirmed.draftInputKeyColumnIds
+        !confirmed.draftInputKeyColumnIds ||
+        confirmed.draftInputRowNames === undefined
       ) {
         return errorResponse("invalid_request", "There is no R draft step to discard.", true, request.sessionId);
       }
@@ -930,7 +936,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       targetRows = confirmed.committedRows;
       targetIdentityRows = confirmed.committedIdentityRows;
       targetKeyColumnIds = confirmed.committedKeyColumnIds;
-      targetRowNames = rowNamesAfterPlan(confirmed.sourceRowNames, confirmed.steps);
+      targetRowNames = confirmed.committedRowNames;
       nextFilterModel =
         confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel
           ? copyFilterModel(confirmed.draftBaseFilterModel)
@@ -952,7 +958,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       targetRows = confirmed.planInputRows.at(-1) ?? confirmed.sourceRows;
       targetIdentityRows = confirmed.planInputIdentityRows.at(-1) ?? confirmed.sourceRows;
       targetKeyColumnIds = confirmed.planInputKeyColumnIds.at(-1) ?? confirmed.sourceKeyColumnIds;
-      targetRowNames = rowNamesAfterPlan(confirmed.sourceRowNames, confirmed.steps.slice(0, -1));
+      targetRowNames = confirmed.planInputRowNames.at(-1) ?? confirmed.sourceRowNames;
       const latest = confirmed.steps.at(-1) as RetainedTransformStep;
       const restore = confirmed.lastAppliedViewRestore;
       nextFilterModel =
@@ -1021,6 +1027,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         const draftInputRows = confirmed.draftInputRows as number;
         const draftInputIdentityRows = confirmed.draftInputIdentityRows as number;
         const draftInputKeyColumnIds = confirmed.draftInputKeyColumnIds as readonly string[];
+        const draftInputRowNames = confirmed.draftInputRowNames as RFramePageContract["frameSemantics"]["rowNames"];
         if (confirmed.draftReplacesStepId === undefined) {
           confirmed.steps = [...confirmed.steps, copyRTransformStep(draftStep)];
           confirmed.planInputSchemas = [...confirmed.planInputSchemas, copySchema(draftInputSchema)];
@@ -1031,6 +1038,7 @@ export class RKernelBridge implements OpenWranglerBridge {
             ...confirmed.planInputKeyColumnIds,
             Object.freeze([...draftInputKeyColumnIds])
           ];
+          confirmed.planInputRowNames = [...confirmed.planInputRowNames, draftInputRowNames];
         } else {
           confirmed.steps = [...confirmed.steps.slice(0, -1), copyRTransformStep(draftStep)];
           confirmed.planInputSchemas = [...confirmed.planInputSchemas.slice(0, -1), copySchema(draftInputSchema)];
@@ -1041,12 +1049,14 @@ export class RKernelBridge implements OpenWranglerBridge {
             ...confirmed.planInputKeyColumnIds.slice(0, -1),
             Object.freeze([...draftInputKeyColumnIds])
           ];
+          confirmed.planInputRowNames = [...confirmed.planInputRowNames.slice(0, -1), draftInputRowNames];
         }
         confirmed.committedSchema = schemaFromContract(result.page);
         confirmed.committedRSchema = result.page.schema;
         confirmed.committedRows = targetRows;
         confirmed.committedIdentityRows = targetIdentityRows;
         confirmed.committedKeyColumnIds = Object.freeze([...targetKeyColumnIds]);
+        confirmed.committedRowNames = targetRowNames;
         if (confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel) {
           let before = copyFilterModel(confirmed.draftBaseFilterModel);
           if (
@@ -1073,11 +1083,13 @@ export class RKernelBridge implements OpenWranglerBridge {
         confirmed.planInputRows = confirmed.planInputRows.slice(0, -1);
         confirmed.planInputIdentityRows = confirmed.planInputIdentityRows.slice(0, -1);
         confirmed.planInputKeyColumnIds = confirmed.planInputKeyColumnIds.slice(0, -1);
+        confirmed.planInputRowNames = confirmed.planInputRowNames.slice(0, -1);
         confirmed.committedSchema = schemaFromContract(result.page);
         confirmed.committedRSchema = result.page.schema;
         confirmed.committedRows = targetRows;
         confirmed.committedIdentityRows = targetIdentityRows;
         confirmed.committedKeyColumnIds = Object.freeze([...targetKeyColumnIds]);
+        confirmed.committedRowNames = targetRowNames;
         confirmed.lastAppliedViewRestore = undefined;
       }
 
@@ -1136,7 +1148,8 @@ export class RKernelBridge implements OpenWranglerBridge {
     }
     const inputKeyColumnIds = session.planInputKeyColumnIds[stepIndex];
     if (!inputKeyColumnIds) throw new Error("The R bridge is missing applied-step input key metadata.");
-    const inputRowNames = rowNamesAfterPlan(session.sourceRowNames, session.steps.slice(0, stepIndex));
+    const inputRowNames = session.planInputRowNames[stepIndex];
+    if (inputRowNames === undefined) throw new Error("The R bridge is missing applied-step input row-name metadata.");
     const outputSchema =
       session.planInputSchemas[stepIndex + 1] ??
       (stepIndex === session.steps.length - 1 ? session.committedSchema : undefined);
@@ -1159,7 +1172,10 @@ export class RKernelBridge implements OpenWranglerBridge {
       session.planInputKeyColumnIds[stepIndex + 1] ??
       (stepIndex === session.steps.length - 1 ? session.committedKeyColumnIds : undefined);
     if (!outputKeyColumnIds) throw new Error("The R bridge is missing applied-step output key metadata.");
-    const outputRowNames = rowNamesAfterPlan(session.sourceRowNames, session.steps.slice(0, stepIndex + 1));
+    const outputRowNames =
+      session.planInputRowNames[stepIndex + 1] ??
+      (stepIndex === session.steps.length - 1 ? session.committedRowNames : undefined);
+    if (outputRowNames === undefined) throw new Error("The R bridge is missing applied-step output row-name metadata.");
     const expectedRevision = session.revision;
     const page = pageWindow(
       request.offset,
@@ -1891,6 +1907,7 @@ function sessionFromContract(
     committedRows: contract.page.totalRows,
     committedIdentityRows: contract.shape.rows,
     committedKeyColumnIds: Object.freeze([...contract.frameSemantics.keyColumnIds]),
+    committedRowNames: contract.frameSemantics.rowNames,
     schema,
     rSchema: contract.schema,
     rows: contract.page.totalRows,
@@ -1907,6 +1924,7 @@ function sessionFromContract(
     planInputRows: Object.freeze([]),
     planInputIdentityRows: Object.freeze([]),
     planInputKeyColumnIds: Object.freeze([]),
+    planInputRowNames: Object.freeze([]),
     viewChangeEpoch: 0,
     invalidated: false
   };
@@ -2125,13 +2143,6 @@ function rowNamesAfterRStep(
   step: RTransformStep
 ): RFramePageContract["frameSemantics"]["rowNames"] {
   return step.kind === "groupBy" ? "positional" : input;
-}
-
-function rowNamesAfterPlan(
-  source: RFramePageContract["frameSemantics"]["rowNames"],
-  steps: readonly { readonly kind: string }[]
-): RFramePageContract["frameSemantics"]["rowNames"] {
-  return steps.some((step) => step.kind === "groupBy") ? "positional" : source;
 }
 
 function sameSchema(expected: readonly ColumnSchema[], actual: RFramePageContract["schema"]): boolean {
@@ -3914,6 +3925,7 @@ function clearDraft(session: RBridgeSession): void {
   session.draftInputRows = undefined;
   session.draftInputIdentityRows = undefined;
   session.draftInputKeyColumnIds = undefined;
+  session.draftInputRowNames = undefined;
   session.draftBaseFilterModel = undefined;
   session.draftBaseViewChangeEpoch = undefined;
 }

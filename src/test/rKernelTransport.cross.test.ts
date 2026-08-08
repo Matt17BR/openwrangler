@@ -408,6 +408,149 @@ ${close.code}
     });
   });
 
+  it("carries explicit row-name semantics through native R Group By transport", () => {
+    const editingSessionId = "09000000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "09000000-0000-4000-8000-000000000002",
+      preview: "09000000-0000-4000-8000-000000000003",
+      apply: "09000000-0000-4000-8000-000000000004",
+      inspect: "09000000-0000-4000-8000-000000000005",
+      undo: "09000000-0000-4000-8000-000000000006",
+      close: "09000000-0000-4000-8000-000000000007"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const step = {
+      id: "group-explicit-rows",
+      kind: "groupBy" as const,
+      params: {
+        keys: [{ id: "r:c:0", name: "group" }] as const,
+        aggregations: [{ column: { id: "r:c:1", name: "value" }, operation: "sum" as const, alias: "total" }] as const
+      }
+    };
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const preview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: { sessionId: editingSessionId, revision: 0, step, page: pageWindow() }
+    });
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const inspect = inspectionRequestCodes(ids.inspect, {
+      sessionId: editingSessionId,
+      revision: 2,
+      stepId: step.id,
+      page: pageWindow()
+    });
+    const undo = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.undo,
+      kind: "undoStep",
+      payload: { sessionId: editingSessionId, revision: 2, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+    const result = runR(`
+frame <- data.frame(
+  group = c("b", "a", "b"),
+  value = c(1L, 2L, 3L),
+  row.names = c("row-b-1", "row-a", "row-b-2"),
+  stringsAsFactors = FALSE
+)
+frame_before <- unserialize(serialize(frame, NULL, version = 3L))
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+${inspect.info.code}
+${inspect.input.code}
+${inspect.output.code}
+${undo.code}
+stopifnot(identical(frame, frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
+    if (opened.kind !== "page") throw new Error("Expected an opened native R Group By session.");
+    expect(opened.page).toMatchObject({
+      frameSemantics: { rowNames: "explicit" },
+      page: { rows: [{ rowLabel: "row-b-1" }, { rowLabel: "row-a" }, { rowLabel: "row-b-2" }] }
+    });
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
+      inputSchema: opened.page.schema
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R Group By preview.");
+    expect(previewed.page).toMatchObject({
+      frameSemantics: { rowNames: "positional" },
+      page: { totalRows: 2 }
+    });
+    expect(previewed.page.page.rows.every((row) => row.rowLabel === undefined)).toBe(true);
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2,
+      page: { frameSemantics: { rowNames: "positional" } }
+    });
+    const inspectedInput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.input.marker),
+      inspect.inputRequestId,
+      { inputSchema: opened.page.schema, inspectionSide: "input" }
+    );
+    const inspectedOutput = decodeRKernelResponseJson(
+      marked(result.stdout, inspect.output.marker),
+      inspect.outputRequestId,
+      { outputSchema: previewed.page.schema, inspectionSide: "output" }
+    );
+    expect(inspectedInput).toMatchObject({
+      kind: "stepInspectionPage",
+      page: { frameSemantics: { rowNames: "explicit" } }
+    });
+    expect(inspectedOutput).toMatchObject({
+      kind: "stepInspectionPage",
+      page: { frameSemantics: { rowNames: "positional" } }
+    });
+    const restored = decodeRKernelResponseJson(marked(result.stdout, undo.marker), ids.undo);
+    expect(restored).toMatchObject({
+      kind: "planUpdated",
+      action: "undo",
+      revision: 3,
+      page: { frameSemantics: { rowNames: "explicit" } }
+    });
+
+    const generated = runR(`
+frame <- data.frame(
+  group = c("b", "a", "b"),
+  value = c(1L, 2L, 3L),
+  row.names = c("row-b-1", "row-a", "row-b-2"),
+  stringsAsFactors = FALSE
+)
+frame_before <- unserialize(serialize(frame, NULL, version = 3L))
+${previewed.code}
+stopifnot(identical(open_wrangler_result$group, c("b", "a")))
+stopifnot(identical(open_wrangler_result$total, c(4L, 2L)))
+stopifnot(.row_names_info(open_wrangler_result, type = 1L) < 0L)
+stopifnot(identical(frame, frame_before))
+cat("generated-ok\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("runs the native R rename draft, apply, edit, undo, and generated code lifecycle", () => {
     const editingSessionId = "10000000-0000-4000-8000-000000000001";
     const ids = {

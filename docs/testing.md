@@ -581,9 +581,10 @@ Group and aggregate has direct frame, kernel-agent, protocol, and host-bridge co
 first-seen group order, missing keys, type preservation, overflow, generated code, inspection, replacement, and undo.
 The R tests cover exact integer64 cancellation, odd-count medians, and same-sign boundary pairs for live and generated
 mean and median. Sum tests retain ordinary integer and integer64 output and reject overflow before publication because
-base R and `bit64` have no exact 38-digit integer type. The bridge tests also cover explicit row names becoming
-positional after grouping and returning after discard or undo, plus latest-step replacement while the active view
-targets an aggregation output. The kernel-agent suite exports a committed grouped result through native R Parquet.
+base R and `bit64` have no exact 38-digit integer type. The bridge and strict transport tests also cover explicit row
+names becoming positional after grouping and returning after discard or undo, plus latest-step replacement while the
+active view targets an aggregation output. The kernel-agent suite exports a committed grouped result through native R
+Parquet.
 Its packaged editor journey remains a stable-2.0 gate. Round, Floor, and Ceiling use their visible forms and check
 derived values from positive and negative fractional inputs.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;

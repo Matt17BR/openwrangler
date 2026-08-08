@@ -2039,9 +2039,38 @@ describe("canonical R kernel bridge", () => {
     });
     await expect(bridge.request(planRequest("applyDraft", 3))).resolves.toMatchObject({ kind: "planUpdated" });
 
+    transport.queuePreview({
+      sessionId,
+      revision: 5,
+      page: grouped,
+      diff: groupDiff(source, grouped, step),
+      code: "open_wrangler_result <- grouped_orders"
+    });
+    await expect(bridge.request({ ...previewRequest, revision: 4, replaceStepId: step.id })).resolves.toMatchObject({
+      kind: "stepPreview",
+      page: { rows: [expect.not.objectContaining({ rowLabel: expect.anything() })] }
+    });
+    expect(transport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      4,
+      expect.objectContaining({ id: step.id, kind: "groupBy" }),
+      expect.any(Object),
+      expect.any(Array),
+      step.id,
+      expect.any(Object)
+    );
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 6,
+      page: grouped,
+      code: "open_wrangler_result <- grouped_orders"
+    });
+    await expect(bridge.request(planRequest("applyDraft", 5))).resolves.toMatchObject({ kind: "planUpdated" });
+
     transport.inspectStep.mockResolvedValueOnce({
       sessionId,
-      revision: 4,
+      revision: 6,
       stepId: step.id,
       stepIndex: 0,
       inputPage: source,
@@ -2054,7 +2083,7 @@ describe("canonical R kernel bridge", () => {
       bridge.request({
         kind: "inspectStep",
         sessionId,
-        revision: 4,
+        revision: 6,
         stepId: step.id,
         offset: 0,
         limit: 20,
@@ -2067,8 +2096,8 @@ describe("canonical R kernel bridge", () => {
       outputPage: { rows: [expect.not.objectContaining({ rowLabel: expect.anything() })] }
     });
 
-    transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 5, page: source, code: "" });
-    await expect(bridge.request(planRequest("undoStep", 4))).resolves.toMatchObject({
+    transport.undoStep.mockResolvedValueOnce({ sessionId, action: "undo", revision: 7, page: source, code: "" });
+    await expect(bridge.request(planRequest("undoStep", 6))).resolves.toMatchObject({
       kind: "planUpdated",
       page: { rows: [expect.objectContaining({ rowLabel: "source-row" })] }
     });

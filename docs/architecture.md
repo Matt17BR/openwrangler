@@ -161,7 +161,10 @@ the input identity domain, so page diffs cannot mistake an aggregate row for a s
 `integer64` sums keep their native R type. Base R and `bit64` do not provide an exact 38-digit integer type, so a
 sum outside that native type's range fails before publication instead of being converted to text or another engine.
 Integer64 mean and median use exact decimal addition before their final double result, including cancellation and
-same-sign boundary pairs. First and last use source order.
+same-sign boundary pairs. First and last use source order. The host records row-name mode at each source, committed,
+draft, and plan-input boundary alongside schema, row count, row identities, and data-table keys. Group and aggregate
+changes that mode to positional; replacement, inspection, discard, and undo use the retained boundary instead of
+inferring it from the operation list.
 A live session reports nullability conservatively; isolating it for editing or changing the schema keeps retained
 nullability metadata unless Fill Missing Values has removed every missing value. Preview, apply, discard, latest-step replacement,
 undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
