@@ -542,6 +542,8 @@ R notebook acceptance opens real `data.frame`, tibble, and data.table variables 
 release candidates also run the complete local journey in VS Code on macOS and Windows. The cross-platform jobs reuse
 the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the complete Python suite or the
 standalone R contract suite.
+The focused R 4.4/4.5 contract jobs and release contract gate install `readr` alongside the other frame packages
+because the suite opens an actual readr tibble rather than a hand-built stand-in.
 The local kernel installs missing packages into a temporary library. Linux uses
 `https://p3m.dev/cran/__linux__/noble/2026-03-10`; macOS and Windows use
 `https://p3m.dev/cran/2026-03-10`. The test records and checks these versions: IRkernel 1.3.2, jsonlite 2.0.0, rlang
