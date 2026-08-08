@@ -1,0 +1,26 @@
+{
+  "description": "Open source dataframe wrangler and previewer for VS Code and its forks with native support for Python (Polars, Pandas, etc.) and R (tidyverse, data.table, etc.)",
+  "homepage": "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler",
+  "topics": [
+    "csv",
+    "cursor",
+    "data-cleaning",
+    "data-preview",
+    "data-table",
+    "data-wrangling",
+    "dataframe",
+    "duckdb",
+    "jupyter",
+    "pandas",
+    "parquet",
+    "polars",
+    "pyspark",
+    "python",
+    "quarto",
+    "r",
+    "rmarkdown",
+    "rstats",
+    "tidyverse",
+    "vscode-extension"
+  ]
+}
