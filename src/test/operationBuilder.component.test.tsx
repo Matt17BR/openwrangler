@@ -762,13 +762,22 @@ describe("OperationBuilder", () => {
 
     const column = screen.getByLabelText("Column");
     const method = screen.getByLabelText("Method");
+    expect(method).toHaveAccessibleDescription("Available methods are based on the selected integer column.");
+    expect(Array.from(method.querySelectorAll("optgroup"), (group) => group.label)).toEqual([
+      "Column statistics",
+      "Within groups",
+      "Ordered data",
+      "Manual"
+    ]);
     fireEvent.change(method, { target: { value: "groupedMedian" } });
     expect(screen.getByText(/Preview fails if a group median cannot fit the column type/u)).toBeInTheDocument();
     expect(within(method).queryByRole("option", { name: "Mean within groups" })).toBeNull();
 
     fireEvent.change(column, { target: { value: "c:1" } });
+    expect(method).toHaveAccessibleDescription("Available methods are based on the selected number column.");
     expect(within(method).getByRole("option", { name: "Mean within groups" })).toBeInTheDocument();
     fireEvent.change(column, { target: { value: "c:2" } });
+    expect(method).toHaveAccessibleDescription("Available methods are based on the selected text column.");
     expect(within(method).getByRole("option", { name: "Most common value within groups" })).toBeInTheDocument();
     expect(within(method).queryByRole("option", { name: "Median within groups" })).toBeNull();
     fireEvent.change(method, { target: { value: "groupedMostFrequent" } });

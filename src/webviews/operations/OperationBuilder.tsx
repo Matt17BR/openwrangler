@@ -21,6 +21,7 @@ import {
   supportsOperation
 } from "../../shared/operations";
 import { isTransformStep } from "../../shared/protocolValidation";
+import { columnTypePresentation } from "../columnTypes";
 
 interface OperationBuilderProps {
   metadata: SessionMetadata;
@@ -1404,6 +1405,8 @@ function FillMissingFields({
   const incompatibleFallbackCount = selectedColumn
     ? columns.filter((column) => column.id !== selectedColumn.id && column.type !== selectedColumn.type).length
     : 0;
+  const methodHelpId = useId();
+  const selectedTypeLabel = selectedColumn ? columnTypePresentation(selectedColumn).label.toLowerCase() : "selected";
 
   return (
     <>
@@ -1420,27 +1423,51 @@ function FillMissingFields({
         <select
           name="fillMode"
           aria-label="Method"
+          aria-describedby={methodHelpId}
           value={mode}
           onChange={(event) => setMode(event.target.value as FillMode)}
         >
-          {fillModes.includes("median") && <option value="median">Median</option>}
-          {fillModes.includes("mean") && <option value="mean">Mean</option>}
-          {fillModes.includes("linearInterpolation") && (
-            <option value="linearInterpolation">Linear interpolation</option>
+          {fillModes.some((candidate) => ["median", "mean", "mostFrequent"].includes(candidate)) && (
+            <optgroup label="Column statistics">
+              {fillModes.includes("median") && <option value="median">Median</option>}
+              {fillModes.includes("mean") && <option value="mean">Mean</option>}
+              {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
+            </optgroup>
           )}
-          {fillModes.includes("mostFrequent") && <option value="mostFrequent">Most common value</option>}
-          {fillModes.includes("groupedMedian") && <option value="groupedMedian">Median within groups</option>}
-          {fillModes.includes("groupedMean") && <option value="groupedMean">Mean within groups</option>}
-          {fillModes.includes("groupedMostFrequent") && (
-            <option value="groupedMostFrequent">Most common value within groups</option>
+          {fillModes.some((candidate) =>
+            ["groupedMedian", "groupedMean", "groupedMostFrequent"].includes(candidate)
+          ) && (
+            <optgroup label="Within groups">
+              {fillModes.includes("groupedMedian") && <option value="groupedMedian">Median within groups</option>}
+              {fillModes.includes("groupedMean") && <option value="groupedMean">Mean within groups</option>}
+              {fillModes.includes("groupedMostFrequent") && (
+                <option value="groupedMostFrequent">Most common value within groups</option>
+              )}
+            </optgroup>
           )}
-          {fillModes.includes("directionalForward") && <option value="directionalForward">Previous value</option>}
-          {fillModes.includes("directionalBackward") && <option value="directionalBackward">Next value</option>}
+          {fillModes.some((candidate) =>
+            ["linearInterpolation", "directionalForward", "directionalBackward"].includes(candidate)
+          ) && (
+            <optgroup label="Ordered data">
+              {fillModes.includes("linearInterpolation") && (
+                <option value="linearInterpolation">Linear interpolation</option>
+              )}
+              {fillModes.includes("directionalForward") && <option value="directionalForward">Previous value</option>}
+              {fillModes.includes("directionalBackward") && <option value="directionalBackward">Next value</option>}
+            </optgroup>
+          )}
           {fillModes.includes("fallbackColumns") && (
-            <option value="fallbackColumns">Other columns (first available)</option>
+            <optgroup label="Other columns">
+              <option value="fallbackColumns">Other columns (first available)</option>
+            </optgroup>
           )}
-          {fillModes.includes("value") && <option value="value">Specific value</option>}
+          {fillModes.includes("value") && (
+            <optgroup label="Manual">
+              <option value="value">Specific value</option>
+            </optgroup>
+          )}
         </select>
+        <small id={methodHelpId}>Available methods are based on the selected {selectedTypeLabel} column.</small>
       </label>
       {mode === "median" ? (
         <p className="panelNote">
