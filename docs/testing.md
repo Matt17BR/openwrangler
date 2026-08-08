@@ -858,7 +858,9 @@ regression blocks release; p95 is review context. Release evidence still require
 sessions.
 
 The 1.2.1 results remain the published comparison during the 1.99 preview series. Before 2.0 is released, rerun the
-full study with the candidate VSIX, review the raw results, and update the README and a new dated report.
+full study with the candidate VSIX, review the raw results, and update the README and a new dated report. A stable
+major or minor release needs a report from that exact release. Patch releases may keep the latest reviewed report
+from the same major/minor line; the runtime and installed-editor regression benchmarks still run for every release.
 
 Every session owns a mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
 extension directories are prepared once per arm to avoid repeated Marketplace downloads. One JSON result is written

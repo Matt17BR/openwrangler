@@ -216,22 +216,23 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
     `https://github.com/Matt17BR/openwrangler/blob/main/${reportPath(reportVersion)}`;
   const readmeWithReport = (reportVersion, prefix = "") =>
     `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${prefix}## Performance\n\n[dated report](${reportUrl(reportVersion)})\n`;
-  const candidate = (reportVersion, overrides = {}) =>
+  const candidate = (reportVersion, overrides = {}, sourceVersion = version) =>
     ready({
-      releaseTag: `v${version}`,
-      sourcePackageJson: JSON.stringify({ ...stablePackage, version }),
-      pythonVersionFile: `__version__ = "${version}"\n`,
-      changelog: `# Changelog\n\n## [${version}] - 2026-08-08\n\n### Added\n\n- Published R support.\n`,
+      releaseTag: `v${sourceVersion}`,
+      sourcePackageJson: JSON.stringify({ ...stablePackage, version: sourceVersion }),
+      pythonVersionFile: `__version__ = "${sourceVersion}"\n`,
+      changelog: `# Changelog\n\n## [${sourceVersion}] - 2026-08-08\n\n### Added\n\n- Published R support.\n`,
       readme: readmeWithReport(reportVersion),
-      packagedPackageJson: JSON.stringify({ ...stablePackage, version }),
-      packagedPythonVersionFile: `__version__ = "${version}"\n`,
+      packagedPackageJson: JSON.stringify({ ...stablePackage, version: sourceVersion }),
+      packagedPythonVersionFile: `__version__ = "${sourceVersion}"\n`,
       packagedReadme: readmeWithReport(reportVersion),
       trackedEvidencePaths: new Set([...ready().trackedEvidencePaths, reportPath(reportVersion)]),
-      vsixManifest: manifest({ version }),
+      vsixManifest: manifest({ version: sourceVersion }),
       ...overrides
     });
 
   assert.deepEqual(inspectStableReleaseReadiness(candidate(version)), []);
+  assert.deepEqual(inspectStableReleaseReadiness(candidate("2.0.0", {}, "2.0.1")), []);
 
   const historical = `[historical report](${reportUrl("1.2.1")})\n\n`;
   assert.deepEqual(
@@ -251,7 +252,9 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
     })
   );
   assert.ok(
-    sourceProblems.includes("README.md Performance report version 1.2.1 does not match source package version 2.0.0.")
+    sourceProblems.includes(
+      "README.md Performance report version 1.2.1 does not cover source release line 2.0.x at 2.0.0."
+    )
   );
 
   const packagedProblems = inspectStableReleaseReadiness(
@@ -262,7 +265,14 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   );
   assert.ok(
     packagedProblems.includes(
-      "Packaged README Performance report version 1.2.1 does not match source package version 2.0.0."
+      "Packaged README Performance report version 1.2.1 does not cover source release line 2.0.x at 2.0.0."
+    )
+  );
+
+  const futureReportProblems = inspectStableReleaseReadiness(candidate("2.0.1"));
+  assert.ok(
+    futureReportProblems.includes(
+      "README.md Performance report version 2.0.1 does not cover source release line 2.0.x at 2.0.0."
     )
   );
 
