@@ -523,7 +523,7 @@ jobs:
           RSCRIPT: ${{ steps.rscript.outputs.executable }}
         run: >-
           "$RSCRIPT" --vanilla -e
-          'install.packages(c("jsonlite", "tibble", "readr", "data.table", "bit64", "collapse", "nanoparquet"), repos = "https://cloud.r-project.org")'
+          'install.packages(c("jsonlite", "tibble", "readr", "dplyr", "data.table", "bit64", "collapse", "nanoparquet"), repos = "https://cloud.r-project.org")'
       - run: npm run test:r-contract
         env:
           RSCRIPT: ${{ steps.rscript.outputs.executable }}
