@@ -2085,7 +2085,7 @@ describe("canonical R kernel bridge", () => {
           keys: [{ id: "r:c:5", name: "flag" }],
           aggregations: [
             { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
-            { column: { id: "r:c:0", name: "value" }, operation: "mean", alias: "average_value" },
+            { column: { id: "r:c:0", name: "value" }, operation: "mean", alias: "value" },
             { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
           ]
         }
@@ -2097,7 +2097,7 @@ describe("canonical R kernel bridge", () => {
           keys: [{ id: "r:c:5", name: "flag" }],
           aggregations: [
             { column: { id: "r:c:1", name: "count" }, operation: "count", alias: "rows_present" },
-            { column: { id: "r:c:0", name: "value" }, operation: "max", alias: "average_value" },
+            { column: { id: "r:c:0", name: "value" }, operation: "median", alias: "value" },
             { column: { id: "r:c:6", name: "missing" }, operation: "first", alias: "first_label" }
           ]
         }
@@ -2146,16 +2146,24 @@ describe("canonical R kernel bridge", () => {
           ? {
               filters: [
                 {
-                  column: "average_value",
+                  column: "value",
                   type: "float" as const,
                   predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 2 }]
+                },
+                {
+                  column: "flag",
+                  type: "boolean" as const,
+                  predicates: [{ kind: "predicate" as const, operator: "equals" as const, value: true }]
                 }
               ],
               sort: []
             }
           : {
               filters: [],
-              sort: [{ column: "average_value", direction: "desc" as const, nulls: "last" as const }]
+              sort: [
+                { column: "value", direction: "desc" as const, nulls: "last" as const },
+                { column: "flag", direction: "asc" as const, nulls: "last" as const }
+              ]
             };
       await bridge.request({
         kind: "getPage",
@@ -2174,7 +2182,7 @@ describe("canonical R kernel bridge", () => {
         revision: 3,
         page: viewedGrouped,
         diff: { ...groupDiff(source, grouped, replacement), truncated: viewKind === "filter" },
-        code: "open_wrangler_result <- grouped_orders_with_max"
+        code: "open_wrangler_result <- grouped_orders_with_median"
       });
       await expect(
         bridge.request({
@@ -2201,11 +2209,17 @@ describe("canonical R kernel bridge", () => {
           view: {
             filters:
               viewKind === "filter"
-                ? [expect.objectContaining({ column: { id: `c:step:${step.id}:1`, name: "average_value" } })]
+                ? [
+                    expect.objectContaining({ column: { id: `c:step:${step.id}:1`, name: "value" } }),
+                    expect.objectContaining({ column: { id: "r:c:5", name: "flag" } })
+                  ]
                 : [],
             sorts:
               viewKind === "sort"
-                ? [expect.objectContaining({ column: { id: `c:step:${step.id}:1`, name: "average_value" } })]
+                ? [
+                    expect.objectContaining({ column: { id: `c:step:${step.id}:1`, name: "value" } }),
+                    expect.objectContaining({ column: { id: "r:c:5", name: "flag" } })
+                  ]
                 : []
           }
         }),
@@ -2219,7 +2233,7 @@ describe("canonical R kernel bridge", () => {
         action: "apply",
         revision: 4,
         page: viewedGrouped,
-        code: "open_wrangler_result <- grouped_orders_with_max"
+        code: "open_wrangler_result <- grouped_orders_with_median"
       });
       await expect(bridge.request(planRequest("applyDraft", 3))).resolves.toMatchObject({
         kind: "planUpdated",
@@ -2231,7 +2245,7 @@ describe("canonical R kernel bridge", () => {
               id: step.id,
               kind: "groupBy",
               params: {
-                aggregations: expect.arrayContaining([expect.objectContaining({ operation: "max" })])
+                aggregations: expect.arrayContaining([expect.objectContaining({ operation: "median" })])
               }
             }
           ]
@@ -2242,12 +2256,29 @@ describe("canonical R kernel bridge", () => {
       await expect(bridge.request(planRequest("undoStep", 4))).resolves.toMatchObject({
         kind: "planUpdated",
         action: "undo",
-        metadata: { filterModel: { filters: [], sort: [] }, steps: [] }
+        metadata: {
+          filterModel:
+            viewKind === "filter"
+              ? { filters: [expect.objectContaining({ column: "flag" })], sort: [] }
+              : { filters: [], sort: [expect.objectContaining({ column: "flag" })] },
+          steps: []
+        }
       });
       expect(transport.undoStep).toHaveBeenLastCalledWith(
         sessionId,
         4,
-        expect.objectContaining({ view: { filters: [], sorts: [] } }),
+        expect.objectContaining({
+          view:
+            viewKind === "filter"
+              ? {
+                  filters: [expect.objectContaining({ column: { id: "r:c:5", name: "flag" } })],
+                  sorts: []
+                }
+              : {
+                  filters: [],
+                  sorts: [expect.objectContaining({ column: { id: "r:c:5", name: "flag" } })]
+                }
+        }),
         expect.any(Object)
       );
     }

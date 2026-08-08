@@ -6518,11 +6518,11 @@ group_by_filter_view <- page_window(
   filters = list(list(
     column = list(id = "c:step:group-by-step:1", name = "number_mean"),
     type = "float",
-    predicates = I(list(list(kind = "predicate", operator = "gt", value = 3L)))
+    predicates = I(list(list(kind = "predicate", operator = "gt", value = 2L)))
   ))
 )
 group_by_filtered_step <- unserialize(serialize(group_by_step, NULL, version = 3L))
-group_by_filtered_step$params$aggregations[[2L]]$operation <- "max"
+group_by_filtered_step$params$aggregations[[2L]]$operation <- "median"
 source_materializations_before_edit <- group_by_source_materializations
 group_by_filter_edit_preview <- dispatch(
   "previewStep",
@@ -6559,7 +6559,7 @@ eval(parse(text = group_by_filter_edit_preview$code), envir = .GlobalEnv)
 group_by_filtered_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
 assert_identical(
   group_by_filtered_generated$number_mean,
-  c(3L, 4L, NA_integer_),
+  c(2, 3, NA_real_),
   "generated R Group By did not match the filtered live replacement"
 )
 rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
@@ -6581,7 +6581,7 @@ group_by_sort_view <- page_window(
   ))
 )
 group_by_sorted_step <- unserialize(serialize(group_by_filtered_step, NULL, version = 3L))
-group_by_sorted_step$params$aggregations[[2L]]$operation <- "min"
+group_by_sorted_step$params$aggregations[[2L]]$operation <- "mean"
 source_materializations_before_edit <- group_by_source_materializations
 group_by_sort_edit_preview <- dispatch(
   "previewStep",
@@ -6614,7 +6614,7 @@ eval(parse(text = group_by_sort_edit_preview$code), envir = .GlobalEnv)
 group_by_sorted_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
 assert_identical(
   group_by_sorted_generated$number_mean,
-  c(1L, 2L, NA_integer_),
+  c(2, 3, NA_real_),
   "generated R Group By did not match the sorted live replacement"
 )
 rm("group_by_frame", "open_wrangler_result", envir = .GlobalEnv)
@@ -6668,7 +6668,7 @@ assert_identical(
   c("group", vapply(group_by_aggregations, `[[`, character(1L), "alias")),
   "grouped Parquet export changed aliases"
 )
-assert_identical(group_by_parquet_frame$number_mean, c(1L, 2L, NA_integer_), "grouped Parquet export changed minima")
+assert_identical(group_by_parquet_frame$number_mean, c(2, 3, NA_real_), "grouped Parquet export changed means")
 assert_identical(source_environment$group_by_frame, group_by_source_before, "grouped Parquet export mutated its source")
 invisible(dispatch(
   "closeDataExport",

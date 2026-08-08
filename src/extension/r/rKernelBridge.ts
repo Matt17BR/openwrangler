@@ -955,18 +955,12 @@ export class RKernelBridge implements OpenWranglerBridge {
       targetRowNames = rowNamesAfterPlan(confirmed.sourceRowNames, confirmed.steps.slice(0, -1));
       const latest = confirmed.steps.at(-1) as RetainedTransformStep;
       const restore = confirmed.lastAppliedViewRestore;
-      if (
+      nextFilterModel =
         restore?.stepId === latest.id &&
         restore.viewChangeEpoch === confirmed.viewChangeEpoch &&
         isDeepStrictEqual(restore.after, confirmed.filterModel)
-      ) {
-        const restored = copyFilterModel(restore.before);
-        nextFilterModel = filterModelTargetsSchema(restored, targetSchema)
-          ? restored
-          : reconcileFilterModelById(restored, confirmed.schema, targetSchema);
-      } else {
-        nextFilterModel = reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
-      }
+          ? copyFilterModel(restore.before)
+          : reconcileFilterModelById(confirmed.filterModel, confirmed.schema, targetSchema);
     }
 
     let view: RKernelViewQuery;
@@ -1053,19 +1047,23 @@ export class RKernelBridge implements OpenWranglerBridge {
         confirmed.committedRows = targetRows;
         confirmed.committedIdentityRows = targetIdentityRows;
         confirmed.committedKeyColumnIds = Object.freeze([...targetKeyColumnIds]);
-        if (confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch && confirmed.draftBaseFilterModel) {
-          let before = copyFilterModel(confirmed.draftBaseFilterModel);
-          if (
-            confirmed.draftReplacesStepId === draftStep.id &&
-            priorRestore?.stepId === draftStep.id &&
-            priorRestore.viewChangeEpoch === confirmed.viewChangeEpoch &&
-            isDeepStrictEqual(priorRestore.after, confirmed.draftBaseFilterModel)
-          ) {
-            before = copyFilterModel(priorRestore.before);
-          }
+        const chainedRestore =
+          confirmed.draftReplacesStepId === draftStep.id &&
+          priorRestore?.stepId === draftStep.id &&
+          priorRestore.viewChangeEpoch === confirmed.viewChangeEpoch &&
+          isDeepStrictEqual(priorRestore.after, confirmed.draftBaseFilterModel)
+            ? priorRestore
+            : undefined;
+        const replacementLostOriginalView =
+          confirmed.draftReplacesStepId === draftStep.id && chainedRestore === undefined;
+        if (
+          confirmed.draftBaseViewChangeEpoch === confirmed.viewChangeEpoch &&
+          confirmed.draftBaseFilterModel &&
+          !replacementLostOriginalView
+        ) {
           confirmed.lastAppliedViewRestore = {
             stepId: draftStep.id,
-            before,
+            before: copyFilterModel(chainedRestore?.before ?? confirmed.draftBaseFilterModel),
             after: copyFilterModel(nextFilterModel),
             viewChangeEpoch: confirmed.viewChangeEpoch
           };
@@ -2988,15 +2986,6 @@ function reconcileFilterModelById(
     filters,
     sort
   };
-}
-
-function filterModelTargetsSchema(model: FilterModel, schema: readonly ColumnSchema[]): boolean {
-  try {
-    resolveViewQuery(model, schema);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function uniqueColumnsByName(schema: readonly ColumnSchema[]): Map<string, ColumnSchema> {
