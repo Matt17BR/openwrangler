@@ -56,7 +56,7 @@ printf 'executable=%s\\n' "$rscript" >> "$GITHUB_OUTPUT"
 printf 'version=%s\\n' "$r_version" >> "$GITHUB_OUTPUT"
 printf 'Hosted R: %s\\n' "$r_version"`;
 const R_CONTRACT_INSTALL_RUN = `"$RSCRIPT" --vanilla -e
-'install.packages(c("jsonlite", "tibble", "data.table", "bit64", "collapse"), repos = "https://cloud.r-project.org")'`;
+'install.packages(c("jsonlite", "tibble", "data.table", "bit64", "collapse", "nanoparquet"), repos = "https://cloud.r-project.org")'`;
 const PREPARED_CURSOR_XVFB = "${{ steps.prepare_cursor_xvfb.outputs.executable }}";
 const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
 const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release"];

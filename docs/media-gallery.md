@@ -193,8 +193,9 @@ outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `In
 ties-to-even rule. A keyed `data.table` column can be written to a new output column but cannot be changed in place.
 All twenty operations use draft preview, generated R, apply, discard, inspection, latest-step editing, and undo.
 Generated R can be copied, saved as a `.R` script, or inserted into the notebook or R document that opened the
-dataframe. R notebook and local R document sessions opened in Editing mode can export their cleaned result as CSV.
-R Parquet export is not supported yet.
+dataframe. Local R notebook and R document sessions opened in Editing mode can export their cleaned result as CSV.
+They can also export Parquet when `nanoparquet` 0.5.1 or newer is installed in the selected R environment. Reopen the
+dataframe after installing the package so the export menu can refresh.
 
 <a href="images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 

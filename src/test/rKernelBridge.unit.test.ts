@@ -653,7 +653,59 @@ describe("canonical R kernel bridge", () => {
     expect(atomic.abandon).not.toHaveBeenCalled();
   });
 
-  it("advertises R CSV export only for eligible local notebook and document sessions", async () => {
+  it("advertises and atomically exports Parquet only when the selected R runtime supports it", async () => {
+    const contract = frameContract();
+    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
+      await args[3](new TextEncoder().encode("PAR1native-r-parquetPAR1"));
+      return {
+        sessionId: args[0],
+        revision: args[1],
+        format: "parquet",
+        rows: contract.shape.rows,
+        columns: contract.shape.columns
+      };
+    });
+    const transport = {
+      ...fakeTransport(contract, sessionId, ["csv", "parquet"]),
+      exportData
+    };
+    const atomic = fakeAtomicTransaction();
+    const beginTransaction = vi.fn(async () => atomic.transaction);
+    const bridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
+
+    await expect(bridge.request(documentOpenRequest("editing"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { capabilities: { exportCsv: true, exportParquet: true } }
+    });
+    await expect(
+      bridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/orders.cleaned.parquet",
+        format: "parquet"
+      })
+    ).resolves.toEqual({
+      kind: "dataExported",
+      revision: 0,
+      path: "/workspace/orders.cleaned.parquet",
+      format: "parquet",
+      shape: { rows: 1, columns: 8 }
+    });
+
+    expect(exportData).toHaveBeenCalledWith(
+      sessionId,
+      0,
+      "parquet",
+      expect.any(Function),
+      expect.objectContaining({ timeoutMs: 30 * 60_000 })
+    );
+    expect(atomic.write).toHaveBeenCalledWith(new TextEncoder().encode("PAR1native-r-parquetPAR1"));
+    expect(atomic.commit).toHaveBeenCalledOnce();
+    expect(atomic.rollback).not.toHaveBeenCalled();
+  });
+
+  it("advertises R export formats only for eligible local notebook and document sessions", async () => {
     const contract = frameContract();
     const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
       await args[3](new TextEncoder().encode("value\n12.5\n"));
@@ -684,7 +736,23 @@ describe("canonical R kernel bridge", () => {
     const notebookTransport = { ...fakeTransport(contract), exportData: vi.fn(exportData) };
     const notebookBridge = createBridge(notebookTransport, undefined, undefined, undefined, { beginTransaction });
     const notebook = await notebookBridge.request(openRequest("editing"));
-    expect(notebook).toMatchObject({ kind: "sessionOpened", metadata: { capabilities: { exportCsv: true } } });
+    expect(notebook).toMatchObject({
+      kind: "sessionOpened",
+      metadata: { capabilities: { exportCsv: true, exportParquet: false } }
+    });
+    await expect(
+      notebookBridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/out.parquet",
+        format: "parquet"
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "unsupported_operation",
+      message: expect.stringContaining("nanoparquet 0.5.1")
+    });
     await expect(
       notebookBridge.request({
         kind: "exportData",
@@ -5621,12 +5689,16 @@ interface FakeRTransport extends RKernelBridgeTransport {
   invalidate(): void;
 }
 
-function fakeTransport(contract: RFramePageContract, openedSessionId = sessionId): FakeRTransport {
+function fakeTransport(
+  contract: RFramePageContract,
+  openedSessionId = sessionId,
+  exportFormats: readonly ("csv" | "parquet")[] = ["csv"]
+): FakeRTransport {
   const emitter = new vscode.EventEmitter<void>();
   const previewQueue: RKernelStepPreviewResult[] = [];
   return {
     onDidInvalidateKernel: emitter.event,
-    open: vi.fn(async () => ({ sessionId: openedSessionId, page: contract })),
+    open: vi.fn(async () => ({ sessionId: openedSessionId, page: contract, exportFormats })),
     getPage: vi.fn(async () => contract),
     getSummary: vi.fn(async (_sessionId, columns) => columns.map((column) => summaryFor(contract, column))),
     getDatasetStats: vi.fn(async () => ({ totalRows: contract.shape.rows, stats: datasetStatsFor(contract) })),

@@ -110,9 +110,10 @@ both ends, or the default whitespace when no set is supplied. Split text uses a 
 and returns `NA` when the requested part is missing. Convert type replaces one column under the same identity and
 supports string, integer, float, boolean, date, and datetime targets. Failed parses become `NA`. It rejects active data-table
 keys and conversions that would lose units or `integer64` precision. Generated R can be copied, saved as a `.R`
-script, or inserted into the notebook or R document that opened the dataframe. R notebook sessions and local R
-document sessions opened in Editing mode can export the committed cleaning result as CSV. R Parquet export is not
-supported yet.
+script, or inserted into the notebook or R document that opened the dataframe. Local R notebook and R document
+sessions opened in Editing mode can export the committed cleaning result as CSV. Parquet export is also available when
+`nanoparquet` 0.5.1 or newer is installed in the selected R environment; a session opened before installation must be
+reopened so its capabilities can be refreshed.
 
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's

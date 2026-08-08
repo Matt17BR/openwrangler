@@ -528,6 +528,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /supported top-level R cells in `\.Rmd` and `\.qmd` documents/u);
   assert.match(readme, /do not render Quarto or R Markdown or attach to another\s+R session/u);
   assert.match(readme, /including unsaved\s+editor changes/u);
+  assert.match(readme, /To export Parquet, install `nanoparquet` 0\.5\.1 or newer[\s\S]{0,100}reopen the dataframe/u);
   assert.match(readme, /The R workbench supports[\s\S]{0,180}20 cleaning operations/u);
   assert.match(readme, /\*\*Split text\*\*, \*\*Round\*\*, \*\*Floor\*\*, and \*\*Ceiling\*\*/u);
   assert.match(readme, /inserted into the notebook or document that opened the dataframe/u);
@@ -710,7 +711,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /These methods ignore `NA`\s+and `NaN`\./u);
   assert.match(
     gallery,
-    /R notebook and local R document sessions opened in Editing mode can export their cleaned result as CSV\./u
+    /Local R notebook and R document sessions opened in Editing mode can export their cleaned result as CSV\./u
   );
   assert.doesNotMatch(gallery, /R notebooks\s+cannot export cleaned data yet/u);
   assert.match(

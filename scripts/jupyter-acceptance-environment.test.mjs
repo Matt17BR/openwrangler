@@ -17,9 +17,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
-  R_ACCEPTANCE_COLLAPSE_REPOSITORY,
   R_ACCEPTANCE_PACKAGE_VERSIONS,
   R_ACCEPTANCE_REPOSITORY,
+  R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY,
   acceptancePythonForPhase,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
@@ -164,13 +164,21 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     assert.equal(prepared.kernelId, "openwrangler-r-acceptance");
     assert.equal(prepared.kernelDisplayName, "R (Open Wrangler)");
     assert.equal(prepared.rExecutable, rExecutable);
-    assert.deepEqual(prepared.packages, ["IRkernel", "jsonlite", "rlang", "tibble", "data.table", "collapse"]);
+    assert.deepEqual(prepared.packages, [
+      "IRkernel",
+      "jsonlite",
+      "rlang",
+      "tibble",
+      "data.table",
+      "collapse",
+      "nanoparquet"
+    ]);
     assert.deepEqual(prepared.packageVersions, R_ACCEPTANCE_PACKAGE_VERSIONS);
     assert.equal(prepared.repository, R_ACCEPTANCE_REPOSITORY);
-    assert.equal(prepared.collapseRepository, R_ACCEPTANCE_COLLAPSE_REPOSITORY);
+    assert.equal(prepared.supplementalRepository, R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY);
     assert.equal(
       prepared.packageRecord,
-      "IRkernel=1.3.2\njsonlite=2.0.0\nrlang=1.1.7\ntibble=3.3.1\ndata.table=1.18.2.1\ncollapse=2.1.7"
+      "IRkernel=1.3.2\njsonlite=2.0.0\nrlang=1.1.7\ntibble=3.3.1\ndata.table=1.18.2.1\ncollapse=2.1.7\nnanoparquet=0.5.1"
     );
     assert.deepEqual(prepared.jupyterEnvironment, {
       dataDir: join(privateRoot, "d"),
@@ -250,11 +258,17 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       );
     }
     assert.match(prepared.dependencyProbe.input.args.at(-1), /status = 11L/u);
-    assert.match(prepared.dependencyProbe.input.args.at(-1), /collapse = "\\n"\), sep = ""\)$/u);
+    assert.equal(
+      prepared.dependencyProbe.input.args
+        .at(-1)
+        .endsWith('cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'),
+      true
+    );
     assert.deepEqual(prepared.dependencyProbe.options, { timeoutMs: 30_000 });
     assert.equal(prepared.dependencyInstall.input.args.at(-1).includes(R_ACCEPTANCE_REPOSITORY), true);
-    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes(R_ACCEPTANCE_COLLAPSE_REPOSITORY), true);
-    assert.match(prepared.dependencyInstall.input.args.at(-1), /setdiff\(\.ow_packages, "collapse"\)/u);
+    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes(R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY), true);
+    assert.match(prepared.dependencyInstall.input.args.at(-1), /c\("collapse", "nanoparquet"\)/u);
+    assert.match(prepared.dependencyInstall.input.args.at(-1), /setdiff\(\.ow_packages, \.ow_supplemental_packages\)/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /repos = "[^"]+2026-06-01"/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /lib = \.ow_library/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /dependencies = NA/u);

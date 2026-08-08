@@ -36,6 +36,7 @@ require_package("tibble")
 require_package("data.table")
 require_package("bit64")
 require_package("collapse")
+require_package("nanoparquet")
 
 base_frame <- data.frame(
   duplicate = c(TRUE, NA, FALSE),
@@ -80,6 +81,76 @@ assert_identical(base_page$page$rows[[2L]]$values[[2L]]$kind, "null", "NA was no
 assert_identical(base_page$page$rows[[3L]]$values[[3L]]$kind, "infinity", "infinity was not typed")
 assert_identical(base_page$page$rows[[3L]]$values[[3L]]$sign, 1L, "infinity sign changed")
 assert_true(jsonlite::validate(openwrangler_r_frame_contract$encode_page(base_capture, row_limit = 3L)), "JSON is invalid")
+
+assert_true(
+  !openwrangler_r_frame_contract$nanoparquet_version_supported(NULL) &&
+    !openwrangler_r_frame_contract$nanoparquet_version_supported("not-a-version") &&
+    !openwrangler_r_frame_contract$nanoparquet_version_supported("0.5.0") &&
+    openwrangler_r_frame_contract$nanoparquet_version_supported("0.5.1") &&
+    openwrangler_r_frame_contract$nanoparquet_version_supported("1.0.0"),
+  "nanoparquet version gating changed"
+)
+assert_true(openwrangler_r_frame_contract$parquet_export_available(), "nanoparquet was not detected")
+assert_identical(
+  openwrangler_r_frame_contract$export_formats(),
+  c("csv", "parquet"),
+  "the R export format probe changed"
+)
+
+parquet_target <- tempfile(fileext = ".parquet")
+parquet_details <- openwrangler_r_frame_contract$write_parquet(base_capture, parquet_target)
+assert_identical(parquet_details$rows, 3L, "Parquet export changed the row count")
+assert_identical(parquet_details$columns, 10L, "Parquet export changed the column count")
+assert_true(parquet_details$bytes >= 8, "Parquet export reported an invalid byte count")
+parquet_connection <- file(parquet_target, open = "rb")
+parquet_prefix <- readBin(parquet_connection, what = "raw", n = 4L)
+seek(parquet_connection, where = -4L, origin = "end", rw = "read")
+parquet_suffix <- readBin(parquet_connection, what = "raw", n = 4L)
+close(parquet_connection)
+assert_identical(parquet_prefix, charToRaw("PAR1"), "Parquet export has an invalid header")
+assert_identical(parquet_suffix, charToRaw("PAR1"), "Parquet export has an invalid footer")
+parquet_frame <- nanoparquet::read_parquet(
+  parquet_target,
+  options = nanoparquet::parquet_options(class = "data.frame", read_int64_type = "integer64")
+)
+assert_identical(names(parquet_frame), names(base_frame), "Parquet export changed duplicate or non-syntactic names")
+assert_identical(parquet_frame[[1L]], base_frame[[1L]], "Parquet export changed logical values")
+assert_identical(parquet_frame[[2L]], base_frame[[2L]], "Parquet export changed integer values")
+assert_identical(parquet_frame[[3L]], base_frame[[3L]], "Parquet export changed double, NaN, or infinity values")
+assert_identical(parquet_frame[[4L]], base_frame[[4L]], "Parquet export changed UTF-8 text")
+assert_identical(as.character(parquet_frame[[5L]]), as.character(base_frame[[5L]]), "Parquet export changed factor values")
+assert_identical(levels(parquet_frame[[5L]]), levels(base_frame[[5L]]), "Parquet export changed factor levels")
+assert_identical(as.character(parquet_frame[[6L]]), as.character(base_frame[[6L]]), "Parquet export changed ordered values")
+assert_identical(as.numeric(parquet_frame[[7L]]), as.numeric(base_frame[[7L]]), "Parquet export changed Date values")
+assert_identical(as.numeric(parquet_frame[[8L]]), as.numeric(base_frame[[8L]]), "Parquet export changed POSIXct instants")
+assert_identical(as.numeric(parquet_frame[[9L]], units = "secs"), as.numeric(base_frame[[9L]], units = "secs"), "Parquet export changed difftime values")
+assert_identical(as.character(parquet_frame[[10L]]), as.character(base_frame[[10L]]), "Parquet export lost integer64 precision")
+unlink(parquet_target)
+
+zero_column_frame <- data.frame(row.names = seq_len(3L))
+zero_column_capture <- openwrangler_r_frame_contract$capture_frame(zero_column_frame)
+zero_column_target <- tempfile(fileext = ".parquet")
+zero_column_details <- openwrangler_r_frame_contract$write_parquet(zero_column_capture, zero_column_target)
+zero_column_result <- nanoparquet::read_parquet(
+  zero_column_target,
+  options = nanoparquet::parquet_options(class = "data.frame")
+)
+assert_identical(zero_column_details$rows, 3L, "zero-column Parquet export changed the row count")
+assert_identical(dim(zero_column_result), c(3L, 0L), "zero-column Parquet export did not round-trip")
+unlink(zero_column_target)
+
+existing_parquet_target <- tempfile(fileext = ".parquet")
+writeBin(charToRaw("do not replace"), existing_parquet_target)
+assert_error(
+  openwrangler_r_frame_contract$write_parquet(base_capture, existing_parquet_target),
+  "export-target-changed"
+)
+assert_identical(
+  readBin(existing_parquet_target, what = "raw", n = file.info(existing_parquet_target)$size),
+  charToRaw("do not replace"),
+  "a rejected Parquet export changed an existing target"
+)
+unlink(existing_parquet_target)
 
 ambient_frame <- data.frame(
   amount = 1234.5,

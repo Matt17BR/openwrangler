@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 7L
+  transport_version <- 8L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
@@ -3575,7 +3575,9 @@ openwrangler_r_kernel_agent <- local({
       "materialize_summaries",
       "materialize_dataset_stats",
       "materialize_column_values",
-      "write_csv"
+      "export_formats",
+      "write_csv",
+      "write_parquet"
     )
     if (
       !is.list(frame_contract) ||
@@ -3631,6 +3633,22 @@ openwrangler_r_kernel_agent <- local({
 
     sessions <- new.env(hash = TRUE, parent = emptyenv())
     exports <- new.env(hash = TRUE, parent = emptyenv())
+
+    supported_export_formats <- function() {
+      formats <- frame_contract$export_formats()
+      if (
+        !is.character(formats) ||
+          length(formats) < 1L ||
+          length(formats) > 2L ||
+          anyNA(formats) ||
+          anyDuplicated(formats) ||
+          !identical(formats[[1L]], "csv") ||
+          any(!formats %in% c("csv", "parquet"))
+      ) {
+        abort("runtime_error", "The R frame contract returned invalid export capabilities")
+      }
+      unname(formats)
+    }
 
     remove_export <- function(export_id) {
       if (!exists(export_id, envir = exports, inherits = FALSE)) return(invisible(FALSE))
@@ -3727,6 +3745,7 @@ openwrangler_r_kernel_agent <- local({
           requestId = request_id,
           kind = "page",
           sessionId = session_id,
+          exportFormats = I(supported_export_formats()),
           page = result
         )
         preflight_response(response)
@@ -4096,19 +4115,30 @@ openwrangler_r_kernel_agent <- local({
           abort("invalid_request", "The requested R export identity is already in use", TRUE)
         }
         format <- bounded_text(payload$format, "request.payload.format", 16L)
-        if (!identical(format, "csv")) {
-          abort("invalid_request", "Native R data export currently supports CSV only", TRUE)
+        if (!format %in% c("csv", "parquet")) {
+          abort("invalid_request", "Native R data export requires CSV or Parquet", TRUE)
+        }
+        if (!format %in% supported_export_formats()) {
+          abort(
+            "missing_package",
+            "Parquet export requires nanoparquet 0.5.1 or newer in the selected R runtime",
+            TRUE
+          )
         }
         capture <- if (isTRUE(session$editing)) session$committed else session$source
         if (is.null(capture)) {
           abort("runtime_error", "The committed R dataframe is no longer available")
         }
-        artifact_path <- file.path(export_root, paste0(export_id, ".csv"))
+        artifact_path <- file.path(export_root, paste0(export_id, if (identical(format, "csv")) ".csv" else ".parquet"))
         completed <- FALSE
         on.exit({
           if (!completed && file.exists(artifact_path)) try(unlink(artifact_path, force = TRUE), silent = TRUE)
         }, add = TRUE)
-        exported <- frame_contract$write_csv(capture, artifact_path)
+        exported <- if (identical(format, "csv")) {
+          frame_contract$write_csv(capture, artifact_path)
+        } else {
+          frame_contract$write_parquet(capture, artifact_path)
+        }
         response <- list(
           transportVersion = transport_version,
           requestId = request_id,
@@ -4116,7 +4146,7 @@ openwrangler_r_kernel_agent <- local({
           sessionId = session_id,
           revision = session$revision,
           exportId = export_id,
-          format = "csv",
+          format = format,
           rows = exported$rows,
           columns = exported$columns,
           bytes = exported$bytes

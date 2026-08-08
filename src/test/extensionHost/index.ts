@@ -2554,12 +2554,15 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
     assertReleasedRGeneratedCode(generatedCode, "record_id", "orders_frame");
     assert.equal(applied.metadata.capabilities.documentInsert, true);
     assert.equal(applied.metadata.capabilities.notebookInsert, false);
+    assert.equal(applied.metadata.capabilities.exportCsv, true);
+    assert.equal(applied.metadata.capabilities.exportParquet, true);
 
     recordAcceptanceProgress("jupyter-r:document:export-cleaned-csv");
     app = await releasedRSessionApp(workbench, testing, opened.sessionId, "the applied plain R session before export");
     await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-document-export-"));
     const exportPath = path.join(exportDirectory, "orders-cleaned.csv");
+    const parquetExportPath = path.join(exportDirectory, "orders-cleaned.parquet");
     try {
       await exportCleanedDataThroughCommand(workbench, exportPath);
       await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R CSV export to appear");
@@ -2568,15 +2571,18 @@ async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Pag
         releasedRDocumentCleanedCsv(),
         "The public R export command must write every cleaned row and the renamed schema."
       );
+      await exportCleanedDataThroughCommand(workbench, parquetExportPath, "parquet");
+      await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R Parquet export to appear");
+      assertParquetFile(parquetExportPath, "The public R document export");
       assert.deepEqual(
-        readdirSync(exportDirectory),
-        [path.basename(exportPath)],
-        "The R CSV export must not retain a sibling temporary file."
+        readdirSync(exportDirectory).sort(),
+        [path.basename(exportPath), path.basename(parquetExportPath)].sort(),
+        "R document exports must not retain sibling temporary files."
       );
       assert.deepEqual(
         readdirSync(path.join(processRoot, "exports")),
         [],
-        "The R process must remove its private export artifact after the host has copied it."
+        "The R process must remove its private export artifacts after the host has copied them."
       );
       assert.equal(sourceDocument.getText(), sourceTextBefore, "Export must not edit the open R source document.");
       assert.equal(
@@ -4616,7 +4622,7 @@ async function exerciseReleasedREditingJourney(
   assertReleasedRGeneratedCode(firstApplied.code ?? "", "record_id");
   assert.equal(firstApplied.metadata.capabilities.notebookInsert, true);
   assert.equal(firstApplied.metadata.capabilities.exportCsv, true);
-  assert.equal(firstApplied.metadata.capabilities.exportParquet, false);
+  assert.equal(firstApplied.metadata.capabilities.exportParquet, true);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R rename session");
   await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
 
@@ -4673,10 +4679,14 @@ async function exerciseReleasedREditingJourney(
   assert.equal(exportedLines[1], releasedRNotebookCleanedCsvRow(1));
   assert.equal(exportedLines[2], releasedRNotebookCleanedCsvRow(2));
   assert.equal(exportedLines[1_205], releasedRNotebookCleanedCsvRow(1_205));
+  const parquetExportPath = path.join(outputDirectory, `${phase}.orders.clean.parquet`);
+  await exportCleanedDataThroughCommand(workbench, parquetExportPath, "parquet");
+  await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R notebook Parquet export to appear");
+  assertParquetFile(parquetExportPath, "The public R notebook export");
   assert.deepEqual(
     readdirSync(outputDirectory).filter((name) => name.startsWith(".openwrangler-") && name.endsWith(".tmp")),
     [],
-    "The R notebook CSV export must not retain a sibling temporary file."
+    "R notebook exports must not retain a sibling temporary file."
   );
   assert.deepEqual(
     testing.activeSession()?.viewState.filterModel,
@@ -4695,7 +4705,7 @@ async function exerciseReleasedREditingJourney(
     notebookBytesBeforeExport,
     "Export must not change the notebook on disk."
   );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after CSV export");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after data export");
   await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
   exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await exportDrawer.waitFor({ state: "visible", timeout: 10_000 });
@@ -14043,9 +14053,20 @@ async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, 
   await completeCleanedDataExportDialog(workbench, destination);
 }
 
-async function exportCleanedDataThroughCommand(workbench: Page, destination: string): Promise<void> {
+function assertParquetFile(filePath: string, label: string): void {
+  const bytes = readFileSync(filePath);
+  assert.ok(bytes.byteLength >= 8, `${label} must contain a complete Parquet file.`);
+  assert.equal(bytes.subarray(0, 4).toString("utf8"), "PAR1", `${label} has an invalid Parquet header.`);
+  assert.equal(bytes.subarray(-4).toString("utf8"), "PAR1", `${label} has an invalid Parquet footer.`);
+}
+
+async function exportCleanedDataThroughCommand(
+  workbench: Page,
+  destination: string,
+  format: "csv" | "parquet" = "csv"
+): Promise<void> {
   const completion = vscode.commands.executeCommand<boolean>("openWrangler.exportData");
-  await completeCleanedDataExportDialog(workbench, destination);
+  await completeCleanedDataExportDialog(workbench, destination, format);
   const outcome = await withBoundedAcceptancePromise(completion, 30_000, "the public cleaned-data export command");
   const notifications =
     outcome === true
@@ -14066,13 +14087,18 @@ async function exportCleanedDataThroughCommand(workbench: Page, destination: str
   );
 }
 
-async function completeCleanedDataExportDialog(workbench: Page, destination: string): Promise<void> {
+async function completeCleanedDataExportDialog(
+  workbench: Page,
+  destination: string,
+  format: "csv" | "parquet" = "csv"
+): Promise<void> {
   const formatPicker = workbench
     .locator(".quick-input-widget:visible")
     .filter({ hasText: "Export Cleaned Data" })
     .last();
   await formatPicker.waitFor({ state: "visible", timeout: 10_000 });
-  await formatPicker.getByRole("option").filter({ hasText: /^CSV/u }).first().click();
+  const label = format === "csv" ? /^CSV/u : /^Parquet/u;
+  await formatPicker.getByRole("option").filter({ hasText: label }).first().click();
   assert.equal(
     await pollAcceptanceCondition(
       async () =>
@@ -14083,12 +14109,12 @@ async function completeCleanedDataExportDialog(workbench: Page, destination: str
           .locator(".quick-input-box input")
           .first()
           .inputValue()
-          .then((value) => /\.cleaned\.csv$/u.test(value))
+          .then((value) => value.endsWith(`.cleaned.${format}`))
           .catch(() => false),
       { timeoutMs: 10_000, intervalMs: 50 }
     ),
     true,
-    "The cleaned-data Save dialog must retain the suggested .cleaned.csv destination."
+    `The cleaned-data Save dialog must retain the suggested .cleaned.${format} destination.`
   );
   const saveDialog = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Export Cleaned Data" }).last();
   const saveInput = saveDialog.locator(".quick-input-box input").first();

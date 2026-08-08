@@ -39,6 +39,7 @@ openwrangler_r_frame_contract <- local({
   row_fixed_bytes <- 96L
   cell_fixed_bytes <- 96L
   summary_fixed_bytes <- 1024L
+  minimum_nanoparquet_version <- "0.5.1"
 
   abort <- function(code, message) {
     condition <- structure(
@@ -4241,14 +4242,29 @@ openwrangler_r_frame_contract <- local({
     value
   }
 
-  write_csv <- function(capture, target_path) {
-    validate_capture(capture)
-    if (capture$descriptor$shape$columns == 0L) {
-      abort(
-        "export-write-failed",
-        "CSV export requires at least one column because CSV cannot preserve a zero-column dataframe's row count"
-      )
-    }
+  nanoparquet_version_supported <- function(version) {
+    if (is.null(version)) return(FALSE)
+    parsed <- tryCatch(
+      base::package_version(as.character(version)),
+      error = function(error) NULL
+    )
+    !is.null(parsed) && length(parsed) == 1L && !is.na(parsed) &&
+      parsed >= base::package_version(minimum_nanoparquet_version)
+  }
+
+  parquet_export_available <- function() {
+    if (!requireNamespace("nanoparquet", quietly = TRUE)) return(FALSE)
+    version <- tryCatch(utils::packageVersion("nanoparquet"), error = function(error) NULL)
+    nanoparquet_version_supported(version)
+  }
+
+  export_formats <- function() {
+    formats <- "csv"
+    if (parquet_export_available()) formats <- c(formats, "parquet")
+    unname(formats)
+  }
+
+  validate_export_target <- function(target_path) {
     target_path <- bounded_utf8(target_path, "target_path", 32768L)
     if (
       identical(target_path, "") ||
@@ -4263,6 +4279,18 @@ openwrangler_r_frame_contract <- local({
     if (file.exists(target_path)) {
       abort("export-target-changed", "the private R export artifact already exists")
     }
+    target_path
+  }
+
+  write_csv <- function(capture, target_path) {
+    validate_capture(capture)
+    if (capture$descriptor$shape$columns == 0L) {
+      abort(
+        "export-write-failed",
+        "CSV export requires at least one column because CSV cannot preserve a zero-column dataframe's row count"
+      )
+    }
+    target_path <- validate_export_target(target_path)
 
     frame <- read_capture_frame(capture)
     connection <- NULL
@@ -4308,6 +4336,60 @@ openwrangler_r_frame_contract <- local({
         isTRUE(details$isdir[[1L]])
     ) {
       abort("export-target-changed", "the private R export artifact could not be verified")
+    }
+    completed <- TRUE
+    list(
+      rows = capture$descriptor$shape$rows,
+      columns = capture$descriptor$shape$columns,
+      bytes = as.double(details$size[[1L]])
+    )
+  }
+
+  write_parquet <- function(capture, target_path) {
+    validate_capture(capture)
+    target_path <- validate_export_target(target_path)
+    if (!parquet_export_available()) {
+      abort(
+        "missing-package",
+        sprintf("Parquet export requires nanoparquet %s or newer in the selected R runtime", minimum_nanoparquet_version)
+      )
+    }
+
+    frame <- read_capture_frame(capture)
+    completed <- FALSE
+    connection <- NULL
+    on.exit({
+      if (!is.null(connection)) try(close(connection), silent = TRUE)
+      if (!completed && file.exists(target_path)) try(unlink(target_path, force = TRUE), silent = TRUE)
+    }, add = TRUE)
+    tryCatch(
+      nanoparquet::write_parquet(frame, target_path),
+      openwrangler_r_frame_error = function(error) stop(error),
+      error = function(error) {
+        abort("export-write-failed", "the R dataframe could not be written as Parquet")
+      }
+    )
+
+    invisible(read_capture_frame(capture))
+    details <- file.info(target_path)
+    if (
+      nrow(details) != 1L ||
+        is.na(details$size[[1L]]) ||
+        !is.finite(details$size[[1L]]) ||
+        details$size[[1L]] < 8L ||
+        isTRUE(details$isdir[[1L]])
+    ) {
+      abort("export-target-changed", "the private R Parquet artifact could not be verified")
+    }
+    connection <- file(target_path, open = "rb")
+    prefix <- readBin(connection, what = "raw", n = 4L)
+    seek(connection, where = -4L, origin = "end", rw = "read")
+    suffix <- readBin(connection, what = "raw", n = 4L)
+    close(connection)
+    connection <- NULL
+    parquet_magic <- charToRaw("PAR1")
+    if (!identical(prefix, parquet_magic) || !identical(suffix, parquet_magic)) {
+      abort("export-target-changed", "the private R Parquet artifact has invalid file markers")
     }
     completed <- TRUE
     list(
@@ -4878,7 +4960,11 @@ openwrangler_r_frame_contract <- local({
     drop_missing_rows_at = drop_missing_rows_at,
     drop_duplicate_rows_at = drop_duplicate_rows_at,
     transform_rows = transform_rows,
+    nanoparquet_version_supported = nanoparquet_version_supported,
+    parquet_export_available = parquet_export_available,
+    export_formats = export_formats,
     write_csv = write_csv,
+    write_parquet = write_parquet,
     capture_metrics = capture_metrics,
     materialize_page = materialize_page,
     materialize_view_page = materialize_view_page,

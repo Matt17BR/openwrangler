@@ -1,6 +1,10 @@
 source("r/openwrangler_runtime/frame_contract.R", local = FALSE)
 source("r/openwrangler_runtime/kernel_agent.R", local = FALSE)
 
+if (!requireNamespace("nanoparquet", quietly = TRUE)) {
+  stop("The R kernel agent test requires nanoparquet", call. = FALSE)
+}
+
 assert_identical <- function(actual, expected, message) {
   if (!identical(actual, expected)) {
     stop(sprintf("%s\nExpected: %s\nActual: %s", message, deparse(expected), deparse(actual)), call. = FALSE)
@@ -60,6 +64,8 @@ grouped_collapse_session_id <- "50505050-5050-4050-8050-505050505050"
 export_session_id <- "41414141-4141-4141-8141-414141414141"
 export_id <- "42424242-4242-4242-8242-424242424242"
 cleanup_export_id <- "43434343-4343-4343-8343-434343434343"
+parquet_export_id <- "53535353-5353-4353-8353-535353535353"
+unavailable_export_session_id <- "54545454-5454-4454-8454-545454545454"
 text_cleanup_session_id <- "34343434-3434-4434-8434-343434343434"
 text_cleanup_table_session_id <- "35353535-3535-4535-8535-353535353535"
 text_failure_session_id <- "36363636-3636-4636-8636-363636363636"
@@ -115,7 +121,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 7L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 8L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -207,6 +213,7 @@ opened <- dispatch(
 )
 assert_identical(opened$kind, "page", "the R agent did not open a page session")
 assert_identical(opened$sessionId, session_id, "the R agent changed the candidate session identity")
+assert_identical(opened$exportFormats, list("csv", "parquet"), "the R agent reported the wrong export formats")
 assert_identical(isolated_capture_count, 0L, "viewing open created an isolated full-frame snapshot")
 assert_identical(full_capture_count, 0L, "viewing open copied the full R dataframe")
 assert_identical(opened$page$page$columnIds, list("r:c:0", "r:c:1"), "the initial projection changed")
@@ -5894,9 +5901,28 @@ missing_package_contract <- list(
   materialize_summaries = function(...) stop("unexpected summary materialization", call. = FALSE),
   materialize_dataset_stats = function(...) stop("unexpected dataset profile", call. = FALSE),
   materialize_column_values = function(...) stop("unexpected column values", call. = FALSE),
+  export_formats = function() "csv",
   write_csv = function(...) stop("unexpected CSV export", call. = FALSE),
+  write_parquet = function(...) stop("unexpected Parquet export", call. = FALSE),
   limits = openwrangler_r_frame_contract$limits
 )
+for (required_export_tool in c("export_formats", "write_csv", "write_parquet")) {
+  incomplete_export_contract <- missing_package_contract
+  incomplete_export_contract[[required_export_tool]] <- NULL
+  incomplete_export_error <- tryCatch(
+    {
+      openwrangler_r_kernel_agent$new_agent(incomplete_export_contract, source_environment)
+      NULL
+    },
+    error = function(error) error
+  )
+  if (
+    is.null(incomplete_export_error) ||
+      !identical(conditionMessage(incomplete_export_error), "Open Wrangler received an invalid R frame contract.")
+  ) {
+    stop(sprintf("the R agent accepted a frame contract without %s support", required_export_tool), call. = FALSE)
+  }
+}
 missing_write_csv_contract <- missing_package_contract
 missing_write_csv_contract$write_csv <- NULL
 missing_write_csv_error <- tryCatch(
@@ -6311,6 +6337,71 @@ export_closed_again <- dispatch(
 )
 assert_identical(export_closed_again$kind, "dataExportClosed", "closing an R export was not idempotent")
 
+parquet_ready <- dispatch(
+  "exportData",
+  list(
+    sessionId = export_session_id,
+    revision = export_discard$revision,
+    exportId = parquet_export_id,
+    format = "parquet"
+  )
+)
+assert_identical(parquet_ready$kind, "dataExported", "the R agent did not prepare a Parquet export")
+assert_identical(parquet_ready$format, "parquet", "the R agent changed the Parquet export format")
+assert_identical(parquet_ready$rows, 3L, "viewing state changed the Parquet export row count")
+assert_identical(parquet_ready$columns, 6L, "the Parquet export returned the wrong width")
+parquet_bytes <- raw()
+offset <- 0L
+while (offset < parquet_ready$bytes) {
+  chunk <- dispatch(
+    "readDataExport",
+    list(
+      sessionId = export_session_id,
+      revision = export_discard$revision,
+      exportId = parquet_export_id,
+      offset = offset,
+      limit = 13L
+    )
+  )
+  decoded <- jsonlite::base64_dec(chunk$data)
+  assert_identical(length(decoded), chunk$bytes, "the R Parquet export chunk byte count changed")
+  parquet_bytes <- c(parquet_bytes, decoded)
+  offset <- offset + chunk$bytes
+}
+assert_identical(length(parquet_bytes), parquet_ready$bytes, "the R Parquet export stream was truncated")
+assert_identical(parquet_bytes[seq_len(4L)], charToRaw("PAR1"), "the R Parquet export has an invalid header")
+assert_identical(tail(parquet_bytes, 4L), charToRaw("PAR1"), "the R Parquet export has an invalid footer")
+parquet_target <- tempfile(fileext = ".parquet")
+writeBin(parquet_bytes, parquet_target)
+parquet_frame <- nanoparquet::read_parquet(
+  parquet_target,
+  options = nanoparquet::parquet_options(class = "data.frame")
+)
+unlink(parquet_target)
+assert_identical(
+  names(parquet_frame),
+  c("order_id", "duplicate", "duplicate", "when", "at", "value"),
+  "Parquet export changed duplicate or renamed columns"
+)
+assert_identical(parquet_frame[[1L]], c(3L, 1L, 2L), "viewing filters or sorts changed the committed Parquet data")
+assert_identical(as.character(parquet_frame[[2L]]), c("gamma", "alpha", "beta"), "Parquet export changed factor labels")
+assert_identical(
+  as.numeric(parquet_frame[[4L]]),
+  as.numeric(source_environment$export_frame[[4L]]),
+  "Parquet export changed Date values"
+)
+assert_identical(
+  as.numeric(parquet_frame[[5L]]),
+  as.numeric(source_environment$export_frame[[5L]]),
+  "Parquet export changed POSIXct instants"
+)
+assert_identical(source_environment$export_frame, export_source_before, "Parquet export mutated its R source")
+parquet_closed <- dispatch(
+  "closeDataExport",
+  list(sessionId = export_session_id, revision = export_discard$revision, exportId = parquet_export_id)
+)
+assert_identical(parquet_closed$kind, "dataExportClosed", "the R Parquet export artifact did not close")
+
 cleanup_ready <- dispatch(
   "exportData",
   list(sessionId = export_session_id, revision = export_discard$revision, exportId = cleanup_export_id, format = "csv")
@@ -6323,6 +6414,45 @@ cleanup_read <- dispatch(
   list(sessionId = export_session_id, revision = export_discard$revision, exportId = cleanup_export_id, offset = 0L, limit = 1L)
 )
 assert_identical(cleanup_read$kind, "error", "closing the R session retained its export artifact")
+
+unavailable_write_count <- 0L
+unavailable_parquet_contract <- openwrangler_r_frame_contract
+unavailable_parquet_contract$export_formats <- function() "csv"
+unavailable_parquet_contract$write_parquet <- function(...) {
+  unavailable_write_count <<- unavailable_write_count + 1L
+  stop("unexpected unavailable Parquet writer", call. = FALSE)
+}
+unavailable_parquet_agent <- openwrangler_r_kernel_agent$new_agent(
+  unavailable_parquet_contract,
+  source_environment
+)
+unavailable_open <- dispatch_with(
+  unavailable_parquet_agent,
+  "openSession",
+  list(sessionId = unavailable_export_session_id, variableName = "export_frame", page = page_window())
+)
+assert_identical(unavailable_open$kind, "page", "the CSV-only R export session did not open")
+assert_identical(unavailable_open$exportFormats, list("csv"), "the CSV-only R session advertised Parquet")
+unavailable_parquet <- dispatch_with(
+  unavailable_parquet_agent,
+  "exportData",
+  list(
+    sessionId = unavailable_export_session_id,
+    revision = 0L,
+    exportId = parquet_export_id,
+    format = "parquet"
+  )
+)
+assert_identical(unavailable_parquet$kind, "error", "the R agent accepted unavailable Parquet export")
+assert_identical(unavailable_parquet$code, "missing_package", "the unavailable Parquet diagnostic changed")
+assert_identical(unavailable_parquet$recoverable, TRUE, "the unavailable Parquet diagnostic was not recoverable")
+assert_identical(unavailable_write_count, 0L, "the R agent called an unavailable Parquet writer")
+invisible(dispatch_with(
+  unavailable_parquet_agent,
+  "closeSession",
+  list(sessionId = unavailable_export_session_id)
+))
+unavailable_parquet_agent$dispose()
 
 missing_package_agent <- openwrangler_r_kernel_agent$new_agent(missing_package_contract, source_environment)
 missing_package <- dispatch_with(
