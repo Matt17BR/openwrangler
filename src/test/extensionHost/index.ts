@@ -514,6 +514,7 @@ export async function run(): Promise<void> {
     "openWrangler.changeImportOptions",
     "openWrangler.launchDataViewer",
     "openWrangler.openNotebookVariable",
+    "openWrangler.refreshRInteractiveVariables",
     "openWrangler.runRDocument",
     "openWrangler.chooseNotebookPreviewProvider",
     "openWrangler.checkJupyterIntegration",
@@ -2519,6 +2520,299 @@ async function exerciseReleasedRJupyterExtension(
     }
   }
   if (acceptanceError) throw acceptanceError.value;
+  if (phase === "jupyter-r") {
+    assert.equal(
+      await assertReleasedNativeREditorTooling(),
+      true,
+      "Local R acceptance requires the pinned official R and Quarto extensions."
+    );
+    await exerciseReleasedRInteractiveTerminalJourney(testing, await connectToEditorWorkbench());
+  }
+}
+
+async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, workbench: Page): Promise<void> {
+  recordAcceptanceProgress("jupyter-r:interactive:start");
+  assert.equal(vscode.workspace.isTrusted, true, "Inspecting the active R session requires a trusted workspace.");
+  assert.equal(testing.diagnostics().sessionCount, 0, "The active R journey must start without another session.");
+  const commands = new Set(await vscode.commands.getCommands(true));
+  assert.ok(commands.has("r.createRTerm"), "The pinned official R extension must expose r.createRTerm.");
+
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-interactive-"));
+  const initialMailboxes = releasedRInteractiveMailboxRoots();
+  const configuration = vscode.workspace.getConfiguration("openWrangler");
+  const originalNotebookStartMode = configuration.inspect<"viewing" | "editing">("notebookStartMode")
+    ?.workspaceValue;
+  let sourceTerminal: vscode.Terminal | undefined;
+  let replacementTerminal: vscode.Terminal | undefined;
+  let sessionId: string | undefined;
+
+  try {
+    await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
+
+    recordAcceptanceProgress("jupyter-r:interactive:first-terminal");
+    sourceTerminal = await createReleasedOfficialRTerminal("the first active R session");
+    await seedReleasedRInteractiveFrames(sourceTerminal, directory, 2_400_001, "first");
+    assert.equal(vscode.window.activeTerminal, sourceTerminal, "Refresh must target the exact active R terminal.");
+    assert.equal(
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand<boolean>("openWrangler.refreshRInteractiveVariables"),
+        90_000,
+        "refreshing synthetic dataframes from the first active R terminal"
+      ),
+      true
+    );
+
+    let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
+    let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+    await assertReleasedRInteractiveRows(operations);
+    await waitFor(
+      () => releasedRInteractiveMailboxRoots().length === initialMailboxes.length + 1,
+      10_000,
+      "the first active R bridge to own one private mailbox"
+    );
+
+    recordAcceptanceProgress("jupyter-r:interactive:first-terminal-close");
+    sourceTerminal.dispose();
+    await waitFor(
+      () => sourceTerminal !== undefined && !vscode.window.terminals.includes(sourceTerminal),
+      10_000,
+      "the first official R terminal to close"
+    );
+    assert.equal(
+      await pollAcceptanceCondition(
+        async () => (await operations.getByRole("treeitem", { name: /^base_orders\b/u }).count()) === 0,
+        { timeoutMs: 10_000, intervalMs: 50 }
+      ),
+      true,
+      "Closing the terminal must invalidate its cached Operations rows."
+    );
+    await operations
+      .getByRole("treeitem", { name: /^Refresh R dataframes\b/u })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await waitFor(
+      () => isDeepStrictEqual(releasedRInteractiveMailboxRoots(), initialMailboxes),
+      10_000,
+      "the invalidated cached R bridge to remove its mailbox"
+    );
+    if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+    sourceTerminal = undefined;
+
+    recordAcceptanceProgress("jupyter-r:interactive:replacement-terminal");
+    replacementTerminal = await createReleasedOfficialRTerminal("the replacement active R session");
+    await seedReleasedRInteractiveFrames(replacementTerminal, directory, 3_400_001, "replacement");
+    assert.equal(vscode.window.activeTerminal, replacementTerminal, "The replacement R terminal must be active.");
+    assert.equal(
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand<boolean>("openWrangler.refreshRInteractiveVariables"),
+        90_000,
+        "refreshing synthetic dataframes from the replacement R terminal"
+      ),
+      true
+    );
+
+    sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
+    operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+    await assertReleasedRInteractiveRows(operations);
+    recordAcceptanceProgress("jupyter-r:interactive:open-base-frame");
+    await operations.getByRole("treeitem", { name: /^base_orders\b/u }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.kind === "rInteractiveVariable" &&
+          active.metadata.source.variableName === "base_orders" &&
+          active.metadata.backend === "r" &&
+          active.metadata.rDataframeFlavor === "r.data.frame"
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the base data.frame selected from Operations to open",
+      () => JSON.stringify(testing.diagnostics())
+    );
+    const opened = testing.activeSession();
+    assert.ok(opened, "The active R terminal selection must publish a session.");
+    sessionId = opened.sessionId;
+    assert.equal(opened.metadata.mode, "viewing");
+    assert.deepEqual(opened.metadata.shape, { rows: 240, columns: 5 });
+    assert.equal(opened.metadata.capabilities.notebookInsert, false);
+    assert.equal(opened.metadata.capabilities.documentInsert, false);
+    await assertReleasedSessionPage(testing, opened, "3400001", "jupyter-r-interactive-page");
+    await assertReleasedRInteractiveProfileAndEditing(testing, workbench, opened.sessionId);
+
+    recordAcceptanceProgress("jupyter-r:interactive:replacement-terminal-close");
+    const confirmed = testing.activeSession();
+    assert.ok(confirmed, "The active R terminal session must remain confirmed before terminal close.");
+    replacementTerminal.dispose();
+    await waitFor(
+      () => replacementTerminal !== undefined && !vscode.window.terminals.includes(replacementTerminal),
+      10_000,
+      "the replacement official R terminal to close"
+    );
+    const stale = await withBoundedAcceptancePromise(
+      testing.request({
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId: "jupyter-r-interactive-terminal-closed",
+        sessionId: confirmed.sessionId,
+        revision: confirmed.metadata.revision,
+        offset: 0,
+        limit: 10,
+        filterModel: confirmed.viewState.filterModel
+      }),
+      10_000,
+      "the active R page after its exact terminal closed"
+    );
+    assert.equal(stale.kind, "error");
+    if (stale.kind !== "error") throw new Error("A closed R terminal unexpectedly returned a dataframe page.");
+    assert.equal(stale.code, "r_kernel_changed");
+    assert.equal(stale.recoverable, true);
+    await disposePackagedSessionPanel(testing, confirmed.sessionId, "the terminal-invalidated active R session");
+    sessionId = undefined;
+    await waitFor(
+      () => isDeepStrictEqual(releasedRInteractiveMailboxRoots(), initialMailboxes),
+      10_000,
+      "the closed active R session to remove its private mailbox"
+    );
+    replacementTerminal = undefined;
+    recordAcceptanceProgress("jupyter-r:interactive:complete");
+  } finally {
+    if (sessionId) await testing.disposePanelForSession(sessionId).catch(() => undefined);
+    sourceTerminal?.dispose();
+    replacementTerminal?.dispose();
+    await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
+    await waitFor(
+      () => isDeepStrictEqual(releasedRInteractiveMailboxRoots(), initialMailboxes),
+      10_000,
+      "active R acceptance cleanup to remove every private mailbox"
+    );
+    cleanupAcceptanceTemporaryDirectory(directory);
+  }
+}
+
+async function createReleasedOfficialRTerminal(description: string): Promise<vscode.Terminal> {
+  const before = new Set(vscode.window.terminals);
+  await withBoundedAcceptancePromise(
+    vscode.commands.executeCommand("r.createRTerm", true),
+    30_000,
+    `starting ${description} through the official R extension`
+  );
+  await waitFor(
+    () =>
+      vscode.window.terminals.filter(
+        (terminal) => !before.has(terminal) && (terminal.name === "R" || terminal.name === "R Interactive")
+      ).length === 1,
+    30_000,
+    `${description} to create one identifiable official R terminal`
+  );
+  const terminal = vscode.window.terminals.find(
+    (candidate) => !before.has(candidate) && (candidate.name === "R" || candidate.name === "R Interactive")
+  );
+  assert.ok(terminal, `${description} must create one official R terminal.`);
+  terminal.show(false);
+  await waitFor(() => vscode.window.activeTerminal === terminal, 10_000, `${description} to become active`);
+  return terminal;
+}
+
+async function seedReleasedRInteractiveFrames(
+  terminal: vscode.Terminal,
+  directory: string,
+  firstOrderId: number,
+  label: string
+): Promise<void> {
+  const marker = `__OW_R_INTERACTIVE_${label.toUpperCase()}_READY__`;
+  const markerPath = path.join(directory, `${label}-ready.txt`);
+  const code = [
+    ".ow_row <- 0:239",
+    `base_orders <- data.frame(order_id = ${firstOrderId} + .ow_row, market = rep(c('DACH', 'Nordics', 'Iberia', 'France'), length.out = 240), revenue = 100.5 + (.ow_row * 1.25), fulfilled = (.ow_row %% 3L) != 0L, order_date = as.Date('2026-01-01') + .ow_row, stringsAsFactors = FALSE)`,
+    "tibble_orders <- tibble::as_tibble(base_orders)",
+    "table_orders <- data.table::as.data.table(base_orders)",
+    "rm(.ow_row)",
+    `writeLines(${JSON.stringify(marker)}, ${JSON.stringify(markerPath)}, useBytes = TRUE)`
+  ].join("; ");
+  terminal.sendText(code, true);
+  await waitFor(
+    () => {
+      if (!existsSync(markerPath)) return false;
+      try {
+        return readFileSync(markerPath, "utf8") === `${marker}\n`;
+      } catch {
+        return false;
+      }
+    },
+    30_000,
+    `${label} synthetic frames to finish in the exact R terminal`
+  );
+}
+
+async function assertReleasedRInteractiveRows(operations: Locator): Promise<void> {
+  for (const [name, flavor] of [
+    ["base_orders", "data.frame"],
+    ["tibble_orders", "tibble"],
+    ["table_orders", "data.table"]
+  ] as const) {
+    const row = operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).first();
+    await row.waitFor({ state: "visible", timeout: 10_000 });
+    assert.match((await row.innerText()).replace(/\s+/gu, " "), new RegExp(`^${name}.*R · ${flavor}`, "u"));
+  }
+}
+
+async function assertReleasedRInteractiveProfileAndEditing(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string
+): Promise<void> {
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The active R terminal renderer must acknowledge its first complete snapshot."
+  );
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the active R terminal session");
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+  assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill("revenue");
+  await app.getByRole("option", { name: /^revenue,/u }).first().waitFor({ state: "visible", timeout: 10_000 });
+  await columnSearch.press("Enter");
+  await app.getByRole("button", { name: "Column profiles and filters", exact: true }).click();
+  const drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  const profile = drawer.getByRole("tabpanel");
+  await profile.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await assertReleasedProfileStat(profile, "Rows", "240");
+  await assertReleasedProfileStat(profile, "Min", "100.5");
+  await assertReleasedProfileStat(profile, "Max", "399.25");
+  await drawer.getByRole("button", { name: "Close panel", exact: true }).click();
+
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the profiled active R terminal session");
+  const beforeRevision = testing.activeSession()?.metadata.revision;
+  assert.ok(beforeRevision !== undefined);
+  await app.getByRole("button", { name: "Switch to Editing", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return active?.sessionId === sessionId && active.metadata.mode === "editing" && active.metadata.revision > beforeRevision;
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the active R terminal dataframe to switch to Editing mode"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The Editing-mode active R terminal renderer must acknowledge the replacement runtime."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the editable active R terminal session");
+  assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
+  assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
+  const active = testing.activeSession();
+  assert.equal(active?.metadata.rDataframeFlavor, "r.data.frame");
+  assert.equal(active?.metadata.capabilities.editable, true);
+  assert.deepEqual(active?.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
+}
+
+function releasedRInteractiveMailboxRoots(): string[] {
+  return readdirSync(tmpdir(), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("openwrangler-r-live-"))
+    .map((entry) => path.join(tmpdir(), entry.name))
+    .sort();
 }
 
 async function exerciseReleasedRDocumentJourney(
