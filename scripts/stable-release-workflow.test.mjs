@@ -85,6 +85,19 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     source.replace('OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"', 'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"'),
     source.replace("OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor", "OPEN_WRANGLER_PACKAGED_EDITORS: vscode"),
     source.replace('          r-version: "4.5.2"', '          r-version: "4.4"'),
+    source.replace("        shell: Rscript {0}", "        shell: bash"),
+    source.replace(
+      '          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter\n          OPEN_WRANGLER_PACKAGED_EDITORS: vscode\n          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"\n          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"',
+      '          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter\n          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor\n          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"\n          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"'
+    ),
+    source.replace(
+      "run: node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}",
+      "run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
+    ),
+    source.replace(
+      "path: ${{ steps.packaged_editor_r_platform.outputs.evidence_path }}",
+      "path: ${{ runner.temp }}/**"
+    ),
     source.replace(
       "          RSCRIPT: ${{ steps.rscript.outputs.executable }}\n        run: >-",
       "          RSCRIPT: Rscript\n        run: >-"

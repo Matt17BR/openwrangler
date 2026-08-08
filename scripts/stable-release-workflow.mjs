@@ -41,6 +41,19 @@ const PACKAGED_EDITOR_COMMAND =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
 const R_PACKAGED_EDITOR_COMMAND =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}";
+const CROSS_PLATFORM_R_PACKAGED_EDITOR_COMMAND =
+  "node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}";
+const PORTABLE_RSCRIPT_DISCOVERY_RUN = `version <- as.character(getRversion())
+if (!identical(version, "4.5.2")) stop("Expected hosted R 4.5.2, got ", version, ".")
+executable <- normalizePath(
+  file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript"),
+  winslash = "/",
+  mustWork = TRUE
+)
+if (!nzchar(executable) || grepl("[\\r\\n]", executable)) stop("Rscript resolved to an unsafe path.")
+output <- Sys.getenv("GITHUB_OUTPUT")
+if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
+cat(sprintf("executable=%s\\nversion=%s\\n", executable, version), file = output, append = TRUE)`;
 const RSCRIPT_DISCOVERY_RUN = `set -euo pipefail
 rscript="$(command -v Rscript)"
 if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
@@ -400,6 +413,69 @@ function inspectCursorXvfbPreparation(jobSteps, cursorStep, problems) {
   }
 }
 
+function inspectCrossPlatformRJupyter(job, problems) {
+  const jobSteps = steps(job);
+  const setupMatches = jobSteps.filter((step) => step?.uses === SETUP_R_ACTION);
+  const setup = setupMatches[0];
+  const locateMatches = jobSteps.filter((step) => step?.id === "rscript");
+  const locate = locateMatches[0];
+  const runnerMatches = jobSteps.filter((step) => step?.id === "packaged_editor_r_platform");
+  const runner = runnerMatches[0];
+  const npmCi = findRun(job, "npm ci");
+  if (
+    setupMatches.length !== 1 ||
+    !exactKeys(setup, ["uses", "with"]) ||
+    !exactKeys(setup.with, ["r-version", "use-public-rspm"]) ||
+    setup.with["r-version"] !== "4.5.2" ||
+    setup.with["use-public-rspm"] !== true ||
+    locateMatches.length !== 1 ||
+    !exactKeys(locate, ["id", "name", "shell", "run"]) ||
+    locate.name !== "Locate hosted Rscript" ||
+    locate.shell !== "Rscript {0}" ||
+    command(locate.run) !== command(PORTABLE_RSCRIPT_DISCOVERY_RUN) ||
+    npmCi === undefined ||
+    !(jobSteps.indexOf(setup) < jobSteps.indexOf(locate)) ||
+    !(jobSteps.indexOf(locate) < jobSteps.indexOf(npmCi)) ||
+    runnerMatches.length !== 1 ||
+    !exactKeys(runner, ["id", "name", "run", "env"]) ||
+    runner.name !== "Test local R Jupyter in packaged VS Code" ||
+    command(runner.run) !== CROSS_PLATFORM_R_PACKAGED_EDITOR_COMMAND ||
+    !exactKeys(runner.env, [
+      "OPEN_WRANGLER_PACKAGED_EDITORS",
+      "OPEN_WRANGLER_PACKAGED_MODE",
+      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
+      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
+      "OPEN_WRANGLER_TEST_RSCRIPT",
+      "VSCODE_TEST_VERSION"
+    ]) ||
+    runner.env.OPEN_WRANGLER_PACKAGED_MODE !== "r-jupyter" ||
+    runner.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
+    runner.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
+    runner.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "0" ||
+    runner.env.OPEN_WRANGLER_TEST_RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
+    runner.env.VSCODE_TEST_VERSION !== "stable" ||
+    command(findRun(job, "npm run test:r-contract")?.run) !== ""
+  ) {
+    problems.push("cross-platform must run one local VS Code R-Jupyter journey with portable R 4.5.2 setup.");
+    return;
+  }
+  inspectAdjacentCanonicalVerification(
+    jobSteps,
+    runner,
+    "canonical_r_jupyter_platform",
+    "Reverify the exact canonical stable artifact for cross-platform R Jupyter",
+    "cross-platform R Jupyter",
+    problems
+  );
+  inspectFailureUpload(
+    jobSteps,
+    runner,
+    "stable-release-r-jupyter-platform-${{ runner.os }}-${{ github.run_attempt }}",
+    "cross-platform R Jupyter",
+    problems
+  );
+}
+
 export function inspectStableReleaseWorkflow(source) {
   const problems = [];
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_WORKFLOW_BYTES) {
@@ -496,7 +572,12 @@ export function inspectStableReleaseWorkflow(source) {
             step.id === "rscript" &&
             step.name === "Locate hosted Rscript" &&
             step.shell === "bash" &&
-            command(step.run) === command(RSCRIPT_DISCOVERY_RUN))
+            command(step.run) === command(RSCRIPT_DISCOVERY_RUN)) ||
+          (jobName === "cross-platform" &&
+            step.id === "rscript" &&
+            step.name === "Locate hosted Rscript" &&
+            step.shell === "Rscript {0}" &&
+            command(step.run) === command(PORTABLE_RSCRIPT_DISCOVERY_RUN))
         )
       ) {
         problems.push(`${jobName} must not override the shell of a required release step.`);
@@ -664,6 +745,7 @@ export function inspectStableReleaseWorkflow(source) {
     "cross-platform Cursor",
     problems
   );
+  inspectCrossPlatformRJupyter(crossPlatform, problems);
 
   const linux = workflow.jobs["linux-acceptance"];
   for (const required of [

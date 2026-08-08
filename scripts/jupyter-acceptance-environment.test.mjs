@@ -18,14 +18,13 @@ import test from "node:test";
 import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
   R_ACCEPTANCE_PACKAGE_VERSIONS,
-  R_ACCEPTANCE_REPOSITORY,
-  R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY,
   acceptancePythonForPhase,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
   prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceJava,
   probeJupyterAcceptancePython,
+  rAcceptanceRepositories,
   writeJupyterAcceptanceEnvironment,
   writeRemoteJupyterAcceptanceDescriptor,
   writeRemoteJupyterAcceptanceEnvironment
@@ -45,6 +44,20 @@ const javaReport = (specificationVersion = "17", version = "17.0.19") => ({
   stderr:
     `Property settings:\n    java.specification.version = ${specificationVersion}\n` +
     `    java.version = ${version}\nopenjdk version "${version}"\n`
+});
+
+test("released-Jupyter R setup selects dated binary repositories for each supported platform", () => {
+  assert.deepEqual(rAcceptanceRepositories("linux"), {
+    repository: "https://p3m.dev/cran/__linux__/noble/2026-03-10",
+    supplementalRepository: "https://p3m.dev/cran/__linux__/noble/2026-06-01"
+  });
+  for (const platform of ["darwin", "win32"]) {
+    assert.deepEqual(rAcceptanceRepositories(platform), {
+      repository: "https://p3m.dev/cran/2026-03-10",
+      supplementalRepository: "https://p3m.dev/cran/2026-06-01"
+    });
+  }
+  assert.throws(() => rAcceptanceRepositories("freebsd"), /does not support "freebsd"/u);
 });
 
 test("remote Jupyter tokens use one fixed redaction-friendly high-entropy shape", () => {
@@ -143,6 +156,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     R_PROFILE_USER: "/global/r-profile"
   });
   const previousRLibrary = process.env.R_LIBS_USER;
+  const selectedRepositories = rAcceptanceRepositories("darwin");
   try {
     await writeFile(rscript, "fake Rscript executable\n");
     await writeFile(rExecutable, "fake R executable\n");
@@ -152,6 +166,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     const prepared = await prepareJupyterAcceptanceREnvironment(privateRoot, rscript, {
       containedBy: directory,
       environment: inheritedEnvironment,
+      platform: "darwin",
       async runCommand(input, options) {
         assert.equal(existsSync(privateRoot), false);
         matchingRProbes.push({ input, options });
@@ -174,8 +189,8 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       "nanoparquet"
     ]);
     assert.deepEqual(prepared.packageVersions, R_ACCEPTANCE_PACKAGE_VERSIONS);
-    assert.equal(prepared.repository, R_ACCEPTANCE_REPOSITORY);
-    assert.equal(prepared.supplementalRepository, R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY);
+    assert.equal(prepared.repository, selectedRepositories.repository);
+    assert.equal(prepared.supplementalRepository, selectedRepositories.supplementalRepository);
     assert.equal(
       prepared.packageRecord,
       "IRkernel=1.3.2\njsonlite=2.0.0\nrlang=1.1.7\ntibble=3.3.1\ndata.table=1.18.2.1\ncollapse=2.1.7\nnanoparquet=0.5.1"
@@ -265,8 +280,12 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       true
     );
     assert.deepEqual(prepared.dependencyProbe.options, { timeoutMs: 30_000 });
-    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes(R_ACCEPTANCE_REPOSITORY), true);
-    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes(R_ACCEPTANCE_SUPPLEMENTAL_REPOSITORY), true);
+    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes(selectedRepositories.repository), true);
+    assert.equal(
+      prepared.dependencyInstall.input.args.at(-1).includes(selectedRepositories.supplementalRepository),
+      true
+    );
+    assert.equal(prepared.dependencyInstall.input.args.at(-1).includes("/__linux__/"), false);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /c\("collapse", "nanoparquet"\)/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /setdiff\(\.ow_packages, \.ow_supplemental_packages\)/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /repos = "[^"]+2026-06-01"/u);

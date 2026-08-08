@@ -58,6 +58,19 @@ const INSTALL_R_CONTRACT_PACKAGES =
   'Rscript --vanilla -e \'install.packages(c("jsonlite", "tibble", "data.table", "bit64", "collapse", "nanoparquet"), repos = "https://cloud.r-project.org")\'';
 const R_JUPYTER_RUN =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}";
+const CROSS_PLATFORM_R_JUPYTER_RUN =
+  "node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}";
+const PORTABLE_LOCATE_RSCRIPT_RUN = `version <- as.character(getRversion())
+if (!identical(version, "4.5.2")) stop("Expected hosted R 4.5.2, got ", version, ".")
+executable <- normalizePath(
+  file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript"),
+  winslash = "/",
+  mustWork = TRUE
+)
+if (!nzchar(executable) || grepl("[\\r\\n]", executable)) stop("Rscript resolved to an unsafe path.")
+output <- Sys.getenv("GITHUB_OUTPUT")
+if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
+cat(sprintf("executable=%s\\nversion=%s\\n", executable, version), file = output, append = TRUE)`;
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -327,6 +340,84 @@ function inspectPreviewRJupyter(job, problems) {
   }
 }
 
+function inspectCrossPlatformRJupyter(job, problems) {
+  const jobSteps = steps(job);
+  const setupMatches = jobSteps.filter((step) => step?.uses === SETUP_R_ACTION);
+  const setup = setupMatches[0];
+  const locateMatches = jobSteps.filter((step) => step?.id === "rscript");
+  const locate = locateMatches[0];
+  const runnerMatches = jobSteps.filter((step) => step?.id === "packaged_editor_r_platform");
+  const runner = runnerMatches[0];
+  const runnerIndex = jobSteps.indexOf(runner);
+  const verifier = jobSteps[runnerIndex - 1];
+  const diagnostics = jobSteps[runnerIndex + 1];
+  const npmCi = findRun(job, "npm ci");
+  if (
+    setupMatches.length !== 1 ||
+    !exactKeys(setup, ["uses", "with"]) ||
+    !exactKeys(setup.with, ["r-version", "use-public-rspm"]) ||
+    setup.with["r-version"] !== "4.5.2" ||
+    setup.with["use-public-rspm"] !== true ||
+    locateMatches.length !== 1 ||
+    !exactKeys(locate, ["id", "name", "shell", "run"]) ||
+    locate.name !== "Locate hosted Rscript" ||
+    locate.shell !== "Rscript {0}" ||
+    command(locate.run) !== command(PORTABLE_LOCATE_RSCRIPT_RUN) ||
+    npmCi === undefined ||
+    !(jobSteps.indexOf(setup) < jobSteps.indexOf(locate)) ||
+    !(jobSteps.indexOf(locate) < jobSteps.indexOf(npmCi)) ||
+    runnerMatches.length !== 1 ||
+    !exactKeys(runner, ["id", "name", "run", "env"]) ||
+    runner.name !== "Test local R Jupyter in packaged VS Code" ||
+    command(runner.run) !== CROSS_PLATFORM_R_JUPYTER_RUN ||
+    !exactKeys(runner.env, [
+      "OPEN_WRANGLER_PACKAGED_EDITORS",
+      "OPEN_WRANGLER_PACKAGED_MODE",
+      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
+      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
+      "OPEN_WRANGLER_TEST_RSCRIPT",
+      "VSCODE_TEST_VERSION"
+    ]) ||
+    runner.env.OPEN_WRANGLER_PACKAGED_MODE !== "r-jupyter" ||
+    runner.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
+    runner.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
+    runner.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "0" ||
+    runner.env.OPEN_WRANGLER_TEST_RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
+    runner.env.VSCODE_TEST_VERSION !== "stable" ||
+    !exactKeys(verifier, ["id", "name", "env", "run"]) ||
+    verifier.id !== "canonical_r_jupyter_platform" ||
+    verifier.name !== "Reverify the exact canonical preview artifact for cross-platform R Jupyter" ||
+    !exactKeys(verifier.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    verifier.env.EXPECTED_SHA !== EVENT_SHA ||
+    verifier.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(verifier.run) !== "node scripts/verify-preview-release-artifact.mjs canonical-release" ||
+    !exactKeys(diagnostics, ["name", "if", "uses", "with"]) ||
+    diagnostics.name !== "Upload cross-platform R-Jupyter failure diagnostics" ||
+    diagnostics.if !==
+      "${{ always() && steps.packaged_editor_r_platform.outcome == 'failure' && steps.packaged_editor_r_platform.outputs.evidence_ready == 'true' }}" ||
+    diagnostics.uses !== UPLOAD_ACTION ||
+    !exactKeys(diagnostics.with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "retention-days",
+      "compression-level",
+      "include-hidden-files"
+    ]) ||
+    diagnostics.with.name !== "preview-release-r-jupyter-platform-${{ runner.os }}-${{ github.run_attempt }}" ||
+    diagnostics.with.path !== "${{ steps.packaged_editor_r_platform.outputs.evidence_path }}" ||
+    diagnostics.with["if-no-files-found"] !== "error" ||
+    diagnostics.with["retention-days"] !== 7 ||
+    diagnostics.with["compression-level"] !== 9 ||
+    diagnostics.with["include-hidden-files"] !== false ||
+    command(findRun(job, "npm run test:r-contract")?.run) !== ""
+  ) {
+    problems.push(
+      "cross-platform must run one local VS Code R-Jupyter journey with portable R 4.5.2 setup, fresh artifact verification, and sealed failure diagnostics."
+    );
+  }
+}
+
 export function inspectPreviewReleaseWorkflow(source) {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_WORKFLOW_BYTES) {
     return ["release.yml must be bounded YAML text."];
@@ -465,6 +556,7 @@ export function inspectPreviewReleaseWorkflow(source) {
   if (runs(workflow.jobs["cross-platform"]).some((run) => run.startsWith("python -m pytest"))) {
     problems.push("cross-platform must retain native smoke coverage without repeating the complete Python suite.");
   }
+  inspectCrossPlatformRJupyter(workflow.jobs["cross-platform"], problems);
   const installedPerformanceRun = runs(workflow.jobs["installed-performance"]).find((run) =>
     run.includes("benchmark:installed --")
   );

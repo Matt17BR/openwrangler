@@ -54,6 +54,15 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 <!-- open-wrangler-release-status:end -->
 
+The v2 release checks cover these R paths:
+
+| R workflow         | Linux                                  | macOS          | Windows        |
+| ------------------ | -------------------------------------- | -------------- | -------------- |
+| IRkernel notebook  | VS Code (local/remote), Cursor (local) | VS Code; local | VS Code; local |
+| `.R`/`.Rmd`/`.qmd` | VS Code and Cursor                     | VS Code        | Not available  |
+
+Other combinations may work, but they are not part of the release test matrix yet.
+
 ## Why Open Wrangler
 
 - View and clean Pandas, Polars, or file-backed DuckDB data without conversion. DuckDB notebook relations and local PySpark 4.2 Classic/Connect dataframes are view-only.

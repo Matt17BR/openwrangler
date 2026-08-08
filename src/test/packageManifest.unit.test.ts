@@ -171,7 +171,7 @@ describe("file launch contributions", () => {
 
   it("offers the trusted R document command on local and remote R, R Markdown, and Quarto sources", () => {
     const rSourcePredicate =
-      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+      "(isLinux || isMac) && isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
 
     expect(manifest.activationEvents).toContain("onCommand:openWrangler.runRDocument");
     expect(manifest.contributes?.commands).toContainEqual({
@@ -198,6 +198,10 @@ describe("file launch contributions", () => {
       command: "openWrangler.runRDocument",
       when: rSourcePredicate,
       group: "navigation@49"
+    });
+    expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
+      command: "openWrangler.runRDocument",
+      when: "isLinux || isMac"
     });
   });
 

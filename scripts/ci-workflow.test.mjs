@@ -531,6 +531,29 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
       ),
       true
     );
+    const nativeRSetup = native?.steps?.find((step) => step?.uses === SETUP_R_ACTION);
+    assert.deepEqual(nativeRSetup?.with, { "r-version": "4.5.2", "use-public-rspm": true });
+    const nativeRscript = native?.steps?.find((step) => step?.id === "rscript");
+    assert.equal(nativeRscript?.shell, "Rscript {0}");
+    assert.match(nativeRscript?.run ?? "", /Rscript\.exe/u);
+    assert.match(nativeRscript?.run ?? "", /GITHUB_OUTPUT/u);
+    const nativeR = native?.steps?.find((step) => step?.id === "packaged_editor_r_platform");
+    assert.deepEqual(nativeR?.env, {
+      OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+      OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+      OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+      OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+      OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+      VSCODE_TEST_VERSION: "stable"
+    });
+    assert.equal(
+      nativeR?.run,
+      "node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}"
+    );
+    const nativeRIndex = native?.steps?.indexOf(nativeR) ?? -1;
+    assert.equal(native?.steps?.[nativeRIndex - 1]?.id, "canonical_r_jupyter_platform");
+    assert.equal(native?.steps?.[nativeRIndex + 1]?.name, "Upload cross-platform R-Jupyter failure diagnostics");
+    assert.equal(native?.steps?.filter((step) => step?.run === "npm run test:r-contract").length, 0);
     assert.equal(
       workflow?.jobs?.["released-jupyter"]?.steps?.some(
         (step) =>

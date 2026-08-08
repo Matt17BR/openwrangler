@@ -537,13 +537,15 @@ Python real-kernel tests require Pandas and Polars to emit MIME v2 with a `text/
 
 Generated-code insertion tests cover Python and R cells, the 10-second observation bound, event-driven exact-document success, sole-open-document ownership, exact language and unique-marker proof, rejected and indeterminate edits, and suppression of queued dispatch behind an unresolved indeterminate edit. VSIX tests parse the exact packaged `media/notebookRenderer.js` bytes and reject an empty or invalid bundle, static or dynamic imports, dependency re-exports, and a missing named `activate` export.
 
-R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. The manually
-dispatched Released Jupyter workflow and both release workflows use exact R 4.5.2. They run the local journey in VS
-Code and Cursor; the manual and release paths also run the remote journey in VS Code. The local kernel installs
-missing packages into a temporary library from
-`https://p3m.dev/cran/__linux__/noble/2026-03-10`, then records and checks these versions: IRkernel 1.3.2,
-jsonlite 2.0.0, rlang 1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Collapse 2.1.7 and nanoparquet 0.5.1 come
-from the reviewed `2026-06-01` snapshot. Tests cover projected paging, row labels,
+R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. Every path uses R
+4.5.2. Linux runs the local journey in VS Code and Cursor and the remote journey in VS Code. Preview and stable
+release candidates also run the complete local journey in VS Code on macOS and Windows. The cross-platform jobs reuse
+the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the standalone R contract suite.
+The local kernel installs missing packages into a temporary library. Linux uses
+`https://p3m.dev/cran/__linux__/noble/2026-03-10`; macOS and Windows use
+`https://p3m.dev/cran/2026-03-10`. The test records and checks these versions: IRkernel 1.3.2, jsonlite 2.0.0, rlang
+1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Collapse 2.1.7 and nanoparquet 0.5.1 come from the matching reviewed
+`2026-06-01` snapshot. Tests cover projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
 and cleanup. The base dataframe starts in Viewing mode, keeps its exact notebook, public session, and compound sort
 through the visible **Switch to Editing** action, then continues through the cleaning journey on that same session.
@@ -608,7 +610,9 @@ CSV header, representative values, unchanged notebook bytes and view state, and 
 artifacts. A local packaged run on 2026-08-07 passed the earlier CSV-only journey in VS Code
 1.132.0 and Cursor 3.14.7 on the pinned private Xvfb display.
 
-On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start another VS Code or Cursor process.
+On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start
+another editor process. Windows skips that document subjourney and the package manifest hides its Explorer, editor,
+and Command Palette actions there.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public
 **Run R Document in Open Wrangler…** command and real variable picker. The plain-R test checks an editing session, paging, an exact
 numeric profile, a filter, two sort keys, Rename preview/apply/undo, and generated R. It keeps a different `.R` editor

@@ -13,6 +13,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   The session keeps its filters, sorts, column widths, selection, and scroll position when the editing runtime opens.
 - Stable release candidates now run the R 4.5.2 contract and the packaged R notebook journey in VS Code and Cursor
   before publication. Preview candidates already used this gate.
+- Preview and stable release candidates now run the packaged local R notebook journey in VS Code on macOS and
+  Windows. macOS also runs the `.R`, `.Rmd`, and `.qmd` document checks; Windows hides those unsupported document
+  actions.
 - Local R notebook and R document sessions can now export committed cleaning results as Parquet with `nanoparquet`
   0.5.1 or newer. The R process writes the file directly, and the extension streams it through the same atomic Save
   path used by CSV.
