@@ -345,6 +345,64 @@ describe("interactive R session transport", () => {
     }
   });
 
+  it("starts one official R terminal for active-or-create discovery", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-create-terminal-unit-"));
+    const requestKinds: string[] = [];
+    let responseWrite = Promise.resolve();
+    const sendText = vi.fn((code: string) => {
+      responseWrite = responseWrite.then(async () => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+        requestKinds.push(request.kind);
+        await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
+      });
+    });
+    const createdTerminal = { name: "R Interactive", sendText } as unknown as vscode.Terminal;
+    let terminals: readonly vscode.Terminal[] = [];
+    let activeTerminal: vscode.Terminal | undefined;
+    const windowRecord = vscode.window as unknown as Record<string, unknown>;
+    const terminalDescriptors = new Map(
+      ["terminals", "activeTerminal", "onDidCloseTerminal"].map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(windowRecord, key)
+      ])
+    );
+    Object.defineProperties(windowRecord, {
+      terminals: { configurable: true, get: () => terminals },
+      activeTerminal: { configurable: true, get: () => activeTerminal },
+      onDidCloseTerminal: { configurable: true, value: () => ({ dispose: () => undefined }) }
+    });
+    const activate = vi.fn(async () => undefined);
+    const extensionSpy = vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate
+    } as unknown as vscode.Extension<unknown>);
+    const commandSpy = vi.spyOn(vscode.commands, "executeCommand").mockImplementation(async (command, ...args) => {
+      expect(command).toBe("r.createRTerm");
+      expect(args).toEqual([true]);
+      terminals = [createdTerminal];
+      activeTerminal = createdTerminal;
+      return undefined;
+    });
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent
+    });
+    try {
+      await expect(transport.discoverVariables()).resolves.toEqual({ variables: [], truncated: false });
+      expect(activate).toHaveBeenCalledOnce();
+      expect(commandSpy).toHaveBeenCalledOnce();
+      expect(sendText).toHaveBeenCalledOnce();
+    } finally {
+      await transport.dispose();
+      await responseWrite;
+      commandSpy.mockRestore();
+      extensionSpy.mockRestore();
+      restoreDescriptors(windowRecord, terminalDescriptors);
+      expect(requestKinds).toEqual(["discoverInteractiveVariables", "teardownInteractiveRuntime"]);
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it("returns a bounded disposal diagnostic but finishes exact cleanup after a hung dispatch settles", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-deferred-dispose-unit-"));
     let release!: () => void;
