@@ -24,6 +24,7 @@ const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const SETUP_JAVA_ACTION = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
+const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const PYSPARK_COVERAGE_INSTALL = 'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"';
 const PYSPARK_COVERAGE_VERIFY_RUN = `python - <<'PY'
 import pandas
@@ -38,6 +39,24 @@ java -XshowSettings:properties -version 2>&1 |
 `;
 const PACKAGED_EDITOR_COMMAND =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
+const R_PACKAGED_EDITOR_COMMAND =
+  "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}";
+const RSCRIPT_DISCOVERY_RUN = `set -euo pipefail
+rscript="$(command -v Rscript)"
+if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
+  echo "Rscript did not resolve to an absolute executable." >&2
+  exit 1
+fi
+r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
+if [[ "$r_version" != "4.5.2" ]]; then
+  echo "Expected hosted R 4.5.2, got $r_version." >&2
+  exit 1
+fi
+printf 'executable=%s\\n' "$rscript" >> "$GITHUB_OUTPUT"
+printf 'version=%s\\n' "$r_version" >> "$GITHUB_OUTPUT"
+printf 'Hosted R: %s\\n' "$r_version"`;
+const R_CONTRACT_INSTALL_RUN = `"$RSCRIPT" --vanilla -e
+'install.packages(c("jsonlite", "tibble", "data.table", "bit64", "collapse"), repos = "https://cloud.r-project.org")'`;
 const PREPARED_CURSOR_XVFB = "${{ steps.prepare_cursor_xvfb.outputs.executable }}";
 const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
 const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release"];
@@ -472,7 +491,12 @@ export function inspectStableReleaseWorkflow(source) {
           (jobName === "released-jupyter" &&
             step.id === "prepare_xvfb" &&
             step.shell === "node {0}" &&
-            command(step.run) === command(PINNED_CURSOR_XVFB_PREPARATION))
+            command(step.run) === command(PINNED_CURSOR_XVFB_PREPARATION)) ||
+          (jobName === "released-jupyter" &&
+            step.id === "rscript" &&
+            step.name === "Locate hosted Rscript" &&
+            step.shell === "bash" &&
+            command(step.run) === command(RSCRIPT_DISCOVERY_RUN))
         )
       ) {
         problems.push(`${jobName} must not override the shell of a required release step.`);
@@ -793,12 +817,92 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("released-jupyter must provision one pinned Temurin Java 17 before its PySpark editor gate.");
   }
+  const rSetupSteps = steps(jupyter).filter((step) => step?.uses === SETUP_R_ACTION);
+  const rSetup = rSetupSteps[0];
+  const rscriptSteps = steps(jupyter).filter((step) => step?.id === "rscript");
+  const rscript = rscriptSteps[0];
+  const rInstallSteps = steps(jupyter).filter((step) => step?.name === "Install R contract packages");
+  const rInstall = rInstallSteps[0];
+  const rContractSteps = steps(jupyter).filter((step) => command(step?.run) === "npm run test:r-contract");
+  const rContract = rContractSteps[0];
+  const npmCiSteps = steps(jupyter).filter((step) => command(step?.run) === "npm ci");
+  const npmCi = npmCiSteps[0];
+  if (
+    rSetupSteps.length !== 1 ||
+    !exactKeys(rSetup, ["uses", "with"]) ||
+    !exactKeys(rSetup.with, ["r-version", "use-public-rspm"]) ||
+    rSetup.with["r-version"] !== "4.5.2" ||
+    rSetup.with["use-public-rspm"] !== true ||
+    rscriptSteps.length !== 1 ||
+    !exactKeys(rscript, ["id", "name", "shell", "run"]) ||
+    rscript.name !== "Locate hosted Rscript" ||
+    rscript.shell !== "bash" ||
+    command(rscript.run) !== command(RSCRIPT_DISCOVERY_RUN) ||
+    rInstallSteps.length !== 1 ||
+    !exactKeys(rInstall, ["name", "env", "run"]) ||
+    !exactKeys(rInstall.env, ["RSCRIPT"]) ||
+    rInstall.env.RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
+    command(rInstall.run) !== command(R_CONTRACT_INSTALL_RUN) ||
+    rContractSteps.length !== 1 ||
+    !exactKeys(rContract, ["run", "env"]) ||
+    !exactKeys(rContract.env, ["RSCRIPT"]) ||
+    rContract.env.RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
+    npmCiSteps.length !== 1 ||
+    steps(jupyter).indexOf(rSetup) >= steps(jupyter).indexOf(rscript) ||
+    steps(jupyter).indexOf(rscript) >= steps(jupyter).indexOf(npmCi) ||
+    steps(jupyter).indexOf(npmCi) >= steps(jupyter).indexOf(rInstall) ||
+    steps(jupyter).indexOf(rInstall) >= steps(jupyter).indexOf(rContract)
+  ) {
+    problems.push("released-jupyter must run the R 4.5.2 contract with the exact hosted Rscript.");
+  }
   inspectAdjacentCanonicalVerification(
     steps(jupyter),
     jupyterStep,
     "canonical_jupyter",
     "Reverify the exact canonical stable artifact for released Jupyter",
     "released-jupyter",
+    problems
+  );
+  const rJupyterStep = steps(jupyter).find((step) => step?.id === "packaged_editor_r");
+  if (
+    !exactKeys(rJupyterStep, ["id", "name", "run", "env"]) ||
+    rJupyterStep.name !== "Test R Jupyter in the exact packaged VSIX" ||
+    command(rJupyterStep.run) !== command(R_PACKAGED_EDITOR_COMMAND) ||
+    !exactKeys(rJupyterStep.env, [
+      "OPEN_WRANGLER_PACKAGED_MODE",
+      "OPEN_WRANGLER_PACKAGED_EDITORS",
+      "OPEN_WRANGLER_EDITOR_DISPLAY",
+      "OPEN_WRANGLER_XVFB_EXECUTABLE",
+      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
+      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
+      "OPEN_WRANGLER_TEST_RSCRIPT",
+      "VSCODE_TEST_VERSION"
+    ]) ||
+    rJupyterStep.env.OPEN_WRANGLER_PACKAGED_MODE !== "r-jupyter" ||
+    rJupyterStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode,cursor" ||
+    rJupyterStep.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
+    rJupyterStep.env.OPEN_WRANGLER_XVFB_EXECUTABLE !== "${{ steps.prepare_xvfb.outputs.executable }}" ||
+    rJupyterStep.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
+    rJupyterStep.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "1" ||
+    rJupyterStep.env.OPEN_WRANGLER_TEST_RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
+    rJupyterStep.env.VSCODE_TEST_VERSION !== "stable" ||
+    steps(jupyter).indexOf(rContract) >= steps(jupyter).indexOf(rJupyterStep)
+  ) {
+    problems.push("released-jupyter must cover R Jupyter in both VS Code and Cursor with exact R 4.5.2.");
+  }
+  inspectAdjacentCanonicalVerification(
+    steps(jupyter),
+    rJupyterStep,
+    "canonical_r_jupyter",
+    "Reverify the exact canonical stable artifact for R Jupyter",
+    "released-jupyter R",
+    problems
+  );
+  inspectFailureUpload(
+    steps(jupyter),
+    rJupyterStep,
+    "stable-release-r-jupyter-${{ runner.os }}-${{ github.run_attempt }}",
+    "released-jupyter R",
     problems
   );
 
