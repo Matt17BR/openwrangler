@@ -690,11 +690,14 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("cross-platform must cover the pinned macOS and Windows release matrix.");
   }
-  for (const required of ["npm run test:python-environment-smoke", "python -m pytest python/tests -q"]) {
-    const requiredSteps = steps(crossPlatform).filter((step) => command(step?.run) === required);
-    if (requiredSteps.length !== 1 || !exactKeys(requiredSteps[0], ["run"])) {
-      problems.push(`cross-platform must run ${required} exactly once as an unconditional required step.`);
-    }
+  const environmentSmokeSteps = steps(crossPlatform).filter(
+    (step) => command(step?.run) === "npm run test:python-environment-smoke"
+  );
+  if (environmentSmokeSteps.length !== 1 || !exactKeys(environmentSmokeSteps[0], ["run"])) {
+    problems.push("cross-platform must run the Python environment smoke exactly once as an unconditional step.");
+  }
+  if (steps(crossPlatform).some((step) => command(step?.run).startsWith("python -m pytest"))) {
+    problems.push("cross-platform must keep native smoke coverage without repeating Linux's complete Python suite.");
   }
   const extensionHostStep = findRun(crossPlatform, "npm run test:extension-host");
   if (

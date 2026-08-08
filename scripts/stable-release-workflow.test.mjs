@@ -49,6 +49,10 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "      - run: npm run test:python-environment-smoke\n        if: ${{ false }}"
     ),
     source.replace(
+      "      - run: npm run test:python-environment-smoke",
+      "      - run: npm run test:python-environment-smoke\n      - run: python -m pytest python/tests -q"
+    ),
+    source.replace(
       "      - id: packaged_editor\n        name: Test packaged VS Code",
       "      - id: packaged_editor\n        name: Test packaged VS Code\n        if: ${{ false }}"
     ),

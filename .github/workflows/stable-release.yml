@@ -179,7 +179,6 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
       - run: npm run test:python-environment-smoke
-      - run: python -m pytest python/tests -q
       - run: npm run test:extension-host
         env:
           VSCODE_TEST_VERSION: stable

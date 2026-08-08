@@ -540,7 +540,8 @@ Generated-code insertion tests cover Python and R cells, the 10-second observati
 R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. Every path uses R
 4.5.2. Linux runs the local journey in VS Code and Cursor and the remote journey in VS Code. Preview and stable
 release candidates also run the complete local journey in VS Code on macOS and Windows. The cross-platform jobs reuse
-the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the standalone R contract suite.
+the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the complete Python suite or the
+standalone R contract suite.
 The local kernel installs missing packages into a temporary library. Linux uses
 `https://p3m.dev/cran/__linux__/noble/2026-03-10`; macOS and Windows use
 `https://p3m.dev/cran/2026-03-10`. The test records and checks these versions: IRkernel 1.3.2, jsonlite 2.0.0, rlang
