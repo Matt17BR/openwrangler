@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerE
 import type {
   CellDiff,
   CellValue,
+  ColumnFilter,
   ColumnSchema,
   ColumnSummary,
   ColumnVisualization,
@@ -16,7 +17,9 @@ import type { SortDirection, SortRule } from "../../shared/filterModel";
 import {
   ambiguousViewColumnMessage,
   countViewColumnNames,
-  supportsTypedViewComparison
+  supportsTypedViewComparison,
+  viewNumericBinFilter,
+  viewValueSelectionFilter
 } from "../../shared/filterModel";
 import type { GridViewState } from "../../shared/viewState";
 import {
@@ -59,6 +62,7 @@ interface DataGridProps {
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onClearSortColumn?(column: string): void;
+  onApplyProfileFilter?(filter: ColumnFilter): void;
   onOpenFilter(column: string): void;
   onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
   onVisibleColumnRangeChange?(range: VisibleColumnRange): void;
@@ -146,6 +150,7 @@ export function DataGrid({
   onPage,
   onSortColumn,
   onClearSortColumn = () => undefined,
+  onApplyProfileFilter,
   onOpenFilter,
   onGoToColumnHandled = () => undefined,
   onVisibleColumnRangeChange = ignoreVisibleColumnRangeChange,
@@ -1121,6 +1126,8 @@ export function DataGrid({
                     }}
                     onSortColumn={onSortColumn}
                     onClearSortColumn={onClearSortColumn}
+                    onSelect={() => reportViewState({ ...viewStateRef.current, selectedColumnId: column.id })}
+                    onApplyProfileFilter={onApplyProfileFilter}
                     onResize={(width) =>
                       reportViewState({
                         ...viewStateRef.current,
@@ -1580,6 +1587,8 @@ function ColumnHeader({
   onOpenFilter,
   onSortColumn,
   onClearSortColumn,
+  onSelect,
+  onApplyProfileFilter,
   onResize
 }: {
   column: ColumnSchema;
@@ -1602,6 +1611,8 @@ function ColumnHeader({
   onOpenFilter(column: string): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onClearSortColumn(column: string): void;
+  onSelect(): void;
+  onApplyProfileFilter?: (filter: ColumnFilter) => void;
   onResize(width: number): void;
 }) {
   const menuRef = useRef<HTMLDetailsElement>(null);
@@ -1623,6 +1634,13 @@ function ColumnHeader({
     : sortControlsDisabled
       ? sortControlsDisabledReason
       : ambiguityReason;
+  const distributionFilterAvailable =
+    !filterUnavailable && !comparisonUnavailable && onApplyProfileFilter !== undefined;
+  const applyProfileFilter = (filter: ColumnFilter) => {
+    if (!distributionFilterAvailable || !onApplyProfileFilter) return;
+    onSelect();
+    onApplyProfileFilter(filter);
+  };
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (viewControlsDisabled) return;
     event.preventDefault();
@@ -1679,6 +1697,16 @@ function ColumnHeader({
       data-diff-state={added ? "added" : undefined}
       className={[selected ? "selectedColumn" : "", added ? "diffAddedColumn" : ""].filter(Boolean).join(" ")}
       title={`${column.rawType}${column.nullable ? " nullable" : ""}${added ? ", added column" : ""}`}
+      tabIndex={0}
+      onClick={(event) => {
+        if (columnHeaderControlTarget(event.target, event.currentTarget)) return;
+        onSelect();
+      }}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        onSelect();
+      }}
     >
       <div className="columnHeader">
         <span className="columnTitle" title={column.name}>
@@ -1825,7 +1853,11 @@ function ColumnHeader({
             </div>
             <div className="summaryDistribution">
               {summary.visualization?.sampled && <span className="sampledLabel">Distribution sampled</span>}
-              <MiniChart visualization={summary.visualization} />
+              <MiniChart
+                visualization={summary.visualization}
+                column={column}
+                onApplyFilter={distributionFilterAvailable ? applyProfileFilter : undefined}
+              />
             </div>
           </div>
         ) : (
@@ -1833,6 +1865,12 @@ function ColumnHeader({
         ))}
     </th>
   );
+}
+
+function columnHeaderControlTarget(target: EventTarget, header: HTMLTableCellElement): boolean {
+  if (!(target instanceof Element)) return false;
+  const control = target.closest("button, details, summary, a, input, select, textarea, [role='button']");
+  return control !== null && control !== header;
 }
 
 function CompactExtremum({
@@ -1858,10 +1896,28 @@ function CompactExtremum({
   );
 }
 
-function MiniChart({ visualization }: { visualization: ColumnVisualization | undefined }) {
+function MiniChart({
+  visualization,
+  column,
+  onApplyFilter
+}: {
+  visualization: ColumnVisualization | undefined;
+  column: ColumnSchema;
+  onApplyFilter?: (filter: ColumnFilter) => void;
+}) {
   if (!visualization) return <span className="miniChart emptyInsight">No chart</span>;
   if (visualization.kind === "numeric") {
-    return <NumericHistogram visualization={visualization} compact />;
+    return (
+      <NumericHistogram
+        visualization={visualization}
+        compact
+        onSelectBin={
+          onApplyFilter
+            ? (bin, index) => onApplyFilter(viewNumericBinFilter(column, bin, index === visualization.bins.length - 1))
+            : undefined
+        }
+      />
+    );
   }
   if (visualization.kind === "boolean") {
     const total = Math.max(1, visualization.trueCount + visualization.falseCount);
@@ -1892,18 +1948,35 @@ function MiniChart({ visualization }: { visualization: ColumnVisualization | und
     return (
       <span
         className="categoryMiniChart"
-        role="img"
+        role={onApplyFilter ? "group" : "img"}
         aria-label={`${visualization.sampled ? "Sampled " : ""}categorical distribution${categoryLabel ? `: ${categoryLabel}` : " with no values"}.`}
       >
-        {visibleCategories.map((category, index) => (
-          <span className="categoryMiniRow" key={`${category.value}-${index}`}>
-            <span className="categoryMiniLabel" title={category.value}>
-              {category.value}
+        {visibleCategories.map((category, index) => {
+          const contents = (
+            <>
+              <span className="categoryMiniLabel" title={category.value}>
+                {category.value}
+              </span>
+              <i aria-hidden="true" style={{ width: `${(category.count / max) * 100}%` }} />
+              <small title={`${category.count.toLocaleString()} rows`}>{category.count.toLocaleString()}</small>
+            </>
+          );
+          return onApplyFilter ? (
+            <button
+              type="button"
+              className="categoryMiniRow interactive"
+              key={`${category.value}-${index}`}
+              aria-label={`Filter ${column.name} to ${category.value || "empty string"}; ${category.count.toLocaleString()} ${category.count === 1 ? "row" : "rows"}`}
+              onClick={() => onApplyFilter(viewValueSelectionFilter(column, category.selectionValue ?? category.value))}
+            >
+              {contents}
+            </button>
+          ) : (
+            <span className="categoryMiniRow" key={`${category.value}-${index}`}>
+              {contents}
             </span>
-            <i aria-hidden="true" style={{ width: `${(category.count / max) * 100}%` }} />
-            <small title={`${category.count.toLocaleString()} rows`}>{category.count.toLocaleString()}</small>
-          </span>
-        ))}
+          );
+        })}
         {visualization.otherCount > 0 && (
           <span className="categoryMiniRow">
             <span className="categoryMiniLabel">Other</span>

@@ -1,4 +1,11 @@
-import type { ColumnFilter, ColumnSchema, ColumnType, FilterModel, PredicateFilter } from "./protocol.generated";
+import type {
+  ColumnFilter,
+  ColumnSchema,
+  ColumnType,
+  FilterModel,
+  NumericBin,
+  PredicateFilter
+} from "./protocol.generated";
 
 export type { ColumnFilter, ColumnType, FilterModel, PredicateFilter };
 export type SortRule = FilterModel["sort"][number];
@@ -124,4 +131,54 @@ export const compactFilterModel = (model: FilterModel): FilterModel => ({
   ...(model.logic === undefined ? {} : { logic: model.logic }),
   filters: model.filters.map(compactColumnFilter).filter((filter): filter is ColumnFilter => filter !== undefined),
   sort: model.sort
+});
+
+/**
+ * Replace the active viewing filter for one displayed column while preserving
+ * every other filter and the current sort order.
+ */
+export const replaceViewColumnFilter = (model: FilterModel, nextFilter: ColumnFilter): FilterModel => {
+  const compactFilter = compactColumnFilter(nextFilter);
+  let replaced = false;
+  const filters = model.filters.flatMap((filter) => {
+    if (filter.column !== nextFilter.column) return isActiveColumnFilter(filter) ? [filter] : [];
+    if (replaced) return [];
+    replaced = true;
+    return compactFilter ? [compactFilter] : [];
+  });
+  if (!replaced && compactFilter) filters.push(compactFilter);
+  return { ...model, filters };
+};
+
+/** Remove one displayed column's viewing filter without changing its sorts. */
+export const removeViewColumnFilter = (model: FilterModel, column: string): FilterModel => ({
+  ...model,
+  filters: model.filters.filter((filter) => filter.column !== column && isActiveColumnFilter(filter))
+});
+
+export const viewValueSelectionFilter = (column: ColumnSchema, value: unknown): ColumnFilter => ({
+  column: column.name,
+  type: column.type,
+  logic: "and",
+  valueFilter: {
+    kind: "values",
+    selectedValues: [value],
+    includeNulls: false,
+    includeNaN: false
+  },
+  predicates: []
+});
+
+/**
+ * Build a half-open histogram filter so adjacent bins never claim the same
+ * boundary. Only the final bin includes its upper edge.
+ */
+export const viewNumericBinFilter = (column: ColumnSchema, bin: NumericBin, finalBin: boolean): ColumnFilter => ({
+  column: column.name,
+  type: column.type,
+  logic: "and",
+  predicates: [
+    { kind: "predicate", operator: "gte", value: bin.min },
+    { kind: "predicate", operator: finalBin ? "lte" : "lt", value: bin.max }
+  ]
 });

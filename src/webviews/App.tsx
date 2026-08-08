@@ -31,6 +31,7 @@ import {
   compactFilterModel,
   emptyFilterModel,
   prioritizeSortRule,
+  replaceViewColumnFilter,
   viewSortModelSignature,
   type FilterModel
 } from "../shared/filterModel";
@@ -1459,7 +1460,9 @@ export function App() {
         if (restoreGridFocusForPage.current === response.viewRequestId) {
           restoreGridFocusForPage.current = undefined;
           scheduleWebviewFocusRestoration(() => {
-            document.querySelector<HTMLElement>('[data-testid="data-grid-scroller"] [tabindex="0"]')?.focus();
+            document
+              .querySelector<HTMLElement>('[data-testid="data-grid-scroller"] [data-grid-row][tabindex="0"]')
+              ?.focus();
           });
         }
         return;
@@ -2741,6 +2744,10 @@ export function App() {
                         sort: filterModelRef.current.sort.filter((rule) => rule.column !== column)
                       })
                 }
+                onApplyProfileFilter={(filter) => {
+                  if (inspectionMode || !filterSupported) return;
+                  applyFilters(replaceViewColumnFilter(filterModelRef.current, filter));
+                }}
                 onOpenFilter={(column) => {
                   if (inspectionMode || !filterSupported) return;
                   sidePanelReturnFocus.current =
@@ -2802,8 +2809,12 @@ export function App() {
                 activeView={summaryPanelView}
                 profileSupported={profileSupported}
                 filtersSupported={filterPanelSupported}
+                viewFiltersSupported={filterSupported}
+                filtersDisabled={mutationPending || importOptionsPending}
                 filtersLabel={filterPanelLabel}
+                filterModel={filterModel}
                 onSelectView={selectSummaryPanelView}
+                onApplyFilterModel={applyFilters}
               />
               {summaryPanelView === "filters" && (
                 <div

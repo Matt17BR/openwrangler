@@ -1065,8 +1065,12 @@ describe("SummaryPanel", () => {
       summaries?: ColumnSummary[];
       profileSupported?: boolean;
       filtersSupported?: boolean;
+      viewFiltersSupported?: boolean;
+      filtersDisabled?: boolean;
       filtersLabel?: string;
+      filterModel?: FilterModel;
       onSelectView?: (view: "column" | "dataset" | "filters") => void;
+      onApplyFilterModel?: (model: FilterModel) => void;
     } = {}
   ) => {
     const metadataValue = options.metadataValue ?? metadata;
@@ -1079,8 +1083,12 @@ describe("SummaryPanel", () => {
         activeView={options.activeView ?? "column"}
         profileSupported={options.profileSupported}
         filtersSupported={options.filtersSupported}
+        viewFiltersSupported={options.viewFiltersSupported}
+        filtersDisabled={options.filtersDisabled}
         filtersLabel={options.filtersLabel}
+        filterModel={options.filterModel}
         onSelectView={options.onSelectView ?? (() => undefined)}
+        onApplyFilterModel={options.onApplyFilterModel}
       />
     );
   };
@@ -1125,15 +1133,19 @@ describe("SummaryPanel", () => {
     expect(screen.queryByRole("tab", { name: "Dataset" })).not.toBeInTheDocument();
   });
 
-  it("renders only the selected column with exact scalar and sampled-distribution provenance", () => {
+  it("keeps exact profiles quiet while labeling a sampled distribution", () => {
     renderSummary({ selectedColumnId: "c:1" });
 
     expect(screen.getByRole("tabpanel", { name: "Column" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "sales" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "city" })).not.toBeInTheDocument();
     expect(screen.getByText("Float64")).toBeInTheDocument();
-    expect(screen.getByText("Exact statistics")).toBeInTheDocument();
-    expect(screen.getByText("Sampled distribution")).toBeInTheDocument();
+    expect(screen.queryByText("Exact statistics")).not.toBeInTheDocument();
+    expect(screen.queryByText("Exact distribution")).not.toBeInTheDocument();
+    expect(screen.getByText("Distribution based on a sample")).toHaveAttribute(
+      "title",
+      "The chart uses a sample. The statistics above it use all visible rows."
+    );
     expect(screen.getByText("Null").nextElementSibling).toHaveTextContent("1");
     expect(screen.getByText("NaN").nextElementSibling).toHaveTextContent("2");
     expect(screen.getByText("Min").nextElementSibling).toHaveTextContent("10");
@@ -1144,8 +1156,8 @@ describe("SummaryPanel", () => {
       screen.getByRole("img", { name: "Sampled numeric distribution with 2 bins; range 10 to 12." })
     ).toBeVisible();
     expect(screen.getAllByRole("graphics-symbol").map((bin) => bin.getAttribute("aria-label"))).toEqual([
-      "10-11: 1 row",
-      "11-12: 2 rows"
+      "10-11: 1 row (33.3%); lower bound included, upper bound excluded",
+      "11-12: 2 rows (66.7%); both bounds included"
     ]);
     expect(screen.getAllByRole("graphics-symbol").map((bin) => bin.getAttribute("height"))).toEqual(["92", "92"]);
     expect(screen.queryByRole("heading", { name: "Top values" })).not.toBeInTheDocument();
@@ -1265,7 +1277,7 @@ describe("SummaryPanel", () => {
     renderSummary();
 
     expect(screen.getByRole("heading", { name: "city" })).toBeInTheDocument();
-    expect(screen.getByText("Exact distribution")).toBeInTheDocument();
+    expect(screen.queryByText("Exact distribution")).not.toBeInTheDocument();
     expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("3");
     expect(screen.queryByText("NaN")).not.toBeInTheDocument();
     expect(screen.getByText("Empty").nextElementSibling).toHaveTextContent("1");
@@ -1277,7 +1289,146 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Berlin")).toBeInTheDocument();
     expect(screen.getByText("Empty string")).toBeInTheDocument();
     expect(screen.getByText("Other")).toBeInTheDocument();
-    expect(screen.getByRole("meter", { name: "Berlin: 2" })).toHaveValue(2);
+    expect(screen.getByRole("meter", { name: "Berlin: 2 rows, 50%" })).toHaveValue(2);
+  });
+
+  it("switches counts to percentages and filters a categorical value through the shared view model", () => {
+    const onApply = vi.fn();
+    const Harness = () => {
+      const [model, setModel] = useState<FilterModel>({
+        logic: "and",
+        filters: [
+          {
+            column: "sales",
+            type: "float",
+            predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+          }
+        ],
+        sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+      });
+      return (
+        <SummaryPanel
+          metadata={metadata}
+          summaries={[categoricalSummary, numericSummary]}
+          schemaById={new Map(metadata.schema.map((column) => [column.id, column]))}
+          selectedColumnId="c:0"
+          activeView="column"
+          filterModel={model}
+          onSelectView={() => undefined}
+          onApplyFilterModel={(next) => {
+            onApply(next);
+            setModel(next);
+          }}
+        />
+      );
+    };
+    render(<Harness />);
+
+    expect(screen.getByText("Percent uses 4 non-missing visible rows.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "%" }));
+    expect(screen.getByRole("button", { name: "%" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Counts" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("50%", { selector: ".profileDistributionRow small" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter to Berlin; 2 rows, 50%" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      logic: "and",
+      filters: [
+        {
+          column: "sales",
+          type: "float",
+          predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+        },
+        {
+          column: "city",
+          type: "string",
+          logic: "and",
+          valueFilter: {
+            kind: "values",
+            selectedValues: ["Berlin"],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: []
+        }
+      ],
+      sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+    });
+    expect(screen.getByText("Filter: Berlin")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filter for city" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      logic: "and",
+      filters: [
+        {
+          column: "sales",
+          type: "float",
+          predicates: [{ kind: "predicate", operator: "gt", value: 0 }]
+        }
+      ],
+      sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+    });
+  });
+
+  it("uses non-overlapping numeric bin filters and makes the final upper edge inclusive", () => {
+    const onApply = vi.fn();
+    const Harness = () => {
+      const [model, setModel] = useState<FilterModel>({ filters: [], sort: [] });
+      return (
+        <SummaryPanel
+          metadata={metadata}
+          summaries={[numericSummary]}
+          schemaById={new Map(metadata.schema.map((column) => [column.id, column]))}
+          selectedColumnId="c:1"
+          activeView="column"
+          filterModel={model}
+          onSelectView={() => undefined}
+          onApplyFilterModel={(next) => {
+            onApply(next);
+            setModel(next);
+          }}
+        />
+      );
+    };
+    render(<Harness />);
+
+    const firstBin = screen.getByRole("button", {
+      name: "10-11: 1 row (33.3%); lower bound included, upper bound excluded"
+    });
+    fireEvent.click(firstBin);
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [
+        {
+          column: "sales",
+          type: "float",
+          logic: "and",
+          predicates: [
+            { kind: "predicate", operator: "gte", value: 10 },
+            { kind: "predicate", operator: "lt", value: 11 }
+          ]
+        }
+      ],
+      sort: []
+    });
+    expect(screen.getByText("Filter: 10–11")).toBeVisible();
+
+    const finalBin = screen.getByRole("button", {
+      name: "11-12: 2 rows (66.7%); both bounds included"
+    });
+    fireEvent.keyDown(finalBin, { key: "Enter" });
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [
+        {
+          column: "sales",
+          type: "float",
+          logic: "and",
+          predicates: [
+            { kind: "predicate", operator: "gte", value: 11 },
+            { kind: "predicate", operator: "lte", value: 12 }
+          ]
+        }
+      ],
+      sort: []
+    });
   });
 
   it("renders all-null text metrics without inventing length bounds", () => {

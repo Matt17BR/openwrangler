@@ -11,10 +11,11 @@ import type {
 import { MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS, truncateViewValueTextToCodePoints } from "../../shared/viewValueLimits";
 import {
   ambiguousViewColumnMessage,
-  compactColumnFilter,
   countViewColumnNames,
   isActiveColumnFilter,
   prioritizeSortRule,
+  removeViewColumnFilter,
+  replaceViewColumnFilter,
   supportsTypedViewComparison,
   viewPredicateOperators
 } from "../../shared/filterModel";
@@ -116,21 +117,12 @@ export function FilterPanel({
 
   const updateFilter = (nextFilter: ColumnFilter) => {
     if (disabled || !filterSupported || !nextFilter.column) return;
-    const compactFilter = compactColumnFilter(nextFilter);
-    let replaced = false;
-    const filters = model.filters.flatMap((item) => {
-      if (item.column !== nextFilter.column) return isActiveColumnFilter(item) ? [item] : [];
-      if (replaced) return [];
-      replaced = true;
-      return compactFilter ? [compactFilter] : [];
-    });
-    if (!replaced && compactFilter) filters.push(compactFilter);
-    onApply({ ...model, filters });
+    onApply(replaceViewColumnFilter(model, nextFilter));
   };
 
   const removeColumnFilter = (column: string) => {
     if (disabled || !filterSupported) return;
-    onApply({ ...model, filters: activeFilters.filter((item) => item.column !== column) });
+    onApply(removeViewColumnFilter(model, column));
   };
 
   const removePredicate = (filter: ColumnFilter, index: number) => {
