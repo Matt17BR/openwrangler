@@ -3740,20 +3740,34 @@ async function invokeReleasedRDocumentTitleAction(
     ? await prepareReleasedRDocumentScreenshotWorkbench(workbench, source, variableName)
     : async () => {};
   try {
+    const matches = vscode.workspace.textDocuments.filter((document) => document.uri.toString() === source.toString());
+    assert.equal(matches.length, 1, "The R document title action requires one exact open source document.");
+    const document = matches[0]!;
+    await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
+    await waitFor(
+      () => vscode.window.activeTextEditor?.document === document,
+      10_000,
+      "the exact R document to become active before its editor action"
+    );
     await workbench.bringToFront();
     const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
     const action = activeGroup.getByRole("button", { name: /Run(?: R Document)? in Open Wrangler/u }).first();
     if ((await action.count()) > 0 && (await action.isVisible())) {
       await action.click();
     } else {
-      const more = activeGroup.locator('[aria-label="More Actions..."]:visible').first();
-      await more.click();
-      const menuItem = workbench
-        .locator('.context-view.monaco-menu-container [role="menuitem"]:visible')
+      const activeSourceTab = activeGroup
+        .locator(".tabs-container .tab.active")
+        .filter({ hasText: path.basename(source.fsPath) })
+        .last();
+      await activeSourceTab.waitFor({ state: "visible", timeout: 10_000 });
+      const { menu } = await openEditorTabContextMenu(workbench, activeSourceTab);
+      const menuItem = menu
+        .getByRole("menuitem")
         .filter({ hasText: /Run(?: R Document)? in Open Wrangler/u })
         .first();
       await menuItem.waitFor({ state: "visible", timeout: 10_000 });
       await menuItem.click();
+      await menu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
     }
     const title = `Open Wrangler: Choose a dataframe from ${path.basename(source.fsPath)}`;
     const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
