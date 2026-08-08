@@ -26,10 +26,10 @@ their branches are integrated or abandoned.
 
 ## Commit history
 
-Keep independently reviewable changes as separate commits. A release branch may collect several already-reviewed
-commits, but it must not squash unrelated product, test, media, documentation, and release work into one large commit.
-Use a merge strategy that preserves those commits when a pull request contains more than one coherent slice. The
-final release commit is limited to the version, changelog, release notes, and other release metadata.
+Keep independently reviewable changes in separate commits and pull requests. Do not use a release pull request to
+collect unrelated feature work: merge each feature first, then make the release pull request only about the version,
+changelog, release notes, and other release metadata. Use rebase merge when a pull request has several reviewable
+commits. Squash only when the pull request is already one coherent commit.
 
 ## Non-negotiable invariants
 
