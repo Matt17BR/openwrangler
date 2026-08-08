@@ -52,6 +52,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Notebook, Python Interactive, R-file, and active-R dataframe pickers now let Quick Input return focus before opening
+  the dataframe tab. This prevents Cursor from leaving the new tab without a running renderer.
 - Consecutive cleaning actions on non-cancellable runtimes no longer wait behind automatic profiling that restarted
   immediately after the previous step. Opening Column profiles still starts the selected profile right away.
 - Opening **Column profiles** now lets the selected column run beside an active header profile. Its statistics no longer

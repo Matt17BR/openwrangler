@@ -15,6 +15,7 @@ const notebookMocks = vi.hoisted(() => ({
   showInformationMessage: vi.fn(async () => undefined),
   showQuickPick: vi.fn(async (items: readonly unknown[], _options?: unknown) => items[0]),
   createPanel: vi.fn(),
+  restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined),
   kernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
   rKernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
   rVerifiedSelections: [] as unknown[],
@@ -190,7 +191,8 @@ vi.mock("vscode", () => {
 });
 
 vi.mock("../extension/webviewPanel", () => ({
-  OpenWranglerPanel: { create: notebookMocks.createPanel }
+  OpenWranglerPanel: { create: notebookMocks.createPanel },
+  restoreEditorGroupAfterQuickPick: notebookMocks.restoreEditorGroupAfterQuickPick
 }));
 
 vi.mock("../extension/notebooks/kernelBridge", () => ({
@@ -243,6 +245,8 @@ describe("notebook command provenance", () => {
     notebookMocks.showQuickPick.mockReset();
     notebookMocks.showQuickPick.mockImplementation(async (items) => items[0]);
     notebookMocks.createPanel.mockReset();
+    notebookMocks.restoreEditorGroupAfterQuickPick.mockReset();
+    notebookMocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
     notebookMocks.kernelOrigins.length = 0;
     notebookMocks.rKernelOrigins.length = 0;
     notebookMocks.rVerifiedSelections.length = 0;
@@ -1013,6 +1017,10 @@ describe("notebook command provenance", () => {
       },
       "pyspark"
     );
+    expect(notebookMocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
+    expect(notebookMocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
+      notebookMocks.createPanel.mock.invocationCallOrder[0]!
+    );
   });
 
   it("opens a discovered DuckDB relation as a pinned live viewing session", async () => {
@@ -1090,7 +1098,44 @@ describe("notebook command provenance", () => {
       },
       "r"
     );
+    expect(notebookMocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
+    expect(notebookMocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
+      notebookMocks.createPanel.mock.invocationCallOrder[0]!
+    );
     expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the R notebook after returning focus from its picker", async () => {
+    const original = notebook("file:///workspace/r-focus.ipynb");
+    const replacement = notebook("file:///workspace/r-focus.ipynb");
+    const disposeStatusListener = vi.fn();
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.getKernel.mockResolvedValue(rNotebookKernel(disposeStatusListener));
+    notebookMocks.executeCode.mockImplementation((code) =>
+      rDiscoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+      })
+    );
+    notebookMocks.restoreEditorGroupAfterQuickPick.mockImplementationOnce(async () => {
+      closeNotebook(original);
+      notebookMocks.notebookDocuments.splice(0, 1, replacement);
+      notebookMocks.activeNotebookEditor = editor(replacement);
+    });
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.rVerifiedSelections).toHaveLength(0);
+    expect(notebookMocks.rDelegateDisposals).toEqual([]);
+    expect(disposeStatusListener).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The originating notebook is no longer open. Reopen it and try again."
+    );
   });
 
   it("disposes the claimed R bridge when panel creation fails", async () => {
@@ -1685,7 +1730,7 @@ function rDiscoveryOutputs(
   };
 }
 
-function rNotebookKernel(): {
+function rNotebookKernel(disposeStatusListener: () => void = () => undefined): {
   readonly language: "R";
   readonly status: "idle";
   readonly executeCode: typeof notebookMocks.executeCode;
@@ -1695,7 +1740,7 @@ function rNotebookKernel(): {
     language: "R",
     status: "idle",
     executeCode: notebookMocks.executeCode,
-    onDidChangeStatus: () => ({ dispose: () => undefined })
+    onDidChangeStatus: () => ({ dispose: disposeStatusListener })
   };
 }
 

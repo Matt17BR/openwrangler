@@ -10,6 +10,7 @@ import {
 } from "./notebookVariableDiscovery";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 import { openDiscoveredPythonNotebookVariable } from "./jupyterBridge";
+import { restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 
 const PYTHON_CELL_MARKER = /^\s*#\s*%%(?:\s|$)/u;
 const MARKDOWN_CELL_MARKER = /^\s*#\s*%%.*\[markdown\]/iu;
@@ -414,6 +415,13 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
         return;
       }
       if (!choice || !items.includes(choice)) return;
+      await restoreEditorGroupAfterQuickPick();
+      if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+        void vscode.window.showWarningMessage(
+          "The Python file or Interactive Window changed while focus returned from the picker. Try again."
+        );
+        return;
+      }
       selected = choice.descriptor;
     }
     if (!selected) return;

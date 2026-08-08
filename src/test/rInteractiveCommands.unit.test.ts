@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   showErrorMessage: vi.fn(),
   withProgress: vi.fn(),
   panelCreate: vi.fn(),
+  restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined),
   bridgeArguments: [] as unknown[][],
   bridgeDispose: vi.fn(async () => undefined)
 }));
@@ -97,7 +98,8 @@ vi.mock("../extension/r/rKernelBridge", () => ({
 }));
 
 vi.mock("../extension/webviewPanel", () => ({
-  OpenWranglerPanel: { create: mocks.panelCreate }
+  OpenWranglerPanel: { create: mocks.panelCreate },
+  restoreEditorGroupAfterQuickPick: mocks.restoreEditorGroupAfterQuickPick
 }));
 
 import {
@@ -127,6 +129,8 @@ describe("active R session commands", () => {
         task(undefined, cancellationToken())
     );
     mocks.panelCreate.mockReset();
+    mocks.restoreEditorGroupAfterQuickPick.mockReset();
+    mocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
     mocks.bridgeArguments.length = 0;
     mocks.bridgeDispose.mockClear();
   });
@@ -149,7 +153,28 @@ describe("active R session commands", () => {
       { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
       "r"
     );
+    expect(mocks.restoreEditorGroupAfterQuickPick).toHaveBeenCalledOnce();
+    expect(mocks.restoreEditorGroupAfterQuickPick.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.panelCreate.mock.invocationCallOrder[0]!
+    );
     expect(transport.dispose).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the active R picker after returning focus", async () => {
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const { provider, coordinator } = registerWith([transport]);
+    mocks.restoreEditorGroupAfterQuickPick.mockImplementationOnce(async () => {
+      await provider.shutdown();
+      return undefined;
+    });
+
+    await expect(command(OPEN_R_INTERACTIVE_VARIABLE_COMMAND)()).resolves.toBe(false);
+
+    expect(transport.dispose).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
   });
 
   it("refreshes the exact active R terminal and transfers that transport when a cached row opens", async () => {

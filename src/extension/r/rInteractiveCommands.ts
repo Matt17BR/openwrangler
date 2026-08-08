@@ -4,7 +4,7 @@ import type { SessionSource } from "../../shared/protocol";
 import { getSetting } from "../configuration";
 import { DetachedBridgeRequestError } from "../dataBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
-import { OpenWranglerPanel } from "../webviewPanel";
+import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { RInteractiveSessionTransport } from "./rInteractiveSessionTransport";
 import { RKernelBridge, type RKernelBridgeTransport } from "./rKernelBridge";
 import type { RProcessVariableDescriptor, RProcessVariableDiscovery } from "./rProcessTransport";
@@ -241,6 +241,12 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       return false;
     }
     if (!picked || !items.includes(picked)) {
+      const cleanupError = await this.disposeManagedTransport(transport);
+      if (cleanupError) showCleanupError(cleanupError);
+      return false;
+    }
+    await restoreEditorGroupAfterQuickPick();
+    if (!this.isCurrent(generation)) {
       const cleanupError = await this.disposeManagedTransport(transport);
       if (cleanupError) showCleanupError(cleanupError);
       return false;
