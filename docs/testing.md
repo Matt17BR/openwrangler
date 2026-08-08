@@ -63,7 +63,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
   Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor,
-  and Ceiling lifecycles, variable replacement, native CSV export, malformed requests, and close cases. The export
+  Ceiling, and Group and aggregate lifecycles, variable replacement, native CSV export, malformed requests, and close
+  cases. The export
   checks a pending draft and stale revision, full committed rows despite an active view, duplicate names and R types,
   repeated offset reads, explicit close, and session-close cleanup.
   The R tests check the fixed diagnostics for unsupported frames,
@@ -78,7 +79,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   `jsonlite` or `rlang`, malformed output, and notebook/kernel replacement. Host and webview tests cover the native
   picker, coordinator route, R runtime identity,
   Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type,
-  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling
+  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and
+  Group and aggregate
   capabilities, generated-code commands, bounded two-dimensional pages, and enabled viewing filters, sorts,
   profiles, and value selection. The
   production-browser accessibility journey covers explicit row labels,
@@ -576,7 +578,7 @@ generated R, and exact typed diffs. Drop Missing Rows covers the Any and All mod
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites contain cases for all twenty-one operations. The packaged editor run covers the first twenty in both editors.
+suites and packaged editor run cover all twenty-one operations in both editors.
 Group and aggregate has direct frame, kernel-agent, protocol, and host-bridge coverage for all nine aggregations,
 first-seen group order, missing keys, type preservation, overflow, generated code, inspection, replacement, and undo.
 The R tests cover exact integer64 cancellation, odd-count medians, and same-sign boundary pairs for live and generated
@@ -584,8 +586,9 @@ mean and median. Sum tests retain ordinary integer and integer64 output and reje
 base R and `bit64` have no exact 38-digit integer type. The bridge tests also cover explicit row names becoming
 positional after grouping and returning after discard or undo, plus latest-step replacement while the active view
 targets an aggregation output. The kernel-agent suite exports a committed grouped result through native R Parquet.
-Its packaged editor journey remains a stable-2.0 gate. Round, Floor, and Ceiling use their visible forms and check
-derived values from positive and negative fractional inputs.
+The packaged Group and aggregate journey selects a key, sums a numeric column, checks the two exact grouped totals
+and generated R, applies the draft, and undoes it back to the source schema. Round, Floor, and Ceiling use their
+visible forms and check derived values from positive and negative fractional inputs.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact

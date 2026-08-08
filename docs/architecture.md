@@ -225,14 +225,15 @@ and the profile drawer still loads the selected column or dataset on request. Th
 checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
-frame, and final session cleanup. The packaged VS Code and Cursor runs cover the first twenty operations, including the
-visible forms for Find and replace, Uppercase, Round, Floor, and Ceiling. The
+frame, and final session cleanup. The packaged VS Code and Cursor runs cover all twenty-one operations, including the
+visible forms for Find and replace, Uppercase, Round, Floor, Ceiling, and Group and aggregate. The
 base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
 applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,
 and undo. The run checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed
 data tables additionally cover editable open plus Rename and Drop preview/discard. The direct R suites cover all
-twenty-one operations, plus class and key behavior for tibbles and data tables. The packaged run opens the Round, Floor,
-and Ceiling forms and checks their derived values before applying or discarding the draft. An applied-step
+twenty-one operations, plus class and key behavior for tibbles and data tables. The packaged run opens the Round,
+Floor, Ceiling, and Group and aggregate forms and checks their derived values before applying or discarding the draft.
+An applied-step
 inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
 retained input and output schemas and calculates the public diff only after all three responses agree.
 
