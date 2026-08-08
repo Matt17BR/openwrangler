@@ -642,11 +642,11 @@ that grouped `GRP_df` and indexed `indexed_frame` objects stay out of the picker
 same accepted and rejected classes.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
-viewing workbench, a 1,205-row Rename draft after switching that notebook session to Editing mode, and the generated R
-inserted into its notebook.
+viewing workbench, a Group and aggregate draft after switching that same session to Editing mode, the generated R
+inserted into its notebook, and the dataframe picker opened from a real Quarto document.
 The viewing image shows two filters, two
-ordered sorts, and exact revenue statistics. The editing image shows the native R code preview beside the draft,
-cleaning history, and Apply/Discard controls.
+ordered sorts, and exact revenue statistics. The editing image groups the orders by market and channel and shows the
+native R code preview beside the draft, cleaning history, and Apply/Discard controls.
 The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 881
 logical pixels so the grid ends on a complete row. Both are captured at 2× physical density. Capture fails if setup
 cells or private markers are visible, if a grid row or column is clipped, or if the source R object changes. The
@@ -654,9 +654,11 @@ accepted files are
 `docs/images/editor-acceptance/vscode-notebook-r-picker-dark.png` and
 `docs/images/editor-acceptance/vscode-notebook-r-dark.png`,
 `docs/images/editor-acceptance/vscode-notebook-r-editing-dark.png`, and
-`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png`; the gallery uses lossless crops at
+`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png`, plus
+`docs/images/editor-acceptance/vscode-r-quarto-variable-picker-dark.png`; the gallery uses lossless crops at
 `docs/images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png` and
-`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png`.
+`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png`, while the README Quarto crop is
+composed from the accepted full source.
 
 ```bash
 npm run build:test-extension &&

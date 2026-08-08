@@ -87,11 +87,13 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
   focuses the Viewing / DuckDB badges, active filter, and editable two-key sort order.
 - `gallery/notebook-pyspark.png`: complete source; its 820 × 610 detail focuses the Source order / Viewing only /
   PySpark badges, representative native rows, exact statistics, and distribution.
-- `gallery/notebook-r-editing.png`: complete R notebook workbench with a Rename Column draft, generated R, and the
-  native cleaning history.
+- `gallery/notebook-r-editing.png`: complete R notebook workbench with a Group and aggregate draft, generated R, and
+  the native cleaning history.
+- `gallery/r-quarto-variable-picker.png`: complete Quarto source document behind its native dataframe picker; its
+  1200 × 520 detail keeps the source cell and picker readable in the README.
 
-These four README derivatives are exact source-pixel crops, not resized workbenches. Each keeps the distinguishing
-engine behavior legible at half width and links to its complete accepted source scene.
+The cropped notebook and Quarto images use exact source pixels rather than resized workbenches. Each links to its
+complete accepted source scene.
 
 The setup cell is too implementation-focused for product documentation, so the public gallery uses the PySpark
 workbench screenshot instead.

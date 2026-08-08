@@ -210,6 +210,8 @@ including unsaved editor changes. Document runs use a separate R process; they d
 attach to another R session. Choose **Run R Document in Open Wrangler…** from Explorer or the editor. Remote R-document
 execution is experimental and is not part of the release test matrix.
 
+<a href="https://github.com/Matt17BR/openwrangler/blob/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/r-quarto-variable-picker.png"><img alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
+
 Notebook variables open in Viewing mode by default. Use **Switch to Editing** in the dataframe toolbar when you want
 to clean the live variable; the current filters, sorts, column widths, and grid position carry over.
 
@@ -227,9 +229,9 @@ runs longer than an optional limit untouched. Median, mean, and most common valu
 selected groups. Double columns can also use linear interpolation along an integer, double, `Date`, or `POSIXct`
 coordinate. It keeps `integer64`, date, and datetime types. A new factor value is added as a level when needed.
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Rename Column draft in Open Wrangler with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/89143ff1063c68a9e36a052d199004c3fd6e81e9/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
-_R editing uses the same grid, draft review, cleaning history, and code preview as the Python engines._
+The draft groups regional orders by market and channel and previews total revenue before the step is applied.
 
 Generated R can be copied, saved as a script, or inserted into the notebook or document that opened the dataframe.
 Local R notebook and R document sessions opened in Editing mode can export cleaned CSV files. They can also export

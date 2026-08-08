@@ -168,6 +168,10 @@ the dataframes it creates. Unsaved editor changes are included. R Markdown and Q
 command does not render the document or attach to another R session.
 Each variable stays in R.
 
+<a href="images/readme/v1.2/gallery/r-quarto-variable-picker.png"><img alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders" src="images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
+
+The picker comes from a real `.qmd` run. The same command works for `.R` and `.Rmd` documents on macOS and Linux.
+
 <a href="images/editor-acceptance/vscode-notebook-r-dark.png"><img alt="An R data frame in Open Wrangler with two filters, two ordered sorts, and an exact revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="960"></a>
 
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
@@ -198,9 +202,10 @@ dataframe. Local R notebook and R document sessions opened in Editing mode can e
 They can also export Parquet when `nanoparquet` 0.5.1 or newer is installed in the selected R environment. Reopen the
 dataframe after installing the package so the export menu can refresh.
 
-<a href="images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R" src="images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
+<a href="images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R" src="images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
-This Rename Column draft shows the changed schema and generated R before the step is applied.
+This draft groups regional orders by market and channel, then previews total revenue and the generated R before the
+step is applied.
 
 <a href="images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png"><img alt="Generated R cleaning code inserted as an R cell in the notebook that opened the dataframe" src="images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png" width="960"></a>
 
