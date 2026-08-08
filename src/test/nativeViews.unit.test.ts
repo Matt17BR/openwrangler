@@ -296,6 +296,11 @@ describe("native operation commands", () => {
     expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
       [
         [
+          "Refresh R dataframes",
+          "R · 2 loaded",
+          expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
+        ],
+        [
           "shots",
           "R · tibble",
           expect.objectContaining({
@@ -312,8 +317,34 @@ describe("native operation commands", () => {
           })
         ],
         [
-          "Refresh R dataframes",
-          "2 loaded",
+          "Open a data file",
+          "Choose CSV, Parquet, Excel, or JSONL",
+          expect.objectContaining({ command: "openWrangler.openPath" })
+        ]
+      ]
+    );
+  });
+
+  it("puts an explicit R discovery action first while the active terminal has not been read", () => {
+    const variableProvider: RLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "idle",
+        terminalLabel: "R",
+        message: "Reads the selected R session. Wait for the R prompt first.",
+        variables: []
+      }),
+      shutdown: async () => undefined,
+      dispose: () => undefined
+    };
+    const registered = register(noDraftSnapshot(), undefined, undefined, undefined, variableProvider);
+    registered.setActiveSession(undefined);
+
+    expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
+      [
+        [
+          "Show R dataframes",
+          "Reads the selected R session. Wait for the R prompt first.",
           expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
         ],
         [

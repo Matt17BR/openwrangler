@@ -205,7 +205,7 @@ describe("active R session commands", () => {
     expect(transport.discoverVariables).not.toHaveBeenCalled();
     expect(provider.snapshot()).toMatchObject({
       state: "idle",
-      message: "A different R terminal is active. Refresh to list its dataframes."
+      message: "A different R terminal is active. Wait for its prompt before reading it."
     });
     await vi.waitFor(() => expect(transport.dispose).toHaveBeenCalledOnce());
   });
@@ -260,8 +260,26 @@ describe("active R session commands", () => {
     await expect(command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)()).resolves.toBe(false);
 
     expect(factory.create).not.toHaveBeenCalled();
-    expect(provider.snapshot()).toMatchObject({ state: "idle", message: "Select an R terminal, then refresh." });
+    expect(provider.snapshot()).toMatchObject({
+      state: "idle",
+      message: "Select the R terminal that owns the dataframe first."
+    });
     expect(mocks.showInformationMessage).toHaveBeenCalledOnce();
+  });
+
+  it("makes the active R session discoverable without sending code automatically", () => {
+    const terminal = rTerminal("R");
+    const { provider, factory } = registerWith([]);
+
+    emitActiveTerminal(terminal);
+
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    expect(provider.snapshot()).toMatchObject({
+      state: "idle",
+      terminalLabel: "R",
+      message: "Reads the selected R session. Wait for the R prompt first."
+    });
   });
 
   it("keeps a refreshed list when focus moves to a shell and clears it for another R terminal", async () => {
@@ -279,7 +297,7 @@ describe("active R session commands", () => {
     emitActiveTerminal(second);
     expect(provider.snapshot()).toMatchObject({
       state: "idle",
-      message: "A different R terminal is active. Refresh to list its dataframes."
+      message: "A different R terminal is active. Wait for its prompt before reading it."
     });
     await vi.waitFor(() => expect(transport.dispose).toHaveBeenCalledOnce());
   });

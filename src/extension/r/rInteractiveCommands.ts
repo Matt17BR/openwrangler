@@ -144,10 +144,10 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       this.replaceSnapshot({
         state: "idle",
         terminalLabel: "R session",
-        message: "Select an R terminal, then refresh.",
+        message: "Select the R terminal that owns the dataframe first.",
         variables: []
       });
-      void vscode.window.showInformationMessage("Select the R terminal that owns the dataframe, then refresh again.");
+      void vscode.window.showInformationMessage("Select the R terminal that owns the dataframe, then try again.");
       return false;
     }
 
@@ -311,7 +311,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       this.ownedTerminal = terminal;
       this.transportInvalidationSubscription = transport.onDidInvalidateKernel(() => {
         if (this.ownedTransport === transport)
-          this.invalidateOwnedTransport("The R session changed. Refresh it again.");
+          this.invalidateOwnedTransport("The R session changed. Wait for its prompt before reading it again.");
       });
       if (previous) previousCleanup = this.disposeManagedTransport(previous);
     }
@@ -419,18 +419,20 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
   private onActiveTerminalChanged(terminal: vscode.Terminal | undefined): void {
     if (!this.ownedTerminal) {
       if (isOfficialRTerminal(terminal) && this.currentSnapshot.state === "idle") {
+        // VS Code and vscode-R expose no public signal that an R prompt is idle.
+        // Publish the explicit action instead of sending code into a running or partly typed prompt.
         this.replaceSnapshot(idleSnapshot(terminal));
       }
       return;
     }
     if (terminal && isOfficialRTerminal(terminal) && terminal !== this.ownedTerminal) {
-      this.invalidateOwnedTransport("A different R terminal is active. Refresh to list its dataframes.");
+      this.invalidateOwnedTransport("A different R terminal is active. Wait for its prompt before reading it.");
     }
   }
 
   private onTerminalClosed(terminal: vscode.Terminal): void {
     if (terminal === this.ownedTerminal) {
-      this.invalidateOwnedTransport("The R terminal closed. Start or select an R session, then refresh.");
+      this.invalidateOwnedTransport("The R terminal closed. Start or select another R session.");
     }
   }
 
@@ -517,8 +519,8 @@ function idleSnapshot(terminal: vscode.Terminal | undefined): RLiveVariableSnaps
     state: "idle",
     terminalLabel: isOfficialRTerminal(terminal) ? terminal.name : "R session",
     message: isOfficialRTerminal(terminal)
-      ? "Refresh to list dataframes from this R session."
-      : "Select an R terminal, then refresh.",
+      ? "Reads the selected R session. Wait for the R prompt first."
+      : "Select the R terminal that owns the dataframe first.",
     variables: []
   };
 }

@@ -868,18 +868,24 @@ function pythonLiveVariableNodes(snapshot: PythonLiveVariableSnapshot | undefine
 
 function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNode[] {
   if (!snapshot) return [];
-  const refresh = new ViewNode("Refresh R dataframes", snapshot.message, "refresh", {
-    command: "openWrangler.refreshRInteractiveVariables",
-    title: "Refresh R dataframes"
-  });
+  const refresh = new ViewNode(
+    snapshot.state === "ready" ? "Refresh R dataframes" : "Show R dataframes",
+    snapshot.state === "ready" ? `${snapshot.terminalLabel} · ${snapshot.message}` : snapshot.message,
+    snapshot.state === "ready" ? "refresh" : "database",
+    {
+      command: "openWrangler.refreshRInteractiveVariables",
+      title: snapshot.state === "ready" ? "Refresh R dataframes" : "Show R dataframes"
+    }
+  );
   if (snapshot.state === "idle") return [refresh];
   if (snapshot.state !== "ready") {
     return [
-      new ViewNode(snapshot.message, snapshot.terminalLabel, snapshot.state === "error" ? "warning" : "info"),
-      ...(snapshot.state === "loading" ? [] : [refresh])
+      ...(snapshot.state === "loading" ? [] : [refresh]),
+      new ViewNode(snapshot.message, snapshot.terminalLabel, snapshot.state === "error" ? "warning" : "info")
     ];
   }
   return [
+    refresh,
     ...snapshot.variables.map(
       (variable) =>
         new ViewNode(variable.label, variable.description, "symbol-variable", {
@@ -887,8 +893,7 @@ function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNo
           title: `Open ${variable.label}`,
           arguments: [variable.handle]
         })
-    ),
-    refresh
+    )
   ];
 }
 
