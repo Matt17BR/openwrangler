@@ -197,7 +197,10 @@ initialize <- function() {
     classes <- class(value)
     flavor <- if (identical(classes, c("data.table", "data.frame"))) {
       "r.data.table"
-    } else if (identical(classes, c("tbl_df", "tbl", "data.frame"))) {
+    } else if (
+      identical(classes, c("tbl_df", "tbl", "data.frame")) ||
+        identical(classes, c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
+    ) {
       "r.tibble"
     } else if (identical(classes, "data.frame")) {
       "r.data.frame"

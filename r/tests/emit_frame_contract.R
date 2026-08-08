@@ -2,10 +2,10 @@ args <- commandArgs(trailingOnly = TRUE)
 if (
   length(args) < 1L ||
     length(args) > 2L ||
-    !args[[1L]] %in% c("data.frame", "tibble", "data.table") ||
+    !args[[1L]] %in% c("data.frame", "tibble", "readr-tibble", "data.table") ||
     (length(args) == 2L && !identical(args[[2L]], "sorted"))
 ) {
-  stop("Usage: emit_frame_contract.R data.frame|tibble|data.table [sorted]", call. = FALSE)
+  stop("Usage: emit_frame_contract.R data.frame|tibble|readr-tibble|data.table [sorted]", call. = FALSE)
 }
 
 source("r/openwrangler_runtime/frame_contract.R", local = FALSE)
@@ -32,6 +32,7 @@ frame <- switch(
   args[[1L]],
   data.frame = make_base(),
   tibble = tibble::as_tibble(make_base(), .name_repair = "minimal"),
+  `readr-tibble` = readr::read_csv(I("id,label\n1,alpha\n2,beta\n3,gamma"), show_col_types = FALSE),
   data.table = {
     value <- data.table::data.table(primary_key = c(2L, 1L, 3L), amount = c(3.5, NaN, Inf), label = c("b", "a", NA))
     data.table::setkey(value, primary_key)
@@ -40,6 +41,15 @@ frame <- switch(
 )
 
 capture <- openwrangler_r_frame_contract$capture_frame(frame)
+if (
+  identical(args[[1L]], "readr-tibble") &&
+    (
+      !identical(class(frame), c("spec_tbl_df", "tbl_df", "tbl", "data.frame")) ||
+        is.null(attr(frame, "spec"))
+    )
+) {
+  stop("Capturing a readr tibble mutated the source dataframe.", call. = FALSE)
+}
 if (length(args) == 2L) {
   column_name <- names(frame)[[1L]]
   cat(openwrangler_r_frame_contract$encode_view_page(

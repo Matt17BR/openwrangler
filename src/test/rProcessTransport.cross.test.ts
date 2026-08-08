@@ -458,6 +458,8 @@ if (.Platform$OS.type != "windows") {
 }
 plain_frame <- data.frame(id = 1:3, label = c("ALPHA", "BETA", "GAMMA"), stringsAsFactors = FALSE)
 tibble_frame <- tibble::tibble(id = 1:2, label = c("one", "two"))
+readr_frame <- readr::read_csv(I("id,label\n1,one\n2,two"), show_col_types = FALSE)
+grouped_frame <- dplyr::group_by(tibble_frame, id)
 table_frame <- data.table::data.table(id = c(2L, 1L), label = c("b", "a"))
 relative_frame <- read.csv("relative.csv", stringsAsFactors = FALSE)
 source("helper.R", local = TRUE)
@@ -479,6 +481,7 @@ not_a_frame <- matrix(1:4, nrow = 2L)
         variables: [
           { backend: "r", dataframeFlavor: "r.data.frame", name: "helper_frame" },
           { backend: "r", dataframeFlavor: "r.data.frame", name: "plain_frame" },
+          { backend: "r", dataframeFlavor: "r.tibble", name: "readr_frame" },
           { backend: "r", dataframeFlavor: "r.data.frame", name: "relative_frame" },
           { backend: "r", dataframeFlavor: "r.data.table", name: "table_frame" },
           { backend: "r", dataframeFlavor: "r.tibble", name: "tibble_frame" }
@@ -499,6 +502,14 @@ not_a_frame <- matrix(1:4, nrow = 2L)
         }
       });
       expect(transport.isSessionMapped(sessionId)).toBe(true);
+
+      const readrSessionId = randomUUID();
+      const readrOpened = await transport.open("readr_frame", pageWindow(), { requestedSessionId: readrSessionId });
+      expect(readrOpened.page).toMatchObject({
+        dataframeFlavor: "r.tibble",
+        frameSemantics: { classes: ["tbl_df", "tbl", "data.frame"] },
+        shape: { rows: 2, columns: 2 }
+      });
 
       const preview = await transport.previewStep(
         sessionId,
@@ -542,6 +553,7 @@ not_a_frame <- matrix(1:4, nrow = 2L)
       expect(lengthPage.page.rows.map((row) => row.values[0]?.display)).toEqual(["5", "4", "5"]);
 
       await transport.close(sessionId);
+      await transport.close(readrSessionId);
       expect(transport.isSessionMapped(sessionId)).toBe(false);
       expect(await readFile(markerPath, "utf8")).toBe("executed\n");
       expect((await readdir(temporaryParent)).filter((name) => name.startsWith("openwrangler-r-"))).toEqual([]);
