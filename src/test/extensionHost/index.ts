@@ -1864,6 +1864,12 @@ function writeReleasedRLiterateDocumentFixture(
           "This prose contains `data.frame(id = 0L)` but is not R code.",
           "",
           ...loadCell,
+          "## Recent orders",
+          "",
+          "```{r orders-preview, echo=FALSE}",
+          'knitr::kable(utils::head(literate_orders, 8L), caption = "Regional orders preview")',
+          "```",
+          "",
           "<!--",
           "```{r}",
           "stop('An HTML comment is not an executable cell')",
@@ -3491,7 +3497,7 @@ async function exerciseReleasedNativeRMarkdownRender(source: vscode.Uri): Promis
   await vscode.commands.executeCommand("r.knitRmdToHtml");
   await waitForStableReleasedRenderedHtml(
     outputPath,
-    ["Regional orders", "2400001"],
+    ["Regional orders", "Regional orders preview", "2400001"],
     120_000,
     "the official R extension to render its R Markdown document"
   );
