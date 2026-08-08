@@ -32,6 +32,7 @@ import { inspectPreviewReleaseWorkflow as inspectReleaseWorkflow } from "./previ
 import {
   inspectPerformanceEvidenceReadme,
   inspectPreviewReadme,
+  inspectStablePublicCopy,
   PREVIEW_README_RELEASE_SECTION
 } from "./release-documents.mjs";
 import {
@@ -207,6 +208,20 @@ function patchZipEntry(bytes, entryName, patch) {
 
 test("accepts one internally consistent stable release candidate", () => {
   assert.deepEqual(inspectStableReleaseReadiness(ready()), []);
+});
+
+test("stable public copy rejects leftover 1.99 preview labels", () => {
+  assert.deepEqual(inspectStablePublicCopy("## R dataframes", "docs/media-gallery.md"), []);
+  assert.deepEqual(inspectStablePublicCopy("## R dataframes (1.99 preview)", "docs/media-gallery.md"), [
+    "docs/media-gallery.md still contains a 1.99 preview label. Remove it before the stable version 2 release."
+  ]);
+
+  const problems = inspectStableReleaseReadiness(
+    ready({ readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n## R (1.99 preview)\n` })
+  );
+  assert.ok(
+    problems.includes("README.md still contains a 1.99 preview label. Remove it before the stable version 2 release.")
+  );
 });
 
 test("requires one tracked, release-matched Data Wrangler review in the stable Performance section", () => {

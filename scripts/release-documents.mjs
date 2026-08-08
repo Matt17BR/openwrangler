@@ -452,8 +452,20 @@ export function inspectPreviewReadme(contents, label = "README.md") {
   return inspectReadmeReleaseRegion(contents, label, PREVIEW_README_RELEASE_SECTION, "preview");
 }
 
+export function inspectStablePublicCopy(contents, label = "Public documentation") {
+  if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > DOCUMENT_MAX_BYTES) {
+    return [`${label} must be bounded UTF-8 Markdown.`];
+  }
+  return /\b1\.99 previews?\b/iu.test(contents)
+    ? [`${label} still contains a 1.99 preview label. Remove it before the stable version 2 release.`]
+    : [];
+}
+
 export function inspectStableReadme(contents, label = "README.md") {
-  return inspectReadmeReleaseRegion(contents, label, STABLE_README_RELEASE_SECTION, "stable");
+  return [
+    ...inspectReadmeReleaseRegion(contents, label, STABLE_README_RELEASE_SECTION, "stable"),
+    ...inspectStablePublicCopy(contents, label)
+  ];
 }
 
 export function inspectPerformanceEvidenceReadme(contents, label = "README.md") {
