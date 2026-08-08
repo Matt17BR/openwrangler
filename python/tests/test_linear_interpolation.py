@@ -414,7 +414,10 @@ def test_linear_interpolation_validation_and_binding_are_strict() -> None:
 
 def test_pandas_linear_interpolation_addresses_duplicate_labels_by_position() -> None:
     engine = PandasEngine()
-    frame = pd.DataFrame([[100.0, 0, 0.0], [200.0, 1, None], [300.0, 4, 8.0]], columns=["value", "x", "value"])
+    frame = pd.DataFrame(
+        [[100.0, 0, 0.0], [200.0, 1, None], [300.0, 4, 8.0]],
+        columns=pd.Index(["value", "x", "value"]),
+    )
     operation = {
         "id": "duplicate-label-interpolation",
         "kind": "fillMissingValues",
