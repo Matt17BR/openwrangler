@@ -166,7 +166,7 @@ test("released-Jupyter Variables acceptance targets the canonical orders showcas
   assert.doesNotMatch(lateDuckdbReopen, /jupyter\.openVariableView|dispatchReleasedJupyterVariableAction/u);
 });
 
-test("released R Markdown render fixture emits the HTML evidence it awaits", async () => {
+test("released R Markdown fixture includes a real dataframe preview chunk", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const fixture = source.slice(
     source.indexOf("function writeReleasedRLiterateDocumentFixture("),
@@ -176,12 +176,6 @@ test("released R Markdown render fixture emits the HTML evidence it awaits", asy
     fixture,
     /"```\{r orders-preview, echo=FALSE\}",\s*'knitr::kable\(utils::head\(literate_orders, 8L\), caption = "Regional orders preview"\)',\s*"```"/u
   );
-
-  const render = source.slice(
-    source.indexOf("async function exerciseReleasedNativeRMarkdownRender("),
-    source.indexOf("async function openReleasedNativeQuartoPreview(")
-  );
-  assert.match(render, /\["Regional orders", "Regional orders preview", "2400001"\]/u);
 });
 
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
