@@ -113,12 +113,16 @@ stages:
                       node scripts/marketplace-identity-profile.mjs
                       npx --no-install vsce verify-pat Matt17BR --azure-credential
                       node scripts/verify-registry-release-artifact.mjs canonical-release
+                      publish_status=0
                       if [ "$RELEASE_PRERELEASE" = "true" ]; then
-                        npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate
+                        npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate || publish_status=$?
                       elif [ "$RELEASE_PRERELEASE" = "false" ]; then
-                        npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate
+                        npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate || publish_status=$?
                       else
                         exit 64
+                      fi
+                      if [ "$publish_status" -ne 0 ]; then
+                        echo "vsce publish exited with status $publish_status; public verification will determine the result." >&2
                       fi
                     addSpnToEnvironment: false
                     visibleAzLogin: false
