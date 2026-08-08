@@ -588,10 +588,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R"/u
   );
-  assert.match(
-    readme,
-    /alt="A rendered Quarto table beside the source document and Open Wrangler dataframe picker"/u
-  );
+  assert.match(readme, /alt="A rendered Quarto table beside the source document and Open Wrangler dataframe picker"/u);
   assert.match(readme, /Data Wrangler converted Polars input to\s+Pandas/u);
   assert.match(readme, /Open Wrangler kept it as Polars/u);
   assert.doesNotMatch(readme, /That explains part of the difference/u);
