@@ -2358,6 +2358,69 @@ describe("OpenWranglerPanel retained view state", () => {
     });
   });
 
+  it("forwards validated profile priority and rejects unsupported values", async () => {
+    const request = vi.fn(
+      async (candidate: OpenWranglerRequest, _options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+        if (candidate.kind === "getSummary") {
+          return {
+            kind: "summary",
+            revision: metadata.revision,
+            viewRequestId: candidate.viewRequestId,
+            summaries: [summary]
+          };
+        }
+        throw new Error(`Unexpected request ${candidate.kind}`);
+      }
+    );
+    const prioritizeViewRequest = vi.fn();
+    const harness = createPanelHarness({ request, prioritizeViewRequest });
+    await harness.open();
+    await harness.send({ kind: "setViewContext", viewContextId: "priority-view" });
+
+    await harness.send({ kind: "prioritizeViewRequest", viewRequestId: "selected-summary" });
+    expect(prioritizeViewRequest).toHaveBeenCalledWith("session", "selected-summary");
+    await harness.send({ kind: "prioritizeViewRequest", viewRequestId: "" });
+    await harness.send({ kind: "prioritizeViewRequest", viewRequestId: "selected-summary", priority: "interactive" });
+    expect(prioritizeViewRequest).toHaveBeenCalledOnce();
+
+    await harness.send({
+      kind: "runtimeRequest",
+      priority: "interactive",
+      viewContextId: "priority-view",
+      request: {
+        kind: "getSummary",
+        viewRequestId: "selected-summary",
+        filterModel: metadata.filterModel,
+        columnIds: ["c:0"]
+      }
+    });
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "getSummary", viewRequestId: "selected-summary" }),
+      { priority: "interactive", viewContextId: "priority-view" }
+    );
+
+    request.mockClear();
+    await harness.send({
+      kind: "runtimeRequest",
+      priority: "urgent",
+      viewContextId: "priority-view",
+      request: {
+        kind: "getSummary",
+        viewRequestId: "invalid-priority",
+        filterModel: metadata.filterModel,
+        columnIds: ["c:0"]
+      }
+    });
+    expect(request).not.toHaveBeenCalled();
+
+    await harness.send({
+      kind: "runtimeRequest",
+      priority: "interactive",
+      request: { kind: "undoStep", offset: 0, limit: 20, columnOffset: 0, columnLimit: 16 }
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("rejects a stale profile from an older opaque view even when metadata and filters match", async () => {
     let resolveStaleSummary: ((response: OpenWranglerResponse) => void) | undefined;
     let resolveStaleStats: ((response: OpenWranglerResponse) => void) | undefined;

@@ -3703,6 +3703,56 @@ describe("SessionCoordinator", () => {
     expect(executionOrder).toEqual(["stats", "promoted", "background"]);
   });
 
+  it("promotes one queued profile without repeating active work", async () => {
+    const activeProfile = deferred<OpenWranglerResponse>();
+    const executionOrder: string[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "getDatasetStats") {
+        executionOrder.push("active");
+        return activeProfile.promise;
+      }
+      if (request.kind === "getSummary") {
+        executionOrder.push(request.viewRequestId.includes("selected") ? "selected" : "other");
+        return summaryResponse(request.viewRequestId);
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+
+    const stats = bridge.request({
+      kind: "getDatasetStats",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "promote-active",
+      filterModel: opened.metadata.filterModel
+    });
+    await vi.waitFor(() => expect(executionOrder).toEqual(["active"]));
+    bridge.prioritizeViewRequest?.(opened.metadata.sessionId, "promote-active");
+    const selected = bridge.request({
+      kind: "getSummary",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "promote-selected",
+      filterModel: opened.metadata.filterModel
+    });
+    const other = bridge.request({
+      kind: "getSummary",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "promote-other",
+      filterModel: opened.metadata.filterModel
+    });
+    bridge.prioritizeViewRequest?.(opened.metadata.sessionId, "promote-selected");
+
+    activeProfile.resolve(datasetStatsResponse("promote-active"));
+    await Promise.all([stats, selected, other]);
+    expect(executionOrder).toEqual(["active", "selected", "other"]);
+  });
+
   it("drops only obsolete queued background view requests", async () => {
     const activeProfile = deferred<OpenWranglerResponse>();
     const executionOrder: string[] = [];

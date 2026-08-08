@@ -120,6 +120,8 @@ export interface OpenWranglerBridge {
   ): Promise<OpenWranglerResponse>;
   /** Drops queued profiling/value work for views the webview no longer needs. Active work is left alone. */
   cancelViewRequests?(sessionId: string, viewRequestIds: readonly string[]): void;
+  /** Moves one queued profile ahead of passive background work without repeating an active request. */
+  prioritizeViewRequest?(sessionId: string, viewRequestId: string): void;
   /** Confirms the opaque logical view currently shown by a webview. */
   setViewContext?(sessionId: string, viewContextId: string): void;
   /** Returns the host-owned grid presentation for a live session. */
