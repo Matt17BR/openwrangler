@@ -17975,9 +17975,10 @@ async function revealCodePreviewOperationLine(
   const operationLine = codePreview.locator(".cm-line").filter({ hasText: operationText }).last();
   await operationLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
   await operationLine.scrollIntoViewIfNeeded();
-  await new Promise((resolve) => setTimeout(resolve, 100));
   const resultLine = codePreview.locator(".cm-line").filter({ hasText: resultText }).last();
   await resultLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  await resultLine.scrollIntoViewIfNeeded();
+  await new Promise((resolve) => setTimeout(resolve, 100));
   const [operationLineText, resultLineText, operationBounds, resultBounds, scrollerBounds] = await Promise.all([
     operationLine.innerText(),
     resultLine.innerText(),

@@ -3291,11 +3291,8 @@ openwrangler_r_kernel_agent <- local({
         lines <- c(
           lines,
           guard_lines,
-          "  .ow_result <- .ow_group_by(",
-          "    .ow_result,",
-          sprintf("    list(%s),", paste(key_specs, collapse = ", ")),
-          sprintf("    list(%s)", paste(aggregation_specs, collapse = ", ")),
-          "  )"
+          sprintf("  .ow_result <- .ow_group_by(.ow_result, list(%s),", paste(key_specs, collapse = ", ")),
+          sprintf("    list(%s))", paste(aggregation_specs, collapse = ", "))
         )
       } else if (identical(step$kind, "renameColumn")) {
         lines <- c(
