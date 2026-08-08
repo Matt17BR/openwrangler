@@ -1510,7 +1510,7 @@ test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
   assert.equal(install?.length, 1, "The focused R matrix must install its contract packages once.");
   assert.match(
     install?.[0]?.run ?? "",
-    /install\.packages\(c\("jsonlite", "tibble", "readr", "data\.table", "bit64", "collapse", "nanoparquet"\)/u,
+    /install\.packages\(c\("jsonlite", "tibble", "readr", "dplyr", "data\.table", "bit64", "collapse", "nanoparquet"\)/u,
     "The focused R matrix must install every package exercised by the contract."
   );
   assert.equal(
