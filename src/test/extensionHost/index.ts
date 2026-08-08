@@ -1833,14 +1833,25 @@ function writeReleasedRLiterateDocumentFixture(
       ? [
           "---",
           "title: Regional orders",
-          "format: html",
+          "format:",
+          "  html:",
+          "    toc: true",
+          "    df-print: kable",
           "---",
           "",
           "# Regional orders",
           "",
           "Load the latest regional order export and inspect it in Open Wrangler.",
           "",
-          ...loadCell
+          ...loadCell,
+          "## Recent orders",
+          "",
+          "```{r}",
+          "#| label: regional-orders-preview",
+          "#| echo: false",
+          'knitr::kable(utils::head(regional_orders, 8L), caption = "Regional orders preview")',
+          "```",
+          ""
         ]
       : [
           "---",
@@ -1863,7 +1874,7 @@ function writeReleasedRLiterateDocumentFixture(
           "```",
           "-->",
           "",
-          "```{python}",
+          "```{python, eval=FALSE}",
           "raise RuntimeError('A Python cell must not run in the R document process')",
           "```",
           "",
@@ -2877,6 +2888,7 @@ async function exerciseReleasedRLiterateDocumentJourneys(
   directory: string,
   screenshotOutput?: string
 ): Promise<void> {
+  const nativeREditorTooling = await assertReleasedNativeREditorTooling();
   const fixtures = [
     writeReleasedRLiterateDocumentFixture(directory, "rmarkdown"),
     writeReleasedRLiterateDocumentFixture(directory, "quarto")
@@ -2904,6 +2916,13 @@ async function exerciseReleasedRLiterateDocumentJourneys(
     for (const fixture of fixtures) {
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:open`);
       const document = await vscode.workspace.openTextDocument(fixture.sourceUri);
+      if (nativeREditorTooling) {
+        assert.equal(
+          document.languageId,
+          fixture.kind === "quarto" ? "quarto" : "rmd",
+          `The official editor extensions must own the ${fixture.kind} fixture language.`
+        );
+      }
       openedDocuments.set(fixture.sourceUri.toString(), document);
       const sourceText = document.getText();
       const sourceVersion = document.version;
@@ -2911,8 +2930,23 @@ async function exerciseReleasedRLiterateDocumentJourneys(
       assert.equal(vscode.window.activeTextEditor?.document, document);
 
       if (fixture.kind === "quarto") {
-        await invokeReleasedRDocumentTitleAction(workbench, fixture.sourceUri, fixture.variableName, screenshotOutput);
+        const closePreview = nativeREditorTooling
+          ? await openReleasedNativeQuartoPreview(workbench, fixture.sourceUri)
+          : async () => {};
+        try {
+          await invokeReleasedRDocumentTitleAction(
+            workbench,
+            fixture.sourceUri,
+            fixture.variableName,
+            screenshotOutput
+          );
+        } finally {
+          await closePreview();
+        }
       } else {
+        if (nativeREditorTooling) {
+          await exerciseReleasedNativeRMarkdownRender(fixture.sourceUri);
+        }
         await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, fixture.variableName, false);
       }
       const opened = await waitForReleasedRDocumentSession(
@@ -3119,6 +3153,206 @@ async function exerciseReleasedRLiterateDocumentJourneys(
   if (acceptanceError) throw acceptanceError.value;
 }
 
+async function assertReleasedNativeREditorTooling(): Promise<boolean> {
+  const expected = [
+    ["reditorsupport.r-syntax", "0.1.4"],
+    ["reditorsupport.r", "2.8.8"],
+    ["quarto.quarto", "1.135.0"]
+  ] as const;
+  const installed = expected.map(([id, version]) => ({ id, version, extension: vscode.extensions.getExtension(id) }));
+  if (installed.every(({ extension }) => extension === undefined)) return false;
+  for (const { id, version, extension } of installed) {
+    assert.ok(extension, `Packaged R acceptance requires ${id}@${version}.`);
+    assert.equal(extension.packageJSON.version, version, `Packaged R acceptance requires ${id}@${version}.`);
+  }
+  for (const id of ["reditorsupport.r", "quarto.quarto"] as const) {
+    const extension = vscode.extensions.getExtension(id);
+    assert.ok(extension);
+    await withBoundedAcceptancePromise(extension.activate(), 30_000, `activating ${id}`);
+    assert.equal(extension.isActive, true, `${id} must activate in the private editor profile.`);
+  }
+  const commands = new Set(await vscode.commands.getCommands(true));
+  for (const command of ["r.runSource", "r.knitRmdToHtml", "quarto.renderDocument", "quarto.preview"]) {
+    assert.ok(commands.has(command), `The native R/Quarto profile did not register ${command}.`);
+  }
+  const quarto = vscode.workspace.getConfiguration("quarto").get<string>("path");
+  assert.ok(quarto && path.isAbsolute(quarto) && existsSync(quarto), "Quarto must use the pinned private CLI.");
+  assert.equal(
+    execFileSync(quarto, ["--version"], { encoding: "utf8", timeout: 30_000 }).trim(),
+    "1.10.18",
+    "The native editor journey must use Quarto 1.10.18."
+  );
+  return true;
+}
+
+async function exerciseReleasedNativeRMarkdownRender(source: vscode.Uri): Promise<void> {
+  const document = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === source.toString());
+  assert.ok(document, "The R Markdown render requires its exact open source document.");
+  assert.equal(document.languageId, "rmd");
+  await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
+  const outputPath = source.fsPath.replace(/\.Rmd$/iu, ".html");
+  rmSync(outputPath, { force: true });
+  recordAcceptanceProgress("jupyter-r:rmarkdown:render");
+  await vscode.commands.executeCommand("r.knitRmdToHtml");
+  await waitForStableReleasedRenderedHtml(
+    outputPath,
+    ["Regional orders", "2400001"],
+    120_000,
+    "the official R extension to render its R Markdown document"
+  );
+  rmSync(outputPath, { force: true });
+  recordAcceptanceProgress("jupyter-r:rmarkdown:render-complete");
+}
+
+async function openReleasedNativeQuartoPreview(workbench: Page, source: vscode.Uri): Promise<() => Promise<void>> {
+  const document = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === source.toString());
+  assert.ok(document, "The Quarto preview requires its exact open source document.");
+  assert.equal(document.languageId, "quarto");
+  await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.One });
+  const outputPath = source.fsPath.replace(/\.qmd$/u, ".html");
+  rmSync(outputPath, { force: true });
+  const priorTabs = new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs));
+  const priorTerminals = new Set(vscode.window.terminals);
+  let cleaned = false;
+  let previewTabs: vscode.Tab[] = [];
+  let previewTerminals: vscode.Terminal[] = [];
+  let previewOwnershipFrozen = false;
+  const captureOwnedUi = () => {
+    if (previewOwnershipFrozen) return;
+    previewTabs = vscode.window.tabGroups.all
+      .flatMap((group) => group.tabs)
+      .filter(
+        (tab) =>
+          !priorTabs.has(tab) &&
+          tab.input instanceof vscode.TabInputWebview &&
+          tab.input.viewType === "quarto.previewView"
+      );
+    previewTerminals = vscode.window.terminals.filter(
+      (terminal) => !priorTerminals.has(terminal) && terminal.name === "Quarto Preview"
+    );
+  };
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    captureOwnedUi();
+    const openTabs = previewTabs.filter((tab) => vscode.window.tabGroups.all.some((group) => group.tabs.includes(tab)));
+    if (openTabs.length > 0) {
+      assert.equal(await vscode.window.tabGroups.close(openTabs, true), true);
+    }
+    for (const terminal of previewTerminals) terminal.dispose();
+    await waitFor(
+      () => previewTerminals.every((terminal) => !vscode.window.terminals.includes(terminal)),
+      10_000,
+      "the official Quarto preview terminal to close"
+    );
+    await workbench.waitForTimeout(250);
+    rmSync(outputPath, { force: true });
+  };
+
+  let previewFailure: unknown;
+  try {
+    recordAcceptanceProgress("jupyter-r:quarto:preview");
+    void Promise.resolve(vscode.commands.executeCommand("quarto.preview")).catch((error: unknown) => {
+      previewFailure = error;
+    });
+    const deadline = Date.now() + 120_000;
+    let previewLocator: Locator | undefined;
+    let renderedHtmlReady = false;
+    let previousHtmlSignature: string | undefined;
+    let stableHtmlObservations = 0;
+    while (Date.now() < deadline) {
+      if (previewFailure) throw previewFailure;
+      captureOwnedUi();
+      previewLocator = await releasedQuartoPreviewLocator(workbench);
+      const html = releasedRenderedHtmlSnapshot(outputPath, ["Regional orders", "Regional orders preview", "2400001"]);
+      if (html) {
+        if (html.signature === previousHtmlSignature) stableHtmlObservations += 1;
+        else {
+          previousHtmlSignature = html.signature;
+          stableHtmlObservations = 1;
+        }
+        renderedHtmlReady = stableHtmlObservations >= 2;
+      }
+      if (previewTabs.length === 1 && previewTerminals.length >= 1 && previewLocator && renderedHtmlReady) break;
+      await workbench.waitForTimeout(100);
+    }
+    assert.equal(previewTabs.length, 1, "Quarto Preview must open one new internal preview tab.");
+    assert.ok(previewTerminals.length >= 1, "Quarto Preview must own a disposable terminal.");
+    assert.ok(previewLocator, "The internal Quarto preview must show the rendered R table.");
+    assert.equal(renderedHtmlReady, true, "Quarto Preview must finish the expected HTML render.");
+    previewOwnershipFrozen = true;
+    recordAcceptanceProgress("jupyter-r:quarto:preview-ready");
+    return cleanup;
+  } catch (error) {
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "The Quarto preview and its cleanup both failed.");
+    }
+    throw error;
+  }
+}
+
+async function waitForStableReleasedRenderedHtml(
+  outputPath: string,
+  requiredText: readonly string[],
+  timeoutMs: number,
+  expectation: string
+): Promise<void> {
+  let previousSignature: string | undefined;
+  let stableObservations = 0;
+  await waitFor(
+    () => {
+      const snapshot = releasedRenderedHtmlSnapshot(outputPath, requiredText);
+      if (!snapshot) return false;
+      if (snapshot.signature === previousSignature) stableObservations += 1;
+      else {
+        previousSignature = snapshot.signature;
+        stableObservations = 1;
+      }
+      return stableObservations >= 2;
+    },
+    timeoutMs,
+    expectation
+  );
+}
+
+function releasedRenderedHtmlSnapshot(
+  outputPath: string,
+  requiredText: readonly string[]
+): { readonly signature: string } | undefined {
+  if (!existsSync(outputPath)) return undefined;
+  const before = lstatSync(outputPath, { bigint: true });
+  if (before.isSymbolicLink() || !before.isFile() || before.size <= 0n || before.size > 5n * 1024n * 1024n) {
+    throw new Error("The native R document render did not produce one bounded regular HTML file.");
+  }
+  const output = readFileSync(outputPath, "utf8");
+  const after = lstatSync(outputPath, { bigint: true });
+  if (
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeNs !== after.mtimeNs
+  ) {
+    return undefined;
+  }
+  if (!/<\/html>\s*$/iu.test(output) || requiredText.some((text) => !output.includes(text))) return undefined;
+  return { signature: `${after.dev}:${after.ino}:${after.size}:${after.mtimeNs}` };
+}
+
+async function releasedQuartoPreviewLocator(workbench: Page): Promise<Locator | undefined> {
+  for (const frame of releasedWorkbenchFrames(workbench)) {
+    const caption = frame.getByText("Regional orders preview", { exact: true }).first();
+    if ((await caption.count().catch(() => 0)) > 0 && (await caption.isVisible().catch(() => false))) {
+      const knownOrder = frame.getByText(/^(?:2400001|2,400,001)$/u).first();
+      if ((await knownOrder.count().catch(() => 0)) > 0 && (await knownOrder.isVisible().catch(() => false))) {
+        return caption;
+      }
+    }
+  }
+  return undefined;
+}
+
 async function prepareReleasedRDocumentScreenshotWorkbench(
   workbench: Page,
   source: vscode.Uri,
@@ -3303,18 +3537,23 @@ async function assertReleasedRDocumentPickerMediaGeometry(
     .filter({ hasText: `${variableName} <-` })
     .first();
   await sourceLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  const [lineText, lineBounds, pickerBounds] = await Promise.all([
+  const preview = await releasedQuartoPreviewLocator(workbench);
+  assert.ok(preview, "The Quarto media scene requires the official rendered preview.");
+  const [lineText, lineBounds, pickerBounds, previewBounds] = await Promise.all([
     sourceLine.innerText(),
     sourceLine.boundingBox(),
-    picker.boundingBox()
+    picker.boundingBox(),
+    preview.boundingBox()
   ]);
   assert.match(lineText, new RegExp(`${variableName}\\s*<-\\s*utils::read\\.csv`, "u"));
   assert.ok(lineBounds, "The Quarto picker scene requires a measurable dataframe source line.");
   assert.ok(pickerBounds, "The Quarto picker scene requires a measurable picker.");
-  const crop = { left: 80, top: 20, right: 1_360, bottom: 540 };
+  assert.ok(previewBounds, "The Quarto picker scene requires a measurable rendered preview.");
+  const crop = { left: 0, top: 20, right: 1_440, bottom: 780 };
   for (const [subject, bounds] of [
     ["source line", lineBounds],
-    ["picker", pickerBounds]
+    ["picker", pickerBounds],
+    ["rendered preview", previewBounds]
   ] as const) {
     assert.ok(
       bounds.x >= crop.left &&

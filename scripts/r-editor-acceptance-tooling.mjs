@@ -84,7 +84,9 @@ export async function prepareREditorAcceptanceTooling(
     "bin",
     "quarto"
   );
-  assertContainedExecutable(quartoExecutable, installRoot);
+  assertContainedExecutable(quartoExecutable, installRoot, "quarto");
+  const pandocExecutable = resolve(quartoExecutable, "..", "tools", "pandoc");
+  assertContainedExecutable(pandocExecutable, installRoot, "pandoc");
   const version = await runCommand(
     {
       executable: quartoExecutable,
@@ -100,7 +102,8 @@ export async function prepareREditorAcceptanceTooling(
   return Object.freeze({
     root,
     extensionVsixes: Object.freeze(extensionVsixes),
-    quartoExecutable
+    quartoExecutable,
+    pandocDirectory: resolve(pandocExecutable, "..")
   });
 }
 
@@ -177,7 +180,7 @@ function privateDirectory(path) {
   return canonical;
 }
 
-function assertContainedExecutable(path, parent) {
+function assertContainedExecutable(path, parent, expectedName) {
   const canonical = realpathSync(path);
   const canonicalParent = realpathSync(parent);
   const contained = relative(canonicalParent, canonical);
@@ -188,7 +191,7 @@ function assertContainedExecutable(path, parent) {
   if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o111) === 0) {
     throw new Error("The extracted Quarto CLI is not an executable regular file.");
   }
-  if (basename(canonical) !== "quarto" || !existsSync(canonical)) {
-    throw new Error("The extracted Quarto CLI path is invalid.");
+  if (basename(canonical) !== expectedName || !existsSync(canonical)) {
+    throw new Error(`The extracted Quarto ${expectedName} path is invalid.`);
   }
 }

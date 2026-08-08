@@ -66,6 +66,7 @@ import {
 } from "./jupyter-acceptance-environment.mjs";
 import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
 import { preflightPackagedEditorPython } from "./packaged-python-preflight.mjs";
+import { prepareREditorAcceptanceTooling, R_EDITOR_ACCEPTANCE_TOOLING } from "./r-editor-acceptance-tooling.mjs";
 import {
   REAL_REMOTE_JUPYTER_ENV,
   remoteJupyterAcceptanceEnabled,
@@ -116,12 +117,17 @@ const privatePathSafetyPolicy = createEditorAcceptancePrivatePathSafetyPolicy({
 const reportedWithheldCategories = new Set();
 let editorDisplay;
 let cursorAcquisition;
+let rEditorTooling;
 
 try {
   hostHomes = collectEditorAcceptancePrivateDiagnosticPaths([
     resolve(root, process.argv[2] ?? "openwrangler.vsix"),
     process.env.OPEN_WRANGLER_PYTHON_EXTENSION_VSIX,
     process.env.OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX,
+    process.env.OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSIX,
+    process.env.OPEN_WRANGLER_R_EXTENSION_VSIX,
+    process.env.OPEN_WRANGLER_QUARTO_EXTENSION_VSIX,
+    process.env.OPEN_WRANGLER_QUARTO_CLI_ARCHIVE,
     process.env.OPEN_WRANGLER_TEST_RSCRIPT
   ]);
   evidenceStagingReceipt = createEditorAcceptanceEvidenceStagingRoot(resolve(root, "tmp", "editor-acceptance-staging"));
@@ -411,6 +417,22 @@ try {
               throw new Error("Released-Jupyter R acceptance did not resolve the reviewed package versions.");
             }
             process.stdout.write(`Hosted R packages: ${rAcceptanceEnvironment.packageRecord.replaceAll("\n", ", ")}\n`);
+            if (process.platform === "linux" && process.arch === "x64") {
+              writeCorrelatedProgress(
+                orchestrationProgressPath,
+                orchestrationRunId,
+                "setup",
+                "setup:prepare-r-editor-tooling"
+              );
+              rEditorTooling = await prepareREditorAcceptanceTooling(temporaryRoot, {
+                artifactPaths: {
+                  rSyntax: process.env.OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSIX,
+                  r: process.env.OPEN_WRANGLER_R_EXTENSION_VSIX,
+                  quartoExtension: process.env.OPEN_WRANGLER_QUARTO_EXTENSION_VSIX,
+                  quartoCli: process.env.OPEN_WRANGLER_QUARTO_CLI_ARCHIVE
+                }
+              });
+            }
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
@@ -715,7 +737,31 @@ try {
                       "files.simpleDialog.enable": true,
                       "extensions.ignoreRecommendations": true,
                       "notebook.globalToolbar": true,
-                      "jupyter.askForKernelRestart": false
+                      "jupyter.askForKernelRestart": false,
+                      ...(jupyterUserDataDirectory === jupyterRUserData && rEditorTooling
+                        ? {
+                            "files.associations": {
+                              "*.R": "r",
+                              "*.Rmd": "rmd",
+                              "*.rmd": "rmd",
+                              "*.qmd": "quarto"
+                            },
+                            "r.rpath.linux": rAcceptanceEnvironment.rExecutable,
+                            "r.rterm.linux": rAcceptanceEnvironment.rExecutable,
+                            "r.libPaths": [rAcceptanceEnvironment.libraryDir],
+                            "r.rmarkdown.knit.useBackgroundProcess": true,
+                            "r.rmarkdown.knit.focusOutputChannel": false,
+                            "r.rmarkdown.knit.openOutputFile": false,
+                            "r.rmarkdown.knit.command": `local({ rmarkdown::find_pandoc(dir = ${JSON.stringify(
+                              rEditorTooling.pandocDirectory
+                            )}); rmarkdown::render })`,
+                            "quarto.path": rEditorTooling.quartoExecutable,
+                            "quarto.usePipQuarto": false,
+                            "quarto.render.previewType": "internal",
+                            "quarto.render.previewReveal": true,
+                            "quarto.render.renderOnSave": false
+                          }
+                        : {})
                     });
                   }
                 }
@@ -859,6 +905,34 @@ try {
                     },
                     { timeoutMs: 180_000 }
                   );
+                  if (acceptanceMode === "r-jupyter" && rEditorTooling) {
+                    writeCorrelatedProgress(
+                      progressPaths.setup,
+                      runIds.setup,
+                      "setup",
+                      "setup:install-r-quarto-extensions"
+                    );
+                    for (const target of rEditorTooling.extensionVsixes) {
+                      await runBoundedEditorCliCommand(
+                        {
+                          editor,
+                          args: [
+                            "--user-data-dir",
+                            jupyterRUserData,
+                            "--extensions-dir",
+                            jupyterExtensions,
+                            "--install-extension",
+                            target,
+                            "--force",
+                            ...sandboxArgs
+                          ],
+                          environment: editorEnvironment,
+                          label: `${editor.name} native R and Quarto extension installation`
+                        },
+                        { timeoutMs: 120_000 }
+                      );
+                    }
+                  }
                 }
                 if (dataWranglerCoexistenceEnabled) {
                   writeCorrelatedProgress(
@@ -998,7 +1072,14 @@ try {
                   for (const expected of [
                     expectedExtension,
                     EXPECTED_ACCEPTANCE_HARNESS,
-                    PINNED_JUPYTER_EXTENSION_ID
+                    PINNED_JUPYTER_EXTENSION_ID,
+                    ...(acceptanceMode === "r-jupyter" && rEditorTooling
+                      ? [
+                          R_EDITOR_ACCEPTANCE_TOOLING.rSyntax.id,
+                          R_EDITOR_ACCEPTANCE_TOOLING.r.id,
+                          R_EDITOR_ACCEPTANCE_TOOLING.quartoExtension.id
+                        ]
+                      : [])
                   ]) {
                     if (!installedJupyterLines.includes(expected)) {
                       throw new Error(
