@@ -58,14 +58,14 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 The 1.99 preview has three R entry points:
 
-| Workflow                    | How it opens dataframes                                                                 | Current validation                                                      |
-| --------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| IRkernel notebook           | From the notebook toolbar or Jupyter Variables                                          | VS Code on Linux, macOS, and Windows; Cursor on Linux                   |
-| Selected VS Code R terminal | Select the R terminal, then choose **Operations → Refresh R dataframes**                | Runtime and extension tests pass; packaged VS Code/Cursor check pending |
-| `.R`, `.Rmd`, or `.qmd`     | Choose **Run R Document in Open Wrangler…** to start an Open Wrangler-managed R process | VS Code and Cursor on Linux; VS Code on macOS                           |
+| Workflow                    | How it opens dataframes                                                                 | Available in                                          |
+| --------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| IRkernel notebook           | From the notebook toolbar or Jupyter Variables                                          | VS Code on Linux, macOS, and Windows; Cursor on Linux |
+| Selected VS Code R terminal | Select the R terminal, then choose **Operations → Refresh R dataframes**                | VS Code and Cursor on Linux                           |
+| `.R`, `.Rmd`, or `.qmd`     | Choose **Run R Document in Open Wrangler…** to start an Open Wrangler-managed R process | VS Code and Cursor on Linux; VS Code on macOS         |
 
 R-document support follows the machine running the extension host. Remote document execution is experimental, and a
-Windows extension host rejects it. IRkernel notebooks continue to work on Windows.
+Windows extension host rejects it. IRkernel notebooks work on Windows.
 
 ## Why Open Wrangler
 
@@ -224,7 +224,7 @@ The entry point determines which process owns the session:
   the file start-mode setting, which defaults to Editing. Generated R can be inserted back into the exact open
   document. This command does not replace Quarto or R Markdown rendering.
 
-Remote R-document execution is experimental and is not part of the release test matrix.
+Remote R-document execution is experimental.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/r-quarto-variable-picker.png"><img alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
 
@@ -306,7 +306,7 @@ Polars sessions use lazy scans and push filtering, sorting, and column selection
 supports it. Pandas and DuckDB also stay in their native engines.
 
 The published comparison covers Open Wrangler 1.2.1 and Microsoft Data Wrangler 1.24.2. Open Wrangler was faster in
-the notebook-preview and CSV-profiling runs; the closest Parquet workbench and profiling results were similar. For the
+the notebook-preview and CSV-profiling runs. For Parquet, workbench-open and profiling times were close. For the
 Polars runs, Data Wrangler converted the dataframe to Pandas while Open Wrangler stayed in Polars. The benchmark did
 not time the conversion by itself, so it cannot say how much of the gap came from that difference.
 
@@ -317,8 +317,8 @@ before the stable 2.0 release.
 ## Roadmap
 
 - **1.x:** keep improving performance, DuckDB, the Python engines, and support for other desktop VS Code forks.
-- **1.99 previews:** finish testing the 21 R operations, notebooks, documents, and Parquet export in packaged
-  VS Code and Cursor. Progress is tracked in [#87](https://github.com/Matt17BR/openwrangler/issues/87).
+- **1.99 previews:** complete the R operation set, notebook and document workflows, and Parquet export. Progress is
+  tracked in [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 - **2.0:** ship stable R support after release testing and an updated performance comparison. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   explains the runtime boundary.
