@@ -64,13 +64,13 @@ interface PackageManifest {
 }
 
 const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8")) as PackageManifest;
+const repositoryMetadata = JSON.parse(
+  readFileSync(resolve(process.cwd(), ".github", "repository-metadata.json"), "utf8")
+) as { description: string };
 
 describe("Marketplace and walkthrough copy", () => {
-  it("states the engine, notebook, and R source boundaries directly", () => {
-    expect(manifest.description).toBe(
-      "Open source dataframe wrangler and previewer for VS Code and its forks with native support for Python " +
-        "(Polars, Pandas, etc.) and R (tidyverse, data.table, etc.)"
-    );
+  it("keeps public metadata and engine boundaries current", () => {
+    expect(manifest.description).toBe(repositoryMetadata.description);
     expect(manifest.keywords).toEqual(
       expect.arrayContaining([
         "dataframe",

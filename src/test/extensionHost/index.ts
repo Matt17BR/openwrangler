@@ -484,11 +484,6 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
-  assert.equal(
-    extension.packageJSON.description,
-    "Open source dataframe wrangler and previewer for VS Code and its forks with native support for Python " +
-      "(Polars, Pandas, etc.) and R (tidyverse, data.table, etc.)"
-  );
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
