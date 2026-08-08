@@ -85,6 +85,11 @@ The released v1.1.1 notebook UX prepares automatic Pandas/Polars MIME formatters
 
 Inline MIME v2 output shows every captured column and pages the captured rows at 10, 20, 50, or 100 rows per page. When the output retains one canonical live-variable link, its single **Open in Open Wrangler** action opens the complete current dataframe through the exact originating notebook and kernel; it never substitutes the saved capture. An unlinked output stays readable inline and tells the user to run the cell again instead of exposing a misleading open action. The notebook-toolbar and Jupyter Variables workflows remain additional live entry points. Focused unit, renderer, provenance, provider-conflict, restart, and packaged-editor acceptance defined in `docs/testing.md` must be green before this candidate is released.
 
+Trusted Python `.py` editors expose **Open in Open Wrangler** before Jupyter has detected the file's cells. The
+command runs only the `# %%` code cell under the cursor in the selected Python Interactive kernel, then
+opens a dataframe from that exact Interactive Window. A missing marker, failed cell, changed source, or ambiguous
+window stops before variable discovery; the command never runs the whole file or switches to a different source.
+
 ## Native R preview
 
 Open Wrangler 1.99 previews can open base `data.frame`, tibble, and `data.table` variables through IRkernel or from

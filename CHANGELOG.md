@@ -44,6 +44,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- **Open in Open Wrangler** now appears immediately in trusted Python `.py` editors, including before Jupyter has
+  detected the file's cells. The action still runs only the `# %%` cell under the cursor, never the whole file.
 - The operation search icon now stays inside the search field.
 - The getting-started walkthrough now distinguishes editable DuckDB file sessions from view-only notebook
   relations.

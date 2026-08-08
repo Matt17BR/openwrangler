@@ -156,6 +156,10 @@ In trusted Python notebooks, Open Wrangler previews Pandas, Polars, and DuckDB o
 the notebook toolbar. **Open in Open Wrangler** loads the current live dataframe. If you reopened a notebook and only
 its saved output is available, rerun the cell first.
 
+Python files divided into `# %%` cells have the same action in the editor toolbar and tab menu. Put the cursor in the
+cell that creates the dataframe; Open Wrangler runs that cell in the Python Interactive window and then opens the
+live dataframe you choose. It does not run the whole file.
+
 If Microsoft Data Wrangler is installed too, choose which extension owns automatic previews with **Open Wrangler:
 Choose Notebook Preview Provider**.
 

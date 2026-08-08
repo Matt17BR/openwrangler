@@ -385,7 +385,7 @@ describe("notebook launch contributions", () => {
 
   it("runs the current Python cell before opening a live dataframe and offers an explicit refresh", () => {
     const pythonCellContext =
-      "editorFocus && editorLangId == python && jupyter.hascodecells && !notebookEditorFocused && isWorkspaceTrusted";
+      "editorFocus && editorLangId == python && !notebookEditorFocused && isWorkspaceTrusted && resourceExtname =~ /\\.py$/i";
     expect(manifest.activationEvents).toEqual(
       expect.arrayContaining([
         "onCommand:openWrangler.runPythonCellAndOpenVariable",
@@ -414,6 +414,10 @@ describe("notebook launch contributions", () => {
       expect(manifest.contributes?.menus?.[menu]).not.toContainEqual(
         expect.objectContaining({ command: "openWrangler.openPythonInteractiveVariable" })
       );
+      const entry = manifest.contributes?.menus?.[menu]?.find(
+        (candidate) => candidate.command === "openWrangler.runPythonCellAndOpenVariable"
+      );
+      expect(entry?.when).not.toContain("jupyter.hascodecells");
     }
     expect(manifest.contributes?.menus?.["view/title"]).toContainEqual({
       command: "openWrangler.refreshNotebookVariables",

@@ -186,6 +186,19 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.showQuickPick).not.toHaveBeenCalled();
   });
 
+  it("explains how to mark a Python file that has no runnable cell", async () => {
+    const source = textDocument("file:///workspace/analysis.py", "frame = make_frame()\n");
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = textEditor(source, 0);
+
+    await command("openWrangler.runPythonCellAndOpenVariable")();
+
+    expect(pythonMocks.executeCommand).not.toHaveBeenCalled();
+    expect(pythonMocks.showInformationMessage).toHaveBeenCalledWith(
+      "Place the cursor in a Python code cell marked # %%, then try again."
+    );
+  });
+
   it("reruns the current cell in its associated window before offering live dataframes", async () => {
     const source = textDocument("file:///workspace/analysis.py", "# %%\nfirst = make_frame()\n");
     const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
