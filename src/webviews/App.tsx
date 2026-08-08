@@ -2351,7 +2351,7 @@ export function App() {
       >
         <header
           className={
-            metadata && canSwitchNotebookSessionToEditing(metadata) ? "toolbar toolbarWithSessionModeAction" : "toolbar"
+            metadata && canSwitchLiveSessionToEditing(metadata) ? "toolbar toolbarWithSessionModeAction" : "toolbar"
           }
         >
           <div className="toolbarIdentity">
@@ -2492,14 +2492,14 @@ export function App() {
                 selectedColumnId={gridViewState.selectedColumnId}
                 onSelect={requestColumnReveal}
               />
-              {canSwitchNotebookSessionToEditing(metadata) && (
+              {canSwitchLiveSessionToEditing(metadata) && (
                 <button
                   type="button"
                   className="toolbarButton"
                   data-session-mode-action
                   disabled={sessionModeChangePending}
                   aria-busy={sessionModeChangePending || undefined}
-                  title="Reopen this live notebook variable in Editing mode"
+                  title="Reopen this live dataframe in Editing mode"
                   onClick={(event) => requestSessionModeChange(event.currentTarget)}
                 >
                   <span className="codicon codicon-edit" aria-hidden="true" /> Switch to Editing
@@ -3110,12 +3110,14 @@ function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
   return rest;
 }
 
-function canSwitchNotebookSessionToEditing(metadata: SessionMetadata): boolean {
+function canSwitchLiveSessionToEditing(metadata: SessionMetadata): boolean {
+  if (metadata.mode !== "viewing" || metadata.backend === "pyspark") return false;
+  if (metadata.source.kind === "notebookVariable") return metadata.capabilities.notebookInsert;
   return (
-    metadata.mode === "viewing" &&
-    metadata.source.kind === "notebookVariable" &&
-    metadata.backend !== "pyspark" &&
-    metadata.capabilities.notebookInsert
+    metadata.source.kind === "rInteractiveVariable" &&
+    metadata.backend === "r" &&
+    !metadata.capabilities.notebookInsert &&
+    metadata.capabilities.documentInsert !== true
   );
 }
 

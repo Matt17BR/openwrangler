@@ -2512,7 +2512,7 @@ describe("App file import options", () => {
       dispatchAppMessage({ kind: "sessionOpened", metadata: viewingMetadata, page, summaries: [] });
 
       const action = await screen.findByRole("button", { name: "Switch to Editing" });
-      expect(action).toHaveAttribute("title", "Reopen this live notebook variable in Editing mode");
+      expect(action).toHaveAttribute("title", "Reopen this live dataframe in Editing mode");
       webviewPostMessage.mockClear();
       fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
       action.focus();
@@ -2564,6 +2564,45 @@ describe("App file import options", () => {
       hasFocus.mockRestore();
       requestFrame.mockRestore();
     }
+  });
+
+  it("offers Editing mode for a dataframe from the active R terminal", async () => {
+    render(<App />);
+    const viewingMetadata: SessionMetadata = {
+      ...metadata,
+      backend: "r",
+      rDataframeFlavor: "r.data.frame",
+      mode: "viewing",
+      source: { kind: "rInteractiveVariable", label: "base_orders", variableName: "base_orders" },
+      capabilities: {
+        ...metadata.capabilities,
+        editable: true,
+        lazy: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false,
+        documentInsert: false,
+        supportedOperations: ["sortRows", "fillMissingValues"]
+      }
+    };
+    dispatchAppMessage({ kind: "sessionOpened", metadata: viewingMetadata, page, summaries: [] });
+
+    const action = await screen.findByRole("button", { name: "Switch to Editing" });
+    expect(action).toHaveAttribute("title", "Reopen this live dataframe in Editing mode");
+    webviewPostMessage.mockClear();
+    fireEvent.click(action);
+    expect(webviewPostMessage).toHaveBeenCalledWith({
+      kind: "switchSessionToEditing",
+      state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+    });
+
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...viewingMetadata, revision: 1, mode: "editing" },
+      page,
+      summaries: []
+    });
+    expect(screen.queryByRole("button", { name: "Switch to Editing" })).not.toBeInTheDocument();
   });
 
   it("does not issue unsupported viewing requests when capabilities are explicitly disabled", async () => {

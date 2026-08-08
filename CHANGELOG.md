@@ -49,6 +49,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Dataframes opened from the active R terminal now show **Switch to Editing** in Viewing mode, matching the
+  transition already available from live R notebook variables.
 - The editor-title action for `.R`, `.Rmd`, and `.qmd` always runs the current document. An active official R
   terminal no longer replaces it with a different command; terminal dataframes remain available in Operations and
   the editor-tab menu.
