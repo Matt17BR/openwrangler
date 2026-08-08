@@ -56,12 +56,14 @@ Opening data or using a notebook kernel requires a trusted workspace. Open Wrang
 
 The v2 release checks cover these R paths:
 
-| R workflow         | Linux                                  | macOS          | Windows        |
-| ------------------ | -------------------------------------- | -------------- | -------------- |
-| IRkernel notebook  | VS Code (local/remote), Cursor (local) | VS Code; local | VS Code; local |
-| `.R`/`.Rmd`/`.qmd` | VS Code and Cursor                     | VS Code        | Not available  |
+| R workflow         | Linux                                  | macOS          | Windows              |
+| ------------------ | -------------------------------------- | -------------- | -------------------- |
+| IRkernel notebook  | VS Code (local/remote), Cursor (local) | VS Code; local | VS Code; local       |
+| `.R`/`.Rmd`/`.qmd` | VS Code and Cursor                     | VS Code        | Local: not available |
 
-Other combinations may work, but they are not part of the release test matrix yet.
+Direct R-document support follows the machine running the extension host. A Windows client connected to a supported
+Linux or macOS remote can use these commands; a Windows extension host cannot. Other combinations may work, but they
+are not part of the release test matrix yet.
 
 ## Why Open Wrangler
 

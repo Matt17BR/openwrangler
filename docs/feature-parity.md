@@ -180,9 +180,10 @@ non-R cells, a disabled R cell, a relative CSV read, native editing, and a gener
 that cells are parsed separately and unsupported document syntax fails before R starts. The installed VS Code and
 Cursor runs on Linux cover all three document types, including cleaned CSV export from the local `.R` session. The
 macOS preview and stable release cells must pass the same document subjourney in packaged VS Code. Their Windows
-counterparts run the complete local IRkernel journey but skip direct documents and verify that the related menu
-entries are hidden. Direct document execution is disabled on Windows until the extension can own the complete
-spawned process tree. Operations
+counterparts run the complete local IRkernel journey but skip direct documents. Local Windows file menus are hidden;
+remote-resource actions and the Command Palette remain reachable for a Linux or macOS extension host, whose runtime
+platform check is authoritative. Direct document execution is disabled on a Windows extension host until the
+extension can own the complete spawned process tree. Operations
 outside the listed 21-operation set are not available in R yet.
 
 Before a 2.0 tag can be published, both release workflows must pass the local `r-jupyter` journey in packaged VS Code

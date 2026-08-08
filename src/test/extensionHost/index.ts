@@ -644,7 +644,7 @@ export async function run(): Promise<void> {
   const fileResourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const rDocumentPredicate =
-    "(isLinux || isMac) && isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+    "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
@@ -720,11 +720,10 @@ export async function run(): Promise<void> {
     ),
     "R document tabs must expose Run in Open Wrangler in their context menu."
   );
-  assert.ok(
-    contributions.menus?.commandPalette?.some(
-      (item) => item.command === "openWrangler.runRDocument" && item.when === "isLinux || isMac"
-    ),
-    "The R document command palette action must stay hidden on unsupported platforms."
+  assert.equal(
+    contributions.menus?.commandPalette?.some((item) => item.command === "openWrangler.runRDocument"),
+    false,
+    "The R document command must remain available from the Command Palette for supported remote hosts."
   );
   assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
