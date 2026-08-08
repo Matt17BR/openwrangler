@@ -65,6 +65,11 @@ requests, and lists supported dataframes in the Operations view. Opening an item
 workbench. Changing or closing the terminal invalidates the list and session; Open Wrangler never searches for a
 replacement terminal or reads vscode-R's private storage, sockets, or process state.
 
+IRkernel and active-terminal variables open in Viewing mode by default and can switch to Editing without changing the
+live object. A document session follows the file start-mode setting, which defaults to Editing. Generated R can be
+inserted only when the session retains an exact notebook or text document. An active terminal has no such source, so
+its generated R can be copied or saved but not inserted.
+
 The host creates the candidate session ID before dispatch and maps it to that kernel. A malformed, cancelled, timed
 out, or stale open keeps a continuation on the original operation. When that operation settles, the host makes one
 bounded direct close attempt for the known candidate on the same kernel; it does not look the kernel up again or retry
@@ -179,9 +184,10 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
   currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
   Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
   Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate with generated R code. Generated R can be
-  inserted into the originating IRkernel notebook or R document. R notebook sessions and local R document sessions
-  opened in Editing mode can export their committed result as CSV or, when `nanoparquet` 0.5.1 or newer is installed,
-  Parquet. The Parquet writer runs in the same R process and does not convert through Python, Arrow, or another dataframe. A
+  inserted into the originating IRkernel notebook or R document. R notebook, active-terminal, and local R document
+  sessions opened in Editing mode can export their committed result as CSV or, when `nanoparquet` 0.5.1 or newer is
+  installed, Parquet. Active-terminal export is not a release claim until its packaged-editor journey passes. The
+  Parquet writer runs in the same R process and does not convert through Python, Arrow, or another dataframe. A
   document process exposes only its private artifact to the host;
   IRkernel returns offset-addressed canonical-base64 chunks from an artifact owned by that exact kernel. Both routes end in the
   extension-host atomic save path. Operations outside the current 21-operation set are not supported yet.
@@ -192,7 +198,8 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
 - Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
   data-table paths. Grouped `GRP_df` and indexed `indexed_frame` objects are outside the supported class contract.
 - Dataframes from the active official R terminal use the same native R contract and workbench. Refresh and open stay
-  pinned to that terminal, while **Run R Document** continues to own a separate process.
+  pinned to that terminal, while **Run R Document** continues to own a separate process. The active-terminal path is
+  not release-validated until its packaged VS Code and Cursor journey passes.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not
   be carried forward.
 - R 4.4 and 4.5 contract tests must pass before a change to the producer or decoder can merge. Real IRkernel and

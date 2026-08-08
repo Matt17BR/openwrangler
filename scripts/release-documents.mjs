@@ -31,11 +31,13 @@ const README_EDITOR_SUPPORT = `| Editor                      | Support        |
 | Browser-hosted \`vscode.dev\` | Unsupported    |`;
 const README_RUNTIME_REQUIREMENTS = `Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
 3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package
-is missing, Open Wrangler lists it and asks before installing anything. R notebooks use the selected IRkernel and
-require \`jsonlite\` and \`rlang\`. On macOS and Linux, trusted \`.R\`, \`.Rmd\`, and \`.qmd\` documents use \`Rscript\`
-from \`openWrangler.rscriptPath\` or \`PATH\` and require the same packages. R notebooks remain available on Windows;
-direct document execution is not yet available there. To export Parquet, install \`nanoparquet\` 0.5.1 or newer in that
-R environment and reopen the dataframe. CSV export does not need it.`;
+is missing, Open Wrangler lists it and asks before installing anything.
+
+R support uses the environment that owns the dataframe: the selected IRkernel for a notebook, the selected official
+VS Code R terminal for an interactive session, or the \`Rscript\` chosen by \`openWrangler.rscriptPath\` or \`PATH\` for
+a trusted \`.R\`, \`.Rmd\`, or \`.qmd\` document. Install \`jsonlite\` and \`rlang\` in that same environment. Parquet
+export also needs \`nanoparquet\` 0.5.1 or newer there; CSV export does not. R notebooks remain available on Windows,
+but direct R-document execution is currently limited to macOS and Linux.`;
 const README_TRUST_REQUIREMENT =
   "Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.";
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);

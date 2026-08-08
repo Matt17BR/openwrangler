@@ -92,6 +92,11 @@ the exact active terminal owned by the official R extension. The Operations view
 dataframes and opens the selected object without converting it through Python. Changing or closing the R terminal
 invalidates the list instead of retargeting another session.
 
+IRkernel and active-terminal variables start in Viewing mode and can switch to Editing without changing the source
+object. R documents follow the file start-mode setting, which defaults to Editing. Generated R can be copied or saved
+from any editing session. Insertion is available only for an exact originating IRkernel notebook or Open
+Wrangler-managed R document; an active terminal has no source document to edit.
+
 A trusted local `.R`, `.Rmd`, or `.qmd` document on macOS or Linux can also run in an Open Wrangler-owned R process,
 after which the user chooses one of the dataframes it created. R Markdown and Quarto use supported top-level `{r}`
 cells rather than a document render. Pages, compound filters, ordered sorts,
@@ -214,7 +219,8 @@ substitute a smaller R smoke test.
 | Insert generated R into its IRkernel notebook | 1.99 preview                    | Partial | Shared exact-document helper and packaged editor run                                                                                                 | Preview release |
 | Insert generated R into its source `.R` file  | 1.99 preview                    | Partial | Exact-document helper and packaged rerun                                                                                                             | Preview release |
 | Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview                    | Partial | Exact-document tests and installed editor run                                                                                                        | Preview release |
-| Cleaned-data export                           | R notebook/document CSV/Parquet | Partial | Native writers, bounded transfer, atomic save, installed editor run                                                                                  | Preview release |
+| Cleaned-data export                           | R notebook/document CSV/Parquet | Partial | Native writers, bounded transfer, atomic save, installed notebook/document run                                                                       | Preview release |
+| Active R-terminal cleaned-data export         | 1.99 preview                    | Partial | Native writer and atomic-save tests; packaged VS Code/Cursor journey pending                                                                         | Preview release |
 | Quarto and R Markdown lexical R-cell run      | 1.99 preview                    | Partial | Parser, owned process, and installed editor run                                                                                                      | Preview release |
 
 ## DuckDB file-backed preview matrix

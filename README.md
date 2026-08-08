@@ -44,30 +44,32 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 
 Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
 3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package
-is missing, Open Wrangler lists it and asks before installing anything. R notebooks use the selected IRkernel and
-require `jsonlite` and `rlang`. On macOS and Linux, trusted `.R`, `.Rmd`, and `.qmd` documents use `Rscript`
-from `openWrangler.rscriptPath` or `PATH` and require the same packages. R notebooks remain available on Windows;
-direct document execution is not yet available there. To export Parquet, install `nanoparquet` 0.5.1 or newer in that
-R environment and reopen the dataframe. CSV export does not need it.
+is missing, Open Wrangler lists it and asks before installing anything.
+
+R support uses the environment that owns the dataframe: the selected IRkernel for a notebook, the selected official
+VS Code R terminal for an interactive session, or the `Rscript` chosen by `openWrangler.rscriptPath` or `PATH` for
+a trusted `.R`, `.Rmd`, or `.qmd` document. Install `jsonlite` and `rlang` in that same environment. Parquet
+export also needs `nanoparquet` 0.5.1 or newer there; CSV export does not. R notebooks remain available on Windows,
+but direct R-document execution is currently limited to macOS and Linux.
 
 Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.
 
 <!-- open-wrangler-release-status:end -->
 
-The v2 release checks cover these R paths:
+The 1.99 preview has three R entry points:
 
-| R workflow         | Linux                                  | macOS          | Windows               |
-| ------------------ | -------------------------------------- | -------------- | --------------------- |
-| IRkernel notebook  | VS Code (local/remote), Cursor (local) | VS Code; local | VS Code; local        |
-| `.R`/`.Rmd`/`.qmd` | VS Code and Cursor; local              | VS Code; local | Not available locally |
+| Workflow                    | How it opens dataframes                                                                 | Current validation                                                      |
+| --------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| IRkernel notebook           | From the notebook toolbar or Jupyter Variables                                          | VS Code on Linux, macOS, and Windows; Cursor on Linux                   |
+| Selected VS Code R terminal | Select the R terminal, then choose **Operations → Refresh R dataframes**                | Runtime and extension tests pass; packaged VS Code/Cursor check pending |
+| `.R`, `.Rmd`, or `.qmd`     | Choose **Run R Document in Open Wrangler…** to start an Open Wrangler-managed R process | VS Code and Cursor on Linux; VS Code on macOS                           |
 
-Direct R-document support follows the machine running the extension host. The release matrix covers local Linux and
-macOS documents only. Remote document execution is experimental and a Windows extension host is rejected. Other
-combinations may work, but they are not part of the release test matrix yet.
+R-document support follows the machine running the extension host. Remote document execution is experimental, and a
+Windows extension host rejects it. IRkernel notebooks continue to work on Windows.
 
 ## Why Open Wrangler
 
-- View and clean Pandas, Polars, or file-backed DuckDB data without conversion. DuckDB notebook relations and local PySpark 4.2 Classic/Connect dataframes are view-only.
+- View and clean Pandas, Polars, R, or file-backed DuckDB data without conversion. DuckDB notebook relations and local PySpark 4.2 Classic/Connect dataframes are view-only.
 - Each cleaning step previews changed values and generated code before you apply it.
 - Filters and multi-column sorts change only the view. Exports write a separate file.
 - The grid fetches visible rows and columns on demand. Supported file-backed Polars sources use lazy scans.
@@ -204,19 +206,26 @@ grid stays visible unless that reconnect works.
 Closing the view leaves Spark work that has already started alone, so Open Wrangler cannot cancel unrelated notebook
 jobs.
 
-Open Wrangler opens base R `data.frame`, tibble, and `data.table` variables from IRkernel notebooks. It can also list
-dataframes that are already loaded in the official R extension: select the R terminal, then choose **Refresh R
-dataframes** in the Operations sidebar. Each item opens from that exact live R session.
+Open Wrangler handles base R `data.frame`, tibble, and `data.table` objects in the R process where they already live.
+The entry point determines which process owns the session:
 
-On local macOS and Linux workspaces, **Run R Document in Open Wrangler…** runs a trusted `.R` file or the supported
-top-level R cells in an `.Rmd` or `.qmd` document, including unsaved changes. This command uses its own R process. It
-does not replace Quarto or R Markdown rendering. Remote R-document execution is experimental and is not part of the
-release test matrix.
+- In an IRkernel notebook, use the notebook toolbar or Jupyter Variables. The dataframe opens in Viewing mode; use
+  **Switch to Editing** when you want to build a cleaning plan. Generated R can be inserted into that exact notebook.
+- For an interactive session from the official R extension, select its terminal and choose **Operations → Refresh R
+  dataframes**. The list and every opened dataframe stay tied to that terminal. These dataframes also open in Viewing
+  mode and can switch to Editing. Generated R can be copied or saved, but it cannot be inserted because the terminal
+  has no source notebook or document.
+- On local macOS and Linux workspaces, **Run R Document in Open Wrangler…** runs a trusted `.R` file or the supported
+  top-level R cells in an `.Rmd` or `.qmd` document, including unsaved changes. It uses its own R process and follows
+  the file start-mode setting, which defaults to Editing. Generated R can be inserted back into the exact open
+  document. This command does not replace Quarto or R Markdown rendering.
+
+Remote R-document execution is experimental and is not part of the release test matrix.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/r-quarto-variable-picker.png"><img alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
 
-Notebook variables open in Viewing mode by default. Use **Switch to Editing** in the dataframe toolbar when you want
-to clean the live variable; the current filters, sorts, column widths, and grid position carry over.
+Switching a live notebook or terminal dataframe from Viewing to Editing keeps its filters, sorts, column widths, and
+grid position. Open Wrangler does not overwrite the live R object.
 
 The R workbench supports paging, filters, multi-column sorts, value search, profiles, and 21 cleaning operations:
 **Filter Rows**, **Sort Rows**, **Drop Missing Rows**, **Fill Missing Values**, **Drop Duplicates**, **Rename Column**,
@@ -236,9 +245,10 @@ coordinate. It keeps `integer64`, date, and datetime types. A new factor value i
 
 The draft groups regional orders by market and channel and previews total revenue before the step is applied.
 
-Generated R can be copied, saved as a script, or inserted into the notebook or document that opened the dataframe.
-Local R notebook and R document sessions opened in Editing mode can export cleaned CSV files. They can also export
-Parquet when `nanoparquet` 0.5.1 or newer is installed in the selected R environment. Reopen the dataframe after
+Generated R can always be copied or saved as a script. Insertion is available only when the session came from an
+IRkernel notebook or an Open Wrangler-managed R document, because those workflows retain an exact source document.
+Local R sessions opened in Editing mode can export cleaned CSV files. They can also export Parquet when
+`nanoparquet` 0.5.1 or newer is installed in the R environment that owns the dataframe. Reopen the dataframe after
 installing the package so Open Wrangler can refresh its export choices. Operations outside the current 21-operation
 set are not available in R yet.
 
@@ -256,19 +266,19 @@ also shows the variable picker, profiles, and generated code inserted into a not
   </tr>
   <tr>
     <td>Copy generated code or save it as a Python or R script. Notebook and R-source sessions can also insert it into the document that opened the dataframe.</td>
-    <td>Pandas, Polars, and DuckDB editing sessions export cleaned CSV or Parquet files. Local R notebook and R document sessions opened in Editing mode export cleaned CSV files and use nanoparquet for Parquet.</td>
+    <td>Pandas, Polars, DuckDB, and local R editing sessions export cleaned CSV or Parquet files. R uses nanoparquet for Parquet.</td>
   </tr>
 </table>
 
 ## Engines and formats
 
-| Engine               | Files                                     | Notebook data                         | How it runs                                               |
-| -------------------- | ----------------------------------------- | ------------------------------------- | --------------------------------------------------------- |
-| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, LazyFrame, Series          | Native; lazy scans for CSV, TSV, Parquet, and JSONL       |
-| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, Series                     | Native, including duplicate column labels                 |
-| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON           | DuckDBPyRelation                      | Native; notebook relations are viewing-only               |
-| PySpark 4.2.x        | No                                        | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles |
-| R (1.99 preview)     | Local `.R`, `.Rmd`, `.qmd` on macOS/Linux | `data.frame`, tibble, `data.table`    | IRkernel for notebooks; separate Rscript for documents    |
+| Engine               | Files                                     | Notebook data                         | How it runs                                                |
+| -------------------- | ----------------------------------------- | ------------------------------------- | ---------------------------------------------------------- |
+| Polars               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, LazyFrame, Series          | Native; lazy scans for CSV, TSV, Parquet, and JSONL        |
+| Pandas               | CSV, TSV, Parquet, JSONL/NDJSON, Excel    | DataFrame, Series                     | Native, including duplicate column labels                  |
+| DuckDB, experimental | CSV, TSV, Parquet, JSONL/NDJSON           | DuckDBPyRelation                      | Native; notebook relations are viewing-only                |
+| PySpark 4.2.x        | No                                        | Local Classic/Connect batch DataFrame | Native notebook viewing, filtering, sorting, and profiles  |
+| R (1.99 preview)     | Local `.R`, `.Rmd`, `.qmd` on macOS/Linux | `data.frame`, tibble, `data.table`    | IRkernel, selected VS Code R terminal, or document Rscript |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and local
