@@ -254,7 +254,7 @@ The owner has confirmed the following setup without placing account identifiers 
   Release creation is the authorization boundary, so registry promotion needs no second reviewer click; the
   release-tag ruleset prevents deletion and non-fast-forward updates.
 
-The Microsoft pipeline, its fixed service connection, and its exclusive-lock environment are active in the personal `Matt17BR / Open Wrangler` project. Stable release `v1.2.2` is the current registry-handoff reference at source commit `437ac4c2fc535d4521959a90331fce8cd8436acf`. GitHub, Open VSX, and the Visual Studio Marketplace serve the accepted extension from canonical SHA-256 `5a68bf5bfee01e94c0e6fd296c53425bdec6a8d8d42cbb24bc2ec35a930af829`; isolated install-by-ID acceptance passed in both VS Code and Cursor. Open VSX reports the `Matt17BR` publisher verified, and the Marketplace's archive, metadata, checksum, and gallery icons pass the public verifier. Later releases must still run the same checks.
+The Microsoft pipeline, its fixed service connection, and its exclusive-lock environment are active in the personal `Matt17BR / Open Wrangler` project. Stable release `v1.2.2` is the latest stable registry-handoff reference at source commit `437ac4c2fc535d4521959a90331fce8cd8436acf`. GitHub, Open VSX, and the Visual Studio Marketplace serve the accepted extension from canonical SHA-256 `5a68bf5bfee01e94c0e6fd296c53425bdec6a8d8d42cbb24bc2ec35a930af829`; isolated install-by-ID acceptance passed in both VS Code and Cursor. Open VSX reports the `Matt17BR` publisher verified, and the Marketplace's archive, metadata, checksum, and gallery icons pass the public verifier. Later releases must still run the same checks.
 
 ### Automatic Open VSX promotion
 

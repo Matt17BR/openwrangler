@@ -36,7 +36,7 @@ commits. Squash only when the pull request is already one coherent commit.
 1. Pandas, Polars, DuckDB, and PySpark paths remain engine-native. Polars code must never call `to_pandas()`; DuckDB code must never convert through Pandas, Polars, or Arrow. PySpark is a live-notebook, viewing-only backend: it must never call `toPandas()`, `toArrow()`, convert through a local dataframe engine, or perform an unbounded `collect()`/iterator. Projection, filtering, sorting, counting, and aggregation stay in Spark. Container profiles use canonical orderable native keys. A page must pass its Spark-side transport-byte preflight before value collection and then remain within its cell, strict-protocol-byte, complex-node, and nesting-depth limits; only that bounded page/value sample or a fixed-size aggregate result may cross into the kernel process.
 2. Viewing filters/sorts are separate from committed cleaning steps and never alter the source.
 3. User data is not overwritten. Exports target a separate destination and use atomic replacement.
-4. Python execution, dependency installation, custom code, and exports require a trusted workspace.
+4. Python and R execution, dependency installation, custom code, and exports require a trusted workspace.
 5. Every runtime request is versioned, validated, correlated, cancellable where possible, and safe to ignore when stale.
 6. Disposing a panel closes its runtime session. A runtime crash rejects pending work and offers replay/recovery.
 7. Webviews use VS Code theme tokens, a restrictive CSP, same-origin validated messages, accessible labels, and keyboard navigation. User-derived keys belong in `Map`/`Set`, never dynamic object properties.
