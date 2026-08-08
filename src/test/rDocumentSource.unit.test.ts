@@ -142,7 +142,42 @@ describe("R document source preparation", () => {
     expect(prepared.executableText).not.toContain("must_not_run");
   });
 
-  it("fails closed around raw HTML, display math, and raw TeX containers", () => {
+  it("ignores horizontal rules, display math, and raw TeX that do not contain executable cells", () => {
+    const source = [
+      "---",
+      "title: Real document",
+      "---",
+      "",
+      "---",
+      "",
+      "\\newpage",
+      "\\tableofcontents",
+      "$$",
+      "E = mc^2",
+      "$$",
+      "\\begin{center}",
+      "Rendered title",
+      "\\end{center}",
+      "",
+      '```{r 3ptprog, out.width="100%", fig.cap="Three-point field goals"}',
+      "shots <- data.frame(made = c(TRUE, FALSE))",
+      "```",
+      "",
+      "```{r setup, include=FALSE, purl=TRUE}",
+      "summary_frame <- data.frame(rows = nrow(shots))",
+      "```",
+      ""
+    ].join("\n");
+
+    const prepared = prepareRDocumentSource("/workspace/analysis.Rmd", source);
+    expect(prepared).toMatchObject({ rChunkCount: 2, runnableRChunkCount: 2 });
+    expect(prepared.executableUnits).toEqual([
+      "shots <- data.frame(made = c(TRUE, FALSE))\n",
+      "summary_frame <- data.frame(rows = nrow(shots))\n"
+    ]);
+  });
+
+  it("fails closed when an R fence is hidden inside raw HTML, display math, or raw TeX", () => {
     for (const [label, source] of [
       ["raw HTML", "<script type=\"text/plain\">\n```{r}\nsystem('false')\n```\n</script>\n"],
       ["display math", "$$\n```{r}\nsystem('false')\n```\n$$\n"],
@@ -225,12 +260,12 @@ describe("R document source preparation", () => {
         )
       ).toThrow(/does not support this YAML syntax/u);
     }
-    expect(() =>
+    expect(
       prepareRDocumentSource(
         "/workspace/orders.qmd",
         "\n---\nexecute:\n  eval: false\n---\n```{r}\norders <- data.frame(id = 1L)\n```\n"
       )
-    ).toThrow(/metadata block starting on the first line/u);
+    ).toMatchObject({ rChunkCount: 1, runnableRChunkCount: 1 });
   });
 
   it("rejects indented and tilde R fences that do not have portable document semantics", () => {

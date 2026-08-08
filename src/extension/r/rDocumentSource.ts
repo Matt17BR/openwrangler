@@ -29,6 +29,11 @@ interface Fence {
   readonly body: number[];
 }
 
+interface OpaqueMarkdownContainer {
+  readonly kind: "display-math" | "raw-tex";
+  readonly closingMarker: string;
+}
+
 /** Returns the supported R document kind without consulting editor language IDs. */
 export function rDocumentKind(filePath: string): RDocumentKind | undefined {
   switch (path.extname(filePath).toLowerCase()) {
@@ -71,6 +76,7 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
   let fence: Fence | undefined;
   let htmlCommentLine: number | undefined;
   let multilineCodeSpanTicks: number | undefined;
+  let opaqueContainer: OpaqueMarkdownContainer | undefined;
   let rChunkCount = 0;
   let runnableRChunkCount = 0;
   const executableUnits: string[] = [];
@@ -79,6 +85,16 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
     const line = lines[index]!.text;
     if (!fence) {
       if (frontMatter.lines.has(index)) continue;
+      if (opaqueContainer) {
+        const nestedFence = openingFence(line);
+        if (nestedFence && isRFenceInfo(nestedFence.info)) {
+          throw new SyntaxError(
+            `Open Wrangler cannot safely distinguish an R cell inside ${opaqueContainerLabel(opaqueContainer)} near line ${index + 1}.`
+          );
+        }
+        if (line.includes(opaqueContainer.closingMarker)) opaqueContainer = undefined;
+        continue;
+      }
       if (htmlCommentLine !== undefined) {
         const commentEnd = line.indexOf("-->");
         if (commentEnd >= 0) {
@@ -117,6 +133,8 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
         const visibleText =
           commentEnd < 0 ? line.slice(0, commentStart) : line.slice(0, commentStart) + line.slice(commentEnd + 3);
         rejectUnsupportedMarkdownContainer(visibleText, index + 1);
+        const openedContainer = openingOpaqueMarkdownContainer(visibleText);
+        if (openedContainer) opaqueContainer = openedContainer;
         if (commentEnd < 0) htmlCommentLine = index + 1;
         continue;
       }
@@ -125,15 +143,15 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
         if (containsExactBacktickRun(line, multilineCodeSpanTicks)) multilineCodeSpanTicks = undefined;
         continue;
       }
+      const openedContainer = openingOpaqueMarkdownContainer(line);
+      if (openedContainer) {
+        opaqueContainer = openedContainer;
+        continue;
+      }
       const codeSpanTicks = unmatchedBacktickRun(line);
       if (codeSpanTicks !== undefined) {
         multilineCodeSpanTicks = codeSpanTicks;
         continue;
-      }
-      if (/^(?:---|\.\.\.)[\t ]*$/u.test(line)) {
-        throw new SyntaxError(
-          `Open Wrangler supports one YAML metadata block starting on the first line (line ${index + 1}).`
-        );
       }
       continue;
     }
@@ -357,7 +375,7 @@ function parseRChunkHeaderOptions(info: string): readonly Readonly<{ key: string
     const firstComma = rest.indexOf(",");
     const first = (firstComma < 0 ? rest : rest.slice(0, firstComma)).trim();
     if (!first.includes("=")) {
-      if (!/^[A-Za-z][A-Za-z0-9_.-]*$/u.test(first)) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/u.test(first)) {
         throw new SyntaxError("Open Wrangler supports only plain R chunk labels and options.");
       }
       if (firstComma < 0) return [];
@@ -413,11 +431,27 @@ function rejectUnsupportedMarkdownContainer(line: string, lineNumber: number): v
   if (/<[A-Za-z!/?]/u.test(trimmed)) {
     throw new SyntaxError(`Open Wrangler cannot safely distinguish R cells inside raw HTML near line ${lineNumber}.`);
   }
-  if (trimmed.includes("\\[") || /(?:\$\$|\\[A-Za-z]+\s*[[{])/u.test(trimmed)) {
-    throw new SyntaxError(
-      `Open Wrangler cannot safely distinguish R cells inside display math or raw TeX near line ${lineNumber}.`
-    );
+}
+
+function openingOpaqueMarkdownContainer(line: string): OpaqueMarkdownContainer | undefined {
+  const trimmed = stripLeadingMarkdownListMarker(line.trimStart());
+  const displayDollar = trimmed.indexOf("$$");
+  if (displayDollar >= 0 && trimmed.indexOf("$$", displayDollar + 2) < 0) {
+    return { kind: "display-math", closingMarker: "$$" };
   }
+  const displayBracket = trimmed.indexOf("\\[");
+  if (displayBracket >= 0 && trimmed.indexOf("\\]", displayBracket + 2) < 0) {
+    return { kind: "display-math", closingMarker: "\\]" };
+  }
+  const environment = /\\begin\{([A-Za-z][A-Za-z0-9*._-]*)\}/u.exec(trimmed);
+  if (!environment) return undefined;
+  const closingMarker = `\\end{${environment[1]!}}`;
+  if (trimmed.includes(closingMarker, environment.index + environment[0].length)) return undefined;
+  return { kind: "raw-tex", closingMarker };
+}
+
+function opaqueContainerLabel(container: OpaqueMarkdownContainer): string {
+  return container.kind === "display-math" ? "display math" : "raw TeX";
 }
 
 function unmatchedBacktickRun(line: string): number | undefined {
