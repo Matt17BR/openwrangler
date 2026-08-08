@@ -532,11 +532,19 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /Local PySpark 4\.2\.x Classic and Connect batch DataFrames support viewing, filtering, sorting, paging, and profiles/u
   );
-  assert.match(readme, /Open Wrangler opens base R `data\.frame`, tibble, and `data\.table` variables from IRkernel/u);
-  assert.match(readme, /\*\*Run R Document in Open Wrangler…\*\* from Explorer or the\s+editor/u);
-  assert.match(readme, /supported top-level R cells in `\.Rmd` and `\.qmd` documents/u);
-  assert.match(readme, /do not render Quarto or R Markdown or\s+attach to another\s+R session/u);
-  assert.match(readme, /including unsaved\s+editor changes/u);
+  assert.match(
+    readme,
+    /Open Wrangler opens base R `data\.frame`, tibble, and `data\.table` variables from IRkernel notebooks/u
+  );
+  assert.match(readme, /already loaded in the official R extension[\s\S]{0,120}\*\*Refresh R\s+dataframes\*\*/u);
+  assert.match(readme, /Each item opens from that exact live R session/u);
+  assert.match(readme, /\*\*Run R Document in Open Wrangler…\*\* runs a trusted `\.R` file/u);
+  assert.match(readme, /supported\s+top-level R cells in an `\.Rmd` or `\.qmd` document/u);
+  assert.match(
+    readme,
+    /This command uses its own R process[\s\S]{0,80}does not replace Quarto or R Markdown rendering/u
+  );
+  assert.match(readme, /including unsaved changes/u);
   assert.match(readme, /To export Parquet, install `nanoparquet` 0\.5\.1 or newer[\s\S]{0,100}reopen the dataframe/u);
   assert.match(readme, /The R workbench supports[\s\S]{0,180}21 cleaning operations/u);
   assert.match(
@@ -567,7 +575,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders"/u
   );
-  assert.match(readme, /Larger datasets can work, but the\s+practical limit depends on the engine and machine/u);
+  assert.match(readme, /published comparison covers Open Wrangler 1\.2\.1 and Microsoft Data Wrangler 1\.24\.2/u);
+  assert.match(readme, /Data Wrangler converted the dataframe to Pandas while Open Wrangler used Polars directly/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.doesNotMatch(
@@ -604,13 +613,15 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Streaming DataFrames and remote or authenticated clusters are not\s+supported/u);
   assert.match(readme, /Closing the view leaves Spark work that has already started alone/u);
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
-  const performanceSection = readme.slice(readme.indexOf("## Performance and scale"), readme.indexOf("## Roadmap"));
+  const performanceSection = readme.slice(readme.indexOf("## Performance"), readme.indexOf("## Roadmap"));
   assert.match(performanceSection, /Microsoft Data\s+Wrangler/u);
-  assert.match(performanceSection, /notebook previews[^.]*faster/u);
-  assert.match(performanceSection, /profiled every column[^.]*faster/u);
-  assert.match(performanceSection, /Data Wrangler handled the Polars cases through Pandas/u);
-  assert.match(performanceSection, /Open Wrangler ran them in Polars/u);
-  assert.match(performanceSection, /did not time conversion\s+separately/u);
+  assert.match(performanceSection, /faster in\s+the notebook-preview and CSV-profiling runs/u);
+  assert.match(performanceSection, /closest Parquet workbench and profiling results were similar/u);
+  assert.match(
+    performanceSection,
+    /Data Wrangler converted the dataframe to Pandas while Open Wrangler used Polars directly/u
+  );
+  assert.match(performanceSection, /conversion itself was not timed separately/u);
   assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
   const reportLinks = [
     ...performanceSection.matchAll(
