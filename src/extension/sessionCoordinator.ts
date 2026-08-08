@@ -932,13 +932,7 @@ export class SessionCoordinator implements vscode.Disposable {
         session.publicId
       );
     }
-    if (
-      session.openRequest.source.kind !== "notebookVariable" ||
-      session.origin?.kind !== "notebook" ||
-      session.metadata.mode !== "viewing" ||
-      !session.metadata.capabilities.notebookInsert ||
-      session.metadata.backend === "pyspark"
-    ) {
+    if (!canReopenLiveSessionForEditing(session)) {
       return protocolError(
         "editing_mode_unavailable",
         "This session cannot be reopened in Editing mode.",
@@ -1013,7 +1007,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (!this.isLiveSession(session) || session.closing) {
       return protocolError(
         this.disposed ? "coordinator_disposed" : "session_closing",
-        "The notebook session closed before Editing mode could open.",
+        "The live session closed before Editing mode could open.",
         false,
         session.publicId
       );
@@ -1142,7 +1136,7 @@ export class SessionCoordinator implements vscode.Disposable {
       return protocolError(
         error instanceof ReconfigurationSupersededError ? "invalid_source_origin" : "editing_mode_view_restore_failed",
         error instanceof ReconfigurationSupersededError
-          ? "The originating notebook changed while Editing mode was opening."
+          ? "The live dataframe source changed while Editing mode was opening."
           : `Open Wrangler could not restore the current view in Editing mode: ${
               error instanceof Error ? error.message : String(error)
             }`,
@@ -3204,6 +3198,20 @@ function normalizeSessionOrigin(origin: BridgeSessionOrigin | undefined): Coordi
 
 function isTextDocumentSessionOrigin(origin: BridgeSessionOrigin): origin is TextDocumentSessionOrigin {
   return "kind" in origin && origin.kind === "textDocument";
+}
+
+function canReopenLiveSessionForEditing(session: CoordinatedSession): boolean {
+  if (session.metadata.mode !== "viewing" || session.metadata.backend === "pyspark") return false;
+  if (session.openRequest.source.kind === "notebookVariable") {
+    return session.origin?.kind === "notebook" && session.metadata.capabilities.notebookInsert;
+  }
+  return (
+    session.openRequest.source.kind === "rInteractiveVariable" &&
+    session.metadata.backend === "r" &&
+    session.origin === undefined &&
+    !session.metadata.capabilities.notebookInsert &&
+    session.metadata.capabilities.documentInsert !== true
+  );
 }
 
 function sessionOriginMismatch(

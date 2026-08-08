@@ -99,9 +99,9 @@ export interface OpenWranglerBridge {
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse>;
   /**
-   * Atomically replaces a live notebook-variable runtime with an Editing-mode
-   * runtime bound to the same captured notebook document. This is a host-only
-   * lifecycle operation and is intentionally absent from protocol v2.
+   * Atomically replaces a supported live-variable runtime with an Editing-mode
+   * runtime bound to the same live source. This is a host-only lifecycle
+   * operation and is intentionally absent from protocol v2.
    */
   reconfigureNotebookSessionForEditing?(
     sessionId: string,
