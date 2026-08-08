@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
-import type { ColumnSummary, GridPage, OpenWranglerResponse, SessionMetadata } from "../shared/protocol";
+import type { ColumnSummary, GridPage, OpenWranglerResponse, SessionMetadata, TransformStep } from "../shared/protocol";
 
 const postMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -37,6 +37,35 @@ const metadata: SessionMetadata = {
 };
 
 const page = pageWithCity("Berlin");
+
+const cloneStep: TransformStep = {
+  id: "clone-score",
+  kind: "cloneColumn",
+  params: { column: { id: "c:1", name: "sales" }, newName: "sales_copy" }
+};
+const cloneColumn = {
+  id: "c:step:clone-score:0",
+  name: "sales_copy",
+  position: 2,
+  rawType: "numeric",
+  type: "float" as const,
+  nullable: false
+};
+const rCloneDraftMetadata: SessionMetadata = {
+  ...metadata,
+  backend: "r",
+  revision: 1,
+  capabilities: { ...metadata.capabilities, lazy: false, cancel: false },
+  shape: { rows: 500, columns: 3 },
+  filteredShape: { rows: 500, columns: 3 },
+  draftStep: cloneStep,
+  schema: [...metadata.schema, cloneColumn]
+};
+const clonePage: GridPage = {
+  ...page,
+  columnIds: [...page.columnIds, cloneColumn.id],
+  rows: page.rows.map((row) => ({ ...row, values: [...row.values, row.values[1]] }))
+};
 
 const citySummary: ColumnSummary = {
   columnId: "c:0",
@@ -694,6 +723,92 @@ describe("App progressive profiling and view correlation", () => {
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
     expect(onlyRequest("getSummary").columnIds).toEqual(["c:1"]);
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
+  });
+
+  it("lets an immediate non-cancellable undo run before post-mutation profiling restarts", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: rCloneDraftMetadata, page: clonePage, summaries: [] });
+    fireEvent.click(await screen.findByRole("button", { name: "Header profiles" }));
+    await waitFor(() => expect(requestsOfKind("getSummary").length).toBeGreaterThan(0));
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Apply step" }));
+    expect(onlyRequest("applyDraft")).toBeDefined();
+
+    vi.useFakeTimers();
+    try {
+      postMessage.mockClear();
+      const appliedMetadata: SessionMetadata = {
+        ...rCloneDraftMetadata,
+        revision: 2,
+        steps: [cloneStep],
+        draftStep: undefined
+      };
+      dispatch({
+        kind: "planUpdated",
+        action: "apply",
+        revision: 2,
+        metadata: appliedMetadata,
+        page: clonePage,
+        code: "sales_copy <- sales"
+      });
+
+      expect(requestsOfKind("getSummary")).toHaveLength(0);
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      expect(onlyRequest("undoStep")).toBeDefined();
+      act(() => vi.runOnlyPendingTimers());
+      expect(requestsOfKind("getSummary")).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resumes automatic profiles after a non-cancellable mutation stays quiet", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: rCloneDraftMetadata, page: clonePage, summaries: [] });
+    fireEvent.click(await screen.findByRole("button", { name: "Header profiles" }));
+    await waitFor(() => expect(requestsOfKind("getSummary").length).toBeGreaterThan(0));
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Apply step" }));
+
+    vi.useFakeTimers();
+    try {
+      postMessage.mockClear();
+      dispatch({
+        kind: "planUpdated",
+        action: "apply",
+        revision: 2,
+        metadata: { ...rCloneDraftMetadata, revision: 2, steps: [cloneStep], draftStep: undefined },
+        page: clonePage,
+        code: "sales_copy <- sales"
+      });
+      expect(requestsOfKind("getSummary")).toHaveLength(0);
+
+      act(() => vi.runOnlyPendingTimers());
+      expect(requestsOfKind("getSummary").length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an explicit selected-column profile immediate during the post-mutation quiet period", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: rCloneDraftMetadata, page: clonePage, summaries: [] });
+    fireEvent.click(await screen.findByRole("button", { name: "Apply step" }));
+
+    postMessage.mockClear();
+    dispatch({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2,
+      metadata: { ...rCloneDraftMetadata, revision: 2, steps: [cloneStep], draftStep: undefined },
+      page: clonePage,
+      code: "sales_copy <- sales"
+    });
+    expect(requestsOfKind("getSummary")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
+    expect(onlyRuntimeEnvelope("getSummary").priority).toBe("interactive");
   });
 
   it("requests exact stats only for an open drawer and never accepts stale stats", async () => {
