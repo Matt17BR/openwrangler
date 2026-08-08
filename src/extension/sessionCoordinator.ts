@@ -28,6 +28,7 @@ import {
   type OpenWranglerBridge,
   type SessionPresentation
 } from "./dataBridge";
+import { isFileDataBackend } from "./pythonEnvironmentModel";
 import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
 import {
   decodePersistedSession,
@@ -799,7 +800,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (session.reconfiguring) {
       return protocolError(
         "session_reconfiguring",
-        `Open Wrangler session ${session.publicId} is already changing its import options.`,
+        `Open Wrangler session ${session.publicId} is already changing its file configuration.`,
         true,
         session.publicId
       );
@@ -807,15 +808,33 @@ export class SessionCoordinator implements vscode.Disposable {
     if (!sameFileSourceIdentity(session.openRequest.source, source)) {
       return protocolError(
         "invalid_import_source",
-        "Import options can be changed only for the same open file.",
+        "File options and the dataframe engine can be changed only for the same open file.",
         true,
         session.publicId
       );
     }
-    if (isDeepStrictEqual(session.openRequest.source.importOptions, source.importOptions)) {
+    const nextBackendPreference = options?.backendPreference;
+    if (
+      nextBackendPreference !== undefined &&
+      nextBackendPreference !== "auto" &&
+      !isFileDataBackend(nextBackendPreference)
+    ) {
+      return protocolError(
+        "unsupported_backend",
+        "File sessions can use only the Pandas, Polars, or DuckDB backend.",
+        true,
+        session.publicId
+      );
+    }
+    const backendSelectionChanged =
+      nextBackendPreference === "auto"
+        ? session.backendPreference !== undefined
+        : nextBackendPreference !== undefined &&
+          (session.backendPreference !== nextBackendPreference || session.metadata.backend !== nextBackendPreference);
+    if (isDeepStrictEqual(session.openRequest.source.importOptions, source.importOptions) && !backendSelectionChanged) {
       return protocolError(
         "import_options_unchanged",
-        "The selected import options are already active.",
+        "The selected import options and dataframe engine are already active.",
         true,
         session.publicId
       );
@@ -1189,7 +1208,7 @@ export class SessionCoordinator implements vscode.Disposable {
       viewState: session.viewState
     };
     const candidateSessionId = randomUUID();
-    const candidateRequest = replacementOpenRequest(session, source, candidateSessionId);
+    const candidateRequest = replacementOpenRequest(session, source, candidateSessionId, options?.backendPreference);
     if (!isOpenWranglerRequest(candidateRequest)) {
       return protocolError(
         "invalid_import_options",
@@ -1373,6 +1392,8 @@ export class SessionCoordinator implements vscode.Disposable {
     session.runtimeRevision = candidate.runtimeRevision;
     session.publicRevision = publicRevision;
     session.openRequest = confirmedReplayOpenRequest(candidateRequest, candidate.metadata);
+    if (options?.backendPreference === "auto") delete session.backendPreference;
+    else if (options?.backendPreference !== undefined) session.backendPreference = options.backendPreference;
     session.metadata = candidate.metadata;
     session.code = candidate.code;
     session.draftPresentation = candidate.draftPresentation;
@@ -2737,7 +2758,8 @@ function sameFileSourceIdentity(current: SessionSource, replacement: SessionSour
 function replacementOpenRequest(
   session: CoordinatedSession,
   source: SessionSource,
-  requestedSessionId: string
+  requestedSessionId: string,
+  backendPreference: BridgeRequestOptions["backendPreference"] = session.backendPreference
 ): OpenSessionRequest {
   const {
     source: _previousSource,
@@ -2750,7 +2772,7 @@ function replacementOpenRequest(
     kind: "openSession",
     source,
     requestedSessionId,
-    ...(session.backendPreference ? { backend: session.backendPreference } : {})
+    ...(backendPreference && backendPreference !== "auto" ? { backend: backendPreference } : {})
   };
 }
 

@@ -17,6 +17,7 @@ import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
 import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
+import { automaticBackends } from "./pythonEnvironmentModel";
 
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const RENDERER_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
@@ -106,7 +107,7 @@ export class OpenWranglerPanel {
     private source: SessionSource,
     private readonly backend?: DataBackend,
     openImmediately = true,
-    private readonly backendPreference: DataBackend | "auto" = backend ?? "auto"
+    private backendPreference: DataBackend | "auto" = backend ?? "auto"
   ) {
     this.panel.iconPath = {
       light: vscode.Uri.joinPath(this.context.extensionUri, "media", "action-icon-light.svg"),
@@ -476,6 +477,11 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "changeBackend") {
+      await this.enqueueBackendChange();
+      return;
+    }
+
     if (decoded.kind === "installRuntimeDependencies") {
       await this.installRuntimeDependencies();
       return;
@@ -680,6 +686,23 @@ export class OpenWranglerPanel {
     const generation = ++this.openAttemptGeneration;
     this.importChangeCancellation?.cancel();
     const task = this.importChangeTail.catch(() => undefined).then(() => this.changeImportOptions(generation));
+    this.importChangeTail = task.catch(() => undefined);
+    this.currentImportChangeTask = task;
+    void task.then(
+      () => {
+        if (this.currentImportChangeTask === task) this.currentImportChangeTask = undefined;
+      },
+      () => {
+        if (this.currentImportChangeTask === task) this.currentImportChangeTask = undefined;
+      }
+    );
+    return task;
+  }
+
+  private enqueueBackendChange(): Promise<void> {
+    const generation = ++this.openAttemptGeneration;
+    this.importChangeCancellation?.cancel();
+    const task = this.importChangeTail.catch(() => undefined).then(() => this.changeBackend(generation));
     this.importChangeTail = task.catch(() => undefined);
     this.currentImportChangeTask = task;
     void task.then(
@@ -898,6 +921,151 @@ export class OpenWranglerPanel {
         code: "bridge_error",
         message: error instanceof Error ? error.message : String(error),
         recoverable: true
+      });
+    } finally {
+      if (this.importChangeCancellation === cancellation) {
+        this.importChangeCancellation = undefined;
+        cancellation.dispose();
+      }
+      if (!this.disposed && generation === this.openAttemptGeneration) {
+        this.changingImportOptions = false;
+        await this.postRendererMessage({ kind: "importOptionsState", busy: false });
+        if (this.rendererReady) await this.enqueueRendererSynchronization(false);
+      }
+    }
+  }
+
+  private async changeBackend(generation: number): Promise<void> {
+    if (
+      this.disposed ||
+      generation !== this.openAttemptGeneration ||
+      this.source.kind !== "file" ||
+      !this.sessionId ||
+      !this.snapshot ||
+      !this.bridge.reconfigureFileSession
+    ) {
+      return;
+    }
+    if (this.opening) {
+      await this.opening.catch(() => undefined);
+      if (this.disposed || generation !== this.openAttemptGeneration || !this.sessionId || !this.snapshot) return;
+    }
+
+    const cancellation = new vscode.CancellationTokenSource();
+    this.importChangeCancellation?.dispose();
+    this.importChangeCancellation = cancellation;
+    this.changingImportOptions = true;
+    try {
+      await this.postRendererMessage({ kind: "importOptionsState", busy: true });
+      const compatibleBackends = automaticBackends(this.source);
+      const currentBackend = this.snapshot.metadata.backend;
+      const backend = (
+        await vscode.window.showQuickPick(
+          compatibleBackends.map((candidate) => ({
+            label: backendDisplayName(candidate),
+            description: candidate === currentBackend ? "Current" : undefined,
+            backend: candidate
+          })),
+          {
+            title: "Dataframe engine",
+            placeHolder: `Current engine: ${backendDisplayName(currentBackend)}`,
+            matchOnDescription: true
+          },
+          cancellation.token
+        )
+      )?.backend;
+      if (
+        !backend ||
+        cancellation.token.isCancellationRequested ||
+        this.disposed ||
+        generation !== this.openAttemptGeneration
+      ) {
+        return;
+      }
+      if (!compatibleBackends.includes(backend)) {
+        await this.post({
+          kind: "error",
+          code: "unsupported_backend",
+          message: `${backendDisplayName(backend)} cannot open this file with its current import options.`,
+          recoverable: true,
+          sessionId: this.sessionId
+        });
+        return;
+      }
+      if (backend === currentBackend) return;
+
+      const metadata = this.snapshot.metadata;
+      if (metadata.steps.length > 0 || metadata.draftStep) {
+        const applied = metadata.steps.length;
+        const planDescription = [
+          applied > 0 ? `${applied} applied ${applied === 1 ? "step" : "steps"}` : undefined,
+          metadata.draftStep ? "the current draft" : undefined
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(" and ");
+        const confirmation = await vscode.window.showWarningMessage(
+          `Switch to ${backendDisplayName(backend)}?`,
+          {
+            modal: true,
+            detail: `Open Wrangler will replay ${planDescription} with ${backendDisplayName(backend)}. If replay fails, the current ${backendDisplayName(currentBackend)} session stays open.`
+          },
+          "Replay and switch"
+        );
+        if (
+          confirmation !== "Replay and switch" ||
+          cancellation.token.isCancellationRequested ||
+          this.disposed ||
+          generation !== this.openAttemptGeneration
+        ) {
+          return;
+        }
+      }
+
+      await this.drainForwardedRequests();
+      if (
+        this.disposed ||
+        generation !== this.openAttemptGeneration ||
+        cancellation.token.isCancellationRequested ||
+        !this.sessionId
+      ) {
+        return;
+      }
+      const response = await this.bridge.reconfigureFileSession(this.sessionId, this.sessionRevision, this.source, {
+        cancellation: cancellation.token,
+        backendPreference: backend
+      });
+      if (response.kind === "sessionOpened") {
+        this.invalidateRendererSynchronization();
+        this.backendPreference = backend;
+        this.source = response.metadata.source;
+        this.openResponse = response;
+        this.sessionId = response.metadata.sessionId;
+        this.sessionRevision = response.metadata.revision;
+        this.snapshot = response;
+        this.snapshotViewContextId = undefined;
+        this.latestPageViewRequestId = undefined;
+        this.unpublishedAuthoritativeSnapshot = true;
+        await this.rememberConfirmedFileImportOptions(response.metadata.source, response.metadata.backend);
+        if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
+      } else {
+        await this.postUnpublishedAuthoritativeSnapshot();
+      }
+      if (this.disposed || generation !== this.openAttemptGeneration) return;
+      await this.postImportResponse(response);
+      if (response.kind === "sessionOpened") {
+        this.unpublishedAuthoritativeSnapshot = false;
+        await this.postSessionPresentation();
+        await this.postViewState();
+      }
+    } catch (error) {
+      if (this.disposed || generation !== this.openAttemptGeneration) return;
+      await this.postUnpublishedAuthoritativeSnapshot();
+      await this.postImportResponse({
+        kind: "error",
+        code: "bridge_error",
+        message: error instanceof Error ? error.message : String(error),
+        recoverable: true,
+        sessionId: this.sessionId
       });
     } finally {
       if (this.importChangeCancellation === cancellation) {
@@ -1613,6 +1781,9 @@ export class OpenWranglerPanel {
           }
         : undefined;
     }
+    if (message.kind === "changeBackend") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "changeBackend" } : undefined;
+    }
     if (message.kind === "installRuntimeDependencies") {
       return hasExactKeys(message, ["kind"]) ? { kind: "installRuntimeDependencies" } : undefined;
     }
@@ -1742,6 +1913,7 @@ type WebviewRequest =
   | { kind: "updateViewState"; state: GridViewState }
   | { kind: "clearStepInspection" }
   | { kind: "changeImportOptions"; actionId?: string }
+  | { kind: "changeBackend" }
   | { kind: "installRuntimeDependencies" }
   | { kind: "exportData" }
   | { kind: "switchSessionToEditing"; state: GridViewState }
@@ -1784,6 +1956,14 @@ function canChangeImportOptions(source: SessionSource): boolean {
   if (source.kind !== "file") return false;
   const extension = path.extname(source.path ?? source.uri ?? "").toLowerCase();
   return extension === ".csv" || extension === ".tsv" || extension === ".xlsx" || extension === ".xls";
+}
+
+function backendDisplayName(backend: DataBackend): string {
+  if (backend === "duckdb") return "DuckDB";
+  if (backend === "polars") return "Polars";
+  if (backend === "pandas") return "Pandas";
+  if (backend === "pyspark") return "PySpark";
+  return "R";
 }
 
 function canSwitchNotebookSessionToEditing(metadata: SessionMetadata): boolean {

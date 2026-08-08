@@ -177,6 +177,22 @@ textarea {
   text-transform: uppercase;
 }
 
+.backendButton {
+  align-items: center;
+  background: transparent;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.backendButton:not(:disabled):hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-foreground);
+}
+
+.backendButton .codicon {
+  font-size: 10px;
+}
+
 .sessionBadge {
   flex-shrink: 0;
   white-space: nowrap;

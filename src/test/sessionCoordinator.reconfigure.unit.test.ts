@@ -554,6 +554,86 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     });
   });
 
+  it("switches the backend without changing import options and pins the confirmed engine", async () => {
+    const candidateRequests: OpenSessionRequest[] = [];
+    const candidateMetadata = new Map<string, SessionMetadata>();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession" && delegateRequest.mock.calls.length === 1) {
+        return openedFor(request, metadataFor({ runtimeId: "runtime-old", source: initialSource, backend: "polars" }));
+      }
+      if (request.kind === "openSession") {
+        candidateRequests.push(request);
+        const runtimeId = request.requestedSessionId ?? "";
+        const candidate = metadataFor({
+          runtimeId,
+          source: request.source,
+          backend: request.backend ?? "polars"
+        });
+        candidateMetadata.set(runtimeId, candidate);
+        return openedFor(request, candidate);
+      }
+      if (request.kind === "getPage") {
+        const candidate = candidateMetadata.get(request.sessionId);
+        if (!candidate) throw new Error(`Unknown replacement runtime: ${request.sessionId}`);
+        return pageFor(request, {
+          ...candidate,
+          revision: request.revision,
+          filterModel: request.filterModel
+        });
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const openedResponse = await bridge.request(openRequest(initialSource), { backendPreference: "auto" });
+    if (openedResponse.kind !== "sessionOpened") throw new Error("Expected a Polars session.");
+    await bridge.updateViewState?.(openedResponse.metadata.sessionId, {
+      selectedColumnId: "c:value",
+      columnWidths: { "c:value": 245 },
+      viewport: { firstVisibleRow: 1, scrollLeft: 17 }
+    });
+
+    const switched = await bridge.reconfigureFileSession!(
+      openedResponse.metadata.sessionId,
+      openedResponse.metadata.revision,
+      initialSource,
+      { backendPreference: "pandas" }
+    );
+    if (switched.kind !== "sessionOpened") throw new Error("Expected a Pandas replacement.");
+
+    expect(candidateRequests[0]).toMatchObject({
+      kind: "openSession",
+      backend: "pandas",
+      source: initialSource
+    });
+    expect(switched).toMatchObject({
+      metadata: {
+        sessionId: openedResponse.metadata.sessionId,
+        backend: "pandas",
+        source: initialSource
+      }
+    });
+    expect(coordinator.activeSession()?.viewState).toMatchObject({
+      selectedColumnId: "c:value",
+      columnWidths: { "c:value": 245 },
+      viewport: { firstVisibleRow: 1, scrollLeft: 17 }
+    });
+
+    const imported = await bridge.reconfigureFileSession!(
+      switched.metadata.sessionId,
+      switched.metadata.revision,
+      replacementSource
+    );
+
+    expect(imported.kind).toBe("sessionOpened");
+    expect(candidateRequests[1]).toMatchObject({
+      kind: "openSession",
+      backend: "pandas",
+      source: replacementSource
+    });
+  });
+
   it("keeps an automatic preference after reopening a confirmed backend", async () => {
     const candidateRequests: OpenSessionRequest[] = [];
     let candidateId = "";
