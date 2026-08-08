@@ -20,4 +20,5 @@ test("native R and Quarto acceptance pins one reviewed toolchain", () => {
     assert.match(pin.sha256, /^[0-9a-f]{64}$/u);
     assert.ok(Number.isSafeInteger(pin.bytes) && pin.bytes > 0);
   }
+  assert.equal(R_EDITOR_ACCEPTANCE_TOOLING.quartoCli.pandocRelativePath, "bin/tools/x86_64/pandoc");
 });

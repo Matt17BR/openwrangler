@@ -34,7 +34,8 @@ export const R_EDITOR_ACCEPTANCE_TOOLING = Object.freeze({
     fileName: "quarto-1.10.18-linux-amd64.tar.gz",
     url: "https://github.com/quarto-dev/quarto-cli/releases/download/v1.10.18/quarto-1.10.18-linux-amd64.tar.gz",
     bytes: 147_010_003,
-    sha256: "afad071b5bd22c02f2d300695743189d3650e0537a53073e654b630cff2b0c73"
+    sha256: "afad071b5bd22c02f2d300695743189d3650e0537a53073e654b630cff2b0c73",
+    pandocRelativePath: "bin/tools/x86_64/pandoc"
   })
 });
 
@@ -78,14 +79,10 @@ export async function prepareREditorAcceptanceTooling(
     },
     { timeoutMs: 120_000 }
   );
-  const quartoExecutable = resolve(
-    installRoot,
-    `quarto-${R_EDITOR_ACCEPTANCE_TOOLING.quartoCli.version}`,
-    "bin",
-    "quarto"
-  );
+  const quartoRoot = resolve(installRoot, `quarto-${R_EDITOR_ACCEPTANCE_TOOLING.quartoCli.version}`);
+  const quartoExecutable = resolve(quartoRoot, "bin", "quarto");
   assertContainedExecutable(quartoExecutable, installRoot, "quarto");
-  const pandocExecutable = resolve(quartoExecutable, "..", "tools", "pandoc");
+  const pandocExecutable = resolve(quartoRoot, R_EDITOR_ACCEPTANCE_TOOLING.quartoCli.pandocRelativePath);
   assertContainedExecutable(pandocExecutable, installRoot, "pandoc");
   const version = await runCommand(
     {
