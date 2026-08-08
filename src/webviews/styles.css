@@ -1781,6 +1781,8 @@ dd {
 
 .operationSearch > span {
   color: var(--vscode-descriptionForeground);
+  grid-column: 1;
+  grid-row: 1;
   margin-left: 7px;
   pointer-events: none;
   position: relative;

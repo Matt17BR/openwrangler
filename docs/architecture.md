@@ -13,7 +13,7 @@ Open Wrangler has three cooperating parts:
 Python and R sessions use the same coordinator, grid, filters, sorts, profiles, draft review, and cleaning history.
 R currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Round, Floor, and Ceiling.
+Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate.
 The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
@@ -134,9 +134,10 @@ a `data.table` key column is rejected; choosing a new output column leaves the e
 data frames and tibbles are copied with R serialization; `data.table` uses
 `data.table::copy()` and native column selection, preserving compatible keys without mutating the notebook variable.
 Fill Missing Values offers a typed value, an exact numeric median, a mean for double columns, or the most common
-non-missing value for character, factor, and logical columns. It also accepts an ordered list of same-type fallback
-columns and takes the first present value in each row. Directional fills use an explicit stable sort, restore the
-original row order, and may reject a whole missing run above a chosen limit. Forward fill leaves leading gaps
+non-missing value for character, factor, and logical columns. Median, mean, and most common replacements can also be
+calculated within one or more groups. It accepts an ordered list of same-type fallback columns and takes the first
+present value in each row. Directional fills use an explicit stable sort, restore the original row order, and may
+reject a whole missing run above a chosen limit. Forward fill leaves leading gaps
 unresolved; backward fill leaves trailing gaps unresolved. A double column can instead interpolate between finite
 anchors along an ordinary numeric, `Date`, or `POSIXct` coordinate. Coordinates must be complete, finite, and unique.
 The calculation uses their actual distance, fills only bracketed runs, and restores source order. `integer64` is not a

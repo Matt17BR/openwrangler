@@ -175,9 +175,10 @@ through the public command. The installed VS Code and Cursor journey checks the 
 view state, and cleanup of both host and IRkernel artifacts. A second macOS/Linux run starts from a real `.R` file,
 opens a discovered dataframe, inserts generated code back into that exact unsaved document, and reruns the result
 without changing a decoy editor or either source file on disk.
-The same acceptance phase now includes realistic `.Rmd` and `.qmd` fixtures with first-line YAML, ignored prose and
-non-R cells, a disabled R cell, a relative CSV read, native editing, and a generated fenced R cell. Focused tests prove
-that cells are parsed separately and unsupported document syntax fails before R starts. The installed VS Code and
+The same acceptance phase now includes realistic `.Rmd` and `.qmd` fixtures with first-line YAML, ignored prose, a
+relative CSV read, native editing, and a generated fenced R cell. The R Markdown parser fixture also includes a non-R
+cell and a disabled R cell. Focused tests prove that cells are parsed separately and unsupported document syntax fails
+before R starts. The installed VS Code and
 Cursor runs locally on Linux cover all three document types, including cleaned CSV export from the local `.R` session.
 The macOS preview and stable release cells must pass the same local document subjourney in packaged VS Code. Their Windows
 counterparts run the complete local IRkernel journey but skip direct documents. Local Windows file menus are hidden;

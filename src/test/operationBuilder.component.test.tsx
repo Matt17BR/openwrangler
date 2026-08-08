@@ -1067,7 +1067,9 @@ describe("OperationBuilder", () => {
       />
     );
 
-    fireEvent.change(screen.getByLabelText("Method"), { target: { value: "fallbackColumns" } });
+    const method = screen.getByLabelText("Method");
+    expect(within(method).getByRole("option", { name: "Fallback columns (same row)" })).toBeInTheDocument();
+    fireEvent.change(method, { target: { value: "fallbackColumns" } });
     const first = screen.getByLabelText("Fallback 1");
     expect(first).toHaveValue("c:1");
     expect(within(first).queryByRole("option", { name: "value" })).toBeNull();
@@ -1264,6 +1266,12 @@ describe("OperationBuilder", () => {
 
     const input = screen.getByLabelText("Replacement value");
     expect(screen.getByText("R text replacements can use up to 8,192 UTF-8 bytes.")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Character columns stay character. For factor columns, a new value is added as a level and the factor type is kept."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/may convert the column to text/u)).toBeNull();
 
     fireEvent.input(input, { target: { value: "🙂".repeat(3_000) } });
     expect(input).toBeInvalid();

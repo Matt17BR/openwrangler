@@ -62,7 +62,9 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
 - `filter-result.png`: 1440 × 861 with one exact viewing filter and synchronized sidebar state.
 - `gallery/histogram-hover.png` and `gallery/sort-priority.png`: 448 × 480 interaction details.
 - `gallery/column-search-wide.png`: 1440 × 865; `column-search-wide-detail.png`: 540 × 420.
-- `gallery/operation-catalog.png` and `gallery/operation-configuration.png`: complete selection/configuration.
+- `gallery/operation-catalog.png`: complete operation selection.
+- `gallery/operation-configuration.png`: grouped mean missing-value configuration for `revenue`, using `market` and
+  `segment` as group keys before preview.
 - `workflow.png`: 1440 × 870 draft, highlighted values, Apply / Discard, history, and native Polars code.
 - `gallery/applied-step-inspection.png`: 1440 × 870; detail: 995 × 320.
 - `gallery/latest-step-edited.png` and `gallery/latest-step-undone.png`: 1440 × 865; details: 448 × 440.
@@ -85,11 +87,13 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
   focuses the Viewing / DuckDB badges, active filter, and editable two-key sort order.
 - `gallery/notebook-pyspark.png`: complete source; its 820 × 610 detail focuses the Source order / Viewing only /
   PySpark badges, representative native rows, exact statistics, and distribution.
-- `gallery/notebook-r-editing.png`: complete R notebook workbench with a Rename Column draft, generated R, and the
-  native cleaning history.
+- `gallery/notebook-r-editing.png`: complete R notebook workbench with a Group and aggregate draft, generated R, and
+  the native cleaning history.
+- `gallery/r-quarto-variable-picker.png`: complete Quarto source document behind its native dataframe picker; its
+  1280 × 520 detail keeps the source cell and picker readable in the README.
 
-These four README derivatives are exact source-pixel crops, not resized workbenches. Each keeps the distinguishing
-engine behavior legible at half width and links to its complete accepted source scene.
+The cropped notebook and Quarto images use exact source pixels rather than resized workbenches. Each links to its
+complete accepted source scene.
 
 The setup cell is too implementation-focused for product documentation, so the public gallery uses the PySpark
 workbench screenshot instead.
@@ -150,9 +154,9 @@ After GitHub and both registries have rendered a release README, install the loc
 `npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"` from the
 exact released source checkout. The SHA must be lowercase 40-hex and the version must be semantic without a leading
 `v`. Starting with `1.2.1`, the verifier byte-compares the exact source README and package version; rejects an
-undeclared media series; pre-stats a bounded inventory before any full file read; checks all 46 PNGs for chunk CRC,
+undeclared media series; pre-stats a bounded inventory before any full file read; checks all 48 PNGs for chunk CRC,
 ordered structure, complete decode, reviewed natural dimensions, standard sRGB, per-file and total budgets, and
-immutable remote bytes; and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. Every one of the 19
+immutable remote bytes; and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. Every one of the 20
 rendered README images must retain its exact reviewed `src`/`currentSrc` and natural dimensions. Their width-only
 presentation may not exceed 960 CSS pixels, its container, or the viewport, must preserve the natural aspect ratio, and must retain
 at least two natural pixels per rendered CSS pixel. Four representative images repeat those checks near 760px and

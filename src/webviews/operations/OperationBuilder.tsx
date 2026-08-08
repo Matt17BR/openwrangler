@@ -1460,7 +1460,7 @@ function FillMissingFields({
           )}
           {fillModes.includes("fallbackColumns") && (
             <optgroup label="Other columns">
-              <option value="fallbackColumns">Other columns (first available)</option>
+              <option value="fallbackColumns">Fallback columns (same row)</option>
             </optgroup>
           )}
           {fillModes.includes("value") && (
@@ -1748,8 +1748,9 @@ function FillMissingFields({
           <FillReplacementInput backend={backend} kind={valueKind} defaultValue={savedValue} />
           {selectedColumn?.type === "string" && (
             <p className="panelNote">
-              For categorical columns, a specific value may convert the column to text. Most common value keeps the
-              category type.
+              {backend === "r"
+                ? "Character columns stay character. For factor columns, a new value is added as a level and the factor type is kept."
+                : "For categorical columns, a specific value may convert the column to text. Most common value keeps the category type."}
             </p>
           )}
         </>

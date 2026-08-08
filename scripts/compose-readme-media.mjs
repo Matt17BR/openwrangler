@@ -55,6 +55,7 @@ const assets = [
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-r-editing.png", "vscode-notebook-r-editing-dark.png", 1_440, 900),
+  nativeAsset("gallery/r-quarto-variable-picker.png", "vscode-r-quarto-variable-picker-dark.png", 1_440, 900),
   nativeAsset("gallery/sidebar-overview.png", "vscode-sidebar-overview-dark.png", 1_440, 874),
   nativeAsset("gallery/operation-catalog.png", "vscode-operation-catalog-dark.png", 1_280, 874),
   nativeAsset("gallery/operation-configuration.png", "vscode-operation-configuration-dark.png", 1_280, 874),
@@ -90,6 +91,12 @@ const assets = [
     y: 170,
     width: 510,
     height: 605
+  }),
+  nativeCrop("gallery/r-quarto-variable-picker-detail.png", "vscode-r-quarto-variable-picker-dark.png", 1_440, 900, {
+    x: 80,
+    y: 20,
+    width: 1_280,
+    height: 520
   }),
   nativeCrop("gallery/applied-step-inspection-detail.png", "vscode-applied-step-inspection-dark.png", 1_440, 870, {
     x: 445,

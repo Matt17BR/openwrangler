@@ -57,7 +57,8 @@ export const PACKAGED_SCREENSHOT_SCENES = [
   "notebook-pyspark",
   "notebook-r",
   "notebook-r-editing",
-  "notebook-r-code-insertion"
+  "notebook-r-code-insertion",
+  "r-quarto-variable-picker"
 ] as const;
 export const PACKAGED_SCREENSHOT_FEATURED_COLUMNS = [
   "order_id",

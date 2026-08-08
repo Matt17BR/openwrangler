@@ -478,9 +478,9 @@ npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --ver
 The check rejects a mutable GitHub branch, source/version mismatch, undeclared media series, missing or orphaned
 inventory entries, stale registry versions or README content, and any displayed image whose rendered `src` or
 `currentSrc` is not the exact immutable raw URL in the reviewed README. Before reading a PNG, traversal caps the
-inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 46
+inventory at 64 entries, depth 4, 240 UTF-8 bytes per relative path, 2 MiB per file, and 32 MiB in total. All 48
 declared PNGs then require valid chunk CRCs, one ordered IHDR/sRGB/IDAT/IEND structure, a successful full decode,
-reviewed natural dimensions, sRGB, and immutable remote equality. All 19 README images are checked at DPR 2 on each
+reviewed natural dimensions, sRGB, and immutable remote equality. All 20 README images are checked at DPR 2 on each
 of the three public surfaces. They must stay within their declared width, rendered container, and viewport, preserve their
 natural aspect ratio within one CSS pixel of height rounding, and retain at least two natural pixels per rendered CSS
 pixel. The hero, histogram, PySpark workbench, and R editing scene repeat those checks near 760px and 1400px viewport
@@ -629,9 +629,10 @@ The modified in-memory source is then run again and its generated result is open
 exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite`, `rlang`, and
 `nanoparquet`.
 
-The R Markdown and Quarto fixtures each contain first-line YAML, prose, a non-R cell, a disabled R cell, and one
-top-level backtick-fenced `{r}` cell that reads a relative CSV. The journey opens the dataframe, checks its full schema
-and page, applies Rename, inserts generated R as a new fenced cell, and proves the source file on disk is unchanged.
+The R Markdown and Quarto fixtures each contain first-line YAML, prose, and one top-level backtick-fenced `{r}` cell
+that reads a relative CSV. The R Markdown parser fixture also contains a non-R cell and a disabled R cell. The journey
+opens the dataframe, checks its full schema and page, applies Rename, inserts generated R as a new fenced cell, and
+proves the source file on disk is unchanged.
 Parser tests reject later metadata blocks, raw HTML/TeX containers, indented or tilde R fences, alternate engines,
 ambiguous options, cross-cell syntax joining, and R Markdown fence-length mismatches. These are lexical R-cell runs;
 the test does not claim knitr or Quarto rendering behavior.
@@ -642,21 +643,23 @@ that grouped `GRP_df` and indexed `indexed_frame` objects stay out of the picker
 same accepted and rejected classes.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
-viewing workbench, a 1,205-row Rename draft after switching that notebook session to Editing mode, and the generated R
-inserted into its notebook.
+viewing workbench, a Group and aggregate draft after switching that same session to Editing mode, the generated R
+inserted into its notebook, and the dataframe picker opened from a real Quarto document.
 The viewing image shows two filters, two
-ordered sorts, and exact revenue statistics. The editing image shows the native R code preview beside the draft,
-cleaning history, and Apply/Discard controls.
-The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 881
+ordered sorts, and exact revenue statistics. The editing image groups the orders by market and channel and shows the
+native R code preview beside the draft, cleaning history, and Apply/Discard controls.
+The picker uses a 1440 × 900 logical viewport. The workbench starts at the same size and trims its height to 874
 logical pixels so the grid ends on a complete row. Both are captured at 2× physical density. Capture fails if setup
 cells or private markers are visible, if a grid row or column is clipped, or if the source R object changes. The
 accepted files are
 `docs/images/editor-acceptance/vscode-notebook-r-picker-dark.png` and
 `docs/images/editor-acceptance/vscode-notebook-r-dark.png`,
 `docs/images/editor-acceptance/vscode-notebook-r-editing-dark.png`, and
-`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png`; the gallery uses lossless crops at
+`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-dark.png`, plus
+`docs/images/editor-acceptance/vscode-r-quarto-variable-picker-dark.png`; the gallery uses lossless crops at
 `docs/images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png` and
-`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png`.
+`docs/images/editor-acceptance/vscode-notebook-r-code-insertion-detail-dark.png`, while the README Quarto crop is
+composed from the accepted full source.
 
 ```bash
 npm run build:test-extension &&

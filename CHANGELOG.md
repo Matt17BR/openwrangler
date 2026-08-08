@@ -34,8 +34,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Changed
 
 - The Fill Missing Values method menu now groups column statistics, grouped statistics, ordered data, fallback
-  columns, and manual replacement. The menu also names the selected column type so it is clear why options appear or
-  disappear.
+  columns, and manual replacement. The fallback choice is labeled **Fallback columns (same row)**, and the menu names
+  the selected column type so it is clear why options appear or disappear.
+- Generated R now lays out Group and aggregate calls across several lines so the selected keys and output names are
+  readable in Code Preview.
+- Updated the R gallery with a Quarto dataframe picker and a grouped revenue example.
 
 ### Fixed
 

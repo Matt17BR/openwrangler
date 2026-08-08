@@ -3216,19 +3216,19 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_group_spec <- function(specification, aggregation = FALSE) {
-    fields <- c(
-      sprintf("position = %dL", specification$position),
+    source_fields <- c(
       sprintf("name = %s", r_string(specification$name)),
+      sprintf("position = %dL", specification$position),
       sprintf("kind = %s", r_string(specification$semanticsKind)),
       sprintf("ordered = %s", if (isTRUE(specification$ordered)) "TRUE" else "FALSE")
     )
-    if (aggregation) {
-      fields <- c(
-        fields,
+    fields <- if (aggregation) {
+      c(
+        sprintf("alias = %s", r_string(specification$alias)),
         sprintf("operation = %s", r_string(specification$operation)),
-        sprintf("alias = %s", r_string(specification$alias))
+        source_fields
       )
-    }
+    } else source_fields
     sprintf("list(%s)", paste(fields, collapse = ", "))
   }
 
@@ -3272,19 +3272,13 @@ openwrangler_r_kernel_agent <- local({
       } else if (step$kind %in% c("dropMissingRows", "dropDuplicates")) {
         lines <- c(lines, row_reduction_code_lines(step))
       } else if (identical(step$kind, "groupBy")) {
-        key_specs <- paste(
-          vapply(step$keys, r_group_spec, character(1L), USE.NAMES = FALSE),
-          collapse = ", "
-        )
-        aggregation_specs <- paste(
-          vapply(
-            step$aggregations,
-            r_group_spec,
-            character(1L),
-            aggregation = TRUE,
-            USE.NAMES = FALSE
-          ),
-          collapse = ", "
+        key_specs <- vapply(step$keys, r_group_spec, character(1L), USE.NAMES = FALSE)
+        aggregation_specs <- vapply(
+          step$aggregations,
+          r_group_spec,
+          character(1L),
+          aggregation = TRUE,
+          USE.NAMES = FALSE
         )
         guard_lines <- character()
         guarded <- c(step$keys, step$aggregations)
@@ -3297,11 +3291,8 @@ openwrangler_r_kernel_agent <- local({
         lines <- c(
           lines,
           guard_lines,
-          sprintf(
-            "  .ow_result <- .ow_group_by(.ow_result, list(%s), list(%s))",
-            key_specs,
-            aggregation_specs
-          )
+          sprintf("  .ow_result <- .ow_group_by(.ow_result, list(%s),", paste(key_specs, collapse = ", ")),
+          sprintf("    list(%s))", paste(aggregation_specs, collapse = ", "))
         )
       } else if (identical(step$kind, "renameColumn")) {
         lines <- c(

@@ -6486,6 +6486,12 @@ assert_identical(group_by_apply$action, "apply", "the R Group By draft did not a
 if (!grepl(".ow_group_by", group_by_apply$code, fixed = TRUE)) {
   stop("generated R Group By code omitted its native reducer", call. = FALSE)
 }
+if (!grepl("  .ow_result <- .ow_group_by(.ow_result, list(", group_by_apply$code, fixed = TRUE)) {
+  stop("generated R Group By code did not format its call across readable lines", call. = FALSE)
+}
+if (!grepl('list(alias = "number_sum", operation = "sum"', group_by_apply$code, fixed = TRUE)) {
+  stop("generated R Group By code did not keep the output name visible at the start of its aggregation", call. = FALSE)
+}
 assign("group_by_frame", source_environment$group_by_frame, envir = .GlobalEnv)
 eval(parse(text = group_by_apply$code), envir = .GlobalEnv)
 group_by_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)

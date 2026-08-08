@@ -47,6 +47,7 @@ const nativeAssets = [
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-r-editing.png", "vscode-notebook-r-editing-dark.png", 1_440, 900),
+  nativeAsset("gallery/r-quarto-variable-picker.png", "vscode-r-quarto-variable-picker-dark.png", 1_440, 900),
   nativeAsset("gallery/sidebar-overview.png", "vscode-sidebar-overview-dark.png", 1_440, 874),
   nativeAsset("gallery/operation-catalog.png", "vscode-operation-catalog-dark.png", 1_280, 874),
   nativeAsset("gallery/operation-configuration.png", "vscode-operation-configuration-dark.png", 1_280, 874),
@@ -82,6 +83,12 @@ const nativeAssets = [
     y: 170,
     width: 510,
     height: 605
+  }),
+  nativeCrop("gallery/r-quarto-variable-picker-detail.png", "vscode-r-quarto-variable-picker-dark.png", 1_440, 900, {
+    x: 80,
+    y: 20,
+    width: 1_280,
+    height: 520
   }),
   nativeCrop("gallery/applied-step-inspection-detail.png", "vscode-applied-step-inspection-dark.png", 1_440, 870, {
     x: 445,
@@ -483,6 +490,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "gallery/notebook-pyspark.png",
     "gallery/notebook-pyspark-detail.png",
     "gallery/notebook-r-editing.png",
+    "gallery/r-quarto-variable-picker.png",
+    "gallery/r-quarto-variable-picker-detail.png",
     "gallery/export-script-detail.png",
     "gallery/export-data-detail.png"
   ]) {
@@ -552,7 +561,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /alt="An R Rename Column draft in Open Wrangler with cleaning history, Apply and Discard controls, and generated R"/u
+    /alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R"/u
+  );
+  assert.match(
+    readme,
+    /alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders"/u
   );
   assert.match(readme, /Larger datasets can work, but the\s+practical limit depends on the engine and machine/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
@@ -655,6 +668,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "images/readme/v1.2/gallery/notebook-pyspark.png",
     "images/readme/v1.2/gallery/notebook-pyspark-detail.png",
     "images/readme/v1.2/gallery/notebook-r-editing.png",
+    "images/readme/v1.2/gallery/r-quarto-variable-picker.png",
+    "images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png",
     "images/readme/v1.2/gallery/sidebar-overview.png",
     "images/readme/v1.2/gallery/file-explorer-action.png",
     "images/readme/v1.2/gallery/file-explorer-action-detail.png",
@@ -716,13 +731,15 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /Local R notebook and R document sessions opened in Editing mode can export their cleaned result as CSV\./u
   );
   assert.doesNotMatch(gallery, /R notebooks\s+cannot export cleaned data yet/u);
+  assert.match(gallery, /This draft groups regional orders by market and channel/u);
   assert.match(
     gallery,
-    /This Rename Column draft shows the changed schema and generated R before the step is applied/u
+    /alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R"/u
   );
+  assert.match(gallery, /The picker comes from a real `\.qmd` run/u);
   assert.match(
     gallery,
-    /alt="An R Rename Column draft in Open Wrangler with the cleaning history, Apply and Discard controls, and native generated R"/u
+    /alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders"/u
   );
   assert.match(gallery, /vscode-notebook-r-code-insertion-detail-dark\.png/u);
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
@@ -773,11 +790,15 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const rNotebookWorkbench = readFileSync(
     resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-dark.png")
   );
-  assertPng(rNotebookWorkbench, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(881), false);
+  assertPng(rNotebookWorkbench, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(874), false);
   const rNotebookEditing = readFileSync(
     resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-editing-dark.png")
   );
   assertPng(rNotebookEditing, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(900), false);
+  const rQuartoPicker = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-r-quarto-variable-picker-dark.png")
+  );
+  assertPng(rQuartoPicker, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(900), false);
   const rNotebookCodeInsertion = readFileSync(
     resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-code-insertion-dark.png")
   );
@@ -820,8 +841,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(mediaSpec, /aspect ratio/u);
   assert.deepEqual(PUBLIC_MEDIA_RESPONSIVE_WIDTHS, [760, 1_400]);
   assert.match(mediaSpec, /2 MiB per PNG and 32 MiB for the complete inventory/u);
-  assert.match(mediaSpec, /checks all 46 PNGs/u);
-  assert.match(mediaSpec, /Every one of the 19\s+rendered README images/u);
+  assert.match(mediaSpec, /checks all 48 PNGs/u);
+  assert.match(mediaSpec, /Every one of the 20\s+rendered README images/u);
   assert.match(mediaSpec, /Four representative images repeat those checks/u);
   assert.match(releasing, /Four representative images are rechecked near 760px and 1400px/u);
   assert.match(mediaSpec, /Private setup, restart-probe, and runtime-transfer cells are collapsed/u);
@@ -832,8 +853,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(testing, /Private Monaco DOM structure is\s+not part of that proof/u);
   assert.match(testing, /public product media\s+at 2× physical density/u);
   assert.match(testing, /ordinary visual baselines remain 1×/u);
-  assert.match(testing, /All 46\s+declared PNGs/u);
-  assert.match(testing, /All 19 README images are checked/u);
+  assert.match(testing, /All 48\s+declared PNGs/u);
+  assert.match(testing, /All 20 README images are checked/u);
   assert.match(testing, /hero, histogram, PySpark workbench, and R editing scene/u);
 });
 
