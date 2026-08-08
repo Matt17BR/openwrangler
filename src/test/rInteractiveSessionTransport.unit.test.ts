@@ -1,11 +1,13 @@
+import { constants as fsConstants } from "node:fs";
 import { readFile, stat, unlink, writeFile } from "node:fs/promises";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, open, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
+import { R_KERNEL_MAX_REQUEST_BYTES } from "../extension/r/rKernelProtocol";
 import { RInteractiveSessionTransport } from "../extension/r/rInteractiveSessionTransport";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -24,8 +26,21 @@ describe("interactive R session transport", () => {
         try {
           const { requestPath, responsePath } = mailboxPaths(code);
           expect((await stat(dirname(dirname(requestPath)))).mode & 0o777).toBe(0o700);
-          expect((await stat(requestPath)).mode & 0o777).toBe(0o600);
-          const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+          const requestHandle = await open(
+            requestPath,
+            fsConstants.O_RDONLY | (typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0)
+          );
+          let request: { requestId: string; kind: string };
+          try {
+            const requestMetadata = await requestHandle.stat();
+            expect(requestMetadata.isFile()).toBe(true);
+            expect(requestMetadata.mode & 0o777).toBe(0o600);
+            expect(requestMetadata.size).toBeGreaterThan(0);
+            expect(requestMetadata.size).toBeLessThanOrEqual(R_KERNEL_MAX_REQUEST_BYTES);
+            request = JSON.parse(await requestHandle.readFile("utf8")) as { requestId: string; kind: string };
+          } finally {
+            await requestHandle.close();
+          }
           requestKinds.push(request.kind);
           await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
           await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
