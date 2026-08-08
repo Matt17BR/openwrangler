@@ -6486,7 +6486,7 @@ assert_identical(group_by_apply$action, "apply", "the R Group By draft did not a
 if (!grepl(".ow_group_by", group_by_apply$code, fixed = TRUE)) {
   stop("generated R Group By code omitted its native reducer", call. = FALSE)
 }
-if (!grepl("  .ow_result <- .ow_group_by(\n    .ow_result,\n    list(\n", group_by_apply$code, fixed = TRUE)) {
+if (!grepl("  .ow_result <- .ow_group_by(\n    .ow_result,\n    list(", group_by_apply$code, fixed = TRUE)) {
   stop("generated R Group By code did not format its call across readable lines", call. = FALSE)
 }
 if (!grepl('list(alias = "number_sum", operation = "sum"', group_by_apply$code, fixed = TRUE)) {

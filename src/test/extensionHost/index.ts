@@ -7220,7 +7220,7 @@ async function captureReleasedRNotebookGroupByDraft(
       .getByRole("tree", { name: /Cleaning Steps/u })
       .getByRole("treeitem", { name: /^Draft · Group and aggregate/u })
       .waitFor({ state: "visible", timeout: 10_000 });
-    await ensureCodePreviewHeight(workbench, 220);
+    await ensureCodePreviewHeight(workbench, 180);
     await revealCodePreviewOperationLine(codePreview, ".ow_result <- .ow_group_by", "total_revenue");
 
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R editing screenshot");

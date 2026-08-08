@@ -3217,8 +3217,8 @@ openwrangler_r_kernel_agent <- local({
 
   r_group_spec <- function(specification, aggregation = FALSE) {
     source_fields <- c(
-      sprintf("position = %dL", specification$position),
       sprintf("name = %s", r_string(specification$name)),
+      sprintf("position = %dL", specification$position),
       sprintf("kind = %s", r_string(specification$semanticsKind)),
       sprintf("ordered = %s", if (isTRUE(specification$ordered)) "TRUE" else "FALSE")
     )
@@ -3280,12 +3280,6 @@ openwrangler_r_kernel_agent <- local({
           aggregation = TRUE,
           USE.NAMES = FALSE
         )
-        key_lines <- paste0("      ", key_specs, ifelse(seq_along(key_specs) < length(key_specs), ",", ""))
-        aggregation_lines <- paste0(
-          "      ",
-          aggregation_specs,
-          ifelse(seq_along(aggregation_specs) < length(aggregation_specs), ",", "")
-        )
         guard_lines <- character()
         guarded <- c(step$keys, step$aggregations)
         for (guard_index in seq_along(guarded)) {
@@ -3299,12 +3293,8 @@ openwrangler_r_kernel_agent <- local({
           guard_lines,
           "  .ow_result <- .ow_group_by(",
           "    .ow_result,",
-          "    list(",
-          key_lines,
-          "    ),",
-          "    list(",
-          aggregation_lines,
-          "    )",
+          sprintf("    list(%s),", paste(key_specs, collapse = ", ")),
+          sprintf("    list(%s)", paste(aggregation_specs, collapse = ", ")),
           "  )"
         )
       } else if (identical(step$kind, "renameColumn")) {
