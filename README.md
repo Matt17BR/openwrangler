@@ -61,7 +61,7 @@ The 1.99 preview has three R entry points:
 | Workflow                    | How it opens dataframes                                                                 | Available in                                          |
 | --------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | IRkernel notebook           | From the notebook toolbar or Jupyter Variables                                          | VS Code on Linux, macOS, and Windows; Cursor on Linux |
-| Selected VS Code R terminal | Select the R terminal, then choose **Operations → Refresh R dataframes**                | VS Code and Cursor on Linux                           |
+| Selected VS Code R terminal | Choose **Operations → Show R dataframes…**; Open Wrangler starts R when needed          | VS Code and Cursor on Linux                           |
 | `.R`, `.Rmd`, or `.qmd`     | Choose **Run R Document in Open Wrangler…** to start an Open Wrangler-managed R process | VS Code and Cursor on Linux; VS Code on macOS         |
 
 R-document support follows the machine running the extension host. Remote document execution is experimental, and a
@@ -215,10 +215,10 @@ The entry point determines which process owns the session:
 
 - In an IRkernel notebook, use the notebook toolbar or Jupyter Variables. The dataframe opens in Viewing mode; use
   **Switch to Editing** when you want to build a cleaning plan. Generated R can be inserted into that exact notebook.
-- For an interactive session from the official R extension, select its terminal and choose **Operations → Refresh R
-  dataframes**. The list and every opened dataframe stay tied to that terminal. These dataframes also open in Viewing
-  mode and can switch to Editing. Generated R can be copied or saved, but it cannot be inserted because the terminal
-  has no source notebook or document.
+- For an interactive session from the official R extension, select its terminal and choose **Operations → Show R
+  dataframes…**. If no R terminal is running, **Start R and show dataframes…** opens one first. The list and every
+  opened dataframe stay tied to that terminal. These dataframes open in Viewing mode and can switch to Editing.
+  Generated R can be copied or saved, but it cannot be inserted because the terminal has no source document.
 - On local macOS and Linux workspaces, **Run R Document in Open Wrangler…** runs a trusted `.R` file or the supported
   top-level R cells in an `.Rmd` or `.qmd` document, including unsaved changes. It uses its own R process and follows
   the file start-mode setting, which defaults to Editing. Generated R can be inserted back into the exact open
@@ -231,19 +231,12 @@ Remote R-document execution is experimental.
 Switching a live notebook or terminal dataframe from Viewing to Editing keeps its filters, sorts, column widths, and
 grid position. Open Wrangler does not overwrite the live R object.
 
-The R workbench supports paging, filters, multi-column sorts, value search, profiles, and 21 cleaning operations:
-**Filter Rows**, **Sort Rows**, **Drop Missing Rows**, **Fill Missing Values**, **Drop Duplicates**, **Rename Column**,
-**Drop Columns**, **Select Columns**, **Clone Column**, **Convert type**, **Text Length**, **Lowercase**, **Uppercase**,
-**Find and replace**, **Capitalize**, **Strip text**, **Split text**, **Round**, **Floor**, **Ceiling**, and **Group and
-aggregate**. Grouping supports sum, mean, median, minimum, maximum, count, distinct count, first, and last. Every
-draft shows its data changes and generated R before it is applied. Applied steps can be inspected, edited, or undone.
-
-Fill Missing Values uses the median of all non-missing numeric values, the mean of a floating-point column, the most
-common non-missing character, factor, or logical value, a value entered by the user, or the first present value from
-an ordered list of same-type columns. It can also take the previous or next value in an explicit sort order and leave
-runs longer than an optional limit untouched. Median, mean, and most common value can be calculated separately within
-selected groups. Double columns can also use linear interpolation along an integer, double, `Date`, or `POSIXct`
-coordinate. It keeps `integer64`, date, and datetime types. A new factor value is added as a level when needed.
+The R workbench supports paging, filters, multi-column sorts, value search, profiles, and cleaning steps for rows,
+columns, text, numbers, missing values, and grouped summaries. Missing values can use a typed value, median, mean,
+mode, a fallback column, ordered forward or backward fill, grouped statistics, or numeric interpolation when the
+column type supports it. Every draft shows the changed data and generated R before it is applied. Applied steps can
+be inspected, edited, or undone. The [generated reference](docs/reference.md#transformation-operations) lists the
+operation parameters; the workbench shows only the operations supported by the active dataframe.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/992e9bf87bc448d38c0af53a8d1082fd65edd37b/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
@@ -253,8 +246,7 @@ Generated R can always be copied or saved as a script. Insertion is available on
 IRkernel notebook or an Open Wrangler-managed R document, because those workflows retain an exact source document.
 Local R sessions opened in Editing mode can export cleaned CSV files. They can also export Parquet when
 `nanoparquet` 0.5.1 or newer is installed in the R environment that owns the dataframe. Reopen the dataframe after
-installing the package so Open Wrangler can refresh its export choices. Operations outside the current 21-operation
-set are not available in R yet.
+installing the package so Open Wrangler can refresh its export choices.
 
 Ordinary frames created with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing dataframe, tibble, and
 data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
