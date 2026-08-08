@@ -308,6 +308,8 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
       - run: npm run check
+      - name: Verify live repository metadata
+        run: npm run repository:check-live
       - run: npm run test:scripts
       - run: npm run test:webview-acceptance
       - name: Upload webview failure diagnostics
