@@ -12917,6 +12917,15 @@ async function bestEffortReleasedJupyterCleanup(
   }
   recordAcceptanceProgress(`${phase}:cleanup-session-tabs`);
   if (notebook) {
+    if (!notebook.isClosed && notebook.isDirty) {
+      const saved = await withBoundedAcceptancePromise(
+        notebook.save(),
+        10_000,
+        "saving the temporary released-Jupyter notebook before cleanup"
+      );
+      assert.equal(saved, true, "The temporary released-Jupyter notebook must save before its tab closes.");
+      recordAcceptanceProgress(`${phase}:cleanup-notebook-saved`);
+    }
     const tab = notebookTab(notebook.uri);
     if (tab) {
       try {
@@ -12925,6 +12934,7 @@ async function bestEffortReleasedJupyterCleanup(
           10_000,
           "released-Jupyter notebook-tab cleanup"
         );
+        await waitFor(() => notebook.isClosed, 10_000, "the released-Jupyter notebook document to close");
       } catch {
         // Preserve the first released-Jupyter acceptance failure.
       }
