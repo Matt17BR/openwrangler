@@ -1529,6 +1529,60 @@ describe("protocol-v2 request validation", () => {
     ).toBe(false);
   });
 
+  it("accepts an active R-session variable without notebook or document provenance", () => {
+    const source = {
+      kind: "rInteractiveVariable" as const,
+      label: "orders",
+      variableName: "orders"
+    };
+    const request = {
+      kind: "openSession" as const,
+      source,
+      backend: "r" as const,
+      mode: "editing" as const,
+      pageSize: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    };
+    const opened = {
+      ...responses[1],
+      metadata: {
+        ...metadata,
+        backend: "r" as const,
+        rDataframeFlavor: "r.tibble" as const,
+        source,
+        capabilities: { ...metadata.capabilities, notebookInsert: false, documentInsert: false }
+      }
+    };
+    const envelope = { protocolVersion: 2, requestId: "r-interactive-open", priority: "interactive", request };
+
+    expect(isOpenWranglerRequest(request)).toBe(true);
+    expect(validateTransportSchema(envelope)).toBe(true);
+    expect(isOpenWranglerResponse(opened)).toBe(true);
+    expect(validateTransportSchema({ protocolVersion: 2, requestId: "r-interactive-opened", response: opened })).toBe(
+      true
+    );
+
+    for (const invalidSource of [
+      { kind: "rInteractiveVariable", label: "orders" },
+      { ...source, variableName: "" },
+      { ...source, uri: "file:///workspace/analysis.R" },
+      { ...source, path: "/workspace/analysis.R" },
+      { ...source, importOptions: {} }
+    ]) {
+      expect(isOpenWranglerRequest({ ...request, source: invalidSource })).toBe(false);
+      expect(validateTransportSchema({ ...envelope, request: { ...request, source: invalidSource } })).toBe(false);
+    }
+    const { backend: _rBackend, ...missingBackend } = request;
+    for (const candidate of [
+      missingBackend,
+      ...(["pandas", "polars", "duckdb", "pyspark"] as const).map((backend) => ({ ...request, backend }))
+    ]) {
+      expect(isOpenWranglerRequest(candidate)).toBe(false);
+      expect(validateTransportSchema({ ...envelope, request: candidate })).toBe(false);
+    }
+  });
+
   it("accepts only unique, non-empty stable IDs in summary projections", () => {
     const request = requests.find((candidate) => candidate.kind === "getSummary");
     expect(request?.kind).toBe("getSummary");

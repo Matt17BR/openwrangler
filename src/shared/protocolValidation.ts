@@ -161,7 +161,12 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
             (candidate.mode === undefined || candidate.mode === "viewing"))) &&
         (candidate.backend !== "r" ||
           (isRecord(candidate.source) &&
-            (candidate.source.kind === "notebookVariable" || candidate.source.kind === "documentVariable"))) &&
+            (candidate.source.kind === "notebookVariable" ||
+              candidate.source.kind === "documentVariable" ||
+              candidate.source.kind === "rInteractiveVariable"))) &&
+        (!isRecord(candidate.source) ||
+          candidate.source.kind !== "rInteractiveVariable" ||
+          candidate.backend === "r") &&
         optional(candidate, "mode", (mode) => isOneOf(mode, ["viewing", "editing"])) &&
         isBoundedPageSize(candidate.pageSize) &&
         isNonNegativeInteger(candidate.columnOffset) &&
@@ -560,7 +565,10 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
       (isRecord(candidate.source) && candidate.source.kind === "notebookVariable" && candidate.mode === "viewing")) &&
     (candidate.backend !== "r" ||
       (isRecord(candidate.source) &&
-        (candidate.source.kind === "notebookVariable" || candidate.source.kind === "documentVariable"))) &&
+        (candidate.source.kind === "notebookVariable" ||
+          candidate.source.kind === "documentVariable" ||
+          candidate.source.kind === "rInteractiveVariable"))) &&
+    (!isRecord(candidate.source) || candidate.source.kind !== "rInteractiveVariable" || candidate.backend === "r") &&
     (candidate.backend === "r"
       ? isOneOf(candidate.rDataframeFlavor, R_DATAFRAME_FLAVORS)
       : !Object.prototype.hasOwnProperty.call(candidate, "rDataframeFlavor")) &&
@@ -587,7 +595,13 @@ function isSessionSource(value: unknown): boolean {
   const candidate = exactRecord(value, ["kind", "label"], ["path", "uri", "variableName", "importOptions"]);
   if (
     candidate === undefined ||
-    !isOneOf(candidate.kind, ["file", "notebookVariable", "documentVariable", "notebookOutput"]) ||
+    !isOneOf(candidate.kind, [
+      "file",
+      "notebookVariable",
+      "documentVariable",
+      "rInteractiveVariable",
+      "notebookOutput"
+    ]) ||
     !isNonEmptyString(candidate.label) ||
     !optional(candidate, "path", isString) ||
     !optional(candidate, "uri", isString) ||
@@ -601,6 +615,14 @@ function isSessionSource(value: unknown): boolean {
       isNonEmptyString(candidate.variableName) &&
       isCanonicalSourceUri(candidate.uri) &&
       !Object.prototype.hasOwnProperty.call(candidate, "path") &&
+      !Object.prototype.hasOwnProperty.call(candidate, "importOptions")
+    );
+  }
+  if (candidate.kind === "rInteractiveVariable") {
+    return (
+      isNonEmptyString(candidate.variableName) &&
+      !Object.prototype.hasOwnProperty.call(candidate, "path") &&
+      !Object.prototype.hasOwnProperty.call(candidate, "uri") &&
       !Object.prototype.hasOwnProperty.call(candidate, "importOptions")
     );
   }

@@ -465,7 +465,7 @@ export interface OpenSessionRequest {
   columnLimit: number;
 }
 export interface SessionSource {
-  kind: "file" | "notebookVariable" | "documentVariable" | "notebookOutput";
+  kind: "file" | "notebookVariable" | "documentVariable" | "rInteractiveVariable" | "notebookOutput";
   label: string;
   path?: string;
   uri?: string;

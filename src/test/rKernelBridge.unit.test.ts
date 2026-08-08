@@ -654,6 +654,53 @@ describe("canonical R kernel bridge", () => {
     expect(atomic.abandon).not.toHaveBeenCalled();
   });
 
+  it("exports an active R-session dataframe without inventing a protected source file", async () => {
+    const contract = frameContract();
+    const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {
+      await args[3](new TextEncoder().encode("value,count\n"));
+      return {
+        sessionId: args[0],
+        revision: args[1],
+        format: "csv",
+        rows: contract.shape.rows,
+        columns: contract.shape.columns
+      };
+    });
+    const transport = { ...fakeTransport(contract), exportData };
+    const atomic = fakeAtomicTransaction();
+    const beginTransaction = vi.fn(async () => atomic.transaction);
+    const bridge = createBridge(transport, undefined, undefined, undefined, { beginTransaction });
+    const request: OpenSessionRequest = {
+      ...openRequest("editing"),
+      source: { kind: "rInteractiveVariable", label: "orders", variableName: "orders" }
+    };
+
+    const opened = await bridge.request(request);
+    expect(opened).toMatchObject({
+      kind: "sessionOpened",
+      metadata: {
+        source: request.source,
+        capabilities: { exportCsv: true, notebookInsert: false }
+      }
+    });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected an active R session.");
+    expect(opened.metadata.capabilities.documentInsert).not.toBe(true);
+    await expect(
+      bridge.request({
+        kind: "exportData",
+        sessionId,
+        revision: 0,
+        path: "/workspace/orders.cleaned.csv",
+        format: "csv"
+      })
+    ).resolves.toMatchObject({ kind: "dataExported", path: "/workspace/orders.cleaned.csv", format: "csv" });
+
+    expect(beginTransaction).toHaveBeenCalledWith({
+      destination: expect.objectContaining({ scheme: "file", fsPath: "/workspace/orders.cleaned.csv" }),
+      protectedSources: []
+    });
+  });
+
   it("advertises and atomically exports Parquet only when the selected R runtime supports it", async () => {
     const contract = frameContract();
     const exportData = vi.fn<NonNullable<RKernelBridgeTransport["exportData"]>>(async (...args) => {

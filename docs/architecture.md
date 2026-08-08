@@ -8,7 +8,9 @@ Open Wrangler has three cooperating parts:
 2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute dataframe code directly.
 3. A language runtime owns dataframe work. Python sessions use the bundled runtime in a selected interpreter or active
    Jupyter kernel. R notebooks use the bundled R reader inside the selected IRkernel. On macOS and Linux, a trusted
-   `.R`, `.Rmd`, or `.qmd` document runs in its own Open Wrangler `Rscript` process.
+   `.R`, `.Rmd`, or `.qmd` document can run in its own Open Wrangler `Rscript` process. A dataframe that already
+   exists in the official R extension's terminal uses an `rInteractiveVariable` source with no invented file or
+   notebook location; the host keeps that session pinned to the exact terminal that supplied it.
 
 Python and R sessions use the same coordinator, grid, filters, sorts, profiles, draft review, and cleaning history.
 R currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
