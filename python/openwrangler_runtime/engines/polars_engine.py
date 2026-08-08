@@ -938,6 +938,13 @@ class PolarsEngine(DataFrameEngine):
                     replacement["direction"],
                     replacement.get("maxGap"),
                 )
+            if replacement.get("kind") == "groupedStatistic":
+                return _polars_fill_missing_grouped_statistic(
+                    df,
+                    column,
+                    [bound_column_name(key, kind) for key in replacement["keys"]],
+                    replacement["statistic"],
+                )
             schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
             dtype = schema[column]
             expression = pl.col(column)
@@ -1392,6 +1399,14 @@ class PolarsEngine(DataFrameEngine):
                         f"{prefix}df = _ow_polars_fill_missing_directional("
                         f"df, {column!r}, {order_rules!r}, {replacement['direction']!r}, "
                         f"{replacement.get('maxGap')!r})"
+                    )
+                ]
+            if replacement.get("kind") == "groupedStatistic":
+                keys = [bound_column_name(key, kind) for key in replacement["keys"]]
+                return [
+                    (
+                        f"{prefix}df = _ow_polars_fill_missing_grouped_statistic("
+                        f"df, {column!r}, {keys!r}, {replacement['statistic']!r})"
                     )
                 ]
             schema = f"_fill_schema_{index}"
@@ -2111,6 +2126,189 @@ def _polars_fill_missing_directional(
     )
 
 
+def _polars_fill_missing_grouped_statistic(
+    frame: Any,
+    target: str,
+    keys: list[str],
+    statistic: str,
+) -> Any:
+    import polars as pl
+
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    target_dtype = schema[target]
+    object_columns = [column for column in [target, *keys] if schema[column] == pl.Object]
+    if object_columns:
+        raise EngineError(
+            "Grouped fills require native scalar Polars columns; Object columns are not supported: "
+            + ", ".join(object_columns)
+        )
+    target_value = pl.col(target)
+    if target_dtype.is_float():
+        target_value = target_value.fill_nan(None)
+
+    reserved = set(schema.names())
+
+    def unique(base: str) -> str:
+        candidate = base
+        while candidate in reserved:
+            candidate += "_"
+        reserved.add(candidate)
+        return candidate
+
+    normalized_keys: list[str] = []
+    key_expressions = []
+    for index, key in enumerate(keys):
+        name = unique(f"__ow_grouped_key_{index}")
+        expression = pl.col(key)
+        if schema[key].is_float():
+            expression = expression.fill_nan(None)
+        normalized_keys.append(name)
+        key_expressions.append(expression.alias(name))
+    fill_name = unique("__ow_grouped_fill")
+
+    normalized = frame.with_columns(key_expressions)
+    if statistic == "mean":
+        positive_name = unique("__ow_grouped_positive")
+        negative_name = unique("__ow_grouped_negative")
+        scale_name = unique("__ow_grouped_scale")
+        scaled_name = unique("__ow_grouped_scaled")
+        stats = normalized.group_by(normalized_keys, maintain_order=True).agg(
+            (target_value == float("inf")).any().alias(positive_name),
+            (target_value == float("-inf")).any().alias(negative_name),
+            target_value.filter(target_value.is_finite()).abs().max().alias(scale_name),
+        )
+        annotated = normalized.join(
+            stats,
+            on=normalized_keys,
+            how="left",
+            nulls_equal=True,
+            maintain_order="left",
+        )
+        summary = annotated.group_by(normalized_keys, maintain_order=True).agg(
+            pl.col(positive_name).first(),
+            pl.col(negative_name).first(),
+            pl.col(scale_name).first(),
+            (target_value / pl.col(scale_name)).filter(target_value.is_finite()).mean().alias(scaled_name),
+        )
+        fill = (
+            pl.when(pl.col(positive_name) & pl.col(negative_name))
+            .then(None)
+            .when(pl.col(positive_name))
+            .then(float("inf"))
+            .when(pl.col(negative_name))
+            .then(float("-inf"))
+            .when(pl.col(scale_name).is_null())
+            .then(None)
+            .when(pl.col(scale_name) == 0)
+            .then(0.0)
+            .otherwise(pl.col(scaled_name).clip(-1.0, 1.0) * pl.col(scale_name))
+            .cast(target_dtype, strict=True)
+            .alias(fill_name)
+        )
+        summary = summary.select(*normalized_keys, fill)
+    elif statistic == "mostFrequent":
+        count_name = unique("__ow_grouped_count")
+        maximum_name = unique("__ow_grouped_maximum")
+        ties_name = unique("__ow_grouped_ties")
+        counts = (
+            normalized.filter(target_value.is_not_null())
+            .group_by([*normalized_keys, target], maintain_order=True)
+            .len(name=count_name)
+        )
+        winners = counts.with_columns(pl.col(count_name).max().over(normalized_keys).alias(maximum_name)).filter(
+            pl.col(count_name) == pl.col(maximum_name)
+        )
+        summary = winners.group_by(normalized_keys, maintain_order=True).agg(
+            pl.col(target).first().alias(fill_name),
+            pl.len().alias(ties_name),
+        )
+        summary = summary.with_columns(
+            pl.when(pl.col(ties_name) == 1)
+            .then(pl.col(fill_name))
+            .otherwise(None)
+            .cast(target_dtype, strict=True)
+            .alias(fill_name)
+        ).drop(ties_name)
+    elif target_dtype.is_float():
+        lower_name = unique("__ow_grouped_lower")
+        upper_name = unique("__ow_grouped_upper")
+        summary = normalized.group_by(normalized_keys, maintain_order=True).agg(
+            target_value.quantile(0.5, interpolation="lower").alias(lower_name),
+            target_value.quantile(0.5, interpolation="higher").alias(upper_name),
+        )
+        lower = pl.col(lower_name)
+        upper = pl.col(upper_name)
+        finite = lower.is_finite() & upper.is_finite()
+        same_sign = (lower < 0) == (upper < 0)
+        midpoint = (
+            pl.when(lower == upper)
+            .then(lower)
+            .when(finite & same_sign)
+            .then(lower + ((upper - lower) / 2.0))
+            .otherwise((lower / 2.0) + (upper / 2.0))
+            .fill_nan(None)
+            .cast(target_dtype, strict=True)
+            .alias(fill_name)
+        )
+        summary = summary.select(*normalized_keys, midpoint)
+    else:
+        lower_name = unique("__ow_grouped_lower")
+        upper_name = unique("__ow_grouped_upper")
+        missing_name = unique("__ow_grouped_missing")
+        present = target_value.drop_nulls()
+        summary = normalized.group_by(normalized_keys, maintain_order=True).agg(
+            present.sort().get((present.len() - 1) // 2, null_on_oob=True).alias(lower_name),
+            present.sort().get(present.len() // 2, null_on_oob=True).alias(upper_name),
+            target_value.is_null().any().alias(missing_name),
+        )
+
+        def calculate(item: dict[str, Any]) -> Any:
+            if not item[missing_name] or item[lower_name] is None or item[upper_name] is None:
+                return None
+            lower = item[lower_name]
+            upper = item[upper_name]
+            if target_dtype.is_integer():
+                return exact_integer_median(lower, upper)
+            if isinstance(target_dtype, pl.Decimal):
+                return exact_decimal_median(lower, upper, target_dtype.precision, target_dtype.scale)
+            raise EngineError("Grouped median requires an integer or decimal Polars column.")
+
+        fill = (
+            pl.struct(lower_name, upper_name, missing_name)
+            .map_elements(
+                calculate,
+                return_dtype=target_dtype,
+                skip_nulls=False,
+            )
+            .alias(fill_name)
+        )
+        summary = summary.select(*normalized_keys, fill)
+
+    if isinstance(frame, pl.LazyFrame):
+        assert isinstance(normalized, pl.LazyFrame)
+        mapping = summary if isinstance(summary, pl.LazyFrame) else summary.lazy()
+        joined = normalized.join(
+            mapping,
+            on=normalized_keys,
+            how="left",
+            nulls_equal=True,
+            maintain_order="left",
+        )
+    else:
+        assert isinstance(normalized, pl.DataFrame)
+        mapping = summary.collect(engine="streaming") if isinstance(summary, pl.LazyFrame) else summary
+        joined = normalized.join(
+            mapping,
+            on=normalized_keys,
+            how="left",
+            nulls_equal=True,
+            maintain_order="left",
+        )
+    eligible = target_value.is_null() & pl.col(fill_name).is_not_null()
+    result = pl.when(eligible).then(pl.col(fill_name)).otherwise(pl.col(target)).alias(target)
+    return joined.with_columns(result).drop(*normalized_keys, fill_name)
+
+
 def _polars_has_missing(frame: Any, expression: Any) -> bool:
     import polars as pl
 
@@ -2346,6 +2544,167 @@ def _generated_polars_fill_helpers() -> list[str]:
         "        .sort(position_name)",
         "        .drop(position_name, missing_name, run_name, gap_name, candidate_name)",
         "    )",
+        "",
+        "",
+        "def _ow_polars_fill_missing_grouped_statistic(frame, target, keys, statistic):",
+        "    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema",
+        "    target_dtype = schema[target]",
+        "    object_columns = [column for column in [target, *keys] if schema[column] == pl.Object]",
+        "    if object_columns:",
+        (
+            "        raise ValueError('Grouped fills require native scalar Polars columns; Object columns are "
+            "not supported: ' + ', '.join(object_columns))"
+        ),
+        "    target_value = pl.col(target)",
+        "    if target_dtype.is_float():",
+        "        target_value = target_value.fill_nan(None)",
+        "    reserved = set(schema.names())",
+        "    def unique(base):",
+        "        candidate = base",
+        "        while candidate in reserved:",
+        "            candidate += '_'",
+        "        reserved.add(candidate)",
+        "        return candidate",
+        "    normalized_keys = []",
+        "    key_expressions = []",
+        "    for index, key in enumerate(keys):",
+        "        name = unique(f'__ow_grouped_key_{index}')",
+        "        expression = pl.col(key)",
+        "        if schema[key].is_float():",
+        "            expression = expression.fill_nan(None)",
+        "        normalized_keys.append(name)",
+        "        key_expressions.append(expression.alias(name))",
+        "    fill_name = unique('__ow_grouped_fill')",
+        "    normalized = frame.with_columns(key_expressions)",
+        "    if statistic == 'mean':",
+        "        positive_name = unique('__ow_grouped_positive')",
+        "        negative_name = unique('__ow_grouped_negative')",
+        "        scale_name = unique('__ow_grouped_scale')",
+        "        scaled_name = unique('__ow_grouped_scaled')",
+        "        stats = normalized.group_by(normalized_keys, maintain_order=True).agg(",
+        "            (target_value == float('inf')).any().alias(positive_name),",
+        "            (target_value == float('-inf')).any().alias(negative_name),",
+        "            target_value.filter(target_value.is_finite()).abs().max().alias(scale_name),",
+        "        )",
+        (
+            "        annotated = normalized.join(stats, on=normalized_keys, how='left', "
+            "nulls_equal=True, maintain_order='left')"
+        ),
+        "        summary = annotated.group_by(normalized_keys, maintain_order=True).agg(",
+        "            pl.col(positive_name).first(),",
+        "            pl.col(negative_name).first(),",
+        "            pl.col(scale_name).first(),",
+        "            (target_value / pl.col(scale_name))",
+        "            .filter(target_value.is_finite())",
+        "            .mean()",
+        "            .alias(scaled_name),",
+        "        )",
+        "        fill = (",
+        "            pl.when(pl.col(positive_name) & pl.col(negative_name))",
+        "            .then(None)",
+        "            .when(pl.col(positive_name))",
+        "            .then(float('inf'))",
+        "            .when(pl.col(negative_name))",
+        "            .then(float('-inf'))",
+        "            .when(pl.col(scale_name).is_null())",
+        "            .then(None)",
+        "            .when(pl.col(scale_name) == 0)",
+        "            .then(0.0)",
+        "            .otherwise(pl.col(scaled_name).clip(-1.0, 1.0) * pl.col(scale_name))",
+        "            .cast(target_dtype, strict=True)",
+        "            .alias(fill_name)",
+        "        )",
+        "        summary = summary.select(*normalized_keys, fill)",
+        "    elif statistic == 'mostFrequent':",
+        "        count_name = unique('__ow_grouped_count')",
+        "        maximum_name = unique('__ow_grouped_maximum')",
+        "        ties_name = unique('__ow_grouped_ties')",
+        "        counts = (",
+        "            normalized.filter(target_value.is_not_null())",
+        "            .group_by([*normalized_keys, target], maintain_order=True)",
+        "            .len(name=count_name)",
+        "        )",
+        "        winners = counts.with_columns(",
+        "            pl.col(count_name).max().over(normalized_keys).alias(maximum_name)",
+        "        ).filter(pl.col(count_name) == pl.col(maximum_name))",
+        "        summary = winners.group_by(normalized_keys, maintain_order=True).agg(",
+        "            pl.col(target).first().alias(fill_name),",
+        "            pl.len().alias(ties_name),",
+        "        )",
+        "        summary = summary.with_columns(",
+        "            pl.when(pl.col(ties_name) == 1)",
+        "            .then(pl.col(fill_name))",
+        "            .otherwise(None)",
+        "            .cast(target_dtype, strict=True)",
+        "            .alias(fill_name)",
+        "        ).drop(ties_name)",
+        "    elif target_dtype.is_float():",
+        "        lower_name = unique('__ow_grouped_lower')",
+        "        upper_name = unique('__ow_grouped_upper')",
+        "        summary = normalized.group_by(normalized_keys, maintain_order=True).agg(",
+        "            target_value.quantile(0.5, interpolation='lower').alias(lower_name),",
+        "            target_value.quantile(0.5, interpolation='higher').alias(upper_name),",
+        "        )",
+        "        lower = pl.col(lower_name)",
+        "        upper = pl.col(upper_name)",
+        "        finite = lower.is_finite() & upper.is_finite()",
+        "        same_sign = (lower < 0) == (upper < 0)",
+        "        midpoint = (",
+        "            pl.when(lower == upper)",
+        "            .then(lower)",
+        "            .when(finite & same_sign)",
+        "            .then(lower + ((upper - lower) / 2.0))",
+        "            .otherwise((lower / 2.0) + (upper / 2.0))",
+        "            .fill_nan(None)",
+        "            .cast(target_dtype, strict=True)",
+        "            .alias(fill_name)",
+        "        )",
+        "        summary = summary.select(*normalized_keys, midpoint)",
+        "    else:",
+        "        lower_name = unique('__ow_grouped_lower')",
+        "        upper_name = unique('__ow_grouped_upper')",
+        "        missing_name = unique('__ow_grouped_missing')",
+        "        present = target_value.drop_nulls()",
+        "        summary = normalized.group_by(normalized_keys, maintain_order=True).agg(",
+        ("            present.sort().get((present.len() - 1) // 2, null_on_oob=True).alias(lower_name),"),
+        "            present.sort().get(present.len() // 2, null_on_oob=True).alias(upper_name),",
+        "            target_value.is_null().any().alias(missing_name),",
+        "        )",
+        "        def calculate(item):",
+        "            if not item[missing_name] or item[lower_name] is None or item[upper_name] is None:",
+        "                return None",
+        "            lower = item[lower_name]",
+        "            upper = item[upper_name]",
+        "            if target_dtype.is_integer():",
+        "                total = int(lower) + int(upper)",
+        "                if total % 2:",
+        (
+            "                    raise ValueError('The integer median is fractional. Cast the column to float "
+            "or decimal before filling missing values.')"
+        ),
+        "                return total // 2",
+        "            if isinstance(target_dtype, pl.Decimal):",
+        "                left, right = Decimal(lower), Decimal(upper)",
+        "                with localcontext() as context:",
+        (
+            "                    context.prec = max(80, target_dtype.precision + target_dtype.scale + 4, "
+            "len(left.as_tuple().digits) + len(right.as_tuple().digits) + target_dtype.scale + 4)"
+        ),
+        "                    value = (left + right) / Decimal(2)",
+        "                return _ow_decimal_at_scale(value, target_dtype.precision, target_dtype.scale)",
+        "            raise ValueError('Grouped median requires an integer or decimal Polars column.')",
+        "        fill = pl.struct(lower_name, upper_name, missing_name).map_elements(",
+        "            calculate, return_dtype=target_dtype, skip_nulls=False",
+        "        ).alias(fill_name)",
+        "        summary = summary.select(*normalized_keys, fill)",
+        "    mapping = summary.lazy() if isinstance(frame, pl.LazyFrame) else summary",
+        (
+            "    joined = normalized.join(mapping, on=normalized_keys, how='left', "
+            "nulls_equal=True, maintain_order='left')"
+        ),
+        "    eligible = target_value.is_null() & pl.col(fill_name).is_not_null()",
+        "    result = pl.when(eligible).then(pl.col(fill_name)).otherwise(pl.col(target)).alias(target)",
+        "    return joined.with_columns(result).drop(*normalized_keys, fill_name)",
         "",
         "",
         "def _ow_polars_has_missing(frame, expression):",

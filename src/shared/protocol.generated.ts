@@ -149,6 +149,11 @@ export type FillMissingReplacement =
       maxGap?: number;
     }
   | {
+      kind: "groupedStatistic";
+      statistic: "median" | "mean" | "mostFrequent";
+      keys: NonEmptyColumnReferenceArray;
+    }
+  | {
       kind: "string";
       value: string;
     }
@@ -183,15 +188,15 @@ export type FillMissingReplacement =
  * @maxItems 64
  */
 export type FillMissingFallbackColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
+/**
+ * @minItems 1
+ */
+export type NonEmptyColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
 export type DropDuplicatesTransformStep = TransformStepTemplate & {
   kind: "dropDuplicates";
   params: DropDuplicatesParams;
   [k: string]: unknown;
 };
-/**
- * @minItems 1
- */
-export type NonEmptyColumnReferenceArray = [ColumnReference, ...ColumnReference[]];
 export type SelectColumnsTransformStep = TransformStepTemplate & {
   kind: "selectColumns";
   params: ColumnsParams;

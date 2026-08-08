@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 6L
+  transport_version <- 7L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
@@ -478,7 +478,7 @@ openwrangler_r_kernel_agent <- local({
       value,
       "kind",
       "request.payload.step.params.replacement",
-      optional_fields = c("value", "columns", "direction", "orderBy", "maxGap")
+      optional_fields = c("value", "columns", "direction", "orderBy", "maxGap", "statistic", "keys")
     )
     kind <- bounded_text(
       replacement$kind,
@@ -491,6 +491,7 @@ openwrangler_r_kernel_agent <- local({
       "mostFrequent",
       "fallbackColumns",
       "directional",
+      "groupedStatistic",
       "string",
       "integer",
       "float",
@@ -571,6 +572,40 @@ openwrangler_r_kernel_agent <- local({
       result <- list(kind = kind, direction = direction, orderBy = order_by)
       if (!is.null(max_gap)) result$maxGap <- max_gap
       return(result)
+    }
+    if (identical(kind, "groupedStatistic")) {
+      if (!setequal(names(replacement), c("kind", "statistic", "keys"))) {
+        abort("invalid_request", "a grouped-statistic replacement requires exactly kind, statistic, and keys")
+      }
+      statistic <- bounded_text(
+        replacement$statistic,
+        "request.payload.step.params.replacement.statistic",
+        16L
+      )
+      if (!statistic %in% c("median", "mean", "mostFrequent")) {
+        abort("invalid_request", "a grouped-statistic replacement contains an unsupported statistic")
+      }
+      keys <- replacement$keys
+      if (
+        !is.list(keys) ||
+          is.object(keys) ||
+          !is.null(names(keys)) ||
+          length(keys) == 0L ||
+          length(keys) > limits$columns
+      ) {
+        abort("invalid_request", "grouping columns must be a bounded non-empty array")
+      }
+      keys <- lapply(seq_along(keys), function(index) {
+        decode_column_reference(
+          keys[[index]],
+          sprintf("request.payload.step.params.replacement.keys[%d]", index),
+          limits$columnIdBytes
+        )
+      })
+      ids <- vapply(keys, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (anyDuplicated(ids)) abort("invalid_request", "grouping columns contain a repeated column identity")
+      if (target_column$id %in% ids) abort("invalid_request", "the fill target cannot also be a grouping column")
+      return(list(kind = kind, statistic = statistic, keys = keys))
     }
     if (!"value" %in% names(replacement)) {
       abort("invalid_request", "a typed replacement requires a value")
@@ -1203,7 +1238,15 @@ openwrangler_r_kernel_agent <- local({
     column <- schema[[position]]
     semantic_kind <- column$semantics$kind
     replacement_kind <- step$params$replacement$kind
-    compatible <- if (identical(replacement_kind, "directional")) {
+    compatible <- if (identical(replacement_kind, "groupedStatistic")) {
+      switch(
+        step$params$replacement$statistic,
+        mean = identical(semantic_kind, "double"),
+        median = semantic_kind %in% c("integer", "integer64", "double"),
+        mostFrequent = semantic_kind %in% c("character", "factor", "logical"),
+        FALSE
+      )
+    } else if (identical(replacement_kind, "directional")) {
       semantic_kind %in% c(
         "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
       )
@@ -1295,6 +1338,47 @@ openwrangler_r_kernel_agent <- local({
         )
       })
     }
+    group_keys <- list()
+    if (identical(replacement_kind, "groupedStatistic")) {
+      supported_key_kinds <- c(
+        "character", "factor", "integer", "integer64", "double", "logical", "date", "datetime", "difftime"
+      )
+      group_keys <- lapply(seq_along(step$params$replacement$keys), function(index) {
+        reference <- step$params$replacement$keys[[index]]
+        key_matches <- which(vapply(schema, function(candidate) identical(candidate$id, reference$id), logical(1L)))
+        if (
+          length(key_matches) != 1L ||
+            !identical(schema[[key_matches[[1L]]]]$name, reference$name)
+        ) {
+          abort("stale_column", "A grouping column no longer matches the active R dataframe", TRUE)
+        }
+        key_position <- as.integer(key_matches[[1L]])
+        key_column <- schema[[key_position]]
+        if (identical(key_column$id, column$id)) {
+          abort("invalid_request", "The fill target cannot also be a grouping column", TRUE)
+        }
+        if (!key_column$semantics$kind %in% supported_key_kinds) {
+          abort(
+            "invalid_request",
+            sprintf("R %s columns cannot be used as grouped-fill keys", key_column$semantics$kind),
+            TRUE
+          )
+        }
+        list(
+          id = key_column$id,
+          position = key_position,
+          name = key_column$name,
+          semanticsKind = key_column$semantics$kind,
+          units = key_column$semantics$units,
+          direction = "asc",
+          nulls = "first"
+        )
+      })
+      key_ids <- vapply(group_keys, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (length(group_keys) == 0L || anyDuplicated(key_ids)) {
+        abort("invalid_request", "Grouped fill requires unique grouping columns", TRUE)
+      }
+    }
     list(
       id = step$id,
       kind = step$kind,
@@ -1309,7 +1393,8 @@ openwrangler_r_kernel_agent <- local({
       levels = if (is.null(column$semantics$levels)) character() else column$semantics$levels,
       replacement = step$params$replacement,
       fallbackColumns = fallback_columns,
-      orderBy = order_by
+      orderBy = order_by,
+      groupKeys = group_keys
     )
   }
 
@@ -1670,6 +1755,7 @@ openwrangler_r_kernel_agent <- local({
       bound <- bind_fill_missing_step(capture, step)
       fallback_fill <- identical(bound$replacement$kind, "fallbackColumns")
       directional_fill <- identical(bound$replacement$kind, "directional")
+      grouped_fill <- identical(bound$replacement$kind, "groupedStatistic")
       result <- if (fallback_fill) {
         frame_contract$fill_missing_from_fallback_columns_at(
           source,
@@ -1690,6 +1776,15 @@ openwrangler_r_kernel_agent <- local({
           bound$replacement$direction,
           bound$replacement$maxGap
         )
+      } else if (grouped_fill) {
+        frame_contract$fill_missing_grouped_statistic_at(
+          source,
+          bound$position,
+          bound$oldName,
+          vapply(bound$groupKeys, `[[`, integer(1L), "position", USE.NAMES = FALSE),
+          vapply(bound$groupKeys, `[[`, character(1L), "name", USE.NAMES = FALSE),
+          bound$replacement$statistic
+        )
       } else {
         frame_contract$fill_missing_column_at(
           source,
@@ -1703,7 +1798,7 @@ openwrangler_r_kernel_agent <- local({
           result,
           nullability_source = capture,
           source_positions = seq_along(capture$descriptor$schema),
-          fill_missing_positions = if (fallback_fill || directional_fill) NULL else bound$position,
+          fill_missing_positions = if (fallback_fill || directional_fill || grouped_fill) NULL else bound$position,
           fallback_fill_positions = if (fallback_fill) bound$position else NULL
         ),
         bound = bound
@@ -2282,7 +2377,7 @@ openwrangler_r_kernel_agent <- local({
   }
 
   r_fill_replacement <- function(replacement) {
-    if (replacement$kind %in% c("fallbackColumns", "directional")) {
+    if (replacement$kind %in% c("fallbackColumns", "directional", "groupedStatistic")) {
       abort("runtime_error", "Generated R code received a non-scalar replacement through the scalar fill path")
     }
     if (replacement$kind %in% c("mean", "median", "mostFrequent")) {
@@ -2316,6 +2411,83 @@ openwrangler_r_kernel_agent <- local({
       "      .ow_donor_position <- .ow_rows[[.ow_donor]]",
       "      if (is.na(.ow_result_values[.ow_donor_position])) next",
       "      .ow_result_values[.ow_rows[.ow_start:.ow_end]] <- .ow_result_values[.ow_donor_position]",
+      "    }",
+      "    .ow_result_values",
+      "  }",
+      "  .ow_fill_grouped <- function(.ow_values, .ow_rows, .ow_keys, .ow_semantic_kind, .ow_statistic) {",
+      "    if (!.ow_statistic %in% c(\"mean\", \"median\", \"mostFrequent\")) stop(\"Open Wrangler received an invalid grouped statistic\", call. = FALSE)",
+      "    .ow_result_values <- .ow_values",
+      "    .ow_count <- length(.ow_rows)",
+      "    if (.ow_count == 0L || !anyNA(.ow_result_values)) return(.ow_result_values)",
+      "    .ow_same_group <- rep(TRUE, max(0L, .ow_count - 1L))",
+      "    if (.ow_count > 1L) {",
+      "      .ow_left_rows <- .ow_rows[-.ow_count]; .ow_right_rows <- .ow_rows[-1L]",
+      "      for (.ow_key in .ow_keys) {",
+      "        .ow_left <- .ow_key[.ow_left_rows]; .ow_right <- .ow_key[.ow_right_rows]",
+      "        .ow_left_missing <- is.na(.ow_left); .ow_right_missing <- is.na(.ow_right)",
+      "        .ow_equal <- (.ow_left_missing & .ow_right_missing) | (!.ow_left_missing & !.ow_right_missing & .ow_left == .ow_right)",
+      "        .ow_equal[is.na(.ow_equal)] <- FALSE",
+      "        .ow_same_group <- .ow_same_group & .ow_equal",
+      "      }",
+      "    }",
+      "    .ow_starts <- c(1L, which(!.ow_same_group) + 1L); .ow_ends <- c(.ow_starts[-1L] - 1L, .ow_count)",
+      "    for (.ow_group_index in seq_along(.ow_starts)) {",
+      "      .ow_group_rows <- .ow_rows[.ow_starts[[.ow_group_index]]:.ow_ends[[.ow_group_index]]]",
+      "      .ow_missing_rows <- .ow_group_rows[is.na(.ow_result_values[.ow_group_rows])]",
+      "      if (length(.ow_missing_rows) == 0L) next",
+      "      .ow_present <- .ow_result_values[.ow_group_rows[!is.na(.ow_result_values[.ow_group_rows])]]",
+      "      if (length(.ow_present) == 0L) next",
+      "      .ow_fill <- NULL",
+      "      if (.ow_statistic == \"mean\") {",
+      "        .ow_positive_infinity <- any(is.infinite(.ow_present) & .ow_present > 0); .ow_negative_infinity <- any(is.infinite(.ow_present) & .ow_present < 0)",
+      "        if (.ow_positive_infinity && .ow_negative_infinity) next",
+      "        if (.ow_positive_infinity) { .ow_fill <- Inf } else if (.ow_negative_infinity) { .ow_fill <- -Inf } else {",
+      "          .ow_scale <- max(abs(.ow_present)); .ow_fill <- if (.ow_scale == 0) 0 else max(-1, min(1, mean(.ow_present / .ow_scale))) * .ow_scale",
+      "        }",
+      "      } else if (.ow_statistic == \"median\") {",
+      "        .ow_ordered <- sort(.ow_present); .ow_present_count <- length(.ow_ordered)",
+      "        .ow_lower <- .ow_ordered[[(.ow_present_count + 1L) %/% 2L]]; .ow_upper <- .ow_ordered[[(.ow_present_count + 2L) %/% 2L]]",
+      "        if (.ow_semantic_kind == \"integer64\") {",
+      "          if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required for a grouped integer64 median\", call. = FALSE)",
+      "          if (.ow_present_count %% 2L == 1L) { .ow_fill <- .ow_lower } else {",
+      "            .ow_zero <- bit64::as.integer64(0L); .ow_two <- bit64::as.integer64(2L)",
+      "            if ((.ow_lower < .ow_zero && .ow_upper < .ow_zero) || (.ow_lower >= .ow_zero && .ow_upper >= .ow_zero)) {",
+      "              .ow_difference <- .ow_upper - .ow_lower",
+      "              if (as.character(.ow_difference %% .ow_two) != \"0\") stop(\"Open Wrangler grouped integer64 median is not an integer\", call. = FALSE)",
+      "              .ow_fill <- .ow_lower + .ow_difference %/% .ow_two",
+      "            } else {",
+      "              .ow_total <- .ow_lower + .ow_upper",
+      "              if (as.character(.ow_total %% .ow_two) != \"0\") stop(\"Open Wrangler grouped integer64 median is not an integer\", call. = FALSE)",
+      "              .ow_fill <- .ow_total %/% .ow_two",
+      "            }",
+      "            if (is.na(.ow_fill)) stop(\"Open Wrangler grouped integer64 median is outside the supported range\", call. = FALSE)",
+      "          }",
+      "        } else {",
+      "          .ow_fill <- if (.ow_present_count %% 2L == 1L) {",
+      "            .ow_lower",
+      "          } else if (.ow_semantic_kind == \"double\") {",
+      "            if (.ow_lower == .ow_upper) .ow_lower else if (is.finite(.ow_lower) && is.finite(.ow_upper)) {",
+      "              if ((.ow_lower < 0) == (.ow_upper < 0)) .ow_lower + ((.ow_upper - .ow_lower) / 2) else (.ow_lower / 2) + (.ow_upper / 2)",
+      "            } else {",
+      "              (.ow_lower + .ow_upper) / 2",
+      "            }",
+      "          } else {",
+      "            .ow_lower / 2 + .ow_upper / 2",
+      "          }",
+      "          if (is.nan(.ow_fill)) next",
+      "          if (.ow_semantic_kind == \"integer\") {",
+      "            if (!is.finite(.ow_fill) || .ow_fill != floor(.ow_fill)) stop(\"Open Wrangler grouped integer median is not an integer\", call. = FALSE)",
+      "            .ow_fill <- as.integer(.ow_fill)",
+      "            if (is.na(.ow_fill)) stop(\"Open Wrangler grouped integer median is outside the R integer range\", call. = FALSE)",
+      "          }",
+      "        }",
+      "      } else {",
+      "        .ow_candidates <- unique(.ow_present); .ow_counts <- tabulate(match(.ow_present, .ow_candidates), nbins = length(.ow_candidates))",
+      "        .ow_winners <- which(.ow_counts == max(.ow_counts))",
+      "        if (length(.ow_winners) != 1L) next",
+      "        .ow_fill <- .ow_candidates[[.ow_winners[[1L]]]]",
+      "      }",
+      "      .ow_result_values[.ow_missing_rows] <- .ow_fill",
       "    }",
       "    .ow_result_values",
       "  }",
@@ -2905,6 +3077,7 @@ openwrangler_r_kernel_agent <- local({
       } else if (identical(step$kind, "fillMissingValues")) {
         fallback_fill <- identical(step$replacement$kind, "fallbackColumns")
         directional_fill <- identical(step$replacement$kind, "directional")
+        grouped_fill <- identical(step$replacement$kind, "groupedStatistic")
         lines <- c(
           lines,
           sprintf("  .ow_fill_position <- %dL", step$position),
@@ -2943,6 +3116,37 @@ openwrangler_r_kernel_agent <- local({
               fallback_list,
               fallback_kinds,
               maximum_factor_levels
+            )
+          )
+        } else if (grouped_fill) {
+          if (any(vapply(
+            c(list(list(semanticsKind = step$semanticKind)), step$groupKeys),
+            function(specification) identical(specification$semanticsKind, "integer64"),
+            logical(1L),
+            USE.NAMES = FALSE
+          ))) {
+            lines <- c(
+              lines,
+              "  if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required for this grouped fill\", call. = FALSE)"
+            )
+          }
+          group_key_values <- sprintf(
+            "list(%s)",
+            paste(vapply(
+              step$groupKeys,
+              function(key) sprintf(".ow_result[[%dL]]", key$position),
+              character(1L),
+              USE.NAMES = FALSE
+            ), collapse = ", ")
+          )
+          lines <- c(
+            lines,
+            row_sort_code_lines(step$groupKeys),
+            sprintf(
+              "  .ow_fill_result <- .ow_fill_grouped(.ow_fill_source, .ow_rows, %s, %s, %s)",
+              group_key_values,
+              r_string(step$semanticKind),
+              r_string(step$replacement$statistic)
             )
           )
         } else if (directional_fill) {
@@ -3236,6 +3440,7 @@ openwrangler_r_kernel_agent <- local({
       "fill_missing_column_at",
       "fill_missing_from_fallback_columns_at",
       "fill_missing_directional_at",
+      "fill_missing_grouped_statistic_at",
       "cast_column_at",
       "drop_columns_at",
       "select_columns_at",

@@ -1371,8 +1371,12 @@ class SessionManager:
             raise EngineError("The fill-missing result does not match its target column.")
 
         replacement = params.get("replacement") if isinstance(params, Mapping) else None
-        if isinstance(replacement, Mapping) and replacement.get("kind") in {"fallbackColumns", "directional"}:
-            # Ordered fallbacks and directional fills may leave cells missing.
+        if isinstance(replacement, Mapping) and replacement.get("kind") in {
+            "fallbackColumns",
+            "directional",
+            "groupedStatistic",
+        }:
+            # These replacements may leave cells missing.
             # Keep the engine's observed nullability (or a lazy engine's
             # conservative metadata) instead of claiming complete resolution.
             return result

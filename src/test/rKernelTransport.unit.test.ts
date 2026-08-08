@@ -1207,6 +1207,11 @@ describe("native R kernel protocol", () => {
         ],
         maxGap: 25
       },
+      {
+        kind: "groupedStatistic",
+        statistic: "mean",
+        keys: [{ id: "r:c:1", name: "group" }]
+      },
       { kind: "string", value: "unknown" },
       { kind: "integer", value: "-42" },
       { kind: "float", value: "1.25e+3" },
@@ -1341,6 +1346,43 @@ describe("native R kernel protocol", () => {
           sortRules: [{ column: { id: "r:c:1", name: "sequence" }, direction: "asc", nulls: "last" }]
         },
         "invalid fields"
+      ],
+      [{ kind: "groupedStatistic", statistic: "mean", keys: [] }, "bounded non-empty array"],
+      [
+        {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [{ id: "r:c:0", name: "value" }]
+        },
+        "cannot also be a grouping column"
+      ],
+      [
+        {
+          kind: "groupedStatistic",
+          statistic: "mean",
+          keys: [
+            { id: "r:c:1", name: "group" },
+            { id: "r:c:1", name: "group" }
+          ]
+        },
+        "repeated identity"
+      ],
+      [
+        {
+          kind: "groupedStatistic",
+          statistic: "sum",
+          keys: [{ id: "r:c:1", name: "group" }]
+        },
+        "unsupported statistic"
+      ],
+      [
+        {
+          kind: "groupedStatistic",
+          statistic: "median",
+          keys: [{ id: "r:c:1", name: "group" }],
+          maxGap: 1
+        },
+        "may contain only"
       ],
       [{ kind: "string" }, "requires a value"],
       [{ kind: "integer", value: "01" }, "canonical decimal text"],

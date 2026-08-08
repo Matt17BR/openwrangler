@@ -13140,6 +13140,9 @@ async function exercisePackagedFirstUseInteractionJourney(
   recordAcceptanceProgress("platform-smoke:fill-previous");
   app = await previewAndDiscardPreviousRevenue(app, workbench, testing, sessionId, revenue);
 
+  recordAcceptanceProgress("platform-smoke:fill-grouped-median");
+  app = await previewApplyAndUndoGroupedRevenue(app, workbench, testing, sessionId, revenue);
+
   recordAcceptanceProgress("platform-smoke:fill-most-common");
   await previewMostCommonAccountNote(app, testing);
   app = await rediscoverApp("Most-common fill validation");
@@ -13503,6 +13506,199 @@ async function previewAndDiscardPreviousRevenue(
     "discarding the previous-value fill preview"
   );
   await review.waitFor({ state: "hidden", timeout: 10_000 });
+  return refreshedApp;
+}
+
+async function previewApplyAndUndoGroupedRevenue(
+  app: Locator,
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  revenue: ColumnReference
+): Promise<Locator> {
+  const active = testing.activeSession();
+  assert.ok(active, "The grouped-median preview requires one active dataframe session.");
+  const market = columnReference(active.metadata, "market");
+  const segment = columnReference(active.metadata, "segment");
+  const revenuePosition = active.metadata.schema.findIndex((column) => column.id === revenue.id);
+  assert.notEqual(revenuePosition, -1);
+  const revenueGapIndex = 84;
+  const gapRow = packagedScreenshotRow(revenueGapIndex);
+  assert.equal(gapRow[2], "", "The installed-editor fixture must retain its grouped-fill revenue gap.");
+  const groupedRevenue = Array.from({ length: PACKAGED_FIRST_USE_ROW_COUNT }, (_, index) =>
+    packagedScreenshotRow(index)
+  )
+    .filter((row) => row[1] === gapRow[1] && row[5] === gapRow[5] && row[2] !== "")
+    .map((row) => Number(row[2]))
+    .sort((left, right) => left - right);
+  assert.ok(groupedRevenue.length > 0, "The grouped-fill fixture must have usable values in the target group.");
+  const midpoint = Math.floor(groupedRevenue.length / 2);
+  const expectedMedian =
+    groupedRevenue.length % 2 === 1
+      ? groupedRevenue[midpoint]!
+      : (groupedRevenue[midpoint - 1]! + groupedRevenue[midpoint]!) / 2;
+
+  const sourceGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: active.metadata.revision,
+    viewRequestId: "platform-smoke-fill-grouped-source-gap",
+    offset: revenueGapIndex,
+    limit: 1,
+    filterModel: active.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(sourceGap.kind, "page");
+  if (sourceGap.kind !== "page") throw new Error("The grouped-median source gap did not resolve.");
+  assert.deepEqual(sourceGap.page.columnIds, [revenue.id]);
+  assert.equal(sourceGap.page.rows[0]?.values[0]?.isNull, true);
+  const sourceRowId = sourceGap.page.rows[0]?.id;
+
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("fill missing");
+  await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
+  await dialog.getByLabel("Column", { exact: true }).selectOption(revenue.id);
+  await dialog.getByLabel("Method", { exact: true }).selectOption("groupedMedian");
+  const groupBy = dialog.getByRole("group", { name: "Group by", exact: true });
+  const selectedKeys = groupBy.getByRole("checkbox", { checked: true });
+  for (let index = (await selectedKeys.count()) - 1; index >= 0; index -= 1) {
+    await selectedKeys.nth(index).uncheck();
+  }
+  await groupBy.getByRole("checkbox", { name: "market", exact: true }).check();
+  await groupBy.getByRole("checkbox", { name: "segment", exact: true }).check();
+  await dialog
+    .getByText("Filters and sorts in the current view are ignored", { exact: false })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const draft = testing.activeSession()?.metadata.draftStep;
+      return (
+        draft?.kind === "fillMissingValues" &&
+        draft.params.column.id === revenue.id &&
+        isDeepStrictEqual(draft.params.replacement, {
+          kind: "groupedStatistic",
+          statistic: "median",
+          keys: [market, segment]
+        })
+      );
+    },
+    30_000,
+    "the grouped-median revenue preview"
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+
+  const codePreview = await waitForCodePreview(workbench, "grouped");
+  const code = await codePreview.innerText();
+  assert.match(code, /import polars as pl/u);
+  assert.match(
+    code,
+    /_ow_polars_fill_missing_grouped_statistic\(df, ['"]revenue['"], \[['"]market['"], ['"]segment['"]\], ['"]median['"]\)/u
+  );
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const refreshedApp = await exactSessionApp(target.frame, sessionId);
+  assert.ok(refreshedApp, "The grouped-median preview must retain the exact Open Wrangler renderer.");
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
+  const previewGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: "platform-smoke-fill-grouped-preview-gap",
+    offset: revenueGapIndex,
+    limit: 1,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(previewGap.kind, "page");
+  if (previewGap.kind !== "page") throw new Error("The grouped-median preview gap did not resolve.");
+  assert.deepEqual(previewGap.page.columnIds, [revenue.id]);
+  assert.equal(previewGap.page.rows[0]?.id, sourceRowId, "Grouped filling must not reorder the source rows.");
+  const previewValue = previewGap.page.rows[0]?.values[0];
+  assert.ok(previewValue?.kind === "number" && previewValue.isNull === false && previewValue.isNaN === false);
+  assert.ok(
+    Math.abs(Number(previewValue.raw) - expectedMedian) < 1e-9,
+    `Expected grouped median ${expectedMedian}, received ${String(previewValue.raw)}.`
+  );
+
+  const review = refreshedApp.getByRole("region", { name: "Draft review" });
+  await review.waitFor({ state: "visible", timeout: 10_000 });
+  await review
+    .locator('[aria-label="Data diff summary"]')
+    .getByText(/^[1-9][\d,]* existing cells? changed(?: in this block)?$/u)
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await review.getByRole("button", { name: "Apply step", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      const step = current?.metadata.steps[0];
+      return (
+        current?.metadata.draftStep === undefined &&
+        current?.metadata.steps.length === 1 &&
+        step?.kind === "fillMissingValues" &&
+        isDeepStrictEqual(step.params.replacement, {
+          kind: "groupedStatistic",
+          statistic: "median",
+          keys: [market, segment]
+        })
+      );
+    },
+    30_000,
+    "applying the grouped-median revenue fill"
+  );
+  const applied = testing.activeSession();
+  assert.ok(applied, "The applied grouped-median step must keep its session active.");
+  const appliedGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: applied.metadata.revision,
+    viewRequestId: "platform-smoke-fill-grouped-applied-gap",
+    offset: revenueGapIndex,
+    limit: 1,
+    filterModel: applied.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(appliedGap.kind, "page");
+  if (appliedGap.kind !== "page") throw new Error("The applied grouped-median gap did not resolve.");
+  assert.equal(appliedGap.page.rows[0]?.id, sourceRowId);
+  assert.ok(Math.abs(Number(appliedGap.page.rows[0]?.values[0]?.raw) - expectedMedian) < 1e-9);
+
+  await refreshedApp.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const current = testing.activeSession();
+      return (
+        current?.metadata.steps.length === 0 &&
+        current.metadata.draftStep === undefined &&
+        current.metadata.schema.find((column) => column.id === revenue.id)?.nullable === true &&
+        (current.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the grouped-median revenue fill"
+  );
+  const restored = testing.activeSession();
+  assert.ok(restored, "Undoing grouped median must keep its session active.");
+  const restoredGap = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: restored.metadata.revision,
+    viewRequestId: "platform-smoke-fill-grouped-restored-gap",
+    offset: revenueGapIndex,
+    limit: 1,
+    filterModel: restored.viewState.filterModel,
+    columnOffset: revenuePosition,
+    columnLimit: 1
+  });
+  assert.equal(restoredGap.kind, "page");
+  if (restoredGap.kind !== "page") throw new Error("The undone grouped-median gap did not resolve.");
+  assert.equal(restoredGap.page.rows[0]?.id, sourceRowId);
+  assert.equal(restoredGap.page.rows[0]?.values[0]?.isNull, true);
   return refreshedApp;
 }
 

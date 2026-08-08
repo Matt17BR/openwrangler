@@ -837,6 +837,14 @@ class DuckDBEngine(DataFrameEngine):
                         f"{replacement.get('maxGap')!r})"
                     )
                 ]
+            if replacement.get("kind") == "groupedStatistic":
+                keys = [bound_column_name(key, kind) for key in replacement["keys"]]
+                return [
+                    (
+                        f"{prefix}df = _ow_fill_missing_grouped_statistic("
+                        f"df, {column!r}, {keys!r}, {replacement['statistic']!r})"
+                    )
+                ]
             if replacement.get("kind") in {"mean", "median", "mostFrequent"}:
                 return [f"{prefix}df = _ow_fill_missing(df, {column!r}, {replacement['kind']!r}, None)"]
             value = generated_fill_replacement_expression(replacement)
@@ -1069,6 +1077,13 @@ class DuckDBEngine(DataFrameEngine):
                 order_rules,
                 replacement["direction"],
                 replacement.get("maxGap"),
+            )
+        if replacement.get("kind") == "groupedStatistic":
+            return self._fill_missing_grouped_statistic(
+                frame,
+                column,
+                [bound_column_name(key, "fillMissingValues") for key in replacement["keys"]],
+                replacement["statistic"],
             )
         types = dict(zip(self._columns(frame), (str(item) for item in frame.types), strict=True))
         raw_type = types[column]
@@ -1362,6 +1377,167 @@ class DuckDBEngine(DataFrameEngine):
             f"count(*) OVER () AS {total}, {candidate_expression} AS {candidate} FROM ordered) "
             f"SELECT * EXCLUDE ({_identifier_list(temporary_names)}) REPLACE ("
             f"{replacement} AS {target_identifier}) FROM context ORDER BY {original}"
+        )
+        return self._relation(frame, query)
+
+    def _fill_missing_grouped_statistic(
+        self,
+        frame: Any,
+        target: str,
+        keys: list[str],
+        statistic: str,
+    ) -> Any:
+        columns = self._columns(frame)
+        types = dict(zip(columns, (str(item) for item in frame.types), strict=True))
+        target_type = types[target]
+        target_identifier = _quote_ident(target)
+        target_valid = _valid_predicate(target_identifier, target_type)
+        target_missing = f"NOT ({target_valid})"
+
+        reserved = list(columns)
+        original_name = _unique_internal(reserved, "__ow_grouped_original")
+        reserved.append(original_name)
+        key_names = []
+        for index, _key in enumerate(keys):
+            name = _unique_internal(reserved, f"__ow_grouped_key_{index}")
+            reserved.append(name)
+            key_names.append(name)
+        fill_name = _unique_internal(reserved, "__ow_grouped_fill")
+        reserved.append(fill_name)
+        count_name = _unique_internal(reserved, "__ow_grouped_count")
+        reserved.append(count_name)
+        maximum_name = _unique_internal(reserved, "__ow_grouped_maximum")
+        reserved.append(maximum_name)
+
+        original = _quote_ident(original_name)
+        normalized_key_expressions = []
+        for key, name in zip(keys, key_names, strict=True):
+            identifier = _quote_ident(key)
+            key_value = _case_sensitive_group_value(identifier, types[key])
+            normalized_key_expressions.append(
+                f"CASE WHEN {_valid_predicate(identifier, types[key])} THEN {key_value} ELSE NULL END "
+                f"AS {_quote_ident(name)}"
+            )
+        normalized_keys = _identifier_list(key_names)
+        partition = normalized_keys
+        normalized = (
+            f"normalized AS (SELECT *, row_number() OVER () AS {original}, "
+            f"{', '.join(normalized_key_expressions)} FROM ow)"
+        )
+
+        if statistic == "mostFrequent":
+            value_name = _unique_internal(reserved, "__ow_grouped_value")
+            reserved.append(value_name)
+            token_name = _unique_internal(reserved, "__ow_grouped_token")
+            reserved.append(token_name)
+            ties_name = _unique_internal(reserved, "__ow_grouped_ties")
+            value = _quote_ident(value_name)
+            token = _quote_ident(token_name)
+            count = _quote_ident(count_name)
+            maximum = _quote_ident(maximum_name)
+            ties = _quote_ident(ties_name)
+            fill = _quote_ident(fill_name)
+            grouped_target = _case_sensitive_group_value(target_identifier, target_type)
+            summary_ctes = (
+                f"counts AS (SELECT {normalized_keys}, {grouped_target} AS {token}, "
+                f"any_value({target_identifier}) AS {value}, count(*) AS {count} FROM normalized "
+                f"WHERE {target_valid} GROUP BY {normalized_keys}, {grouped_target}), "
+                f"ranked AS (SELECT *, max({count}) OVER (PARTITION BY {partition}) AS {maximum} FROM counts), "
+                f"summary AS (SELECT {normalized_keys}, count(*) FILTER (WHERE {count} = {maximum}) AS {ties}, "
+                f"CASE WHEN {ties} = 1 THEN any_value({value}) FILTER (WHERE {count} = {maximum}) "
+                f"ELSE NULL END AS {fill} FROM ranked GROUP BY {normalized_keys})"
+            )
+        elif statistic == "mean":
+            positive_name = _unique_internal(reserved, "__ow_grouped_positive")
+            reserved.append(positive_name)
+            negative_name = _unique_internal(reserved, "__ow_grouped_negative")
+            reserved.append(negative_name)
+            scale_name = _unique_internal(reserved, "__ow_grouped_scale")
+            reserved.append(scale_name)
+            scaled_name = _unique_internal(reserved, "__ow_grouped_scaled")
+            positive = _quote_ident(positive_name)
+            negative = _quote_ident(negative_name)
+            scale = _quote_ident(scale_name)
+            scaled = _quote_ident(scaled_name)
+            fill = _quote_ident(fill_name)
+            summary_ctes = (
+                f"annotated AS (SELECT *, count(*) FILTER (WHERE {target_valid} AND {target_identifier} = "
+                f"CAST('Infinity' AS DOUBLE)) OVER (PARTITION BY {partition}) AS {positive}, "
+                f"count(*) FILTER (WHERE {target_valid} AND {target_identifier} = CAST('-Infinity' AS DOUBLE)) "
+                f"OVER (PARTITION BY {partition}) AS {negative}, max(abs({target_identifier})) FILTER "
+                f"(WHERE {target_valid} AND isfinite({target_identifier})) OVER (PARTITION BY {partition}) "
+                f"AS {scale} FROM normalized), "
+                f"scaled_rows AS (SELECT *, avg({target_identifier} / nullif({scale}, 0)) FILTER "
+                f"(WHERE {target_valid} AND isfinite({target_identifier})) OVER (PARTITION BY {partition}) "
+                f"AS {scaled} FROM annotated), "
+                f"summary AS (SELECT DISTINCT {normalized_keys}, CASE WHEN {positive} > 0 AND {negative} > 0 "
+                f"THEN NULL WHEN {positive} > 0 THEN CAST('Infinity' AS DOUBLE) WHEN {negative} > 0 THEN "
+                f"CAST('-Infinity' AS DOUBLE) WHEN {scale} IS NULL THEN NULL WHEN {scale} = 0 THEN 0.0 "
+                f"ELSE greatest(-1.0, least(1.0, {scaled})) * {scale} END AS {fill} FROM scaled_rows)"
+            )
+        else:
+            lower_name = _unique_internal(reserved, "__ow_grouped_lower")
+            reserved.append(lower_name)
+            upper_name = _unique_internal(reserved, "__ow_grouped_upper")
+            reserved.append(upper_name)
+            missing_name = _unique_internal(reserved, "__ow_grouped_missing")
+            lower = _quote_ident(lower_name)
+            upper = _quote_ident(upper_name)
+            missing_count = _quote_ident(missing_name)
+            fill = _quote_ident(fill_name)
+            semantic_type = _semantic_type(target_type)
+            lower_aggregate = (
+                f"quantile_disc({target_identifier}, 0.5 ORDER BY {target_identifier}) FILTER (WHERE {target_valid})"
+            )
+            upper_aggregate = (
+                f"quantile_disc({target_identifier}, 0.5 ORDER BY {target_identifier} DESC) "
+                f"FILTER (WHERE {target_valid})"
+            )
+            if semantic_type == "integer":
+                fill_expression = (
+                    f"CAST(({lower} // 2) + ({upper} // 2) + ((({lower} % 2) + ({upper} % 2)) // 2) AS {target_type})"
+                )
+                invalid = f"{missing_count} > 0 AND ((({lower} % 2) + ({upper} % 2)) % 2) <> 0"
+            elif semantic_type == "decimal":
+                fill_expression = f"median({target_identifier}) FILTER (WHERE {target_valid})"
+                invalid = f"{missing_count} > 0 AND {fill} IS NOT NULL AND ({fill} - {lower}) <> ({upper} - {fill})"
+            else:
+                raw_median = f"median({target_identifier}) FILTER (WHERE {target_valid})"
+                fill_expression = f"CASE WHEN isnan({raw_median}) THEN NULL ELSE {raw_median} END"
+                invalid = "FALSE"
+            summary_select = (
+                f"SELECT {normalized_keys}, count(*) FILTER (WHERE {target_missing}) AS {missing_count}, "
+                f"{lower_aggregate} AS {lower}, {upper_aggregate} AS {upper}, {fill_expression} AS {fill} "
+                f"FROM normalized GROUP BY {normalized_keys}"
+            )
+            if invalid == "FALSE":
+                summary_ctes = f"summary AS ({summary_select})"
+            else:
+                label = "integer" if semantic_type == "integer" else "decimal"
+                message = (
+                    f"A grouped {label} median cannot be represented exactly in the selected column. "
+                    "Cast the column to a wider type before filling missing values."
+                )
+                checked_fill = f"CASE WHEN {invalid} THEN error({_sql_literal(message)}) ELSE {fill} END"
+                summary_ctes = (
+                    f"raw_summary AS ({summary_select}), summary AS (SELECT {normalized_keys}, "
+                    f"{checked_fill} AS {fill} FROM raw_summary)"
+                )
+
+        normalized_join = " AND ".join(
+            f"n.{_quote_ident(name)} IS NOT DISTINCT FROM s.{_quote_ident(name)}" for name in key_names
+        )
+        fill = f"s.{_quote_ident(fill_name)}"
+        qualified_target = f"n.{target_identifier}"
+        qualified_missing = target_missing.replace(target_identifier, qualified_target)
+        replacement = (
+            f"CASE WHEN {qualified_missing} AND {fill} IS NOT NULL THEN CAST({fill} AS {target_type}) "
+            f"ELSE {qualified_target} END"
+        )
+        query = (
+            f"WITH {normalized}, {summary_ctes} SELECT n.* EXCLUDE ({_identifier_list([original_name, *key_names])}) "
+            f"REPLACE ({replacement} AS {target_identifier}) FROM normalized n LEFT JOIN summary s ON "
+            f"{normalized_join} ORDER BY n.{original}"
         )
         return self._relation(frame, query)
 
@@ -1786,6 +1962,14 @@ def _is_float_type(raw_type: str) -> bool:
 
 def _is_integer_type(raw_type: str) -> bool:
     return _semantic_type(raw_type) == "integer"
+
+
+def _case_sensitive_group_value(identifier: str, raw_type: str) -> str:
+    """Return a collation-free value for public exact grouping semantics."""
+    lowered = raw_type.strip().lower()
+    if lowered in {"varchar", "char"} or lowered.startswith(("varchar(", "char(")):
+        return f"encode({identifier})"
+    return identifier
 
 
 def _nan_predicate(identifier: str, raw_type: str) -> str:
@@ -2305,6 +2489,13 @@ def _ow_is_integer(raw_type):
     )
 
 
+def _ow_case_sensitive_group_value(identifier, raw_type):
+    lowered = str(raw_type).strip().lower()
+    if lowered in {"varchar", "char"} or lowered.startswith(("varchar(", "char(")):
+        return "encode(" + identifier + ")"
+    return identifier
+
+
 def _ow_checked_integer_result(expression):
     maximum_value = str(10**38 - 1)
     minimum = "'-" + maximum_value + "'::BIGNUM"
@@ -2556,6 +2747,170 @@ def _ow_fill_missing_directional(df, target, order_rules, direction, max_gap):
         + following + ", count(*) OVER () AS " + total + ", " + candidate_expression + " AS " + candidate
         + " FROM ordered) SELECT * EXCLUDE (" + _ow_identifiers(temporary_names) + ") REPLACE ("
         + replacement + " AS " + target_identifier + ") FROM context ORDER BY " + original
+    )
+    return _ow_query(df, query)
+
+
+def _ow_fill_missing_grouped_statistic(df, target, keys, statistic):
+    columns = _ow_columns(df)
+    types = dict(zip(columns, map(str, df.types)))
+    target_type = types[target]
+    target_identifier = _ow_ident(target)
+    target_valid = _ow_valid(target_identifier, target_type)
+    target_missing = "NOT (" + target_valid + ")"
+    reserved = list(columns)
+    original_name = _ow_unique(reserved, "__ow_grouped_original")
+    reserved.append(original_name)
+    key_names = []
+    for index, key in enumerate(keys):
+        name = _ow_unique(reserved, "__ow_grouped_key_" + str(index))
+        reserved.append(name)
+        key_names.append(name)
+    fill_name = _ow_unique(reserved, "__ow_grouped_fill")
+    reserved.append(fill_name)
+    count_name = _ow_unique(reserved, "__ow_grouped_count")
+    reserved.append(count_name)
+    maximum_name = _ow_unique(reserved, "__ow_grouped_maximum")
+    reserved.append(maximum_name)
+    original = _ow_ident(original_name)
+    normalized_key_expressions = []
+    for key, name in zip(keys, key_names):
+        identifier = _ow_ident(key)
+        key_value = _ow_case_sensitive_group_value(identifier, types[key])
+        normalized_key_expressions.append(
+            "CASE WHEN " + _ow_valid(identifier, types[key]) + " THEN " + key_value
+            + " ELSE NULL END AS " + _ow_ident(name)
+        )
+    normalized_keys = _ow_identifiers(key_names)
+    partition = normalized_keys
+    normalized = (
+        "normalized AS (SELECT *, row_number() OVER () AS " + original + ", "
+        + ", ".join(normalized_key_expressions) + " FROM ow)"
+    )
+    if statistic == "mostFrequent":
+        value_name = _ow_unique(reserved, "__ow_grouped_value")
+        reserved.append(value_name)
+        token_name = _ow_unique(reserved, "__ow_grouped_token")
+        reserved.append(token_name)
+        ties_name = _ow_unique(reserved, "__ow_grouped_ties")
+        value = _ow_ident(value_name)
+        token = _ow_ident(token_name)
+        count = _ow_ident(count_name)
+        maximum = _ow_ident(maximum_name)
+        ties = _ow_ident(ties_name)
+        fill = _ow_ident(fill_name)
+        grouped_target = _ow_case_sensitive_group_value(target_identifier, target_type)
+        summary_ctes = (
+            "counts AS (SELECT " + normalized_keys + ", " + grouped_target + " AS " + token
+            + ", any_value(" + target_identifier + ") AS " + value + ", count(*) AS " + count
+            + " FROM normalized WHERE " + target_valid + " GROUP BY " + normalized_keys + ", "
+            + grouped_target + "), ranked AS (SELECT *, max(" + count
+            + ") OVER (PARTITION BY " + partition + ") AS " + maximum + " FROM counts), summary AS (SELECT "
+            + normalized_keys + ", count(*) FILTER (WHERE " + count + " = " + maximum + ") AS " + ties
+            + ", CASE WHEN " + ties + " = 1 THEN any_value(" + value + ") FILTER (WHERE " + count + " = "
+            + maximum + ") ELSE NULL END AS " + fill + " FROM ranked GROUP BY " + normalized_keys + ")"
+        )
+    elif statistic == "mean":
+        positive_name = _ow_unique(reserved, "__ow_grouped_positive")
+        reserved.append(positive_name)
+        negative_name = _ow_unique(reserved, "__ow_grouped_negative")
+        reserved.append(negative_name)
+        scale_name = _ow_unique(reserved, "__ow_grouped_scale")
+        reserved.append(scale_name)
+        scaled_name = _ow_unique(reserved, "__ow_grouped_scaled")
+        positive = _ow_ident(positive_name)
+        negative = _ow_ident(negative_name)
+        scale = _ow_ident(scale_name)
+        scaled = _ow_ident(scaled_name)
+        fill = _ow_ident(fill_name)
+        summary_ctes = (
+            "annotated AS (SELECT *, count(*) FILTER (WHERE " + target_valid + " AND " + target_identifier
+            + " = CAST('Infinity' AS DOUBLE)) OVER (PARTITION BY " + partition + ") AS " + positive
+            + ", count(*) FILTER (WHERE " + target_valid + " AND " + target_identifier
+            + " = CAST('-Infinity' AS DOUBLE)) OVER (PARTITION BY " + partition + ") AS " + negative
+            + ", max(abs(" + target_identifier + ")) FILTER (WHERE " + target_valid + " AND isfinite("
+            + target_identifier + ")) OVER (PARTITION BY " + partition + ") AS " + scale
+            + " FROM normalized), scaled_rows AS (SELECT *, avg(" + target_identifier + " / nullif(" + scale
+            + ", 0)) FILTER (WHERE " + target_valid + " AND isfinite(" + target_identifier
+            + ")) OVER (PARTITION BY " + partition + ") AS " + scaled + " FROM annotated), summary AS (SELECT "
+            + "DISTINCT " + normalized_keys + ", CASE WHEN " + positive + " > 0 AND " + negative
+            + " > 0 THEN NULL WHEN " + positive + " > 0 THEN CAST('Infinity' AS DOUBLE) WHEN " + negative
+            + " > 0 THEN CAST('-Infinity' AS DOUBLE) WHEN " + scale + " IS NULL THEN NULL WHEN " + scale
+            + " = 0 THEN 0.0 ELSE greatest(-1.0, least(1.0, " + scaled + ")) * " + scale + " END AS "
+            + fill + " FROM scaled_rows)"
+        )
+    else:
+        lower_name = _ow_unique(reserved, "__ow_grouped_lower")
+        reserved.append(lower_name)
+        upper_name = _ow_unique(reserved, "__ow_grouped_upper")
+        reserved.append(upper_name)
+        missing_name = _ow_unique(reserved, "__ow_grouped_missing")
+        lower = _ow_ident(lower_name)
+        upper = _ow_ident(upper_name)
+        missing_count = _ow_ident(missing_name)
+        fill = _ow_ident(fill_name)
+        lower_aggregate = (
+            "quantile_disc(" + target_identifier + ", 0.5 ORDER BY " + target_identifier
+            + ") FILTER (WHERE " + target_valid + ")"
+        )
+        upper_aggregate = (
+            "quantile_disc(" + target_identifier + ", 0.5 ORDER BY " + target_identifier
+            + " DESC) FILTER (WHERE " + target_valid + ")"
+        )
+        if _ow_is_integer(target_type):
+            fill_expression = (
+                "CAST((" + lower + " // 2) + (" + upper + " // 2) + ((" + lower + " % 2 + "
+                + upper + " % 2) // 2) AS " + target_type + ")"
+            )
+            invalid = (
+                missing_count + " > 0 AND ((" + lower + " % 2 + " + upper + " % 2) % 2) <> 0"
+            )
+            label = "integer"
+        elif "decimal" in target_type.lower():
+            fill_expression = "median(" + target_identifier + ") FILTER (WHERE " + target_valid + ")"
+            invalid = (
+                missing_count + " > 0 AND " + fill + " IS NOT NULL AND (" + fill + " - " + lower
+                + ") <> (" + upper + " - " + fill + ")"
+            )
+            label = "decimal"
+        else:
+            raw_median = "median(" + target_identifier + ") FILTER (WHERE " + target_valid + ")"
+            fill_expression = "CASE WHEN isnan(" + raw_median + ") THEN NULL ELSE " + raw_median + " END"
+            invalid = "FALSE"
+            label = "numeric"
+        summary_select = (
+            "SELECT " + normalized_keys + ", count(*) FILTER (WHERE " + target_missing + ") AS "
+            + missing_count + ", " + lower_aggregate + " AS " + lower + ", " + upper_aggregate
+            + " AS " + upper + ", " + fill_expression + " AS " + fill + " FROM normalized GROUP BY "
+            + normalized_keys
+        )
+        if invalid == "FALSE":
+            summary_ctes = "summary AS (" + summary_select + ")"
+        else:
+            message = (
+                "A grouped " + label + " median cannot be represented exactly in the selected column. "
+                "Cast the column to a wider type before filling missing values."
+            )
+            checked_fill = "CASE WHEN " + invalid + " THEN error(" + _ow_literal(message) + ") ELSE " + fill + " END"
+            summary_ctes = (
+                "raw_summary AS (" + summary_select + "), summary AS (SELECT " + normalized_keys + ", "
+                + checked_fill + " AS " + fill + " FROM raw_summary)"
+            )
+    normalized_join = " AND ".join(
+        "n." + _ow_ident(name) + " IS NOT DISTINCT FROM s." + _ow_ident(name) for name in key_names
+    )
+    fill = "s." + _ow_ident(fill_name)
+    qualified_target = "n." + target_identifier
+    qualified_missing = target_missing.replace(target_identifier, qualified_target)
+    replacement = (
+        "CASE WHEN " + qualified_missing + " AND " + fill + " IS NOT NULL THEN CAST(" + fill + " AS "
+        + target_type + ") ELSE " + qualified_target + " END"
+    )
+    query = (
+        "WITH " + normalized + ", " + summary_ctes + " SELECT n.* EXCLUDE ("
+        + _ow_identifiers([original_name] + key_names) + ") REPLACE (" + replacement + " AS "
+        + target_identifier + ") FROM normalized n LEFT JOIN summary s ON " + normalized_join
+        + " ORDER BY n." + original
     )
     return _ow_query(df, query)
 

@@ -19,6 +19,7 @@ _GROUP_KEY_TYPES = {
     "duration",
     "binary",
 }
+_GROUPED_FILL_KEY_TYPES = _GROUP_KEY_TYPES - {"binary"}
 _NUMERIC_AGGREGATION_TYPES = {"integer", "float", "decimal"}
 _ORDERED_AGGREGATION_TYPES = {
     "string",
@@ -290,6 +291,34 @@ class _BindingContext:
                         f"{order_column.name!r} is {order_column.semantic_type!r}."
                     )
             return
+        if kind == "groupedStatistic":
+            statistic = replacement.get("statistic")
+            allowed_targets = (
+                {"float"}
+                if statistic == "mean"
+                else _NUMERIC_AGGREGATION_TYPES
+                if statistic == "median"
+                else {"string", "boolean"}
+                if statistic == "mostFrequent"
+                else set()
+            )
+            if column.semantic_type not in allowed_targets:
+                raise ColumnBindingError(
+                    f"{label} cannot use grouped {statistic!r} fill for {column.semantic_type!r}; "
+                    "choose a compatible target column."
+                )
+            keys = replacement.get("keys")
+            if not isinstance(keys, list) or not keys:
+                raise ColumnBindingError("fillMissingValues.replacement.keys must be a non-empty array.")
+            for index, key_reference in enumerate(keys):
+                key = self._column_for(key_reference, f"fillMissingValues.replacement.keys[{index}]")
+                if key.identifier == column.identifier:
+                    raise ColumnBindingError("A grouped fill target cannot also be one of its group keys.")
+                if key.semantic_type not in _GROUPED_FILL_KEY_TYPES:
+                    raise ColumnBindingError(
+                        f"Grouped fill keys require portable scalar columns; {key.name!r} is {key.semantic_type!r}."
+                    )
+            return
         allowed = _FILL_VALUE_KINDS_BY_COLUMN.get(column.semantic_type, set())
         if kind not in allowed:
             raise ColumnBindingError(
@@ -497,6 +526,17 @@ def bind_step(
             replacement["orderBy"] = [
                 {**rule, "column": reference} for rule, reference in zip(order_by, bound_order_columns, strict=True)
             ]
+            params["replacement"] = replacement
+        elif isinstance(replacement, Mapping) and replacement.get("kind") == "groupedStatistic":
+            if set(replacement) != {"kind", "statistic", "keys"}:
+                raise ColumnBindingError(
+                    "A grouped-statistic replacement must contain exactly kind, statistic, and keys."
+                )
+            replacement = dict(replacement)
+            replacement["keys"] = context.bind_many(
+                replacement.get("keys"),
+                "fillMissingValues.replacement.keys",
+            )
             params["replacement"] = replacement
         context.require_fill_replacement(
             params["column"],

@@ -52,9 +52,12 @@ ordered list of same-type fallback columns: the first present value in each row 
 fallback stays missing. Ordered data can use the previous or next value after an explicit stable multi-column sort.
 The sort belongs to the cleaning step rather than the current view, and the result returns to its prior row order.
 An optional maximum gap applies to a complete missing run; longer runs stay untouched. Forward fill leaves leading
-gaps unresolved, while backward fill leaves trailing gaps unresolved. Automatic methods ignore both null and NaN.
-When missing cells need filling, a tie, an all-missing column, or an undefined mean asks the user for another method.
-A no-op keeps the exact native column type.
+gaps unresolved, while backward fill leaves trailing gaps unresolved. Numeric columns can calculate a median within
+selected groups, floating-point columns can calculate a grouped mean, and text, categorical, and boolean columns can
+use the most common value within each group. Null and NaN grouping keys share one group. If every target value in a
+group is missing, those cells stay missing; tied most-common values do too. Row order does not change. Automatic
+methods ignore both null and NaN. When a global fill needs a value, a tie, an all-missing column, or an undefined mean
+asks the user for another method. A no-op keeps the exact native column type.
 On Python engines, a specific value or a fallback from a different categorical domain may widen the result to text;
 the preview shows that type change. The most-common method uses an existing value and keeps its category type. Integer
 and decimal medians must fit that type exactly; decimal values must also fit its scale, and datetime values must match
@@ -115,9 +118,10 @@ column.
 Fill Missing Values offers the median of all non-missing numeric values, the mean of a double column, the most common
 non-missing character, factor, or logical value, a specific typed value, or ordered same-row fallback columns. It can
 also use the previous or next value in an explicit multi-column order, with an optional whole-run gap limit. The
-result returns to its earlier row order. Automatic fills ignore `NA` and `NaN`. Factor order and existing levels are
-kept; new labels used by a fill are appended as levels. Signed 64-bit integers, dates, and datetimes keep their R
-types. Active data-table key columns are blocked.
+result returns to its earlier row order. Median, mean, and most common value can also be calculated within selected
+groups. All-missing groups and tied most-common values stay missing. Automatic fills ignore `NA` and `NaN`. Factor
+order and existing levels are kept; new labels used by a fill are appended as levels. Signed 64-bit integers, dates,
+and datetimes keep their R types. Active data-table key columns are blocked.
 
 The default `collapse::qDF()` output follows the base `data.frame` path. Default `collapse::qTBL()` and `qDT()` output
 follows the existing tibble and `data.table` paths. Open Wrangler does not require `collapse`, and grouped `GRP_df`
