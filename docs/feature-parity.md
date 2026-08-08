@@ -182,25 +182,25 @@ Cursor runs cover all three document types, including cleaned CSV export from th
 document execution is disabled on Windows until the extension can own the complete spawned process tree. Operations
 outside the listed 21-operation set are not available in R yet.
 
-| Surface                                       | Availability            | Status  | Current checks                                                      | Release check   |
-| --------------------------------------------- | ----------------------- | ------- | ------------------------------------------------------------------- | --------------- |
-| Native R frame paging and typed cells         | 1.99 preview            | Partial | Projected pages, row labels, local/remote packaged tests            | Preview release |
-| Native R compound viewing filters             | 1.99 preview            | Partial | R contracts and packaged value/predicate path                       | Preview release |
-| Native R value search and selections          | 1.99 preview            | Partial | Typed selection contracts and packaged value path                   | Preview release |
-| Native R ordered viewing sorts                | 1.99 preview            | Partial | Pure-R tests and local/remote packaged tests                        | Preview release |
-| Native R column and dataset profiles          | 1.99 preview            | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts                | Preview release |
-| Base `data.frame`, tibble, and `data.table`   | 1.99 preview            | Partial | Native discovery, paging, queries, and profile tests                | Preview release |
-| Exact IRkernel session transport              | 1.99 preview            | Done    | Local VS Code/Cursor and remote VS Code restart test                | —               |
-| Owned `.R` source process                     | 1.99 preview            | Partial | Real process contracts and packaged VS Code/Cursor path             | Preview release |
-| Owned `.Rmd` and `.qmd` cell process          | 1.99 preview            | Partial | Parser, real R, and installed VS Code/Cursor run                    | Preview release |
-| Notebook workbench                            | 1.99 preview            | Partial | Packaged viewing/editing, screenshots, production axe               | Preview release |
-| R cleaning operations and generated code      | 21 operations           | Partial | All 21 pass in native runtime and packaged IRkernel journeys        | Preview release |
-| Copy or save generated R                      | 21 operations           | Partial | Rename uses packaged save; all 21 generate executable code          | Preview release |
-| Insert generated R into its IRkernel notebook | 1.99 preview            | Partial | Shared exact-document helper and packaged editor run                | Preview release |
-| Insert generated R into its source `.R` file  | 1.99 preview            | Partial | Exact-document helper and packaged rerun                            | Preview release |
-| Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview            | Partial | Exact-document tests and installed editor run                       | Preview release |
-| Cleaned-data export                           | R notebook/document CSV | Partial | Native writers, bounded transfer, atomic save, installed editor run | Preview release |
-| Quarto and R Markdown lexical R-cell run      | 1.99 preview            | Partial | Parser, owned process, and installed editor run                     | Preview release |
+| Surface                                       | Availability                    | Status  | Current checks                                                      | Release check   |
+| --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------- | --------------- |
+| Native R frame paging and typed cells         | 1.99 preview                    | Partial | Projected pages, row labels, local/remote packaged tests            | Preview release |
+| Native R compound viewing filters             | 1.99 preview                    | Partial | R contracts and packaged value/predicate path                       | Preview release |
+| Native R value search and selections          | 1.99 preview                    | Partial | Typed selection contracts and packaged value path                   | Preview release |
+| Native R ordered viewing sorts                | 1.99 preview                    | Partial | Pure-R tests and local/remote packaged tests                        | Preview release |
+| Native R column and dataset profiles          | 1.99 preview                    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts                | Preview release |
+| Base `data.frame`, tibble, and `data.table`   | 1.99 preview                    | Partial | Native discovery, paging, queries, and profile tests                | Preview release |
+| Exact IRkernel session transport              | 1.99 preview                    | Done    | Local VS Code/Cursor and remote VS Code restart test                | —               |
+| Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts and packaged VS Code/Cursor path             | Preview release |
+| Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser, real R, and installed VS Code/Cursor run                    | Preview release |
+| Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe               | Preview release |
+| R cleaning operations and generated code      | 21 operations                   | Partial | All 21 pass in native runtime and packaged IRkernel journeys        | Preview release |
+| Copy or save generated R                      | 21 operations                   | Partial | Rename uses packaged save; all 21 generate executable code          | Preview release |
+| Insert generated R into its IRkernel notebook | 1.99 preview                    | Partial | Shared exact-document helper and packaged editor run                | Preview release |
+| Insert generated R into its source `.R` file  | 1.99 preview                    | Partial | Exact-document helper and packaged rerun                            | Preview release |
+| Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview                    | Partial | Exact-document tests and installed editor run                       | Preview release |
+| Cleaned-data export                           | R notebook/document CSV/Parquet | Partial | Native writers, bounded transfer, atomic save, installed editor run | Preview release |
+| Quarto and R Markdown lexical R-cell run      | 1.99 preview                    | Partial | Parser, owned process, and installed editor run                     | Preview release |
 
 ## DuckDB file-backed preview matrix
 
