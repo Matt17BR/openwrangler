@@ -19758,9 +19758,9 @@ async function capturePackagedOperationDialogScenes(
     await groupBy.getByRole("checkbox", { name: "market", exact: true }).check();
     await groupBy.getByRole("checkbox", { name: "segment", exact: true }).check();
     await groupBy.getByText("Selected (2): market, segment", { exact: true }).waitFor({ state: "visible" });
-    await dialog.getByLabel("Search group columns", { exact: true }).fill("m");
+    await dialog.getByLabel("Search group columns", { exact: true }).fill("market");
     await groupBy.getByRole("checkbox", { name: "market", exact: true }).waitFor({ state: "visible" });
-    await groupBy.getByRole("checkbox", { name: "segment", exact: true }).waitFor({ state: "visible" });
+    await groupBy.getByText("Selected (2): market, segment", { exact: true }).waitFor({ state: "visible" });
     await dialog
       .getByText("Filters and sorts in the current view are ignored", { exact: false })
       .waitFor({ state: "visible" });
