@@ -206,8 +206,7 @@ The R workbench supports paging, filters, multi-column sorts, value search, prof
 **Drop Columns**, **Select Columns**, **Clone Column**, **Convert type**, **Text Length**, **Lowercase**, **Uppercase**,
 **Find and replace**, **Capitalize**, **Strip text**, **Split text**, **Round**, **Floor**, **Ceiling**, and **Group and
 aggregate**. Grouping supports sum, mean, median, minimum, maximum, count, distinct count, first, and last. Every
-draft shows its data changes and generated R before it is applied. Applied steps can be inspected, edited, or undone,
-including a grouped result that is currently filtered or sorted by an aggregation column.
+draft shows its data changes and generated R before it is applied. Applied steps can be inspected, edited, or undone.
 
 Fill Missing Values uses the median of all non-missing numeric values, the mean of a floating-point column, the most
 common non-missing character, factor, or logical value, a value entered by the user, or the first present value from
