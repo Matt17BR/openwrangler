@@ -8,7 +8,7 @@ import { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinat
 import { registerPythonInteractiveCommands } from "./notebooks/pythonInteractiveCommands";
 import { PythonBridge } from "./pythonBridge";
 import { registerRDocumentCommands } from "./r/rDocumentCommands";
-import { registerRInteractiveCommands } from "./r/rInteractiveCommands";
+import { registerRInteractiveCommands, type RLiveVariableProvider } from "./r/rInteractiveCommands";
 import { SessionCoordinator } from "./sessionCoordinator";
 import { registerRuntimeCommands } from "./runtimeCommands";
 import {
@@ -59,6 +59,7 @@ export interface OpenWranglerExtensionApi {
 let activeCoordinator: SessionCoordinator | undefined;
 let activeBridge: PythonBridge | undefined;
 let activePickleWorkers: TrustedPickleWorkerLifecycle | undefined;
+let activeRInteractive: RLiveVariableProvider | undefined;
 
 const NOTEBOOK_EDITOR_TITLE_ACTION_CONTEXT = "openWrangler.forceNotebookEditorTitleAction";
 
@@ -83,6 +84,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
   registerTrustedPickleConversion(context, bridge, { runWorker: (options) => pickleWorkers.run(options) });
   const pythonInteractive = registerPythonInteractiveCommands(context, coordinator);
   const rInteractive = registerRInteractiveCommands(context, coordinator);
+  activeRInteractive = rInteractive;
   const nativeViews = registerNativeViews(context, coordinator, pythonInteractive, rInteractive);
   registerRuntimeCommands(context, bridge);
   registerRDocumentCommands(context, coordinator);
@@ -137,13 +139,20 @@ export async function deactivate(): Promise<void> {
   const coordinator = activeCoordinator;
   const bridge = activeBridge;
   const pickleWorkers = activePickleWorkers;
+  const rInteractive = activeRInteractive;
   activeCoordinator = undefined;
   activeBridge = undefined;
   activePickleWorkers = undefined;
+  activeRInteractive = undefined;
 
   const failures: unknown[] = [];
   try {
     await pickleWorkers?.shutdown();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await rInteractive?.shutdown();
   } catch (error) {
     failures.push(error);
   }
