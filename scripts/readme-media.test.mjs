@@ -605,29 +605,23 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Closing the view leaves Spark work that has already started alone/u);
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   assert.match(readme, /Microsoft Data\s+Wrangler 1\.24\.2/u);
-  assert.match(readme, /Data Wrangler converts Polars data to Pandas/u);
+  assert.match(readme, /notebook previews 4\.4–7\.3× faster/u);
+  assert.match(readme, /CSV fixtures about 3\.4× faster/u);
+  assert.match(readme, /Data Wrangler handled the Polars cases through Pandas/u);
+  assert.match(readme, /Open Wrangler ran them in Polars/u);
+  assert.match(readme, /did not time conversion\s+separately/u);
   assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
   assert.match(
     readme,
-    /\[full results\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
+    /\[dated report\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/data-wrangler-1\.2\.1\/review\.md\)/u
   );
-  assert.match(readme, /These results are from stable 1\.2\.1\. We will rerun the comparison before stable 2\.0\./u);
-  for (const row of [
-    /\| Pandas CSV\s+\| Show notebook preview \|\s+\*\*0\.34 s\*\* \|\s+1\.49 s \|/u,
-    /\| Pandas CSV\s+\| Open workbench\s+\|\s+\*\*0\.60 s\*\* \|\s+1\.01 s \|/u,
-    /\| Pandas CSV\s+\| Profile every column\s+\|\s+\*\*5\.58 s\*\* \|\s+18\.80 s \|/u,
-    /\| Polars CSV\s+\| Show notebook preview \|\s+\*\*0\.32 s\*\* \|\s+1\.50 s \|/u,
-    /\| Polars CSV\s+\| Open workbench\s+\|\s+\*\*0\.53 s\*\* \|\s+0\.99 s \|/u,
-    /\| Polars CSV\s+\| Profile every column\s+\|\s+\*\*5\.54 s\*\* \|\s+18\.81 s \|/u,
-    /\| Pandas Parquet \| Show notebook preview \|\s+\*\*0\.24 s\*\* \|\s+1\.53 s \|/u,
-    /\| Pandas Parquet \| Open workbench\s+\|\s+\*\*0\.67 s\*\* \|\s+0\.69 s \|/u,
-    /\| Pandas Parquet \| Profile every column\s+\|\s+\*\*7\.64 s\*\* \|\s+7\.95 s \|/u,
-    /\| Polars Parquet \| Show notebook preview \|\s+\*\*0\.20 s\*\* \|\s+1\.49 s \|/u,
-    /\| Polars Parquet \| Open workbench\s+\|\s+\*\*0\.48 s\*\* \|\s+0\.69 s \|/u,
-    /\| Polars Parquet \| Profile every column\s+\|\s+\*\*7\.20 s\*\* \|\s+8\.23 s \|/u
-  ]) {
-    assert.match(readme, row);
-  }
+  assert.match(readme, /comparison will be rerun with the\s+stable 2\.0 candidate/u);
+  const performanceSection = readme.slice(readme.indexOf("## Performance and scale"), readme.indexOf("## Roadmap"));
+  assert.doesNotMatch(
+    performanceSection,
+    /^\|/mu,
+    "The README performance summary must not duplicate a release-specific results table."
+  );
   const comparisonReview = readFileSync(resolve(root, "docs/performance/data-wrangler-1.2.1/review.md"), "utf8");
   assert.match(comparisonReview, /Open Wrangler completed 40\/40\. Data Wrangler\s+completed 37\/40/u);
   assert.match(comparisonReview, /e45eb499fed50febb61fb0d32cfa9a20800d59b04c67edd20d2568e39aa34ff3/u);

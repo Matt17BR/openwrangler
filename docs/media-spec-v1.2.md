@@ -44,8 +44,8 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
 4. **Notebooks:** the live-variable picker, generated-code insertion, Pandas/Polars/DuckDB/PySpark matrix, and R
    editing scene show how each engine behaves.
 5. **Export:** paired script and data outcomes show reproducible code and separate cleaned files.
-6. **Evidence and roadmap:** concise engine, format, compatibility, performance, and future-scope tables follow
-   the visual proof.
+6. **Evidence and roadmap:** concise engine, format, and compatibility tables plus a short performance summary and
+   future scope follow the visual proof.
 
 ## Public media inventory
 
