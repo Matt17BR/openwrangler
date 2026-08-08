@@ -47,7 +47,8 @@ Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook 
 is missing, Open Wrangler lists it and asks before installing anything. R notebooks use the selected IRkernel and
 require `jsonlite` and `rlang`. On macOS and Linux, trusted `.R`, `.Rmd`, and `.qmd` documents use `Rscript`
 from `openWrangler.rscriptPath` or `PATH` and require the same packages. R notebooks remain available on Windows;
-direct document execution is not yet available there.
+direct document execution is not yet available there. To export Parquet, install `nanoparquet` 0.5.1 or newer in that
+R environment and reopen the dataframe. CSV export does not need it.
 
 Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.
 
@@ -209,8 +210,10 @@ coordinate. It keeps `integer64`, date, and datetime types. A new factor value i
 _R editing uses the same grid, draft review, cleaning history, and code preview as the Python engines._
 
 Generated R can be copied, saved as a script, or inserted into the notebook or document that opened the dataframe.
-R notebook sessions and local R document sessions opened in Editing mode can export cleaned CSV files. R Parquet
-export is not available in this preview. Operations outside the current 20-operation set are not available in R yet.
+Local R notebook and R document sessions opened in Editing mode can export cleaned CSV files. They can also export
+Parquet when `nanoparquet` 0.5.1 or newer is installed in the selected R environment. Reopen the dataframe after
+installing the package so Open Wrangler can refresh its export choices. Operations outside the current 20-operation
+set are not available in R yet.
 
 Ordinary frames created with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing dataframe, tibble, and
 data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
@@ -226,7 +229,7 @@ also shows the variable picker, profiles, and generated code inserted into a not
   </tr>
   <tr>
     <td>Copy generated code or save it as a Python or R script. Notebook and R-source sessions can also insert it into the document that opened the dataframe.</td>
-    <td>Pandas, Polars, and DuckDB editing sessions export cleaned CSV or Parquet files. R notebook and local R document sessions opened in Editing mode export cleaned CSV files.</td>
+    <td>Pandas, Polars, and DuckDB editing sessions export cleaned CSV or Parquet files. Local R notebook and R document sessions opened in Editing mode export cleaned CSV files and use nanoparquet for Parquet.</td>
   </tr>
 </table>
 

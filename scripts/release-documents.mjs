@@ -34,7 +34,8 @@ const README_RUNTIME_REQUIREMENTS = `Open Wrangler requires VS Code 1.106 or new
 is missing, Open Wrangler lists it and asks before installing anything. R notebooks use the selected IRkernel and
 require \`jsonlite\` and \`rlang\`. On macOS and Linux, trusted \`.R\`, \`.Rmd\`, and \`.qmd\` documents use \`Rscript\`
 from \`openWrangler.rscriptPath\` or \`PATH\` and require the same packages. R notebooks remain available on Windows;
-direct document execution is not yet available there.`;
+direct document execution is not yet available there. To export Parquet, install \`nanoparquet\` 0.5.1 or newer in that
+R environment and reopen the dataframe. CSV export does not need it.`;
 const README_TRUST_REQUIREMENT =
   "Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.";
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);

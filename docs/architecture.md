@@ -184,12 +184,14 @@ temporary directory, and responses are published by atomic rename. Requests are 
 different source sessions may run independently. Closing the panel closes its R session, stops the owned process, and
 removes its temporary directory.
 
-An editable R notebook or local R document session can export its committed cleaning result as CSV. A document process
-writes an opaque file in its private directory; the extension verifies and streams that file. IRkernel keeps its file
-inside the kernel and returns bounded, offset-addressed chunks. Both routes feed the existing atomic file transaction,
-and R never receives the destination path. Drafts, stale revisions, and Parquet requests are rejected. Viewing filters
-and sorts are not part of the exported cleaning result. Notebook export is offered only when the notebook belongs to
-the current local extension host; the public export request does not yet carry a VS Code remote authority.
+An editable R notebook or local R document session can export its committed cleaning result as CSV or Parquet. CSV is
+part of base R. Parquet requires `nanoparquet` 0.5.1 or newer in the exact R process that owns the session; the runtime
+checks this when the session opens and again when export starts. A document process writes an opaque file in its
+private directory; the extension verifies and streams that file. IRkernel keeps its file inside the kernel and returns
+bounded, offset-addressed chunks. Both routes feed the existing atomic file transaction, and R never receives the
+destination path. Drafts and stale revisions are rejected. Viewing filters and sorts are not part of the exported
+cleaning result. Notebook export is offered only when the notebook belongs to the current local extension host; the
+public export request does not yet carry a VS Code remote authority.
 
 Direct R-document execution is currently disabled on Windows. Node's ordinary child-process API cannot prove that every
 process started by user R code has exited. The command can be enabled there only after the extension owns the R

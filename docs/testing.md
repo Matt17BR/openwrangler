@@ -540,7 +540,8 @@ dispatched Released Jupyter workflow and both release workflows use exact R 4.5.
 Code and Cursor; the manual and release paths also run the remote journey in VS Code. The local kernel installs
 missing packages into a temporary library from
 `https://p3m.dev/cran/__linux__/noble/2026-03-10`, then records and checks these versions: IRkernel 1.3.2,
-jsonlite 2.0.0, rlang 1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Tests cover projected paging, row labels,
+jsonlite 2.0.0, rlang 1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Collapse 2.1.7 and nanoparquet 0.5.1 come
+from the reviewed `2026-06-01` snapshot. Tests cover projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
 and cleanup. They also check that header profiles start off; the journey does not turn them on. The temporary R
 library is deleted with the run.
@@ -583,9 +584,10 @@ again after editing. Separate tibble and keyed-data-table sessions preview and d
 R tests also check class and key behavior for both dataframe types.
 
 The notebook journey also applies Rename to a 1,205-row, 25-column frame, adds a viewing filter and two sort keys,
-and exports through the public command and real Save dialog. The saved CSV contains every committed row, not just the
-filtered view. The test checks the renamed header, representative values, unchanged notebook bytes and view state,
-and zero remaining host or kernel export artifacts. A local packaged run on 2026-08-07 passed this journey in VS Code
+and exports CSV and Parquet through the public command and real Save dialog. The saved CSV contains every committed
+row, not just the filtered view, and the Parquet file must have complete `PAR1` markers. The test checks the renamed
+CSV header, representative values, unchanged notebook bytes and view state, and zero remaining host or kernel export
+artifacts. A local packaged run on 2026-08-07 passed the earlier CSV-only journey in VS Code
 1.132.0 and Cursor 3.14.7 on the pinned private Xvfb display.
 
 On macOS and Linux, the same local R editor launch also tests `.R`, `.Rmd`, and `.qmd` workflows; it does not start another VS Code or Cursor process.
@@ -594,11 +596,13 @@ The fixture reads a relative CSV, creates a base data frame, tibble, and keyed d
 numeric profile, a filter, two sort keys, Rename preview/apply/undo, and generated R. It keeps a different `.R` editor
 active while inserting the generated code, proving that only the captured unsaved source document changes. Both files
 on disk remain byte-for-byte unchanged. After applying Rename, the test also runs the public zero-argument data-export
-command, completes the real Save dialog, and compares the full 240-row CSV with the expected cleaned result. It checks
-that the open source stays clean, the process export directory is empty, and the private process root disappears when
-the session closes. Neither R path advertises Parquet.
+command for CSV and Parquet and completes the real Save dialog for each. It compares the full 240-row CSV with the
+expected cleaned result and checks the Parquet file markers. It checks that the open source stays clean, the process
+export directory is empty, and the private process root disappears when the session closes. Parquet is advertised
+only when the exact R process has nanoparquet 0.5.1 or newer.
 The modified in-memory source is then run again and its generated result is opened before the final panel and R process are closed. The phase uses the
-exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite` and `rlang`.
+exact Rscript and temporary R library that already belong to the IRkernel test, including `jsonlite`, `rlang`, and
+`nanoparquet`.
 
 The R Markdown and Quarto fixtures each contain first-line YAML, prose, a non-R cell, a disabled R cell, and one
 top-level backtick-fenced `{r}` cell that reads a relative CSV. The journey opens the dataframe, checks its full schema
@@ -652,7 +656,11 @@ On Linux, `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=1` adds a container-isolated remote
 
 The Python fixture starts from a digest-pinned Python 3.12 image. Its complete hash-locked `requirements.txt` installs Jupyter Server 2.20.0, IPykernel 6.30.1, Pandas 2.3.3, Polars 1.35.2, and DuckDB 1.5.4 with their Python dependencies. It repeats the Pandas/Polars/DuckDB runtime-transfer, renderer, insertion, restart, replay, and cleanup checks.
 
-The R fixture starts from digest-pinned Rocker R 4.5.2 and uses Ubuntu snapshot `20260311T000000Z`. Its existing R packages stay on the March P3M snapshot; collapse alone comes from the reviewed June snapshot that contains version 2.1.7. The image checks all six versions before installing its kernelspec. Its separate `requirements.r.txt` contains Jupyter Server 2.20.0 and the minimum Python closure needed to host it; it does not install Pandas, Polars, DuckDB, or IPykernel. The journey covers native R discovery, paging, sorting, profiles, restart, runtime transfer, and cleanup.
+The R fixture starts from digest-pinned Rocker R 4.5.2 and uses Ubuntu snapshot `20260311T000000Z`. Its existing R
+packages stay on the March P3M snapshot. Collapse 2.1.7 and nanoparquet 0.5.1 come from the reviewed June snapshot.
+The image checks all seven versions before installing its kernelspec. Its separate `requirements.r.txt` contains
+Jupyter Server 2.20.0 and the minimum Python closure needed to host it; it does not install Pandas, Polars, DuckDB, or
+IPykernel. The journey covers native R discovery, paging, sorting, profiles, restart, runtime transfer, and cleanup.
 
 Both containers are unprivileged and read-only, with private tmpfs storage, no host mounts, a random loopback-only port, dropped capabilities, no-new-privileges, and explicit resource limits. The per-run credential enters only through bounded stdin to a private file and reaches the editor through an owned mode-0400 descriptor. Before importing Jupyter, the server creates private work, configuration, data, runtime, and IPython directories. Container identity is checked before and after the journey, and cleanup removes only the labelled container and image. If Docker identity or ownership becomes uncertain, the test publishes no evidence path and leaves its private root in place. This is a container test, not a claim about WAN TLS, JupyterHub, SSH, or arbitrary hosted providers.
 

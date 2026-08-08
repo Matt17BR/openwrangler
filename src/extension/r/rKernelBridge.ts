@@ -64,6 +64,7 @@ import type {
   RKernelColumnReference,
   RKernelDataExportResult,
   RKernelDatasetStatsResult,
+  RKernelExportFormat,
   RKernelPageWindow,
   RKernelPlanUpdatedResult,
   RKernelFillMissingReplacement,
@@ -222,7 +223,7 @@ export interface RKernelBridgeTransport {
   exportData?(
     sessionId: string,
     revision: number,
-    format: "csv",
+    format: RKernelExportFormat,
     writeChunk: (chunk: Uint8Array) => Promise<void>,
     options?: RKernelRequestOptions
   ): Promise<RKernelDataExportResult>;
@@ -241,6 +242,7 @@ interface RBridgeSession {
   readonly sourceRSchema: readonly RColumnSchema[];
   readonly sourceKeyColumnIds: readonly string[];
   readonly exportCsv: boolean;
+  readonly exportParquet: boolean;
   readonly rowNames: RFramePageContract["frameSemantics"]["rowNames"];
   mode: SessionMode;
   revision: number;
@@ -434,7 +436,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         request.source,
         request.mode ?? "viewing",
         result.page,
-        isExportableRSource(request.source) && this.transport.exportData !== undefined
+        isExportableRSource(request.source) && this.transport.exportData !== undefined ? result.exportFormats : []
       );
       this.sessions.set(sessionId, session);
       return {
@@ -1182,10 +1184,13 @@ export class RKernelBridge implements OpenWranglerBridge {
     if (!session) return unknownSessionError(request.sessionId);
     if (session.invalidated) return kernelChangedError(request.sessionId);
     const writer = this.transport.exportData;
-    if (!session.exportCsv || !writer || request.format !== "csv") {
+    const supportsFormat = request.format === "csv" ? session.exportCsv : session.exportParquet;
+    if (!supportsFormat || !writer) {
       return errorResponse(
         "unsupported_operation",
-        "Cleaned-data export is available as CSV for local R notebook and document sessions opened in Editing mode.",
+        request.format === "parquet"
+          ? "Parquet export requires nanoparquet 0.5.1 or newer in the selected local R runtime."
+          : "Cleaned-data export is available for local R notebook and document sessions opened in Editing mode.",
         true,
         request.sessionId
       );
@@ -1248,7 +1253,7 @@ export class RKernelBridge implements OpenWranglerBridge {
         this.transport,
         request.sessionId,
         expectedRevision,
-        "csv",
+        request.format,
         (chunk) => output.write(chunk),
         transportOptions({
           ...options,
@@ -1271,14 +1276,14 @@ export class RKernelBridge implements OpenWranglerBridge {
         settled = true;
         return staleResponseError(request.sessionId);
       }
-      assertRExportResult(result, request.sessionId, expectedRevision, expectedRows, expectedColumns);
+      assertRExportResult(result, request.sessionId, expectedRevision, request.format, expectedRows, expectedColumns);
       await transaction.commit();
       settled = true;
       return {
         kind: "dataExported",
         revision: expectedRevision,
         path: request.path,
-        format: "csv",
+        format: request.format,
         shape: { rows: result.rows, columns: result.columns }
       };
     } catch (error) {
@@ -1790,7 +1795,7 @@ function sessionFromContract(
   source: SessionSource,
   mode: SessionMode,
   contract: RFramePageContract,
-  exportCsv: boolean
+  exportFormats: readonly RKernelExportFormat[]
 ): RBridgeSession {
   const schema = schemaFromContract(contract);
   return {
@@ -1801,7 +1806,8 @@ function sessionFromContract(
     sourceSchema: schema,
     sourceRSchema: contract.schema,
     sourceKeyColumnIds: Object.freeze([...contract.frameSemantics.keyColumnIds]),
-    exportCsv,
+    exportCsv: exportFormats.includes("csv"),
+    exportParquet: exportFormats.includes("parquet"),
     committedSchema: schema,
     committedRSchema: contract.schema,
     committedRows: contract.page.totalRows,
@@ -1833,7 +1839,11 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.row
     rDataframeFlavor: session.dataframeFlavor,
     mode: session.mode,
     source: copySource(session.source),
-    capabilities: rCapabilitiesForSource(session.source, session.mode === "editing" && session.exportCsv),
+    capabilities: rCapabilitiesForSource(
+      session.source,
+      session.mode === "editing" && session.exportCsv,
+      session.mode === "editing" && session.exportParquet
+    ),
     shape: { rows: session.rows, columns: session.schema.length },
     filteredShape: { rows: filteredRows, columns: session.schema.length },
     schema: copySchema(session.schema),
@@ -1847,10 +1857,11 @@ function metadataFor(session: RBridgeSession, filteredRows: number = session.row
   };
 }
 
-function rCapabilitiesForSource(source: SessionSource, exportCsv: boolean): SourceCapabilities {
+function rCapabilitiesForSource(source: SessionSource, exportCsv: boolean, exportParquet: boolean): SourceCapabilities {
   return {
     ...R_BASE_CAPABILITIES,
     exportCsv,
+    exportParquet,
     notebookInsert: source.kind === "notebookVariable",
     ...(source.kind === "documentVariable" ? { documentInsert: true } : {})
   };
@@ -1858,12 +1869,12 @@ function rCapabilitiesForSource(source: SessionSource, exportCsv: boolean): Sour
 
 function rExportProtectedSourceUris(source: SessionSource): readonly vscode.Uri[] {
   if ((source.kind !== "documentVariable" && source.kind !== "notebookVariable") || !source.uri) {
-    throw new TypeError("R CSV export requires an originating R notebook or document URI.");
+    throw new TypeError("R data export requires an originating R notebook or document URI.");
   }
   const uri = vscode.Uri.parse(source.uri, true);
   if (uri.scheme === "file" && uri.fsPath) return [uri];
   if (source.kind === "notebookVariable" && uri.scheme === "untitled") return [];
-  throw new TypeError("R CSV export requires a local R notebook or document source.");
+  throw new TypeError("R data export requires a local R notebook or document source.");
 }
 
 function isExportableRSource(source: SessionSource): boolean {
@@ -1886,13 +1897,14 @@ function assertRExportResult(
   result: RKernelDataExportResult,
   sessionId: string,
   revision: number,
+  format: RKernelExportFormat,
   rows: number,
   columns: number
 ): void {
   if (
     result.sessionId !== sessionId ||
     result.revision !== revision ||
-    result.format !== "csv" ||
+    result.format !== format ||
     !Number.isSafeInteger(result.rows) ||
     result.rows < 0 ||
     result.rows !== rows ||

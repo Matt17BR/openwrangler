@@ -8,6 +8,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Stable release candidates now run the R 4.5.2 contract and the packaged R notebook journey in VS Code and Cursor
   before publication. Preview candidates already used this gate.
+- Local R notebook and R document sessions can now export committed cleaning results as Parquet with `nanoparquet`
+  0.5.1 or newer. The R process writes the file directly, and the extension streams it through the same atomic Save
+  path used by CSV.
 - Fill Missing Values previews now report the exact number of values that are still missing in the target column.
   The count covers the complete cleaned dataframe, not just the visible grid block.
 - Fill Missing Values can now use the previous or next value after sorting by one or more explicit columns. An

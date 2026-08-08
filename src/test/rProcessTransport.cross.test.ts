@@ -15,7 +15,7 @@ const runtimeRoot = resolve(root, "r/openwrangler_runtime");
 const rscriptPath = process.env.RSCRIPT ?? "/usr/bin/Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
-  it("streams committed CSV exports through bounded host chunks without changing the source frame", async () => {
+  it("streams committed CSV and Parquet exports through bounded host chunks without changing the source frame", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-export-test-"));
     const transport = new RProcessSessionTransport({
       runtimeRoot,
@@ -50,6 +50,7 @@ empty_frame <- data.frame(id = integer(), label = character(), check.names = FAL
     try {
       const plainSession = randomUUID();
       const opened = await transport.open("plain_frame", pageWindow(), { requestedSessionId: plainSession });
+      expect(opened.exportFormats).toEqual(["csv", "parquet"]);
       const preview = await transport.previewStep(
         plainSession,
         0,
@@ -94,6 +95,10 @@ empty_frame <- data.frame(id = integer(), label = character(), check.names = FAL
       expect(csv).toContain('"id","label","when","category"\n');
       expect(csv).toContain('1," alpha ",2026-01-01,"one"\n');
       expect(csv).toContain("3,,,\n");
+
+      const parquet = await exportedBytes(transport, plainSession, "parquet", applied.revision);
+      expect(parquet.subarray(0, 4).toString("utf8")).toBe("PAR1");
+      expect(parquet.subarray(-4).toString("utf8")).toBe("PAR1");
 
       const sourceSession = randomUUID();
       const source = await transport.open("plain_frame", pageWindow(), { requestedSessionId: sourceSession });
@@ -218,6 +223,7 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
         requestedSessionId: zeroColumnSession
       });
       expect(zeroColumn.page.shape).toEqual({ rows: 3, columns: 0 });
+      expect(zeroColumn.exportFormats).toEqual(["csv", "parquet"]);
       const zeroColumnChunks: Uint8Array[] = [];
       await expect(
         transport.exportData(zeroColumnSession, 0, "csv", async (chunk) => {
@@ -225,6 +231,9 @@ zero_column_frame <- data.frame(row.names = c("row-1", "row-2", "row-3"))
         })
       ).rejects.toThrow("CSV export requires at least one column");
       expect(zeroColumnChunks).toEqual([]);
+      const zeroColumnParquet = await exportedBytes(transport, zeroColumnSession, "parquet");
+      expect(zeroColumnParquet.subarray(0, 4).toString("utf8")).toBe("PAR1");
+      expect(zeroColumnParquet.subarray(-4).toString("utf8")).toBe("PAR1");
       expect((await transport.getPage(zeroColumnSession, pageWindow())).shape).toEqual({ rows: 3, columns: 0 });
 
       for (const sessionId of [
@@ -821,11 +830,20 @@ function pageWindow(): RKernelPageWindow {
 }
 
 async function exportedCsv(transport: RProcessSessionTransport, sessionId: string): Promise<string> {
+  return (await exportedBytes(transport, sessionId, "csv")).toString("utf8");
+}
+
+async function exportedBytes(
+  transport: RProcessSessionTransport,
+  sessionId: string,
+  format: "csv" | "parquet",
+  revision = 0
+): Promise<Buffer> {
   const chunks: Uint8Array[] = [];
-  await transport.exportData(sessionId, 0, "csv", async (chunk) => {
+  await transport.exportData(sessionId, revision, format, async (chunk) => {
     chunks.push(Uint8Array.from(chunk));
   });
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
 }
 
 function rString(value: string): string {

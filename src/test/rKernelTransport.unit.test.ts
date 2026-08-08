@@ -87,15 +87,46 @@ describe("native R kernel protocol", () => {
       requestId: openRequestId,
       kind: "page",
       sessionId,
+      exportFormats: ["csv", "parquet"],
       page: minimalFramePage()
     });
 
-    expect(decodeRKernelResponseJson(encoded, openRequestId)).toMatchObject({
+    expect(decodeRKernelResponseJson(encoded, openRequestId, { expectExportFormats: true })).toMatchObject({
       kind: "page",
       sessionId,
+      exportFormats: ["csv", "parquet"],
       page: { dataframeFlavor: "r.data.frame", shape: { rows: 1, columns: 1 } }
     });
-    expect(() => decodeRKernelResponseJson(encoded, pageRequestId)).toThrow("stale or mis-correlated");
+    expect(() => decodeRKernelResponseJson(encoded, pageRequestId, { expectExportFormats: true })).toThrow(
+      "stale or mis-correlated"
+    );
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: openRequestId,
+          kind: "page",
+          sessionId,
+          exportFormats: ["parquet", "csv"],
+          page: minimalFramePage()
+        }),
+        openRequestId,
+        { expectExportFormats: true }
+      )
+    ).toThrow("must contain csv first");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: openRequestId,
+          kind: "page",
+          sessionId,
+          page: minimalFramePage()
+        }),
+        openRequestId,
+        { expectExportFormats: true }
+      )
+    ).toThrow("invalid fields");
   });
 
   it("strictly decodes bounded column profiles and dataset statistics", () => {
@@ -277,7 +308,7 @@ describe("native R kernel protocol", () => {
     ).toThrow("typed selection");
   });
 
-  it("validates private streamed CSV exports", () => {
+  it("validates private streamed CSV and Parquet exports", () => {
     const request: Extract<RKernelRequest, { kind: "exportData" }> = {
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: exportRequestId,
@@ -313,6 +344,29 @@ describe("native R kernel protocol", () => {
       columns: 2,
       bytes: 42
     });
+
+    const parquetRequest = {
+      ...request,
+      payload: { ...request.payload, format: "parquet" as const }
+    };
+    expect(JSON.parse(encodeRKernelRequest(parquetRequest))).toEqual(parquetRequest);
+    expect(
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: exportRequestId,
+          kind: "dataExported",
+          sessionId,
+          revision: 4,
+          exportId,
+          format: "parquet",
+          rows: 3,
+          columns: 2,
+          bytes: 84
+        }),
+        exportRequestId
+      )
+    ).toMatchObject({ kind: "dataExported", format: "parquet", bytes: 84 });
 
     expect(() =>
       encodeRKernelRequest({
@@ -2115,6 +2169,7 @@ describe("exact IRkernel session transport", () => {
 
     await expect(transport.open("frame", pageWindow())).resolves.toMatchObject({
       sessionId,
+      exportFormats: ["csv"],
       page: { dataframeFlavor: "r.data.frame" }
     });
     await expect(transport.getPage(sessionId, pageWindow([sortRule()]))).resolves.toMatchObject({
@@ -2148,90 +2203,94 @@ describe("exact IRkernel session transport", () => {
     });
   });
 
-  it("streams a bounded CSV from the exact IRkernel and closes its private artifact", async () => {
-    const requests: RKernelRequest[] = [];
-    const controller = controlledRKernel(async (request) => {
-      requests.push(request);
-      if (request.kind === "exportData") {
+  it.each(["csv", "parquet"] as const)(
+    "streams a bounded %s export from the exact IRkernel and closes its private artifact",
+    async (format) => {
+      const requests: RKernelRequest[] = [];
+      const controller = controlledRKernel(async (request) => {
+        requests.push(request);
+        if (request.kind === "exportData") {
+          return response(request, {
+            kind: "dataExported",
+            sessionId,
+            revision: request.payload.revision,
+            exportId: request.payload.exportId,
+            format,
+            rows: 1,
+            columns: 1,
+            bytes: R_KERNEL_EXPORT_CHUNK_BYTES + 3
+          });
+        }
+        if (request.kind === "readDataExport") {
+          const data =
+            request.payload.offset === 0 ? Buffer.alloc(R_KERNEL_EXPORT_CHUNK_BYTES, 0x61) : Buffer.from("end", "utf8");
+          return response(request, {
+            kind: "dataExportChunk",
+            sessionId,
+            revision: request.payload.revision,
+            exportId: request.payload.exportId,
+            offset: request.payload.offset,
+            bytes: data.byteLength,
+            data: data.toString("base64")
+          });
+        }
+        if (request.kind === "closeDataExport") {
+          return response(request, {
+            kind: "dataExportClosed",
+            sessionId,
+            revision: request.payload.revision,
+            exportId: request.payload.exportId
+          });
+        }
+        if (request.kind === "closeSession") {
+          return response(request, { kind: "closed", sessionId: request.payload.sessionId });
+        }
         return response(request, {
-          kind: "dataExported",
-          sessionId,
-          revision: request.payload.revision,
-          exportId: request.payload.exportId,
-          format: "csv",
-          rows: 1,
-          columns: 1,
-          bytes: R_KERNEL_EXPORT_CHUNK_BYTES + 3
+          kind: "page",
+          sessionId: request.payload.sessionId,
+          exportFormats: ["csv", "parquet"],
+          page: minimalFramePage()
         });
-      }
-      if (request.kind === "readDataExport") {
-        const data =
-          request.payload.offset === 0 ? Buffer.alloc(R_KERNEL_EXPORT_CHUNK_BYTES, 0x61) : Buffer.from("end", "utf8");
-        return response(request, {
-          kind: "dataExportChunk",
-          sessionId,
-          revision: request.payload.revision,
-          exportId: request.payload.exportId,
-          offset: request.payload.offset,
-          bytes: data.byteLength,
-          data: data.toString("base64")
-        });
-      }
-      if (request.kind === "closeDataExport") {
-        return response(request, {
-          kind: "dataExportClosed",
-          sessionId,
-          revision: request.payload.revision,
-          exportId: request.payload.exportId
-        });
-      }
-      if (request.kind === "closeSession") {
-        return response(request, { kind: "closed", sessionId: request.payload.sessionId });
-      }
-      return response(request, {
-        kind: "page",
-        sessionId: request.payload.sessionId,
-        page: minimalFramePage()
       });
-    });
-    mockKernel(controller.kernel);
-    const document = notebookDocument();
-    setOpenNotebookDocuments(document);
-    const transport = createTransport(document, [
-      sessionId,
-      openRequestId,
-      exportId,
-      exportRequestId,
-      exportChunkRequestId,
-      exportSecondChunkRequestId,
-      exportCloseRequestId,
-      closeRequestId
-    ]);
-    const chunks: Uint8Array[] = [];
+      mockKernel(controller.kernel);
+      const document = notebookDocument();
+      setOpenNotebookDocuments(document);
+      const transport = createTransport(document, [
+        sessionId,
+        openRequestId,
+        exportId,
+        exportRequestId,
+        exportChunkRequestId,
+        exportSecondChunkRequestId,
+        exportCloseRequestId,
+        closeRequestId
+      ]);
+      const chunks: Uint8Array[] = [];
 
-    await transport.open("frame", pageWindow());
-    await expect(
-      transport.exportData(sessionId, 0, "csv", async (chunk) => {
-        chunks.push(chunk);
-      })
-    ).resolves.toEqual({ sessionId, revision: 0, format: "csv", rows: 1, columns: 1 });
-    await transport.close(sessionId);
-    await transport.dispose();
+      await transport.open("frame", pageWindow());
+      await expect(
+        transport.exportData(sessionId, 0, format, async (chunk) => {
+          chunks.push(chunk);
+        })
+      ).resolves.toEqual({ sessionId, revision: 0, format, rows: 1, columns: 1 });
+      await transport.close(sessionId);
+      await transport.dispose();
 
-    expect(chunks).toHaveLength(2);
-    expect(chunks[0]).toHaveLength(R_KERNEL_EXPORT_CHUNK_BYTES);
-    expect(Buffer.from(chunks[1]!).toString("utf8")).toBe("end");
-    expect(requests.map(({ kind }) => kind)).toEqual([
-      "openSession",
-      "exportData",
-      "readDataExport",
-      "readDataExport",
-      "closeDataExport",
-      "closeSession"
-    ]);
-    expect(requests[2]).toMatchObject({ payload: { offset: 0, limit: R_KERNEL_EXPORT_CHUNK_BYTES } });
-    expect(requests[3]).toMatchObject({ payload: { offset: R_KERNEL_EXPORT_CHUNK_BYTES, limit: 3 } });
-  });
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0]).toHaveLength(R_KERNEL_EXPORT_CHUNK_BYTES);
+      expect(Buffer.from(chunks[1]!).toString("utf8")).toBe("end");
+      expect(requests.map(({ kind }) => kind)).toEqual([
+        "openSession",
+        "exportData",
+        "readDataExport",
+        "readDataExport",
+        "closeDataExport",
+        "closeSession"
+      ]);
+      expect(requests[2]).toMatchObject({ payload: { offset: 0, limit: R_KERNEL_EXPORT_CHUNK_BYTES } });
+      expect(requests[3]).toMatchObject({ payload: { offset: R_KERNEL_EXPORT_CHUNK_BYTES, limit: 3 } });
+    }
+  );
 
   it("closes a private IRkernel export after a timed-out begin request settles", async () => {
     vi.useFakeTimers();
@@ -3399,7 +3458,8 @@ function minimalColumnValue() {
 }
 
 function response(request: RKernelRequest, body: Record<string, unknown>) {
-  return { transportVersion: R_KERNEL_TRANSPORT_VERSION, requestId: request.requestId, ...body };
+  const exportFormats = request.kind === "openSession" && body.kind === "page" ? { exportFormats: ["csv"] } : {};
+  return { transportVersion: R_KERNEL_TRANSPORT_VERSION, requestId: request.requestId, ...exportFormats, ...body };
 }
 
 function createTransport(

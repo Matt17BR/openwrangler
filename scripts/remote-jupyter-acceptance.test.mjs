@@ -1540,14 +1540,15 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   assert.match(dockerfile, /^ARG UBUNTU_SNAPSHOT=20260311T000000Z$/mu);
   assert.match(dockerfile, /https:\/\/snapshot\.ubuntu\.com\/ubuntu\/\$\{UBUNTU_SNAPSHOT\}/u);
   assert.match(dockerfile, /^ARG R_REPOSITORY=https:\/\/p3m\.dev\/cran\/__linux__\/noble\/2026-03-10$/mu);
-  assert.match(dockerfile, /^ARG COLLAPSE_REPOSITORY=https:\/\/p3m\.dev\/cran\/__linux__\/noble\/2026-06-01$/mu);
+  assert.match(dockerfile, /^ARG R_SUPPLEMENTAL_REPOSITORY=https:\/\/p3m\.dev\/cran\/__linux__\/noble\/2026-06-01$/mu);
   for (const [name, version] of [
     ["IRKERNEL_VERSION", "1.3.2"],
     ["JSONLITE_VERSION", "2.0.0"],
     ["RLANG_VERSION", "1.1.7"],
     ["TIBBLE_VERSION", "3.3.1"],
     ["DATA_TABLE_VERSION", "1.18.2.1"],
-    ["COLLAPSE_VERSION", "2.1.7"]
+    ["COLLAPSE_VERSION", "2.1.7"],
+    ["NANOPARQUET_VERSION", "0.5.1"]
   ]) {
     assert.match(dockerfile, new RegExp(`^ARG ${name}=${version.replaceAll(".", "\\.")}$`, "mu"));
   }
@@ -1555,9 +1556,10 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   assert.match(dockerfile, /--require-hashes/u);
   assert.match(dockerfile, /--requirement \/opt\/openwrangler\/requirements\.r\.txt/u);
   assert.match(dockerfile, /python -I -m pip check/u);
-  assert.match(dockerfile, /collapse_repository <- Sys\.getenv\("COLLAPSE_REPOSITORY"\)/u);
-  assert.match(dockerfile, /install\.packages\("collapse", repos = collapse_repository, Ncpus = 2L\)/u);
+  assert.match(dockerfile, /supplemental_repository <- Sys\.getenv\("R_SUPPLEMENTAL_REPOSITORY"\)/u);
   assert.match(dockerfile, /collapse = Sys\.getenv\("COLLAPSE_VERSION"\)/u);
+  assert.match(dockerfile, /nanoparquet = Sys\.getenv\("NANOPARQUET_VERSION"\)/u);
+  assert.match(dockerfile, /install\.packages\(c\("collapse", "nanoparquet"\), repos = supplemental_repository/u);
   assert.match(dockerfile, /as\.character\(getRversion\(\)\) == "4\.5\.2"/u);
   assert.match(dockerfile, /identical\(actual, expected\)/u);
   assert.match(dockerfile, /name = "openwrangler-r-remote-acceptance"/u);

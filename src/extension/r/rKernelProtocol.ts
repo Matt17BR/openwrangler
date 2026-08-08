@@ -20,7 +20,7 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 7 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 8 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -366,10 +366,12 @@ export interface RKernelStepInspectionResult {
   readonly code: string;
 }
 
+export type RKernelExportFormat = "csv" | "parquet";
+
 export interface RKernelDataExportResult {
   readonly sessionId: string;
   readonly revision: number;
-  readonly format: "csv";
+  readonly format: RKernelExportFormat;
   readonly rows: number;
   readonly columns: number;
 }
@@ -467,7 +469,7 @@ export type RKernelRequest =
         sessionId: string;
         revision: number;
         exportId: string;
-        format: "csv";
+        format: RKernelExportFormat;
       }>;
     }>
   | Readonly<{
@@ -505,6 +507,7 @@ export type RKernelResponse =
       requestId: string;
       kind: "page";
       sessionId: string;
+      exportFormats?: readonly RKernelExportFormat[];
       page: RFramePageContract;
     }>
   | Readonly<{
@@ -586,7 +589,7 @@ export type RKernelResponse =
       sessionId: string;
       revision: number;
       exportId: string;
-      format: "csv";
+      format: RKernelExportFormat;
       rows: number;
       columns: number;
       bytes: number;
@@ -622,6 +625,8 @@ export interface RKernelErrorResponse {
 }
 
 export interface RKernelResponseDecodeContext {
+  /** An open-session page must carry capabilities from the exact R runtime. */
+  readonly expectExportFormats?: boolean;
   /** Exact host-retained schema for mutation input-cell validation. */
   readonly inputSchema?: readonly RColumnSchema[];
   /** Exact host-retained schema for applied-step output validation. */
@@ -658,13 +663,22 @@ export function decodeRKernelResponseJson(
   if (!isRecord(value)) fail("R kernel response must be an object.");
   const kind = value.kind;
   if (kind === "page") {
-    const record = exactRecord(value, ["transportVersion", "requestId", "kind", "sessionId", "page"]);
+    const record = exactRecord(
+      value,
+      context.expectExportFormats
+        ? ["transportVersion", "requestId", "kind", "sessionId", "exportFormats", "page"]
+        : ["transportVersion", "requestId", "kind", "sessionId", "page"]
+    );
     validateEnvelope(record, expected);
+    const exportFormats = context.expectExportFormats
+      ? decodeExportFormats(record.exportFormats, "response.exportFormats")
+      : undefined;
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
       kind: "page" as const,
       sessionId: identifier(record.sessionId, "response.sessionId"),
+      ...(exportFormats === undefined ? {} : { exportFormats }),
       page: decodeRFramePage(record.page)
     });
   }
@@ -896,7 +910,7 @@ export function decodeRKernelResponseJson(
       "bytes"
     ]);
     validateEnvelope(record, expected);
-    if (record.format !== "csv") fail("R kernel data-export response has an invalid format.");
+    const format = decodeExportFormat(record.format, "response.format");
     return Object.freeze({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
       requestId: expected,
@@ -904,7 +918,7 @@ export function decodeRKernelResponseJson(
       sessionId: identifier(record.sessionId, "response.sessionId"),
       revision: boundedInteger(record.revision, "response.revision", 2_147_483_647),
       exportId: identifier(record.exportId, "response.exportId"),
-      format: "csv" as const,
+      format,
       rows: boundedInteger(record.rows, "response.rows", R_FRAME_CONTRACT_LIMITS.rows),
       columns: boundedInteger(record.columns, "response.columns", R_FRAME_CONTRACT_LIMITS.columns),
       bytes: boundedInteger(record.bytes, "response.bytes", Number.MAX_SAFE_INTEGER)
@@ -1090,7 +1104,7 @@ function validateRequest(request: RKernelRequest): void {
     identifier(payload.sessionId, "request.payload.sessionId");
     boundedInteger(payload.revision, "request.payload.revision", 2_147_483_647);
     identifier(payload.exportId, "request.payload.exportId");
-    if (payload.format !== "csv") fail("request.payload.format must be csv.");
+    decodeExportFormat(payload.format, "request.payload.format");
     return;
   }
   if (record.kind === "readDataExport") {
@@ -1686,6 +1700,22 @@ function validateColumnReference(value: unknown, label: string): Readonly<{ id: 
     id: boundedText(reference.id, `${label}.id`, R_FRAME_CONTRACT_LIMITS.columnIdBytes, false),
     name: boundedText(reference.name, `${label}.name`, maximumVariableNameBytes, true)
   });
+}
+
+function decodeExportFormat(value: unknown, label: string): RKernelExportFormat {
+  if (value !== "csv" && value !== "parquet") fail(`${label} must be csv or parquet.`);
+  return value;
+}
+
+function decodeExportFormats(value: unknown, label: string): readonly RKernelExportFormat[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 2) {
+    fail(`${label} must be a non-empty export-format array.`);
+  }
+  const formats = value.map((format, index) => decodeExportFormat(format, `${label}[${index}]`));
+  if (formats[0] !== "csv" || new Set(formats).size !== formats.length) {
+    fail(`${label} must contain csv first without duplicates.`);
+  }
+  return Object.freeze(formats);
 }
 
 function validateViewQuery(value: unknown): void {
