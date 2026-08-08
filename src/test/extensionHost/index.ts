@@ -19803,14 +19803,29 @@ async function assertPackagedOperationDialogGeometry(
     const catalog = root.querySelector(".operationCatalog");
     const form = root.querySelector(".operationForm");
     const header = root.querySelector(".operationDialogHeader");
-    if (!body || !catalog || !form || !header) throw new Error("The operation dialog layout is incomplete.");
+    const searchIcon = root.querySelector(".operationSearch > span");
+    const searchInput = root.querySelector(".operationSearch input");
+    if (!body || !catalog || !form || !header || !searchIcon || !searchInput) {
+      throw new Error("The operation dialog layout is incomplete.");
+    }
     const bounds = root.getBoundingClientRect();
+    const searchIconBounds = searchIcon.getBoundingClientRect();
+    const searchInputBounds = searchInput.getBoundingClientRect();
     return {
       bounds: { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom },
       bodyOverflow: body.scrollWidth - body.clientWidth,
       headerOverflow: header.scrollWidth - header.clientWidth,
       catalogVisible: catalog.getBoundingClientRect().width > 0,
       formVisible: form.getBoundingClientRect().width > 0,
+      searchIconContained:
+        searchIconBounds.left >= searchInputBounds.left - 1 &&
+        searchIconBounds.right <= searchInputBounds.right + 1 &&
+        searchIconBounds.top >= searchInputBounds.top - 1 &&
+        searchIconBounds.bottom <= searchInputBounds.bottom + 1,
+      searchIconCenterDelta: Math.abs(
+        (searchIconBounds.top + searchIconBounds.bottom) / 2 -
+          (searchInputBounds.top + searchInputBounds.bottom) / 2
+      ),
       viewport: {
         width: root.ownerDocument.defaultView.innerWidth,
         height: root.ownerDocument.defaultView.innerHeight
@@ -19826,6 +19841,8 @@ async function assertPackagedOperationDialogGeometry(
   assert.ok(geometry.headerOverflow <= 1, `${scene} operation dialog header must not clip.`);
   assert.equal(geometry.catalogVisible, true);
   assert.equal(geometry.formVisible, true);
+  assert.equal(geometry.searchIconContained, true, `${scene} search icon must stay inside its input.`);
+  assert.ok(geometry.searchIconCenterDelta <= 1, `${scene} search icon must be vertically centered in its input.`);
 }
 
 async function capturePackagedImportOptionsScene(
