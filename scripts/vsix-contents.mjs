@@ -26,10 +26,11 @@ export const allowedVsixEntryPatterns = [
   /^extension\/python\/openwrangler_runtime\/engines\/[^/]+\.py$/u,
   /^extension\/r\/$/u,
   /^extension\/r\/openwrangler_runtime\/$/u,
-  /^extension\/r\/openwrangler_runtime\/(?:frame_contract|kernel_agent|process_agent)\.R$/u
+  /^extension\/r\/openwrangler_runtime\/(?:frame_contract|interactive_agent|kernel_agent|process_agent)\.R$/u
 ];
 
 const rFrameContractEntry = "extension/r/openwrangler_runtime/frame_contract.R";
+const rInteractiveAgentEntry = "extension/r/openwrangler_runtime/interactive_agent.R";
 const rKernelAgentEntry = "extension/r/openwrangler_runtime/kernel_agent.R";
 const rProcessAgentEntry = "extension/r/openwrangler_runtime/process_agent.R";
 
@@ -62,6 +63,7 @@ const requiredVsixEntriesBeforeR = Object.freeze([
 export const requiredVsixEntries = Object.freeze([
   ...requiredVsixEntriesBeforeR,
   rFrameContractEntry,
+  rInteractiveAgentEntry,
   rKernelAgentEntry,
   rProcessAgentEntry
 ]);

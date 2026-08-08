@@ -156,6 +156,7 @@ function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION, manifest 
     ["extension/media/icon.png", "icon"],
     ["extension/media/icon-128.png", "icon"],
     ["extension/r/openwrangler_runtime/frame_contract.R", "openwrangler_frame_contract <- function(frame) frame\n"],
+    ["extension/r/openwrangler_runtime/interactive_agent.R", "openwrangler_r_interactive_agent <- list()\n"],
     ["extension/r/openwrangler_runtime/kernel_agent.R", "openwrangler_kernel_agent <- list()\n"],
     ["extension/r/openwrangler_runtime/process_agent.R", 'quit(save = "no")\n'],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],

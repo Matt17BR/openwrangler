@@ -74,6 +74,7 @@ function releaseEntries(
     ["extension/media/icon.png", galleryIcon],
     ["extension/media/icon-128.png", png(128, 128, 33)],
     ["extension/r/openwrangler_runtime/frame_contract.R", "openwrangler_frame_contract <- function(frame) frame\n"],
+    ["extension/r/openwrangler_runtime/interactive_agent.R", "openwrangler_r_interactive_agent <- list()\n"],
     ["extension/r/openwrangler_runtime/kernel_agent.R", "openwrangler_kernel_agent <- list()\n"],
     ["extension/r/openwrangler_runtime/process_agent.R", 'quit(save = "no")\n'],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
