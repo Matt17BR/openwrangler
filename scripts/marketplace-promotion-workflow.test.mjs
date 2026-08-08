@@ -59,6 +59,8 @@ test("Marketplace promotion inspector rejects credentials, rebuilding, and promo
       "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate",
       "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate"
     ),
+    source.replace(" || publish_status=$?", ""),
+    source.replace("public verification will determine the result", "publication failure ignored"),
     source.replace("BUILD_REASON: $(Build.Reason)", "BUILD_REASON: Manual"),
     source.replace("EXPECTED_SHA: $(releaseCommit)", "EXPECTED_SHA: $(Build.SourceVersion)"),
     source.replace("OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS: 40", "OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS: 39"),

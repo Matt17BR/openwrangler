@@ -184,6 +184,10 @@ digest immediately before each draft creation, asset upload, or final publish mu
 canonical 128 MiB ceiling; provenance remains capped at 4 KiB and the checksum at 512 bytes, so increasing the
 package ceiling cannot widen either sidecar boundary.
 
+After the remote tag push, the job creates or verifies the same lightweight tag in its local checkout before it
+publishes the GitHub release. The tag push uses a commit-to-remote refspec, so this explicit local step is required
+before registry verification reads the release source from `refs/tags/<version>`.
+
 This ordering follows GitHub's [immutable-release publication guidance](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases):
 create the draft, attach every asset, then publish it. The publisher uses the versioned `2026-03-10` REST contract
 and validates GitHub's `immutable` response field. The repository's future-only immutable-release setting was enabled
@@ -200,6 +204,10 @@ metadata, publisher, checksum, download, and gallery icon. Stable and preview pu
 the exact GitHub release remains available for the recovery workflow; nothing is rebuilt or replaced.
 
 The real lightweight-tag push starts `azure-pipelines-marketplace.yml` before GitHub Release creation. The Azure pipeline waits for that release to become public, downloads the same three assets, and may publish only the accepted VSIX to Microsoft Marketplace. Creating only a GitHub Release through the API is not accepted as a substitute for this Git protocol event.
+
+Microsoft can accept a VSIX while `vsce publish` still returns a nonzero status. The pipeline records that result as
+an ambiguous submission and continues to the exact public-package check. Missing or conflicting public bytes still
+fail after the bounded wait; identity, authentication, and artifact checks remain fail-fast.
 
 Draft pull requests report `Draft feedback`, not the protected `validate` context. Marking a draft ready reruns all three pull-request workflows at the same commit and starts the required merge checks. When several ready pull requests share a base, merge them one at a time so strict up-to-date protection does not spend time on runs that will immediately become stale. Dependabot checks npm, Python, and GitHub Actions on separate UTC days, groups compatible minor and patch updates by ecosystem, and leaves major and security updates separate.
 

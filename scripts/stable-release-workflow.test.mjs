@@ -75,8 +75,12 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     ),
     source.replace("          GITHUB_TOKEN: ${{ github.token }}", "          GITHUB_TOKEN: literal-token"),
     source.replace(
-      "        run: node scripts/push-stable-release-tag.mjs\n      - name: Publish or verify the exact GitHub stable release",
-      "        run: node scripts/push-stable-release-tag.mjs\n      - run: echo intervening\n      - name: Publish or verify the exact GitHub stable release"
+      "        run: node scripts/prepare-stable-candidate-tag.mjs\n      - name: Publish or verify the exact GitHub stable release",
+      "        run: node scripts/prepare-stable-candidate-tag.mjs\n      - run: echo intervening\n      - name: Publish or verify the exact GitHub stable release"
+    ),
+    source.replace(
+      "      - name: Prepare the exact local release tag for registry verification",
+      "      - name: Skip local release tag preparation"
     ),
     source.replace('OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"', 'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"'),
     source.replace("OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor", "OPEN_WRANGLER_PACKAGED_EDITORS: vscode"),

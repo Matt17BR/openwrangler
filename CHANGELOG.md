@@ -4,6 +4,15 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Fixed
+
+- Preview and stable release jobs now create the exact local release tag before registry checks. Previously the tag
+  was pushed to GitHub but remained absent from the runner, which stopped Open VSX publication after the GitHub
+  release had already succeeded.
+- Marketplace promotion now lets the public package check decide whether a nonzero `vsce publish` result actually
+  failed. Microsoft can accept an upload before the CLI returns; authentication and artifact checks still stop
+  immediately.
+
 ## [1.99.1] - 2026-08-07
 
 ### Added

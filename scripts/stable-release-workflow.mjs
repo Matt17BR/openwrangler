@@ -922,6 +922,9 @@ export function inspectStableReleaseWorkflow(source) {
   }
   const releaseJobSteps = steps(release);
   const publishTagStep = findRun(release, PUBLISH_TAG_COMMAND);
+  const localTagStep = releaseJobSteps.find(
+    (step) => step?.name === "Prepare the exact local release tag for registry verification"
+  );
   const githubReleaseStep = findRun(release, "node scripts/publish-github-stable-release.mjs canonical-release");
   if (
     !exactKeys(publishTagStep, ["name", "env", "run"]) ||
@@ -930,9 +933,14 @@ export function inspectStableReleaseWorkflow(source) {
     publishTagStep.env.EXPECTED_SHA !== EVENT_SHA ||
     publishTagStep.env.GITHUB_REPOSITORY !== "${{ github.repository }}" ||
     publishTagStep.env.GITHUB_TOKEN !== "${{ github.token }}" ||
-    publishTagStep.env.RELEASE_TAG !== RELEASE_TAG
+    publishTagStep.env.RELEASE_TAG !== RELEASE_TAG ||
+    !exactKeys(localTagStep, ["name", "env", "run"]) ||
+    !exactKeys(localTagStep?.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    localTagStep.env.EXPECTED_SHA !== EVENT_SHA ||
+    localTagStep.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(localTagStep.run) !== "node scripts/prepare-stable-candidate-tag.mjs"
   ) {
-    problems.push("release must publish one exact lightweight tag with the ephemeral GitHub token.");
+    problems.push("release must publish and materialize one exact lightweight tag with the ephemeral GitHub token.");
   } else {
     inspectAdjacentCanonicalVerification(
       releaseJobSteps,
@@ -960,8 +968,11 @@ export function inspectStableReleaseWorkflow(source) {
     githubReleaseStep.env.RELEASE_TAG !== RELEASE_TAG
   ) {
     problems.push("release must idempotently publish or verify the exact GitHub stable release.");
-  } else if (releaseJobSteps.indexOf(githubReleaseStep) !== releaseJobSteps.indexOf(publishTagStep) + 1) {
-    problems.push("GitHub release publication must immediately follow the exact lightweight tag push.");
+  } else if (
+    releaseJobSteps.indexOf(localTagStep) !== releaseJobSteps.indexOf(publishTagStep) + 1 ||
+    releaseJobSteps.indexOf(githubReleaseStep) !== releaseJobSteps.indexOf(localTagStep) + 1
+  ) {
+    problems.push("GitHub release publication must follow exact local tag preparation.");
   }
 
   const tokenStep = releaseJobSteps.find((step) => step?.name === "Verify the Open VSX publisher token");

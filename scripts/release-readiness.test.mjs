@@ -1419,6 +1419,11 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       releaseSteps.push(tag);
     },
     (workflow) => {
+      workflow.jobs.release.steps.find(
+        (step) => step.name === "Prepare the exact local release tag for registry verification"
+      ).run = "node scripts/prepare-stable-candidate-tag.mjs --require-remote";
+    },
+    (workflow) => {
       workflow.jobs.release.steps.find((step) => String(step.run ?? "").includes("ovsx verify-pat")).run =
         "npx --no-install ovsx verify-pat Matt17BR";
     },
