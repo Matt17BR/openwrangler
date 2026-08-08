@@ -159,7 +159,7 @@ final sort key.
 
 ## R notebooks and documents (1.99 preview)
 
-<a href="images/editor-acceptance/vscode-notebook-r-picker-dark.png"><img alt="An R notebook variable picker listing a base data frame, data.table, and tibble" src="images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png" width="960"></a>
+<a href="images/editor-acceptance/vscode-notebook-r-picker-dark.png"><img alt="An IRkernel variable picker listing data.frame, data.table, and tibble objects, including collapse frames" src="images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png" width="960"></a>
 
 Open Wrangler finds base `data.frame`, tibble, and `data.table` objects in the active IRkernel and opens them without
 converting them to Python.

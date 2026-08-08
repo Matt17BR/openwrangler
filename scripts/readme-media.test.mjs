@@ -590,7 +590,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /alt="A Quarto document with its R dataframe picker open over the source cell that creates regional orders"/u
+    /alt="A rendered Quarto table beside the source document and Open Wrangler dataframe picker"/u
   );
   assert.match(readme, /Data Wrangler converted Polars input to\s+Pandas/u);
   assert.match(readme, /Open Wrangler kept it as Polars/u);
