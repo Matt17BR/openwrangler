@@ -3046,8 +3046,11 @@ openwrangler_r_kernel_agent <- local({
         if (.ow_right_negative) paste0("-", .ow_difference) else .ow_difference
       }
     }
+    .ow_exact_sum_text <- function(.ow_values) {
+      Reduce(.ow_signed_add, as.list(as.character(.ow_values)), init = "0")
+    }
     .ow_exact_sum <- function(.ow_values, .ow_kind) {
-      .ow_text <- Reduce(.ow_signed_add, as.list(as.character(.ow_values)), init = "0")
+      .ow_text <- .ow_exact_sum_text(.ow_values)
       .ow_negative <- startsWith(.ow_text, "-")
       .ow_magnitude <- if (.ow_negative) substring(.ow_text, 2L) else .ow_text
       .ow_limit <- if (identical(.ow_kind, "integer")) "2147483647" else "9223372036854775807"
@@ -3120,6 +3123,9 @@ openwrangler_r_kernel_agent <- local({
         return(sum(.ow_present))
       }
       if (identical(.ow_operation, "mean")) {
+        if (identical(.ow_kind, "integer64")) {
+          return(suppressWarnings(as.double(.ow_exact_sum_text(.ow_present))) / length(.ow_present))
+        }
         .ow_numeric <- suppressWarnings(as.double(.ow_present))
         .ow_positive_infinity <- any(is.infinite(.ow_numeric) & .ow_numeric > 0)
         .ow_negative_infinity <- any(is.infinite(.ow_numeric) & .ow_numeric < 0)
@@ -3133,8 +3139,12 @@ openwrangler_r_kernel_agent <- local({
         .ow_ordered <- sort(.ow_present)
         .ow_count <- length(.ow_ordered)
         .ow_lower <- suppressWarnings(as.double(.ow_ordered[[(.ow_count + 1L) %/% 2L]]))
-        .ow_upper <- suppressWarnings(as.double(.ow_ordered[[(.ow_count + 2L) %/% 2L]]))
         if (.ow_count %% 2L == 1L) return(.ow_lower)
+        if (identical(.ow_kind, "integer64")) {
+          .ow_middle <- .ow_ordered[c((.ow_count + 1L) %/% 2L, (.ow_count + 2L) %/% 2L)]
+          return(suppressWarnings(as.double(.ow_exact_sum_text(.ow_middle))) / 2)
+        }
+        .ow_upper <- suppressWarnings(as.double(.ow_ordered[[(.ow_count + 2L) %/% 2L]]))
         if (is.infinite(.ow_lower) && identical(.ow_lower, .ow_upper)) return(.ow_lower)
         return(.ow_lower / 2 + .ow_upper / 2)
       }
@@ -3187,6 +3197,7 @@ openwrangler_r_kernel_agent <- local({
     )
     .ow_base <- as.data.frame(.ow_output, optional = TRUE, check.names = FALSE, stringsAsFactors = FALSE)
     names(.ow_base) <- names(.ow_output)
+    row.names(.ow_base) <- NULL
     if (inherits(.ow_frame, "data.table")) {
       if (!requireNamespace("data.table", quietly = TRUE)) stop("data.table is required", call. = FALSE)
       .ow_result <- data.table::as.data.table(.ow_base)
@@ -3905,7 +3916,11 @@ openwrangler_r_kernel_agent <- local({
       if (is.null(frame_contract) || is.null(before) || is.null(after) || is.null(page)) {
         abort("runtime_error", "The R Group By diff is missing its bounded page context")
       }
-      if (is.null(before_page)) before_page <- materialize(frame_contract, before, page)
+      if (is.null(before_page)) {
+        before_page_request <- page
+        before_page_request$view <- list(logic = "and", filters = list(), sorts = list())
+        before_page <- materialize(frame_contract, before, before_page_request)
+      }
       if (is.null(after_page)) after_page <- materialize(frame_contract, after, page)
       before_rows <- before$descriptor$shape$rows
       after_rows <- after$descriptor$shape$rows

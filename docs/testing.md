@@ -577,8 +577,13 @@ regression checks two pages that are valid separately but exceed the kernel resp
 suites contain cases for all twenty-one operations. The packaged editor run covers the first twenty in both editors.
 Group and aggregate has direct frame, kernel-agent, protocol, and host-bridge coverage for all nine aggregations,
 first-seen group order, missing keys, type preservation, overflow, generated code, inspection, replacement, and undo.
-Its packaged editor journey remains a stable-2.0 gate. Round,
-Floor, and Ceiling use their visible forms and check derived values from positive and negative fractional inputs.
+The R tests cover exact integer64 cancellation, odd-count medians, and same-sign boundary pairs for live and generated
+mean and median. Sum tests retain ordinary integer and integer64 output and reject overflow before publication because
+base R and `bit64` have no exact 38-digit integer type. The bridge tests also cover explicit row names becoming
+positional after grouping and returning after discard or undo, plus latest-step replacement while the active view
+targets an aggregation output. The kernel-agent suite exports a committed grouped result through native R Parquet.
+Its packaged editor journey remains a stable-2.0 gate. Round, Floor, and Ceiling use their visible forms and check
+derived values from positive and negative fractional inputs.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact

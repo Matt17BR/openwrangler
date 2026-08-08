@@ -119,7 +119,9 @@ Group and aggregate accepts one or more stable key references and any number of 
 mean, median, minimum, maximum, count, distinct count, first, and last. Groups keep first-seen order, and `NA` and
 `NaN` keys share one missing group. The result keeps the source dataframe family, clears a `data.table` key, and gives
 each group a new row identity. Integer and `integer64` sums are exact and fail if the result exceeds their supported
-range. First and last follow source order.
+range. Their outputs stay ordinary R integer or `bit64::integer64`; base R and `bit64` do not have an exact 38-digit
+integer type, so overflow fails before publication instead of changing the public type. Integer64 mean and median
+perform exact decimal addition before producing their final double values. First and last follow source order.
 
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` stays exact. They keep `NA`, `NaN`, `Inf`, and `-Inf`; Round uses R's

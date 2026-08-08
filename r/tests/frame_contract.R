@@ -257,7 +257,8 @@ for (case in collapse_cases) {
 group_identity_source <- data.frame(
   group = c("b", "a", "b"),
   value = c(1L, 2L, 3L),
-  stringsAsFactors = FALSE
+  stringsAsFactors = FALSE,
+  row.names = c("source-b-1", "source-a", "source-b-2")
 )
 group_identity_source_capture <- openwrangler_r_frame_contract$capture_frame(group_identity_source)
 group_identity_result <- openwrangler_r_frame_contract$group_by_at(
@@ -304,9 +305,95 @@ assert_identical(
 )
 assert_identical(group_identity_page$page$totalRows, 2L, "a grouped page lost its actual visible row count")
 assert_identical(
+  group_identity_page$frameSemantics$rowNames,
+  "positional",
+  "a grouped result retained source row-name semantics"
+)
+assert_true(
+  all(vapply(group_identity_page$page$rows, function(row) is.null(row$rowLabel), logical(1L))),
+  "a grouped result retained source row labels"
+)
+assert_identical(
   vapply(group_identity_page$page$rows, `[[`, character(1L), "id"),
   c("r:r:3", "r:r:4"),
   "a grouped page published overlapping row identities"
+)
+
+group_integer64_source <- data.frame(
+  case = c("cancel", "cancel", "odd", "odd", "odd", "same", "same"),
+  value = bit64::as.integer64(c(
+    "9223372036854775806", "-9223372036854775805",
+    "-9223372036854775805", "2", "9223372036854775806",
+    "9223372036854775802", "9223372036854775806"
+  )),
+  stringsAsFactors = FALSE
+)
+group_integer64_before <- unserialize(serialize(group_integer64_source, NULL, version = 3L))
+group_integer64_result <- openwrangler_r_frame_contract$group_by_at(
+  group_integer64_source,
+  1L,
+  "case",
+  c(2L, 2L),
+  c("value", "value"),
+  c("mean", "median"),
+  c("value_mean", "value_median")
+)
+same_sign_midpoint <- suppressWarnings(as.double(bit64::as.integer64("9223372036854775804")))
+assert_identical(
+  group_integer64_result$value_mean,
+  c(0.5, 1, same_sign_midpoint),
+  "integer64 Group By mean lost cancellation, odd-count, or same-sign precision"
+)
+assert_identical(
+  group_integer64_result$value_median,
+  c(0.5, 2, same_sign_midpoint),
+  "integer64 Group By median lost cancellation, odd-count, or same-sign precision"
+)
+assert_identical(
+  group_integer64_source,
+  group_integer64_before,
+  "integer64 Group By mutated its source dataframe"
+)
+
+group_integer64_sum_source <- data.frame(
+  group = c("cancel", "cancel"),
+  value = bit64::as.integer64(c("9223372036854775807", "-9223372036854775807")),
+  stringsAsFactors = FALSE
+)
+group_integer64_sum_result <- openwrangler_r_frame_contract$group_by_at(
+  group_integer64_sum_source,
+  1L,
+  "group",
+  2L,
+  "value",
+  "sum",
+  "value_sum"
+)
+assert_identical(
+  class(group_integer64_sum_result$value_sum),
+  "integer64",
+  "an exact R integer64 Group By sum changed output type"
+)
+assert_identical(
+  as.character(group_integer64_sum_result$value_sum),
+  "0",
+  "an exact R integer64 Group By sum lost cancellation"
+)
+assert_error(
+  openwrangler_r_frame_contract$group_by_at(
+    data.frame(
+      group = c("overflow", "overflow"),
+      value = bit64::as.integer64(c("9223372036854775807", "1")),
+      stringsAsFactors = FALSE
+    ),
+    1L,
+    "group",
+    2L,
+    "value",
+    "sum",
+    "value_sum"
+  ),
+  "outside the integer64 range"
 )
 
 rename_frame <- data.frame(

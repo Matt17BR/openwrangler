@@ -4235,7 +4235,11 @@ openwrangler_r_frame_contract <- local({
     groups[order(first_rows, method = "radix")]
   }
 
-  safe_group_mean <- function(values) {
+  safe_group_mean <- function(values, semantics) {
+    if (identical(semantics$kind, "integer64")) {
+      total <- exact_integer_sum_text(values, semantics$kind)
+      return(suppressWarnings(as.double(total)) / length(values))
+    }
     values <- suppressWarnings(as.double(values))
     positive_infinity <- any(is.infinite(values) & values > 0)
     negative_infinity <- any(is.infinite(values) & values < 0)
@@ -4253,8 +4257,11 @@ openwrangler_r_frame_contract <- local({
       count <- length(ordered)
       lower <- suppressWarnings(as.double(ordered[[(count + 1L) %/% 2L]]))
       if (count %% 2L == 1L) return(lower)
-      upper <- suppressWarnings(as.double(ordered[[(count + 2L) %/% 2L]]))
-      return(safe_float_midpoint(lower, upper))
+      total <- exact_integer_sum_text(
+        ordered[c((count + 1L) %/% 2L, (count + 2L) %/% 2L)],
+        semantics$kind
+      )
+      return(suppressWarnings(as.double(total)) / 2)
     }
     ordered <- sort(as.double(values), method = "radix")
     count <- length(ordered)
@@ -4331,7 +4338,7 @@ openwrangler_r_frame_contract <- local({
           output[[group_index]] <- sum(present)
         }
       } else if (identical(operation, "mean")) {
-        output[[group_index]] <- safe_group_mean(present)
+        output[[group_index]] <- safe_group_mean(present, semantics)
       } else if (identical(operation, "median")) {
         output[[group_index]] <- safe_group_median(present, semantics)
       } else if (operation %in% c("min", "max")) {
@@ -4484,6 +4491,7 @@ openwrangler_r_frame_contract <- local({
     names(result_columns) <- result_names
     result <- as.data.frame(result_columns, optional = TRUE, stringsAsFactors = FALSE)
     names(result) <- result_names
+    row.names(result) <- NULL
     if (identical(inspected$flavor, "r.tibble")) {
       if (!requireNamespace("tibble", quietly = TRUE)) {
         abort("missing-package", "tibble is required to preserve an R tibble")

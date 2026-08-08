@@ -296,8 +296,8 @@ These results are from stable 1.2.1. We will rerun the comparison before stable 
 ## Roadmap
 
 - **1.x:** keep improving performance, DuckDB, the Python engines, and support for other desktop VS Code forks.
-- **1.99 previews:** test native R notebooks and documents, add R Parquet export, and expand the
-  current R operation catalog. Progress is tracked in [#87](https://github.com/Matt17BR/openwrangler/issues/87).
+- **1.99 previews:** finish testing the 21 R operations, notebooks, documents, and Parquet export in packaged
+  VS Code and Cursor. Progress is tracked in [#87](https://github.com/Matt17BR/openwrangler/issues/87).
 - **2.0:** ship stable R support after release testing and an updated performance comparison. The
   [R architecture decision](https://github.com/Matt17BR/openwrangler/blob/main/docs/decisions/0001-native-r-runtime.md)
   explains the runtime boundary.

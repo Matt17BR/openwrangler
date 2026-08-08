@@ -173,8 +173,9 @@ Each variable stays in R.
 The current R workbench supports paging, filters, multi-column sorts, value search, and column and dataset profiles.
 Editing mode currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates,
 Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, and Find
-and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling. A viewing filter or sort can be copied
-into a cleaning draft. Drop Missing Rows can check any or all selected columns and treats `NA` and `NaN` as missing.
+and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate. A viewing filter or
+sort can be copied into a cleaning draft. Drop Missing Rows can check any or all selected columns and treats `NA` and
+`NaN` as missing.
 Drop Duplicates can compare selected columns or the whole row and keep the first, last, or none of the repeated rows.
 Select keeps the order in which the columns were chosen. Text Length counts Unicode characters. The text operations
 convert factors to character and keep `NA`. Capitalize changes the first character to uppercase and the rest to

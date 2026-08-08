@@ -171,13 +171,17 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
   Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
-  Strip text, Split text, Round, Floor, and Ceiling with generated R code. Generated R can be inserted into its
-  originating IRkernel notebook or R document. R notebook sessions and local R document sessions opened in Editing
-  mode can export their committed result as CSV or, when `nanoparquet` 0.5.1 or newer is installed, Parquet. The
-  Parquet writer runs in the same R process and does not convert through Python, Arrow, or another dataframe. A
+  Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate with generated R code. Generated R can be
+  inserted into the originating IRkernel notebook or R document. R notebook sessions and local R document sessions
+  opened in Editing mode can export their committed result as CSV or, when `nanoparquet` 0.5.1 or newer is installed,
+  Parquet. The Parquet writer runs in the same R process and does not convert through Python, Arrow, or another dataframe. A
   document process exposes only its private artifact to the host;
   IRkernel returns offset-addressed canonical-base64 chunks from an artifact owned by that exact kernel. Both routes end in the
-  extension-host atomic save path. Operations outside the current 20-operation set are not supported yet.
+  extension-host atomic save path. Operations outside the current 21-operation set are not supported yet.
+- Group sums keep ordinary R integer or `bit64::integer64` output. Base R and `bit64` do not have an exact 38-digit
+  integer type, so the runtime rejects an out-of-range sum before publishing a result instead of stringifying it or
+  routing it through another engine. Integer64 mean and median perform exact decimal addition before their final
+  double result.
 - Ordinary frames returned by `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing data-frame, tibble, and
   data-table paths. Grouped `GRP_df` and indexed `indexed_frame` objects are outside the supported class contract.
 - The old R branches are design input only. Their speculative shared types and detached kernel timeout model will not

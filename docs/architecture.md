@@ -158,7 +158,10 @@ Group and aggregate binds every key and input by stable ID and name. It keeps gr
 count, first, and last. The result stays a base data frame, tibble, or data table to match its input. A data-table
 key is cleared because the grouped output does not promise keyed order. Grouped rows receive new identities after
 the input identity domain, so page diffs cannot mistake an aggregate row for a source row. Exact integer and
-`integer64` sums reject overflow; first and last use source order.
+`integer64` sums keep their native R type. Base R and `bit64` do not provide an exact 38-digit integer type, so a
+sum outside that native type's range fails before publication instead of being converted to text or another engine.
+Integer64 mean and median use exact decimal addition before their final double result, including cancellation and
+same-sign boundary pairs. First and last use source order.
 A live session reports nullability conservatively; isolating it for editing or changing the schema keeps retained
 nullability metadata unless Fill Missing Values has removed every missing value. Preview, apply, discard, latest-step replacement,
 undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
