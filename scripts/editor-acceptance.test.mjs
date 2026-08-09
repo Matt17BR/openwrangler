@@ -194,6 +194,47 @@ test("ordinary Quarto acceptance does not require a headless preview webview", a
   assert.doesNotMatch(journey, /priorTabs|instanceof vscode\.TabInputWebview/u);
 });
 
+test("packaged panel actions stay bound to the acknowledged renderer", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const exactApp = source.slice(
+    source.indexOf("async function exactSessionApp("),
+    source.indexOf("function sameRendererSynchronizationReceipt(")
+  );
+  assert.match(exactApp, /main\.app\[data-session-id="\$\{expectedSessionId\}"\]/u);
+  assert.match(exactApp, /data-renderer-sync-id="\$\{expectedRendererSynchronizationId\}"/u);
+  assert.doesNotMatch(exactApp, /\.nth\(/u);
+
+  const firstUseJourney = source.slice(
+    source.indexOf("async function exercisePackagedFirstUseInteractionJourney("),
+    source.indexOf("async function previewMostCommonAccountNote(")
+  );
+  const panelHelper = firstUseJourney.slice(
+    firstUseJourney.indexOf("const openSidePanel = async ("),
+    firstUseJourney.indexOf("assert.equal(", firstUseJourney.indexOf("const openSidePanel = async ("))
+  );
+  const toggleClick = panelHelper.indexOf("await toggle.click();");
+  const rendererReacquisition = panelHelper.indexOf("app = await rediscoverApp(", toggleClick);
+  const expandedToggle = panelHelper.indexOf(
+    'button[aria-controls="openwrangler-insights-panel"]',
+    rendererReacquisition
+  );
+  const refreshedDrawer = panelHelper.indexOf('const drawer = app.getByRole("complementary"', rendererReacquisition);
+  const requestedTab = panelHelper.indexOf('drawer.getByRole("tab"', refreshedDrawer);
+  assert.ok(
+    toggleClick >= 0 &&
+      rendererReacquisition > toggleClick &&
+      expandedToggle > rendererReacquisition &&
+      refreshedDrawer > rendererReacquisition &&
+      requestedTab > refreshedDrawer,
+    "Opening the side panel must reacquire its acknowledged renderer before selecting a tab."
+  );
+  assert.doesNotMatch(
+    panelHelper.slice(rendererReacquisition, refreshedDrawer),
+    /toggle\.click\(\)/u,
+    "The refreshed renderer must expose its expanded panel without another stale toggle action."
+  );
+});
+
 test("native R tooling pins Quarto to an internal revealed preview", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const tooling = source.slice(
