@@ -155,9 +155,11 @@ same document object and version are rechecked; success requires the complete re
 For `.Rmd` and `.qmd`, the command accepts top-level backtick-fenced `{r}` cells and a bounded first-line YAML block.
 It blanks prose for display diagnostics but sends each enabled cell to R as a separate source unit. The process reads
 and parses every unit before evaluating them in order in the shared document environment. This prevents syntax from
-joining across cell boundaries. The command rejects alternate engines, indented R cells, later metadata blocks, raw
-HTML/TeX containers, ambiguous option syntax, and unsupported YAML forms. It does not promise knitr or Quarto render
-semantics; code that changes knitr defaults cannot change this lexical cell selection.
+joining across cell boundaries. Nested presentation options are parsed without splitting commas inside calls.
+Syntactically valid cells with literal `eval=FALSE` are skipped even when they refer to external chunk content;
+enabled external references and alternate engines are rejected. Indented R cells, R-looking fences inside opaque
+Markdown containers, ambiguous options, and unsupported YAML forms also fail before R starts. The command does not
+promise knitr or Quarto render semantics; code that changes knitr defaults cannot change this lexical cell selection.
 
 Generated R is appended to R Markdown or Quarto as a top-level `{r}` cell. R Markdown insertion rejects a generated
 line that knitr would interpret as the end of the cell.

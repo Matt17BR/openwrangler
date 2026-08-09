@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 
 const MAX_DOCUMENT_BYTES = 64 * 1_024 * 1_024;
 const MAX_RUNNABLE_R_CHUNKS = 1_024;
+const MAX_R_CHUNK_OPTION_NESTING = 64;
 
 export type RDocumentKind = "r" | "rmarkdown" | "quarto";
 
@@ -24,7 +25,7 @@ interface Fence {
   readonly length: number;
   readonly indent: number;
   readonly r: boolean;
-  readonly runnable: boolean;
+  readonly info: string;
   readonly openingLine: number;
   readonly body: number[];
 }
@@ -114,14 +115,13 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
         if (r && opening.indent !== 0) {
           throw new SyntaxError(`Open Wrangler supports only top-level R code fences (line ${index + 1}).`);
         }
-        const runnable = r && !rChunkOptionsDisableEvaluation(opening.info, []);
         if (r) rChunkCount += 1;
         fence = {
           character: opening.character,
           length: opening.length,
           indent: opening.indent,
           r,
-          runnable,
+          info: opening.info,
           openingLine: index + 1,
           body: []
         };
@@ -158,15 +158,9 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
 
     const closingLength = kind === "rmarkdown" && fence.r ? 3 : fence.length;
     if (isClosingFence(line, fence.character, closingLength)) {
-      if (
-        fence.r &&
-        fence.runnable &&
-        frontMatter.executionEnabled &&
-        !rChunkOptionsDisableEvaluation(
-          "{r}",
-          fence.body.map((bodyIndex) => lines[bodyIndex]!.text)
-        )
-      ) {
+      const body = fence.body.map((bodyIndex) => lines[bodyIndex]!.text);
+      const chunkDisabled = fence.r ? rChunkOptionsDisableEvaluation(fence.info, body) : true;
+      if (fence.r && !chunkDisabled && frontMatter.executionEnabled) {
         runnableRChunkCount += 1;
         if (runnableRChunkCount > MAX_RUNNABLE_R_CHUNKS) {
           throw new RangeError(`The document exceeds the supported ${MAX_RUNNABLE_R_CHUNKS} runnable R cells.`);
@@ -327,18 +321,17 @@ function isClosingFence(line: string, character: "`" | "~", minimumLength: numbe
 }
 
 function isRFenceInfo(info: string): boolean {
-  return /^\{r(?:[\s,][^}]*)?\}$/iu.test(info);
+  return /^\{r(?:[\s,].*)?\}$/iu.test(info);
 }
 
 function rChunkOptionsDisableEvaluation(info: string, body: readonly string[]): boolean {
   const executionOverrides = ["engine", "child", "code", "file", "ref.label", "opts.label"];
   let disabled = false;
   let headerEvalSeen = false;
+  let executionOverride: string | undefined;
   for (const option of parseRChunkHeaderOptions(info)) {
-    const key = option.key.toLowerCase();
-    if (executionOverrides.includes(key)) {
-      throw new SyntaxError(`Open Wrangler does not run R chunks that use the ${key} option.`);
-    }
+    const key = normalizeRChunkOptionKey(option.key);
+    if (executionOverrides.includes(key)) executionOverride ??= key;
     if (key === "eval") {
       if (headerEvalSeen) throw new SyntaxError("Open Wrangler does not run R chunks with repeated eval options.");
       headerEvalSeen = true;
@@ -354,14 +347,24 @@ function rChunkOptionsDisableEvaluation(info: string, body: readonly string[]): 
     }
     const option = /^\s*#\|\s*([A-Za-z][A-Za-z0-9_.-]*)\s*:\s*(.*?)\s*$/u.exec(line);
     if (!option) throw new SyntaxError("Open Wrangler supports only plain key: value R cell options.");
-    const key = option[1]!.toLowerCase();
+    const key = normalizeRChunkOptionKey(option[1]!);
     const value = stripYamlComment(option[2]!);
-    if (executionOverrides.includes(key)) {
-      throw new SyntaxError(`Open Wrangler does not run R chunks that use the ${key} option.`);
+    if (value.length === 0) {
+      throw new SyntaxError("Open Wrangler supports only plain key: value R cell options.");
     }
-    if (key === "eval" && !literalBoolean(value, "R cell eval")) disabled = true;
+    if (executionOverrides.includes(key)) executionOverride ??= key;
+    if (key === "eval") {
+      if (!literalBoolean(value, "R cell eval")) disabled = true;
+    }
+  }
+  if (!disabled && executionOverride) {
+    throw new SyntaxError(`Open Wrangler does not run R chunks that use the ${executionOverride} option.`);
   }
   return disabled;
+}
+
+function normalizeRChunkOptionKey(key: string): string {
+  return key.toLowerCase().replaceAll("-", ".");
 }
 
 function parseRChunkHeaderOptions(info: string): readonly Readonly<{ key: string; value: string }>[] {
@@ -393,6 +396,7 @@ function parseRChunkHeaderOptions(info: string): readonly Readonly<{ key: string
 
 function splitRChunkHeaderOptions(value: string): string[] {
   const parts: string[] = [];
+  const delimiters: ("(" | "[" | "{")[] = [];
   let quote: "'" | '"' | undefined;
   let escaped = false;
   let start = 0;
@@ -406,16 +410,42 @@ function splitRChunkHeaderOptions(value: string): string[] {
       escaped = true;
       continue;
     }
+    if (!quote && (character === "r" || character === "R") && (value[index + 1] === '"' || value[index + 1] === "'")) {
+      throw new SyntaxError("Open Wrangler does not run R chunks with raw-string options.");
+    }
+    if (!quote && character === "%") {
+      throw new SyntaxError("Open Wrangler does not run R chunks with special infix operators in options.");
+    }
     if (character === "'" || character === '"') {
       quote = quote === character ? undefined : (quote ?? character);
       continue;
     }
-    if (!quote && character === ",") {
+    if (quote) continue;
+    if (character === "(" || character === "[" || character === "{") {
+      delimiters.push(character);
+      if (delimiters.length > MAX_R_CHUNK_OPTION_NESTING) {
+        throw new SyntaxError(
+          `Open Wrangler does not run R chunks with options nested beyond ${MAX_R_CHUNK_OPTION_NESTING} levels.`
+        );
+      }
+      continue;
+    }
+    if (character === ")" || character === "]" || character === "}") {
+      const expected = character === ")" ? "(" : character === "]" ? "[" : "{";
+      if (delimiters.pop() !== expected) {
+        throw new SyntaxError("Open Wrangler does not run R chunks with unbalanced option delimiters.");
+      }
+      continue;
+    }
+    if (character === "," && delimiters.length === 0) {
       parts.push(value.slice(start, index));
       start = index + 1;
     }
   }
   if (quote || escaped) throw new SyntaxError("Open Wrangler does not run R chunks with incomplete quoted options.");
+  if (delimiters.length > 0) {
+    throw new SyntaxError("Open Wrangler does not run R chunks with unbalanced option delimiters.");
+  }
   parts.push(value.slice(start));
   return parts;
 }

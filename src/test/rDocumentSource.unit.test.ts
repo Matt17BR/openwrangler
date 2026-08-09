@@ -92,6 +92,104 @@ describe("R document source preparation", () => {
     expect(prepared.executableText).not.toContain("also_disabled");
   });
 
+  it("keeps commas inside nested R chunk options", () => {
+    const source = [
+      '```{r summary, fig.cap=paste("Shots", c("made", "missed"), collapse=", "), fig.alt={paste("Made", "missed")}, fig.pos=list(values=c("H", "t"))[["values"]], echo=FALSE}',
+      "shots <- data.frame(made = c(TRUE, FALSE))",
+      "```",
+      ""
+    ].join("\n");
+
+    expect(prepareRDocumentSource("/workspace/analysis.Rmd", source)).toMatchObject({
+      rChunkCount: 1,
+      runnableRChunkCount: 1,
+      executableUnits: ["shots <- data.frame(made = c(TRUE, FALSE))\n"]
+    });
+  });
+
+  it("skips valid disabled chunks even when they use execution overrides", () => {
+    const overrides = ["engine", "child", "code", "file", "ref.label", "opts.label"];
+    const chunks = overrides.flatMap((key, index) => {
+      const value = key === "ref.label" ? 'all_labels(c("source-a", "source-b"))' : '"other.Rmd"';
+      const options = index % 2 === 0 ? `eval=FALSE, ${key}=${value}` : `${key}=${value}, eval=FALSE`;
+      return [`\`\`\`{r, ${options}}`, "stop('disabled')", "```", ""];
+    });
+    chunks.push("```{r}", "#| child: other.Rmd", "#| eval: false", "stop('disabled')", "```", "");
+    chunks.push("```{r}", "#| eval: false", "#| file: replacement.R", "stop('disabled')", "```", "");
+
+    expect(prepareRDocumentSource("/workspace/analysis.Rmd", chunks.join("\n"))).toMatchObject({
+      rChunkCount: 8,
+      runnableRChunkCount: 0,
+      executableUnits: []
+    });
+  });
+
+  it("still rejects enabled or malformed nested execution options", () => {
+    expect(() =>
+      prepareRDocumentSource(
+        "/workspace/analysis.Rmd",
+        '```{r, ref.label=all_labels(c("source-a", "source-b"))}\norders <- data.frame(id = 1L)\n```\n'
+      )
+    ).toThrow(/ref\.label/u);
+    expect(() =>
+      prepareRDocumentSource(
+        "/workspace/analysis.qmd",
+        [
+          "```{r}",
+          "#| label: disabled-template",
+          "#| eval: false",
+          "invisible(NULL)",
+          "```",
+          "",
+          "```{r}",
+          "#| opts-label: disabled-template",
+          'stop("must not run")',
+          "```",
+          ""
+        ].join("\n")
+      )
+    ).toThrow(/opts\.label/u);
+    expect(() =>
+      prepareRDocumentSource(
+        "/workspace/analysis.qmd",
+        "```{r}\n#| ref-label: source-chunk\nstop('must not run')\n```\n"
+      )
+    ).toThrow(/ref\.label/u);
+    for (const options of [
+      'eval=FALSE, ref.label=all_labels(c("source-a", "source-b")',
+      'eval=FALSE, ref.label=all_labels(c("source-a", "source-b"]',
+      "eval=FALSE, child="
+    ]) {
+      expect(() =>
+        prepareRDocumentSource("/workspace/analysis.Rmd", `\`\`\`{r, ${options}}\nstop('disabled')\n\`\`\`\n`)
+      ).toThrow(/unbalanced option delimiters|plain key=value/u);
+    }
+    const nested = `${"(".repeat(65)}1${")".repeat(65)}`;
+    expect(() =>
+      prepareRDocumentSource(
+        "/workspace/analysis.Rmd",
+        `\`\`\`{r, eval=FALSE, fig.cap=${nested}}\nstop('disabled')\n\`\`\`\n`
+      )
+    ).toThrow(/nested beyond 64 levels/u);
+    expect(() =>
+      prepareRDocumentSource("/workspace/analysis.Rmd", "```{r}\n#| eval: false\n#| child:\nstop('disabled')\n```\n")
+    ).toThrow(/plain key: value/u);
+    for (const options of [
+      'fig.cap=local({identity(r"(one " quote)")}), eval=FALSE',
+      "fig.cap=local({identity(r'(one ' quote)')}), eval=FALSE"
+    ]) {
+      expect(() =>
+        prepareRDocumentSource("/workspace/analysis.Rmd", `\`\`\`{r, ${options}}\nstop("disabled")\n\`\`\`\n`)
+      ).toThrow(/raw-string options/u);
+    }
+    expect(() =>
+      prepareRDocumentSource(
+        "/workspace/analysis.Rmd",
+        "```{r, foo=quote(1 %x'y% 2), eval=FALSE, bar=quote(1 %a'b% 2)}\nstop('disabled')\n```\n"
+      )
+    ).toThrow(/special infix operators/u);
+  });
+
   it("never treats fences embedded in YAML or HTML comments as R cells", () => {
     const source = [
       "---",
@@ -149,6 +247,15 @@ describe("R document source preparation", () => {
       "---",
       "",
       "---",
+      "",
+      "<!--- \\vfill",
+      "\\raggedleft",
+      "Rendered cover art",
+      "\\vfill --->",
+      "",
+      "\\AddToHookNext{shipout/background}{%",
+      "  \\put (3.4in,-\\paperheight){Rendered background}",
+      "}",
       "",
       "\\newpage",
       "\\tableofcontents",
