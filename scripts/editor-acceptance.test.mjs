@@ -285,9 +285,29 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
     'app = await reacquireApp("Filtered revenue navigation")',
     'openSidePanel("Filters / Sorts")'
   );
-  assert.match(firstUseJourney, /profilingPending: lastDrawerText\.includes\("Profiling selected column"\)/u);
+  assert.match(firstUseJourney, /const normalizedText = lastDrawerText\.toLowerCase\(\)/u);
+  assert.match(firstUseJourney, /profilingPending: normalizedText\.includes\("profiling selected column"\)/u);
   assert.match(firstUseJourney, /drawerTextLength: lastDrawerText\.length/u);
-  assert.match(firstUseJourney, /expectedLabels: Object\.fromEntries\(/u);
+  assert.match(
+    firstUseJourney,
+    /expectedLabels: Object\.fromEntries\([\s\S]*normalizedText\.includes\(label\.toLowerCase\(\)\)/u
+  );
+  const revenueProfileWait = firstUseJourney.slice(
+    firstUseJourney.indexOf('recordAcceptanceProgress("platform-smoke:insights")'),
+    firstUseJourney.indexOf('recordAcceptanceProgress("platform-smoke:text-insights")')
+  );
+  assert.match(
+    revenueProfileWait,
+    /const normalized = text\.toLowerCase\(\);[\s\S]*\["min", "max", "mean", "median", "distribution"\]\.every\(\(label\) => normalized\.includes\(label\)\)/u
+  );
+  const accountNoteProfileWait = firstUseJourney.slice(
+    firstUseJourney.indexOf('recordAcceptanceProgress("platform-smoke:text-insights")'),
+    firstUseJourney.indexOf("// Inspect exact values only after the user-facing profile has completed")
+  );
+  assert.match(
+    accountNoteProfileWait,
+    /const normalized = text\.toLowerCase\(\);[\s\S]*\["null", "empty", "min length", "max length", "mean length"\]\.every\(\(label\) => normalized\.includes\(label\)\)/u
+  );
   assert.doesNotMatch(firstUseJourney, /lastDrawerText:\s*lastDrawerText|sourceLabel/u);
   assert.match(firstUseJourney, /scheduler: testing\.sessionSchedulerState\(sessionId\)/u);
   assert.match(

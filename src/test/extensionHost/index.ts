@@ -14213,11 +14213,14 @@ async function exercisePackagedFirstUseInteractionJourney(
     (expectedLabels: readonly string[]) =>
     (lastDrawerText: string): string => {
       const coordinator = testing.diagnostics();
+      const normalizedText = lastDrawerText.toLowerCase();
       return JSON.stringify({
         profile: {
-          profilingPending: lastDrawerText.includes("Profiling selected column"),
+          profilingPending: normalizedText.includes("profiling selected column"),
           drawerTextLength: lastDrawerText.length,
-          expectedLabels: Object.fromEntries(expectedLabels.map((label) => [label, lastDrawerText.includes(label)]))
+          expectedLabels: Object.fromEntries(
+            expectedLabels.map((label) => [label, normalizedText.includes(label.toLowerCase())])
+          )
         },
         coordinator: {
           activeSessionId: coordinator.activeSessionId,
@@ -14278,9 +14281,13 @@ async function exercisePackagedFirstUseInteractionJourney(
   await drawer.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await waitForLocatorText(
     drawer,
-    (text) =>
-      !text.includes("Profiling selected column") &&
-      ["Min", "Max", "Mean", "Median", "Distribution"].every((label) => text.includes(label)),
+    (text) => {
+      const normalized = text.toLowerCase();
+      return (
+        !normalized.includes("profiling selected column") &&
+        ["min", "max", "mean", "median", "distribution"].every((label) => normalized.includes(label))
+      );
+    },
     30_000,
     "complete exact revenue insights",
     profileWaitDiagnostics(["Min", "Max", "Mean", "Median", "Distribution"])
@@ -14322,9 +14329,13 @@ async function exercisePackagedFirstUseInteractionJourney(
   });
   await waitForLocatorText(
     drawer,
-    (text) =>
-      !text.includes("Profiling selected column") &&
-      ["Null", "Empty", "Min length", "Max length", "Mean length"].every((label) => text.includes(label)),
+    (text) => {
+      const normalized = text.toLowerCase();
+      return (
+        !normalized.includes("profiling selected column") &&
+        ["null", "empty", "min length", "max length", "mean length"].every((label) => normalized.includes(label))
+      );
+    },
     30_000,
     "complete exact account-note insights",
     profileWaitDiagnostics(["Null", "Empty", "Min length", "Max length", "Mean length"])
