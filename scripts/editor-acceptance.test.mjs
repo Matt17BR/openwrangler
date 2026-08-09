@@ -320,6 +320,17 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
   );
   assert.doesNotMatch(firstUseJourney, /lastDrawerText:\s*lastDrawerText|sourceLabel/u);
   assert.match(firstUseJourney, /scheduler: testing\.sessionSchedulerState\(sessionId\)/u);
+  const previousValueDiscard = source.slice(
+    source.indexOf("async function previewAndDiscardPreviousRevenue("),
+    source.indexOf("async function previewApplyAndUndoGroupedRevenue(")
+  );
+  const reviewHidden = previousValueDiscard.indexOf('await review.waitFor({ state: "hidden"');
+  const confirmedRenderer = previousValueDiscard.indexOf("return synchronizedSessionApp(", reviewHidden);
+  assert.ok(
+    reviewHidden >= 0 && confirmedRenderer > reviewHidden,
+    "Discarding the previous-value draft must reacquire the renderer that publishes the confirmed state."
+  );
+  assert.doesNotMatch(previousValueDiscard.slice(reviewHidden), /return refreshedApp;/u);
   assert.match(
     firstUseJourney,
     /openSidePanel\("Column"\)/u,

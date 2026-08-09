@@ -15306,7 +15306,12 @@ async function previewAndDiscardPreviousRevenue(
     () => JSON.stringify(discardState())
   );
   await review.waitFor({ state: "hidden", timeout: 10_000 });
-  return refreshedApp;
+  return synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "The discarded previous-value preview must publish its confirmed state on the acknowledged renderer."
+  );
 }
 
 async function previewApplyAndUndoGroupedRevenue(
