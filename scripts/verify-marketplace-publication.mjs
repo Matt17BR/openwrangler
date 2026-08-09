@@ -186,17 +186,13 @@ function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson,
     throw new Error("Marketplace returned an ambiguous extension identity.");
   }
   const extension = extensions[0];
-  const publicTags = Array.isArray(extension?.tags) ? new Set(extension.tags) : new Set();
-  const keywords = Array.isArray(packageJson.keywords) ? packageJson.keywords : [];
   if (
     typeof extension !== "object" ||
     extension === null ||
     Array.isArray(extension) ||
     extension.publisher?.publisherName?.toLowerCase() !== MARKETPLACE_PUBLISHER.toLowerCase() ||
     extension.extensionName !== MARKETPLACE_EXTENSION ||
-    extension.displayName !== packageJson.displayName ||
-    extension.shortDescription !== packageJson.description ||
-    keywords.some((keyword) => !publicTags.has(keyword))
+    extension.displayName !== packageJson.displayName
   ) {
     throw new Error("Marketplace public extension metadata does not match the canonical package.");
   }
@@ -213,6 +209,16 @@ function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson,
   }
   if (matches.length !== 1) {
     throw new Error(`Marketplace returned duplicate metadata for version ${version}.`);
+  }
+  if (extension.versions[0]?.version === version) {
+    const publicTags = Array.isArray(extension.tags) ? new Set(extension.tags) : new Set();
+    const keywords = Array.isArray(packageJson.keywords) ? packageJson.keywords : [];
+    if (
+      extension.shortDescription !== packageJson.description ||
+      keywords.some((keyword) => !publicTags.has(keyword))
+    ) {
+      throw new Error("Marketplace listing copy does not match the current canonical package.");
+    }
   }
   const published = matches[0];
   if (!flagSet(published.flags).has("validated")) {
