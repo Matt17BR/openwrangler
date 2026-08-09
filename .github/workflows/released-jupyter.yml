@@ -173,7 +173,7 @@ jobs:
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - run: npm run package -- --out openwrangler.vsix
+      - run: npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
       - run: npm run build:test-extension
       - id: packaged_editor_r

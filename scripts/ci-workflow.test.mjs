@@ -1676,7 +1676,9 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     "use-public-rspm": true
   });
   assert.equal(
-    macosR?.steps?.some((step) => step?.run === "npm run package -- --out openwrangler.vsix"),
+    macosR?.steps?.some(
+      (step) => step?.run === "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix"
+    ),
     true
   );
   assert.equal(
