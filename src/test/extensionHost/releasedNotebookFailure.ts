@@ -28,6 +28,50 @@ const R_SETUP_FAILURE_STAGES = new Set([
 ]);
 const FAILURE_SCAN_MAX_ITEMS = 32;
 const FAILURE_SCAN_MAX_BYTES = 16 * 1024;
+const R_ERROR_PACKAGE_ALLOWLIST = ["IRkernel", "collapse", "data.table", "jsonlite", "tibble"] as const;
+
+function decodeNotebookError(data: Uint8Array): { readonly message: string; readonly name: string } | undefined {
+  if (data.byteLength === 0 || data.byteLength > FAILURE_SCAN_MAX_BYTES) return undefined;
+  try {
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(data);
+    const parsed: unknown = JSON.parse(decoded);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const record = parsed as Record<string, unknown>;
+    if (typeof record.name !== "string" || typeof record.message !== "string") return undefined;
+    if (record.name.length > 128 || record.message.length > FAILURE_SCAN_MAX_BYTES) return undefined;
+    return { name: record.name, message: record.message };
+  } catch {
+    return undefined;
+  }
+}
+
+function fixedNotebookErrorDiagnostic(error: { readonly message: string; readonly name: string }): string | undefined {
+  const text = `${error.name}\n${error.message}`;
+  const parseLocation = /:(\d{1,6}):(\d{1,6}):\s*unexpected\s+([^\r\n]{1,64})/iu.exec(text);
+  if (parseLocation) {
+    const detail = parseLocation[3].toLowerCase();
+    const category = detail.includes("end of input")
+      ? "unexpected end of input"
+      : detail.includes("symbol")
+        ? "unexpected symbol"
+        : detail.includes("string")
+          ? "unexpected string"
+          : detail.includes("numeric")
+            ? "unexpected number"
+            : "unexpected token";
+    return `R parse error at ${Number(parseLocation[1])}:${Number(parseLocation[2])} (${category})`;
+  }
+  if (/\b(?:kernel (?:died|stopped|terminated)|kernel has been disposed)\b/iu.test(text)) return "kernel stopped";
+  if (/\b(?:cancelled|canceled|cancellation)\b/iu.test(text)) return "execution cancelled";
+  for (const packageName of R_ERROR_PACKAGE_ALLOWLIST) {
+    const escaped = packageName.replaceAll(".", "\\.");
+    if (new RegExp(`there is no package called [‘'"]${escaped}[’'"]`, "iu").test(text)) {
+      return `missing R package ${packageName}`;
+    }
+  }
+  if (/\b(?:unable to load shared object|dll load failed)\b/iu.test(text)) return "R package failed to load";
+  return undefined;
+}
 
 function isMarkerPrefixBoundary(value: number): boolean {
   return value === 0x20 || value === 0x09 || value === 0x0d || value === 0x0a || value === 0x22;
@@ -46,6 +90,28 @@ export function releasedNotebookOutputClassification(outputs: readonly NotebookO
   return outputs.some((output) => output.items.some((item) => item.mime === NOTEBOOK_ERROR_MIME))
     ? "notebook-error-output"
     : "no-notebook-error-output";
+}
+
+export function releasedNotebookErrorDiagnostic(outputs: readonly NotebookOutputShape[]): string | undefined {
+  const diagnostics = new Set<string>();
+  let itemCount = 0;
+  let byteCount = 0;
+  for (const output of outputs) {
+    for (const item of output.items) {
+      itemCount += 1;
+      if (itemCount > FAILURE_SCAN_MAX_ITEMS) return undefined;
+      if (item.mime !== NOTEBOOK_ERROR_MIME) continue;
+      if (item.data === undefined) return undefined;
+      if (item.data.byteLength > FAILURE_SCAN_MAX_BYTES - byteCount) return undefined;
+      byteCount += item.data.byteLength;
+      const decoded = decodeNotebookError(item.data);
+      if (!decoded) return undefined;
+      const diagnostic = fixedNotebookErrorDiagnostic(decoded);
+      if (!diagnostic) return undefined;
+      diagnostics.add(diagnostic);
+    }
+  }
+  return diagnostics.size === 1 ? diagnostics.values().next().value : undefined;
 }
 
 export function releasedNotebookRSetupFailureStage(outputs: readonly NotebookOutputShape[]): string | undefined {
@@ -106,5 +172,7 @@ export function releasedNotebookExecutionFailureMessage(
   const classification = releasedNotebookOutputClassification(outputs);
   const stage =
     rSetupStage !== undefined && R_SETUP_FAILURE_STAGES.has(rSetupStage) ? `; R setup stage ${rSetupStage}` : "";
-  return `Released-Jupyter cell ${cellIndex} failed (${classification}${stage}).`;
+  const errorDiagnostic = releasedNotebookErrorDiagnostic(outputs);
+  const diagnostic = errorDiagnostic ? `; ${errorDiagnostic}` : "";
+  return `Released-Jupyter cell ${cellIndex} failed (${classification}${stage}${diagnostic}).`;
 }

@@ -275,9 +275,15 @@ const RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT = "__OW_RELEASED_PYSPARK_CLOSE__";
 const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)";
 const RELEASED_JUPYTER_R_KERNEL_LABEL = "R (Open Wrangler)";
 const RELEASED_JUPYTER_R_KERNEL_NAME = "openwrangler-r-acceptance";
+const RELEASED_JUPYTER_R_KERNEL_RESULT = "__OW_RELEASED_R_KERNEL__";
 const RELEASED_JUPYTER_R_SETUP_RESULT = "__OW_RELEASED_R_SETUP__";
 const RELEASED_JUPYTER_R_BINDING_RESULT = "__OW_RELEASED_R_BINDING__";
 const RELEASED_JUPYTER_R_MEDIA_RESULT = "__OW_RELEASED_R_MEDIA__";
+const RELEASED_JUPYTER_R_KERNEL_CELL = 0;
+const RELEASED_JUPYTER_R_SETUP_CELL = 1;
+const RELEASED_JUPYTER_R_BINDING_CELL = 2;
+const RELEASED_JUPYTER_R_MEDIA_CELL = 3;
+const RELEASED_JUPYTER_R_SHOWCASE_CELL = 4;
 const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
   "sortRows",
   "filterRows",
@@ -1571,6 +1577,9 @@ function writeDataWranglerCoexistenceNotebook(notebookPath: string, target: Rele
 
 function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupyter-r-remote"): void {
   const target = releasedJupyterKernelTarget(phase);
+  const kernelProbe = [
+    `cat(${JSON.stringify(RELEASED_JUPYTER_R_KERNEL_RESULT)}, as.character(getRversion()), '\\n', sep = '')`
+  ];
   const source = [
     ".ow_setup_stage <- 'base-frame'",
     "tryCatch({",
@@ -1700,6 +1709,13 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     notebookPath,
     JSON.stringify({
       cells: [
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: kernelProbe.map((line) => `${line}\n`)
+        },
         {
           cell_type: "code",
           execution_count: null,
@@ -1995,13 +2011,13 @@ async function waitForReleasedRRuntimeBindingCleanup(
     attempt += 1;
     await executeReleasedNotebookCell(
       notebook,
-      1,
+      RELEASED_JUPYTER_R_BINDING_CELL,
       RELEASED_JUPYTER_R_BINDING_RESULT,
       `${phase}:binding-cleanup-${attempt}`,
       notebookEditor
     );
     const result = releasedNotebookJsonResult(
-      notebook.cellAt(1),
+      notebook.cellAt(RELEASED_JUPYTER_R_BINDING_CELL),
       RELEASED_JUPYTER_R_BINDING_RESULT,
       "R runtime binding probe"
     );
@@ -2026,9 +2042,14 @@ async function assertReleasedRRuntimeBinding(
   expectedBinding: boolean,
   checkpoint: string
 ): Promise<void> {
-  await executeReleasedNotebookCell(notebook, 1, RELEASED_JUPYTER_R_BINDING_RESULT, checkpoint);
+  await executeReleasedNotebookCell(
+    notebook,
+    RELEASED_JUPYTER_R_BINDING_CELL,
+    RELEASED_JUPYTER_R_BINDING_RESULT,
+    checkpoint
+  );
   const result = releasedNotebookJsonResult(
-    notebook.cellAt(1),
+    notebook.cellAt(RELEASED_JUPYTER_R_BINDING_CELL),
     RELEASED_JUPYTER_R_BINDING_RESULT,
     "R runtime binding and source-integrity probe"
   );
@@ -2136,13 +2157,20 @@ async function exerciseReleasedRJupyterExtension(
     await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
     await executeReleasedNotebookCell(
       notebook,
-      0,
+      RELEASED_JUPYTER_R_KERNEL_CELL,
+      RELEASED_JUPYTER_R_KERNEL_RESULT,
+      `${phase}:kernel-probe`,
+      notebookEditor
+    );
+    await executeReleasedNotebookCell(
+      notebook,
+      RELEASED_JUPYTER_R_SETUP_CELL,
       [RELEASED_JUPYTER_R_SETUP_RESULT, RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX],
       `${phase}:setup`,
       notebookEditor,
       "r-setup"
     );
-    const setupCell = notebook.cellAt(0);
+    const setupCell = notebook.cellAt(RELEASED_JUPYTER_R_SETUP_CELL);
     const setupFailureStage = releasedNotebookRSetupFailureStage(setupCell.outputs);
     if (setupFailureStage !== undefined) {
       throw new Error(`Released-Jupyter R setup failed at stage ${setupFailureStage}.`);
@@ -2243,13 +2271,13 @@ async function exerciseReleasedRJupyterExtension(
       const mediaEditor = await showExactReleasedNotebook(notebook);
       await executeReleasedNotebookCell(
         notebook,
-        2,
+        RELEASED_JUPYTER_R_MEDIA_CELL,
         RELEASED_JUPYTER_R_MEDIA_RESULT,
         `${phase}:media-setup`,
         mediaEditor
       );
       const mediaSetup = releasedNotebookJsonResult(
-        notebook.cellAt(2),
+        notebook.cellAt(RELEASED_JUPYTER_R_MEDIA_CELL),
         RELEASED_JUPYTER_R_MEDIA_RESULT,
         "R media setup"
       );
@@ -2620,13 +2648,20 @@ async function exerciseReleasedRJupyterExtension(
     const replacementEditor = await showExactReleasedNotebook(notebook);
     await executeReleasedNotebookCell(
       notebook,
-      0,
+      RELEASED_JUPYTER_R_KERNEL_CELL,
+      RELEASED_JUPYTER_R_KERNEL_RESULT,
+      `${phase}:replacement-kernel-probe`,
+      replacementEditor
+    );
+    await executeReleasedNotebookCell(
+      notebook,
+      RELEASED_JUPYTER_R_SETUP_CELL,
       RELEASED_JUPYTER_R_SETUP_RESULT,
       `${phase}:replacement-setup`,
       replacementEditor
     );
     const replacementSetup = releasedNotebookJsonResult(
-      notebook.cellAt(0),
+      notebook.cellAt(RELEASED_JUPYTER_R_SETUP_CELL),
       RELEASED_JUPYTER_R_SETUP_RESULT,
       "replacement R setup"
     );
@@ -17799,7 +17834,12 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
     for (const command of requiredCommands) {
       assert.ok(commands.has(command), `R notebook media requires the built-in ${command} command.`);
     }
-    for (const privateIndex of [0, 1, 2]) {
+    for (const privateIndex of [
+      RELEASED_JUPYTER_R_KERNEL_CELL,
+      RELEASED_JUPYTER_R_SETUP_CELL,
+      RELEASED_JUPYTER_R_BINDING_CELL,
+      RELEASED_JUPYTER_R_MEDIA_CELL
+    ]) {
       const privateCell = new vscode.NotebookRange(privateIndex, privateIndex + 1);
       editor.selection = privateCell;
       editor.selections = [privateCell];
@@ -17807,12 +17847,16 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
       await vscode.commands.executeCommand(requiredCommands[0]);
       await vscode.commands.executeCommand(requiredCommands[1]);
     }
-    const publicCell = new vscode.NotebookRange(3, 4);
+    const publicCell = new vscode.NotebookRange(RELEASED_JUPYTER_R_SHOWCASE_CELL, RELEASED_JUPYTER_R_SHOWCASE_CELL + 1);
     editor.selection = publicCell;
     editor.selections = [publicCell];
     editor.revealRange(publicCell, vscode.NotebookEditorRevealType.AtTop);
     await waitFor(
-      () => editor.visibleRanges.some((visible) => visible.start <= 3 && visible.end > 3),
+      () =>
+        editor.visibleRanges.some(
+          (visible) =>
+            visible.start <= RELEASED_JUPYTER_R_SHOWCASE_CELL && visible.end > RELEASED_JUPYTER_R_SHOWCASE_CELL
+        ),
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the public R notebook cell to be visible before picker capture"
     );
@@ -17892,6 +17936,7 @@ async function assertReleasedRPrivateNotebookContentHidden(workbench: Page): Pro
       });
     },
     [
+      RELEASED_JUPYTER_R_KERNEL_RESULT,
       RELEASED_JUPYTER_R_SETUP_RESULT,
       RELEASED_JUPYTER_R_BINDING_RESULT,
       RELEASED_JUPYTER_R_MEDIA_RESULT,
