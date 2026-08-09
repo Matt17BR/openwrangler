@@ -484,6 +484,86 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
+test("Cursor uses one explicit representative R coverage profile while VS Code stays comprehensive", async () => {
+  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
+  const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
+  const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(", profileStart);
+  const journeyEnd = source.indexOf("\nasync function exerciseReleasedRInteractiveTerminalJourney(", journeyStart);
+  assert.ok(profileStart >= 0 && journeyStart > profileStart && journeyEnd > journeyStart);
+  const profiles = source.slice(profileStart, journeyStart);
+  const journey = source.slice(journeyStart, journeyEnd);
+
+  assert.match(
+    profiles,
+    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "all-operations"[\s\S]*documents: "plain-and-literate"[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
+  );
+  assert.match(
+    profiles,
+    /RELEASED_R_CURSOR_COVERAGE[\s\S]*name: "cursor-representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*documents: "plain-only"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
+  );
+  assert.match(
+    profiles,
+    /process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\s*\? RELEASED_R_CURSOR_COVERAGE\s*:\s*RELEASED_R_COMPREHENSIVE_COVERAGE/u
+  );
+  assert.doesNotMatch(
+    journey,
+    /OPEN_WRANGLER_TEST_EDITOR/u,
+    "Editor-specific R coverage decisions belong in the named profile, not scattered through the journey."
+  );
+  assert.match(journey, /exerciseReleasedRGridJourney\(testing, workbench, base\.sessionId, coverage\.gridPaging\)/u);
+  assert.match(
+    journey,
+    /if \(coverage\.editing === "all-operations"\)[\s\S]*exerciseReleasedREditingJourney\([\s\S]*else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\(/u
+  );
+  assert.match(journey, /coverage\.documents === "plain-and-literate"/u);
+  assert.match(journey, /if \(coverage\.openCollapseSessions\)/u);
+  assert.match(journey, /if \(coverage\.openNativeFramesInViewingMode\)/u);
+  assert.match(journey, /coverage\.nativeFrameEditing === "rename-and-drop"/u);
+  for (const section of ["variable-discovery", "grid", "editing", "native-editing", "restart"]) {
+    assert.match(
+      journey,
+      new RegExp(`recordReleasedRAcceptanceSection\\(phase, coverage, "${section}", "start"\\)`, "u")
+    );
+    assert.match(
+      journey,
+      new RegExp(`recordReleasedRAcceptanceSection\\(phase, coverage, "${section}", "complete"\\)`, "u")
+    );
+  }
+  assert.match(
+    journey,
+    /await exerciseReleasedRInteractiveTerminalJourney\(testing, await connectToEditorWorkbench\(\)\)/u,
+    "The local Cursor profile must still exercise the official R terminal and Operations sidebar."
+  );
+
+  const gridStart = source.indexOf("async function exerciseReleasedRGridJourney(");
+  const gridEnd = source.indexOf("\nasync function exerciseReleasedRPersistentRowsJourney(", gridStart);
+  const representativeStart = source.indexOf("async function exerciseReleasedRRepresentativeEditingJourney(");
+  const representativeEnd = source.indexOf("\nasync function exerciseReleasedREditingJourney(", representativeStart);
+  assert.ok(
+    gridStart >= 0 && gridEnd > gridStart && representativeStart >= 0 && representativeEnd > representativeStart
+  );
+  const grid = source.slice(gridStart, gridEnd);
+  const representative = source.slice(representativeStart, representativeEnd);
+  assert.match(
+    grid,
+    /if \(paging === "all-blocks"\)[\s\S]*else \{[\s\S]*"the representative second R block"[\s\S]*"the representative restored R block"/u
+  );
+  assert.match(grid, /"Clear all"/u);
+  assert.match(grid, /applyReleasedRQuickSort\(workbench, testing, "group", "ascending", \["group"\]\)/u);
+  assert.match(grid, /applyReleasedRQuickSort\(workbench, testing, "score", "descending", \["score", "group"\]\)/u);
+  assert.match(grid, /Move View Sort Up/u);
+  assert.equal((representative.match(/previewReleasedRRename\(/gu) ?? []).length, 2);
+  for (const marker of [
+    "No value changes in this block",
+    "assertReleasedRGeneratedCode",
+    'executeCommand("openWrangler.selectStep"',
+    "inspection.diff",
+    'name: "Undo"'
+  ]) {
+    assert.ok(representative.includes(marker), `The representative R edit must retain ${JSON.stringify(marker)}.`);
+  }
+});
+
 test("R editing acceptance reveals the capitalized column after temporary derived columns", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const start = source.indexOf("async function exerciseReleasedREditingJourney(");
@@ -642,7 +722,7 @@ test("R native-frame editing waits for its visible renderer before notebook prob
   const rendererReceipt = journey.indexOf("let app = await releasedRSessionApp(", sessionReceipt);
   const rendererCheckpoint = journey.indexOf(":editing-renderer-ready`);", rendererReceipt);
   const renamePreview = journey.indexOf("const previewed = await previewReleasedRRename(", rendererCheckpoint);
-  const sourceProbe = journey.indexOf(":after-rename-discard`);", renamePreview);
+  const sourceProbe = journey.indexOf(":after-native-edit`);", renamePreview);
   const loopEnd = journey.indexOf('await configuration.update("notebookStartMode", "viewing"', loop);
 
   assert.ok(
@@ -670,7 +750,7 @@ test("R native-frame editing waits for its visible renderer before notebook prob
   assert.match(journey, /source-after-filter-journey/u);
   assert.match(journey, /source-after-editing-journey/u);
   assert.match(journey, /media-source-after-capture/u);
-  assert.match(journey, /:after-rename-discard/u);
+  assert.match(journey, /:after-native-edit/u);
 
   const editingJourneyStart = source.indexOf("async function exerciseReleasedREditingJourney(");
   const editingJourneyEnd = source.indexOf("\nasync function ", editingJourneyStart + 1);
