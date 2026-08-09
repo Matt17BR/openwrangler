@@ -36,7 +36,11 @@ import {
 } from "playwright-core";
 import type { Jupyter, JupyterServerCollection, KernelStatus } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
-import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
+import {
+  DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS,
+  DEFAULT_SESSION_OPEN_TIMEOUT_MS,
+  getSetting
+} from "../../extension/configuration";
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { supportsRDocumentExecution } from "../../extension/r/rDocumentCommands";
@@ -217,6 +221,7 @@ const DUCKDB_FOREIGN_ENGINE_CONVERSION =
   /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
 const GRID_COLUMN_WINDOW = { columnOffset: 0, columnLimit: 16 } as const;
 const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_000;
+const QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS = DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS * 2 + 15_000;
 const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = 10_000;
 const WORKBENCH_OPERATION_TIMEOUT_MS = 12_000;
 const WORKBENCH_DIAGNOSTIC_TIMEOUT_MS = 5_000;
@@ -6578,15 +6583,29 @@ async function exerciseReleasedREditingJourney(
       }
     };
   };
+  await waitFor(
+    () => {
+      const scheduler = testing.sessionSchedulerState(sessionId);
+      return (
+        scheduler?.sessionId === sessionId &&
+        scheduler.activeForegroundOperation === false &&
+        scheduler.interactiveQueueLength === 0
+      );
+    },
+    10_000,
+    "the native R foreground lane to settle before Undo",
+    () => JSON.stringify(lengthUndoState())
+  );
   await app.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(
     () => {
       const active = testing.activeSession();
       const scheduler = testing.sessionSchedulerState(sessionId);
       return (
-        (active?.metadata.revision ?? appliedLength.metadata.revision) > appliedLength.metadata.revision ||
-        scheduler?.activeForegroundOperation === true ||
-        (scheduler?.interactiveQueueLength ?? 0) > 0
+        active?.sessionId === sessionId &&
+        ((active.metadata.revision ?? appliedLength.metadata.revision) > appliedLength.metadata.revision ||
+          scheduler?.activeForegroundOperation === true ||
+          (scheduler?.interactiveQueueLength ?? 0) > 0)
       );
     },
     5_000,
@@ -6608,7 +6627,7 @@ async function exerciseReleasedREditingJourney(
         (active.code ?? "") === ""
       );
     },
-    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    QUEUED_RUNTIME_MUTATION_ACCEPTANCE_TIMEOUT_MS,
     "undoing the native R Text Length step",
     () => JSON.stringify(lengthUndoState())
   );
