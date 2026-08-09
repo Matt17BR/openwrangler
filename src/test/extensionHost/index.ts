@@ -15261,7 +15261,8 @@ async function previewAndDiscardPreviousRevenue(
       generatedCodeLength: current?.code?.length,
       scheduler: testing.sessionSchedulerState(sessionId),
       panelHydrated: testing.panelHydrated(sessionId),
-      panelSynchronizable: testing.panelSynchronizable(sessionId)
+      panelSynchronizable: testing.panelSynchronizable(sessionId),
+      panelReceipt: testing.panelSynchronizationReceipt(sessionId)
     };
   };
   const waitForDiscardDispatch = (): Promise<void> =>
@@ -15306,6 +15307,12 @@ async function previewAndDiscardPreviousRevenue(
     () => JSON.stringify(discardState())
   );
   await review.waitFor({ state: "hidden", timeout: 10_000 });
+  await waitFor(
+    () => testing.panelHydrated(sessionId),
+    OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+    "the discarded previous-value state to hydrate on its automatically published renderer",
+    () => JSON.stringify(discardState())
+  );
   return reacquireAcknowledgedSessionApp(
     workbench,
     testing,
