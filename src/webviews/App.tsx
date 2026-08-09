@@ -2389,7 +2389,19 @@ export function App() {
   }
 
   return (
-    <main className="app" data-session-id={metadata?.sessionId} tabIndex={-1} onKeyDown={handleKeyboardShortcut}>
+    <main
+      className="app"
+      data-session-id={metadata?.sessionId}
+      data-renderer-sync-id={
+        metadata &&
+        pendingRendererSynchronization?.sessionId === metadata.sessionId &&
+        pendingRendererSynchronization.revision === metadata.revision
+          ? pendingRendererSynchronization.syncId
+          : undefined
+      }
+      tabIndex={-1}
+      onKeyDown={handleKeyboardShortcut}
+    >
       <div
         className="appWorkspace"
         data-testid="app-workspace"

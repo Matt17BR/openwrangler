@@ -653,7 +653,9 @@ describe("OpenWranglerPanel retained view state", () => {
     );
     await harness.open();
     expect(OpenWranglerPanel.panelHydratedForSession("missing-session")).toBe(false);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession("missing-session")).toBeUndefined();
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(false);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toBeUndefined();
     expect(OpenWranglerPanel.panelSynchronizableForSession(opened.metadata.sessionId)).toBe(false);
     await harness.receive({ kind: "ready" });
     const initialMarker = latestRendererSynchronization(harness.posted);
@@ -674,6 +676,11 @@ describe("OpenWranglerPanel retained view state", () => {
       revision: initialMarker.revision
     });
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(true);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toEqual({
+      syncId: initialMarker.syncId,
+      sessionId: initialMarker.sessionId,
+      revision: initialMarker.revision
+    });
 
     harness.posted.length = 0;
     await harness.receive({ kind: "requestSessionSnapshot" });
@@ -693,10 +700,16 @@ describe("OpenWranglerPanel retained view state", () => {
       revision: pulledMarker.revision
     });
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(true);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toEqual({
+      syncId: pulledMarker.syncId,
+      sessionId: pulledMarker.sessionId,
+      revision: pulledMarker.revision
+    });
     harness.posted.length = 0;
 
     const synchronization = OpenWranglerPanel.synchronizePanelForSession(opened.metadata.sessionId);
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(false);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toBeUndefined();
     await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
     const marker = latestRendererSynchronization(harness.posted);
     let settled = false;
@@ -719,6 +732,11 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     await expect(synchronization).resolves.toBe(true);
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(true);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toEqual({
+      syncId: marker.syncId,
+      sessionId: marker.sessionId,
+      revision: marker.revision
+    });
 
     await harness.receive({ kind: "updateViewState", state: rendererState });
     expect(updateViewState).toHaveBeenCalledOnce();
@@ -726,6 +744,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     harness.dispose();
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(false);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toBeUndefined();
     expect(OpenWranglerPanel.panelSynchronizableForSession(opened.metadata.sessionId)).toBe(false);
   });
 

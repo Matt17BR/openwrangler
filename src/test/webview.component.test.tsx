@@ -3065,6 +3065,7 @@ describe("App file import options", () => {
       });
 
       expect(document.querySelector("main.app")).toHaveAttribute("data-session-id", metadata.sessionId);
+      expect(document.querySelector("main.app")).toHaveAttribute("data-renderer-sync-id", "S".repeat(32));
       expect(webviewPostMessage).toHaveBeenCalledWith({
         kind: "rendererSynchronized",
         syncId: "S".repeat(32),
