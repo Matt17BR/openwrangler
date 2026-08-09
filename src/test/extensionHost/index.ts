@@ -61,6 +61,7 @@ import type {
 } from "../../shared/protocol";
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
+  AcceptanceActionNotDispatchedError,
   acquirePreparedAcceptanceAction,
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
@@ -2394,7 +2395,6 @@ async function exerciseReleasedRJupyterExtension(
       const dropPreview = await previewReleasedRDrop(
         testing,
         workbench,
-        app,
         session.sessionId,
         droppedColumn,
         expected.name
@@ -4486,7 +4486,7 @@ async function exerciseReleasedRPersistentRowsJourney(
 ): Promise<void> {
   recordAcceptanceProgress(`${phase}:editing:persistent-sort`);
   let app = await releasedRSessionApp(workbench, testing, sessionId, "the R persistent-sort session");
-  const sortDraftId = await previewReleasedRSortRows(testing, app, sessionId);
+  const sortDraftId = await previewReleasedRSortRows(testing, workbench, sessionId);
   let active = testing.activeSession();
   assert.ok(active?.metadata.draftStep?.kind === "sortRows", "The R Sort rows preview must retain its draft.");
   assert.equal(active.metadata.draftStep.id, sortDraftId);
@@ -4646,7 +4646,7 @@ async function exerciseReleasedRPersistentRowsJourney(
 
   recordAcceptanceProgress(`${phase}:editing:persistent-filter-discard`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R view before Filter rows preview");
-  const discardedFilterId = await previewReleasedRFilterRows(testing, app, sessionId);
+  const discardedFilterId = await previewReleasedRFilterRows(testing, workbench, sessionId);
   active = testing.activeSession();
   assert.ok(active?.metadata.draftStep?.kind === "filterRows", "The R Filter rows preview must retain its draft.");
   assert.equal(active.metadata.draftStep.id, discardedFilterId);
@@ -4684,7 +4684,7 @@ async function exerciseReleasedRPersistentRowsJourney(
 
   recordAcceptanceProgress(`${phase}:editing:persistent-filter-apply`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R view before applying Filter rows");
-  const filterStepId = await previewReleasedRFilterRows(testing, app, sessionId);
+  const filterStepId = await previewReleasedRFilterRows(testing, workbench, sessionId);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R Filter rows draft before apply");
   await app
     .getByRole("region", { name: "Draft review" })
@@ -4839,7 +4839,7 @@ async function exerciseReleasedRRowReductionJourney(
 
   recordAcceptanceProgress(`${phase}:editing:drop-missing-rows`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop missing rows session");
-  const missingStepId = await previewReleasedRDropMissingRows(testing, app, sessionId);
+  const missingStepId = await previewReleasedRDropMissingRows(testing, workbench, sessionId);
   let active = testing.activeSession();
   assert.ok(active?.metadata.draftStep?.kind === "dropMissingRows");
   assert.equal(active.metadata.draftStep.id, missingStepId);
@@ -4962,7 +4962,7 @@ async function exerciseReleasedRRowReductionJourney(
 
   recordAcceptanceProgress(`${phase}:editing:drop-duplicates`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R Drop duplicates session");
-  const duplicateStepId = await previewReleasedRDropDuplicates(testing, app, sessionId);
+  const duplicateStepId = await previewReleasedRDropDuplicates(testing, workbench, sessionId);
   active = testing.activeSession();
   assert.ok(active?.metadata.draftStep?.kind === "dropDuplicates");
   assert.equal(active.metadata.draftStep.id, duplicateStepId);
@@ -5113,10 +5113,9 @@ async function exerciseReleasedRFillMissingJourney(
     10_000,
     "navigating to the nullable R column before filling it"
   );
-  app = await releasedRSessionApp(workbench, testing, sessionId, "the R Fill missing values source column");
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const fillPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+  app = fillPicker.app;
+  const dialog = fillPicker.dialog;
   await dialog.getByPlaceholder("Search operations").fill("fill missing");
   await dialog.getByRole("button", { name: /^Fill missing values/u }).click();
   const fillColumn = dialog.getByLabel("Column", { exact: true });
@@ -5763,7 +5762,7 @@ async function exerciseReleasedREditingJourney(
 
   recordAcceptanceProgress(`${phase}:editing:drop-preview-discard`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Drop Columns");
-  const discardedDrop = await previewReleasedRDrop(testing, workbench, app, sessionId, "label");
+  const discardedDrop = await previewReleasedRDrop(testing, workbench, sessionId, "label");
   app = discardedDrop.app;
   await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
   await waitFor(
@@ -5782,7 +5781,7 @@ async function exerciseReleasedREditingJourney(
 
   recordAcceptanceProgress(`${phase}:editing:drop-preview-apply-inspect-undo`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Drop Columns");
-  const dropped = await previewReleasedRDrop(testing, workbench, app, sessionId, "label");
+  const dropped = await previewReleasedRDrop(testing, workbench, sessionId, "label");
   app = dropped.app;
   await app
     .getByRole("region", { name: "Draft review" })
@@ -5854,7 +5853,7 @@ async function exerciseReleasedREditingJourney(
 
   recordAcceptanceProgress(`${phase}:editing:select-preview-discard`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Select Columns");
-  const selected = await previewReleasedRSelect(testing, workbench, app, sessionId, ["score", "row_id", "label"]);
+  const selected = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
   app = selected.app;
   await app.getByRole("region", { name: "Draft review" }).getByRole("button", { name: "Discard", exact: true }).click();
   await waitFor(
@@ -5881,11 +5880,7 @@ async function exerciseReleasedREditingJourney(
     sessionId,
     "the restored R session before applying Select Columns"
   );
-  const appliedSelection = await previewReleasedRSelect(testing, workbench, app, sessionId, [
-    "score",
-    "row_id",
-    "label"
-  ]);
+  const appliedSelection = await previewReleasedRSelect(testing, workbench, sessionId, ["score", "row_id", "label"]);
   app = appliedSelection.app;
   await app
     .getByRole("region", { name: "Draft review" })
@@ -6144,7 +6139,6 @@ async function exerciseReleasedREditingJourney(
   const discardedLength = await previewReleasedRTextLength(
     testing,
     workbench,
-    app,
     sessionId,
     "label",
     "discarded_label_length"
@@ -6167,7 +6161,7 @@ async function exerciseReleasedREditingJourney(
 
   recordAcceptanceProgress(`${phase}:editing:text-length-preview-apply-inspect-undo`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before applying Text Length");
-  const measured = await previewReleasedRTextLength(testing, workbench, app, sessionId, "label", "label_length");
+  const measured = await previewReleasedRTextLength(testing, workbench, sessionId, "label", "label_length");
   app = measured.app;
   await app
     .getByRole("region", { name: "Draft review" })
@@ -6280,8 +6274,7 @@ async function exerciseReleasedREditingJourney(
 
   if (phase === "jupyter-r") {
     recordAcceptanceProgress(`${phase}:editing:find-replace-picker-preview-apply-undo`);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Find and replace");
-    const replaced = await previewReleasedRFindReplace(testing, workbench, app, sessionId, "group", "A", "Alpha");
+    const replaced = await previewReleasedRFindReplace(testing, workbench, sessionId, "group", "A", "Alpha");
     app = replaced.app;
     const replaceReview = app.getByRole("region", { name: "Draft review" });
     await replaceReview.getByText("Find and replace", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -6375,7 +6368,7 @@ async function exerciseReleasedREditingJourney(
   );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R score-column session before Convert type");
   await app.locator('th[data-column="score"]').first().waitFor({ state: "visible", timeout: 10_000 });
-  const converted = await previewReleasedRCast(testing, workbench, app, sessionId, "score", "integer");
+  const converted = await previewReleasedRCast(testing, workbench, sessionId, "score", "integer");
   app = converted.app;
   const castReview = app.getByRole("region", { name: "Draft review" });
   await castReview.getByText("Convert type", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -6491,9 +6484,9 @@ async function exerciseReleasedREditingJourney(
     const roundingColumn = roundingBase.metadata.schema.find((column) => column.name === "fractional_score");
     assert.ok(roundingColumn, "The packaged R numeric-rounding run requires the fractional score column.");
 
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Round");
-    await app.getByRole("button", { name: "Add step", exact: true }).click();
-    const roundingDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    const roundingPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+    app = roundingPicker.app;
+    const roundingDialog = roundingPicker.dialog;
     await roundingDialog.getByPlaceholder("Search operations").fill("round");
     await roundingDialog.getByRole("button", { name: /^Round\b/u }).click();
     await roundingDialog.getByLabel("Numeric column", { exact: true }).selectOption(roundingColumn.id);
@@ -6542,9 +6535,9 @@ async function exerciseReleasedREditingJourney(
     await waitFor(() => testing.activeSession()?.metadata.steps.length === 0, 30_000, "undoing native R Round");
 
     recordAcceptanceProgress(`${phase}:editing:floor-picker-preview-discard`);
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Floor");
-    await app.getByRole("button", { name: "Add step", exact: true }).click();
-    const floorDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    const floorPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+    app = floorPicker.app;
+    const floorDialog = floorPicker.dialog;
     await floorDialog.getByPlaceholder("Search operations").fill("floor");
     await floorDialog.getByRole("button", { name: /^Floor\b/u }).click();
     await floorDialog.getByLabel("Numeric column", { exact: true }).selectOption(roundingColumn.id);
@@ -6616,9 +6609,9 @@ async function exerciseReleasedREditingJourney(
 
     const ceilingBase = testing.activeSession();
     assert.ok(ceilingBase, "The restored R session must remain available for Ceiling.");
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the restored R session before Ceiling");
-    await app.getByRole("button", { name: "Add step", exact: true }).click();
-    const ceilingDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    const ceilingPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+    app = ceilingPicker.app;
+    const ceilingDialog = ceilingPicker.dialog;
     await ceilingDialog.getByPlaceholder("Search operations").fill("ceiling");
     await ceilingDialog.getByRole("button", { name: /^Ceiling\b/u }).click();
     await ceilingDialog.getByLabel("Numeric column", { exact: true }).selectOption(roundingColumn.id);
@@ -6699,9 +6692,9 @@ async function exerciseReleasedREditingJourney(
     const labelColumn = capitalizeBase.metadata.schema.find((column) => column.name === "label");
     assert.ok(labelColumn, "The packaged R Capitalize journey requires the label column.");
 
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Capitalize");
-    await app.getByRole("button", { name: "Add step", exact: true }).click();
-    const textDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    const capitalizePicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+    app = capitalizePicker.app;
+    const textDialog = capitalizePicker.dialog;
     await textDialog.getByPlaceholder("Search operations").fill("capitalize");
     await textDialog.getByRole("button", { name: /^Capitalize/u }).click();
     await textDialog.getByLabel("Text column", { exact: true }).selectOption(labelColumn.id);
@@ -6894,9 +6887,9 @@ async function exerciseReleasedRGroupByJourney(testing: TestApi, workbench: Page
   assert.ok(groupKeyColumn, "The packaged R Group and aggregate journey requires the group column.");
   assert.ok(groupedScoreColumn, "The packaged R Group and aggregate journey requires the score column.");
 
-  let app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before Group and aggregate");
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const groupDialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  const groupPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+  let app = groupPicker.app;
+  const groupDialog = groupPicker.dialog;
   await groupDialog.getByPlaceholder("Search operations").fill("group");
   await groupDialog.getByRole("button", { name: /^Group and aggregate\b/u }).click();
   await groupDialog
@@ -6986,10 +6979,8 @@ async function exerciseReleasedRGroupByJourney(testing: TestApi, workbench: Page
   );
 }
 
-async function previewReleasedRSortRows(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+async function previewReleasedRSortRows(testing: TestApi, workbench: Page, sessionId: string): Promise<string> {
+  const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Sort rows/u }).click();
   await dialog.getByLabel("Column 1", { exact: true }).selectOption({ label: "group" });
   await dialog.getByLabel("Direction", { exact: true }).nth(0).selectOption("asc");
@@ -7027,10 +7018,8 @@ async function previewReleasedRSortRows(testing: TestApi, app: Locator, sessionI
   return draft.id;
 }
 
-async function previewReleasedRFilterRows(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+async function previewReleasedRFilterRows(testing: TestApi, workbench: Page, sessionId: string): Promise<string> {
+  const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Filter rows/u }).click();
   await dialog.getByText("1 filters", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await dialog.getByText("2 sorts", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -7063,10 +7052,8 @@ async function previewReleasedRFilterRows(testing: TestApi, app: Locator, sessio
   return draft.id;
 }
 
-async function previewReleasedRDropMissingRows(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+async function previewReleasedRDropMissingRows(testing: TestApi, workbench: Page, sessionId: string): Promise<string> {
+  const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Drop missing rows/u }).click();
   await dialog.getByLabel("Drop when", { exact: true }).selectOption("any");
   await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
@@ -7097,10 +7084,8 @@ async function previewReleasedRDropMissingRows(testing: TestApi, app: Locator, s
   return draft.id;
 }
 
-async function previewReleasedRDropDuplicates(testing: TestApi, app: Locator, sessionId: string): Promise<string> {
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+async function previewReleasedRDropDuplicates(testing: TestApi, workbench: Page, sessionId: string): Promise<string> {
+  const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Drop duplicates/u }).click();
   await dialog.getByRole("checkbox", { name: "group", exact: true }).check();
   await dialog.getByLabel("Keep", { exact: true }).selectOption("first");
@@ -7154,15 +7139,12 @@ function assertReleasedRRowReductionGeneratedCode(code: string, kind: "dropMissi
 async function previewReleasedRTextLength(
   testing: TestApi,
   workbench: Page,
-  app: Locator,
   sessionId: string,
   sourceName: string,
   newColumn: string,
   variableName = "orders_frame"
 ): Promise<Readonly<{ app: Locator; stepId: string }>> {
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Text length/u }).click();
   await dialog.waitFor({ state: "visible", timeout: 10_000 });
   const column = dialog.getByLabel("Text column", { exact: true });
@@ -7215,15 +7197,12 @@ async function previewReleasedRTextLength(
 async function previewReleasedRFindReplace(
   testing: TestApi,
   workbench: Page,
-  app: Locator,
   sessionId: string,
   sourceName: string,
   find: string,
   replacement: string
 ): Promise<Readonly<{ app: Locator; stepId: string }>> {
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Find and replace/u }).click();
   await dialog.getByLabel("Text column", { exact: true }).selectOption({ label: sourceName });
   await dialog.getByLabel("Find (blank matches empty boundaries)", { exact: true }).fill(find);
@@ -7268,10 +7247,138 @@ async function previewReleasedRFindReplace(
   };
 }
 
+async function openReleasedROperationPicker(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string
+): Promise<Readonly<{ app: Locator; dialog: Locator }>> {
+  type RendererReceipt = NonNullable<ReturnType<TestApi["panelSynchronizationReceipt"]>>;
+  const acquire = async (expected?: RendererReceipt) => {
+    const app =
+      expected === undefined
+        ? await synchronizedSessionApp(
+            workbench,
+            testing,
+            sessionId,
+            "The native R operation picker requires the acknowledged renderer."
+          )
+        : await reacquireAcknowledgedSessionApp(
+            workbench,
+            testing,
+            sessionId,
+            "The replacement R operation picker requires its exact acknowledged renderer."
+          );
+    const receipt = testing.panelSynchronizationReceipt(sessionId);
+    assert.ok(receipt, "The native R operation picker requires one renderer receipt.");
+    assert.equal(
+      expected === undefined || sameRendererSynchronizationReceipt(expected, receipt),
+      true,
+      "The replacement R operation picker must bind the requested renderer receipt."
+    );
+    return {
+      app,
+      button: app.getByRole("button", { name: "Add step", exact: true }),
+      dialog: app.getByRole("dialog", { name: "Add cleaning step" }),
+      receipt
+    };
+  };
+  type PickerTarget = Awaited<ReturnType<typeof acquire>>;
+  const click = async (expected?: RendererReceipt): Promise<PickerTarget> => {
+    const deadline = Date.now() + 10_000;
+    let wanted = expected;
+    let lastError: unknown;
+    do {
+      let target: PickerTarget;
+      let element: Awaited<ReturnType<PickerTarget["button"]["elementHandle"]>>;
+      try {
+        target = await withAcceptanceOperationDeadline(
+          acquire(wanted),
+          Math.max(1, deadline - Date.now()),
+          "the native R Add step renderer acquisition"
+        );
+        wanted = target.receipt;
+        const remainingMs = Math.max(1, deadline - Date.now());
+        await target.button.click({ trial: true, timeout: remainingMs });
+        if (!sameRendererSynchronizationReceipt(target.receipt, testing.panelSynchronizationReceipt(sessionId))) {
+          wanted = testing.panelSynchronizationReceipt(sessionId);
+          continue;
+        }
+        element = await target.button.elementHandle({ timeout: Math.max(1, deadline - Date.now()) });
+        assert.ok(element, "The native R renderer must expose one exact Add step action.");
+      } catch (error) {
+        lastError = error;
+        const current = testing.panelSynchronizationReceipt(sessionId);
+        if (current) wanted = current;
+        if (Date.now() < deadline) await workbench.waitForTimeout(50);
+        continue;
+      }
+      try {
+        await activateExactAcceptanceElementOnce(element, Math.max(1, deadline - Date.now()), () => {
+          if (!sameRendererSynchronizationReceipt(target.receipt, testing.panelSynchronizationReceipt(sessionId))) {
+            throw new AcceptanceActionNotDispatchedError(
+              "The native R Add step renderer changed immediately before its click",
+              new Error("The acknowledged renderer receipt changed.")
+            );
+          }
+        });
+        return target;
+      } catch (error) {
+        if (!(error instanceof AcceptanceActionNotDispatchedError)) throw error;
+        lastError = error;
+      } finally {
+        await element.dispose();
+      }
+      const current = testing.panelSynchronizationReceipt(sessionId);
+      if (current) wanted = current;
+      if (Date.now() < deadline) await workbench.waitForTimeout(50);
+    } while (Date.now() < deadline);
+    const detail = lastError instanceof Error ? `${lastError.name}: ${lastError.message}` : String(lastError);
+    throw new AcceptanceActionNotDispatchedError(
+      `The native R Add step action did not become actionable (${detail.slice(0, 512)})`,
+      lastError
+    );
+  };
+  const observe = async (
+    target: PickerTarget
+  ): Promise<Readonly<{ app: Locator; dialog: Locator }> | RendererReceipt> => {
+    const deadline = Date.now() + 10_000;
+    do {
+      const current = testing.panelSynchronizationReceipt(sessionId);
+      if (current && !sameRendererSynchronizationReceipt(target.receipt, current)) return current;
+      if (
+        sameRendererSynchronizationReceipt(target.receipt, current) &&
+        (await target.dialog.isVisible().catch(() => false))
+      ) {
+        const confirmed = testing.panelSynchronizationReceipt(sessionId);
+        if (sameRendererSynchronizationReceipt(target.receipt, confirmed)) {
+          return { app: target.app, dialog: target.dialog };
+        }
+        if (confirmed) return confirmed;
+      }
+      await workbench.waitForTimeout(50);
+    } while (Date.now() < deadline);
+    const active = testing.activeSession();
+    throw new Error(
+      `The native R operation picker did not appear. ${JSON.stringify({
+        receipt: testing.panelSynchronizationReceipt(sessionId),
+        hydrated: testing.panelHydrated(sessionId),
+        scheduler: testing.sessionSchedulerState(sessionId),
+        revision: active?.metadata.revision,
+        draft: active?.metadata.draftStep?.kind
+      })}`
+    );
+  };
+
+  let outcome = await observe(await click());
+  if ("app" in outcome) return outcome;
+  outcome = await observe(await click(outcome));
+  if ("app" in outcome) return outcome;
+  throw new Error("The native R operation picker was retired after one safe retry.");
+}
+
 async function previewReleasedRCast(
   testing: TestApi,
   workbench: Page,
-  app: Locator,
   sessionId: string,
   sourceName: string,
   dtype: "string" | "integer" | "float" | "boolean" | "date" | "datetime",
@@ -7280,9 +7387,7 @@ async function previewReleasedRCast(
   const before = testing.activeSession();
   const input = before?.metadata.schema.find((column) => column.name === sourceName);
   assert.ok(input, `The native R Convert type preview requires ${JSON.stringify(sourceName)}.`);
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Convert type/u }).click();
   await dialog.waitFor({ state: "visible", timeout: 10_000 });
   await dialog.getByLabel("Column", { exact: true }).selectOption({ label: sourceName });
@@ -7349,9 +7454,9 @@ async function previewReleasedRClone(
     await app.getByRole("button", { name: "Edit latest", exact: true }).click();
     dialog = app.getByRole("dialog", { name: "Edit cleaning step" });
   } else {
-    await app.getByRole("button", { name: "Add step", exact: true }).click();
-    dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-    await dialog.waitFor({ state: "visible", timeout: 10_000 });
+    const opened = await openReleasedROperationPicker(testing, workbench, sessionId);
+    app = opened.app;
+    dialog = opened.dialog;
     await dialog.getByRole("button", { name: /^Clone column/u }).click();
   }
   await dialog.waitFor({ state: "visible", timeout: 10_000 });
@@ -7410,14 +7515,11 @@ async function previewReleasedRClone(
 async function previewReleasedRSelect(
   testing: TestApi,
   workbench: Page,
-  app: Locator,
   sessionId: string,
   selectedNames: readonly string[],
   variableName = "orders_frame"
 ): Promise<Readonly<{ app: Locator; stepId: string }>> {
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Select columns/u }).click();
   await dialog.waitFor({ state: "visible", timeout: 10_000 });
   const columns = dialog.getByRole("group", { name: "Columns to keep", exact: true });
@@ -7463,14 +7565,11 @@ async function previewReleasedRSelect(
 async function previewReleasedRDrop(
   testing: TestApi,
   workbench: Page,
-  app: Locator,
   sessionId: string,
   sourceName: string,
   variableName = "orders_frame"
 ): Promise<Readonly<{ app: Locator; stepId: string }>> {
-  await app.getByRole("button", { name: "Add step", exact: true }).click();
-  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  const { dialog } = await openReleasedROperationPicker(testing, workbench, sessionId);
   await dialog.getByRole("button", { name: /^Drop columns/u }).click();
   await dialog.waitFor({ state: "visible", timeout: 10_000 });
   await dialog
@@ -7525,9 +7624,9 @@ async function previewReleasedRRename(
     await app.getByRole("button", { name: "Edit latest", exact: true }).click();
     dialog = app.getByRole("dialog", { name: "Edit cleaning step" });
   } else {
-    await app.getByRole("button", { name: "Add step", exact: true }).click();
-    dialog = app.getByRole("dialog", { name: "Add cleaning step" });
-    await dialog.waitFor({ state: "visible", timeout: 10_000 });
+    const opened = await openReleasedROperationPicker(testing, workbench, sessionId);
+    app = opened.app;
+    dialog = opened.dialog;
     await dialog.getByRole("button", { name: /^Rename column/u }).click();
   }
   await dialog.waitFor({ state: "visible", timeout: 10_000 });
@@ -7788,9 +7887,9 @@ async function captureReleasedRNotebookGroupByDraft(
     await clearedDrawer.getByRole("button", { name: "Close panel", exact: true }).click();
     await clearedDrawer.waitFor({ state: "hidden", timeout: 10_000 });
 
-    app = await releasedRSessionApp(workbench, testing, sessionId, "the R media session before its Group By draft");
-    await app.getByRole("button", { name: "Add step", exact: true }).click();
-    const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+    const groupPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+    app = groupPicker.app;
+    const dialog = groupPicker.dialog;
     await dialog.getByPlaceholder("Search operations").fill("group");
     await dialog.getByRole("button", { name: /^Group and aggregate\b/u }).click();
     const groupKeys = dialog.getByRole("group", { name: "Group keys", exact: true });
