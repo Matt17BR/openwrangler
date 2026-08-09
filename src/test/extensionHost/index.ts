@@ -15403,12 +15403,17 @@ async function previewApplyAndUndoGroupedRevenue(
   );
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 
-  const codePreview = await waitForCodePreview(workbench, "grouped");
-  const code = await codePreview.innerText();
+  const code = testing.activeSession()?.code ?? "";
   assert.match(code, /import polars as pl/u);
   assert.match(
     code,
     /_ow_polars_fill_missing_grouped_statistic\(df, ['"]revenue['"], \[['"]market['"], ['"]segment['"]\], ['"]median['"]\)/u
+  );
+  const codePreview = await waitForCodePreview(workbench, "import polars as pl");
+  await revealCodePreviewOperationLine(
+    codePreview,
+    "_ow_polars_fill_missing_grouped_statistic(df, 'revenue', ['market', 'segment'], 'median')",
+    "return df"
   );
   const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   const refreshedApp = await exactSessionApp(target.frame, sessionId);
