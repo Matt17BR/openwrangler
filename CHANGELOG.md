@@ -4,7 +4,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
-## [1.99.2] - 2026-08-08
+## [1.99.2] - 2026-08-09
 
 ### Added
 
