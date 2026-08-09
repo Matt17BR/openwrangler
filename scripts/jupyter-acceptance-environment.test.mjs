@@ -22,6 +22,7 @@ import {
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
   prepareJupyterAcceptanceREnvironment,
+  probeJupyterAcceptanceRKernel,
   probeJupyterAcceptanceJava,
   probeJupyterAcceptancePython,
   rAcceptanceRepositories,
@@ -351,6 +352,64 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
   }
 });
 
+test("released-Jupyter R readiness launches only the exact private kernelspec and fixed base-R marker", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-ready-"));
+  const python = join(directory, "python");
+  try {
+    await writeFile(python, "fake executable\n");
+    await chmod(python, 0o700);
+    const root = join(directory, "r");
+    const prepared = {
+      root,
+      libraryDir: join(root, "l"),
+      kernelId: "openwrangler-r-acceptance",
+      kernelSpecPath: join(root, "d", "kernels", "openwrangler-r-acceptance", "kernel.json"),
+      jupyterEnvironment: {
+        dataDir: join(root, "d"),
+        runtimeDir: join(root, "r")
+      },
+      dependencyProbe: { input: { environment: { R_LIBS_USER: join(root, "l") } } }
+    };
+
+    let invocation;
+    await probeJupyterAcceptanceRKernel(python, prepared, {
+      async runCommand(input, options) {
+        invocation = { input, options };
+        return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\n", stderr: "" };
+      }
+    });
+    const { input, options } = invocation;
+    assert.equal(input.executable, python);
+    const script = input.args[2];
+    assert.deepEqual(input.args, [
+      "-I",
+      "-c",
+      script,
+      prepared.kernelId,
+      join(prepared.jupyterEnvironment.dataDir, "kernels"),
+      join(prepared.jupyterEnvironment.runtimeDir, "kernel-readiness.json"),
+      join(prepared.root, "h")
+    ]);
+    assert.match(
+      script,
+      /KernelSpecManager\(kernel_dirs=\[kernel_dir\], ensure_native_kernel=False[\s\S]+client\.wait_for_ready\(timeout=12\)[\s\S]+__OW_RELEASED_R_KERNEL__[\s\S]+manager\.shutdown_kernel\(now=True\)/u
+    );
+    assert.deepEqual(options, { timeoutMs: 30_000, maxOutputBytes: 1_024 });
+    assert.equal(input.environment.R_LIBS_USER, prepared.libraryDir);
+
+    await assert.rejects(
+      probeJupyterAcceptanceRKernel(python, prepared, {
+        async runCommand() {
+          return { stdout: "OPEN_WRANGLER_R_KERNEL_FAILED:ready\n", stderr: "" };
+        }
+      }),
+      /readiness failed during ready/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("released-Jupyter R setup builds collapse from source on macOS", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-binary-"));
   const rscript = join(directory, "Rscript");
@@ -536,6 +595,15 @@ test("packaged-editor R acceptance wires the private R environment to local edit
   assert.match(
     source.slice(setup, display),
     /dependencyProbeResult\.stdout !== rAcceptanceEnvironment\.packageRecord/u
+  );
+  const readinessCheckpoint = source.indexOf('"setup:probe-r-kernel-readiness"', setup);
+  const readinessProbe = source.indexOf(
+    "await probeJupyterAcceptanceRKernel(testPython, rAcceptanceEnvironment)",
+    setup
+  );
+  assert.ok(
+    readinessCheckpoint > setup && readinessProbe > readinessCheckpoint && readinessProbe < display,
+    "The exact private R kernel must answer its base-R marker before an editor can start."
   );
 
   const phaseBranch = source.indexOf('if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter")');
