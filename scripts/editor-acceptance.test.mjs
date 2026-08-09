@@ -194,6 +194,16 @@ test("ordinary Quarto acceptance does not require a headless preview webview", a
   assert.doesNotMatch(journey, /priorTabs|instanceof vscode\.TabInputWebview/u);
 });
 
+test("panel hydration uses the renderer discovery deadline", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const helper = source.slice(
+    source.indexOf("async function requireFreshExactSessionPanelHydration("),
+    source.indexOf("async function previewUppercaseMarketReplacement(")
+  );
+  assert.match(helper, /timeoutMs: OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS/u);
+  assert.doesNotMatch(helper, /timeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS/u);
+});
+
 test("packaged panel actions stay bound to the acknowledged renderer", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const exactApp = source.slice(
