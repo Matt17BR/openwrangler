@@ -713,6 +713,10 @@ accepted files are
 composed from the accepted full source. `npm run compose:readme-media` refreshes all three derived R crops after a
 new accepted capture.
 
+The manual **Released Jupyter acceptance** workflow has a `macos-r` lane for the packaged VS Code and local IRkernel
+journey. Use it while diagnosing macOS-only R failures; the default `linux-all` lane keeps the broader VS Code, Cursor,
+Python, R, and remote-Jupyter coverage.
+
 ```bash
 npm run build:test-extension &&
 OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
