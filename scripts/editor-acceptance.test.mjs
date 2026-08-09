@@ -340,6 +340,56 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
     postDiscardRenderer,
     /return (?:refreshedApp|synchronizedSessionApp\()|testing\.synchronizePanel|ensurePanelSynchronized/u
   );
+  const assertFirstUseMutationReacquisition = ({ settledMarker, boundaryMarker, reacquisitionMarker, nextMarker }) => {
+    const settled = firstUseJourney.indexOf(settledMarker);
+    const boundary = firstUseJourney.indexOf(boundaryMarker, settled);
+    const automaticHydration = firstUseJourney.indexOf("() => testing.panelHydrated(sessionId)", boundary);
+    const discoveryTimeout = firstUseJourney.indexOf("OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS", automaticHydration);
+    const diagnostics = firstUseJourney.indexOf("confirmedMutationDiagnostics", discoveryTimeout);
+    const reacquired = firstUseJourney.indexOf(reacquisitionMarker, diagnostics);
+    const next = firstUseJourney.indexOf(nextMarker, reacquired);
+    assert.ok(
+      settled >= 0 &&
+        boundary >= settled &&
+        automaticHydration > boundary &&
+        discoveryTimeout > automaticHydration &&
+        diagnostics > discoveryTimeout &&
+        reacquired > diagnostics &&
+        next > reacquired,
+      `${reacquisitionMarker} must follow confirmed state publication and automatic hydration.`
+    );
+    assert.doesNotMatch(
+      firstUseJourney.slice(boundary, next),
+      /rediscoverApp|synchronizedSessionApp|testing\.synchronizePanel|ensurePanelSynchronized/u,
+      `${reacquisitionMarker} must preserve the current acknowledged renderer receipt.`
+    );
+  };
+  assertFirstUseMutationReacquisition({
+    settledMarker: '"discarding the most-common fill preview"',
+    boundaryMarker: 'await fillReview.waitFor({ state: "hidden"',
+    reacquisitionMarker: 'app = await reacquireApp("Most-common fill discard")',
+    nextMarker: 'recordAcceptanceProgress("platform-smoke:draft-discard")'
+  });
+  assertFirstUseMutationReacquisition({
+    settledMarker: '"discarding the preview to restore the confirmed dataframe"',
+    boundaryMarker: 'await draftReview.waitFor({ state: "hidden"',
+    reacquisitionMarker: 'app = await reacquireApp("Uppercase draft discard")',
+    nextMarker: 'recordAcceptanceProgress("platform-smoke:draft-apply")'
+  });
+  assertFirstUseMutationReacquisition({
+    settledMarker: '"applying the previewed uppercase step"',
+    boundaryMarker: '"applying the previewed uppercase step"',
+    reacquisitionMarker: 'app = await reacquireApp("Uppercase draft apply")',
+    nextMarker: 'const appliedPlan = app.getByRole("group", { name: "Cleaning plan" })'
+  });
+  const confirmedMutationDiagnostics = firstUseJourney.slice(
+    firstUseJourney.indexOf("const confirmedMutationDiagnostics ="),
+    firstUseJourney.indexOf("const profileWaitDiagnostics =")
+  );
+  assert.match(confirmedMutationDiagnostics, /scheduler: testing\.sessionSchedulerState\(sessionId\)/u);
+  assert.match(confirmedMutationDiagnostics, /hydrated: testing\.panelHydrated\(sessionId\)/u);
+  assert.match(confirmedMutationDiagnostics, /synchronizable: testing\.panelSynchronizable\(sessionId\)/u);
+  assert.match(confirmedMutationDiagnostics, /receipt: testing\.panelSynchronizationReceipt\(sessionId\)/u);
   const groupedFill = source.slice(
     source.indexOf("async function previewApplyAndUndoGroupedRevenue("),
     source.indexOf("async function exercisePackagedLinearInterpolationJourney(")
