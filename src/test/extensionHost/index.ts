@@ -5138,6 +5138,8 @@ async function exerciseReleasedRFillMissingJourney(
   );
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Fill missing values preview");
+
   const preview = testing.activeSession();
   assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
   const stepId = preview.metadata.draftStep.id;
@@ -5189,6 +5191,7 @@ async function exerciseReleasedRFillMissingJourney(
     30_000,
     "applying native R Fill missing values through Draft review"
   );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied native R Fill missing values step");
   await app.getByRole("group", { name: "Cleaning plan" }).getByText("1 applied step").waitFor({
     state: "visible",
     timeout: 10_000

@@ -510,6 +510,39 @@ test("R editing acceptance reveals the capitalized column after temporary derive
   );
 });
 
+test("R fill acceptance reacquires the renderer after preview and apply", async () => {
+  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
+  const start = source.indexOf("async function exerciseReleasedRFillMissingJourney(");
+  const end = source.indexOf("\nasync function ", start + 1);
+  assert.ok(start >= 0 && end > start);
+  const journey = source.slice(start, end);
+
+  const dialogClosed = journey.indexOf('await dialog.waitFor({ state: "hidden", timeout: 10_000 });');
+  const previewRenderer = journey.indexOf(
+    'app = await releasedRSessionApp(workbench, testing, sessionId, "the native R Fill missing values preview");',
+    dialogClosed
+  );
+  const draftReview = journey.indexOf('app.getByRole("region", { name: "Draft review" })', previewRenderer);
+  const appliedState = journey.indexOf('"applying native R Fill missing values through Draft review"', draftReview);
+  const appliedRenderer = journey.indexOf(
+    'app = await releasedRSessionApp(workbench, testing, sessionId, "the applied native R Fill missing values step");',
+    appliedState
+  );
+  const cleaningPlan = journey.indexOf('app.getByRole("group", { name: "Cleaning plan" })', appliedRenderer);
+  const undo = journey.indexOf('app.getByRole("button", { name: "Undo", exact: true }).click()', cleaningPlan);
+
+  assert.ok(
+    dialogClosed >= 0 &&
+      previewRenderer > dialogClosed &&
+      draftReview > previewRenderer &&
+      appliedState > draftReview &&
+      appliedRenderer > appliedState &&
+      cleaningPlan > appliedRenderer &&
+      undo > cleaningPlan,
+    "The R fill journey must reacquire its acknowledged renderer after both mutations."
+  );
+});
+
 test("R native-frame editing waits for its visible renderer before notebook probes", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
