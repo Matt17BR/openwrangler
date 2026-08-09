@@ -195,8 +195,9 @@ without changing a decoy editor or either source file on disk.
 The same VS Code acceptance phase includes realistic `.Rmd` and `.qmd` fixtures with first-line YAML, ignored prose, a
 relative CSV read, native editing, and a generated fenced R cell. The R Markdown parser fixture also includes a non-R
 cell and a disabled R cell. Focused tests cover nested presentation options and disabled external chunk references,
-while malformed or enabled code-replacement options fail before R starts. Python-only documents are ignored without
-starting R or showing a notification. The installed VS Code run locally on Linux covers all three document types.
+while malformed or enabled code-replacement options fail before R starts. Python-only documents do not start R; the
+explicit R-document command explains that no R code chunk was found. The installed VS Code run locally on Linux covers
+all three document types.
 Cursor runs the complete plain `.R` document path, including cleaned CSV export; parser, runtime, and VS Code
 acceptance cover the literate formats without repeating them in Cursor's single installed-editor phase.
 The macOS preview and stable release cells must pass the same local document subjourney in packaged VS Code. Their Windows

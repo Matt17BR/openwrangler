@@ -55,11 +55,12 @@ export function registerRDocumentCommands(context: vscode.ExtensionContext, coor
         return false;
       }
       if (prepared.kind !== "r" && prepared.runnableRChunkCount === 0) {
-        if (prepared.rChunkCount > 0) {
-          void vscode.window.showInformationMessage(
-            `${path.basename(document.uri.fsPath)} does not contain an R code chunk enabled for evaluation.`
-          );
-        }
+        const filename = path.basename(document.uri.fsPath);
+        void vscode.window.showInformationMessage(
+          prepared.rChunkCount > 0
+            ? `${filename} does not contain an R code chunk enabled for evaluation.`
+            : `${filename} does not contain an R code chunk.`
+        );
         return false;
       }
       const documentLabel = rDocumentLabel(prepared.kind);

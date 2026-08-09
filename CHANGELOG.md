@@ -7,7 +7,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Fixed
 
 - R Markdown and Quarto now keep commas inside nested chunk options, skip valid `eval=FALSE` cells that refer to
-  external chunk content, and quietly ignore documents that contain no R cells.
+  external chunk content, and explain when a document contains no R cells.
 
 ## [1.99.2] - 2026-08-09
 
