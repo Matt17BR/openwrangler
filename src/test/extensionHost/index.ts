@@ -64,6 +64,7 @@ import {
   acquirePreparedAcceptanceAction,
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
+  activateWithOnePreDispatchReacquisition,
   diagnoseThenReacquireAcceptanceAction,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
@@ -24517,10 +24518,10 @@ async function exercisePackagedRendererProvenance(
 
     recordAcceptanceProgress("verify:notebook-renderer:button");
     const workbench = await connectToEditorWorkbench();
-    const originButton = await waitForNotebookRendererButton(
-      workbench,
-      "renderer provenance A",
-      "Open in Open Wrangler"
+    await withAcceptanceOperationDeadline(
+      workbench.bringToFront(),
+      WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+      "the private editor workbench to come to front before renderer-action discovery"
     );
     assert.equal(
       vscode.window.activeNotebookEditor?.notebook,
@@ -24541,8 +24542,8 @@ async function exercisePackagedRendererProvenance(
     const originLookupBaseline = jupyter.testing.lookupCalls(originNotebook.uri);
     const secondLookupBaseline = jupyter.testing.lookupCalls(openedSecondNotebook.uri);
     const denialBaseline = jupyter.testing.denialCalls();
-    const waitForOriginReceipt = async (): Promise<void> => {
-      recordAcceptanceProgress("verify:notebook-renderer:session");
+    const waitForOriginReceipt = async (recordSessionCheckpoint: boolean): Promise<void> => {
+      if (recordSessionCheckpoint) recordAcceptanceProgress("verify:notebook-renderer:session");
       await waitFor(
         () => {
           const source = testing.activeSession()?.metadata.source;
@@ -24558,23 +24559,43 @@ async function exercisePackagedRendererProvenance(
       );
     };
     recordAcceptanceProgress("verify:notebook-renderer:activate");
+    let clickBoundaryEntered = false;
     try {
       await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
         description: "notebook A's renderer action while notebook B is active",
         activate: () =>
-          activateNotebookRendererButtonOnce(workbench, originButton, () => {
-            assert.equal(
-              vscode.window.activeNotebookEditor?.notebook,
-              openedSecondNotebook,
-              "Notebook B must still be active at notebook A's renderer-action boundary."
-            );
-            recordAcceptanceProgress("verify:notebook-renderer:click-boundary");
+          activateWithOnePreDispatchReacquisition({
+            acquire: () => waitForNotebookRendererButton(workbench, "renderer provenance A", "Open in Open Wrangler"),
+            activate: (button) =>
+              activateExactAcceptanceElementOnce(button, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS, () => {
+                clickBoundaryEntered = true;
+                assert.equal(
+                  vscode.window.activeNotebookEditor?.notebook,
+                  openedSecondNotebook,
+                  "Notebook B must still be active at notebook A's renderer-action boundary."
+                );
+                recordAcceptanceProgress("verify:notebook-renderer:click-boundary");
+              }),
+            dispose: (button) => button.dispose()
           }),
-        receipt: waitForOriginReceipt,
-        authoritativeReceiptAfterActivationFailure: waitForOriginReceipt
+        receipt: () => waitForOriginReceipt(true),
+        authoritativeReceiptAfterActivationFailure: () => waitForOriginReceipt(false)
       });
-    } finally {
-      await originButton.dispose();
+    } catch (error) {
+      if (!(error instanceof AggregateError)) throw error;
+      const activationFailure = error.errors[0];
+      const activationCause =
+        activationFailure instanceof Error ? (activationFailure.cause ?? activationFailure) : null;
+      const activationSummary =
+        activationCause instanceof Error
+          ? `${activationCause.name}: ${activationCause.message}`.replaceAll(/\s+/gu, " ").trim().slice(0, 512)
+          : "unknown activation failure";
+      throw new Error(
+        `${error.message} Activation stage: click boundary ${clickBoundaryEntered ? "entered" : "not entered"}. ` +
+          `Activation cause: ${activationSummary}. ` +
+          `Receipt state: ${rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)}`,
+        { cause: error }
+      );
     }
 
     const active = testing.activeSession();

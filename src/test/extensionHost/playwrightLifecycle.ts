@@ -54,6 +54,12 @@ interface AuthoritativelyReceiptedOneShotAcceptanceAction<T> extends OneShotAcce
   readonly authoritativeReceiptAfterActivationFailure: () => Promise<T>;
 }
 
+interface PreDispatchReacquisitionOptions<T> {
+  readonly acquire: () => Promise<T>;
+  readonly activate: (action: T) => Promise<void>;
+  readonly dispose: (action: T) => Promise<void>;
+}
+
 interface ReplaceableAcceptanceLocator {
   click(options: { readonly timeout: number }): Promise<void>;
 }
@@ -67,6 +73,13 @@ export class IndeterminateAcceptanceActionError extends Error {
   constructor(description: string, cause: unknown) {
     super(`${description} may have been dispatched, but its one-shot user activation did not settle.`, { cause });
     this.name = "IndeterminateAcceptanceActionError";
+  }
+}
+
+export class AcceptanceActionNotDispatchedError extends Error {
+  constructor(description: string, cause: unknown) {
+    super(`${description} failed before its click boundary.`, { cause });
+    this.name = "AcceptanceActionNotDispatchedError";
   }
 }
 
@@ -95,6 +108,7 @@ export async function invokeAcceptanceActionOnceWithAuthoritativeReceipt<T>({
   try {
     await activate();
   } catch (error) {
+    if (error instanceof AcceptanceActionNotDispatchedError) throw error;
     const indeterminate = new IndeterminateAcceptanceActionError(description, error);
     try {
       return await authoritativeReceiptAfterActivationFailure();
@@ -107,6 +121,58 @@ export async function invokeAcceptanceActionOnceWithAuthoritativeReceipt<T>({
   }
 
   return observeAcceptanceActionReceipt(receipt, naturalDismissal, description);
+}
+
+export async function activateWithOnePreDispatchReacquisition<T>({
+  acquire,
+  activate,
+  dispose
+}: PreDispatchReacquisitionOptions<T>): Promise<void> {
+  let ownedAction: T | undefined;
+  const acquireBeforeClick = async (): Promise<T> => {
+    try {
+      return await acquire();
+    } catch (error) {
+      throw new AcceptanceActionNotDispatchedError("The acceptance action target acquisition", error);
+    }
+  };
+  const release = async (): Promise<void> => {
+    if (ownedAction === undefined) return;
+    const action = ownedAction;
+    ownedAction = undefined;
+    await dispose(action);
+  };
+
+  ownedAction = await acquireBeforeClick();
+  try {
+    try {
+      await activate(ownedAction);
+      return;
+    } catch (error) {
+      if (!(error instanceof AcceptanceActionNotDispatchedError)) throw error;
+    }
+
+    try {
+      await release();
+    } catch (error) {
+      throw new AcceptanceActionNotDispatchedError("The retired acceptance action cleanup", error);
+    }
+    ownedAction = await acquireBeforeClick();
+    try {
+      await activate(ownedAction);
+    } catch (error) {
+      if (error instanceof AcceptanceActionNotDispatchedError) {
+        try {
+          await release();
+        } catch (cleanupError) {
+          throw new AcceptanceActionNotDispatchedError("The replacement acceptance action cleanup", cleanupError);
+        }
+      }
+      throw error;
+    }
+  } finally {
+    await release();
+  }
 }
 
 export function activateReplaceableAcceptanceLocator(
@@ -137,51 +203,56 @@ export async function activateExactAcceptanceElementOnce(
   };
 
   const readinessDescription = "the exact acceptance element readiness";
-  const readiness = await withAcceptanceOperationDeadline(
-    target.evaluate((candidate) => {
-      type ClickableElement = {
-        readonly disabled?: boolean;
-        readonly isConnected: boolean;
-        readonly ownerDocument: {
-          elementFromPoint(x: number, y: number): ClickableElement | null;
+  let readiness: string;
+  try {
+    readiness = await withAcceptanceOperationDeadline(
+      target.evaluate((candidate) => {
+        type ClickableElement = {
+          readonly disabled?: boolean;
+          readonly isConnected: boolean;
+          readonly ownerDocument: {
+            elementFromPoint(x: number, y: number): ClickableElement | null;
+          };
+          dataset: Record<string, string | undefined>;
+          addEventListener(
+            type: "click",
+            listener: (event: { readonly isTrusted: boolean }) => void,
+            options: { once: boolean }
+          ): void;
+          contains(node: ClickableElement | null): boolean;
+          getAttribute(name: string): string | null;
+          getBoundingClientRect(): {
+            readonly left: number;
+            readonly top: number;
+            readonly width: number;
+            readonly height: number;
+          };
         };
-        dataset: Record<string, string | undefined>;
-        addEventListener(
-          type: "click",
-          listener: (event: { readonly isTrusted: boolean }) => void,
-          options: { once: boolean }
-        ): void;
-        contains(node: ClickableElement | null): boolean;
-        getAttribute(name: string): string | null;
-        getBoundingClientRect(): {
-          readonly left: number;
-          readonly top: number;
-          readonly width: number;
-          readonly height: number;
-        };
-      };
-      const element = candidate as ClickableElement;
-      if (!element.isConnected) return "disconnected";
-      if (element.disabled === true || element.getAttribute("aria-disabled") === "true") return "disabled";
-      const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return "geometry";
-      const hit = element.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      if (hit !== element && !element.contains(hit)) return "covered";
-      element.dataset.openWranglerAcceptanceActivation = "pending";
-      element.addEventListener(
-        "click",
-        (event) => {
-          if (event.isTrusted) element.dataset.openWranglerAcceptanceActivation = "seen";
-        },
-        { once: true }
-      );
-      return "ready";
-    }),
-    remaining(readinessDescription),
-    readinessDescription
-  );
-  if (readiness !== "ready") {
-    throw new Error(`The exact acceptance element is not ready for one click (${readiness}).`);
+        const element = candidate as ClickableElement;
+        if (!element.isConnected) return "disconnected";
+        if (element.disabled === true || element.getAttribute("aria-disabled") === "true") return "disabled";
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return "geometry";
+        const hit = element.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        if (hit !== element && !element.contains(hit)) return "covered";
+        element.dataset.openWranglerAcceptanceActivation = "pending";
+        element.addEventListener(
+          "click",
+          (event) => {
+            if (event.isTrusted) element.dataset.openWranglerAcceptanceActivation = "seen";
+          },
+          { once: true }
+        );
+        return "ready";
+      }),
+      remaining(readinessDescription),
+      readinessDescription
+    );
+    if (readiness !== "ready") {
+      throw new Error(`The exact acceptance element is not ready for one click (${readiness}).`);
+    }
+  } catch (error) {
+    throw new AcceptanceActionNotDispatchedError("The exact acceptance element", error);
   }
 
   immediatelyBeforeClick?.();
