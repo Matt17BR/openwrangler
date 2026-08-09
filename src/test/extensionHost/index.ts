@@ -1607,10 +1607,23 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "orders_tibble_before <- serialize(orders_tibble, NULL, version = 3L)",
     "orders_table_before <- serialize(orders_table, NULL, version = 3L)",
     ".ow_setup_stage <- 'result'",
+    ".ow_library_attestation <- local({",
+    "  path_key <- function(path) {",
+    "    normalized <- normalizePath(path, winslash = '/', mustWork = TRUE)",
+    "    if (.Platform$OS.type == 'windows') tolower(normalized) else normalized",
+    "  }",
+    "  private_library <- path_key(Sys.getenv('R_LIBS_USER', unset = ''))",
+    "  list(",
+    "    privateLibraryFirst = identical(path_key(.libPaths()[[1L]]), private_library),",
+    "    irKernelFromPrivateLibrary = identical(path_key(dirname(find.package('IRkernel'))), private_library)",
+    "  )",
+    "})",
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
     "  pid = Sys.getpid(), rows = nrow(orders_frame), columns = ncol(orders_frame),",
     "  rVersion = as.character(getRversion()),",
     "  collapseVersion = as.character(utils::packageVersion('collapse')),",
+    "  privateLibraryFirst = .ow_library_attestation$privateLibraryFirst,",
+    "  irKernelFromPrivateLibrary = .ow_library_attestation$irKernelFromPrivateLibrary,",
     "  remoteRunId = Sys.getenv('OPEN_WRANGLER_REMOTE_RUN_ID', unset = ''),",
     "  hostname = unname(Sys.info()[['nodename']])",
     "), auto_unbox = TRUE)), '\\n', sep = '')",
@@ -1957,6 +1970,11 @@ function assertReleasedRVersion(
   }
 }
 
+function assertReleasedRPrivateLibrary(result: Readonly<Record<string, unknown>>, description: string): void {
+  assert.equal(result.privateLibraryFirst, true, `The ${description} must put R_LIBS_USER first in .libPaths().`);
+  assert.equal(result.irKernelFromPrivateLibrary, true, `The ${description} must load IRkernel from R_LIBS_USER.`);
+}
+
 async function waitForReleasedRRuntimeBindingCleanup(
   notebook: vscode.NotebookDocument,
   notebookEditor: vscode.NotebookEditor,
@@ -2126,6 +2144,7 @@ async function exerciseReleasedRJupyterExtension(
     const setup = releasedNotebookJsonResult(setupCell, RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
     assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
     assertReleasedRVersion(setup, kernelTarget, "R setup");
+    assertReleasedRPrivateLibrary(setup, "R setup");
     assert.equal(setup.collapseVersion, "2.1.7");
     assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
     if (kernelTarget.remote) {
@@ -2604,6 +2623,7 @@ async function exerciseReleasedRJupyterExtension(
     );
     assert.notEqual(Number(replacementSetup.pid), Number(setup.pid));
     assertReleasedRVersion(replacementSetup, kernelTarget, "replacement R setup");
+    assertReleasedRPrivateLibrary(replacementSetup, "replacement R setup");
     assert.equal(replacementSetup.collapseVersion, "2.1.7");
     if (kernelTarget.remote) {
       assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
