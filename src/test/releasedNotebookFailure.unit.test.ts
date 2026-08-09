@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  releasedNotebookErrorDiagnostic,
   releasedNotebookExecutionFailureMessage,
   releasedNotebookOutputClassification,
   releasedNotebookRSetupFailureStage
@@ -41,6 +42,78 @@ describe("released notebook failure diagnostics", () => {
     expect(releasedNotebookOutputClassification(outputs)).toBe("no-notebook-error-output");
     expect(releasedNotebookExecutionFailureMessage(0, outputs)).toBe(
       "Released-Jupyter cell 0 failed (no-notebook-error-output)."
+    );
+  });
+
+  it("reports only a fixed R parse category and bounded location", () => {
+    const privateMaterial = "/tmp/private token=do-not-retain -----BEGIN PRIVATE KEY-----";
+    const outputs = [
+      {
+        items: [
+          {
+            mime: "application/vnd.code.notebook.error",
+            data: Buffer.from(
+              JSON.stringify({
+                name: `attacker-controlled ${privateMaterial}`,
+                message: "Error in parse(text = code): <text>:42:7: unexpected end of input",
+                stack: `source line and ${privateMaterial}`
+              }),
+              "utf8"
+            )
+          }
+        ]
+      }
+    ];
+
+    expect(releasedNotebookErrorDiagnostic(outputs)).toBe("R parse error at 42:7 (unexpected end of input)");
+    const message = releasedNotebookExecutionFailureMessage(0, outputs);
+    expect(message).toBe(
+      "Released-Jupyter cell 0 failed (notebook-error-output; R parse error at 42:7 (unexpected end of input))."
+    );
+    expect(message).not.toContain(privateMaterial);
+    expect(message).not.toContain("source line");
+  });
+
+  it("recognizes fixed kernel, cancellation, dependency, and native-load failures", () => {
+    const error = (message: string) => [
+      {
+        items: [
+          {
+            mime: "application/vnd.code.notebook.error",
+            data: Buffer.from(JSON.stringify({ name: "ERROR", message }), "utf8")
+          }
+        ]
+      }
+    ];
+
+    expect(releasedNotebookErrorDiagnostic(error("The kernel died while waiting for a reply."))).toBe("kernel stopped");
+    expect(releasedNotebookErrorDiagnostic(error("Execution was cancelled."))).toBe("execution cancelled");
+    expect(releasedNotebookErrorDiagnostic(error("there is no package called ‘collapse’"))).toBe(
+      "missing R package collapse"
+    );
+    expect(releasedNotebookErrorDiagnostic(error("DLL load failed while loading a package"))).toBe(
+      "R package failed to load"
+    );
+  });
+
+  it("falls back to the opaque classification for malformed, oversized, unknown, or conflicting errors", () => {
+    const item = (data: Buffer) => ({ mime: "application/vnd.code.notebook.error", data });
+    const unknown = item(Buffer.from(JSON.stringify({ name: "Error", message: "secret=/tmp/private" }), "utf8"));
+    expect(releasedNotebookErrorDiagnostic([{ items: [item(Buffer.from("not json", "utf8"))] }])).toBeUndefined();
+    expect(releasedNotebookErrorDiagnostic([{ items: [item(Buffer.alloc(16 * 1024 + 1, 0x78))] }])).toBeUndefined();
+    expect(releasedNotebookErrorDiagnostic([{ items: [unknown] }])).toBeUndefined();
+    expect(
+      releasedNotebookErrorDiagnostic([
+        {
+          items: [
+            item(Buffer.from(JSON.stringify({ name: "Error", message: "<text>:2:1: unexpected symbol" }), "utf8")),
+            item(Buffer.from(JSON.stringify({ name: "Error", message: "The kernel stopped." }), "utf8"))
+          ]
+        }
+      ])
+    ).toBeUndefined();
+    expect(releasedNotebookExecutionFailureMessage(0, [{ items: [unknown] }])).toBe(
+      "Released-Jupyter cell 0 failed (notebook-error-output)."
     );
   });
 

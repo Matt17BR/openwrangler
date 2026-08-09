@@ -566,7 +566,10 @@ The local kernel installs missing packages into a temporary library. Linux uses
 nanoparquet 0.5.1 come from the matching reviewed `2026-06-01` snapshot. macOS builds collapse from source; Linux
 and Windows use the snapshot's binary package. The Linux document journey also installs languageserver 0.3.17,
 rmarkdown 2.30, and knitr 1.51 in that private library. IRkernel starts with that library already present in
-`.libPaths()`. The preflight runs the same 1,205-row,
+`.libPaths()`. Before the dataframe fixture runs, one small cell confirms that the selected controller can execute R;
+this separates kernel startup failures from fixture failures. Notebook errors are reduced to a short fixed category
+such as a parse error, stopped kernel, cancellation, or missing pinned package. Raw messages and stacks are not kept.
+The preflight runs the same 1,205-row,
 25-column collapse conversions, grouping, and indexing used by the notebook journey, so a platform-specific native
 failure is reported before the editor launches. The journey covers projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
