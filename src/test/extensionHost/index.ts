@@ -4136,14 +4136,12 @@ function textDocumentTab(uri: vscode.Uri): vscode.Tab | undefined {
 }
 
 async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
-  await requireFreshExactSessionPanelHydration(
+  let app = await releasedRSessionApp(
+    workbench,
     testing,
     sessionId,
-    "The native R renderer must acknowledge its first complete host snapshot."
+    "the native R renderer's first complete host snapshot"
   );
-  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-  const app = await exactSessionApp(target.frame, sessionId);
-  assert.ok(app, "The native R journey requires its exact production webview.");
   assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
   assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "VIEWING");
   await app
@@ -4159,7 +4157,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   await profiles.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await profiles.isEnabled(), true);
   assert.equal(await profiles.getAttribute("aria-pressed"), "false", "R header profiles must start off.");
-  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  let columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill("score");
   await app
     .getByRole("option", { name: /^score,/u })
@@ -4171,7 +4169,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   await profileToggle.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await profileToggle.isEnabled(), true);
   await profileToggle.click();
-  const drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  let drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await drawer.waitFor({ state: "visible", timeout: 10_000 });
   const columnProfile = drawer.getByRole("tabpanel");
   await columnProfile.getByRole("heading", { name: "score", exact: true }).waitFor({
@@ -4246,11 +4244,18 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     30_000,
     "the cross-column native R filter to publish its one matching row"
   );
-  await requireFreshExactSessionPanelHydration(
+  app = await releasedRSessionApp(
+    workbench,
     testing,
     sessionId,
-    "The native R filter result must be acknowledged before its row and profile are inspected."
+    "the native R filter result before its row and profile are inspected"
   );
+  const filteredProfileToggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });
+  if ((await filteredProfileToggle.getAttribute("aria-expanded")) !== "true") await filteredProfileToggle.click();
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+  filterPanel = drawer.locator(".filterSortPanel").first();
 
   const filteredSession = testing.activeSession();
   assert.ok(filteredSession, "The native R filter journey requires its confirmed session.");
@@ -4278,7 +4283,7 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     .getByRole("button", { name: 'Remove equals "B" filter from group', exact: true })
     .waitFor({ state: "visible", timeout: 10_000 });
 
-  const visibleRows = app.getByRole("status", { name: "Visible rows" });
+  let visibleRows = app.getByRole("status", { name: "Visible rows" });
   await waitForLocatorText(visibleRows, (text) => text.trim() === "Rows 1–1 of 1", 10_000, "the filtered R row");
   await app
     .getByRole("rowheader", { name: "Row 1, label case-1200", exact: true })
@@ -4369,18 +4374,19 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     30_000,
     "Clear all to restore the complete native R frame"
   );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The cleared native R view must be acknowledged before paging resumes."
-  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the cleared native R view before paging resumes");
+  visibleRows = app.getByRole("status", { name: "Visible rows" });
+  columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await waitForLocatorText(
     visibleRows,
     (text) => text.trim() === "Rows 1–200 of 1,205",
     10_000,
     "the restored native R frame"
   );
-  await drawer.getByRole("button", { name: "Close panel" }).click();
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  if ((await drawer.count()) > 0 && (await drawer.isVisible())) {
+    await drawer.getByRole("button", { name: "Close panel" }).click();
+  }
 
   const next = app.getByRole("button", { name: "Next block", exact: true });
   for (const expected of [
@@ -6162,11 +6168,7 @@ async function exerciseReleasedREditingJourney(
     30_000,
     "applying the native R Text Length step"
   );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The applied R Text Length step must be acknowledged before inspection."
-  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Text Length step before inspection");
   const appliedLength = testing.activeSession();
   assert.ok(appliedLength, "The applied native R Text Length step must retain its session.");
   assertReleasedRTextLengthGeneratedCode(appliedLength.code ?? "", "label", "label_length");
@@ -8034,15 +8036,12 @@ async function captureReleasedRJupyterWorkbench(
       30_000,
       "the R media filters and ordered sorts to publish one combined view"
     );
-    await requireFreshExactSessionPanelHydration(
+    app = await releasedRSessionApp(
+      workbench,
       testing,
       sessionId,
-      "The R media filter result must be acknowledged before its profile is captured."
+      "the R media filter result before its profile is captured"
     );
-
-    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-    app = await exactSessionApp(target.frame, sessionId);
-    assert.ok(app, "The filtered R screenshot must retain its exact renderer.");
     const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
     await columnSearch.fill("revenue");
     await app
@@ -8055,12 +8054,11 @@ async function captureReleasedRJupyterWorkbench(
       10_000,
       "the R media scene to select its revenue column"
     );
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      "The R media revenue selection must be acknowledged before profiling."
-    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the R media revenue selection before profiling");
     drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    const selectedProfileToggle = app.getByRole("button", { name: "Column profiles and filters", exact: true });
+    if ((await selectedProfileToggle.getAttribute("aria-expanded")) !== "true") await selectedProfileToggle.click();
+    await drawer.waitFor({ state: "visible", timeout: 10_000 });
     await drawer.getByRole("tab", { name: "Column", exact: true }).click();
     const profile = drawer.getByRole("tabpanel");
     await profile.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
