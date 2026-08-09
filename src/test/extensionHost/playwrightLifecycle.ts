@@ -31,6 +31,13 @@ interface RendererButtonProbe {
   isEnabled(options?: { readonly timeout?: number }): Promise<boolean>;
 }
 
+interface AcceptanceFailureReacquisitionOptions<T, D> {
+  readonly timeoutMs: number;
+  readonly diagnose: (deadline: number) => Promise<D>;
+  readonly reacquire: (deadline: number) => Promise<T | undefined>;
+  readonly now?: () => number;
+}
+
 interface KeyboardKeyPair {
   down(key: string): Promise<void>;
   up(key: string): Promise<void>;
@@ -302,11 +309,30 @@ export async function acquirePreparedAcceptanceAction<T>({
 
 export async function probeRendererButtonReadiness(
   button: RendererButtonProbe,
-  enabledProbeTimeoutMs: number
+  enabledProbeTimeoutMs: number,
+  requireEnabled = true
 ): Promise<boolean> {
-  if ((await button.count()) === 0) return false;
+  if ((await button.count()) !== 1) return false;
   if (!(await button.isVisible())) return false;
-  return button.isEnabled({ timeout: enabledProbeTimeoutMs });
+  return !requireEnabled || button.isEnabled({ timeout: enabledProbeTimeoutMs });
+}
+
+export async function diagnoseThenReacquireAcceptanceAction<T, D>({
+  timeoutMs,
+  diagnose,
+  reacquire,
+  now = Date.now
+}: AcceptanceFailureReacquisitionOptions<T, D>): Promise<{
+  readonly action: T | undefined;
+  readonly diagnostics: D;
+}> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error("Acceptance failure reacquisition requires a positive safe-integer timeout.");
+  }
+  const deadline = now() + timeoutMs;
+  const diagnostics = await diagnose(deadline);
+  const action = await reacquire(deadline);
+  return { action, diagnostics };
 }
 
 export async function pressKeyboardKeyPairWithoutTransitionGap(keyboard: KeyboardKeyPair, key: string): Promise<void> {

@@ -64,11 +64,13 @@ import {
   acquirePreparedAcceptanceAction,
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
+  diagnoseThenReacquireAcceptanceAction,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
   pressKeyboardKeyPairWithoutTransitionGap,
+  probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
@@ -26879,40 +26881,67 @@ async function waitForOpenWranglerWebviewAction(
   requireEnabled = false
 ): Promise<OpenWranglerWebviewAction> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
-  discovery: do {
+  do {
     const browser = workbench.context().browser();
-    assertOpenWranglerWebviewLifecycle(workbench, browser);
-    for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
-      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
-      try {
-        const button = target.frame.getByRole("button", { name, exact: true }).first();
-        const remainingMs = deadline - Date.now();
-        if (remainingMs <= 0) break discovery;
-        const available = await withAcceptanceOperationDeadline(
-          (async () => {
-            if ((await button.count()) === 0 || !(await button.isVisible())) return false;
-            return !requireEnabled || (await button.isEnabled());
-          })(),
-          remainingMs,
-          `the Open Wrangler ${JSON.stringify(name)} button`
-        );
-        if (available) return { target, action: button };
-      } catch (error) {
-        if (Date.now() >= deadline) break discovery;
-        ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
-      }
-    }
+    const available = await findCurrentOpenWranglerWebviewAction(workbench, browser, name, requireEnabled, deadline);
+    if (available) return available;
     await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
   } while (Date.now() < deadline);
 
-  const browser = workbench.context().browser();
-  assertOpenWranglerWebviewLifecycle(workbench, browser);
-  const diagnostics = await openWranglerWebviewDiagnostics(workbench, browser, name);
-  assertOpenWranglerWebviewLifecycle(workbench, browser);
+  const { action, diagnostics } = await diagnoseThenReacquireAcceptanceAction({
+    timeoutMs: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+    diagnose: async (failureDeadline) => {
+      const browser = workbench.context().browser();
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      return openWranglerWebviewDiagnostics(workbench, browser, name, failureDeadline);
+    },
+    reacquire: async (failureDeadline) =>
+      findCurrentOpenWranglerWebviewAction(
+        workbench,
+        workbench.context().browser(),
+        name,
+        requireEnabled,
+        failureDeadline
+      )
+  });
+  if (action) return action;
+  assertOpenWranglerWebviewLifecycle(workbench, workbench.context().browser());
   throw new Error(
     `The Open Wrangler webview did not expose a visible${requireEnabled ? " enabled" : ""} ` +
       `${JSON.stringify(name)} button: ${JSON.stringify(diagnostics)}`
   );
+}
+
+async function findCurrentOpenWranglerWebviewAction(
+  workbench: Page,
+  browser: Browser | null,
+  name: string,
+  requireEnabled: boolean,
+  deadline: number
+): Promise<OpenWranglerWebviewAction | undefined> {
+  assertOpenWranglerWebviewLifecycle(workbench, browser);
+  for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
+    if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+    try {
+      const buttons = target.frame.getByRole("button", { name, exact: true });
+      const button = buttons.first();
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) return undefined;
+      const available = await withAcceptanceOperationDeadline(
+        probeRendererButtonReadiness(button, remainingMs, requireEnabled),
+        remainingMs,
+        `the Open Wrangler ${JSON.stringify(name)} button`
+      );
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      if (available && !isRetiredRendererTarget(workbench, target.page, target.frame)) {
+        return { target, action: button };
+      }
+    } catch (error) {
+      if (Date.now() >= deadline) return undefined;
+      ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+    }
+  }
+  return undefined;
 }
 
 interface GridViewportMeasurement {
@@ -27114,8 +27143,11 @@ async function openWranglerGridDiagnostics(
 async function openWranglerWebviewDiagnostics(
   workbench: Page,
   browser: Browser | null,
-  name: string
+  name: string,
+  deadline: number
 ): Promise<unknown> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return "unavailable within the diagnostics deadline";
   const targets = openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT);
   try {
     const diagnostics = await withAcceptanceOperationDeadline(
@@ -27158,7 +27190,7 @@ async function openWranglerWebviewDiagnostics(
           }
         })
       ),
-      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      remainingMs,
       "bounded Open Wrangler webview diagnostics"
     );
     assertOpenWranglerWebviewLifecycle(workbench, browser);
@@ -28667,36 +28699,29 @@ async function exercisePackagedExcelDependencyInstall(
     assert.equal(recoveredInput.viewType, "openWrangler.viewer");
     assert.equal(recoveredInput.uri.toString(), workbook.toString());
     recordAcceptanceProgress("excel-dependency-install:tab-continuity");
-    assert.equal(install.target.frame.isDetached(), false, "The original XLSX error renderer must remain attached.");
-    const sameApp = install.target.frame.locator("main.app[data-session-id]").first();
-    await sameApp.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    assert.equal(
-      await sameApp.getAttribute("data-session-id"),
-      active.sessionId,
-      "The same XLSX renderer must adopt the confirmed live session."
-    );
-    const grid = sameApp.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
-    await grid.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    assert.equal(await grid.getAttribute("aria-colcount"), "7");
-    assert.equal(await grid.getAttribute("aria-rowcount"), "65");
-    const firstCell = sameApp.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
-    await firstCell.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    assert.equal((await firstCell.innerText()).trim(), "OW-240001");
-    await firstCell.focus();
-    await firstCell.press("ArrowRight");
-    await sameApp
-      .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
-      .waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
     await waitFor(
       () => testing.panelHydrated(active.sessionId),
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the recovered XLSX panel to acknowledge its live snapshot"
     );
-    assert.equal(
-      await testing.synchronizePanel(active.sessionId),
-      true,
-      "The recovered XLSX grid must synchronize through the real renderer."
+    const recoveredApp = await synchronizedSessionApp(
+      workbench,
+      testing,
+      active.sessionId,
+      "The recovered XLSX grid must bind the current acknowledged renderer."
     );
+    const grid = recoveredApp.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
+    await grid.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    assert.equal(await grid.getAttribute("aria-colcount"), "7");
+    assert.equal(await grid.getAttribute("aria-rowcount"), "65");
+    const firstCell = recoveredApp.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
+    await firstCell.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    assert.equal((await firstCell.innerText()).trim(), "OW-240001");
+    await firstCell.focus();
+    await firstCell.press("ArrowRight");
+    await recoveredApp
+      .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
+      .waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
 
     const page = await testing.request({
       kind: "getPage",

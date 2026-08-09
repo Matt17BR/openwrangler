@@ -3,6 +3,7 @@ import {
   acquirePreparedAcceptanceAction,
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
+  diagnoseThenReacquireAcceptanceAction,
   IndeterminateAcceptanceActionError,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnce,
@@ -663,6 +664,19 @@ describe("extension-host Playwright lifecycle", () => {
     expect(button.isEnabled).not.toHaveBeenCalled();
   });
 
+  it("rejects an ambiguous renderer action without probing presentation or enabled state", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(2),
+      isVisible: vi.fn().mockResolvedValue(true),
+      isEnabled: vi.fn().mockResolvedValue(true)
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000)).resolves.toBe(false);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).not.toHaveBeenCalled();
+    expect(button.isEnabled).not.toHaveBeenCalled();
+  });
+
   it("reports a hidden renderer button without probing enabled state", async () => {
     const button = {
       count: vi.fn().mockResolvedValue(1),
@@ -687,6 +701,19 @@ describe("extension-host Playwright lifecycle", () => {
     expect(button.count).toHaveBeenCalledOnce();
     expect(button.isVisible).toHaveBeenCalledOnce();
     expect(button.isEnabled).toHaveBeenCalledWith({ timeout: 1_000 });
+  });
+
+  it("accepts a visible renderer action when enabled state is not required", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(1),
+      isVisible: vi.fn().mockResolvedValue(true),
+      isEnabled: vi.fn().mockResolvedValue(false)
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000, false)).resolves.toBe(true);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).toHaveBeenCalledOnce();
+    expect(button.isEnabled).not.toHaveBeenCalled();
   });
 
   it("reports a visible enabled renderer button without scrolling, focusing, or clicking", async () => {
@@ -734,6 +761,61 @@ describe("extension-host Playwright lifecycle", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("reacquires an action that appears while bounded diagnostics run", async () => {
+    let now = 1_000;
+    let replacementReady = false;
+    const diagnose = vi.fn(async (deadline: number) => {
+      expect(deadline).toBe(6_000);
+      replacementReady = true;
+      now = 1_250;
+      return { targets: 2 };
+    });
+    const reacquire = vi.fn(async (deadline: number) => {
+      expect(deadline).toBe(6_000);
+      return replacementReady && now < deadline ? "replacement" : undefined;
+    });
+
+    await expect(
+      diagnoseThenReacquireAcceptanceAction({
+        timeoutMs: 5_000,
+        diagnose,
+        reacquire,
+        now: () => now
+      })
+    ).resolves.toEqual({ action: "replacement", diagnostics: { targets: 2 } });
+    expect(diagnose).toHaveBeenCalledOnce();
+    expect(reacquire).toHaveBeenCalledOnce();
+  });
+
+  it("does not extend the failure budget when diagnostics consume it", async () => {
+    let now = 1_000;
+    const reacquire = vi.fn(async (deadline: number) => (now < deadline ? "late action" : undefined));
+
+    await expect(
+      diagnoseThenReacquireAcceptanceAction({
+        timeoutMs: 5_000,
+        diagnose: async (deadline) => {
+          expect(deadline).toBe(6_000);
+          now = deadline;
+          return "timed out";
+        },
+        reacquire,
+        now: () => now
+      })
+    ).resolves.toEqual({ action: undefined, diagnostics: "timed out" });
+    expect(reacquire).toHaveBeenCalledWith(6_000);
+  });
+
+  it.each([0, Number.NaN])("rejects an invalid failure-reacquisition timeout (%s)", async (timeoutMs) => {
+    await expect(
+      diagnoseThenReacquireAcceptanceAction({
+        timeoutMs,
+        diagnose: async () => "unused",
+        reacquire: async () => "unused"
+      })
+    ).rejects.toThrow("Acceptance failure reacquisition requires a positive safe-integer timeout.");
   });
 
   it("retires a closed auxiliary page without treating the workbench as closed", () => {
