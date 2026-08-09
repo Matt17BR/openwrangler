@@ -101,6 +101,13 @@ const R_ACCEPTANCE_PROBE = [
   "  as.character(utils::packageVersion(.ow_package, lib.loc = .ow_library))",
   "}, character(1L), USE.NAMES = FALSE)",
   'if (!identical(.ow_versions, unname(.ow_expected))) quit(save = "no", status = 11L)',
+  ".ow_loadable <- vapply(.ow_packages, function(.ow_package) {",
+  "  tryCatch({",
+  "    loadNamespace(.ow_package, lib.loc = .ow_library)",
+  "    TRUE",
+  "  }, error = function(...) FALSE)",
+  "}, logical(1L), USE.NAMES = FALSE)",
+  'if (any(!.ow_loadable)) quit(save = "no", status = 12L)',
   'cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'
 ].join("\n");
 export function rAcceptanceRepositories(platform = process.platform) {
@@ -119,11 +126,27 @@ export function rAcceptanceRepositories(platform = process.platform) {
   throw new Error(`Released-Jupyter R acceptance does not support ${JSON.stringify(platform)}.`);
 }
 
-function rAcceptanceInstall({ repository, supplementalRepository }) {
+function rAcceptanceInstall({ repository, supplementalRepository }, platform) {
+  const macosCollapseInstall =
+    platform === "darwin"
+      ? [
+          "utils::install.packages(",
+          '  "collapse",',
+          "  lib = .ow_library,",
+          `  repos = ${JSON.stringify(supplementalRepository)},`,
+          '  type = "source",',
+          "  dependencies = NA,",
+          "  quiet = TRUE",
+          ")"
+        ]
+      : [];
   return [
     'Sys.setenv(MAKEFLAGS = "-s")',
     `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     '.ow_supplemental_packages <- c("collapse", "nanoparquet")',
+    platform === "darwin"
+      ? '.ow_binary_supplemental_packages <- "nanoparquet"'
+      : ".ow_binary_supplemental_packages <- .ow_supplemental_packages",
     ".ow_core_packages <- setdiff(.ow_packages, .ow_supplemental_packages)",
     '.ow_library <- normalizePath(Sys.getenv("R_LIBS_USER"), winslash = "/", mustWork = TRUE)',
     "utils::install.packages(",
@@ -134,12 +157,13 @@ function rAcceptanceInstall({ repository, supplementalRepository }) {
     "  quiet = TRUE",
     ")",
     "utils::install.packages(",
-    "  .ow_supplemental_packages,",
+    "  .ow_binary_supplemental_packages,",
     "  lib = .ow_library,",
     `  repos = ${JSON.stringify(supplementalRepository)},`,
     "  dependencies = NA,",
     "  quiet = TRUE",
-    ")"
+    ")",
+    ...macosCollapseInstall
   ].join("\n");
 }
 
@@ -449,7 +473,7 @@ export async function prepareJupyterAcceptanceREnvironment(
   const dependencyInstall = freezeRCommandInvocation(
     {
       executable: canonicalRscript,
-      args: ["--vanilla", "-e", rAcceptanceInstall(repositories)],
+      args: ["--vanilla", "-e", rAcceptanceInstall(repositories, platform)],
       environment: commandEnvironment,
       label: "Released-Jupyter private R dependency installation"
     },
