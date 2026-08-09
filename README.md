@@ -302,7 +302,7 @@ profiling; Parquet workbench and profiling times were similar. Data Wrangler con
 Open Wrangler kept it in Polars. The test did not time conversion separately, so it cannot say how much that difference
 affected the result.
 
-The [detailed benchmark report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
+The [Open Wrangler 1.2.1 benchmark report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
 includes the fixtures, median and p95 timings, memory use, exact versions, failures, and method.
 
 ## Roadmap
