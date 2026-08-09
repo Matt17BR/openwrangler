@@ -402,6 +402,18 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
     "Grouped-fill acceptance must scroll CodeMirror to the generated operation instead of assuming its virtualized line is already mounted."
   );
   assert.doesNotMatch(groupedFill, /waitForCodePreview\(workbench, "grouped"\)/u);
+  const linearFill = source.slice(
+    source.indexOf("async function exercisePackagedLinearInterpolationJourney("),
+    source.indexOf("async function previewUppercaseMarket(")
+  );
+  assert.match(linearFill, /const code = testing\.activeSession\(\)\?\.code \?\? ""/u);
+  assert.match(linearFill, /waitForCodePreview\(workbench, "import polars as pl"\)/u);
+  assert.match(
+    linearFill,
+    /revealCodePreviewOperationLine\([\s\S]*_ow_polars_fill_missing_linear_interpolation/u,
+    "Linear-interpolation acceptance must scroll CodeMirror to the generated operation instead of assuming its virtualized line is already mounted."
+  );
+  assert.doesNotMatch(linearFill, /waitForCodePreview\(workbench, "_ow_polars_fill_missing_linear_interpolation"\)/u);
   assert.match(
     firstUseJourney,
     /openSidePanel\("Column"\)/u,

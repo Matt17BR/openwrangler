@@ -15649,14 +15649,19 @@ async function exercisePackagedLinearInterpolationJourney(
   );
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 
-  const codePreview = await waitForCodePreview(workbench, "_ow_polars_fill_missing_linear_interpolation");
-  const code = await codePreview.innerText();
+  const code = testing.activeSession()?.code ?? "";
   assert.match(code, /^import polars as pl$/mu);
   assert.ok(
     code.includes("df = _ow_polars_fill_missing_linear_interpolation(df, 'measurement', 'coordinate', 3)"),
     "Generated Polars code must call linear interpolation with the exact selected columns and gap limit."
   );
   assert.doesNotMatch(code, /\b(?:pandas|duckdb|Rscript)\b/iu);
+  const codePreview = await waitForCodePreview(workbench, "import polars as pl");
+  await revealCodePreviewOperationLine(
+    codePreview,
+    "_ow_polars_fill_missing_linear_interpolation(df, 'measurement', 'coordinate', 3)",
+    "return df"
+  );
 
   const refreshedTarget = await waitForOpenWranglerGridTarget(workbench, testing, opened.sessionId);
   app = await exactSessionApp(refreshedTarget.frame, opened.sessionId);
