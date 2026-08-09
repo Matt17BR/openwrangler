@@ -367,13 +367,9 @@ try {
                   ? "python"
                   : "python3");
           process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-          if (
-            jupyterExtensionInstallTarget &&
-            acceptanceMode !== "r-jupyter" &&
-            (!isAbsolute(testPython) || !existsSync(testPython))
-          ) {
+          if (jupyterExtensionInstallTarget && (!isAbsolute(testPython) || !existsSync(testPython))) {
             throw new Error(
-              "Real Jupyter-extension acceptance requires OPEN_WRANGLER_TEST_PYTHON to resolve to an existing absolute interpreter."
+              "Real Jupyter-extension acceptance requires OPEN_WRANGLER_TEST_PYTHON to resolve to an existing absolute interpreter with jupyter_client."
             );
           }
           if (acceptanceMode !== "data-wrangler-coexistence" && acceptanceMode !== "r-jupyter") {
