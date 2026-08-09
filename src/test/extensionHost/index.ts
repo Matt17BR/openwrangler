@@ -14124,7 +14124,7 @@ async function exercisePackagedFirstUseInteractionJourney(
     );
   };
   const openSidePanel = async (
-    view?: "Column profiles" | "Filters / Sorts"
+    view?: "Column" | "Filters / Sorts"
   ): Promise<{ readonly drawer: Locator; readonly toggle: Locator }> => {
     let toggle = app.getByRole("button", { name: "Column profiles and filters" });
     if ((await toggle.getAttribute("aria-expanded")) !== "true") {
@@ -14166,7 +14166,7 @@ async function exercisePackagedFirstUseInteractionJourney(
   columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
 
   recordAcceptanceProgress("platform-smoke:insights");
-  let { drawer, toggle: insightsToggle } = await openSidePanel("Column profiles");
+  let { drawer, toggle: insightsToggle } = await openSidePanel("Column");
   await drawer.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await waitForLocatorText(
     drawer,
@@ -14206,7 +14206,7 @@ async function exercisePackagedFirstUseInteractionJourney(
   );
   app = await rediscoverApp("Account-note column navigation");
   columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
-  ({ drawer, toggle: insightsToggle } = await openSidePanel("Column profiles"));
+  ({ drawer, toggle: insightsToggle } = await openSidePanel("Column"));
   await drawer.getByRole("heading", { name: "account_note", exact: true }).waitFor({
     state: "visible",
     timeout: 10_000
