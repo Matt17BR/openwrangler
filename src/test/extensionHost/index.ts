@@ -14850,9 +14850,12 @@ async function previewAndDiscardPreviousRevenue(
       "[{'column': 'order_id', 'direction': 'asc', 'nulls': 'last'}], 'forward', 1)",
     "return df"
   );
-  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-  const refreshedApp = await exactSessionApp(target.frame, sessionId);
-  assert.ok(refreshedApp, "The previous-value preview must retain the exact Open Wrangler renderer.");
+  const refreshedApp = await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "The previous-value preview must retain the acknowledged Open Wrangler renderer."
+  );
   const previewGap = await testing.request({
     kind: "getPage",
     sessionId,
@@ -14878,7 +14881,58 @@ async function previewAndDiscardPreviousRevenue(
     .locator('[aria-label="Data diff summary"]')
     .getByText(/^[1-9][\d,]* existing cells? changed(?: in this block)?$/u)
     .waitFor({ state: "visible", timeout: 10_000 });
-  await review.getByRole("button", { name: "Discard", exact: true }).click();
+  const discard = review.getByRole("button", { name: "Discard", exact: true });
+  const schedulerBeforeDiscard = testing.sessionSchedulerState(sessionId);
+  assert.equal(
+    schedulerBeforeDiscard?.activeForegroundOperation,
+    false,
+    "The previous-value Discard action requires no earlier foreground operation."
+  );
+  assert.equal(
+    schedulerBeforeDiscard?.interactiveQueueLength,
+    0,
+    "The previous-value Discard action requires an empty foreground queue."
+  );
+  const discardElement = await discard.elementHandle({ timeout: 10_000 });
+  assert.ok(discardElement, "The previous-value draft must expose one exact Discard action.");
+  const discardState = (): Record<string, unknown> => {
+    const current = testing.activeSession();
+    return {
+      revision: current?.metadata.revision,
+      previewRevision: preview.metadata.revision,
+      draft: current?.metadata.draftStep?.kind,
+      stepCount: current?.metadata.steps.length,
+      scheduler: testing.sessionSchedulerState(sessionId),
+      panelHydrated: testing.panelHydrated(sessionId),
+      panelSynchronizable: testing.panelSynchronizable(sessionId)
+    };
+  };
+  const waitForDiscardDispatch = (): Promise<void> =>
+    waitFor(
+      () => {
+        const current = testing.activeSession();
+        const scheduler = testing.sessionSchedulerState(sessionId);
+        return Boolean(
+          current &&
+          (current.metadata.revision > preview.metadata.revision ||
+            scheduler?.activeForegroundOperation ||
+            (scheduler?.interactiveQueueLength ?? 0) > 0)
+        );
+      },
+      5_000,
+      "the previous-value Discard action to reach the coordinator",
+      () => JSON.stringify(discardState())
+    );
+  try {
+    await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+      description: "the previous-value draft Discard action",
+      activate: () => activateExactAcceptanceElementOnce(discardElement, 10_000),
+      receipt: waitForDiscardDispatch,
+      authoritativeReceiptAfterActivationFailure: waitForDiscardDispatch
+    });
+  } finally {
+    await discardElement.dispose();
+  }
   await waitFor(
     () => {
       const current = testing.activeSession();
@@ -14891,7 +14945,8 @@ async function previewAndDiscardPreviousRevenue(
       );
     },
     30_000,
-    "discarding the previous-value fill preview"
+    "discarding the previous-value fill preview",
+    () => JSON.stringify(discardState())
   );
   await review.waitFor({ state: "hidden", timeout: 10_000 });
   return refreshedApp;
