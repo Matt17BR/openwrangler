@@ -343,16 +343,19 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
   const assertFirstUseMutationReacquisition = ({ settledMarker, boundaryMarker, reacquisitionMarker, nextMarker }) => {
     const settled = firstUseJourney.indexOf(settledMarker);
     const boundary = firstUseJourney.indexOf(boundaryMarker, settled);
-    const automaticHydration = firstUseJourney.indexOf("() => testing.panelHydrated(sessionId)", boundary);
-    const discoveryTimeout = firstUseJourney.indexOf("OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS", automaticHydration);
+    const currentRevisionHydration = firstUseJourney.indexOf("confirmedMutationRendererReady", boundary);
+    const discoveryTimeout = firstUseJourney.indexOf(
+      "OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS",
+      currentRevisionHydration
+    );
     const diagnostics = firstUseJourney.indexOf("confirmedMutationDiagnostics", discoveryTimeout);
     const reacquired = firstUseJourney.indexOf(reacquisitionMarker, diagnostics);
     const next = firstUseJourney.indexOf(nextMarker, reacquired);
     assert.ok(
       settled >= 0 &&
         boundary >= settled &&
-        automaticHydration > boundary &&
-        discoveryTimeout > automaticHydration &&
+        currentRevisionHydration > boundary &&
+        discoveryTimeout > currentRevisionHydration &&
         diagnostics > discoveryTimeout &&
         reacquired > diagnostics &&
         next > reacquired,
@@ -384,12 +387,18 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
   });
   const confirmedMutationDiagnostics = firstUseJourney.slice(
     firstUseJourney.indexOf("const confirmedMutationDiagnostics ="),
-    firstUseJourney.indexOf("const profileWaitDiagnostics =")
+    firstUseJourney.indexOf("const confirmedMutationRendererReady =")
   );
   assert.match(confirmedMutationDiagnostics, /scheduler: testing\.sessionSchedulerState\(sessionId\)/u);
   assert.match(confirmedMutationDiagnostics, /hydrated: testing\.panelHydrated\(sessionId\)/u);
   assert.match(confirmedMutationDiagnostics, /synchronizable: testing\.panelSynchronizable\(sessionId\)/u);
   assert.match(confirmedMutationDiagnostics, /receipt: testing\.panelSynchronizationReceipt\(sessionId\)/u);
+  const confirmedMutationRendererReady = firstUseJourney.slice(
+    firstUseJourney.indexOf("const confirmedMutationRendererReady ="),
+    firstUseJourney.indexOf("const profileWaitDiagnostics =")
+  );
+  assert.match(confirmedMutationRendererReady, /testing\.panelHydrated\(sessionId\)/u);
+  assert.match(confirmedMutationRendererReady, /receipt\.revision === active\.metadata\.revision/u);
   const groupedFill = source.slice(
     source.indexOf("async function previewApplyAndUndoGroupedRevenue("),
     source.indexOf("async function exercisePackagedLinearInterpolationJourney(")

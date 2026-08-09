@@ -14620,6 +14620,12 @@ async function exercisePackagedFirstUseInteractionJourney(
       }
     });
   };
+  const confirmedMutationRendererReady = (): boolean => {
+    const active = testing.activeSession();
+    const receipt = testing.panelSynchronizationReceipt(sessionId);
+    if (!active || active.sessionId !== sessionId || !receipt || receipt.sessionId !== sessionId) return false;
+    return testing.panelHydrated(sessionId) && receipt.revision === active.metadata.revision;
+  };
   const profileWaitDiagnostics =
     (expectedLabels: readonly string[]) =>
     (lastDrawerText: string): string => {
@@ -14923,7 +14929,7 @@ async function exercisePackagedFirstUseInteractionJourney(
   );
   await fillReview.waitFor({ state: "hidden", timeout: 10_000 });
   await waitFor(
-    () => testing.panelHydrated(sessionId),
+    confirmedMutationRendererReady,
     OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
     "the discarded most-common fill state to hydrate on its current renderer",
     confirmedMutationDiagnostics
@@ -15058,7 +15064,7 @@ async function exercisePackagedFirstUseInteractionJourney(
   await draftReview.waitFor({ state: "hidden", timeout: 10_000 });
   assert.equal(await draftReview.count(), 0, "Discarding the only draft must remove the compact draft-review region.");
   await waitFor(
-    () => testing.panelHydrated(sessionId),
+    confirmedMutationRendererReady,
     OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
     "the discarded uppercase state to hydrate on its current renderer",
     confirmedMutationDiagnostics
@@ -15087,7 +15093,7 @@ async function exercisePackagedFirstUseInteractionJourney(
     "applying the previewed uppercase step"
   );
   await waitFor(
-    () => testing.panelHydrated(sessionId),
+    confirmedMutationRendererReady,
     OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
     "the applied uppercase state to hydrate on its current renderer",
     confirmedMutationDiagnostics
