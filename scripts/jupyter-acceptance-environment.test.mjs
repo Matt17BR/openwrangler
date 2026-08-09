@@ -588,6 +588,13 @@ test("packaged-editor R acceptance wires the private R environment to local edit
     source,
     /remoteRJupyterEnabled =\s*acceptanceMode === "r-jupyter" && remoteJupyterEnabled && editor\.key === "vscode"/u
   );
+  const pythonGuard = source.indexOf("(!isAbsolute(testPython) || !existsSync(testPython))");
+  assert.ok(pythonGuard >= 0);
+  assert.doesNotMatch(
+    source.slice(source.lastIndexOf("if (", pythonGuard), pythonGuard),
+    /acceptanceMode !== "r-jupyter"/u,
+    "R Jupyter must reject a PATH-only Python before the private-kernel preflight."
+  );
 
   const setup = source.indexOf("rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(");
   const display = source.indexOf("editorDisplay = await startIsolatedEditorDisplay()");

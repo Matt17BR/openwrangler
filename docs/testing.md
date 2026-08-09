@@ -736,6 +736,7 @@ OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
 OPEN_WRANGLER_PACKAGED_EDITORS=vscode \
 OPEN_WRANGLER_REAL_JUPYTER_EXTENSION=1 \
 OPEN_WRANGLER_REAL_REMOTE_JUPYTER=0 \
+OPEN_WRANGLER_TEST_PYTHON=/absolute/path/to/python \
 OPEN_WRANGLER_TEST_RSCRIPT=/absolute/path/to/Rscript \
 OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS="$PWD/docs/images/editor-acceptance" \
 dbus-run-session -- node scripts/run-packaged-editor-tests.mjs /absolute/path/to/openwrangler.vsix
@@ -746,6 +747,7 @@ OPEN_WRANGLER_PACKAGED_MODE=r-jupyter \
 OPEN_WRANGLER_REAL_JUPYTER_EXTENSION=1 \
 OPEN_WRANGLER_REAL_REMOTE_JUPYTER=1 \
 OPEN_WRANGLER_PACKAGED_EDITORS=vscode,cursor \
+OPEN_WRANGLER_TEST_PYTHON=/absolute/path/to/python \
 OPEN_WRANGLER_TEST_RSCRIPT=/absolute/path/to/Rscript \
 npm run test:packaged-editors -- /absolute/path/to/openwrangler.vsix
 ```
