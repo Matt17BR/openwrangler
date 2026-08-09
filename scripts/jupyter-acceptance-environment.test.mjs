@@ -278,6 +278,23 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     }
     assert.match(prepared.dependencyProbe.input.args.at(-1), /status = 11L/u);
     assert.match(prepared.dependencyProbe.input.args.at(-1), /status = 12L/u);
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /OPEN_WRANGLER_R_COLLAPSE_PROBE:/u);
+    for (const [constructor, status] of [
+      ["qDF", 13],
+      ["qTBL", 14],
+      ["qDT", 15]
+    ]) {
+      assert.match(prepared.dependencyProbe.input.args.at(-1), new RegExp(`collapse::${constructor}\\(`, "u"));
+      assert.match(prepared.dependencyProbe.input.args.at(-1), new RegExp(`status = ${status}L`, "u"));
+    }
+    assert.equal(
+      (prepared.dependencyProbe.input.args.at(-1).match(/suppressMessages\(suppressWarnings\(/gu) ?? []).length,
+      3
+    );
+    assert.equal(
+      (prepared.dependencyProbe.input.args.at(-1).match(/error = function\(\.\.\.\) NULL/gu) ?? []).length,
+      3
+    );
     assert.equal(
       prepared.dependencyProbe.input.args
         .at(-1)
@@ -321,7 +338,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
   }
 });
 
-test("released-Jupyter R setup keeps collapse on the binary path outside macOS", async () => {
+test("released-Jupyter R setup builds collapse from source on macOS and Windows", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-binary-"));
   const rscript = join(directory, "Rscript");
   const rExecutable = join(directory, "R");
@@ -330,7 +347,7 @@ test("released-Jupyter R setup keeps collapse on the binary path outside macOS",
     await writeFile(rExecutable, "fake R executable\n");
     await chmod(rscript, 0o700);
     await chmod(rExecutable, 0o700);
-    for (const platform of ["linux", "win32"]) {
+    for (const platform of ["darwin", "win32"]) {
       const privateRoot = join(directory, platform);
       const prepared = await prepareJupyterAcceptanceREnvironment(privateRoot, rscript, {
         containedBy: directory,
@@ -341,10 +358,36 @@ test("released-Jupyter R setup keeps collapse on the binary path outside macOS",
         }
       });
       const install = prepared.dependencyInstall.input.args.at(-1);
-      assert.match(install, /\.ow_binary_supplemental_packages <- \.ow_supplemental_packages/u);
-      assert.doesNotMatch(install, /type = "source"/u);
-      assert.equal((install.match(/quiet = TRUE/gu) ?? []).length, 2);
+      assert.match(install, /\.ow_binary_supplemental_packages <- "nanoparquet"/u);
+      assert.match(install, /install\.packages\(\n {2}"collapse",[\s\S]+type = "source"/u);
+      assert.equal((install.match(/quiet = TRUE/gu) ?? []).length, 3);
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("released-Jupyter R setup keeps collapse on the Linux binary path", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-linux-binary-"));
+  const rscript = join(directory, "Rscript");
+  const rExecutable = join(directory, "R");
+  try {
+    await writeFile(rscript, "fake Rscript executable\n");
+    await writeFile(rExecutable, "fake R executable\n");
+    await chmod(rscript, 0o700);
+    await chmod(rExecutable, 0o700);
+    const prepared = await prepareJupyterAcceptanceREnvironment(join(directory, "linux"), rscript, {
+      containedBy: directory,
+      environment: Object.freeze({}),
+      platform: "linux",
+      async runCommand() {
+        return { stdout: rExecutable, stderr: "" };
+      }
+    });
+    const install = prepared.dependencyInstall.input.args.at(-1);
+    assert.match(install, /\.ow_binary_supplemental_packages <- \.ow_supplemental_packages/u);
+    assert.doesNotMatch(install, /type = "source"/u);
+    assert.equal((install.match(/quiet = TRUE/gu) ?? []).length, 2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

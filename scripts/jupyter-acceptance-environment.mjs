@@ -108,6 +108,29 @@ const R_ACCEPTANCE_PROBE = [
   "  }, error = function(...) FALSE)",
   "}, logical(1L), USE.NAMES = FALSE)",
   'if (any(!.ow_loadable)) quit(save = "no", status = 12L)',
+  ".ow_collapse_input <- data.frame(group = c('A', 'B'), value = c(1, 2), stringsAsFactors = FALSE)",
+  ".ow_collapse_stage <- function(.ow_stage) {",
+  "  cat('OPEN_WRANGLER_R_COLLAPSE_PROBE:', .ow_stage, '\\n', sep = '', file = stderr())",
+  "  flush(stderr())",
+  "}",
+  ".ow_collapse_stage('qDF')",
+  ".ow_qdf <- tryCatch(",
+  "  suppressMessages(suppressWarnings(collapse::qDF(.ow_collapse_input))),",
+  "  error = function(...) NULL",
+  ")",
+  'if (!inherits(.ow_qdf, "data.frame")) quit(save = "no", status = 13L)',
+  ".ow_collapse_stage('qTBL')",
+  ".ow_qtbl <- tryCatch(",
+  "  suppressMessages(suppressWarnings(collapse::qTBL(.ow_collapse_input))),",
+  "  error = function(...) NULL",
+  ")",
+  'if (!inherits(.ow_qtbl, "tbl_df")) quit(save = "no", status = 14L)',
+  ".ow_collapse_stage('qDT')",
+  ".ow_qdt <- tryCatch(",
+  "  suppressMessages(suppressWarnings(collapse::qDT(.ow_collapse_input))),",
+  "  error = function(...) NULL",
+  ")",
+  'if (!inherits(.ow_qdt, "data.table")) quit(save = "no", status = 15L)',
   'cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'
 ].join("\n");
 export function rAcceptanceRepositories(platform = process.platform) {
@@ -127,8 +150,8 @@ export function rAcceptanceRepositories(platform = process.platform) {
 }
 
 function rAcceptanceInstall({ repository, supplementalRepository }, platform) {
-  const macosCollapseInstall =
-    platform === "darwin"
+  const nativeCollapseInstall =
+    platform === "darwin" || platform === "win32"
       ? [
           "utils::install.packages(",
           '  "collapse",',
@@ -144,7 +167,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform) {
     'Sys.setenv(MAKEFLAGS = "-s")',
     `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     '.ow_supplemental_packages <- c("collapse", "nanoparquet")',
-    platform === "darwin"
+    platform === "darwin" || platform === "win32"
       ? '.ow_binary_supplemental_packages <- "nanoparquet"'
       : ".ow_binary_supplemental_packages <- .ow_supplemental_packages",
     ".ow_core_packages <- setdiff(.ow_packages, .ow_supplemental_packages)",
@@ -163,7 +186,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform) {
     "  dependencies = NA,",
     "  quiet = TRUE",
     ")",
-    ...macosCollapseInstall
+    ...nativeCollapseInstall
   ].join("\n");
 }
 
