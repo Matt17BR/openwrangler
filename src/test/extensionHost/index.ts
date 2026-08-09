@@ -15257,6 +15257,8 @@ async function previewAndDiscardPreviousRevenue(
       previewRevision: preview.metadata.revision,
       draft: current?.metadata.draftStep?.kind,
       stepCount: current?.metadata.steps.length,
+      revenueNullable: current?.metadata.schema.find((column) => column.id === revenue.id)?.nullable,
+      generatedCodeLength: current?.code?.length,
       scheduler: testing.sessionSchedulerState(sessionId),
       panelHydrated: testing.panelHydrated(sessionId),
       panelSynchronizable: testing.panelSynchronizable(sessionId)

@@ -132,6 +132,7 @@ def test_draft_preview_apply_edit_and_undo_replays_the_immutable_source(tmp_path
     assert undone["revision"] == 5
     assert undone["metadata"]["steps"] == []
     assert undone["metadata"]["shape"] == {"rows": 3, "columns": 2}
+    assert undone["code"] == ""
     assert path.read_text(encoding="utf-8") == source
 
 
@@ -166,6 +167,7 @@ def test_fill_missing_uses_the_standard_preview_apply_and_undo_lifecycle(tmp_pat
 
     discarded = manager.discard_draft(session_id, 1, 0, 10)
     assert discarded["metadata"]["steps"] == []
+    assert discarded["code"] == ""
     assert any(
         row["values"][1]["isNull"] is True or row["values"][1]["isNaN"] is True for row in discarded["page"]["rows"]
     )
@@ -207,6 +209,7 @@ def test_fill_missing_uses_the_standard_preview_apply_and_undo_lifecycle(tmp_pat
 
     undone = manager.undo_step(session_id, 6, 0, 10)
     assert undone["metadata"]["steps"] == []
+    assert undone["code"] == ""
     assert any(
         row["values"][1]["isNull"] is True or row["values"][1]["isNaN"] is True for row in undone["page"]["rows"]
     )
