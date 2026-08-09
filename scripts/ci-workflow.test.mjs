@@ -1575,7 +1575,7 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     required: true,
     default: "linux-all",
     type: "choice",
-    options: ["linux-all", "macos-r"]
+    options: ["linux-all", "macos-r", "windows-r"]
   });
   assert.deepEqual(workflow?.concurrency, {
     group: "released-jupyter-${{ github.ref }}",
@@ -1702,4 +1702,42 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     "released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
   );
   assert.equal(macosDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
+
+  const windowsR = workflow?.jobs?.["windows-r"];
+  assert.equal(windowsR?.name, "Released R Jupyter in Windows VS Code");
+  assert.equal(windowsR?.if, "${{ inputs.target == 'windows-r' }}");
+  assert.equal(windowsR?.["runs-on"], "windows-latest");
+  assert.equal(windowsR?.["timeout-minutes"], 45);
+  assert.deepEqual(windowsR?.steps?.find((step) => step?.uses === SETUP_R_ACTION)?.with, {
+    "r-version": "4.5.2",
+    "use-public-rspm": true
+  });
+  const windowsRscript = windowsR?.steps?.find((step) => step?.id === "rscript");
+  assert.equal(windowsRscript?.shell, "Rscript {0}");
+  assert.match(windowsRscript?.run ?? "", /file\.path\(R\.home\("bin"\), "Rscript\.exe"\)/u);
+  assert.equal(
+    windowsR?.steps?.some(
+      (step) => step?.run === "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix"
+    ),
+    true
+  );
+  const windowsPackagedR = windowsR?.steps?.find((step) => step?.id === "packaged_editor_r");
+  assert.equal(windowsPackagedR?.name, "Test local R Jupyter in packaged VS Code");
+  assert.equal(windowsPackagedR?.run, "node scripts/run-packaged-editor-tests.mjs openwrangler.vsix");
+  assert.deepEqual(windowsPackagedR?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const windowsDiagnostics = windowsR?.steps?.find(
+    (step) => step?.name === "Upload Windows R-Jupyter failure diagnostics"
+  );
+  assert.equal(
+    windowsDiagnostics?.with?.name,
+    "released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(windowsDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
 });
