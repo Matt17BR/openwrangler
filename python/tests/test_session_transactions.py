@@ -24,7 +24,7 @@ VIEW_FILTER = {
 }
 
 
-def formula_step(step_id: str) -> dict[str, Any]:
+def formula_step(step_id: str, new_column: str = "doubled") -> dict[str, Any]:
     return {
         "id": step_id,
         "kind": "formula",
@@ -32,7 +32,7 @@ def formula_step(step_id: str) -> dict[str, Any]:
             "leftColumn": {"id": "c:source:1", "name": "value"},
             "operator": "multiply",
             "value": 2,
-            "newColumn": "doubled",
+            "newColumn": new_column,
         },
     }
 
@@ -134,31 +134,35 @@ def test_apply_rolls_back_after_late_response_construction_failure(tmp_path: Pat
 
 def test_discard_rolls_back_after_late_response_construction_failure(tmp_path: Path, monkeypatch) -> None:
     manager, session_id = open_pandas_session(tmp_path)
-    manager.preview_step(session_id, 0, formula_step("discard"), 0, 2)
-    prime_filtered_page(manager, session_id, 1)
+    manager.preview_step(session_id, 0, formula_step("kept"), 0, 2)
+    manager.apply_draft(session_id, 1, 0, 2)
+    manager.preview_step(session_id, 2, formula_step("discard", "also_doubled"), 0, 2)
+    prime_filtered_page(manager, session_id, 3)
     session = manager.sessions[session_id]
     before = session_state(session)
-    fail_after_response_page(monkeypatch, session, 1)
+    fail_after_response_page(monkeypatch, session, 3)
 
     with pytest.raises(EngineError, match="late response construction"):
-        manager.discard_draft(session_id, 1, 0, 2)
+        manager.discard_draft(session_id, 3, 0, 2)
 
-    assert_unchanged_and_closable(manager, session_id, 1, before)
+    assert_unchanged_and_closable(manager, session_id, 3, before)
 
 
 def test_undo_rolls_back_after_late_response_construction_failure(tmp_path: Path, monkeypatch) -> None:
     manager, session_id = open_pandas_session(tmp_path)
-    manager.preview_step(session_id, 0, formula_step("undo"), 0, 2)
+    manager.preview_step(session_id, 0, formula_step("kept"), 0, 2)
     manager.apply_draft(session_id, 1, 0, 2)
-    prime_filtered_page(manager, session_id, 2)
+    manager.preview_step(session_id, 2, formula_step("undo", "also_doubled"), 0, 2)
+    manager.apply_draft(session_id, 3, 0, 2)
+    prime_filtered_page(manager, session_id, 4)
     session = manager.sessions[session_id]
     before = session_state(session)
-    fail_after_response_page(monkeypatch, session, 2)
+    fail_after_response_page(monkeypatch, session, 4)
 
     with pytest.raises(EngineError, match="late response construction"):
-        manager.undo_step(session_id, 2, 0, 2)
+        manager.undo_step(session_id, 4, 0, 2)
 
-    assert_unchanged_and_closable(manager, session_id, 2, before)
+    assert_unchanged_and_closable(manager, session_id, 4, before)
 
 
 def test_source_post_validation_rolls_back_preview_but_keeps_cache_invalidated(tmp_path: Path) -> None:
