@@ -233,6 +233,12 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
     /toggle\.click\(\)/u,
     "The refreshed renderer must expose its expanded panel without another stale toggle action."
   );
+  assert.match(
+    firstUseJourney,
+    /openSidePanel\("Column"\)/u,
+    "The packaged journey must select the actual Column tab instead of the surrounding Column profiles drawer label."
+  );
+  assert.doesNotMatch(firstUseJourney, /openSidePanel\("Column profiles"\)/u);
 });
 
 test("native R tooling pins Quarto to an internal revealed preview", async () => {
