@@ -30,7 +30,13 @@ const FAILURE_SCAN_MAX_ITEMS = 32;
 const FAILURE_SCAN_MAX_BYTES = 16 * 1024;
 const R_ERROR_PACKAGE_ALLOWLIST = ["IRkernel", "collapse", "data.table", "jsonlite", "tibble"] as const;
 
-function decodeNotebookError(data: Uint8Array): { readonly message: string; readonly name: string } | undefined {
+interface DecodedNotebookError {
+  readonly message: string;
+  readonly name: string;
+  readonly stack: string;
+}
+
+function decodeNotebookError(data: Uint8Array): DecodedNotebookError | undefined {
   if (data.byteLength === 0 || data.byteLength > FAILURE_SCAN_MAX_BYTES) return undefined;
   try {
     const decoded = new TextDecoder("utf-8", { fatal: true }).decode(data);
@@ -39,14 +45,17 @@ function decodeNotebookError(data: Uint8Array): { readonly message: string; read
     const record = parsed as Record<string, unknown>;
     if (typeof record.name !== "string" || typeof record.message !== "string") return undefined;
     if (record.name.length > 128 || record.message.length > FAILURE_SCAN_MAX_BYTES) return undefined;
-    return { name: record.name, message: record.message };
+    if (record.stack !== undefined && typeof record.stack !== "string") return undefined;
+    const stack = record.stack ?? "";
+    if (stack.length > FAILURE_SCAN_MAX_BYTES) return undefined;
+    return { name: record.name, message: record.message, stack };
   } catch {
     return undefined;
   }
 }
 
-function fixedNotebookErrorDiagnostic(error: { readonly message: string; readonly name: string }): string | undefined {
-  const text = `${error.name}\n${error.message}`;
+function fixedNotebookErrorDiagnostic(error: DecodedNotebookError): string | undefined {
+  const text = `${error.name}\n${error.message}\n${error.stack}`;
   const parseLocation = /:(\d{1,6}):(\d{1,6}):\s*unexpected\s+([^\r\n]{1,64})/iu.exec(text);
   if (parseLocation) {
     const detail = parseLocation[3].toLowerCase();
@@ -61,7 +70,25 @@ function fixedNotebookErrorDiagnostic(error: { readonly message: string; readonl
             : "unexpected token";
     return `R parse error at ${Number(parseLocation[1])}:${Number(parseLocation[2])} (${category})`;
   }
-  if (/\b(?:kernel (?:died|stopped|terminated)|kernel has been disposed)\b/iu.test(text)) return "kernel stopped";
+  if (/\bkernel\b[^\r\n]{0,256}\blocated in an insecure location\b/iu.test(text)) {
+    return "kernel spec not trusted";
+  }
+  if (/\btimeout waiting for (?:the )?ports? to (?:get|be) used\b/iu.test(text)) {
+    return "kernel port wait timed out";
+  }
+  if (/\b(?:connection timeout|timed out (?:while )?waiting for (?:a )?kernel connection)\b/iu.test(text)) {
+    return "kernel connection timed out";
+  }
+  if (/\bconnection file not found in kernelspec json args\b/iu.test(text)) {
+    return "kernel spec missing connection file";
+  }
+  if (/(?:(?:failed|unable) to start (?:the )?kernel|\bkernel\b[^\r\n]{0,128}\bwas not started)\b/iu.test(text)) {
+    return "kernel failed to start";
+  }
+  if (/\bkernel(?:\s+[‘'"][^’'"\r\n]{0,128}[’'"])?\s+(?:died|stopped|terminated)\b/iu.test(text)) {
+    return "kernel stopped";
+  }
+  if (/\b(?:kernel|session)(?: has been| was)? disposed\b/iu.test(text)) return "kernel session disposed";
   if (/\b(?:cancelled|canceled|cancellation)\b/iu.test(text)) return "execution cancelled";
   for (const packageName of R_ERROR_PACKAGE_ALLOWLIST) {
     const escaped = packageName.replaceAll(".", "\\.");
@@ -70,6 +97,7 @@ function fixedNotebookErrorDiagnostic(error: { readonly message: string; readonl
     }
   }
   if (/\b(?:unable to load shared object|dll load failed)\b/iu.test(text)) return "R package failed to load";
+  if (/\bSyntaxError\b[^\r\n]{0,256}\binvalid syntax\b/iu.test(text)) return "kernel language mismatch";
   return undefined;
 }
 
