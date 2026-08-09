@@ -307,7 +307,7 @@ describe("R document command", () => {
     );
   });
 
-  it("quietly ignores a Quarto document without R cells", async () => {
+  it("explains when a Quarto document does not contain R cells", async () => {
     const document = rDocument(
       "/workspace/analysis/orders.qmd",
       "---\ntitle: Orders\nformat: html\n---\n\n```{python}\norders = [1, 2, 3]\n```\n"
@@ -320,7 +320,7 @@ describe("R document command", () => {
 
     expect(mocks.transportOptions).toHaveLength(0);
     expect(mocks.discovery).not.toHaveBeenCalled();
-    expect(mocks.showInformationMessage).not.toHaveBeenCalled();
+    expect(mocks.showInformationMessage).toHaveBeenCalledWith("orders.qmd does not contain an R code chunk.");
     expect(mocks.showWarningMessage).not.toHaveBeenCalled();
     expect(mocks.showErrorMessage).not.toHaveBeenCalled();
   });
