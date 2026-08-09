@@ -298,6 +298,81 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
   assert.doesNotMatch(firstUseJourney, /openSidePanel\("Column profiles"\)/u);
 });
 
+test("packaged webview actions accept a current replacement at the failure boundary", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const finder = source.slice(
+    source.indexOf("async function findCurrentOpenWranglerWebviewAction("),
+    source.indexOf("interface GridViewportMeasurement")
+  );
+  assert.match(finder, /openWranglerWebviewTargets\(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT\)/u);
+  assert.equal(
+    finder.match(/isRetiredRendererTarget\(workbench, target\.page, target\.frame\)/gu)?.length,
+    2,
+    "A candidate renderer must be current before and after its asynchronous readiness probe."
+  );
+  assert.match(finder, /probeRendererButtonReadiness\(button, remainingMs, requireEnabled\)/u);
+  assert.match(
+    finder,
+    /withAcceptanceOperationDeadline\([\s\S]*?remainingMs,[\s\S]*?the Open Wrangler/u,
+    "Every readiness probe must stay inside the caller's one absolute deadline."
+  );
+  assert.doesNotMatch(finder, /\.click\(|innerText|textContent/u);
+
+  const waitForAction = source.slice(
+    source.indexOf("async function waitForOpenWranglerWebviewAction("),
+    source.indexOf("async function findCurrentOpenWranglerWebviewAction(")
+  );
+  const finalization = waitForAction.indexOf("diagnoseThenReacquireAcceptanceAction({");
+  const sharedBudget = waitForAction.indexOf("timeoutMs: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS", finalization);
+  const diagnostics = waitForAction.indexOf(
+    "openWranglerWebviewDiagnostics(workbench, browser, name, failureDeadline)",
+    sharedBudget
+  );
+  const finalReacquisition = waitForAction.indexOf("reacquire: async (failureDeadline)", diagnostics);
+  const sharedDeadline = waitForAction.indexOf("requireEnabled,\n        failureDeadline", finalReacquisition);
+  const finalReturn = waitForAction.indexOf("if (action) return action;", sharedDeadline);
+  const lifecycleCheck = waitForAction.indexOf(
+    "assertOpenWranglerWebviewLifecycle(workbench, workbench.context().browser());",
+    finalReturn
+  );
+  assert.ok(
+    finalization >= 0 &&
+      sharedBudget > finalization &&
+      diagnostics > sharedBudget &&
+      finalReacquisition > diagnostics &&
+      sharedDeadline > finalReacquisition &&
+      finalReturn > sharedDeadline &&
+      lifecycleCheck > finalReturn,
+    "Failure diagnostics must be followed by one fresh action acquisition within the same failure budget."
+  );
+  const failureFinalization = waitForAction.slice(finalization);
+  assert.equal(failureFinalization.match(/findCurrentOpenWranglerWebviewAction\(/gu)?.length, 1);
+  assert.doesNotMatch(
+    failureFinalization,
+    /setTimeout|OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS|\bdo\s*\{|\bwhile\s*\(/u
+  );
+});
+
+test("XLSX dependency recovery follows the current acknowledged renderer", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const journey = source.slice(
+    source.indexOf("async function exercisePackagedExcelDependencyInstall("),
+    source.indexOf("function excelDependencyInstallDiagnostics(")
+  );
+  const recoveredSection = journey.slice(
+    journey.indexOf('recordAcceptanceProgress("excel-dependency-install:session-published")')
+  );
+  const oneTab = recoveredSection.indexOf("matchingTabs.length,");
+  const hydration = recoveredSection.indexOf("testing.panelHydrated(active.sessionId)", oneTab);
+  const synchronizedApp = recoveredSection.indexOf("const recoveredApp = await synchronizedSessionApp(", hydration);
+  const grid = recoveredSection.indexOf("const grid = recoveredApp.getByRole", synchronizedApp);
+  assert.ok(
+    oneTab >= 0 && hydration > oneTab && synchronizedApp > hydration && grid > synchronizedApp,
+    "Dependency recovery must keep one tab, await hydration, and then bind the current receipt-backed renderer."
+  );
+  assert.doesNotMatch(recoveredSection, /install\.target\.frame|\bsameApp\b|testing\.synchronizePanel/u);
+});
+
 test("native R tooling pins Quarto to an internal revealed preview", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const tooling = source.slice(
