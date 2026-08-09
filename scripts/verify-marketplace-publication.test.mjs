@@ -334,6 +334,7 @@ test("keeps historical recovery independent of current Marketplace listing copy"
   const candidate = await fixture(context);
   const historical = gallery(candidate.candidateSha256);
   const extension = historical.results[0].extensions[0];
+  extension.displayName = "A newer display name";
   extension.shortDescription = "Copy from a newer release";
   extension.tags = ["newer"];
   extension.versions.unshift({ version: "9.0.0" });
