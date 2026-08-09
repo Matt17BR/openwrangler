@@ -14605,6 +14605,21 @@ async function exercisePackagedFirstUseInteractionJourney(
       `${phase} must keep the current acknowledged renderer receipt.`
     );
   };
+  const confirmedMutationDiagnostics = (): string => {
+    const active = testing.activeSession();
+    return JSON.stringify({
+      activeSessionId: active?.sessionId,
+      revision: active?.metadata.revision,
+      draft: active?.metadata.draftStep?.kind,
+      stepCount: active?.metadata.steps.length,
+      scheduler: testing.sessionSchedulerState(sessionId),
+      panel: {
+        hydrated: testing.panelHydrated(sessionId),
+        synchronizable: testing.panelSynchronizable(sessionId),
+        receipt: testing.panelSynchronizationReceipt(sessionId)
+      }
+    });
+  };
   const profileWaitDiagnostics =
     (expectedLabels: readonly string[]) =>
     (lastDrawerText: string): string => {
@@ -14907,6 +14922,13 @@ async function exercisePackagedFirstUseInteractionJourney(
     "discarding the most-common fill preview"
   );
   await fillReview.waitFor({ state: "hidden", timeout: 10_000 });
+  await waitFor(
+    () => testing.panelHydrated(sessionId),
+    OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+    "the discarded most-common fill state to hydrate on its current renderer",
+    confirmedMutationDiagnostics
+  );
+  app = await reacquireApp("Most-common fill discard");
 
   recordAcceptanceProgress("platform-smoke:draft-discard");
   await previewUppercaseMarket(app, testing, "market_upper");
@@ -15035,6 +15057,13 @@ async function exercisePackagedFirstUseInteractionJourney(
   );
   await draftReview.waitFor({ state: "hidden", timeout: 10_000 });
   assert.equal(await draftReview.count(), 0, "Discarding the only draft must remove the compact draft-review region.");
+  await waitFor(
+    () => testing.panelHydrated(sessionId),
+    OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+    "the discarded uppercase state to hydrate on its current renderer",
+    confirmedMutationDiagnostics
+  );
+  app = await reacquireApp("Uppercase draft discard");
 
   recordAcceptanceProgress("platform-smoke:draft-apply");
   await previewUppercaseMarket(app, testing, "market_upper");
@@ -15057,6 +15086,13 @@ async function exercisePackagedFirstUseInteractionJourney(
     30_000,
     "applying the previewed uppercase step"
   );
+  await waitFor(
+    () => testing.panelHydrated(sessionId),
+    OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+    "the applied uppercase state to hydrate on its current renderer",
+    confirmedMutationDiagnostics
+  );
+  app = await reacquireApp("Uppercase draft apply");
   const appliedPlan = app.getByRole("group", { name: "Cleaning plan" });
   await appliedPlan.getByText("1 applied step").waitFor({ state: "visible", timeout: 10_000 });
   assert.match(testing.activeSession()?.code ?? "", /import polars as pl/u);
