@@ -508,10 +508,18 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
 
 test("native R tooling pins Quarto to an internal revealed preview", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const notebookJourney = source.slice(
+    source.indexOf("async function exerciseReleasedRJupyterExtension("),
+    source.indexOf("async function exerciseReleasedRInteractiveTerminalJourney(")
+  );
+  assert.match(notebookJourney, /if \(phase === "jupyter-r" && \(await assertReleasedNativeREditorTooling\(\)\)\) \{/u);
+  assert.doesNotMatch(notebookJourney, /assert\.equal\(\s*await assertReleasedNativeREditorTooling\(\),\s*true/u);
   const tooling = source.slice(
     source.indexOf("async function assertReleasedNativeREditorTooling("),
     source.indexOf("async function openReleasedNativeQuartoPreview(")
   );
+  assert.match(tooling, /if \(installed\.every\(\(\{ extension \}\) => extension === undefined\)\) return false/u);
+  assert.match(tooling, /assert\.ok\(extension, `Packaged R acceptance requires \$\{id\}@\$\{version\}\.`\)/u);
   assert.match(tooling, /get<string>\("render\.previewType"\),\s*"internal"/u);
   assert.match(tooling, /get<boolean>\("render\.previewReveal"\),\s*true/u);
 });

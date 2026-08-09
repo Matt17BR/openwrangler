@@ -716,8 +716,9 @@ composed from the accepted full source. `npm run compose:readme-media` refreshes
 new accepted capture.
 
 The manual **Released Jupyter acceptance** workflow has a `macos-r` lane for the packaged VS Code and local IRkernel
-journey. Use it while diagnosing macOS-only R failures; the default `linux-all` lane keeps the broader VS Code, Cursor,
-Python, R, and remote-Jupyter coverage.
+notebook plus Open Wrangler's direct `.R`, `.Rmd`, and `.qmd` journeys. Use it while diagnosing macOS-only R failures;
+the default `linux-all` lane also installs the pinned R and Quarto editor tooling and keeps the broader VS Code, Cursor,
+Python, active R terminal, native Quarto preview, and remote-Jupyter coverage.
 
 ```bash
 npm run build:test-extension &&
