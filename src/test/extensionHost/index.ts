@@ -1615,9 +1615,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "  hostname = unname(Sys.info()[['nodename']])",
     "), auto_unbox = TRUE)), '\\n', sep = '')",
     "}, error = function(.ow_setup_error) {",
-    `  cat(${JSON.stringify(RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX)}, .ow_setup_stage, '\\n', sep = '', file = stderr())`,
-    "  flush(stderr())",
-    "  stop('Open Wrangler R setup failed.', call. = FALSE)",
+    `  cat(${JSON.stringify(RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX)}, .ow_setup_stage, '\\n', sep = '')`,
     "})"
   ];
   const bindingProbe = [
@@ -2112,12 +2110,20 @@ async function exerciseReleasedRJupyterExtension(
     await executeReleasedNotebookCell(
       notebook,
       0,
-      RELEASED_JUPYTER_R_SETUP_RESULT,
+      [RELEASED_JUPYTER_R_SETUP_RESULT, RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX],
       `${phase}:setup`,
       notebookEditor,
       "r-setup"
     );
-    const setup = releasedNotebookJsonResult(notebook.cellAt(0), RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
+    const setupCell = notebook.cellAt(0);
+    const setupFailureStage = releasedNotebookRSetupFailureStage(setupCell.outputs);
+    if (setupFailureStage !== undefined) {
+      throw new Error(`Released-Jupyter R setup failed at stage ${setupFailureStage}.`);
+    }
+    if (!notebookCellOutputText(setupCell).includes(RELEASED_JUPYTER_R_SETUP_RESULT)) {
+      throw new Error("Released-Jupyter R setup returned a malformed fixed diagnostic.");
+    }
+    const setup = releasedNotebookJsonResult(setupCell, RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
     assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
     assertReleasedRVersion(setup, kernelTarget, "R setup");
     assert.equal(setup.collapseVersion, "2.1.7");
@@ -11262,7 +11268,7 @@ async function releasedJupyterQuickInputDiagnostics(workbench: Page): Promise<st
 async function executeReleasedNotebookCell(
   notebook: vscode.NotebookDocument,
   index: number,
-  expectedText: string | undefined,
+  expectedText: string | readonly string[] | undefined,
   checkpoint: string,
   expectedEditor?: vscode.NotebookEditor,
   failureDiagnostic?: "r-setup"
@@ -11334,7 +11340,11 @@ async function executeReleasedNotebookCell(
         recordAcceptanceProgress(`${checkpoint}:execution-observed`);
       }
       if (observedFreshExecutionSummary && cell.executionSummary?.success === true) {
-        if (expectedText === undefined || notebookCellOutputText(cell).includes(expectedText)) {
+        const expectedTexts = typeof expectedText === "string" ? [expectedText] : expectedText;
+        if (
+          expectedTexts === undefined ||
+          expectedTexts.some((candidate) => notebookCellOutputText(cell).includes(candidate))
+        ) {
           recordAcceptanceProgress(`${checkpoint}:output-complete`);
           await withBoundedAcceptancePromise(command, 10_000, `released-Jupyter cell ${index} command completion`);
           if (expectedEditor) {

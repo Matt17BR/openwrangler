@@ -471,8 +471,14 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   assert.match(remoteRJourney, /waitForReleasedRRuntimeBindingCleanup\(notebook, cleanupEditor, phase\)/u);
   assert.doesNotMatch(writer, /hostExtensionVisible|extension\.extensionPath/u);
   assert.match(writer, /RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX/u);
-  assert.match(writer, /stop\('Open Wrangler R setup failed\.', call\. = FALSE\)/u);
+  assert.match(
+    writer,
+    /cat\(\$\{JSON\.stringify\(RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX\)\}, \.ow_setup_stage, '\\\\n', sep = ''\)/u
+  );
   assert.doesNotMatch(writer, /conditionMessage|\.ow_setup_error\$|print\(\.ow_setup_error/u);
+  assert.match(remoteRJourney, /\[RELEASED_JUPYTER_R_SETUP_RESULT, RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX\]/u);
+  assert.match(remoteRJourney, /const setupFailureStage = releasedNotebookRSetupFailureStage\(setupCell\.outputs\)/u);
+  assert.match(remoteRJourney, /Released-Jupyter R setup returned a malformed fixed diagnostic\./u);
 
   const setupExecution = remoteRJourney.indexOf("await executeReleasedNotebookCell(");
   const exactRefocus = remoteRJourney.indexOf("const actionNotebookEditor = await showExactReleasedNotebook(notebook)");
