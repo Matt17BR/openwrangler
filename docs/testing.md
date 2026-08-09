@@ -562,9 +562,10 @@ packages because the suite opens actual readr and grouped tibbles rather than ha
 The local kernel installs missing packages into a temporary library. Linux uses
 `https://p3m.dev/cran/__linux__/noble/2026-03-10`; macOS and Windows use
 `https://p3m.dev/cran/2026-03-10`. The test records and checks these versions: IRkernel 1.3.2, jsonlite 2.0.0, rlang
-1.1.7, Rcpp 1.1.1, tibble 3.3.1, and data.table 1.18.2.1. Rcpp is installed before the pinned source build of
-collapse. Collapse 2.1.7 and nanoparquet 0.5.1 come from the matching reviewed `2026-06-01` snapshot. The Linux
-document journey also installs languageserver 0.3.17, rmarkdown 2.30, and knitr 1.51 in that private library. Tests
+1.1.7, Rcpp 1.1.1, tibble 3.3.1, and data.table 1.18.2.1. Rcpp is installed before collapse. Collapse 2.1.7 and
+nanoparquet 0.5.1 come from the matching reviewed `2026-06-01` snapshot. macOS builds collapse from source; Linux
+and Windows use the snapshot's binary package. The Linux document journey also installs languageserver 0.3.17,
+rmarkdown 2.30, and knitr 1.51 in that private library. Tests
 cover projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
 and cleanup. The base dataframe starts in Viewing mode, keeps its exact notebook, public session, and compound sort
@@ -692,8 +693,8 @@ supply the same verified artifacts through `OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSI
 library. It creates real `qDF()`, `qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms
 that grouped and indexed objects stay out of the picker. The R contract tests cover the same class boundary directly.
 A setup failure records only a fixed stage name; R errors and notebook output stay out of the retained diagnostic.
-macOS and Windows build collapse from its pinned source package, while Linux uses the pinned binary. Setup loads every
-pinned namespace and exercises all three supported constructors before the editor starts.
+macOS builds collapse from its pinned source package, while Linux and Windows use the pinned binary. Setup loads
+every pinned namespace and exercises all three supported constructors before the editor starts.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
 viewing workbench, a Group and aggregate draft after switching that same session to Editing mode, the generated R
