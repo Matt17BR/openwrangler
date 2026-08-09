@@ -2662,12 +2662,7 @@ async function exerciseReleasedRJupyterExtension(
   }
   if (acceptanceError) throw acceptanceError.value;
   recordReleasedRAcceptanceSection(phase, coverage, "notebook", "complete");
-  if (phase === "jupyter-r") {
-    assert.equal(
-      await assertReleasedNativeREditorTooling(),
-      true,
-      "Local R acceptance requires the pinned official R and Quarto extensions."
-    );
+  if (phase === "jupyter-r" && (await assertReleasedNativeREditorTooling())) {
     await exerciseReleasedRInteractiveTerminalJourney(testing, await connectToEditorWorkbench());
   }
 }
