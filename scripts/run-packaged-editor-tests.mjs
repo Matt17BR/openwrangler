@@ -60,6 +60,7 @@ import {
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
   prepareJupyterAcceptanceREnvironment,
+  probeJupyterAcceptanceRKernel,
   writeJupyterAcceptanceEnvironment,
   writeRemoteJupyterAcceptanceDescriptor,
   writeRemoteJupyterAcceptanceEnvironment
@@ -417,6 +418,13 @@ try {
               throw new Error("Released-Jupyter R acceptance did not resolve the reviewed package versions.");
             }
             process.stdout.write(`Hosted R packages: ${rAcceptanceEnvironment.packageRecord.replaceAll("\n", ", ")}\n`);
+            writeCorrelatedProgress(
+              orchestrationProgressPath,
+              orchestrationRunId,
+              "setup",
+              "setup:probe-r-kernel-readiness"
+            );
+            await probeJupyterAcceptanceRKernel(testPython, rAcceptanceEnvironment);
             if (process.platform === "linux" && process.arch === "x64") {
               writeCorrelatedProgress(
                 orchestrationProgressPath,

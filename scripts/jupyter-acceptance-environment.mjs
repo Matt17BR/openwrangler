@@ -91,6 +91,39 @@ const R_ACCEPTANCE_KERNEL_EXPRESSION = [
   "IRkernel::main()"
 ].join("; ");
 const R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS = 300_000;
+const R_ACCEPTANCE_KERNEL_PROBE = String.raw`
+import subprocess, sys, time
+stage, manager, client, result = "start", None, None, None
+try:
+    from jupyter_client import KernelManager
+    from jupyter_client.kernelspec import KernelSpecManager
+    kernel_id, kernel_dir, connection_file, private_cwd = sys.argv[1:]
+    specs = KernelSpecManager(kernel_dirs=[kernel_dir], ensure_native_kernel=False, allowed_kernelspecs={kernel_id})
+    manager = KernelManager(kernel_name=kernel_id, kernel_spec_manager=specs, connection_file=connection_file)
+    manager.start_kernel(cwd=private_cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    stage = "ready"
+    client = manager.blocking_client(); client.start_channels(); client.wait_for_ready(timeout=12)
+    stage = "execute"
+    request = client.execute("cat(\"__OW_RELEASED_R_KERNEL__\", as.character(getRversion()), '\\n', sep = '')", store_history=False, allow_stdin=False, stop_on_error=True)
+    deadline, marker = time.monotonic() + 8, False
+    while time.monotonic() < deadline:
+        message = client.get_iopub_msg(timeout=max(0.01, deadline - time.monotonic()))
+        if message.get("parent_header", {}).get("msg_id") != request: continue
+        kind, content = message.get("header", {}).get("msg_type"), message.get("content", {})
+        if kind == "stream" and content.get("name") == "stdout":
+            marker = content.get("text", "").startswith("__OW_RELEASED_R_KERNEL__")
+        elif kind == "error": raise RuntimeError("kernel error")
+        elif kind == "status" and content.get("execution_state") == "idle":
+            if not marker: raise RuntimeError("missing marker")
+            result = "ready"; break
+except BaseException: result = stage
+finally:
+    try:
+        if client is not None: client.stop_channels()
+        if manager is not None and manager.has_kernel: manager.shutdown_kernel(now=True)
+    except BaseException: result = "cleanup"
+sys.stdout.write("OPEN_WRANGLER_R_KERNEL_" + ("READY" if result == "ready" else "FAILED:" + (result or stage)) + "\n")
+`.trimStart();
 const R_ACCEPTANCE_EXECUTABLE_PROBE = [
   '.ow_r <- file.path(R.home("bin"), if (.Platform$OS.type == "windows") "R.exe" else "R")',
   'cat(normalizePath(.ow_r, winslash = "/", mustWork = TRUE), sep = "")'
@@ -560,6 +593,52 @@ export async function prepareJupyterAcceptanceREnvironment(
     dependencyProbe,
     dependencyInstall
   });
+}
+
+export async function probeJupyterAcceptanceRKernel(python, prepared, { runCommand = runBoundedEditorCommand } = {}) {
+  if (
+    typeof python !== "string" ||
+    !isAbsolute(python) ||
+    /[\0\r\n]/u.test(python) ||
+    !existsSync(python) ||
+    prepared?.kernelId !== R_ACCEPTANCE_KERNEL_ID ||
+    typeof prepared.root !== "string" ||
+    !isAbsolute(prepared.root) ||
+    typeof prepared.kernelSpecPath !== "string" ||
+    !isAbsolute(prepared.kernelSpecPath) ||
+    typeof prepared.jupyterEnvironment?.runtimeDir !== "string" ||
+    !isAbsolute(prepared.jupyterEnvironment.runtimeDir) ||
+    typeof prepared.dependencyProbe?.input?.environment !== "object" ||
+    typeof runCommand !== "function"
+  ) {
+    throw new Error("Released-Jupyter R kernel readiness requires one exact prepared private environment.");
+  }
+
+  const homeDir = resolve(prepared.root, "h");
+  const result = await runCommand(
+    {
+      executable: python,
+      args: [
+        "-I",
+        "-c",
+        R_ACCEPTANCE_KERNEL_PROBE,
+        prepared.kernelId,
+        dirname(dirname(prepared.kernelSpecPath)),
+        resolve(prepared.jupyterEnvironment.runtimeDir, "kernel-readiness.json"),
+        homeDir
+      ],
+      environment: prepared.dependencyProbe.input.environment,
+      label: "Released-Jupyter private R kernel readiness probe"
+    },
+    { timeoutMs: 30_000, maxOutputBytes: 1_024 }
+  );
+  if (result?.stderr !== "") {
+    throw new Error("Released-Jupyter R kernel readiness probe returned a malformed fixed result.");
+  }
+  if (result.stdout === "OPEN_WRANGLER_R_KERNEL_READY\n") return;
+  const failure = /^OPEN_WRANGLER_R_KERNEL_FAILED:(start|ready|execute|cleanup)\n$/u.exec(result.stdout);
+  if (failure) throw new Error(`Released-Jupyter R kernel readiness failed during ${failure[1]}.`);
+  throw new Error("Released-Jupyter R kernel readiness probe returned a malformed fixed result.");
 }
 
 async function resolveJupyterAcceptanceRExecutable(rscript, { environment, runCommand }) {
