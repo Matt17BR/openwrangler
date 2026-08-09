@@ -191,8 +191,7 @@ function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson,
     extension === null ||
     Array.isArray(extension) ||
     extension.publisher?.publisherName?.toLowerCase() !== MARKETPLACE_PUBLISHER.toLowerCase() ||
-    extension.extensionName !== MARKETPLACE_EXTENSION ||
-    extension.displayName !== packageJson.displayName
+    extension.extensionName !== MARKETPLACE_EXTENSION
   ) {
     throw new Error("Marketplace public extension metadata does not match the canonical package.");
   }
@@ -214,6 +213,7 @@ function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson,
     const publicTags = Array.isArray(extension.tags) ? new Set(extension.tags) : new Set();
     const keywords = Array.isArray(packageJson.keywords) ? packageJson.keywords : [];
     if (
+      extension.displayName !== packageJson.displayName ||
       extension.shortDescription !== packageJson.description ||
       keywords.some((keyword) => !publicTags.has(keyword))
     ) {
