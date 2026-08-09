@@ -72,7 +72,35 @@ describe("released notebook failure diagnostics", () => {
     expect(message).not.toContain("token");
   });
 
-  it("rejects unknown, conflicting, and adjacent R setup markers", () => {
+  it("extracts one repeated allowlisted stage from a bounded notebook error without retaining its payload", () => {
+    const privateMaterial = "/tmp/private token=do-not-retain";
+    const marker = "OPEN_WRANGLER_R_SETUP_FAILED:collapse-data-frame";
+    const outputs = [
+      {
+        items: [
+          {
+            mime: "application/vnd.code.notebook.error",
+            data: Buffer.from(
+              JSON.stringify({
+                message: `Error: ${marker}`,
+                stack: `${marker}\n${privateMaterial}`
+              }),
+              "utf8"
+            )
+          }
+        ]
+      }
+    ];
+
+    const stage = releasedNotebookRSetupFailureStage(outputs);
+    expect(stage).toBe("collapse-data-frame");
+    const message = releasedNotebookExecutionFailureMessage(0, outputs, stage);
+    expect(message).toBe("Released-Jupyter cell 0 failed (notebook-error-output; R setup stage collapse-data-frame).");
+    expect(message).not.toContain(privateMaterial);
+    expect(message).not.toContain("token");
+  });
+
+  it("accepts only structurally bounded R setup markers", () => {
     const stream = (text: string) => [
       {
         items: [
@@ -93,6 +121,11 @@ describe("released notebook failure diagnostics", () => {
     expect(
       releasedNotebookRSetupFailureStage(stream("OPEN_WRANGLER_R_SETUP_FAILED:tibble secret=/tmp/private\n"))
     ).toBeUndefined();
+    expect(releasedNotebookRSetupFailureStage(stream("XOPEN_WRANGLER_R_SETUP_FAILED:tibble\n"))).toBeUndefined();
+    expect(releasedNotebookRSetupFailureStage(stream("OPEN_WRANGLER_R_SETUP_FAILED:tibble\\u0065vil"))).toBeUndefined();
+    expect(releasedNotebookRSetupFailureStage(stream("OPEN_WRANGLER_R_SETUP_FAILED:tibble\\tprivate"))).toBeUndefined();
+    expect(releasedNotebookRSetupFailureStage(stream("OPEN_WRANGLER_R_SETUP_FAILED:tibble\\n"))).toBe("tibble");
+    expect(releasedNotebookRSetupFailureStage(stream('"OPEN_WRANGLER_R_SETUP_FAILED:tibble"'))).toBe("tibble");
   });
 
   it("rejects R setup output outside the item and byte bounds", () => {

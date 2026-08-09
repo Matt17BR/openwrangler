@@ -6,7 +6,11 @@ interface NotebookOutputShape {
 }
 
 const NOTEBOOK_ERROR_MIME = "application/vnd.code.notebook.error";
-const NOTEBOOK_STREAM_MIMES = new Set(["application/vnd.code.notebook.stdout", "application/vnd.code.notebook.stderr"]);
+const NOTEBOOK_DIAGNOSTIC_MIMES = new Set([
+  NOTEBOOK_ERROR_MIME,
+  "application/vnd.code.notebook.stdout",
+  "application/vnd.code.notebook.stderr"
+]);
 export const RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX = "OPEN_WRANGLER_R_SETUP_FAILED:";
 const R_SETUP_FAILURE_PREFIX = Buffer.from(RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX, "utf8");
 const R_SETUP_FAILURE_STAGES = new Set([
@@ -25,6 +29,19 @@ const R_SETUP_FAILURE_STAGES = new Set([
 const FAILURE_SCAN_MAX_ITEMS = 32;
 const FAILURE_SCAN_MAX_BYTES = 16 * 1024;
 
+function isMarkerPrefixBoundary(value: number): boolean {
+  return value === 0x20 || value === 0x09 || value === 0x0d || value === 0x0a || value === 0x22;
+}
+
+function isMarkerStageTerminator(bytes: Buffer, stageEnd: number): boolean {
+  if (stageEnd === bytes.byteLength) return true;
+  const value = bytes[stageEnd];
+  if (value === 0x22 || value === 0x0d || value === 0x0a) return true;
+  return (
+    value === 0x5c && stageEnd + 1 < bytes.byteLength && (bytes[stageEnd + 1] === 0x6e || bytes[stageEnd + 1] === 0x72)
+  );
+}
+
 export function releasedNotebookOutputClassification(outputs: readonly NotebookOutputShape[]): string {
   return outputs.some((output) => output.items.some((item) => item.mime === NOTEBOOK_ERROR_MIME))
     ? "notebook-error-output"
@@ -32,32 +49,50 @@ export function releasedNotebookOutputClassification(outputs: readonly NotebookO
 }
 
 export function releasedNotebookRSetupFailureStage(outputs: readonly NotebookOutputShape[]): string | undefined {
-  const streamItems: Buffer[] = [];
+  const diagnosticItems: Buffer[] = [];
   let itemCount = 0;
   let byteCount = 0;
   for (const output of outputs) {
     for (const item of output.items) {
       itemCount += 1;
       if (itemCount > FAILURE_SCAN_MAX_ITEMS) return undefined;
-      if (!NOTEBOOK_STREAM_MIMES.has(item.mime) || item.data === undefined) continue;
+      if (!NOTEBOOK_DIAGNOSTIC_MIMES.has(item.mime) || item.data === undefined) continue;
       if (item.data.byteLength > FAILURE_SCAN_MAX_BYTES - byteCount) return undefined;
       const bytes = Buffer.from(item.data);
       byteCount += bytes.byteLength;
-      streamItems.push(bytes);
+      diagnosticItems.push(bytes);
     }
   }
 
-  const markers: string[] = [];
-  for (const rawLine of Buffer.concat(streamItems).subarray(0, byteCount).toString("latin1").split("\n")) {
-    const line = Buffer.from(rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine, "latin1");
-    if (!line.subarray(0, R_SETUP_FAILURE_PREFIX.byteLength).equals(R_SETUP_FAILURE_PREFIX)) continue;
-    const stageBytes = line.subarray(R_SETUP_FAILURE_PREFIX.byteLength);
-    if (stageBytes.byteLength === 0 || !stageBytes.every((value) => value >= 0x20 && value <= 0x7e)) return undefined;
+  const bytes = Buffer.concat(diagnosticItems).subarray(0, byteCount);
+  const markers = new Set<string>();
+  let searchFrom = 0;
+  while (searchFrom < bytes.byteLength) {
+    const markerIndex = bytes.indexOf(R_SETUP_FAILURE_PREFIX, searchFrom);
+    if (markerIndex < 0) break;
+    if (markerIndex > 0 && !isMarkerPrefixBoundary(bytes[markerIndex - 1])) {
+      searchFrom = markerIndex + R_SETUP_FAILURE_PREFIX.byteLength;
+      continue;
+    }
+    const stageStart = markerIndex + R_SETUP_FAILURE_PREFIX.byteLength;
+    let stageEnd = stageStart;
+    while (stageEnd < bytes.byteLength) {
+      const value = bytes[stageEnd];
+      if ((value >= 0x61 && value <= 0x7a) || (value >= 0x30 && value <= 0x39) || value === 0x2d) {
+        stageEnd += 1;
+        continue;
+      }
+      break;
+    }
+    if (stageEnd === stageStart) return undefined;
+    if (!isMarkerStageTerminator(bytes, stageEnd)) return undefined;
+    const stageBytes = bytes.subarray(stageStart, stageEnd);
     const stage = stageBytes.toString("ascii");
     if (!R_SETUP_FAILURE_STAGES.has(stage)) return undefined;
-    markers.push(stage);
+    markers.add(stage);
+    searchFrom = stageEnd;
   }
-  return markers.length === 1 ? markers[0] : undefined;
+  return markers.size === 1 ? markers.values().next().value : undefined;
 }
 
 export function releasedNotebookExecutionFailureMessage(
