@@ -2242,7 +2242,11 @@ async function exerciseReleasedRJupyterExtension(
       30_000,
       "clearing the replayed R view before the cleaning journey"
     );
-    await editingDrawer.getByRole("button", { name: "Close panel" }).click();
+    editingApp = await releasedRSessionApp(workbench, testing, base.sessionId, "the cleared R editing view");
+    await editingApp
+      .getByRole("complementary", { name: "Column profiles and filters", exact: true })
+      .getByRole("button", { name: "Close panel" })
+      .click();
     await exerciseReleasedREditingJourney(
       testing,
       workbench,
@@ -4226,6 +4230,10 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
     "the selected native R score value to filter the complete frame"
   );
 
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the selected native R score filter");
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
   filterPanel = drawer.locator(".filterSortPanel").first();
   await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
   await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
@@ -4600,6 +4608,8 @@ async function exerciseReleasedRPersistentRowsJourney(
     30_000,
     "the R group viewing filter"
   );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R persistent-row view");
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await drawer.getByRole("button", { name: "Close panel" }).click();
   await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
   await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
@@ -4777,6 +4787,8 @@ async function exerciseReleasedRPersistentRowsJourney(
     30_000,
     "clearing the native R persistent-row acceptance view"
   );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the cleared R persistent-row view");
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await drawer.getByRole("button", { name: "Close panel" }).click();
   first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-persistent-rows-cleanup`);
   assert.deepEqual(
@@ -4818,6 +4830,8 @@ async function exerciseReleasedRRowReductionJourney(
     30_000,
     "the unrelated R row-reduction viewing filter"
   );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R row-reduction view");
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await drawer.getByRole("button", { name: "Close panel" }).click();
 
   recordAcceptanceProgress(`${phase}:editing:drop-missing-rows`);
@@ -4939,6 +4953,8 @@ async function exerciseReleasedRRowReductionJourney(
     30_000,
     "clearing the R row-reduction viewing filter"
   );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the cleared R row-reduction view");
+  drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await drawer.getByRole("button", { name: "Close panel" }).click();
 
   recordAcceptanceProgress(`${phase}:editing:drop-duplicates`);
@@ -5525,6 +5541,8 @@ async function exerciseReleasedREditingJourney(
     30_000,
     "the R notebook export viewing filter"
   );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R notebook export view");
+  exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await exportDrawer.getByRole("button", { name: "Close panel" }).click();
   await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
   await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
@@ -5595,6 +5613,8 @@ async function exerciseReleasedREditingJourney(
     30_000,
     "clearing the R notebook export view"
   );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the cleared R notebook export view");
+  exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await exportDrawer.getByRole("button", { name: "Close panel" }).click();
 
   recordAcceptanceProgress(`${phase}:editing:inspect`);
@@ -7748,8 +7768,10 @@ async function captureReleasedRNotebookGroupByDraft(
       30_000,
       "clearing the representative R view before Group and aggregate"
     );
-    await drawer.getByRole("button", { name: "Close panel", exact: true }).click();
-    await drawer.waitFor({ state: "hidden", timeout: 10_000 });
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the cleared representative R view");
+    const clearedDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    await clearedDrawer.getByRole("button", { name: "Close panel", exact: true }).click();
+    await clearedDrawer.waitFor({ state: "hidden", timeout: 10_000 });
 
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R media session before its Group By draft");
     await app.getByRole("button", { name: "Add step", exact: true }).click();
@@ -8029,6 +8051,22 @@ async function captureReleasedRJupyterWorkbench(
     await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("gte");
     await filterPanel.getByLabel("gte predicate value", { exact: true }).fill("20000");
     await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+    await waitFor(
+      () => {
+        const current = testing.activeSession();
+        return (
+          current?.sessionId === sessionId &&
+          current.viewState.filterModel.filters.length === 1 &&
+          current.viewState.filterModel.filters[0]?.column === "revenue"
+        );
+      },
+      30_000,
+      "the first R media filter"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the first R media filter");
+    drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
+    await drawer.waitFor({ state: "visible", timeout: 10_000 });
+    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
     filterPanel = drawer.locator(".filterSortPanel").first();
     await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "market" });
     await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
@@ -8201,7 +8239,6 @@ async function applyReleasedRQuickSort(
   const menu = await waitForReleasedRColumnMenu(workbench, sessionId, column);
   await menu.summary.click();
   await menu.menu.getByRole("button", { name: `Sort ${direction}`, exact: true }).click();
-  assert.equal(await menu.menu.evaluate((element) => element.hasAttribute("open")), false);
   await waitFor(
     () =>
       testing
@@ -8211,6 +8248,10 @@ async function applyReleasedRQuickSort(
     10_000,
     `${column} to join the native R compound sort`
   );
+  const sortedApp = await releasedRSessionApp(workbench, testing, sessionId, `the sorted R ${column} view`);
+  const closedMenu = sortedApp.locator(`th[data-column=${JSON.stringify(column)}] details.columnMenu`).first();
+  await closedMenu.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await closedMenu.evaluate((element) => element.hasAttribute("open")), false);
 }
 
 interface ReleasedRColumnMenu {
