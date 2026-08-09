@@ -543,6 +543,73 @@ test("R fill acceptance reacquires the renderer after preview and apply", async 
   );
 });
 
+test("R view mutations reacquire the renderer before the next panel action", async () => {
+  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
+  const assertOrder = (functionName, markers) => {
+    const start = source.indexOf(`async function ${functionName}(`);
+    const end = source.indexOf("\nasync function ", start + 1);
+    assert.ok(start >= 0 && end > start, `${functionName} must exist.`);
+    const body = source.slice(start, end);
+    let previous = -1;
+    for (const marker of markers) {
+      const index = body.indexOf(marker, previous + 1);
+      assert.ok(index > previous, `${functionName} must place ${JSON.stringify(marker)} after the prior boundary.`);
+      previous = index;
+    }
+  };
+
+  assertOrder("exerciseReleasedRJupyterExtension", [
+    '"clearing the replayed R view before the cleaning journey"',
+    '"the cleared R editing view"',
+    "exerciseReleasedREditingJourney("
+  ]);
+  assertOrder("exerciseReleasedRGridJourney", [
+    '"the selected native R score value to filter the complete frame"',
+    '"the selected native R score filter"',
+    'selectOption({ label: "group" })'
+  ]);
+  assertOrder("exerciseReleasedRPersistentRowsJourney", [
+    '"the R group viewing filter"',
+    '"the filtered R persistent-row view"',
+    'name: "Close panel"',
+    '"clearing the native R persistent-row acceptance view"',
+    '"the cleared R persistent-row view"',
+    'name: "Close panel"'
+  ]);
+  assertOrder("exerciseReleasedRRowReductionJourney", [
+    '"the unrelated R row-reduction viewing filter"',
+    '"the filtered R row-reduction view"',
+    'name: "Close panel"',
+    '"clearing the R row-reduction viewing filter"',
+    '"the cleared R row-reduction view"',
+    'name: "Close panel"'
+  ]);
+  assertOrder("exerciseReleasedREditingJourney", [
+    '"the R notebook export viewing filter"',
+    '"the filtered R notebook export view"',
+    'name: "Close panel"',
+    '"clearing the R notebook export view"',
+    '"the cleared R notebook export view"',
+    'name: "Close panel"'
+  ]);
+  assertOrder("captureReleasedRNotebookGroupByDraft", [
+    '"clearing the representative R view before Group and aggregate"',
+    '"the cleared representative R view"',
+    'name: "Close panel"'
+  ]);
+  assertOrder("captureReleasedRJupyterWorkbench", [
+    '"the first R media filter"',
+    'app = await releasedRSessionApp(workbench, testing, sessionId, "the first R media filter");',
+    'selectOption({ label: "market" })'
+  ]);
+  assertOrder("applyReleasedRQuickSort", [
+    "await menu.menu.getByRole",
+    "await waitFor(",
+    "const sortedApp = await releasedRSessionApp",
+    "await closedMenu.evaluate"
+  ]);
+});
+
 test("R native-frame editing waits for its visible renderer before notebook probes", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
