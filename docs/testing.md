@@ -568,8 +568,7 @@ and Windows use the snapshot's binary package. The Linux document journey also i
 rmarkdown 2.30, and knitr 1.51 in that private library. IRkernel starts with that library already present in
 `.libPaths()`. The preflight runs the same 1,205-row,
 25-column collapse conversions, grouping, and indexing used by the notebook journey, so a platform-specific native
-failure is reported before the editor launches. The journey covers
-cover projected paging, row labels,
+failure is reported before the editor launches. The journey covers projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
 and cleanup. The base dataframe starts in Viewing mode, keeps its exact notebook, public session, and compound sort
 through the visible **Switch to Editing** action, then continues through the cleaning journey on that same session.
