@@ -565,7 +565,10 @@ The local kernel installs missing packages into a temporary library. Linux uses
 1.1.7, Rcpp 1.1.1, tibble 3.3.1, and data.table 1.18.2.1. Rcpp is installed before collapse. Collapse 2.1.7 and
 nanoparquet 0.5.1 come from the matching reviewed `2026-06-01` snapshot. macOS builds collapse from source; Linux
 and Windows use the snapshot's binary package. The Linux document journey also installs languageserver 0.3.17,
-rmarkdown 2.30, and knitr 1.51 in that private library. Tests
+rmarkdown 2.30, and knitr 1.51 in that private library. IRkernel starts with that library already present in
+`.libPaths()`. The preflight runs the same 1,205-row,
+25-column collapse conversions, grouping, and indexing used by the notebook journey, so a platform-specific native
+failure is reported before the editor launches. The journey covers
 cover projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
 and cleanup. The base dataframe starts in Viewing mode, keeps its exact notebook, public session, and compound sort

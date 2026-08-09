@@ -84,6 +84,12 @@ const R_ACCEPTANCE_EXPECTED_VERSIONS = Object.entries(R_ACCEPTANCE_PACKAGE_VERSI
   .join(", ");
 const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
 const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
+const R_ACCEPTANCE_KERNEL_EXPRESSION = [
+  '.ow_library <- Sys.getenv("R_LIBS_USER", unset = NA_character_)',
+  'if (is.na(.ow_library) || !dir.exists(.ow_library)) stop("Open Wrangler R acceptance library is unavailable.")',
+  '.libPaths(unique(c(normalizePath(.ow_library, winslash = "/", mustWork = TRUE), .libPaths())))',
+  "IRkernel::main()"
+].join("; ");
 const R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS = 300_000;
 const R_ACCEPTANCE_EXECUTABLE_PROBE = [
   '.ow_r <- file.path(R.home("bin"), if (.Platform$OS.type == "windows") "R.exe" else "R")',
@@ -109,7 +115,22 @@ const R_ACCEPTANCE_PROBE = [
   "  }, error = function(...) FALSE)",
   "}, logical(1L), USE.NAMES = FALSE)",
   'if (any(!.ow_loadable)) quit(save = "no", status = 12L)',
-  ".ow_collapse_input <- data.frame(group = c('A', 'B'), value = c(1, 2), stringsAsFactors = FALSE)",
+  ".ow_row_count <- 1205L",
+  ".ow_collapse_input <- data.frame(",
+  "  row_id = seq_len(.ow_row_count),",
+  "  group = c(rep('A', 602L), rep('B', .ow_row_count - 602L)),",
+  "  score = as.numeric(seq_len(.ow_row_count)),",
+  "  label = sprintf('row-%04d', seq_len(.ow_row_count)),",
+  "  fractional_score = ifelse(seq_len(.ow_row_count) %% 2L == 0L, -as.numeric(seq_len(.ow_row_count)) - 0.25, as.numeric(seq_len(.ow_row_count)) + 0.25),",
+  "  check.names = FALSE,",
+  "  stringsAsFactors = FALSE",
+  ")",
+  "for (.ow_column_index in seq_len(20L)) {",
+  "  .ow_collapse_input[[sprintf('extra_%02d', .ow_column_index)]] <- sprintf('value-%02d-%04d', .ow_column_index, seq_len(.ow_row_count))",
+  "}",
+  ".ow_collapse_input$extra_20[1L] <- NA_character_",
+  ".ow_collapse_input$fractional_score[603L] <- NA_real_",
+  "row.names(.ow_collapse_input) <- sprintf('case-%04d', seq_len(.ow_row_count))",
   ".ow_collapse_stage <- function(.ow_stage) {",
   "  cat('OPEN_WRANGLER_R_COLLAPSE_PROBE:', .ow_stage, '\\n', sep = '', file = stderr())",
   "  flush(stderr())",
@@ -132,6 +153,18 @@ const R_ACCEPTANCE_PROBE = [
   "  error = function(...) NULL",
   ")",
   'if (!inherits(.ow_qdt, "data.table")) quit(save = "no", status = 15L)',
+  ".ow_collapse_stage('fgroup_by')",
+  ".ow_grouped <- tryCatch(",
+  "  suppressMessages(suppressWarnings(collapse::fgroup_by(.ow_qdf, group))),",
+  "  error = function(...) NULL",
+  ")",
+  'if (!inherits(.ow_grouped, "grouped_df")) quit(save = "no", status = 16L)',
+  ".ow_collapse_stage('findex_by')",
+  ".ow_indexed <- tryCatch(",
+  "  suppressMessages(suppressWarnings(collapse::findex_by(.ow_qdf, group, row_id))),",
+  "  error = function(...) NULL",
+  ")",
+  'if (!inherits(.ow_indexed, "indexed_frame")) quit(save = "no", status = 17L)',
   'cat(paste(.ow_packages, .ow_versions, sep = "=", collapse = "\\n"), sep = "")'
 ].join("\n");
 export function rAcceptanceRepositories(platform = process.platform) {
@@ -468,7 +501,7 @@ export async function prepareJupyterAcceptanceREnvironment(
     kernelSpecPath,
     `${JSON.stringify(
       {
-        argv: [rExecutable, "--slave", "-e", "IRkernel::main()", "--args", "{connection_file}"],
+        argv: [rExecutable, "--slave", "-e", R_ACCEPTANCE_KERNEL_EXPRESSION, "--args", "{connection_file}"],
         display_name: R_ACCEPTANCE_KERNEL_DISPLAY_NAME,
         language: "R",
         env: { R_LIBS_USER: libraryDir }
