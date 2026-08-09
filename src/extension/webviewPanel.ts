@@ -277,6 +277,20 @@ export class OpenWranglerPanel {
     );
   }
 
+  static panelSynchronizationReceiptForSession(
+    sessionId: string
+  ): Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined {
+    const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
+    const synchronization = target?.rendererSynchronizationIdentity;
+    return target?.hasHydratedRenderer() && synchronization?.sessionId === sessionId
+      ? {
+          syncId: synchronization.syncId,
+          sessionId: synchronization.sessionId,
+          revision: synchronization.revision
+        }
+      : undefined;
+  }
+
   static openResponseForTesting(): OpenWranglerResponse | undefined {
     return OpenWranglerPanel.activePanel?.openResponse ?? [...OpenWranglerPanel.panels].at(-1)?.openResponse;
   }

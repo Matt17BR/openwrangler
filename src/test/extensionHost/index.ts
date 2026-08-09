@@ -132,6 +132,9 @@ interface TestApi {
   ): Promise<Extract<OpenWranglerResponse, { kind: "sessionOpened" }> | undefined>;
   panelHydrated(sessionId: string): boolean;
   panelSynchronizable(sessionId: string): boolean;
+  panelSynchronizationReceipt(
+    sessionId: string
+  ): Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined;
   sessionSchedulerState(sessionId: string): SessionSchedulerState | undefined;
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
@@ -7882,9 +7885,20 @@ async function releasedRSessionApp(
       sessionId,
       `${description} must render the current confirmed session state.`
     );
+    const receipt = testing.panelSynchronizationReceipt(sessionId);
+    assert.ok(receipt, `${description} must retain its renderer synchronization receipt before discovery.`);
     // Synchronization may retire the generation that supplied the initial
-    // visible-grid receipt, so locate the exact session again before use.
-    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    // visible-grid receipt, so locate the renderer that acknowledged this
+    // exact host receipt before using it.
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId, receipt);
+    const app = await exactSessionApp(target.frame, sessionId, receipt.syncId);
+    assert.ok(app, `${description} requires its exact synchronized Open Wrangler renderer.`);
+    assert.equal(
+      sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId)),
+      true,
+      `${description} must retain the same renderer synchronization receipt through acquisition.`
+    );
+    return app;
   }
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, `${description} requires its exact Open Wrangler renderer.`);
@@ -13648,7 +13662,8 @@ async function exerciseRemoteWorkspace(
 async function waitForOpenWranglerGridTarget(
   workbench: Page,
   testing: TestApi,
-  expectedSessionId: string
+  expectedSessionId: string,
+  expectedRendererSynchronizationReceipt?: Readonly<{ syncId: string; sessionId: string; revision: number }>
 ): Promise<OpenWranglerWebviewTarget> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   do {
@@ -13657,10 +13672,24 @@ async function waitForOpenWranglerGridTarget(
     for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
       if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
       try {
-        const app = await exactSessionApp(target.frame, expectedSessionId);
+        const app = await exactSessionApp(
+          target.frame,
+          expectedSessionId,
+          expectedRendererSynchronizationReceipt?.syncId
+        );
         if (!app) continue;
         const grid = app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first();
-        if ((await grid.count()) > 0 && (await grid.isVisible())) return target;
+        if ((await grid.count()) === 0 || !(await grid.isVisible())) continue;
+        if (
+          expectedRendererSynchronizationReceipt &&
+          !sameRendererSynchronizationReceipt(
+            expectedRendererSynchronizationReceipt,
+            testing.panelSynchronizationReceipt(expectedSessionId)
+          )
+        ) {
+          continue;
+        }
+        return target;
       } catch (error) {
         ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
       }
@@ -13692,14 +13721,31 @@ async function waitForOpenWranglerGridTarget(
   );
 }
 
-async function exactSessionApp(frame: Frame, expectedSessionId: string): Promise<Locator | undefined> {
+async function exactSessionApp(
+  frame: Frame,
+  expectedSessionId: string,
+  expectedRendererSynchronizationId?: string
+): Promise<Locator | undefined> {
   const apps = frame.locator("main.app[data-session-id]");
   const count = await apps.count();
   for (let index = 0; index < count; index += 1) {
     const app = apps.nth(index);
-    if ((await app.getAttribute("data-session-id")) === expectedSessionId) return app;
+    if (
+      (await app.getAttribute("data-session-id")) === expectedSessionId &&
+      (expectedRendererSynchronizationId === undefined ||
+        (await app.getAttribute("data-renderer-sync-id")) === expectedRendererSynchronizationId)
+    ) {
+      return app;
+    }
   }
   return undefined;
+}
+
+function sameRendererSynchronizationReceipt(
+  left: Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined,
+  right: Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined
+): boolean {
+  return left?.syncId === right?.syncId && left?.sessionId === right?.sessionId && left?.revision === right?.revision;
 }
 
 async function waitForExactSessionWebviewButton(
