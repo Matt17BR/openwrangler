@@ -401,7 +401,7 @@ describe("packaged editor screenshot evidence", () => {
     );
     expect(extensionHost).toContain("const boundaryTolerance = 1;");
     const finalDraftHydration = extensionHost.indexOf(
-      "The draft preview and final Code Preview layout must be acknowledged before the generated column is inspected."
+      'app = await rediscoverApp("Post-Code Preview renderer synchronization");'
     );
     const generatedColumnInspection = extensionHost.indexOf("const addedHeader =");
     expect(finalDraftHydration).toBeGreaterThan(0);

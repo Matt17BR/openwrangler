@@ -570,12 +570,26 @@ test("R native-frame editing waits for its visible renderer before notebook prob
   const helperEnd = source.indexOf("\nasync function captureReleasedRJupyterWorkbench(", helperStart);
   assert.ok(helperStart >= 0 && helperEnd > helperStart);
   const helper = source.slice(helperStart, helperEnd);
-  const visibleGrid = helper.indexOf("let target = await waitForOpenWranglerGridTarget(");
-  const synchronization = helper.indexOf("await requireFreshExactSessionPanelHydration(", visibleGrid);
-  const reacquiredGrid = helper.indexOf("target = await waitForOpenWranglerGridTarget(", synchronization);
+  const sharedAcquisition = helper.indexOf("return synchronizedSessionApp(");
+  const synchronization = helper.indexOf("await requireFreshExactSessionPanelHydration(", sharedAcquisition);
+  const receipt = helper.indexOf("const receipt = testing.panelSynchronizationReceipt(sessionId);", synchronization);
+  const reacquiredGrid = helper.indexOf(
+    "await waitForOpenWranglerGridTarget(workbench, testing, sessionId, receipt)",
+    receipt
+  );
+  const exactRenderer = helper.indexOf(
+    "await exactSessionApp(target.frame, sessionId, receipt.syncId)",
+    reacquiredGrid
+  );
+  const receiptRecheck = helper.indexOf("sameRendererSynchronizationReceipt(", exactRenderer);
   assert.ok(
-    visibleGrid >= 0 && synchronization > visibleGrid && reacquiredGrid > synchronization,
-    "A released R panel must provide a visible-grid receipt before synchronization and be reacquired afterward."
+    sharedAcquisition >= 0 &&
+      synchronization > sharedAcquisition &&
+      receipt > synchronization &&
+      reacquiredGrid > receipt &&
+      exactRenderer > reacquiredGrid &&
+      receiptRecheck > exactRenderer,
+    "A released R panel must synchronize once, bind the exact acknowledged renderer, and recheck its receipt."
   );
 });
 
