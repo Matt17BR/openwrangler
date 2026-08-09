@@ -96,11 +96,71 @@ describe("released notebook failure diagnostics", () => {
     );
   });
 
+  it.each([
+    [
+      "\u001b[1;31mFailed to start the Kernel 'R (Open Wrangler)'. View Jupyter log for further details.",
+      "kernel failed to start"
+    ],
+    [
+      "Unable to start Kernel 'R (Open Wrangler)' due to a connection timeout. View Jupyter log for further details.",
+      "kernel connection timed out"
+    ],
+    [
+      "Unable to start Kernel 'R (Open Wrangler)' due to a timeout waiting for the ports to get used.",
+      "kernel port wait timed out"
+    ],
+    [
+      "The kernel 'R (Open Wrangler)' was not started as it is located in an insecure location '/tmp/private'.",
+      "kernel spec not trusted"
+    ],
+    [
+      "Connection file not found in kernelspec json args: /tmp/private/kernel.json",
+      "kernel spec missing connection file"
+    ],
+    ["The kernel 'R (Open Wrangler)' died. View Jupyter log for further details.", "kernel stopped"],
+    ["Cannot execute code, session has been disposed.", "kernel session disposed"],
+    ["SyntaxError: invalid syntax at /tmp/private/script.py", "kernel language mismatch"]
+  ])("classifies a Jupyter stack without exposing its contents: %s", (stack, expected) => {
+    const privateMaterial = "/tmp/private token=do-not-retain -----BEGIN PRIVATE KEY-----";
+    const outputs = [
+      {
+        items: [
+          {
+            mime: "application/vnd.code.notebook.error",
+            data: Buffer.from(JSON.stringify({ name: "", message: "", stack: `${stack}\n${privateMaterial}` }), "utf8")
+          }
+        ]
+      }
+    ];
+
+    expect(releasedNotebookErrorDiagnostic(outputs)).toBe(expected);
+    const message = releasedNotebookExecutionFailureMessage(0, outputs);
+    expect(message).toBe(`Released-Jupyter cell 0 failed (notebook-error-output; ${expected}).`);
+    expect(message).not.toContain(privateMaterial);
+    expect(message).not.toContain("\u001b");
+  });
+
   it("falls back to the opaque classification for malformed, oversized, unknown, or conflicting errors", () => {
     const item = (data: Buffer) => ({ mime: "application/vnd.code.notebook.error", data });
     const unknown = item(Buffer.from(JSON.stringify({ name: "Error", message: "secret=/tmp/private" }), "utf8"));
     expect(releasedNotebookErrorDiagnostic([{ items: [item(Buffer.from("not json", "utf8"))] }])).toBeUndefined();
     expect(releasedNotebookErrorDiagnostic([{ items: [item(Buffer.alloc(16 * 1024 + 1, 0x78))] }])).toBeUndefined();
+    expect(
+      releasedNotebookErrorDiagnostic([
+        {
+          items: [item(Buffer.from(JSON.stringify({ name: "", message: "", stack: 42 }), "utf8"))]
+        }
+      ])
+    ).toBeUndefined();
+    expect(
+      releasedNotebookErrorDiagnostic([
+        {
+          items: [
+            item(Buffer.from(JSON.stringify({ name: "", message: "", stack: "x".repeat(16 * 1024 + 1) }), "utf8"))
+          ]
+        }
+      ])
+    ).toBeUndefined();
     expect(releasedNotebookErrorDiagnostic([{ items: [unknown] }])).toBeUndefined();
     expect(
       releasedNotebookErrorDiagnostic([
