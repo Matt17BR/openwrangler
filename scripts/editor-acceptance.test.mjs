@@ -325,12 +325,21 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
     source.indexOf("async function previewApplyAndUndoGroupedRevenue(")
   );
   const reviewHidden = previousValueDiscard.indexOf('await review.waitFor({ state: "hidden"');
-  const confirmedRenderer = previousValueDiscard.indexOf("return reacquireAcknowledgedSessionApp(", reviewHidden);
+  const automaticHydration = previousValueDiscard.indexOf("() => testing.panelHydrated(sessionId)", reviewHidden);
+  const confirmedRenderer = previousValueDiscard.indexOf("return reacquireAcknowledgedSessionApp(", automaticHydration);
   assert.ok(
-    reviewHidden >= 0 && confirmedRenderer > reviewHidden,
-    "Discarding the previous-value draft must reacquire the renderer that publishes the confirmed state."
+    reviewHidden >= 0 && automaticHydration > reviewHidden && confirmedRenderer > automaticHydration,
+    "Discarding the previous-value draft must await and reacquire the renderer that publishes the confirmed state."
   );
-  assert.doesNotMatch(previousValueDiscard.slice(reviewHidden), /return (?:refreshedApp|synchronizedSessionApp\()/u);
+  const postDiscardRenderer = previousValueDiscard.slice(reviewHidden);
+  assert.match(postDiscardRenderer, /OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS/u);
+  assert.match(postDiscardRenderer, /JSON\.stringify\(discardState\(\)\)/u);
+  assert.match(previousValueDiscard, /panelReceipt: testing\.panelSynchronizationReceipt\(sessionId\)/u);
+  assert.match(previousValueDiscard, /panelSynchronizable: testing\.panelSynchronizable\(sessionId\)/u);
+  assert.doesNotMatch(
+    postDiscardRenderer,
+    /return (?:refreshedApp|synchronizedSessionApp\()|testing\.synchronizePanel|ensurePanelSynchronized/u
+  );
   assert.match(
     firstUseJourney,
     /openSidePanel\("Column"\)/u,
