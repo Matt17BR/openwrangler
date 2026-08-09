@@ -76,7 +76,7 @@ function exactPublicUrls(root, version) {
   });
 }
 
-function validateMetadata(metadata, { channel, urls, version }) {
+function validateMetadata(metadata, { channel, packageJson, urls, version }) {
   requirePlainObject(metadata, "Open VSX release metadata");
   const files = requirePlainObject(metadata.files, "Open VSX release files");
   const downloads = requirePlainObject(metadata.downloads, "Open VSX release downloads");
@@ -103,6 +103,15 @@ function validateMetadata(metadata, { channel, urls, version }) {
   }
   if (metadata.verified !== true) {
     throw new Error("Open VSX does not report Matt17BR as a verified publisher for this namespace.");
+  }
+  const keywords = Array.isArray(packageJson.keywords) ? packageJson.keywords : [];
+  const publicTags = Array.isArray(metadata.tags) ? new Set(metadata.tags) : new Set();
+  if (
+    metadata.description !== packageJson.description ||
+    metadata.homepage !== packageJson.homepage ||
+    keywords.some((keyword) => !publicTags.has(keyword))
+  ) {
+    throw new Error("Open VSX listing copy differs from the canonical package.");
   }
 }
 
@@ -147,8 +156,12 @@ export async function verifyOpenVsxReleaseOnce({
   }
   const metadataBytes = await readBoundedResponse(response, METADATA_MAX_BYTES, "Open VSX metadata");
   const metadata = parseStrictJson(metadataBytes.toString("utf8"), { maxBytes: METADATA_MAX_BYTES });
-  validateMetadata(metadata, { channel, urls, version });
   const candidateArchive = await inspectCandidate(candidateBytes, { requireRFrameContract });
+  const packageJson = requirePlainObject(
+    parseStrictJson(candidateArchive.packagedPackageJson),
+    "Canonical VSIX package metadata"
+  );
+  validateMetadata(metadata, { channel, packageJson, urls, version });
   const candidateIconSize = new Map(candidateArchive.entrySizes).get("extension/media/icon.png");
   const candidateIconSha256 = new Map(candidateArchive.entryDigests).get("extension/media/icon.png");
   if (

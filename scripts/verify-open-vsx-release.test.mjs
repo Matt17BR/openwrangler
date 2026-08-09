@@ -13,25 +13,34 @@ const icon = `${api}/file/icon.png`;
 const checksum = `${api}/file/Matt17BR.openwrangler-${version}.sha256`;
 const candidateIcon = Buffer.from("canonical-icon");
 const candidateIconSha256 = createHash("sha256").update(candidateIcon).digest("hex");
+const packageJson = Object.freeze({
+  description: "An open-source dataframe wrangler.",
+  homepage: "https://github.com/Matt17BR/openwrangler#readme",
+  keywords: ["dataframe", "polars"]
+});
 const inspectCandidate = async () => ({
   entryDigests: [["extension/media/icon.png", candidateIconSha256]],
-  entrySizes: [["extension/media/icon.png", candidateIcon.length]]
+  entrySizes: [["extension/media/icon.png", candidateIcon.length]],
+  packagedPackageJson: JSON.stringify(packageJson)
 });
 
 function metadata(overrides = {}) {
   return {
     allVersions: { [version]: api },
     deprecated: false,
+    description: packageJson.description,
     displayName: "Open Wrangler",
     downloadable: true,
     downloads: { universal: download },
     files: { download, icon, sha256: checksum },
     name: "openwrangler",
     namespace: "Matt17BR",
+    homepage: packageJson.homepage,
     preRelease: false,
     preview: false,
     publishedBy: { loginName: "Matt17BR" },
     targetPlatform: "universal",
+    tags: [...packageJson.keywords, "keybindings"],
     verified: true,
     version,
     ...overrides
@@ -136,6 +145,15 @@ test("requires Open VSX to verify the exact publisher and namespace", async () =
     else manifest.verified = verified;
     await assert.rejects(verify(exactFetch({ manifest })), /verified publisher/u);
   }
+});
+
+test("requires current Open VSX description, homepage, and manifest tags", async () => {
+  await assert.rejects(verify(exactFetch({ manifest: metadata({ description: "stale" }) })), /listing copy/u);
+  await assert.rejects(
+    verify(exactFetch({ manifest: metadata({ homepage: "https://example.com" }) })),
+    /listing copy/u
+  );
+  await assert.rejects(verify(exactFetch({ manifest: metadata({ tags: ["dataframe"] }) })), /listing copy/u);
 });
 
 test("distinguishes an absent version from a transient registry response", async () => {
