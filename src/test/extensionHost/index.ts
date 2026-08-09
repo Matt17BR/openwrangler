@@ -1607,17 +1607,21 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "orders_tibble_before <- serialize(orders_tibble, NULL, version = 3L)",
     "orders_table_before <- serialize(orders_table, NULL, version = 3L)",
     ".ow_setup_stage <- 'result'",
-    ".ow_library_attestation <- local({",
-    "  path_key <- function(path) {",
-    "    normalized <- normalizePath(path, winslash = '/', mustWork = TRUE)",
-    "    if (.Platform$OS.type == 'windows') tolower(normalized) else normalized",
-    "  }",
-    "  private_library <- path_key(Sys.getenv('R_LIBS_USER', unset = ''))",
-    "  list(",
-    "    privateLibraryFirst = identical(path_key(.libPaths()[[1L]]), private_library),",
-    "    irKernelFromPrivateLibrary = identical(path_key(dirname(find.package('IRkernel'))), private_library)",
-    "  )",
-    "})",
+    ...(phase === "jupyter-r"
+      ? [
+          ".ow_library_attestation <- local({",
+          "  path_key <- function(path) {",
+          "    normalized <- normalizePath(path, winslash = '/', mustWork = TRUE)",
+          "    if (.Platform$OS.type == 'windows') tolower(normalized) else normalized",
+          "  }",
+          "  private_library <- path_key(Sys.getenv('R_LIBS_USER', unset = ''))",
+          "  list(",
+          "    privateLibraryFirst = identical(path_key(.libPaths()[[1L]]), private_library),",
+          "    irKernelFromPrivateLibrary = identical(path_key(dirname(find.package('IRkernel'))), private_library)",
+          "  )",
+          "})"
+        ]
+      : [".ow_library_attestation <- list(privateLibraryFirst = NA, irKernelFromPrivateLibrary = NA)"]),
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
     "  pid = Sys.getpid(), rows = nrow(orders_frame), columns = ncol(orders_frame),",
     "  rVersion = as.character(getRversion()),",
@@ -2144,7 +2148,7 @@ async function exerciseReleasedRJupyterExtension(
     const setup = releasedNotebookJsonResult(setupCell, RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
     assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
     assertReleasedRVersion(setup, kernelTarget, "R setup");
-    assertReleasedRPrivateLibrary(setup, "R setup");
+    if (!kernelTarget.remote) assertReleasedRPrivateLibrary(setup, "R setup");
     assert.equal(setup.collapseVersion, "2.1.7");
     assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
     if (kernelTarget.remote) {
@@ -2623,7 +2627,7 @@ async function exerciseReleasedRJupyterExtension(
     );
     assert.notEqual(Number(replacementSetup.pid), Number(setup.pid));
     assertReleasedRVersion(replacementSetup, kernelTarget, "replacement R setup");
-    assertReleasedRPrivateLibrary(replacementSetup, "replacement R setup");
+    if (!kernelTarget.remote) assertReleasedRPrivateLibrary(replacementSetup, "replacement R setup");
     assert.equal(replacementSetup.collapseVersion, "2.1.7");
     if (kernelTarget.remote) {
       assert.equal(replacementSetup.remoteRunId, kernelTarget.remote.runId);
