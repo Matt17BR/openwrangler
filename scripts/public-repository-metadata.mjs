@@ -22,6 +22,8 @@ export function inspectPublicRepositoryMetadata({ contractSource, packageSource 
     problems.push("GitHub About description must match package.json description.");
   if (metadata.homepage !== marketplace)
     problems.push("GitHub About homepage must point to the Visual Studio Marketplace listing.");
+  if (packageJson.homepage !== metadata.homepage)
+    problems.push("The extension homepage must match the GitHub About homepage.");
   const topics = metadata.topics;
   if (
     !Array.isArray(topics) ||

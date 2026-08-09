@@ -6,13 +6,21 @@ import { inspectPublicRepositoryMetadata, verifyLivePublicRepositoryMetadata } f
 
 const metadata = JSON.parse(readFileSync(resolve(import.meta.dirname, "../.github/repository-metadata.json"), "utf8"));
 const packageSource = readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8");
-const inspect = (candidate) =>
-  inspectPublicRepositoryMetadata({ contractSource: JSON.stringify(candidate), packageSource });
+const packageJson = JSON.parse(packageSource);
+const inspect = (candidate, candidatePackageSource = packageSource) =>
+  inspectPublicRepositoryMetadata({ contractSource: JSON.stringify(candidate), packageSource: candidatePackageSource });
 
 test("local validation rejects description, homepage, and topic drift", () => {
   assert.deepEqual(inspect(metadata), []);
   assert.match(inspect({ ...metadata, description: "stale" }).join(" "), /description/u);
   assert.match(inspect({ ...metadata, homepage: "https://github.com/Matt17BR/openwrangler" }).join(" "), /homepage/u);
+  assert.match(
+    inspect(
+      metadata,
+      JSON.stringify({ ...packageJson, homepage: "https://github.com/Matt17BR/openwrangler#readme" })
+    ).join(" "),
+    /extension homepage/u
+  );
   assert.match(inspect({ ...metadata, topics: [...metadata.topics].reverse() }).join(" "), /topics/u);
 });
 
