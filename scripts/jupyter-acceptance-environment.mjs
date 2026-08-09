@@ -537,7 +537,15 @@ export async function prepareJupyterAcceptanceREnvironment(
         argv: [rExecutable, "--slave", "-e", R_ACCEPTANCE_KERNEL_EXPRESSION, "--args", "{connection_file}"],
         display_name: R_ACCEPTANCE_KERNEL_DISPLAY_NAME,
         language: "R",
-        env: { R_LIBS_USER: libraryDir }
+        env: {
+          HOME: homeDir,
+          USERPROFILE: homeDir,
+          TMPDIR: tempDir,
+          TMP: tempDir,
+          TEMP: tempDir,
+          R_USER: homeDir,
+          R_LIBS_USER: libraryDir
+        }
       },
       null,
       2

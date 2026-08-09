@@ -236,7 +236,15 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       ],
       display_name: "R (Open Wrangler)",
       language: "R",
-      env: { R_LIBS_USER: prepared.libraryDir }
+      env: {
+        HOME: join(privateRoot, "h"),
+        USERPROFILE: join(privateRoot, "h"),
+        TMPDIR: join(privateRoot, "t"),
+        TMP: join(privateRoot, "t"),
+        TEMP: join(privateRoot, "t"),
+        R_USER: join(privateRoot, "h"),
+        R_LIBS_USER: prepared.libraryDir
+      }
     });
     assert.equal(kernelSpec.argv.at(-1), "{connection_file}");
     assert.equal(kernelSpec.argv.filter((value) => value === "{connection_file}").length, 1);
