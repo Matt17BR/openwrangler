@@ -340,6 +340,18 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
     postDiscardRenderer,
     /return (?:refreshedApp|synchronizedSessionApp\()|testing\.synchronizePanel|ensurePanelSynchronized/u
   );
+  const groupedFill = source.slice(
+    source.indexOf("async function previewApplyAndUndoGroupedRevenue("),
+    source.indexOf("async function exercisePackagedLinearInterpolationJourney(")
+  );
+  assert.match(groupedFill, /const code = testing\.activeSession\(\)\?\.code \?\? ""/u);
+  assert.match(groupedFill, /waitForCodePreview\(workbench, "import polars as pl"\)/u);
+  assert.match(
+    groupedFill,
+    /revealCodePreviewOperationLine\([\s\S]*_ow_polars_fill_missing_grouped_statistic/u,
+    "Grouped-fill acceptance must scroll CodeMirror to the generated operation instead of assuming its virtualized line is already mounted."
+  );
+  assert.doesNotMatch(groupedFill, /waitForCodePreview\(workbench, "grouped"\)/u);
   assert.match(
     firstUseJourney,
     /openSidePanel\("Column"\)/u,
