@@ -6560,7 +6560,39 @@ async function exerciseReleasedREditingJourney(
     "returning from the native R Text Length inspection"
   );
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R Text Length session before undo");
+  const lengthUndoState = (): Record<string, unknown> => {
+    const active = testing.activeSession();
+    return {
+      revision: active?.metadata.revision,
+      appliedRevision: appliedLength.metadata.revision,
+      stepCount: active?.metadata.steps.length,
+      draft: active?.metadata.draftStep?.kind,
+      derivedColumnPresent: active?.metadata.schema.some((column) => column.id === derivedColumnId),
+      firstColumns: active?.metadata.schema.slice(0, 4).map((column) => column.name),
+      codeEmpty: (active?.code ?? "") === "",
+      scheduler: testing.sessionSchedulerState(sessionId),
+      panel: {
+        hydrated: testing.panelHydrated(sessionId),
+        synchronizable: testing.panelSynchronizable(sessionId),
+        receipt: testing.panelSynchronizationReceipt(sessionId)
+      }
+    };
+  };
   await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const scheduler = testing.sessionSchedulerState(sessionId);
+      return (
+        (active?.metadata.revision ?? appliedLength.metadata.revision) > appliedLength.metadata.revision ||
+        scheduler?.activeForegroundOperation === true ||
+        (scheduler?.interactiveQueueLength ?? 0) > 0
+      );
+    },
+    5_000,
+    "the native R Text Length Undo click to dispatch once",
+    () => JSON.stringify(lengthUndoState())
+  );
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -6576,8 +6608,9 @@ async function exerciseReleasedREditingJourney(
         (active.code ?? "") === ""
       );
     },
-    30_000,
-    "undoing the native R Text Length step"
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "undoing the native R Text Length step",
+    () => JSON.stringify(lengthUndoState())
   );
 
   if (phase === "jupyter-r") {
