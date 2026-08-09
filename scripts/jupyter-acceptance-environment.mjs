@@ -66,6 +66,7 @@ export const R_ACCEPTANCE_PACKAGE_VERSIONS = Object.freeze({
   IRkernel: "1.3.2",
   jsonlite: "2.0.0",
   rlang: "1.1.7",
+  Rcpp: "1.1.1",
   languageserver: "0.3.17",
   rmarkdown: "2.30",
   knitr: "1.51",
