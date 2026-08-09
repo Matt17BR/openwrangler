@@ -9,6 +9,7 @@ import { join, parse, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import {
   clearEditorAcceptanceEvidence,
+  redactEditorAcceptanceJson,
   redactEditorAcceptanceText,
   retainEditorAcceptanceEvidence
 } from "./editor-acceptance-evidence.mjs";
@@ -81,6 +82,43 @@ test("text redaction covers quoted JSON, generic URI userinfo, and signed query 
   assert.match(redacted, /"auth":"<redacted>"/u);
   assert.equal(redacted.includes("glpat-"), false);
   assert.equal(redacted.includes("xoxb-"), false);
+});
+
+test("JSON evidence redacts structured and encoded credentials without changing JSON syntax", () => {
+  const secret = "json-evidence-secret-that-must-not-survive";
+  const selector = 'main.app[data-session-id="session-id"][data-renderer-sync-id="renderer-id"]';
+  const redacted = redactEditorAcceptanceJson(
+    JSON.stringify({
+      message: `waiting for locator('${selector}')`,
+      nested: { password: secret, "creden%74ial": secret },
+      encoded: `%22password%22%3A%22${secret}%22`
+    })
+  );
+
+  assert.equal(typeof redacted, "string");
+  const parsed = JSON.parse(redacted);
+  assert.equal(parsed.message, `waiting for locator('${selector}')`);
+  assert.equal(JSON.stringify(parsed).includes(secret), false);
+  assert.match(JSON.stringify(parsed), /<redacted>/u);
+  assert.equal(
+    redactEditorAcceptanceJson(JSON.stringify({ kty: "RSA", n: "public", e: "AQAB", d: "private" })),
+    undefined
+  );
+  assert.equal(redactEditorAcceptanceJson(JSON.stringify({ message: "x".repeat(128) }), [], 64), undefined);
+});
+
+test("JSON evidence preserves the complete bounded profile manifest", () => {
+  const manifest = Array.from({ length: MANIFEST_ENTRY_LIMIT }, (_, index) => ({
+    path: `logs/${index}/renderer.log`,
+    type: "file",
+    size: index
+  }));
+  const redacted = redactEditorAcceptanceJson(JSON.stringify(manifest));
+  assert.equal(typeof redacted, "string");
+  assert.equal(JSON.parse(redacted).length, MANIFEST_ENTRY_LIMIT);
+  const sealed = redactEditorAcceptanceJson(redacted);
+  assert.equal(typeof sealed, "string");
+  assert.equal(JSON.parse(sealed).length, MANIFEST_ENTRY_LIMIT);
 });
 
 test("text redaction normalizes security escapes before removing credentials", () => {
@@ -658,6 +696,63 @@ test("evidence collection enforces canonical profile, result, and retention cont
   }
 });
 
+test("retained result and progress evidence keeps quoted Playwright selectors as valid JSON", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-json-"));
+  const temporaryRoot = join(directory, "editor-temp");
+  const profile = join(temporaryRoot, "profile");
+  const resultPath = join(profile, "verify-result.json");
+  const progressPath = join(profile, "verify-progress.json");
+  const evidenceRoot = join(directory, "evidence");
+  const selector = 'main.app[data-session-id="session-id"][data-renderer-sync-id="renderer-id"]';
+  try {
+    await mkdir(profile, { recursive: true });
+    await writeFile(resultPath, `${JSON.stringify({ ok: false, error: `waiting for locator('${selector}')` })}\n`);
+    await writeFile(
+      progressPath,
+      `${JSON.stringify({ protocol: 1, phase: "verify", checkpoint: `waiting for locator('${selector}')` })}\n`
+    );
+
+    const target = retainEditorAcceptanceEvidence({
+      evidenceRoot,
+      temporaryRoot,
+      profile,
+      editor: { key: "vscode", name: "VS Code", version: "1.130.0" },
+      phase: "verify",
+      error: new Error(`waiting for locator('${selector}')`),
+      resultPath,
+      progressPaths: { verify: progressPath }
+    });
+
+    const result = JSON.parse(await readFile(join(target, "phases", "verify", "result.json"), "utf8"));
+    const progress = JSON.parse(await readFile(join(target, "phases", "verify", "progress.json"), "utf8"));
+    assert.equal(result.error, `waiting for locator('${selector}')`);
+    assert.equal(progress.checkpoint, `waiting for locator('${selector}')`);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retained structured evidence rejects a complete source above its JSON budget", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-json-budget-"));
+  try {
+    const fixture = await createEvidenceFixture(directory);
+    await writeFile(
+      fixture.options.resultPath,
+      JSON.stringify({ padding: "x".repeat(LOG_FILE_LIMIT), validTail: { protocol: 1 } })
+    );
+
+    const target = retainEditorAcceptanceEvidence(fixture.options);
+    const failure = JSON.parse(await readFile(join(target, "failure.json"), "utf8"));
+    assert.equal(
+      failure.skippedFiles.some((entry) => entry.path === "verify-result.json" && entry.reason === "json-size-budget"),
+      true
+    );
+    await assert.rejects(readFile(join(target, "phases", "verify", "result.json"), "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("metadata-only evidence redacts diagnostics without inspecting the live profile", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-metadata-only-"));
   const temporaryRoot = join(directory, "editor-temp");
@@ -951,9 +1046,10 @@ test("failure evidence retains only sanitized allowlisted text and survives prof
     assert.match(allEvidence, /https:\/\/<redacted>@example\.test\/private/u);
 
     const retainedProgress = await readFile(join(retainedTarget, "phases", "verify", "progress.json"), "utf8");
-    assert.match(retainedProgress, /"protocol":1/u);
-    assert.match(retainedProgress, /"runId":"11111111-1111-4111-8111-111111111111"/u);
-    assert.match(retainedProgress, /"phase":"verify"/u);
+    const parsedProgress = JSON.parse(retainedProgress);
+    assert.equal(parsedProgress.protocol, 1);
+    assert.equal(parsedProgress.runId, "11111111-1111-4111-8111-111111111111");
+    assert.equal(parsedProgress.phase, "verify");
     assert.equal(retainedProgress.includes("<profile>"), true);
     assert.equal(retainedProgress.includes("progress-secret"), false);
 
@@ -1010,6 +1106,7 @@ test("failure evidence retains only sanitized allowlisted text and survives prof
     assert.deepEqual(
       new Map(failure.skippedFiles.map((entry) => [entry.path, entry.reason])),
       new Map([
+        ["results/verify-result.json", "redaction-rejected"],
         ["user-data/logs/binary/window1/exthost/exthost.log", "binary"],
         ["user-data/logs/boundary-invalid/window1/renderer.log", "not-utf8"],
         ["user-data/logs/escaped-private/sharedprocess.log", "private-key"],
@@ -1561,7 +1658,7 @@ test("a regex-hostile bounded source is omitted without aborting failure evidenc
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-redaction-bound-"));
   try {
     const fixture = await createEvidenceFixture(directory);
-    const hostile = `"${"a".repeat(EVIDENCE_SOURCE_LIMIT - 1)}`;
+    const hostile = `"${"a".repeat(LOG_FILE_LIMIT - 1)}`;
     await writeFile(fixture.options.resultPath, hostile);
     assert.equal(redactEditorAcceptanceText(hostile), undefined);
 

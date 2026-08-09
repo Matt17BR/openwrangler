@@ -14,6 +14,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { parseStrictJson } from "./strict-json.mjs";
 
 const MAX_LOG_FILES = 24;
 const MAX_LOG_BYTES = 512 * 1024;
@@ -26,6 +27,8 @@ const MAX_TOTAL_EVIDENCE_SCAN_BYTES = 64 * 1024 * 1024;
 // A single source is scanned completely for private-key markers before its bounded tail can be retained.
 // Rejecting larger files before that scan keeps failure collection deterministic under hostile profiles.
 const MAX_EVIDENCE_SOURCE_BYTES = 16 * 1024 * 1024;
+const MAX_JSON_EVIDENCE_DEPTH = 64;
+const MAX_JSON_EVIDENCE_ENTRIES = 100_000;
 const MAX_MANIFEST_ENTRIES = 4_000;
 const MAX_FAILURE_BYTES = 128 * 1024;
 const MAX_FAILURE_DEPTH = 8;
@@ -244,7 +247,7 @@ export function retainEditorAcceptanceEvidence({
   const skippedFiles = [];
   const evidenceByProfilePath = new Map();
   const sourceBudget = createEvidenceSourceBudget();
-  const copyText = (source, destination, byteLimit = MAX_LOG_BYTES) => {
+  const copyText = (source, destination, byteLimit = MAX_LOG_BYTES, format = "text") => {
     const sourceProfilePath = profileRelativePath(isolatedProfile, source);
     let retained;
     try {
@@ -261,7 +264,14 @@ export function retainEditorAcceptanceEvidence({
       );
       return false;
     }
-    const redacted = redactEditorAcceptanceText(retained.text, replacements);
+    if (format === "json" && retained.truncated) {
+      recordSkippedEvidence(sourceProfilePath, "json-size-budget", skippedFiles, evidenceByProfilePath, replacements);
+      return false;
+    }
+    const redacted =
+      format === "json"
+        ? redactEditorAcceptanceJson(retained.text, replacements, byteLimit)
+        : redactEditorAcceptanceText(retained.text, replacements);
     if (redacted === undefined) {
       recordSkippedEvidence(sourceProfilePath, "redaction-rejected", skippedFiles, evidenceByProfilePath, replacements);
       return false;
@@ -284,9 +294,11 @@ export function retainEditorAcceptanceEvidence({
 
   for (const [resultPhase, phaseResultPath] of Object.entries(resultPaths)) {
     const phaseDirectory = resolve(target, "phases", safeSegment(redactFailureText(resultPhase, replacements, 128)));
-    copyText(phaseResultPath, resolve(phaseDirectory, "result.json"));
+    copyText(phaseResultPath, resolve(phaseDirectory, "result.json"), MAX_LOG_BYTES, "json");
     const phaseProgressPath = progressPaths[resultPhase];
-    if (phaseProgressPath) copyText(phaseProgressPath, resolve(phaseDirectory, "progress.json"));
+    if (phaseProgressPath) {
+      copyText(phaseProgressPath, resolve(phaseDirectory, "progress.json"), MAX_LOG_BYTES, "json");
+    }
   }
 
   const logRoot = resolve(isolatedProfile, "user-data", "logs");
@@ -469,6 +481,81 @@ export function redactEditorAcceptanceText(text, replacements = []) {
     // candidate instead of aborting the failure bundle or retaining raw text.
     return undefined;
   }
+}
+
+export function redactEditorAcceptanceJson(text, replacements = [], maxBytes = MAX_EVIDENCE_SOURCE_BYTES) {
+  try {
+    const source = String(text);
+    const value = parseStrictJson(source, { maxBytes, maxDepth: MAX_JSON_EVIDENCE_DEPTH });
+    const state = { entries: 0, failed: false };
+    const redacted = redactJsonEvidenceValue(value, replacements, state, 0);
+    if (state.failed) return undefined;
+    // Scan a multiline canonical form so a valid minified result does not trip the
+    // text redactor's long-line guard while composite private-key checks still run.
+    const canonicalSource = JSON.stringify(value, null, 2);
+    if (redactEditorAcceptanceText(canonicalSource, replacements) === undefined) return undefined;
+    const serialized = `${JSON.stringify(redacted)}\n`;
+    return Buffer.byteLength(serialized, "utf8") <= maxBytes ? serialized : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function redactJsonEvidenceValue(value, replacements, state, depth) {
+  if (depth > MAX_JSON_EVIDENCE_DEPTH) {
+    state.failed = true;
+    return null;
+  }
+  if (typeof value === "string") {
+    const redacted = redactEditorAcceptanceText(value, replacements);
+    if (redacted === undefined) state.failed = true;
+    return redacted ?? null;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) state.failed = true;
+    return value;
+  }
+  if (typeof value === "boolean" || value === null) return value;
+  if (Array.isArray(value)) {
+    const result = [];
+    for (const item of value) {
+      if (!consumeJsonEvidenceEntry(state)) return result;
+      result.push(redactJsonEvidenceValue(item, replacements, state, depth + 1));
+      if (state.failed) return result;
+    }
+    return result;
+  }
+  if (typeof value !== "object") {
+    state.failed = true;
+    return null;
+  }
+
+  const result = Object.create(null);
+  for (const [rawKey, item] of Object.entries(value)) {
+    if (!consumeJsonEvidenceEntry(state)) return result;
+    const normalizedKey = normalizeSecurityEscapes(rawKey);
+    if (normalizedKey === undefined) {
+      state.failed = true;
+      return result;
+    }
+    const secretKey = isSecretKey(rawKey) || isSecretKey(normalizedKey) || isStructuredSecretName(rawKey);
+    const redactedKey = secretKey ? "<redacted-key>" : redactEditorAcceptanceText(rawKey, replacements);
+    if (redactedKey === undefined) {
+      state.failed = true;
+      return result;
+    }
+    const key = uniqueStructuredKey(result, redactedKey);
+    result[key] = secretKey ? "<redacted>" : redactJsonEvidenceValue(item, replacements, state, depth + 1);
+    if (state.failed) return result;
+  }
+  return result;
+}
+
+function consumeJsonEvidenceEntry(state) {
+  state.entries += 1;
+  if (state.entries <= MAX_JSON_EVIDENCE_ENTRIES) return true;
+  state.failed = true;
+  return false;
 }
 
 function redactCredentialSyntax(text, includeHumanLines) {

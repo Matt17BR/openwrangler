@@ -166,6 +166,51 @@ test("sealed editor evidence contains only receipt-bound, re-redacted text", asy
   }
 });
 
+test("sealed structured evidence keeps failure and phase result JSON parseable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-sealed-json-"));
+  try {
+    const evidenceRoot = join(directory, "staging");
+    const target = join(evidenceRoot, "vscode-1.0-verify-attempt-1");
+    const phaseDirectory = join(target, "phases", "verify");
+    const artifactParent = createEditorAcceptanceArtifactParent(join(directory, "artifact-base"));
+    const selector = 'main.app[data-session-id="session-id"][data-renderer-sync-id="renderer-id"]';
+    await mkdir(phaseDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(join(target, "failure.json"), `${JSON.stringify({ message: selector })}\n`, { mode: 0o600 });
+    await writeFile(join(phaseDirectory, "result.json"), `${JSON.stringify({ ok: false, error: selector })}\n`, {
+      mode: 0o600
+    });
+
+    const receipt = captureEditorAcceptanceEvidenceReceipt({ evidenceRoot, target });
+    const artifactReceipt = sealEditorAcceptanceEvidence({ evidenceRoot, artifactParent, receipts: [receipt] });
+    const bundle = JSON.parse(await readFile(artifactReceipt.path, "utf8"));
+    const entries = new Map(bundle.entries.map((entry) => [entry.path, entry.text]));
+    assert.equal(JSON.parse(entries.get("evidence-001/failure.json")).message, selector);
+    assert.equal(JSON.parse(entries.get("evidence-001/phases/verify/result.json")).error, selector);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("sealed structured evidence omits malformed JSON", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-sealed-malformed-json-"));
+  try {
+    const evidenceRoot = join(directory, "staging");
+    const target = join(evidenceRoot, "vscode-1.0-verify-attempt-1");
+    const artifactParent = createEditorAcceptanceArtifactParent(join(directory, "artifact-base"));
+    await mkdir(target, { recursive: true, mode: 0o700 });
+    await writeFile(join(target, "failure.json"), '{"message":"unterminated}', { mode: 0o600 });
+
+    const receipt = captureEditorAcceptanceEvidenceReceipt({ evidenceRoot, target });
+    const artifactReceipt = sealEditorAcceptanceEvidence({ evidenceRoot, artifactParent, receipts: [receipt] });
+    const bundle = JSON.parse(await readFile(artifactReceipt.path, "utf8"));
+    assert.equal(bundle.entries[0].path, "evidence-001/failure.json");
+    assert.equal(bundle.entries[0].text, "<sealed-source-omitted-sensitive-content>");
+    assert.equal(JSON.stringify(bundle).includes("unterminated"), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("fresh artifact parents are unique private directories", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-artifact-parent-"));
   try {
