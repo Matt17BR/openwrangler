@@ -636,7 +636,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(performanceSection, /Open Wrangler kept it in Polars/u);
   assert.match(performanceSection, /did not time conversion separately/u);
   const performanceProse = performanceSection
-    .replace(/\[Open Wrangler \d+\.\d+\.\d+ benchmark report\]\([^)]+\)/gu, "[benchmark report]")
+    .replace(/\[full benchmark report\]\([^)]+\)/gu, "[benchmark report]")
     .replace(/\]\([^)]+\)/gu, "]");
   assert.doesNotMatch(
     performanceProse,
@@ -647,7 +647,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
   const reportLinks = [
     ...performanceSection.matchAll(
-      /\[Open Wrangler (?<labelVersion>\d+\.\d+\.\d+) benchmark report\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/(?<directory>data-wrangler-(?<openWranglerVersion>\d+\.\d+\.\d+))\/review\.md\)/gu
+      /\[full benchmark report\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/(?<directory>data-wrangler-(?<openWranglerVersion>\d+\.\d+\.\d+))\/review\.md\)/gu
     )
   ];
   assert.equal(reportLinks.length, 1, "The performance summary must link one dated, versioned report.");
@@ -659,7 +659,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const reportDirectory = reportLinks[0]?.groups?.directory;
   const openWranglerVersion = reportLinks[0]?.groups?.openWranglerVersion;
   assert.ok(reportDirectory && openWranglerVersion);
-  assert.equal(reportLinks[0]?.groups?.labelVersion, openWranglerVersion);
   const comparisonReview = readFileSync(resolve(root, "docs", "performance", reportDirectory, "review.md"), "utf8");
   const dataWranglerVersion = /^# Data Wrangler (?<version>\d+\.\d+\.\d+) comparison review$/mu.exec(comparisonReview)
     ?.groups?.version;
