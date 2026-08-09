@@ -49,6 +49,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Updated the R gallery with a Quarto dataframe picker and a grouped revenue example.
 - The GitHub About description, Marketplace link, and topics now follow checked-in repository metadata with a live
   release check.
+- The README performance section now summarizes the comparison in plain language and keeps version-specific details
+  in the linked report.
 
 ### Fixed
 
