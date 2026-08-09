@@ -46,7 +46,7 @@ const javaReport = (specificationVersion = "17", version = "17.0.19") => ({
     `    java.version = ${version}\nopenjdk version "${version}"\n`
 });
 
-test("released-Jupyter R setup selects dated binary repositories for each supported platform", () => {
+test("released-Jupyter R setup selects dated repositories for each supported platform", () => {
   assert.deepEqual(rAcceptanceRepositories("linux"), {
     repository: "https://p3m.dev/cran/__linux__/noble/2026-03-10",
     supplementalRepository: "https://p3m.dev/cran/__linux__/noble/2026-06-01"
@@ -269,6 +269,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     }
     assert.match(prepared.dependencyProbe.input.args.at(-1), /find\.package\(.+lib\.loc = \.ow_library/su);
     assert.match(prepared.dependencyProbe.input.args.at(-1), /packageVersion\(.+lib\.loc = \.ow_library/su);
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /loadNamespace\(.+lib\.loc = \.ow_library/su);
     for (const [packageName, version] of Object.entries(R_ACCEPTANCE_PACKAGE_VERSIONS)) {
       assert.match(
         prepared.dependencyProbe.input.args.at(-1),
@@ -276,6 +277,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       );
     }
     assert.match(prepared.dependencyProbe.input.args.at(-1), /status = 11L/u);
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /status = 12L/u);
     assert.equal(
       prepared.dependencyProbe.input.args
         .at(-1)
@@ -291,11 +293,16 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     assert.equal(prepared.dependencyInstall.input.args.at(-1).includes("/__linux__/"), false);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /c\("collapse", "nanoparquet"\)/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /setdiff\(\.ow_packages, \.ow_supplemental_packages\)/u);
+    assert.match(prepared.dependencyInstall.input.args.at(-1), /\.ow_binary_supplemental_packages <- "nanoparquet"/u);
+    assert.match(
+      prepared.dependencyInstall.input.args.at(-1),
+      /install\.packages\(\n {2}"collapse",\n {2}lib = \.ow_library,[\s\S]+type = "source"/u
+    );
     assert.match(prepared.dependencyInstall.input.args.at(-1), /repos = "[^"]+2026-06-01"/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /lib = \.ow_library/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /dependencies = NA/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /MAKEFLAGS = "-s"/u);
-    assert.equal((prepared.dependencyInstall.input.args.at(-1).match(/quiet = TRUE/gu) ?? []).length, 2);
+    assert.equal((prepared.dependencyInstall.input.args.at(-1).match(/quiet = TRUE/gu) ?? []).length, 3);
     assert.deepEqual(prepared.dependencyInstall.options, { timeoutMs: 600_000 });
     assert.equal(Object.isFrozen(prepared), true);
     assert.equal(Object.isFrozen(prepared.packages), true);
@@ -309,6 +316,35 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       R_LIBS_USER: "/global/r-library",
       R_PROFILE_USER: "/global/r-profile"
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("released-Jupyter R setup keeps collapse on the binary path outside macOS", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-binary-"));
+  const rscript = join(directory, "Rscript");
+  const rExecutable = join(directory, "R");
+  try {
+    await writeFile(rscript, "fake Rscript executable\n");
+    await writeFile(rExecutable, "fake R executable\n");
+    await chmod(rscript, 0o700);
+    await chmod(rExecutable, 0o700);
+    for (const platform of ["linux", "win32"]) {
+      const privateRoot = join(directory, platform);
+      const prepared = await prepareJupyterAcceptanceREnvironment(privateRoot, rscript, {
+        containedBy: directory,
+        environment: Object.freeze({}),
+        platform,
+        async runCommand() {
+          return { stdout: rExecutable, stderr: "" };
+        }
+      });
+      const install = prepared.dependencyInstall.input.args.at(-1);
+      assert.match(install, /\.ow_binary_supplemental_packages <- \.ow_supplemental_packages/u);
+      assert.doesNotMatch(install, /type = "source"/u);
+      assert.equal((install.match(/quiet = TRUE/gu) ?? []).length, 2);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
