@@ -56,6 +56,30 @@ describe("fresh exact-session panel hydration", () => {
     expect(testing.ensurePanelSynchronized).toHaveBeenCalledOnce();
   });
 
+  it("allows the final recovery generation to hydrate after the ordinary operation deadline", async () => {
+    const sessionId = "session-a";
+    let now = 0;
+    const testing: ExactSessionPanelSynchronizationApi = {
+      synchronizePanel: vi.fn(async () => false),
+      ensurePanelSynchronized: vi.fn(async () => false),
+      panelHydrated: vi.fn((candidate) => candidate === sessionId && now >= 13_000),
+      panelSynchronizable: vi.fn((candidate) => candidate === sessionId && now >= 10_000)
+    };
+
+    await expect(
+      waitForFreshExactSessionPanelHydration(testing, sessionId, {
+        timeoutMs: 30_000,
+        pollIntervalMs: 1_000,
+        now: () => now,
+        wait: async (durationMs) => {
+          now += durationMs;
+        }
+      })
+    ).resolves.toBe(true);
+    expect(now).toBe(13_000);
+    expect(testing.ensurePanelSynchronized).toHaveBeenCalledWith(sessionId, 30_000);
+  });
+
   it("does not accept another session's hydration while waiting for the requested renderer", async () => {
     const sessionId = "session-a";
     let now = 0;

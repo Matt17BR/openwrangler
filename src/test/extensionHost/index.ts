@@ -15716,7 +15716,7 @@ async function requireFreshExactSessionPanelHydration(
   expectation: string
 ): Promise<void> {
   const synchronized = await waitForFreshExactSessionPanelHydration(testing, sessionId, {
-    timeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS,
+    timeoutMs: OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
     pollIntervalMs: 25
   });
   assert.equal(
