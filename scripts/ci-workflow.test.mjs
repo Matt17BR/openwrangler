@@ -1570,12 +1570,20 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
   const workflow = parseYaml(source);
   assert.deepEqual(Object.keys(workflow?.on ?? {}), ["workflow_dispatch"]);
   assert.equal(workflow?.on?.pull_request, undefined);
+  assert.deepEqual(workflow?.on?.workflow_dispatch?.inputs?.target, {
+    description: "Acceptance lane to run",
+    required: true,
+    default: "linux-all",
+    type: "choice",
+    options: ["linux-all", "macos-r"]
+  });
   assert.deepEqual(workflow?.concurrency, {
     group: "released-jupyter-${{ github.ref }}",
     "cancel-in-progress": false
   });
   const job = workflow?.jobs?.vscode;
   assert.equal(job?.name, "Released Jupyter in VS Code and Cursor");
+  assert.equal(job?.if, "${{ inputs.target == 'linux-all' }}");
   assert.equal(job?.["timeout-minutes"], 90);
   assert.equal(
     job?.steps?.some((step) => step?.run === "npm run package -- --out openwrangler.vsix"),
@@ -1657,4 +1665,39 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
       .length,
     2
   );
+
+  const macosR = workflow?.jobs?.["macos-r"];
+  assert.equal(macosR?.name, "Released R Jupyter in macOS VS Code");
+  assert.equal(macosR?.if, "${{ inputs.target == 'macos-r' }}");
+  assert.equal(macosR?.["runs-on"], "macos-latest");
+  assert.equal(macosR?.["timeout-minutes"], 45);
+  assert.deepEqual(macosR?.steps?.find((step) => step?.uses === SETUP_R_ACTION)?.with, {
+    "r-version": "4.5.2",
+    "use-public-rspm": true
+  });
+  assert.equal(
+    macosR?.steps?.some((step) => step?.run === "npm run package -- --out openwrangler.vsix"),
+    true
+  );
+  assert.equal(
+    macosR?.steps?.some((step) => step?.run === "npm run verify:vsix -- openwrangler.vsix"),
+    true
+  );
+  const macosPackagedR = macosR?.steps?.find((step) => step?.id === "packaged_editor_r");
+  assert.equal(macosPackagedR?.name, "Test local R Jupyter in packaged VS Code");
+  assert.equal(macosPackagedR?.run, "node scripts/run-packaged-editor-tests.mjs openwrangler.vsix");
+  assert.deepEqual(macosPackagedR?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const macosDiagnostics = macosR?.steps?.find((step) => step?.name === "Upload macOS R-Jupyter failure diagnostics");
+  assert.equal(
+    macosDiagnostics?.with?.name,
+    "released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(macosDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
 });
