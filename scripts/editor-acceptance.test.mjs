@@ -204,16 +204,39 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
   assert.match(exactApp, /data-renderer-sync-id="\$\{expectedRendererSynchronizationId\}"/u);
   assert.doesNotMatch(exactApp, /\.nth\(/u);
 
+  const receiptPreservingApp = source.slice(
+    source.indexOf("async function reacquireAcknowledgedSessionApp("),
+    source.indexOf("async function captureReleasedRJupyterWorkbench(")
+  );
+  assert.match(receiptPreservingApp, /panelSynchronizationReceipt\(sessionId\)/u);
+  assert.match(receiptPreservingApp, /waitForOpenWranglerGridTarget\(workbench, testing, sessionId, receipt\)/u);
+  assert.match(receiptPreservingApp, /exactSessionApp\(target\.frame, sessionId, receipt\.syncId\)/u);
+  assert.match(
+    receiptPreservingApp,
+    /sameRendererSynchronizationReceipt\(receipt, testing\.panelSynchronizationReceipt\(sessionId\)\)/u
+  );
+  assert.doesNotMatch(
+    receiptPreservingApp,
+    /synchronizePanel|synchronizedSessionApp|requireFreshExactSessionPanelHydration/u,
+    "Receipt-preserving reacquisition must not reset or cancel progressive profiling."
+  );
+
   const firstUseJourney = source.slice(
     source.indexOf("async function exercisePackagedFirstUseInteractionJourney("),
     source.indexOf("async function previewMostCommonAccountNote(")
   );
+  const localReacquisition = firstUseJourney.slice(
+    firstUseJourney.indexOf("const reacquireApp = async ("),
+    firstUseJourney.indexOf("const profileWaitDiagnostics =")
+  );
+  assert.match(localReacquisition, /return reacquireAcknowledgedSessionApp\(/u);
+  assert.doesNotMatch(localReacquisition, /synchronizedSessionApp|synchronizePanel/u);
   const panelHelper = firstUseJourney.slice(
     firstUseJourney.indexOf("const openSidePanel = async ("),
     firstUseJourney.indexOf("assert.equal(", firstUseJourney.indexOf("const openSidePanel = async ("))
   );
   const toggleClick = panelHelper.indexOf("await toggle.click();");
-  const rendererReacquisition = panelHelper.indexOf("app = await rediscoverApp(", toggleClick);
+  const rendererReacquisition = panelHelper.indexOf("app = await reacquireApp(", toggleClick);
   const expandedToggle = panelHelper.indexOf(
     'button[aria-controls="openwrangler-insights-panel"]',
     rendererReacquisition
@@ -229,10 +252,44 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
     "Opening the side panel must reacquire its acknowledged renderer before selecting a tab."
   );
   assert.doesNotMatch(
-    panelHelper.slice(rendererReacquisition, refreshedDrawer),
-    /toggle\.click\(\)/u,
-    "The refreshed renderer must expose its expanded panel without another stale toggle action."
+    panelHelper.slice(toggleClick, refreshedDrawer),
+    /rediscoverApp|synchronizedSessionApp/u,
+    "Opening the local panel must not force a synchronization that cancels its profile request."
   );
+  const assertLocalColumnReacquisition = (settledMarker, reacquisitionMarker, nextMarker) => {
+    const settled = firstUseJourney.indexOf(settledMarker);
+    const reacquired = firstUseJourney.indexOf(reacquisitionMarker, settled);
+    const next = firstUseJourney.indexOf(nextMarker, reacquired);
+    assert.ok(
+      settled >= 0 && reacquired > settled && next > reacquired,
+      `${reacquisitionMarker} must follow its settled Column Search state.`
+    );
+    assert.doesNotMatch(
+      firstUseJourney.slice(settled, next),
+      /rediscoverApp|synchronizedSessionApp/u,
+      `${reacquisitionMarker} must preserve the current renderer receipt.`
+    );
+  };
+  assertLocalColumnReacquisition(
+    '"column search to navigate to the selected numeric column"',
+    'app = await reacquireApp("Revenue column navigation")',
+    'recordAcceptanceProgress("platform-smoke:insights")'
+  );
+  assertLocalColumnReacquisition(
+    '"column search to navigate to the realistic text column"',
+    'app = await reacquireApp("Account-note column navigation")',
+    'openSidePanel("Column")'
+  );
+  assertLocalColumnReacquisition(
+    '"column search to return to the filtered numeric column"',
+    'app = await reacquireApp("Filtered revenue navigation")',
+    'openSidePanel("Filters / Sorts")'
+  );
+  assert.match(firstUseJourney, /profilingPending: lastDrawerText\.includes\("Profiling selected column"\)/u);
+  assert.match(firstUseJourney, /drawerTextLength: lastDrawerText\.length/u);
+  assert.match(firstUseJourney, /expectedLabels: Object\.fromEntries\(/u);
+  assert.doesNotMatch(firstUseJourney, /lastDrawerText:\s*lastDrawerText|sourceLabel/u);
+  assert.match(firstUseJourney, /scheduler: testing\.sessionSchedulerState\(sessionId\)/u);
   assert.match(
     firstUseJourney,
     /openSidePanel\("Column"\)/u,

@@ -7951,6 +7951,26 @@ async function synchronizedSessionApp(
   return app;
 }
 
+async function reacquireAcknowledgedSessionApp(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  expectation: string
+): Promise<Locator> {
+  const receipt = testing.panelSynchronizationReceipt(sessionId);
+  assert.ok(receipt, `${expectation} The host must retain its acknowledged renderer receipt.`);
+  assert.equal(testing.panelHydrated(sessionId), true, `${expectation} The current renderer must remain hydrated.`);
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId, receipt);
+  const app = await exactSessionApp(target.frame, sessionId, receipt.syncId);
+  assert.ok(app, `${expectation} The current acknowledged renderer must expose the exact session.`);
+  assert.equal(
+    sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId)),
+    true,
+    `${expectation} The renderer receipt must remain unchanged through acquisition.`
+  );
+  return app;
+}
+
 async function captureReleasedRJupyterWorkbench(
   workbench: Page,
   testing: TestApi,
@@ -14179,13 +14199,43 @@ async function exercisePackagedFirstUseInteractionJourney(
       `${phase} requires the renderer that acknowledged the current session.`
     );
   };
+  const reacquireApp = async (phase: string): Promise<Locator> => {
+    return reacquireAcknowledgedSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      `${phase} must keep the current acknowledged renderer receipt.`
+    );
+  };
+  const profileWaitDiagnostics =
+    (expectedLabels: readonly string[]) =>
+    (lastDrawerText: string): string => {
+      const coordinator = testing.diagnostics();
+      return JSON.stringify({
+        profile: {
+          profilingPending: lastDrawerText.includes("Profiling selected column"),
+          drawerTextLength: lastDrawerText.length,
+          expectedLabels: Object.fromEntries(expectedLabels.map((label) => [label, lastDrawerText.includes(label)]))
+        },
+        coordinator: {
+          activeSessionId: coordinator.activeSessionId,
+          sessionCount: coordinator.sessionCount
+        },
+        scheduler: testing.sessionSchedulerState(sessionId),
+        panel: {
+          hydrated: testing.panelHydrated(sessionId),
+          synchronizable: testing.panelSynchronizable(sessionId),
+          receipt: testing.panelSynchronizationReceipt(sessionId)
+        }
+      });
+    };
   const openSidePanel = async (
     view?: "Column" | "Filters / Sorts"
   ): Promise<{ readonly drawer: Locator; readonly toggle: Locator }> => {
     let toggle = app.getByRole("button", { name: "Column profiles and filters" });
     if ((await toggle.getAttribute("aria-expanded")) !== "true") {
       await toggle.click();
-      app = await rediscoverApp(`${view ?? "Insights"} panel opening`);
+      app = await reacquireApp(`${view ?? "Insights"} panel opening`);
       toggle = app.locator('button[aria-controls="openwrangler-insights-panel"][aria-expanded="true"]');
       await toggle.waitFor({ state: "visible", timeout: 10_000 });
     }
@@ -14218,7 +14268,7 @@ async function exercisePackagedFirstUseInteractionJourney(
     10_000,
     "column search to navigate to the selected numeric column"
   );
-  app = await rediscoverApp("Revenue column navigation");
+  app = await reacquireApp("Revenue column navigation");
   columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
 
   recordAcceptanceProgress("platform-smoke:insights");
@@ -14230,7 +14280,8 @@ async function exercisePackagedFirstUseInteractionJourney(
       !text.includes("Profiling selected column") &&
       ["Min", "Max", "Mean", "Median", "Distribution"].every((label) => text.includes(label)),
     30_000,
-    "complete exact revenue insights"
+    "complete exact revenue insights",
+    profileWaitDiagnostics(["Min", "Max", "Mean", "Median", "Distribution"])
   );
   const histogramBars = drawer.locator(".numericHistogramHitTarget");
   assert.ok(await histogramBars.count(), "Numeric insights must expose keyboard-focusable histogram bins.");
@@ -14260,7 +14311,7 @@ async function exercisePackagedFirstUseInteractionJourney(
     10_000,
     "column search to navigate to the realistic text column"
   );
-  app = await rediscoverApp("Account-note column navigation");
+  app = await reacquireApp("Account-note column navigation");
   columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   ({ drawer, toggle: insightsToggle } = await openSidePanel("Column"));
   await drawer.getByRole("heading", { name: "account_note", exact: true }).waitFor({
@@ -14273,7 +14324,8 @@ async function exercisePackagedFirstUseInteractionJourney(
       !text.includes("Profiling selected column") &&
       ["Null", "Empty", "Min length", "Max length", "Mean length"].every((label) => text.includes(label)),
     30_000,
-    "complete exact account-note insights"
+    "complete exact account-note insights",
+    profileWaitDiagnostics(["Null", "Empty", "Min length", "Max length", "Mean length"])
   );
 
   // Inspect exact values only after the user-facing profile has completed, so
@@ -14376,7 +14428,7 @@ async function exercisePackagedFirstUseInteractionJourney(
     10_000,
     "column search to return to the filtered numeric column"
   );
-  app = await rediscoverApp("Filtered revenue navigation");
+  app = await reacquireApp("Filtered revenue navigation");
   columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   ({ drawer, toggle: insightsToggle } = await openSidePanel("Filters / Sorts"));
   filterPanel = drawer.locator(".filterSortPanel").first();
@@ -15721,14 +15773,18 @@ async function waitForLocatorText(
   locator: Locator,
   predicate: (text: string) => boolean,
   timeoutMs: number,
-  expectation: string
+  expectation: string,
+  diagnostics?: (lastText: string) => string
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  let lastText = "";
   do {
-    if (predicate(await locator.innerText())) return;
+    lastText = await locator.innerText();
+    if (predicate(lastText)) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
-  throw new Error(`Timed out waiting for ${expectation}.`);
+  const state = diagnostics?.(lastText);
+  throw new Error(`Timed out waiting for ${expectation}.${state ? ` State: ${state}` : ""}`);
 }
 
 async function waitForLocatorCount(
