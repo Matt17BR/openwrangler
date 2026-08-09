@@ -107,6 +107,46 @@ describe("R document source preparation", () => {
     });
   });
 
+  it("accepts nested bookdown metadata before an R Markdown chunk", () => {
+    const source = [
+      "---",
+      'title: "**Predictive Modeling of NBA Game Outcomes**"',
+      'subtitle: "Using shot efficiency as a predictor for basketball game results"',
+      'author: "Matteo Mazzarelli"',
+      "date: \"`r format(Sys.time(), 'June %Y')`\"",
+      "papersize: a4",
+      "fontsize: 12pt",
+      "linestretch: 1.25",
+      "geometry: margin=2.5cm",
+      "colorlinks: yes",
+      "output:",
+      "  bookdown::pdf_document2:",
+      '    extra_dependencies: "subfig"',
+      "    includes:",
+      "      in_header: latex/preamble.tex",
+      "      before_body: latex/titlepage.tex",
+      "    keep_tex: yes",
+      "bibliography: latex/references.bib",
+      "csl: latex/apa_numeric_superscript_brackets.csl",
+      "link-citations: yes",
+      "nocite: '@*'",
+      "---",
+      "",
+      "```{r setup, include=FALSE, purl=TRUE}",
+      "library(tidyverse)",
+      "shots <- read_csv('dataset/shots.csv')",
+      "```",
+      ""
+    ].join("\n");
+
+    expect(prepareRDocumentSource("/workspace/thesis.Rmd", source)).toMatchObject({
+      kind: "rmarkdown",
+      rChunkCount: 1,
+      runnableRChunkCount: 1,
+      executableUnits: ["library(tidyverse)\nshots <- read_csv('dataset/shots.csv')\n"]
+    });
+  });
+
   it("skips valid disabled chunks even when they use execution overrides", () => {
     const overrides = ["engine", "child", "code", "file", "ref.label", "opts.label"];
     const chunks = overrides.flatMap((key, index) => {
