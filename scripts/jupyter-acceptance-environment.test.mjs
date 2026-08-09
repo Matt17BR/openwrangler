@@ -599,6 +599,9 @@ test("packaged-editor R acceptance wires the private R environment to local edit
     source,
     /remoteRJupyterEnabled =\s*acceptanceMode === "r-jupyter" && remoteJupyterEnabled && editor\.key === "vscode"/u
   );
+  assert.match(source, /for \(const phase of Object\.keys\(resultPaths\)\) userDataForPhase\(phase\)/u);
+  assert.match(source, /logRoot: resolve\(userDataForPhase\(activePhase\), "logs"\)/u);
+  assert.doesNotMatch(source, /userDataByPhase\.get\(activePhase\)\s*\?\?/u);
   const pythonGuard = source.indexOf("(!isAbsolute(testPython) || !existsSync(testPython))");
   assert.ok(pythonGuard >= 0);
   assert.doesNotMatch(

@@ -127,6 +127,7 @@ export function retainEditorAcceptanceEvidence({
   resultPath,
   resultPaths = { [phase]: resultPath },
   progressPaths = {},
+  logRoot,
   evidenceMode = "full",
   evidenceReason
 }) {
@@ -142,6 +143,12 @@ export function retainEditorAcceptanceEvidence({
   const isolatedRoot = resolve(temporaryRoot);
   const isolatedProfile = resolve(profile);
   const retainedRoot = resolve(evidenceRoot);
+  const requestedLogRoot = logRoot ?? resolve(isolatedProfile, "user-data", "logs");
+  if (typeof requestedLogRoot !== "string" || requestedLogRoot.length === 0 || !isAbsolute(requestedLogRoot)) {
+    throw new Error("Editor acceptance log root must be an absolute path.");
+  }
+  const resolvedLogRoot = resolve(requestedLogRoot);
+  requireContainedPath(isolatedProfile, resolvedLogRoot, "editor acceptance log root");
   if (!Array.isArray(hostHomes)) {
     throw new Error("Editor acceptance host homes must be an array of absolute paths.");
   }
@@ -196,6 +203,7 @@ export function retainEditorAcceptanceEvidence({
       replacements: lexicalReplacements,
       evidenceMode,
       evidenceReason,
+      jupyterLogCategories: [],
       copiedFiles: [],
       skippedFiles: []
     });
@@ -301,12 +309,43 @@ export function retainEditorAcceptanceEvidence({
     }
   }
 
-  const logRoot = resolve(isolatedProfile, "user-data", "logs");
   let retainedLogBytes = 0;
   let retainedLogFiles = 0;
   let logEvidenceOrdinal = 0;
-  for (const source of listProfileEntries(logRoot, canonicalIsolatedProfile)) {
-    const logRelativePath = relative(logRoot, source.path).replaceAll(sep, "/");
+  const jupyterLogCategories = new Set();
+  const logEntries = listProfileEntries(resolvedLogRoot, canonicalIsolatedProfile);
+  const latestJupyterLogPath = selectLatestJupyterOutputPath(logEntries, resolvedLogRoot, phase);
+  for (const source of logEntries) {
+    const logRelativePath = relative(resolvedLogRoot, source.path).replaceAll(sep, "/");
+    if (isJupyterOutputLog(logRelativePath, phase)) {
+      if (source.path !== latestJupyterLogPath) continue;
+      if (source.type !== "file") {
+        jupyterLogCategories.add("log-unavailable");
+        recordSkippedEvidence(
+          profileRelativePath(isolatedProfile, source.path),
+          "not-regular",
+          skippedFiles,
+          evidenceByProfilePath,
+          replacements
+        );
+        continue;
+      }
+      try {
+        sourceBudget.beginCandidate();
+        const retained = readEvidenceUtf8Tail(source.path, canonicalIsolatedProfile, MAX_LOG_BYTES, sourceBudget);
+        for (const category of classifyJupyterOutput(retained.text)) jupyterLogCategories.add(category);
+      } catch (error) {
+        jupyterLogCategories.add("log-unavailable");
+        recordSkippedEvidence(
+          profileRelativePath(isolatedProfile, source.path),
+          error instanceof EvidenceFileError ? error.reason : "unreadable",
+          skippedFiles,
+          evidenceByProfilePath,
+          replacements
+        );
+      }
+      continue;
+    }
     if (!isAllowlistedEditorLog(logRelativePath)) continue;
     if (source.type !== "file") {
       recordSkippedEvidence(
@@ -340,6 +379,10 @@ export function retainEditorAcceptanceEvidence({
       retainedLogBytes += statSync(destination).size;
     }
   }
+  if (/^jupyter-/u.test(phase)) {
+    if (latestJupyterLogPath === undefined) jupyterLogCategories.add("log-not-found");
+    else if (jupyterLogCategories.size === 0) jupyterLogCategories.add("unclassified");
+  }
 
   const manifest = listProfileEntries(isolatedProfile, canonicalIsolatedProfile, MAX_MANIFEST_ENTRIES).map((entry) => {
     const rawPath = relative(isolatedProfile, entry.path).replaceAll(sep, "/") || ".";
@@ -368,6 +411,7 @@ export function retainEditorAcceptanceEvidence({
     replacements,
     evidenceMode,
     evidenceReason,
+    jupyterLogCategories: [...jupyterLogCategories].sort(),
     copiedFiles,
     skippedFiles
   });
@@ -417,6 +461,7 @@ function writeFailureMetadata({
   replacements,
   evidenceMode,
   evidenceReason,
+  jupyterLogCategories,
   copiedFiles,
   skippedFiles
 }) {
@@ -442,6 +487,7 @@ function writeFailureMetadata({
       typeof error?.details?.progress === "string" ? redactFailureText(error.details.progress, replacements) : null,
     message: redactFailureText(error instanceof Error ? error.message : String(error), replacements),
     details,
+    jupyterLogCategories,
     copiedFiles: [...copiedFiles].sort(),
     skippedFiles
   };
@@ -1439,6 +1485,7 @@ function serializeBoundedFailure(failure) {
       lastProgress: null,
       message: boundedUtf8Head(failure.message, 1_024),
       details: { truncated: "failure-size-budget" },
+      jupyterLogCategories: failure.jupyterLogCategories,
       copiedFiles: [],
       skippedFiles: []
     };
@@ -1685,6 +1732,93 @@ function isAllowlistedEditorLog(path) {
     /^[^/]+\/window[0-9]+\/exthost\/exthost\.log$/u.test(path) ||
     /^[^/]+\/window[0-9]+\/exthost\/output_logging_[^/]+\/[^/]*Open Wrangler[^/]*\.log$/iu.test(path)
   );
+}
+
+function isJupyterOutputLog(path, phase) {
+  return /^jupyter-/u.test(phase) && JUPYTER_OUTPUT_PATH_PATTERN.test(path);
+}
+
+const JUPYTER_OUTPUT_PATH_PATTERN =
+  /^([^/]+)\/window([0-9]+)\/exthost\/output_logging_([^/]+)\/([0-9]+)-Jupyter\.log$/iu;
+
+function selectLatestJupyterOutputPath(entries, logRoot, phase) {
+  if (!/^jupyter-/u.test(phase)) return undefined;
+  let latest;
+  let latestRelativePath;
+  for (const entry of entries) {
+    const relativePath = relative(logRoot, entry.path).replaceAll(sep, "/");
+    if (!isJupyterOutputLog(relativePath, phase)) continue;
+    if (latestRelativePath === undefined || compareJupyterOutputRecency(relativePath, latestRelativePath) > 0) {
+      latest = entry.path;
+      latestRelativePath = relativePath;
+    }
+  }
+  return latest;
+}
+
+function compareJupyterOutputRecency(leftPath, rightPath) {
+  const left = JUPYTER_OUTPUT_PATH_PATTERN.exec(leftPath);
+  const right = JUPYTER_OUTPUT_PATH_PATTERN.exec(rightPath);
+  if (!left || !right) return leftPath < rightPath ? -1 : leftPath === rightPath ? 0 : 1;
+  for (const index of [1, 3]) {
+    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
+  }
+  for (const index of [2, 4]) {
+    const difference = Number(left[index]) - Number(right[index]);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function classifyJupyterOutput(text) {
+  const categories = new Set();
+  for (const rawLine of text.split(/\r?\n/u)) {
+    const line = rawLine.toLowerCase();
+    const launchContext = /(?:spawn|executable|launcher|kernel command|rscript|r\.exe)/u.test(line);
+    if (
+      /(?:spawn[^\n]*(?:enoent|cannot find)|(?:enoent|cannot find)[^\n]*spawn|executable[^\n]*not found|cannot find[^\n]*(?:rscript|r\.exe))/u.test(
+        line
+      )
+    ) {
+      categories.add("kernel-executable-missing");
+    }
+    if (launchContext && /(?:eacces|eperm|permission denied)/u.test(line)) {
+      categories.add("kernel-permission-denied");
+    }
+    if (launchContext && /(?:einval|invalid argument|not a valid win32 application)/u.test(line)) {
+      categories.add("kernel-launch-invalid");
+    }
+    if (/(?:dll load failed|loadlibrary[^\n]*(?:error|fail)|(?:cannot|failed to)[^\n]*shared librar)/u.test(line)) {
+      categories.add("native-library-load-failed");
+    }
+    if (/(?:zeromq|\bzmq\b)/u.test(line) && /(?:error|fail|cannot|not found)/u.test(line)) {
+      categories.add("kernel-transport-failed");
+    }
+    if (
+      /there is no package called[^\n]*irkernel/u.test(line) ||
+      /(?:loadnamespace|namespace)[^\n]*(?:irkernel)[^\n]*(?:error|fail)/u.test(line) ||
+      /(?:error|fail)[^\n]*(?:loadnamespace|namespace)[^\n]*irkernel/u.test(line)
+    ) {
+      categories.add("r-runtime-failed");
+    }
+    if (
+      /(?:failed to|cannot) (?:read|load|open|parse|find)[^\n]*(?:connection[_ ]file|kernel\.json)/u.test(line) ||
+      /(?:connection[_ ]file|kernel\.json)(?: is| was)? (?:invalid|missing|not found|not present)/u.test(line)
+    ) {
+      categories.add("kernel-configuration-failed");
+    }
+    if (/(?:kernel[^\n]*(?:timed out|timeout)|(?:timed out|timeout)[^\n]*kernel)/u.test(line)) {
+      categories.add("kernel-start-timeout");
+    }
+    if (/(?:kernel process exited|kernel (?:has )?died)/u.test(line)) categories.add("kernel-exited");
+    if (/(?:failed to start (?:the )?kernel|kernel startup failed)/u.test(line)) {
+      categories.add("kernel-start-failed");
+    }
+    if (/\[error\][^\n]*(?:jupyter|kernel)|(?:jupyter|kernel)[^\n]*\[error\]/u.test(line)) {
+      categories.add("extension-error");
+    }
+  }
+  return categories;
 }
 
 function editorLogKind(path) {

@@ -1131,6 +1131,88 @@ test("failure evidence retains only sanitized allowlisted text and survives prof
   }
 });
 
+test("phase-specific Jupyter output yields categories without retaining user content", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-evidence-"));
+  const temporaryRoot = join(directory, "private");
+  const profile = join(temporaryRoot, "profile");
+  const evidenceRoot = join(directory, "evidence");
+  const resultPath = join(profile, "jupyter-r-result.json");
+  const logRoot = join(profile, "jz", "logs");
+  const jupyterLog = join(
+    logRoot,
+    "20260809T233901",
+    "window1",
+    "exthost",
+    "output_logging_20260809T233905",
+    "2-Jupyter.log"
+  );
+  const olderJupyterLog = join(
+    logRoot,
+    "20260809T120000",
+    "window1",
+    "exthost",
+    "output_logging_20260809T120005",
+    "1-Jupyter.log"
+  );
+  const secret = "sensitive-jupyter-secret";
+  const privateMarkers = [
+    "notebook-code-marker <- data.frame(customer = c('Ada', 'Lin'))",
+    "C:\\private\\workspace\\customer-orders.csv",
+    "customer-row-value-marker"
+  ];
+
+  try {
+    await mkdir(join(jupyterLog, ".."), { recursive: true });
+    await mkdir(join(olderJupyterLog, ".."), { recursive: true });
+    await writeFile(resultPath, `${JSON.stringify({ protocol: 1, ok: false })}\n`);
+    await writeFile(olderJupyterLog, "Kernel process exited before startup.\n");
+    await writeFile(
+      jupyterLog,
+      [
+        ...privateMarkers,
+        "print('kernel.json error while a customer data file was not found')",
+        "print('IRkernel error is only a notebook label')",
+        "Error: spawn R ENOENT",
+        `Authorization: Bearer ${secret}`
+      ].join("\n")
+    );
+
+    const options = {
+      evidenceRoot,
+      temporaryRoot,
+      profile,
+      editor: { key: "vscode", name: "VS Code", version: "1.132.0" },
+      error: new Error("Released Jupyter failed."),
+      resultPath,
+      logRoot
+    };
+    const jupyterTarget = retainEditorAcceptanceEvidence({ ...options, phase: "jupyter-r" });
+    const jupyterFailure = JSON.parse(await readFile(join(jupyterTarget, "failure.json"), "utf8"));
+    assert.deepEqual(jupyterFailure.jupyterLogCategories, ["kernel-executable-missing"]);
+    assert.equal(
+      jupyterFailure.copiedFiles.some((path) => path.endsWith("-jupyter-output.log")),
+      false
+    );
+    const retainedEvidence = await readEvidenceTree(jupyterTarget);
+    for (const marker of [...privateMarkers, secret]) assert.equal(retainedEvidence.includes(marker), false);
+
+    const ordinaryTarget = retainEditorAcceptanceEvidence({ ...options, phase: "verify" });
+    const ordinaryFailure = JSON.parse(await readFile(join(ordinaryTarget, "failure.json"), "utf8"));
+    assert.deepEqual(ordinaryFailure.jupyterLogCategories, []);
+    assert.equal(
+      ordinaryFailure.copiedFiles.some((path) => path.endsWith("-jupyter-output.log")),
+      false
+    );
+
+    assert.throws(
+      () => retainEditorAcceptanceEvidence({ ...options, phase: "jupyter-r", logRoot: directory }),
+      /editor acceptance log root must be inside its private temporary root/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("failure metadata has hard byte, depth, entry, and string limits", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-failure-bounds-"));
   try {

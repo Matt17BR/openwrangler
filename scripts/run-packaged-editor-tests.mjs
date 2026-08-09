@@ -629,6 +629,36 @@ try {
                 editorAcceptanceProgressPath(resultPath, runIds[phase], phase)
               ])
             );
+            const userDataByPhase = new Map([
+              ["setup", userData],
+              ["platform-smoke", userData],
+              ["restricted", restrictedUserData],
+              ["python-environment", pythonEnvironmentUserData],
+              ["jupyter-r", jupyterRUserData],
+              ["jupyter-r-remote-setup", jupyterRemoteRUserData],
+              ["jupyter-r-remote", jupyterRemoteRUserData],
+              ["jupyter-r-remote-cleanup", jupyterRemoteRUserData],
+              ["jupyter-deny", jupyterDenyUserData],
+              ["jupyter-allow", jupyterAllowUserData],
+              ["jupyter-pyspark", jupyterPySparkUserData],
+              ["jupyter-remote-setup", jupyterRemoteUserData],
+              ["jupyter-remote", jupyterRemoteUserData],
+              ["jupyter-remote-cleanup", jupyterRemoteUserData],
+              ["jupyter-coexist-open-select", coexistOpenUserData],
+              ["jupyter-coexist-open-restart", coexistOpenUserData],
+              ["jupyter-coexist-data-select", coexistDataUserData],
+              ["jupyter-coexist-data-restart", coexistDataUserData],
+              ["seed", userData],
+              ["verify", userData]
+            ]);
+            const userDataForPhase = (phase) => {
+              const phaseUserData = userDataByPhase.get(phase);
+              if (phaseUserData === undefined) {
+                throw new Error("A packaged-editor phase is missing its private user-data root.");
+              }
+              return phaseUserData;
+            };
+            for (const phase of Object.keys(resultPaths)) userDataForPhase(phase);
             let activePhase = "setup";
             let identifiedEditor = { ...editor, version: "unknown" };
             const editorStartedAt = Date.now();
@@ -1517,6 +1547,7 @@ try {
                       resultPaths,
                       progressPath: progressPaths[activePhase],
                       progressPaths,
+                      logRoot: resolve(userDataForPhase(activePhase), "logs"),
                       identityOriginPhase: activePhase,
                       hostHomes
                     });
