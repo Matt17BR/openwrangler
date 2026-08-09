@@ -13752,38 +13752,37 @@ async function waitForOpenWranglerGridTarget(
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   do {
     const browser = workbench.context().browser();
-    assertOpenWranglerWebviewLifecycle(workbench, browser);
-    for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
-      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
-      try {
-        const app = await exactSessionApp(
-          target.frame,
-          expectedSessionId,
-          expectedRendererSynchronizationReceipt?.syncId
-        );
-        if (!app) continue;
-        const grid = app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first();
-        if ((await grid.count()) === 0 || !(await grid.isVisible())) continue;
-        if (
-          expectedRendererSynchronizationReceipt &&
-          !sameRendererSynchronizationReceipt(
-            expectedRendererSynchronizationReceipt,
-            testing.panelSynchronizationReceipt(expectedSessionId)
-          )
-        ) {
-          continue;
-        }
-        return target;
-      } catch (error) {
-        ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
-      }
-    }
+    const target = await findCurrentOpenWranglerGridTarget(
+      workbench,
+      browser,
+      testing,
+      expectedSessionId,
+      expectedRendererSynchronizationReceipt
+    );
+    if (target) return target;
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
 
-  const browser = workbench.context().browser();
-  assertOpenWranglerWebviewLifecycle(workbench, browser);
-  const diagnostics = await openWranglerGridDiagnostics(workbench, browser, expectedSessionId);
+  const { action: reacquiredTarget, diagnostics } = await diagnoseThenReacquireAcceptanceAction({
+    timeoutMs: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+    diagnose: async (failureDeadline) => {
+      const browser = workbench.context().browser();
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      return openWranglerGridDiagnostics(workbench, browser, expectedSessionId, failureDeadline);
+    },
+    reacquire: async (failureDeadline) =>
+      findCurrentOpenWranglerGridTarget(
+        workbench,
+        workbench.context().browser(),
+        testing,
+        expectedSessionId,
+        expectedRendererSynchronizationReceipt,
+        failureDeadline
+      )
+  });
+  if (reacquiredTarget) return reacquiredTarget;
+
+  assertOpenWranglerWebviewLifecycle(workbench, workbench.context().browser());
   const active = testing.activeSession();
   throw new Error(
     "The editor journey did not expose the expected live Open Wrangler grid. " +
@@ -13803,6 +13802,47 @@ async function waitForOpenWranglerGridTarget(
         webviews: diagnostics
       })}`
   );
+}
+
+async function findCurrentOpenWranglerGridTarget(
+  workbench: Page,
+  browser: Browser | null,
+  testing: TestApi,
+  expectedSessionId: string,
+  expectedRendererSynchronizationReceipt?: Readonly<{ syncId: string; sessionId: string; revision: number }>,
+  deadline?: number
+): Promise<OpenWranglerWebviewTarget | undefined> {
+  assertOpenWranglerWebviewLifecycle(workbench, browser);
+  if (deadline !== undefined && Date.now() >= deadline) return undefined;
+  for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
+    if (deadline !== undefined && Date.now() >= deadline) return undefined;
+    if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+    try {
+      const app = await exactSessionApp(
+        target.frame,
+        expectedSessionId,
+        expectedRendererSynchronizationReceipt?.syncId
+      );
+      if (deadline !== undefined && Date.now() >= deadline) return undefined;
+      if (!app) continue;
+      const grid = app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first();
+      if ((await grid.count()) === 0 || !(await grid.isVisible())) continue;
+      if (deadline !== undefined && Date.now() >= deadline) return undefined;
+      if (
+        expectedRendererSynchronizationReceipt &&
+        !sameRendererSynchronizationReceipt(
+          expectedRendererSynchronizationReceipt,
+          testing.panelSynchronizationReceipt(expectedSessionId)
+        )
+      ) {
+        continue;
+      }
+      return target;
+    } catch (error) {
+      ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+    }
+  }
+  return undefined;
 }
 
 async function exactSessionApp(
@@ -27111,7 +27151,8 @@ function activeEditorTabDiagnostic(): Record<string, boolean | string> {
 async function openWranglerGridDiagnostics(
   workbench: Page,
   browser: Browser | null,
-  expectedSessionId: string
+  expectedSessionId: string,
+  deadline?: number
 ): Promise<unknown> {
   const allTargets = openWranglerWebviewTargets(workbench, browser, Number.MAX_SAFE_INTEGER);
   const targets = allTargets.slice(0, OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT);
@@ -27120,6 +27161,8 @@ async function openWranglerGridDiagnostics(
     openWranglerTargets: allTargets.filter((target) => target.isOpenWranglerWebview).length,
     diagnosedTargets: targets.length
   };
+  const remainingMs = deadline === undefined ? WORKBENCH_DIAGNOSTIC_TIMEOUT_MS : deadline - Date.now();
+  if (remainingMs <= 0) return { ...summary, targets: "unavailable within the diagnostics deadline" };
   try {
     const targetsState = await withAcceptanceOperationDeadline(
       Promise.all(
@@ -27164,7 +27207,7 @@ async function openWranglerGridDiagnostics(
           }
         })
       ),
-      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      remainingMs,
       "bounded exact-session Open Wrangler grid diagnostics"
     );
     assertOpenWranglerWebviewLifecycle(workbench, browser);
