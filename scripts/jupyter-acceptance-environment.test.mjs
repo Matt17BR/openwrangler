@@ -499,6 +499,12 @@ test("R editing acceptance reveals the capitalized column after temporary derive
     labelReveal
   );
   const visibleValue = journey.indexOf('"the visible R Capitalize value in row 1"', selectedReceipt);
+  const floorSelection = journey.indexOf('"selecting the visible R Floor result"');
+  const floorRenderer = journey.indexOf('"the selected R Floor result"', floorSelection);
+  const floorValue = journey.indexOf("the visible R Floor value in row ${row + 1}", floorRenderer);
+  const ceilingSelection = journey.indexOf('"selecting the visible R Ceiling result"', floorValue);
+  const ceilingRenderer = journey.indexOf('"the selected R Ceiling result"', ceilingSelection);
+  const ceilingValue = journey.indexOf("the visible R Ceiling value in row ${row + 1}", ceilingRenderer);
 
   assert.ok(
     ceilingReveal >= 0 &&
@@ -507,6 +513,15 @@ test("R editing acceptance reveals the capitalized column after temporary derive
       selectedReceipt > labelReveal &&
       visibleValue > selectedReceipt,
     "The R journey must reveal label through Column Search before reading its virtualized Capitalize cell."
+  );
+  assert.ok(
+    floorSelection >= 0 &&
+      floorRenderer > floorSelection &&
+      floorValue > floorRenderer &&
+      ceilingSelection > floorValue &&
+      ceilingRenderer > ceilingSelection &&
+      ceilingValue > ceilingRenderer,
+    "The R journey must reacquire Floor and Ceiling after Column Search before reading their cells."
   );
 });
 

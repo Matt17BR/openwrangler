@@ -6576,6 +6576,12 @@ async function exerciseReleasedREditingJourney(
       .first()
       .waitFor({ state: "visible", timeout: 10_000 });
     await floorColumnSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === floorColumn.id,
+      10_000,
+      "selecting the visible R Floor result"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Floor result");
     for (const [row, expected] of [
       [0, "1"],
       [1, "-3"]
@@ -6644,6 +6650,12 @@ async function exerciseReleasedREditingJourney(
       .first()
       .waitFor({ state: "visible", timeout: 10_000 });
     await ceilingColumnSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === ceilingColumn.id,
+      10_000,
+      "selecting the visible R Ceiling result"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Ceiling result");
     for (const [row, expected] of [
       [0, "2"],
       [1, "-2"]
