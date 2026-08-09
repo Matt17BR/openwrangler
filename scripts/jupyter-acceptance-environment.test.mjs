@@ -470,6 +470,9 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   assert.match(remoteRJourney, /assert\.equal\(setup\.remoteRunId, kernelTarget\.remote\.runId\)/u);
   assert.match(remoteRJourney, /waitForReleasedRRuntimeBindingCleanup\(notebook, cleanupEditor, phase\)/u);
   assert.doesNotMatch(writer, /hostExtensionVisible|extension\.extensionPath/u);
+  assert.match(writer, /RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX/u);
+  assert.match(writer, /stop\('Open Wrangler R setup failed\.', call\. = FALSE\)/u);
+  assert.doesNotMatch(writer, /conditionMessage|\.ow_setup_error\$|print\(\.ow_setup_error/u);
 
   const setupExecution = remoteRJourney.indexOf("await executeReleasedNotebookCell(");
   const exactRefocus = remoteRJourney.indexOf("const actionNotebookEditor = await showExactReleasedNotebook(notebook)");

@@ -84,8 +84,10 @@ import {
 } from "./progress";
 import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
 import {
+  RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX,
   releasedNotebookExecutionFailureMessage,
-  releasedNotebookOutputClassification
+  releasedNotebookOutputClassification,
+  releasedNotebookRSetupFailureStage
 } from "./releasedNotebookFailure";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
@@ -1565,6 +1567,8 @@ function writeDataWranglerCoexistenceNotebook(notebookPath: string, target: Rele
 function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupyter-r-remote"): void {
   const target = releasedJupyterKernelTarget(phase);
   const source = [
+    ".ow_setup_stage <- 'base-frame'",
+    "tryCatch({",
     "row_count <- 1205L",
     "orders_frame <- data.frame(",
     "  row_id = seq_len(row_count),",
@@ -1581,24 +1585,40 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "orders_frame$extra_20[1L] <- NA_character_",
     "orders_frame$fractional_score[603L] <- NA_real_",
     "row.names(orders_frame) <- sprintf('case-%04d', seq_len(row_count))",
+    ".ow_setup_stage <- 'tibble'",
     "orders_tibble <- tibble::as_tibble(orders_frame, .name_repair = 'minimal')",
+    ".ow_setup_stage <- 'data-table'",
     "orders_table <- data.table::as.data.table(orders_frame)",
     "data.table::setkey(orders_table, row_id)",
+    ".ow_setup_stage <- 'collapse-load'",
+    "invisible(loadNamespace('collapse'))",
+    ".ow_setup_stage <- 'collapse-data-frame'",
     "collapse_frame <- collapse::qDF(orders_frame)",
+    ".ow_setup_stage <- 'collapse-tibble'",
     "collapse_tibble <- collapse::qTBL(orders_frame)",
+    ".ow_setup_stage <- 'collapse-data-table'",
     "collapse_table <- collapse::qDT(orders_frame)",
+    ".ow_setup_stage <- 'collapse-grouped'",
     "collapse_grouped <- collapse::fgroup_by(collapse_frame, group)",
+    ".ow_setup_stage <- 'collapse-indexed'",
     "collapse_indexed <- collapse::findex_by(collapse_frame, group, row_id)",
+    ".ow_setup_stage <- 'snapshots'",
     "orders_frame_before <- serialize(orders_frame, NULL, version = 3L)",
     "orders_tibble_before <- serialize(orders_tibble, NULL, version = 3L)",
     "orders_table_before <- serialize(orders_table, NULL, version = 3L)",
+    ".ow_setup_stage <- 'result'",
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_SETUP_RESULT)}, as.character(jsonlite::toJSON(list(`,
     "  pid = Sys.getpid(), rows = nrow(orders_frame), columns = ncol(orders_frame),",
     "  rVersion = as.character(getRversion()),",
     "  collapseVersion = as.character(utils::packageVersion('collapse')),",
     "  remoteRunId = Sys.getenv('OPEN_WRANGLER_REMOTE_RUN_ID', unset = ''),",
     "  hostname = unname(Sys.info()[['nodename']])",
-    "), auto_unbox = TRUE)), '\\n', sep = '')"
+    "), auto_unbox = TRUE)), '\\n', sep = '')",
+    "}, error = function(.ow_setup_error) {",
+    `  cat(${JSON.stringify(RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX)}, .ow_setup_stage, '\\n', sep = '', file = stderr())`,
+    "  flush(stderr())",
+    "  stop('Open Wrangler R setup failed.', call. = FALSE)",
+    "})"
   ];
   const bindingProbe = [
     `cat(${JSON.stringify(RELEASED_JUPYTER_R_BINDING_RESULT)}, as.character(jsonlite::toJSON(list(`,
@@ -2089,7 +2109,14 @@ async function exerciseReleasedRJupyterExtension(
       remoteServerCollection = registerReleasedRemoteJupyterServer(jupyterApi, kernelTarget);
     }
     await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
-    await executeReleasedNotebookCell(notebook, 0, RELEASED_JUPYTER_R_SETUP_RESULT, `${phase}:setup`, notebookEditor);
+    await executeReleasedNotebookCell(
+      notebook,
+      0,
+      RELEASED_JUPYTER_R_SETUP_RESULT,
+      `${phase}:setup`,
+      notebookEditor,
+      "r-setup"
+    );
     const setup = releasedNotebookJsonResult(notebook.cellAt(0), RELEASED_JUPYTER_R_SETUP_RESULT, "R setup");
     assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
     assertReleasedRVersion(setup, kernelTarget, "R setup");
@@ -11237,7 +11264,8 @@ async function executeReleasedNotebookCell(
   index: number,
   expectedText: string | undefined,
   checkpoint: string,
-  expectedEditor?: vscode.NotebookEditor
+  expectedEditor?: vscode.NotebookEditor,
+  failureDiagnostic?: "r-setup"
 ): Promise<void> {
   assertExactOpenNotebookDocument(notebook, `before executing cell ${index}`);
   if (expectedEditor) {
@@ -11318,7 +11346,9 @@ async function executeReleasedNotebookCell(
       }
       if (observedFreshExecutionSummary && cell.executionSummary?.success === false) {
         recordAcceptanceProgress(`${checkpoint}:execution-failed`);
-        throw new Error(releasedNotebookExecutionFailureMessage(index, cell.outputs));
+        const rSetupStage =
+          failureDiagnostic === "r-setup" ? releasedNotebookRSetupFailureStage(cell.outputs) : undefined;
+        throw new Error(releasedNotebookExecutionFailureMessage(index, cell.outputs, rSetupStage));
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (Date.now() < deadline);

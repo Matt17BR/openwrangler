@@ -690,7 +690,8 @@ supply the same verified artifacts through `OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSI
 `collapse` is not a runtime dependency. Packaged R/Jupyter acceptance installs collapse 2.1.7 in its private test
 library. It creates real `qDF()`, `qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms
 that grouped `GRP_df` and indexed `indexed_frame` objects stay out of the picker. The direct R contract tests cover the
-same accepted and rejected classes.
+same accepted and rejected classes. A setup failure records only the fixed stage name; R errors and notebook output
+stay out of the retained diagnostic.
 
 Local screenshot mode also captures the real IRkernel variable picker, a generated 2,400-row orders dataframe in the
 viewing workbench, a Group and aggregate draft after switching that same session to Editing mode, the generated R
