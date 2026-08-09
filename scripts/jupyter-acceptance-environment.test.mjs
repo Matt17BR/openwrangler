@@ -225,7 +225,14 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
 
     const kernelSpec = JSON.parse(await readFile(prepared.kernelSpecPath, "utf8"));
     assert.deepEqual(kernelSpec, {
-      argv: [rExecutable, "--slave", "-e", "IRkernel::main()", "--args", "{connection_file}"],
+      argv: [
+        rExecutable,
+        "--slave",
+        "-e",
+        '.ow_library <- Sys.getenv("R_LIBS_USER", unset = NA_character_); if (is.na(.ow_library) || !dir.exists(.ow_library)) stop("Open Wrangler R acceptance library is unavailable."); .libPaths(unique(c(normalizePath(.ow_library, winslash = "/", mustWork = TRUE), .libPaths()))); IRkernel::main()',
+        "--args",
+        "{connection_file}"
+      ],
       display_name: "R (Open Wrangler)",
       language: "R",
       env: { R_LIBS_USER: prepared.libraryDir }
@@ -280,21 +287,25 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     assert.match(prepared.dependencyProbe.input.args.at(-1), /status = 11L/u);
     assert.match(prepared.dependencyProbe.input.args.at(-1), /status = 12L/u);
     assert.match(prepared.dependencyProbe.input.args.at(-1), /OPEN_WRANGLER_R_COLLAPSE_PROBE:/u);
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /\.ow_row_count <- 1205L/u);
+    assert.match(prepared.dependencyProbe.input.args.at(-1), /seq_len\(20L\)/u);
     for (const [constructor, status] of [
       ["qDF", 13],
       ["qTBL", 14],
-      ["qDT", 15]
+      ["qDT", 15],
+      ["fgroup_by", 16],
+      ["findex_by", 17]
     ]) {
       assert.match(prepared.dependencyProbe.input.args.at(-1), new RegExp(`collapse::${constructor}\\(`, "u"));
       assert.match(prepared.dependencyProbe.input.args.at(-1), new RegExp(`status = ${status}L`, "u"));
     }
     assert.equal(
       (prepared.dependencyProbe.input.args.at(-1).match(/suppressMessages\(suppressWarnings\(/gu) ?? []).length,
-      3
+      5
     );
     assert.equal(
       (prepared.dependencyProbe.input.args.at(-1).match(/error = function\(\.\.\.\) NULL/gu) ?? []).length,
-      3
+      5
     );
     assert.equal(
       prepared.dependencyProbe.input.args
