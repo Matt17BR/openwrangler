@@ -568,7 +568,9 @@ and Windows use the snapshot's binary package. The Linux document journey also i
 rmarkdown 2.30, and knitr 1.51 in that private library. IRkernel starts with that library already present in
 `.libPaths()`. Before the dataframe fixture runs, one small cell confirms that the selected controller can execute R;
 this separates kernel startup failures from fixture failures. Notebook errors are reduced to a short fixed category
-such as a parse error, stopped kernel, cancellation, or missing pinned package. Raw messages and stacks are not kept.
+such as a parse error, failed kernel start, connection timeout, stopped kernel, cancellation, or missing pinned
+package. Raw messages and stacks are not kept. The manual **Released Jupyter acceptance** workflow has `macos-r` and
+`windows-r` targets for rerunning one platform without starting a release or the Linux/Python matrix.
 The preflight runs the same 1,205-row,
 25-column collapse conversions, grouping, and indexing used by the notebook journey, so a platform-specific native
 failure is reported before the editor launches. The journey covers projected paging, row labels,
