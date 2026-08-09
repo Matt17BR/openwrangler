@@ -310,7 +310,7 @@ test("rejects stale Marketplace tags and homepage metadata", async (context) => 
       prerelease: false,
       version
     }),
-    /public extension metadata/u
+    /listing copy/u
   );
 
   const staleHomepage = gallery(candidate.candidateSha256);
@@ -328,6 +328,25 @@ test("rejects stale Marketplace tags and homepage metadata", async (context) => 
     }),
     /homepage metadata/u
   );
+});
+
+test("keeps historical recovery independent of current Marketplace listing copy", async (context) => {
+  const candidate = await fixture(context);
+  const historical = gallery(candidate.candidateSha256);
+  const extension = historical.results[0].extensions[0];
+  extension.shortDescription = "Copy from a newer release";
+  extension.tags = ["newer"];
+  extension.versions.unshift({ version: "9.0.0" });
+
+  const receipt = await verifyMarketplacePublication({
+    attempts: 1,
+    candidatePath: candidate.candidatePath,
+    candidateSha256: candidate.candidateSha256,
+    fetchImpl: fetchFixture(historical, candidate.candidate),
+    prerelease: false,
+    version
+  });
+  assert.equal(receipt.version, version);
 });
 
 test("rejects public payload drift even when Marketplace reports the canonical upload hash", async (context) => {
