@@ -372,12 +372,14 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
     };
 
     let invocation;
-    await probeJupyterAcceptanceRKernel(python, prepared, {
-      async runCommand(input, options) {
-        invocation = { input, options };
-        return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\n", stderr: "" };
-      }
-    });
+    for (const lineEnding of ["\n", "\r\n"]) {
+      await probeJupyterAcceptanceRKernel(python, prepared, {
+        async runCommand(input, options) {
+          invocation = { input, options };
+          return { stdout: `OPEN_WRANGLER_R_KERNEL_READY${lineEnding}`, stderr: "" };
+        }
+      });
+    }
     const { input, options } = invocation;
     assert.equal(input.executable, python);
     const script = input.args[2];
@@ -400,10 +402,19 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
     await assert.rejects(
       probeJupyterAcceptanceRKernel(python, prepared, {
         async runCommand() {
-          return { stdout: "OPEN_WRANGLER_R_KERNEL_FAILED:ready\n", stderr: "" };
+          return { stdout: "OPEN_WRANGLER_R_KERNEL_FAILED:ready\r\n", stderr: "" };
         }
       }),
       /readiness failed during ready/u
+    );
+
+    await assert.rejects(
+      probeJupyterAcceptanceRKernel(python, prepared, {
+        async runCommand() {
+          return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\r\nextra", stderr: "" };
+        }
+      }),
+      /malformed fixed result/u
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

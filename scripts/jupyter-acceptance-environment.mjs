@@ -635,8 +635,8 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
   if (result?.stderr !== "") {
     throw new Error("Released-Jupyter R kernel readiness probe returned a malformed fixed result.");
   }
-  if (result.stdout === "OPEN_WRANGLER_R_KERNEL_READY\n") return;
-  const failure = /^OPEN_WRANGLER_R_KERNEL_FAILED:(start|ready|execute|cleanup)\n$/u.exec(result.stdout);
+  if (/^OPEN_WRANGLER_R_KERNEL_READY\r?\n$/u.test(result.stdout)) return;
+  const failure = /^OPEN_WRANGLER_R_KERNEL_FAILED:(start|ready|execute|cleanup)\r?\n$/u.exec(result.stdout);
   if (failure) throw new Error(`Released-Jupyter R kernel readiness failed during ${failure[1]}.`);
   throw new Error("Released-Jupyter R kernel readiness probe returned a malformed fixed result.");
 }
