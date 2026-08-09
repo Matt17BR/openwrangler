@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const marketplace = "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler";
+const projectHomepage = "https://github.com/Matt17BR/openwrangler#readme";
 const repositoryApi = "https://api.github.com/repos/Matt17BR/openwrangler";
 
 export function inspectPublicRepositoryMetadata({ contractSource, packageSource }) {
@@ -22,8 +23,8 @@ export function inspectPublicRepositoryMetadata({ contractSource, packageSource 
     problems.push("GitHub About description must match package.json description.");
   if (metadata.homepage !== marketplace)
     problems.push("GitHub About homepage must point to the Visual Studio Marketplace listing.");
-  if (packageJson.homepage !== metadata.homepage)
-    problems.push("The extension homepage must match the GitHub About homepage.");
+  if (packageJson.homepage !== projectHomepage)
+    problems.push("The extension homepage must point to the project README.");
   const topics = metadata.topics;
   if (
     !Array.isArray(topics) ||

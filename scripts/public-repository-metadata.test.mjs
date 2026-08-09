@@ -17,7 +17,10 @@ test("local validation rejects description, homepage, and topic drift", () => {
   assert.match(
     inspect(
       metadata,
-      JSON.stringify({ ...packageJson, homepage: "https://github.com/Matt17BR/openwrangler#readme" })
+      JSON.stringify({
+        ...packageJson,
+        homepage: "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"
+      })
     ).join(" "),
     /extension homepage/u
   );

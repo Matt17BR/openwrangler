@@ -22,10 +22,11 @@ Update `package.json`,
 `python/openwrangler_runtime/version.py`, `CHANGELOG.md`, and parity evidence in the release pull request. Do not put
 the release channel in a hyphenated manifest version.
 
-The GitHub About description, homepage, and topics live in `.github/repository-metadata.json`. The package description
-and homepage must match it. Run `npm run repository:check` after editing either file, apply the reviewed metadata to GitHub, then
-run `npm run repository:check-live`. Preview and stable release workflows repeat the live check before publishing, so
-an outdated About panel blocks the release.
+The GitHub About description, homepage, and topics live in `.github/repository-metadata.json`. Its homepage points to
+the Marketplace. The package description must match it, while the package homepage points to the project README so
+the Marketplace and Open VSX Resources links do not loop back to a registry. Run `npm run repository:check` after
+editing either file, apply the reviewed metadata to GitHub, then run `npm run repository:check-live`. Preview and
+stable release workflows repeat the live check before publishing, so an outdated About panel blocks the release.
 
 ## Package gate
 
