@@ -152,7 +152,7 @@ export function rAcceptanceRepositories(platform = process.platform) {
 
 function rAcceptanceInstall({ repository, supplementalRepository }, platform) {
   const nativeCollapseInstall =
-    platform === "darwin" || platform === "win32"
+    platform === "darwin"
       ? [
           "utils::install.packages(",
           '  "collapse",',
@@ -168,7 +168,7 @@ function rAcceptanceInstall({ repository, supplementalRepository }, platform) {
     'Sys.setenv(MAKEFLAGS = "-s")',
     `.ow_packages <- c(${R_ACCEPTANCE_PACKAGES.map((packageName) => JSON.stringify(packageName)).join(", ")})`,
     '.ow_supplemental_packages <- c("collapse", "nanoparquet")',
-    platform === "darwin" || platform === "win32"
+    platform === "darwin"
       ? '.ow_binary_supplemental_packages <- "nanoparquet"'
       : ".ow_binary_supplemental_packages <- .ow_supplemental_packages",
     ".ow_core_packages <- setdiff(.ow_packages, .ow_supplemental_packages)",

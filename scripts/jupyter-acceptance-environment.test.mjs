@@ -340,7 +340,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
   }
 });
 
-test("released-Jupyter R setup builds collapse from source on macOS and Windows", async () => {
+test("released-Jupyter R setup builds collapse from source on macOS", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-binary-"));
   const rscript = join(directory, "Rscript");
   const rExecutable = join(directory, "R");
@@ -349,27 +349,24 @@ test("released-Jupyter R setup builds collapse from source on macOS and Windows"
     await writeFile(rExecutable, "fake R executable\n");
     await chmod(rscript, 0o700);
     await chmod(rExecutable, 0o700);
-    for (const platform of ["darwin", "win32"]) {
-      const privateRoot = join(directory, platform);
-      const prepared = await prepareJupyterAcceptanceREnvironment(privateRoot, rscript, {
-        containedBy: directory,
-        environment: Object.freeze({}),
-        platform,
-        async runCommand() {
-          return { stdout: rExecutable, stderr: "" };
-        }
-      });
-      const install = prepared.dependencyInstall.input.args.at(-1);
-      assert.match(install, /\.ow_binary_supplemental_packages <- "nanoparquet"/u);
-      assert.match(install, /install\.packages\(\n {2}"collapse",[\s\S]+type = "source"/u);
-      assert.equal((install.match(/quiet = TRUE/gu) ?? []).length, 3);
-    }
+    const prepared = await prepareJupyterAcceptanceREnvironment(join(directory, "darwin"), rscript, {
+      containedBy: directory,
+      environment: Object.freeze({}),
+      platform: "darwin",
+      async runCommand() {
+        return { stdout: rExecutable, stderr: "" };
+      }
+    });
+    const install = prepared.dependencyInstall.input.args.at(-1);
+    assert.match(install, /\.ow_binary_supplemental_packages <- "nanoparquet"/u);
+    assert.match(install, /install\.packages\(\n {2}"collapse",[\s\S]+type = "source"/u);
+    assert.equal((install.match(/quiet = TRUE/gu) ?? []).length, 3);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("released-Jupyter R setup keeps collapse on the Linux binary path", async () => {
+test("released-Jupyter R setup keeps collapse on the Linux and Windows binary paths", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-linux-binary-"));
   const rscript = join(directory, "Rscript");
   const rExecutable = join(directory, "R");
@@ -378,18 +375,22 @@ test("released-Jupyter R setup keeps collapse on the Linux binary path", async (
     await writeFile(rExecutable, "fake R executable\n");
     await chmod(rscript, 0o700);
     await chmod(rExecutable, 0o700);
-    const prepared = await prepareJupyterAcceptanceREnvironment(join(directory, "linux"), rscript, {
-      containedBy: directory,
-      environment: Object.freeze({}),
-      platform: "linux",
-      async runCommand() {
-        return { stdout: rExecutable, stderr: "" };
-      }
-    });
-    const install = prepared.dependencyInstall.input.args.at(-1);
-    assert.match(install, /\.ow_binary_supplemental_packages <- \.ow_supplemental_packages/u);
-    assert.doesNotMatch(install, /type = "source"/u);
-    assert.equal((install.match(/quiet = TRUE/gu) ?? []).length, 2);
+    for (const platform of ["linux", "win32"]) {
+      const prepared = await prepareJupyterAcceptanceREnvironment(join(directory, platform), rscript, {
+        containedBy: directory,
+        environment: Object.freeze({}),
+        platform,
+        async runCommand() {
+          return { stdout: rExecutable, stderr: "" };
+        }
+      });
+      const install = prepared.dependencyInstall.input.args.at(-1);
+      assert.match(install, /\.ow_binary_supplemental_packages <- \.ow_supplemental_packages/u);
+      assert.match(install, /"Rcpp"/u);
+      assert.match(install, /repos = "[^"]+2026-06-01"/u);
+      assert.doesNotMatch(install, /type = "source"/u);
+      assert.equal((install.match(/quiet = TRUE/gu) ?? []).length, 2);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
