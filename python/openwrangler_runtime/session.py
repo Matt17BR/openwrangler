@@ -1334,7 +1334,10 @@ class SessionManager:
             "revision": session.revision,
             "metadata": self._metadata(session),
             "page": self._page(session, offset, limit, column_offset, column_limit),
-            "code": session.engine.compile_plan(session.bound_plan),
+            # An empty cleaning plan has no code to keep or export. This also
+            # matches a newly opened session and the R runtime, instead of
+            # leaving an identity-function preview behind after Discard/Undo.
+            "code": session.engine.compile_plan(session.bound_plan) if session.bound_plan else "",
         }
 
     def _replay(
