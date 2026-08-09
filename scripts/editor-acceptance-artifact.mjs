@@ -18,7 +18,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { redactEditorAcceptanceText } from "./editor-acceptance-evidence.mjs";
+import { redactEditorAcceptanceJson, redactEditorAcceptanceText } from "./editor-acceptance-evidence.mjs";
 
 const MAX_RECEIPTS = 64;
 const MAX_RECEIPT_ENTRIES = 512;
@@ -197,7 +197,9 @@ function sealEditorAcceptanceEvidenceWithOperations({ evidenceRoot, artifactPare
       } catch {
         throw new Error("A retained evidence file is not strict UTF-8 text.");
       }
-      const redacted = redactEditorAcceptanceText(text);
+      const redacted = isStructuredEvidencePath(entry.path)
+        ? redactEditorAcceptanceJson(text)
+        : redactEditorAcceptanceText(text);
       entries.push({
         path: `evidence-${String(receiptIndex + 1).padStart(3, "0")}/${entry.path}`,
         text: redacted ?? OMITTED_SENSITIVE_SOURCE
@@ -214,6 +216,14 @@ function sealEditorAcceptanceEvidenceWithOperations({ evidenceRoot, artifactPare
   const receipt = writeExclusiveArtifact(artifactPath, serialized, parentReceipt, operations);
   assertSealedEditorAcceptanceArtifact(receipt);
   return receipt;
+}
+
+function isStructuredEvidencePath(path) {
+  return (
+    path === "failure.json" ||
+    path === "profile-manifest.json" ||
+    /^phases\/[^/]+\/(?:progress|result)\.json$/u.test(path)
+  );
 }
 
 export function assertSealedEditorAcceptanceArtifact(receipt) {
