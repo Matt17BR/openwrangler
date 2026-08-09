@@ -13452,17 +13452,11 @@ async function exercisePackagedPlatformSmoke(
     active.metadata.sessionId,
     "platform-smoke:sort-journey"
   );
-  await exercisePackagedFirstUseInteractionJourney(
-    testing,
-    page,
-    gridTarget.frame,
-    active.metadata.sessionId,
-    fixture,
-    sourceBytes
-  );
+  await exercisePackagedFirstUseInteractionJourney(testing, page, active.metadata.sessionId, fixture, sourceBytes);
 
   recordAcceptanceProgress("platform-smoke:theme");
-  const themeAttestation = await gridTarget.frame.locator("main.app").evaluate((element) => {
+  const themedGridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
+  const themeAttestation = await themedGridTarget.frame.locator("main.app").evaluate((element) => {
     const window = element.ownerDocument.defaultView;
     if (!window) throw new Error("The packaged editor webview did not expose a live window.");
     const computed = window.getComputedStyle(element);
@@ -14063,15 +14057,16 @@ async function exercisePrimarySortJourney(
 async function exercisePackagedFirstUseInteractionJourney(
   testing: TestApi,
   workbench: Page,
-  frame: Frame,
   sessionId: string,
   fixture: vscode.Uri,
   sourceBytes: Uint8Array
 ): Promise<void> {
+  let frame = (await waitForOpenWranglerGridTarget(workbench, testing, sessionId)).frame;
   let app = await exactSessionApp(frame, sessionId);
   assert.ok(app, "The first-use journey requires the exact active Open Wrangler application.");
   const rediscoverApp = async (phase: string): Promise<Locator> => {
     const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    frame = target.frame;
     const current = await exactSessionApp(target.frame, sessionId);
     assert.ok(current, `${phase} requires the exact visible Open Wrangler renderer for the active session.`);
     return current;
