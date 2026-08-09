@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  AcceptanceActionNotDispatchedError,
   acquirePreparedAcceptanceAction,
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
+  activateWithOnePreDispatchReacquisition,
   diagnoseThenReacquireAcceptanceAction,
   IndeterminateAcceptanceActionError,
   ignoreRetiredRendererProbeFailure,
@@ -62,6 +64,7 @@ interface FakeExactAcceptanceElement {
 function exactAcceptanceTarget(
   options: {
     readonly covered?: boolean;
+    readonly disconnected?: boolean;
     readonly disabled?: boolean;
     readonly ariaDisabled?: boolean;
     readonly trusted?: boolean;
@@ -73,7 +76,7 @@ function exactAcceptanceTarget(
   let evaluateCalls = 0;
   const occluder = {} as FakeExactAcceptanceElement;
   const element: FakeExactAcceptanceElement = {
-    isConnected: true,
+    isConnected: !(options.disconnected ?? false),
     disabled: options.disabled ?? false,
     ownerDocument: {
       elementFromPoint: () => (options.covered ? occluder : element)
@@ -206,6 +209,28 @@ describe("extension-host Playwright lifecycle", () => {
     expect(receipt).not.toHaveBeenCalled();
     expect(authoritativeReceiptAfterActivationFailure).toHaveBeenCalledOnce();
     expect(naturalDismissal).not.toHaveBeenCalled();
+  });
+
+  it("skips the authoritative receipt when activation never reaches its click boundary", async () => {
+    const preparationFailure = new AcceptanceActionNotDispatchedError(
+      "The exact acceptance element",
+      new Error("The element was disconnected.")
+    );
+    const activate = vi.fn().mockRejectedValue(preparationFailure);
+    const receipt = vi.fn().mockResolvedValue("ordinary receipt");
+    const authoritativeReceiptAfterActivationFailure = vi.fn().mockResolvedValue("opened session");
+
+    await expect(
+      invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+        description: "the notebook variable action",
+        activate,
+        receipt,
+        authoritativeReceiptAfterActivationFailure
+      })
+    ).rejects.toBe(preparationFailure);
+    expect(activate).toHaveBeenCalledOnce();
+    expect(receipt).not.toHaveBeenCalled();
+    expect(authoritativeReceiptAfterActivationFailure).not.toHaveBeenCalled();
   });
 
   it("retains an indeterminate activation and a missing authoritative receipt without retrying the action", async () => {
@@ -391,9 +416,12 @@ describe("extension-host Playwright lifecycle", () => {
   ] as const)("does not click an exact %s element", async (_label, options, reason) => {
     const { evaluateCalls, target } = exactAcceptanceTarget(options);
 
-    await expect(activateExactAcceptanceElementOnce(target, 10_000)).rejects.toThrow(
-      `The exact acceptance element is not ready for one click (${reason}).`
-    );
+    await expect(activateExactAcceptanceElementOnce(target, 10_000)).rejects.toMatchObject({
+      name: "AcceptanceActionNotDispatchedError",
+      cause: expect.objectContaining({
+        message: `The exact acceptance element is not ready for one click (${reason}).`
+      })
+    });
     expect(evaluateCalls()).toBe(1);
     expect(target.click).not.toHaveBeenCalled();
   });
@@ -417,14 +445,175 @@ describe("extension-host Playwright lifecycle", () => {
     expect(evaluateCalls()).toBe(1);
   });
 
+  it("reacquires one renderer target that retires before the click boundary", async () => {
+    const first = exactAcceptanceTarget({ disconnected: true });
+    const second = exactAcceptanceTarget();
+    const acquire = vi.fn().mockResolvedValueOnce(first.target).mockResolvedValueOnce(second.target);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+
+    await activateWithOnePreDispatchReacquisition({
+      acquire,
+      activate: (target) => activateExactAcceptanceElementOnce(target, 10_000),
+      dispose
+    });
+
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(first.target.click).not.toHaveBeenCalled();
+    expect(second.target.click).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledTimes(2);
+    expect(dispose).toHaveBeenNthCalledWith(1, first.target);
+    expect(dispose).toHaveBeenNthCalledWith(2, second.target);
+  });
+
+  it("classifies an initial target-acquisition failure before the click boundary", async () => {
+    const acquisitionFailure = new Error("renderer discovery failed");
+    const acquire = vi.fn().mockRejectedValue(acquisitionFailure);
+    const activate = vi.fn();
+    const dispose = vi.fn();
+    const authoritativeReceiptAfterActivationFailure = vi.fn().mockResolvedValue("opened session");
+
+    await expect(
+      invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+        description: "the notebook renderer action",
+        activate: () => activateWithOnePreDispatchReacquisition({ acquire, activate, dispose }),
+        receipt: vi.fn().mockResolvedValue("ordinary receipt"),
+        authoritativeReceiptAfterActivationFailure
+      })
+    ).rejects.toMatchObject({
+      name: "AcceptanceActionNotDispatchedError",
+      cause: acquisitionFailure
+    });
+
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(activate).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
+    expect(authoritativeReceiptAfterActivationFailure).not.toHaveBeenCalled();
+  });
+
+  it("does not make a third acquisition when replacement discovery fails", async () => {
+    const first = exactAcceptanceTarget({ disconnected: true });
+    const replacementFailure = new Error("replacement discovery failed");
+    const acquire = vi.fn().mockResolvedValueOnce(first.target).mockRejectedValueOnce(replacementFailure);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      activateWithOnePreDispatchReacquisition({
+        acquire,
+        activate: (target) => activateExactAcceptanceElementOnce(target, 10_000),
+        dispose
+      })
+    ).rejects.toMatchObject({
+      name: "AcceptanceActionNotDispatchedError",
+      cause: replacementFailure
+    });
+
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(first.target.click).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledWith(first.target);
+  });
+
+  it("does not reacquire when retiring the first pre-click target fails", async () => {
+    const first = exactAcceptanceTarget({ disconnected: true });
+    const cleanupFailure = new Error("retired handle did not dispose");
+    const acquire = vi.fn().mockResolvedValue(first.target);
+    const dispose = vi.fn().mockRejectedValue(cleanupFailure);
+
+    await expect(
+      activateWithOnePreDispatchReacquisition({
+        acquire,
+        activate: (target) => activateExactAcceptanceElementOnce(target, 10_000),
+        dispose
+      })
+    ).rejects.toMatchObject({
+      name: "AcceptanceActionNotDispatchedError",
+      cause: cleanupFailure
+    });
+
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(first.target.click).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("does not make a third acquisition when the replacement also fails readiness", async () => {
+    const first = exactAcceptanceTarget({ disconnected: true });
+    const second = exactAcceptanceTarget({ covered: true });
+    const acquire = vi.fn().mockResolvedValueOnce(first.target).mockResolvedValueOnce(second.target);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      activateWithOnePreDispatchReacquisition({
+        acquire,
+        activate: (target) => activateExactAcceptanceElementOnce(target, 10_000),
+        dispose
+      })
+    ).rejects.toBeInstanceOf(AcceptanceActionNotDispatchedError);
+
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(first.target.click).not.toHaveBeenCalled();
+    expect(second.target.click).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps replacement cleanup failures classified before the click boundary", async () => {
+    const first = exactAcceptanceTarget({ disconnected: true });
+    const second = exactAcceptanceTarget({ covered: true });
+    const cleanupFailure = new Error("replacement handle did not dispose");
+    const acquire = vi.fn().mockResolvedValueOnce(first.target).mockResolvedValueOnce(second.target);
+    const dispose = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(cleanupFailure);
+
+    await expect(
+      activateWithOnePreDispatchReacquisition({
+        acquire,
+        activate: (target) => activateExactAcceptanceElementOnce(target, 10_000),
+        dispose
+      })
+    ).rejects.toMatchObject({
+      name: "AcceptanceActionNotDispatchedError",
+      cause: cleanupFailure
+    });
+
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(first.target.click).not.toHaveBeenCalled();
+    expect(second.target.click).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reacquire after the renderer action crosses its click boundary", async () => {
+    const clickFailure = new Error("Cursor rejected the click");
+    const first = exactAcceptanceTarget({ clickError: clickFailure });
+    const replacement = exactAcceptanceTarget();
+    const acquire = vi.fn().mockResolvedValueOnce(first.target).mockResolvedValueOnce(replacement.target);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const boundary = vi.fn();
+
+    await expect(
+      activateWithOnePreDispatchReacquisition({
+        acquire,
+        activate: (target) => activateExactAcceptanceElementOnce(target, 10_000, boundary),
+        dispose
+      })
+    ).rejects.toBe(clickFailure);
+
+    expect(boundary).toHaveBeenCalledOnce();
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(first.target.click).toHaveBeenCalledOnce();
+    expect(replacement.target.click).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledWith(first.target);
+  });
+
   it("bounds a stalled exact-element readiness check before any click", async () => {
     vi.useFakeTimers();
     try {
       const { evaluateCalls, target } = exactAcceptanceTarget({ stalledEvaluation: 1 });
       const outcome = activateExactAcceptanceElementOnce(target, 10_000);
-      const assertion = expect(outcome).rejects.toThrow(
-        "Timed out waiting for the exact acceptance element readiness after 10000 ms."
-      );
+      const assertion = expect(outcome).rejects.toMatchObject({
+        name: "AcceptanceActionNotDispatchedError",
+        cause: expect.objectContaining({
+          message: "Timed out waiting for the exact acceptance element readiness after 10000 ms."
+        })
+      });
 
       await vi.advanceTimersByTimeAsync(10_000);
       await assertion;
