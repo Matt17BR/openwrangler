@@ -88,6 +88,18 @@ interface ProductConfiguration {
   fetchColumnBlockSize: 16;
 }
 
+export async function closeRestoredEditorsBeforeInstalledPerformance(
+  closeAllEditors: () => PromiseLike<unknown>,
+  probe: { diagnostics(): { sessionCount: number }; runtimeRunning(): boolean }
+): Promise<void> {
+  await closeAllEditors();
+  await waitFor(
+    () => probe.diagnostics().sessionCount === 0 && !probe.runtimeRunning(),
+    SESSION_CLOSE_TIMEOUT_MS,
+    "restored installed-performance session cleanup"
+  );
+}
+
 export async function run(): Promise<InstalledPerformanceArtifactReceipt> {
   const phase = requiredEnvironment("OPEN_WRANGLER_TEST_PHASE");
   const firstGridMatch = FIRST_GRID_PHASE_PATTERN.exec(phase);
@@ -127,7 +139,10 @@ export async function run(): Promise<InstalledPerformanceArtifactReceipt> {
   try {
     const workbench = await connectToEditorWorkbench();
     await waitForWorkbenchReady(workbench);
-    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    await closeRestoredEditorsBeforeInstalledPerformance(
+      () => vscode.commands.executeCommand("workbench.action.closeAllEditors"),
+      testing
+    );
     await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
     measurement = firstGridMatch
       ? await measureFirstUsableGrid({
