@@ -183,6 +183,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       "IRkernel",
       "jsonlite",
       "rlang",
+      "Rcpp",
       "languageserver",
       "rmarkdown",
       "knitr",
@@ -196,7 +197,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     assert.equal(prepared.supplementalRepository, selectedRepositories.supplementalRepository);
     assert.equal(
       prepared.packageRecord,
-      "IRkernel=1.3.2\njsonlite=2.0.0\nrlang=1.1.7\nlanguageserver=0.3.17\nrmarkdown=2.30\nknitr=1.51\ntibble=3.3.1\ndata.table=1.18.2.1\ncollapse=2.1.7\nnanoparquet=0.5.1"
+      "IRkernel=1.3.2\njsonlite=2.0.0\nrlang=1.1.7\nRcpp=1.1.1\nlanguageserver=0.3.17\nrmarkdown=2.30\nknitr=1.51\ntibble=3.3.1\ndata.table=1.18.2.1\ncollapse=2.1.7\nnanoparquet=0.5.1"
     );
     assert.deepEqual(prepared.jupyterEnvironment, {
       dataDir: join(privateRoot, "d"),
@@ -310,6 +311,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     assert.equal(prepared.dependencyInstall.input.args.at(-1).includes("/__linux__/"), false);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /c\("collapse", "nanoparquet"\)/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /setdiff\(\.ow_packages, \.ow_supplemental_packages\)/u);
+    assert.match(prepared.dependencyInstall.input.args.at(-1), /"Rcpp"/u);
     assert.match(prepared.dependencyInstall.input.args.at(-1), /\.ow_binary_supplemental_packages <- "nanoparquet"/u);
     assert.match(
       prepared.dependencyInstall.input.args.at(-1),

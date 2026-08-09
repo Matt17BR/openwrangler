@@ -562,9 +562,10 @@ packages because the suite opens actual readr and grouped tibbles rather than ha
 The local kernel installs missing packages into a temporary library. Linux uses
 `https://p3m.dev/cran/__linux__/noble/2026-03-10`; macOS and Windows use
 `https://p3m.dev/cran/2026-03-10`. The test records and checks these versions: IRkernel 1.3.2, jsonlite 2.0.0, rlang
-1.1.7, tibble 3.3.1, and data.table 1.18.2.1. Collapse 2.1.7 and nanoparquet 0.5.1 come from the matching reviewed
-`2026-06-01` snapshot. The Linux document journey also installs languageserver 0.3.17, rmarkdown 2.30, and knitr 1.51
-in that private library. Tests cover projected paging, row labels,
+1.1.7, Rcpp 1.1.1, tibble 3.3.1, and data.table 1.18.2.1. Rcpp is installed before the pinned source build of
+collapse. Collapse 2.1.7 and nanoparquet 0.5.1 come from the matching reviewed `2026-06-01` snapshot. The Linux
+document journey also installs languageserver 0.3.17, rmarkdown 2.30, and knitr 1.51 in that private library. Tests
+cover projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
 and cleanup. The base dataframe starts in Viewing mode, keeps its exact notebook, public session, and compound sort
 through the visible **Switch to Editing** action, then continues through the cleaning journey on that same session.
