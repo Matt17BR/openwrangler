@@ -17,6 +17,8 @@ const packageJson = Object.freeze({
   name: "openwrangler",
   displayName: "Open Wrangler",
   description: "An open-source dataframe wrangler.",
+  homepage: "https://github.com/Matt17BR/openwrangler#readme",
+  keywords: ["dataframe", "polars"],
   publisher: "Matt17BR",
   version,
   preview: false,
@@ -117,6 +119,7 @@ function gallery(candidateSha256, overrides = {}, extraProperties = []) {
             extensionName: "openwrangler",
             displayName: packageJson.displayName,
             shortDescription: packageJson.description,
+            tags: [...packageJson.keywords, "keybindings"],
             flags: "validated, public",
             versions: [
               {
@@ -140,6 +143,7 @@ function gallery(candidateSha256, overrides = {}, extraProperties = []) {
                   { key: MARKETPLACE_VSIX_SHA256_PROPERTY, value: candidateSha256 },
                   { key: "Microsoft.VisualStudio.Code.Engine", value: packageJson.engines.vscode },
                   { key: "Microsoft.VisualStudio.Code.ExtensionKind", value: "workspace" },
+                  { key: "Microsoft.VisualStudio.Services.Links.Learn", value: packageJson.homepage },
                   ...extraProperties
                 ],
                 ...overrides
@@ -290,6 +294,39 @@ test("rejects an existing conflicting upload hash without retrying", async (cont
       version
     }),
     /different VSIX bytes/u
+  );
+});
+
+test("rejects stale Marketplace tags and homepage metadata", async (context) => {
+  const candidate = await fixture(context);
+  const missingTag = gallery(candidate.candidateSha256);
+  missingTag.results[0].extensions[0].tags = ["dataframe"];
+  await assert.rejects(
+    verifyMarketplacePublication({
+      attempts: 1,
+      candidatePath: candidate.candidatePath,
+      candidateSha256: candidate.candidateSha256,
+      fetchImpl: fetchFixture(missingTag, candidate.candidate),
+      prerelease: false,
+      version
+    }),
+    /public extension metadata/u
+  );
+
+  const staleHomepage = gallery(candidate.candidateSha256);
+  staleHomepage.results[0].extensions[0].versions[0].properties.find(
+    (property) => property.key === "Microsoft.VisualStudio.Services.Links.Learn"
+  ).value = "https://example.com";
+  await assert.rejects(
+    verifyMarketplacePublication({
+      attempts: 1,
+      candidatePath: candidate.candidatePath,
+      candidateSha256: candidate.candidateSha256,
+      fetchImpl: fetchFixture(staleHomepage, candidate.candidate),
+      prerelease: false,
+      version
+    }),
+    /homepage metadata/u
   );
 });
 

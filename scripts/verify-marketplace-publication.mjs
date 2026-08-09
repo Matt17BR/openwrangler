@@ -186,6 +186,8 @@ function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson,
     throw new Error("Marketplace returned an ambiguous extension identity.");
   }
   const extension = extensions[0];
+  const publicTags = Array.isArray(extension?.tags) ? new Set(extension.tags) : new Set();
+  const keywords = Array.isArray(packageJson.keywords) ? packageJson.keywords : [];
   if (
     typeof extension !== "object" ||
     extension === null ||
@@ -193,7 +195,8 @@ function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson,
     extension.publisher?.publisherName?.toLowerCase() !== MARKETPLACE_PUBLISHER.toLowerCase() ||
     extension.extensionName !== MARKETPLACE_EXTENSION ||
     extension.displayName !== packageJson.displayName ||
-    extension.shortDescription !== packageJson.description
+    extension.shortDescription !== packageJson.description ||
+    keywords.some((keyword) => !publicTags.has(keyword))
   ) {
     throw new Error("Marketplace public extension metadata does not match the canonical package.");
   }
@@ -225,6 +228,9 @@ function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson,
   }
   if (properties.get("Microsoft.VisualStudio.Code.Engine") !== packageJson.engines?.vscode) {
     throw new Error("Marketplace engine metadata differs from the canonical package.");
+  }
+  if (properties.get("Microsoft.VisualStudio.Services.Links.Learn") !== packageJson.homepage) {
+    throw new Error("Marketplace homepage metadata differs from the canonical package.");
   }
   const extensionKind = Array.isArray(packageJson.extensionKind) ? packageJson.extensionKind.join(",") : undefined;
   if (properties.get("Microsoft.VisualStudio.Code.ExtensionKind") !== extensionKind) {
@@ -326,7 +332,7 @@ async function queryPublicMarketplace({
         }
       ],
       assetTypes: [],
-      flags: 19
+      flags: 23
     }),
     redirect: "error"
   });
