@@ -14795,17 +14795,23 @@ async function previewAndDiscardPreviousRevenue(
   );
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 
-  const codePreview = await waitForCodePreview(workbench, "_ow_polars_fill_missing_directional");
-  const code = await codePreview.innerText();
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
+  const code = preview.code ?? "";
   assert.match(code, /import polars as pl/u);
   assert.match(code, /_ow_polars_fill_missing_directional\(df, 'revenue'/u);
   assert.match(code, /\{'column': 'order_id', 'direction': 'asc', 'nulls': 'last'\}/u);
   assert.match(code, /'forward', 1\)/u);
+  const codePreview = await waitForCodePreview(workbench, "import polars as pl");
+  await revealCodePreviewOperationLine(
+    codePreview,
+    "_ow_polars_fill_missing_directional(df, 'revenue', " +
+      "[{'column': 'order_id', 'direction': 'asc', 'nulls': 'last'}], 'forward', 1)",
+    "return df"
+  );
   const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   const refreshedApp = await exactSessionApp(target.frame, sessionId);
   assert.ok(refreshedApp, "The previous-value preview must retain the exact Open Wrangler renderer.");
-  const preview = testing.activeSession();
-  assert.ok(preview?.metadata.draftStep?.kind === "fillMissingValues");
   const previewGap = await testing.request({
     kind: "getPage",
     sessionId,
