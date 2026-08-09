@@ -7877,33 +7877,40 @@ async function releasedRSessionApp(
   sessionId: string,
   description: string
 ): Promise<Locator> {
-  let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   // Applied-step inspection is deliberately cleared when a renderer is
   // regenerated. Confirmed and draft states can be forced to a fresh
   // generation; an active inspection must render on the existing one.
   if (testing.activeSession()?.stepInspection === undefined) {
-    await requireFreshExactSessionPanelHydration(
+    return synchronizedSessionApp(
+      workbench,
       testing,
       sessionId,
       `${description} must render the current confirmed session state.`
     );
-    const receipt = testing.panelSynchronizationReceipt(sessionId);
-    assert.ok(receipt, `${description} must retain its renderer synchronization receipt before discovery.`);
-    // Synchronization may retire the generation that supplied the initial
-    // visible-grid receipt, so locate the renderer that acknowledged this
-    // exact host receipt before using it.
-    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId, receipt);
-    const app = await exactSessionApp(target.frame, sessionId, receipt.syncId);
-    assert.ok(app, `${description} requires its exact synchronized Open Wrangler renderer.`);
-    assert.equal(
-      sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId)),
-      true,
-      `${description} must retain the same renderer synchronization receipt through acquisition.`
-    );
-    return app;
   }
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, `${description} requires its exact Open Wrangler renderer.`);
+  return app;
+}
+
+async function synchronizedSessionApp(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  expectation: string
+): Promise<Locator> {
+  await requireFreshExactSessionPanelHydration(testing, sessionId, expectation);
+  const receipt = testing.panelSynchronizationReceipt(sessionId);
+  assert.ok(receipt, `${expectation} The host must retain its acknowledged renderer receipt.`);
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId, receipt);
+  const app = await exactSessionApp(target.frame, sessionId, receipt.syncId);
+  assert.ok(app, `${expectation} The acknowledged renderer must expose the exact Open Wrangler session.`);
+  assert.equal(
+    sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId)),
+    true,
+    `${expectation} The renderer receipt must remain unchanged through acquisition.`
+  );
   return app;
 }
 
@@ -14105,15 +14112,29 @@ async function exercisePackagedFirstUseInteractionJourney(
   fixture: vscode.Uri,
   sourceBytes: Uint8Array
 ): Promise<void> {
-  let frame = (await waitForOpenWranglerGridTarget(workbench, testing, sessionId)).frame;
-  let app = await exactSessionApp(frame, sessionId);
-  assert.ok(app, "The first-use journey requires the exact active Open Wrangler application.");
+  let app = await synchronizedSessionApp(
+    workbench,
+    testing,
+    sessionId,
+    "The first-use journey must start from the renderer that acknowledged the current session."
+  );
   const rediscoverApp = async (phase: string): Promise<Locator> => {
-    const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-    frame = target.frame;
-    const current = await exactSessionApp(target.frame, sessionId);
-    assert.ok(current, `${phase} requires the exact visible Open Wrangler renderer for the active session.`);
-    return current;
+    return synchronizedSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      `${phase} requires the renderer that acknowledged the current session.`
+    );
+  };
+  const openSidePanel = async (
+    view?: "Column profiles" | "Filters / Sorts"
+  ): Promise<{ readonly drawer: Locator; readonly toggle: Locator }> => {
+    const toggle = app.getByRole("button", { name: "Column profiles and filters" });
+    const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+    await drawer.waitFor({ state: "visible", timeout: 10_000 });
+    if (view) await drawer.getByRole("tab", { name: view, exact: true }).click();
+    return { drawer, toggle };
   };
   assert.equal(
     await app.getByRole("group", { name: "Cleaning plan" }).count(),
@@ -14123,7 +14144,7 @@ async function exercisePackagedFirstUseInteractionJourney(
   await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
 
   recordAcceptanceProgress("platform-smoke:column-search");
-  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  let columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   await columnSearch.fill("revenue");
   const revenueOption = app.getByRole("option", { name: "revenue, Number column", exact: true });
   await revenueOption.waitFor({ state: "visible", timeout: 10_000 });
@@ -14135,12 +14156,11 @@ async function exercisePackagedFirstUseInteractionJourney(
     10_000,
     "column search to navigate to the selected numeric column"
   );
+  app = await rediscoverApp("Revenue column navigation");
+  columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
 
   recordAcceptanceProgress("platform-smoke:insights");
-  const insightsToggle = app.getByRole("button", { name: "Column profiles and filters" });
-  await insightsToggle.click();
-  const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
-  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  let { drawer, toggle: insightsToggle } = await openSidePanel("Column profiles");
   await drawer.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await waitForLocatorText(
     drawer,
@@ -14178,6 +14198,9 @@ async function exercisePackagedFirstUseInteractionJourney(
     10_000,
     "column search to navigate to the realistic text column"
   );
+  app = await rediscoverApp("Account-note column navigation");
+  columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  ({ drawer, toggle: insightsToggle } = await openSidePanel("Column profiles"));
   await drawer.getByRole("heading", { name: "account_note", exact: true }).waitFor({
     state: "visible",
     timeout: 10_000
@@ -14255,8 +14278,8 @@ async function exercisePackagedFirstUseInteractionJourney(
   );
 
   recordAcceptanceProgress("platform-smoke:filter");
-  await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
-  const filterPanel = drawer.locator(".filterSortPanel").first();
+  ({ drawer, toggle: insightsToggle } = await openSidePanel("Filters / Sorts"));
+  let filterPanel = drawer.locator(".filterSortPanel").first();
   await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
   await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "revenue" });
   await filterPanel.getByLabel("Predicate operator").selectOption("gte");
@@ -14275,11 +14298,8 @@ async function exercisePackagedFirstUseInteractionJourney(
     30_000,
     "the realistic numeric filter to update the visible dataframe"
   );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The filtered host state must be acknowledged by its exact renderer before visible values are inspected."
-  );
+  app = await rediscoverApp("Filtered host state validation");
+  columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
   // Text profiling intentionally navigated to the far-right account_note
   // column. Return to revenue before inspecting its virtualized grid cell;
   // off-screen columns are correctly absent from the DOM.
@@ -14294,12 +14314,12 @@ async function exercisePackagedFirstUseInteractionJourney(
     10_000,
     "column search to return to the filtered numeric column"
   );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The revenue navigation must be acknowledged before its virtualized cell is inspected."
-  );
-  const visibleRevenueCell = frame.locator('td[data-grid-row="0"][data-grid-column="2"]').first();
+  app = await rediscoverApp("Filtered revenue navigation");
+  columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  ({ drawer, toggle: insightsToggle } = await openSidePanel("Filters / Sorts"));
+  filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
+  const visibleRevenueCell = app.locator('td[data-grid-row="0"][data-grid-column="2"]').first();
   await waitForLocatorText(
     visibleRevenueCell,
     (text) => {
@@ -14327,11 +14347,8 @@ async function exercisePackagedFirstUseInteractionJourney(
     30_000,
     "Clear all to restore the complete dataframe view"
   );
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The restored host view must be acknowledged by its exact renderer before the next operation."
-  );
+  app = await rediscoverApp("Restored unfiltered view");
+  ({ drawer, toggle: insightsToggle } = await openSidePanel("Filters / Sorts"));
   await drawer.getByRole("button", { name: "Close panel" }).click();
   await drawer.waitFor({ state: "hidden", timeout: 10_000 });
   assert.equal(
@@ -14380,17 +14397,11 @@ async function exercisePackagedFirstUseInteractionJourney(
   // rendered Code Preview webview above is the cross-editor source of truth;
   // rediscover the exact dataframe renderer afterwards to prove that opening
   // the panel did not replace or hide the custom editor.
-  app = await rediscoverApp("Code Preview reveal validation");
+  app = await rediscoverApp("Post-Code Preview renderer synchronization");
   await app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first().waitFor({
     state: "visible",
     timeout: 10_000
   });
-  await requireFreshExactSessionPanelHydration(
-    testing,
-    sessionId,
-    "The draft preview and final Code Preview layout must be acknowledged before the generated column is inspected."
-  );
-  app = await rediscoverApp("Post-Code Preview renderer synchronization");
   const discardedDraft = testing.activeSession();
   assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
   assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
