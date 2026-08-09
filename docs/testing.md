@@ -677,9 +677,12 @@ The R Markdown and Quarto fixtures each contain first-line YAML, prose, and top-
 read a relative CSV. The R Markdown parser fixture also contains a non-R cell and a disabled R cell. The journey opens
 the dataframe, checks its full schema and page, applies Rename, inserts generated R as a new fenced cell, and proves
 the source file on disk is unchanged.
-Parser tests reject later metadata blocks, raw HTML/TeX containers, indented or tilde R fences, alternate engines,
-ambiguous options, cross-cell syntax joining, and R Markdown fence-length mismatches. Open Wrangler still evaluates
-these cells in its own managed R process; Quarto rendering is a separate editor action.
+Parser tests cover horizontal rules, display math, closed raw-TeX blocks, numeric labels, nested option calls, and
+disabled external chunk references. They reject R-looking fences inside opaque containers, indented or tilde R
+fences, enabled alternate engines or external references (including Quarto's hyphenated option keys), malformed options, cross-cell syntax joining, and R
+Markdown fence-length mismatches. Raw-string chunk options and special infix operators in options are rejected instead
+of being partially parsed. Open Wrangler
+still evaluates these cells in its own managed R process; Quarto rendering is a separate editor action.
 
 On Linux x64, the same isolated editor profile installs exact official releases of R Syntax 0.1.4, R 2.8.8, and
 Quarto 1.135.0. The runner downloads each VSIX from the Visual Studio Marketplace and Quarto CLI 1.10.18 from its

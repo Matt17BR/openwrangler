@@ -32,8 +32,10 @@ different active editor after an await. The document must remain the sole open o
 discovery and selection. Plain `.R` text is one source unit. R Markdown and Quarto use only top-level
 backtick-fenced `{r}` cells from a first-line-YAML document. Every cell is parsed separately before any cell runs,
 then the parsed cells share one private R environment in document order. This is an isolated lexical R-cell run, not
-a knitr/Quarto render or an attachment to a terminal or editor extension. Syntax that can change code ownership,
-including alternate chunk engines, indented cells, later metadata blocks, and raw HTML/TeX containers, is rejected.
+a knitr/Quarto render or an attachment to a terminal or editor extension. Safe prose, horizontal rules, display math,
+and closed raw-TeX blocks are ignored. Enabled cells reject syntax that can replace their code, including alternate
+engines and external chunk references. A syntactically valid cell with literal `eval=FALSE` is skipped instead.
+Indented cells, raw-string chunk options, and R-looking fences inside an opaque Markdown container remain errors.
 
 The active-R path is separate from document execution. It activates the official R extension, captures one exact `R`
 or `R Interactive` terminal, and uses VS Code's public terminal API to load the bundled dispatcher into that session.

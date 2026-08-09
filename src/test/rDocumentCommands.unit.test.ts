@@ -307,6 +307,24 @@ describe("R document command", () => {
     );
   });
 
+  it("quietly ignores a Quarto document without R cells", async () => {
+    const document = rDocument(
+      "/workspace/analysis/orders.qmd",
+      "---\ntitle: Orders\nformat: html\n---\n\n```{python}\norders = [1, 2, 3]\n```\n"
+    );
+    mocks.textDocuments.push(document);
+    mocks.openTextDocument.mockResolvedValue(document);
+    register(coordinatorMock());
+
+    await expect(command()(vscode.Uri.file("/workspace/analysis/orders.qmd"))).resolves.toBe(false);
+
+    expect(mocks.transportOptions).toHaveLength(0);
+    expect(mocks.discovery).not.toHaveBeenCalled();
+    expect(mocks.showInformationMessage).not.toHaveBeenCalled();
+    expect(mocks.showWarningMessage).not.toHaveBeenCalled();
+    expect(mocks.showErrorMessage).not.toHaveBeenCalled();
+  });
+
   it("does not execute an R file in an untrusted workspace", async () => {
     mocks.trusted = false;
     const coordinator = coordinatorMock();
