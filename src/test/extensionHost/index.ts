@@ -13731,19 +13731,16 @@ async function exactSessionApp(
   expectedSessionId: string,
   expectedRendererSynchronizationId?: string
 ): Promise<Locator | undefined> {
-  const apps = frame.locator("main.app[data-session-id]");
-  const count = await apps.count();
-  for (let index = 0; index < count; index += 1) {
-    const app = apps.nth(index);
-    if (
-      (await app.getAttribute("data-session-id")) === expectedSessionId &&
-      (expectedRendererSynchronizationId === undefined ||
-        (await app.getAttribute("data-renderer-sync-id")) === expectedRendererSynchronizationId)
-    ) {
-      return app;
-    }
+  assert.match(expectedSessionId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
+  if (expectedRendererSynchronizationId !== undefined) {
+    assert.match(expectedRendererSynchronizationId, /^[A-Za-z0-9]{32}$/u);
   }
-  return undefined;
+  const synchronizationSelector =
+    expectedRendererSynchronizationId === undefined
+      ? ""
+      : `[data-renderer-sync-id="${expectedRendererSynchronizationId}"]`;
+  const app = frame.locator(`main.app[data-session-id="${expectedSessionId}"]${synchronizationSelector}`);
+  return (await app.count()) === 1 ? app : undefined;
 }
 
 function sameRendererSynchronizationReceipt(
@@ -14129,11 +14126,20 @@ async function exercisePackagedFirstUseInteractionJourney(
   const openSidePanel = async (
     view?: "Column profiles" | "Filters / Sorts"
   ): Promise<{ readonly drawer: Locator; readonly toggle: Locator }> => {
-    const toggle = app.getByRole("button", { name: "Column profiles and filters" });
+    let toggle = app.getByRole("button", { name: "Column profiles and filters" });
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+      await toggle.click();
+      app = await rediscoverApp(`${view ?? "Insights"} panel opening`);
+      toggle = app.locator('button[aria-controls="openwrangler-insights-panel"][aria-expanded="true"]');
+      await toggle.waitFor({ state: "visible", timeout: 10_000 });
+    }
     const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
-    if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
     await drawer.waitFor({ state: "visible", timeout: 10_000 });
-    if (view) await drawer.getByRole("tab", { name: view, exact: true }).click();
+    if (view) {
+      const tab = drawer.getByRole("tab", { name: view, exact: true });
+      await tab.waitFor({ state: "visible", timeout: 10_000 });
+      if ((await tab.getAttribute("aria-selected")) !== "true") await tab.click();
+    }
     return { drawer, toggle };
   };
   assert.equal(
