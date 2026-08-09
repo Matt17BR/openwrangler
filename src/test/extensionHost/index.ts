@@ -1999,11 +1999,58 @@ async function assertReleasedRRuntimeBinding(
   assert.equal(result.mediaSourceUnchanged, true, `The R media data.frame changed during ${checkpoint}.`);
 }
 
+type ReleasedRAcceptanceCoverageProfile = Readonly<{
+  name: "comprehensive" | "cursor-representative";
+  gridPaging: "all-blocks" | "single-round-trip";
+  editing: "all-operations" | "rename-lifecycle";
+  documents: "plain-and-literate" | "plain-only";
+  openCollapseSessions: boolean;
+  openNativeFramesInViewingMode: boolean;
+  nativeFrameEditing: "rename-and-drop" | "one-operation-per-flavor";
+}>;
+
+const RELEASED_R_COMPREHENSIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
+  name: "comprehensive",
+  gridPaging: "all-blocks",
+  editing: "all-operations",
+  documents: "plain-and-literate",
+  openCollapseSessions: true,
+  openNativeFramesInViewingMode: true,
+  nativeFrameEditing: "rename-and-drop"
+});
+
+const RELEASED_R_CURSOR_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
+  name: "cursor-representative",
+  gridPaging: "single-round-trip",
+  editing: "rename-lifecycle",
+  documents: "plain-only",
+  openCollapseSessions: false,
+  openNativeFramesInViewingMode: false,
+  nativeFrameEditing: "one-operation-per-flavor"
+});
+
+function releasedRAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
+  return process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor"
+    ? RELEASED_R_CURSOR_COVERAGE
+    : RELEASED_R_COMPREHENSIVE_COVERAGE;
+}
+
+function recordReleasedRAcceptanceSection(
+  phase: "jupyter-r" | "jupyter-r-remote",
+  coverage: ReleasedRAcceptanceCoverageProfile,
+  section: string,
+  boundary: "start" | "complete"
+): void {
+  recordAcceptanceProgress(`${phase}:coverage:${coverage.name}:${section}:${boundary}`);
+}
+
 async function exerciseReleasedRJupyterExtension(
   testing: TestApi,
   extension: vscode.Extension<ExtensionApi>,
   phase: "jupyter-r" | "jupyter-r-remote"
 ): Promise<void> {
+  const coverage = releasedRAcceptanceCoverageProfile();
+  recordReleasedRAcceptanceSection(phase, coverage, "notebook", "start");
   assert.equal(testing.diagnostics().sessionCount, 0);
   const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
   assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
@@ -2053,6 +2100,8 @@ async function exerciseReleasedRJupyterExtension(
       assert.equal(setup.hostname, kernelTarget.remote.hostname);
     }
 
+    recordReleasedRAcceptanceSection(phase, coverage, "variable-discovery", "start");
+
     const actionNotebookEditor = await showExactReleasedNotebook(notebook);
     assert.equal(
       actionNotebookEditor,
@@ -2098,6 +2147,7 @@ async function exerciseReleasedRJupyterExtension(
     } finally {
       await restorePickerWorkbench?.();
     }
+    recordReleasedRAcceptanceSection(phase, coverage, "variable-discovery", "complete");
 
     let base = await waitForReleasedVariableSession(
       workbench,
@@ -2164,9 +2214,17 @@ async function exerciseReleasedRJupyterExtension(
       await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
 
       if (supportsRDocumentExecution(process.platform)) {
-        await exerciseReleasedRDocumentJourney(testing, workbench, directory, screenshotOutput);
+        recordReleasedRAcceptanceSection(phase, coverage, "document", "start");
+        await exerciseReleasedRDocumentJourney(
+          testing,
+          workbench,
+          directory,
+          coverage.documents === "plain-and-literate",
+          screenshotOutput
+        );
         ranRDocumentJourney = true;
         assert.equal(testing.diagnostics().sessionCount, 0, "The R document journey must release its processes.");
+        recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
       }
 
       await showExactReleasedNotebook(notebook);
@@ -2187,7 +2245,9 @@ async function exerciseReleasedRJupyterExtension(
       );
       await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page-after-media`);
     }
-    await exerciseReleasedRGridJourney(testing, workbench, base.sessionId);
+    recordReleasedRAcceptanceSection(phase, coverage, "grid", "start");
+    await exerciseReleasedRGridJourney(testing, workbench, base.sessionId, coverage.gridPaging);
+    recordReleasedRAcceptanceSection(phase, coverage, "grid", "complete");
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-filter-journey`);
     const viewingStateBeforeEditing = testing.activeSession()?.viewState;
     assert.ok(viewingStateBeforeEditing, "The R mode switch requires the confirmed Viewing-mode presentation.");
@@ -2251,16 +2311,22 @@ async function exerciseReleasedRJupyterExtension(
       .getByRole("complementary", { name: "Column profiles and filters", exact: true })
       .getByRole("button", { name: "Close panel" })
       .click();
-    await exerciseReleasedREditingJourney(
-      testing,
-      workbench,
-      base.sessionId,
-      notebook,
-      notebookPath,
-      directory,
-      phase,
-      screenshotOutput
-    );
+    recordReleasedRAcceptanceSection(phase, coverage, "editing", "start");
+    if (coverage.editing === "all-operations") {
+      await exerciseReleasedREditingJourney(
+        testing,
+        workbench,
+        base.sessionId,
+        notebook,
+        notebookPath,
+        directory,
+        phase,
+        screenshotOutput
+      );
+    } else {
+      await exerciseReleasedRRepresentativeEditingJourney(testing, workbench, base.sessionId, phase);
+    }
+    recordReleasedRAcceptanceSection(phase, coverage, "editing", "complete");
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-editing-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the editable orders R data.frame session");
 
@@ -2293,24 +2359,36 @@ async function exerciseReleasedRJupyterExtension(
         notebookInsert: true
       }
     ] as const;
-    for (const expected of collapseFrames) {
-      await showExactReleasedNotebook(notebook);
-      await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
-      const session = await waitForReleasedVariableSession(
-        workbench,
-        testing,
-        notebook,
-        expected,
-        `the collapse::${expected.factory}() session`
-      );
-      assert.deepEqual(session.metadata.shape, { rows: 1_205, columns: 25 });
-      await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
-      await disposePackagedSessionPanel(testing, session.sessionId, `the collapse::${expected.factory}() session`);
+    if (coverage.openCollapseSessions) {
+      recordReleasedRAcceptanceSection(phase, coverage, "collapse-open", "start");
+      for (const expected of collapseFrames) {
+        await showExactReleasedNotebook(notebook);
+        await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+        const session = await waitForReleasedVariableSession(
+          workbench,
+          testing,
+          notebook,
+          expected,
+          `the collapse::${expected.factory}() session`
+        );
+        assert.deepEqual(session.metadata.shape, { rows: 1_205, columns: 25 });
+        await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
+        await disposePackagedSessionPanel(testing, session.sessionId, `the collapse::${expected.factory}() session`);
+      }
+      recordReleasedRAcceptanceSection(phase, coverage, "collapse-open", "complete");
     }
 
     if (phase === "jupyter-r" && supportsRDocumentExecution(process.platform) && !ranRDocumentJourney) {
-      await exerciseReleasedRDocumentJourney(testing, workbench, directory, screenshotOutput);
+      recordReleasedRAcceptanceSection(phase, coverage, "document", "start");
+      await exerciseReleasedRDocumentJourney(
+        testing,
+        workbench,
+        directory,
+        coverage.documents === "plain-and-literate",
+        screenshotOutput
+      );
       assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
+      recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
     }
 
     const additionalRFrames = [
@@ -2331,20 +2409,29 @@ async function exerciseReleasedRJupyterExtension(
         notebookInsert: true
       }
     ] as const;
-    for (const expected of additionalRFrames) {
-      await showExactReleasedNotebook(notebook);
-      await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
-      const session = await waitForReleasedVariableSession(
-        workbench,
-        testing,
-        notebook,
-        expected,
-        `the native ${expected.rDataframeFlavor} session`
-      );
-      await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
-      await disposePackagedSessionPanel(testing, session.sessionId, `the native ${expected.rDataframeFlavor} session`);
+    if (coverage.openNativeFramesInViewingMode) {
+      recordReleasedRAcceptanceSection(phase, coverage, "native-viewing", "start");
+      for (const expected of additionalRFrames) {
+        await showExactReleasedNotebook(notebook);
+        await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+        const session = await waitForReleasedVariableSession(
+          workbench,
+          testing,
+          notebook,
+          expected,
+          `the native ${expected.rDataframeFlavor} session`
+        );
+        await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
+        await disposePackagedSessionPanel(
+          testing,
+          session.sessionId,
+          `the native ${expected.rDataframeFlavor} session`
+        );
+      }
+      recordReleasedRAcceptanceSection(phase, coverage, "native-viewing", "complete");
     }
 
+    recordReleasedRAcceptanceSection(phase, coverage, "native-editing", "start");
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     for (const expected of additionalRFrames) {
       await showExactReleasedNotebook(notebook);
@@ -2361,64 +2448,71 @@ async function exerciseReleasedRJupyterExtension(
       recordAcceptanceProgress(`${phase}:${expected.name}:editing-session-received`);
       let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
       recordAcceptanceProgress(`${phase}:${expected.name}:editing-renderer-ready`);
-      const previewed = await previewReleasedRRename(
-        testing,
-        workbench,
-        app,
-        session.sessionId,
-        "row_id",
-        "record_id",
-        undefined,
-        expected.name
-      );
-      app = previewed.app;
-      assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
-      await app
-        .getByRole("region", { name: "Draft review" })
-        .getByRole("button", { name: "Discard", exact: true })
-        .click();
-      await waitFor(
-        () => {
-          const active = testing.activeSession();
-          return (
-            active?.sessionId === session.sessionId &&
-            active.metadata.draftStep === undefined &&
-            active.metadata.steps.length === 0 &&
-            active.metadata.schema[0]?.name === "row_id"
-          );
-        },
-        30_000,
-        `discarding the native ${expected.rDataframeFlavor} rename preview`
-      );
-      app = await releasedRSessionApp(workbench, testing, session.sessionId, `the restored ${expected.name}`);
-      const droppedColumn = expected.rDataframeFlavor === "r.data.table" ? "row_id" : "label";
-      const dropPreview = await previewReleasedRDrop(
-        testing,
-        workbench,
-        session.sessionId,
-        droppedColumn,
-        expected.name
-      );
-      app = dropPreview.app;
-      assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
-      await app
-        .getByRole("region", { name: "Draft review" })
-        .getByRole("button", { name: "Discard", exact: true })
-        .click();
-      await waitFor(
-        () => {
-          const active = testing.activeSession();
-          return (
-            active?.sessionId === session.sessionId &&
-            active.metadata.draftStep === undefined &&
-            active.metadata.steps.length === 0 &&
-            active.metadata.schema.some((column) => column.name === droppedColumn)
-          );
-        },
-        30_000,
-        `discarding the native ${expected.rDataframeFlavor} Drop Columns preview`
-      );
-      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:after-rename-discard`);
+      const checkRename = coverage.nativeFrameEditing === "rename-and-drop" || expected.rDataframeFlavor === "r.tibble";
+      if (checkRename) {
+        const previewed = await previewReleasedRRename(
+          testing,
+          workbench,
+          app,
+          session.sessionId,
+          "row_id",
+          "record_id",
+          undefined,
+          expected.name
+        );
+        app = previewed.app;
+        assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
+        await app
+          .getByRole("region", { name: "Draft review" })
+          .getByRole("button", { name: "Discard", exact: true })
+          .click();
+        await waitFor(
+          () => {
+            const active = testing.activeSession();
+            return (
+              active?.sessionId === session.sessionId &&
+              active.metadata.draftStep === undefined &&
+              active.metadata.steps.length === 0 &&
+              active.metadata.schema[0]?.name === "row_id"
+            );
+          },
+          30_000,
+          `discarding the native ${expected.rDataframeFlavor} rename preview`
+        );
+      }
+      const checkDrop =
+        coverage.nativeFrameEditing === "rename-and-drop" || expected.rDataframeFlavor === "r.data.table";
+      if (checkDrop) {
+        app = await releasedRSessionApp(workbench, testing, session.sessionId, `the restored ${expected.name}`);
+        const droppedColumn = expected.rDataframeFlavor === "r.data.table" ? "row_id" : "label";
+        const dropPreview = await previewReleasedRDrop(
+          testing,
+          workbench,
+          session.sessionId,
+          droppedColumn,
+          expected.name
+        );
+        app = dropPreview.app;
+        assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
+        await app
+          .getByRole("region", { name: "Draft review" })
+          .getByRole("button", { name: "Discard", exact: true })
+          .click();
+        await waitFor(
+          () => {
+            const active = testing.activeSession();
+            return (
+              active?.sessionId === session.sessionId &&
+              active.metadata.draftStep === undefined &&
+              active.metadata.steps.length === 0 &&
+              active.metadata.schema.some((column) => column.name === droppedColumn)
+            );
+          },
+          30_000,
+          `discarding the native ${expected.rDataframeFlavor} Drop Columns preview`
+        );
+      }
+      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:after-native-edit`);
       await disposePackagedSessionPanel(
         testing,
         session.sessionId,
@@ -2426,7 +2520,9 @@ async function exerciseReleasedRJupyterExtension(
       );
     }
     await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
+    recordReleasedRAcceptanceSection(phase, coverage, "native-editing", "complete");
 
+    recordReleasedRAcceptanceSection(phase, coverage, "restart", "start");
     await showExactReleasedNotebook(notebook);
     await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
     const beforeRestart = await waitForReleasedVariableSession(
@@ -2501,6 +2597,7 @@ async function exerciseReleasedRJupyterExtension(
     assert.equal(testing.diagnostics().sessionCount, 0);
     const cleanupEditor = await showExactReleasedNotebook(notebook);
     await waitForReleasedRRuntimeBindingCleanup(notebook, cleanupEditor, phase);
+    recordReleasedRAcceptanceSection(phase, coverage, "restart", "complete");
   } catch (error) {
     acceptanceError = { value: error };
   } finally {
@@ -2531,6 +2628,7 @@ async function exerciseReleasedRJupyterExtension(
     }
   }
   if (acceptanceError) throw acceptanceError.value;
+  recordReleasedRAcceptanceSection(phase, coverage, "notebook", "complete");
   if (phase === "jupyter-r") {
     assert.equal(
       await assertReleasedNativeREditorTooling(),
@@ -2866,6 +2964,7 @@ async function exerciseReleasedRDocumentJourney(
   testing: TestApi,
   workbench: Page,
   directory: string,
+  includeLiterateDocuments: boolean,
   screenshotOutput?: string
 ): Promise<void> {
   recordAcceptanceProgress("jupyter-r:document:create");
@@ -3220,7 +3319,9 @@ async function exerciseReleasedRDocumentJourney(
       }
     }
   }
-  await exerciseReleasedRLiterateDocumentJourneys(testing, workbench, directory, screenshotOutput);
+  if (includeLiterateDocuments) {
+    await exerciseReleasedRLiterateDocumentJourneys(testing, workbench, directory, screenshotOutput);
+  }
 }
 
 async function exerciseReleasedRLiterateDocumentJourneys(
@@ -4142,7 +4243,12 @@ function textDocumentTab(uri: vscode.Uri): vscode.Tab | undefined {
     .find((tab) => tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString());
 }
 
-async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+async function exerciseReleasedRGridJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  paging: ReleasedRAcceptanceCoverageProfile["gridPaging"]
+): Promise<void> {
   let app = await releasedRSessionApp(
     workbench,
     testing,
@@ -4400,33 +4506,50 @@ async function exerciseReleasedRGridJourney(testing: TestApi, workbench: Page, s
   }
 
   const next = app.getByRole("button", { name: "Next block", exact: true });
-  for (const expected of [
-    "Rows 201–400 of 1,205",
-    "Rows 401–600 of 1,205",
-    "Rows 601–800 of 1,205",
-    "Rows 801–1,000 of 1,205",
-    "Rows 1,001–1,200 of 1,205",
-    "Rows 1,201–1,205 of 1,205"
-  ]) {
-    await next.click();
-    await waitForLocatorText(visibleRows, (text) => text.trim() === expected, 10_000, expected);
-  }
-  assert.equal(await next.isDisabled(), true);
+  if (paging === "all-blocks") {
+    for (const expected of [
+      "Rows 201–400 of 1,205",
+      "Rows 401–600 of 1,205",
+      "Rows 601–800 of 1,205",
+      "Rows 801–1,000 of 1,205",
+      "Rows 1,001–1,200 of 1,205",
+      "Rows 1,201–1,205 of 1,205"
+    ]) {
+      await next.click();
+      await waitForLocatorText(visibleRows, (text) => text.trim() === expected, 10_000, expected);
+    }
+    assert.equal(await next.isDisabled(), true);
 
-  await columnSearch.fill("extra_20");
-  await app
-    .getByRole("option", { name: /^extra_20,/u })
-    .first()
-    .waitFor({ state: "visible", timeout: 10_000 });
-  await columnSearch.press("Enter");
-  const finalColumn = app.locator('th[data-column="extra_20"]');
-  await finalColumn.waitFor({ state: "visible", timeout: 10_000 });
-  const finalColumnIndex = testing.activeSession()?.metadata.schema.findIndex((column) => column.name === "extra_20");
-  assert.ok(finalColumnIndex !== undefined && finalColumnIndex >= 0, "The complete R schema must retain extra_20.");
-  await app
-    .locator(`td[data-grid-row="1204"][data-grid-column="${finalColumnIndex}"]`)
-    .filter({ hasText: "value-20-1205" })
-    .waitFor({ state: "visible", timeout: 10_000 });
+    await columnSearch.fill("extra_20");
+    await app
+      .getByRole("option", { name: /^extra_20,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await columnSearch.press("Enter");
+    const finalColumn = app.locator('th[data-column="extra_20"]');
+    await finalColumn.waitFor({ state: "visible", timeout: 10_000 });
+    const finalColumnIndex = testing.activeSession()?.metadata.schema.findIndex((column) => column.name === "extra_20");
+    assert.ok(finalColumnIndex !== undefined && finalColumnIndex >= 0, "The complete R schema must retain extra_20.");
+    await app
+      .locator(`td[data-grid-row="1204"][data-grid-column="${finalColumnIndex}"]`)
+      .filter({ hasText: "value-20-1205" })
+      .waitFor({ state: "visible", timeout: 10_000 });
+  } else {
+    await next.click();
+    await waitForLocatorText(
+      visibleRows,
+      (text) => text.trim() === "Rows 201–400 of 1,205",
+      10_000,
+      "the representative second R block"
+    );
+    await app.getByRole("button", { name: "Previous block", exact: true }).click();
+    await waitForLocatorText(
+      visibleRows,
+      (text) => text.trim() === "Rows 1–200 of 1,205",
+      10_000,
+      "the representative restored R block"
+    );
+  }
 
   await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
   await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
@@ -5391,6 +5514,139 @@ async function releasedRFirstVisibleRow(
   const row = response.page.rows[0];
   assert.ok(row, "The native R first-row request must return one row.");
   return row;
+}
+
+async function exerciseReleasedRRepresentativeEditingJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  phase: "jupyter-r" | "jupyter-r-remote"
+): Promise<void> {
+  recordAcceptanceProgress(`${phase}:editing:representative:open`);
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The representative editable R renderer must acknowledge its first complete host snapshot."
+  );
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the representative editable R session");
+  const opened = testing.activeSession();
+  assert.ok(opened, "The representative R editing journey requires one active session.");
+  assert.equal(opened.sessionId, sessionId);
+  assert.equal(opened.metadata.backend, "r");
+  assert.equal(opened.metadata.rDataframeFlavor, "r.data.frame");
+  assert.equal(opened.metadata.mode, "editing");
+  assert.equal(opened.metadata.capabilities.editable, true);
+  assert.deepEqual(opened.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
+
+  recordAcceptanceProgress(`${phase}:editing:representative:preview-discard`);
+  const discarded = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
+  app = discarded.app;
+  const discardedReview = app.getByRole("region", { name: "Draft review" });
+  await discardedReview.getByText("Rename column", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await discardedReview
+    .locator('[aria-label="Data diff summary"]')
+    .getByText("No value changes in this block", { exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  assertReleasedRGeneratedCode(testing.activeSession()?.code ?? "", "record_id");
+  await discardedReview.getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.schema[0]?.name === "row_id" &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "discarding the representative native R rename preview"
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:representative:preview-apply`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the representative R session after discard");
+  const previewed = await previewReleasedRRename(testing, workbench, app, sessionId, "row_id", "record_id");
+  app = previewed.app;
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const step = active?.metadata.steps[0];
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        step?.kind === "renameColumn" &&
+        step.id === previewed.stepId &&
+        step.params.column.name === "row_id" &&
+        step.params.newName === "record_id" &&
+        active.metadata.schema[0]?.name === "record_id"
+      );
+    },
+    30_000,
+    "applying the representative native R rename"
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The representative applied R rename must be acknowledged before inspection."
+  );
+  assertReleasedRGeneratedCode(testing.activeSession()?.code ?? "", "record_id");
+
+  recordAcceptanceProgress(`${phase}:editing:representative:inspect`);
+  await vscode.commands.executeCommand("openWrangler.selectStep", previewed.stepId);
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === previewed.stepId,
+    30_000,
+    "the representative applied native R rename inspection"
+  );
+  const inspection = testing.activeSession()?.stepInspection;
+  assert.ok(inspection, "The representative R rename must publish its inspection.");
+  assert.deepEqual(inspection.diff, {
+    addedRows: 0,
+    removedRows: 0,
+    addedColumns: [],
+    removedColumns: [],
+    changedCells: 0,
+    cells: [],
+    truncated: false
+  });
+  assertReleasedRGeneratedCode(inspection.code, "record_id");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the representative inspected R rename");
+  await app
+    .getByRole("region", { name: "Selected applied-step inspection" })
+    .getByRole("button", { name: "Show confirmed data", exact: true })
+    .click();
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "returning from the representative native R rename inspection"
+  );
+
+  recordAcceptanceProgress(`${phase}:editing:representative:undo`);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the representative R rename before undo");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema[0]?.name === "row_id" &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing the representative native R rename"
+  );
+  const restored = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-representative-rename-restored`);
+  assert.equal(restored.values[0]?.display, "1");
+  recordAcceptanceProgress(`${phase}:editing:representative:complete`);
 }
 
 async function exerciseReleasedREditingJourney(
