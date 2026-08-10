@@ -41,6 +41,7 @@ import { canEditLatestStep, canStartOperation, operationByKind, supportsOperatio
 import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
 import { SummaryPanel, summaryPanelId, summaryTabId, type SummaryPanelView } from "./summary/SummaryPanel";
+import type { ProfileValueMode } from "./profileValueMode";
 import { OperationBuilder } from "./operations/OperationBuilder";
 import { ColumnSearch } from "./ColumnSearch";
 import { vscode } from "./vscodeApi";
@@ -73,6 +74,7 @@ export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
   const [page, setPage] = useState<LiveGridPage | undefined>();
   const [summaries, setSummaries] = useState<ColumnSummary[]>([]);
+  const [profileValueMode, setProfileValueMode] = useState<ProfileValueMode>("count");
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
   const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
   const [foregroundError, setForegroundError] = useState<string | undefined>();
@@ -2764,6 +2766,7 @@ export function App() {
                 metadata={displayMetadata}
                 page={displayPage}
                 summaries={inspectionMode ? [] : summaries}
+                profileValueMode={profileValueMode}
                 onPage={(offset) => {
                   const stepId = stepInspectionTarget?.stepId;
                   if (stepId) requestStepInspection(stepId, offset, inspectionColumnWindow.current, "row");
@@ -2900,7 +2903,19 @@ export function App() {
                 filtersDisabled={mutationPending || importOptionsPending}
                 filtersLabel={filterPanelLabel}
                 filterModel={filterModel}
+                profileValueMode={profileValueMode}
                 onSelectView={selectSummaryPanelView}
+                onProfileValueModeChange={setProfileValueMode}
+                onShowMoreValues={
+                  filterSupported && columnValuesSupported && !mutationPending && !importOptionsPending
+                    ? (column) => {
+                        setFilterColumn(column);
+                        summaryPanelViewRef.current = "filters";
+                        setSummaryPanelView("filters");
+                        requestValues(column);
+                      }
+                    : undefined
+                }
                 onApplyFilterModel={applyFilters}
               />
               {summaryPanelView === "filters" && (

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { NumericVisualization } from "../../shared/protocol";
+import { formatProfilePercent, type ProfileValueMode } from "../profileValueMode";
 
 interface NumericHistogramProps {
   visualization: NumericVisualization;
   compact?: boolean;
-  valueMode?: "count" | "percent";
+  valueMode?: ProfileValueMode;
   percentDenominator?: number;
   onSelectBin?(bin: NumericVisualization["bins"][number], index: number): void;
 }
@@ -259,19 +260,14 @@ function compactHistogramBinLabel(
 function histogramBinLabel(
   bin: NumericVisualization["bins"][number],
   denominator: number,
-  valueMode: "count" | "percent",
+  valueMode: ProfileValueMode,
   upperInclusive: boolean
 ): string {
   const count = `${bin.count.toLocaleString()} ${bin.count === 1 ? "row" : "rows"}`;
-  const percent = formatDistributionPercent(bin.count, denominator);
+  const percent = formatProfilePercent(bin.count, denominator);
   const value = valueMode === "count" ? `${count} (${percent})` : `${percent} (${count})`;
   const boundary = upperInclusive ? "both bounds included" : "lower bound included, upper bound excluded";
   return `${formatHistogramValue(bin.min)}-${formatHistogramValue(bin.max)}: ${value}; ${boundary}`;
-}
-
-function formatDistributionPercent(count: number, denominator: number): string {
-  if (denominator <= 0) return "0%";
-  return new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 }).format(count / denominator);
 }
 
 function formatHistogramValue(value: number): string {

@@ -1889,6 +1889,19 @@ th.rowHeader {
   font-variant-numeric: tabular-nums;
 }
 
+.summaryMoreValues {
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  margin-top: 6px;
+  padding: 3px 4px;
+}
+
+.summaryMoreValues:hover,
+.summaryMoreValues:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+}
+
 .profileDistributionRow {
   background: transparent;
   border: 1px solid transparent;

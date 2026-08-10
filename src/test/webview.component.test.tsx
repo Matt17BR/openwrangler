@@ -869,6 +869,7 @@ describe("DataGrid", () => {
         pageSize={1}
         defaultColumnWidth={190}
         insightsOnOpen={true}
+        profileValueMode="count"
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
@@ -906,11 +907,11 @@ describe("DataGrid", () => {
     expect(within(numericHeader).getByRole("tooltip")).toHaveTextContent("2.5-4: 1 row");
     fireEvent.pointerLeave(distribution);
     expect(within(numericHeader).queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "boolean distribution: true 3, false 1." })).toHaveTextContent(
+    expect(screen.getByRole("img", { name: "boolean distribution: True: 3 (75%), False: 1 (25%)." })).toHaveTextContent(
       "True 3False 1"
     );
     const categoricalChart = screen.getByRole("img", {
-      name: /categorical distribution: alpha: 3, beta: 1/u
+      name: "categorical distribution: alpha: 3 (75%), beta: 1 (25%)."
     });
     expect(categoricalChart).toHaveTextContent("alpha3beta1");
     expect(within(categoricalChart).getByText("alpha")).toHaveAttribute("title", "alpha");
@@ -972,6 +973,7 @@ describe("DataGrid", () => {
         pageSize={2}
         defaultColumnWidth={190}
         insightsOnOpen={true}
+        profileValueMode="count"
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onApplyProfileFilter={onApplyProfileFilter}
@@ -982,7 +984,7 @@ describe("DataGrid", () => {
     );
     onViewStateChange.mockClear();
 
-    fireEvent.click(screen.getByRole("button", { name: "Filter city to Milan; 1 row" }));
+    fireEvent.click(screen.getByRole("button", { name: "Filter city to Milan; Milan: 1 (50%)" }));
     expect(onApplyProfileFilter).toHaveBeenLastCalledWith({
       column: "city",
       type: "string",

@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ColumnSchema, ColumnSummary, SessionMetadata, ValueCount } from "../../shared/protocol";
 import { formatSessionRowCount } from "../../shared/protocol";
@@ -14,6 +13,13 @@ import {
 } from "../../shared/filterModel";
 import { formatNumericSummaryNumber, numericExtremumDisplay } from "../numericSummary";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
+import {
+  describeProfileValue,
+  formatProfilePercent,
+  formatProfileValue,
+  profileDistributionDenominator,
+  type ProfileValueMode
+} from "../profileValueMode";
 
 export type SummaryPanelView = "column" | "dataset" | "filters";
 
@@ -29,7 +35,10 @@ interface SummaryPanelProps {
   filtersDisabled?: boolean;
   filtersLabel?: string;
   filterModel?: FilterModel;
+  profileValueMode?: ProfileValueMode;
   onSelectView(view: SummaryPanelView): void;
+  onProfileValueModeChange?(mode: ProfileValueMode): void;
+  onShowMoreValues?(column: string): void;
   onApplyFilterModel?(model: FilterModel): void;
 }
 
@@ -48,7 +57,10 @@ export function SummaryPanel({
   filtersDisabled = false,
   filtersLabel = "Filters",
   filterModel,
+  profileValueMode = "count",
   onSelectView,
+  onProfileValueModeChange,
+  onShowMoreValues,
   onApplyFilterModel
 }: SummaryPanelProps) {
   const resolvedColumnId =
@@ -100,6 +112,9 @@ export function SummaryPanel({
             filterModel={filterModel ?? metadata?.filterModel ?? { filters: [], sort: [] }}
             filtersSupported={viewFiltersSupported}
             filtersDisabled={filtersDisabled}
+            profileValueMode={profileValueMode}
+            onProfileValueModeChange={onProfileValueModeChange}
+            onShowMoreValues={onShowMoreValues}
             onApplyFilterModel={onApplyFilterModel}
           />
         </div>
@@ -134,6 +149,9 @@ function SelectedColumnSummary({
   filterModel,
   filtersSupported,
   filtersDisabled,
+  profileValueMode,
+  onProfileValueModeChange,
+  onShowMoreValues,
   onApplyFilterModel
 }: {
   metadata: SessionMetadata | undefined;
@@ -142,9 +160,11 @@ function SelectedColumnSummary({
   filterModel: FilterModel;
   filtersSupported: boolean;
   filtersDisabled: boolean;
+  profileValueMode: ProfileValueMode;
+  onProfileValueModeChange?: (mode: ProfileValueMode) => void;
+  onShowMoreValues?: (column: string) => void;
   onApplyFilterModel?: (model: FilterModel) => void;
 }) {
-  const [distributionMode, setDistributionMode] = useState<"count" | "percent">("count");
   if (!metadata) {
     return (
       <p className="summaryPlaceholder" role="status">
@@ -177,12 +197,6 @@ function SelectedColumnSummary({
   };
   const distributionDenominator = summary ? profileDistributionDenominator(summary) : 0;
   const numericVisualization = summary?.visualization?.kind === "numeric" ? summary.visualization : undefined;
-  const hasDistribution = Boolean(
-    summary?.visualization?.kind === "numeric" ||
-    summary?.visualization?.kind === "categorical" ||
-    (summary?.type === "string" && summary.topValues.length > 0)
-  );
-
   return (
     <>
       <header className="summaryColumnHeader">
@@ -210,6 +224,13 @@ function SelectedColumnSummary({
         </div>
       )}
 
+      <DistributionValueToggle
+        mode={profileValueMode}
+        denominator={summary ? profileDistributionDenominator(summary) : undefined}
+        sampled={summary?.visualization?.sampled === true}
+        onChange={onProfileValueModeChange}
+      />
+
       {!summary ? (
         <p className="summaryPlaceholder" role="status" aria-live="polite">
           Profiling selected column...
@@ -229,33 +250,43 @@ function SelectedColumnSummary({
             <dt>Rows</dt>
             <dd>{summary.totalCount.toLocaleString()}</dd>
             <dt>Null</dt>
-            <dd>{summary.nullCount.toLocaleString()}</dd>
+            <ProfileCountValue
+              label="Null"
+              value={summary.nullCount}
+              denominator={summary.totalCount}
+              mode={profileValueMode}
+            />
             {(summary.type !== "string" || summary.nanCount > 0) && (
               <>
                 <dt>NaN</dt>
-                <dd>{summary.nanCount.toLocaleString()}</dd>
+                <ProfileCountValue
+                  label="NaN"
+                  value={summary.nanCount}
+                  denominator={summary.totalCount}
+                  mode={profileValueMode}
+                />
               </>
             )}
             <dt>Distinct</dt>
-            <dd>{summary.distinctCount?.toLocaleString() ?? "n/a"}</dd>
-            <TypeSpecificStats summary={summary} />
+            {summary.distinctCount === undefined ? (
+              <dd>n/a</dd>
+            ) : (
+              <ProfileCountValue
+                label="Distinct"
+                value={summary.distinctCount}
+                denominator={summary.totalCount}
+                mode={profileValueMode}
+              />
+            )}
+            <TypeSpecificStats summary={summary} mode={profileValueMode} />
           </dl>
-
-          {hasDistribution && (
-            <DistributionValueToggle
-              mode={distributionMode}
-              denominator={distributionDenominator}
-              sampled={summary.visualization?.sampled === true}
-              onChange={setDistributionMode}
-            />
-          )}
 
           {numericVisualization && (
             <section className="summaryDistributionChart" aria-labelledby={`summary-distribution-${summary.columnId}`}>
               <h3 id={`summary-distribution-${summary.columnId}`}>Distribution</h3>
               <NumericHistogram
                 visualization={numericVisualization}
-                valueMode={distributionMode}
+                valueMode={profileValueMode}
                 percentDenominator={distributionDenominator}
                 onSelectBin={
                   canFilter
@@ -271,8 +302,9 @@ function SelectedColumnSummary({
 
           <TopValues
             summary={summary}
-            mode={distributionMode}
+            mode={profileValueMode}
             denominator={distributionDenominator}
+            onShowMoreValues={onShowMoreValues ? () => onShowMoreValues(schema.name) : undefined}
             onSelectValue={
               canFilter
                 ? (item) => applyProfileFilter(viewValueSelectionFilter(schema, item.selectionValue ?? item.value))
@@ -285,12 +317,13 @@ function SelectedColumnSummary({
   );
 }
 
-function TypeSpecificStats({ summary }: { summary: ColumnSummary }) {
+function TypeSpecificStats({ summary, mode }: { summary: ColumnSummary; mode: ProfileValueMode }) {
+  const distributionDenominator = profileDistributionDenominator(summary);
   if (summary.text) {
     return (
       <>
         <dt>Empty</dt>
-        <dd>{summary.text.emptyCount.toLocaleString()}</dd>
+        <ProfileCountValue label="Empty" value={summary.text.emptyCount} denominator={summary.totalCount} mode={mode} />
         <dt>Min length</dt>
         <dd>{formatNumber(summary.text.minLength)}</dd>
         <dt>Max length</dt>
@@ -300,7 +333,12 @@ function TypeSpecificStats({ summary }: { summary: ColumnSummary }) {
         {summary.visualization?.kind === "categorical" && summary.visualization.otherCount > 0 && (
           <>
             <dt>Other values</dt>
-            <dd>{summary.visualization.otherCount.toLocaleString()}</dd>
+            <ProfileCountValue
+              label="Other values"
+              value={summary.visualization.otherCount}
+              denominator={distributionDenominator}
+              mode={mode}
+            />
           </>
         )}
       </>
@@ -341,9 +379,19 @@ function TypeSpecificStats({ summary }: { summary: ColumnSummary }) {
     return (
       <>
         <dt>True</dt>
-        <dd>{summary.visualization.trueCount.toLocaleString()}</dd>
+        <ProfileCountValue
+          label="True"
+          value={summary.visualization.trueCount}
+          denominator={distributionDenominator}
+          mode={mode}
+        />
         <dt>False</dt>
-        <dd>{summary.visualization.falseCount.toLocaleString()}</dd>
+        <ProfileCountValue
+          label="False"
+          value={summary.visualization.falseCount}
+          denominator={distributionDenominator}
+          mode={mode}
+        />
       </>
     );
   }
@@ -352,12 +400,36 @@ function TypeSpecificStats({ summary }: { summary: ColumnSummary }) {
     return (
       <>
         <dt>Other values</dt>
-        <dd>{summary.visualization.otherCount.toLocaleString()}</dd>
+        <ProfileCountValue
+          label="Other values"
+          value={summary.visualization.otherCount}
+          denominator={distributionDenominator}
+          mode={mode}
+        />
       </>
     );
   }
 
   return null;
+}
+
+function ProfileCountValue({
+  label,
+  value,
+  denominator,
+  mode
+}: {
+  label: string;
+  value: number;
+  denominator: number;
+  mode: ProfileValueMode;
+}) {
+  const description = describeProfileValue(label, value, denominator);
+  return (
+    <dd title={description} aria-label={description}>
+      {formatProfileValue(value, denominator, mode)}
+    </dd>
+  );
 }
 
 function NumericExtremumValue({
@@ -393,25 +465,35 @@ function DistributionValueToggle({
   sampled,
   onChange
 }: {
-  mode: "count" | "percent";
-  denominator: number;
+  mode: ProfileValueMode;
+  denominator: number | undefined;
   sampled: boolean;
-  onChange: (mode: "count" | "percent") => void;
+  onChange?: (mode: ProfileValueMode) => void;
 }) {
-  const denominatorLabel = sampled
-    ? `${denominator.toLocaleString()} sampled non-missing ${denominator === 1 ? "row" : "rows"}`
-    : `${denominator.toLocaleString()} non-missing visible ${denominator === 1 ? "row" : "rows"}`;
+  const denominatorDescription =
+    denominator === undefined
+      ? "Distributions use non-missing visible rows."
+      : sampled
+        ? `Distributions use ${denominator.toLocaleString()} sampled non-missing ${denominator === 1 ? "row" : "rows"}.`
+        : `Distributions use ${denominator.toLocaleString()} non-missing visible ${denominator === 1 ? "row" : "rows"}.`;
   return (
     <div className="distributionValueControls">
       <div className="segmentedControl" role="group" aria-label="Distribution values">
-        <button type="button" aria-pressed={mode === "count"} onClick={() => onChange("count")}>
+        <button type="button" aria-pressed={mode === "count"} disabled={!onChange} onClick={() => onChange?.("count")}>
           Counts
         </button>
-        <button type="button" aria-pressed={mode === "percent"} onClick={() => onChange("percent")}>
+        <button
+          type="button"
+          aria-label="%"
+          aria-description={denominatorDescription}
+          title={denominatorDescription}
+          aria-pressed={mode === "percent"}
+          disabled={!onChange}
+          onClick={() => onChange?.("percent")}
+        >
           %
         </button>
       </div>
-      <small>Percent uses {denominatorLabel}.</small>
     </div>
   );
 }
@@ -420,17 +502,22 @@ function TopValues({
   summary,
   mode,
   denominator,
+  onShowMoreValues,
   onSelectValue
 }: {
   summary: ColumnSummary;
-  mode: "count" | "percent";
+  mode: ProfileValueMode;
   denominator: number;
+  onShowMoreValues?: () => void;
   onSelectValue?: (item: ValueCount) => void;
 }) {
   const categorical = summary.visualization?.kind === "categorical" ? summary.visualization : undefined;
   const values = categorical?.categories ?? (summary.type === "string" ? summary.topValues : []);
   const otherCount = categorical?.otherCount ?? 0;
-  if (values.length === 0 && otherCount === 0) return null;
+  const valuesTruncated =
+    (categorical !== undefined || summary.type === "string") &&
+    (otherCount > 0 || (summary.distinctCount ?? values.length) > values.length);
+  if (values.length === 0 && otherCount === 0 && !(valuesTruncated && onShowMoreValues)) return null;
   const maximum = Math.max(1, ...values.map((item) => item.count), otherCount);
 
   return (
@@ -456,6 +543,11 @@ function TopValues({
           />
         )}
       </div>
+      {valuesTruncated && onShowMoreValues && (
+        <button type="button" className="summaryMoreValues" onClick={onShowMoreValues}>
+          More values…
+        </button>
+      )}
     </section>
   );
 }
@@ -470,12 +562,12 @@ function TopValueRow({
   item: ValueCount;
   maximum: number;
   denominator: number;
-  mode: "count" | "percent";
+  mode: ProfileValueMode;
   onSelect?: () => void;
 }) {
   const label = item.value.length === 0 ? "Empty string" : item.value;
   const count = `${item.count.toLocaleString()} ${item.count === 1 ? "row" : "rows"}`;
-  const percent = formatDistributionPercent(item.count, denominator);
+  const percent = formatProfilePercent(item.count, denominator);
   const displayedValue = mode === "count" ? item.count.toLocaleString() : percent;
   const contents = (
     <>
@@ -597,29 +689,6 @@ function schemaDisplayName(schema: ColumnSchema, allColumns: readonly ColumnSche
 
 function topValueKey(item: ValueCount, index: number): string {
   return `${item.value}-${item.count}-${index}`;
-}
-
-function profileDistributionDenominator(summary: ColumnSummary): number {
-  if (summary.visualization?.sampled) {
-    if (summary.visualization.kind === "numeric") {
-      return summary.visualization.bins.reduce((total, bin) => total + bin.count, 0);
-    }
-    if (summary.visualization.kind === "categorical") {
-      return (
-        summary.visualization.categories.reduce((total, category) => total + category.count, 0) +
-        summary.visualization.otherCount
-      );
-    }
-    if (summary.visualization.kind === "boolean") {
-      return summary.visualization.trueCount + summary.visualization.falseCount;
-    }
-  }
-  return Math.max(0, summary.totalCount - summary.nullCount - summary.nanCount);
-}
-
-function formatDistributionPercent(count: number, denominator: number): string {
-  if (denominator <= 0) return "0%";
-  return new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 }).format(count / denominator);
 }
 
 function describeProfileFilter(filter: ColumnFilter): string {
