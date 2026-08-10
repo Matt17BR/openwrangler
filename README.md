@@ -266,8 +266,8 @@ Local R sessions opened in Editing mode can export cleaned CSV files. They can a
 installing the package so Open Wrangler can refresh its export choices.
 
 Ordinary frames created with `collapse::qDF()`, `qTBL()`, and `qDT()` use the existing dataframe, tibble, and
-data-table paths without adding `collapse` as a dependency. Grouped `GRP_df` and indexed `indexed_frame` objects are
-not supported. The [R gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#r-notebooks-and-documents-199-preview)
+data-table paths without adding `collapse` as a dependency. Their atomic and classed columns may retain ordinary
+element names when they open. Grouped `GRP_df` and indexed `indexed_frame` objects are not supported. The [R gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#r-notebooks-and-documents-199-preview)
 also shows the variable picker, profiles, and generated code inserted into a notebook.
 
 ## Export

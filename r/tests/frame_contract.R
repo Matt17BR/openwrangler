@@ -254,6 +254,55 @@ for (case in collapse_cases) {
   )
 }
 
+named_row_labels <- c("row-a", "row-b", "row-c")
+named_atomic_column <- structure(c(3L, 1L, 2L), names = named_row_labels)
+named_classed_column <- structure(
+  as.Date(c("2026-01-03", "2026-01-01", "2026-01-02")),
+  names = named_row_labels
+)
+named_factor_column <- structure(
+  factor(c("high", "low", "high"), levels = c("low", "high")),
+  names = named_row_labels
+)
+named_column_source <- structure(
+  list(atomic = named_atomic_column, classed = named_classed_column, category = named_factor_column),
+  class = "data.frame",
+  row.names = named_row_labels
+)
+named_column_table <- data.table::as.data.table(named_column_source)
+for (position in seq_len(ncol(named_column_table))) {
+  data.table::setattr(named_column_table[[position]], "names", named_row_labels)
+}
+named_column_cases <- list(
+  list(label = "base data.frame", frame = named_column_source, expectedNames = named_row_labels),
+  list(label = "tibble", frame = tibble::as_tibble(named_column_source), expectedNames = named_row_labels),
+  list(label = "data.table", frame = named_column_table, expectedNames = NULL),
+  list(label = "collapse qDF", frame = collapse::qDF(named_column_source), expectedNames = named_row_labels),
+  list(label = "collapse qTBL", frame = collapse::qTBL(named_column_source), expectedNames = named_row_labels),
+  list(label = "collapse qDT", frame = collapse::qDT(named_column_source), expectedNames = NULL)
+)
+for (case in named_column_cases) {
+  capture <- openwrangler_r_frame_contract$capture_frame(case$frame)
+  page <- openwrangler_r_frame_contract$materialize_page(capture, row_limit = 3L, column_limit = 3L)
+  assert_identical(page$shape, list(rows = 3L, columns = 3L), sprintf("%s named columns changed shape", case$label))
+  assert_identical(
+    page$page$rows[[1L]]$values[[1L]]$display,
+    "3",
+    sprintf("%s named atomic column changed values", case$label)
+  )
+  assert_identical(
+    page$page$rows[[1L]]$values[[2L]]$display,
+    "2026-01-03",
+    sprintf("%s named classed column changed values", case$label)
+  )
+  snapshot <- get("snapshot", envir = capture, inherits = FALSE)
+  assert_identical(
+    attr(snapshot[[3L]], "names", exact = TRUE),
+    case$expectedNames,
+    sprintf("%s snapshot has unexpected aligned names metadata", case$label)
+  )
+}
+
 group_identity_source <- data.frame(
   group = c("b", "a", "b"),
   value = c(1L, 2L, 3L),
@@ -4358,6 +4407,18 @@ assert_error(openwrangler_r_frame_contract$capture_frame(complex_frame), "unsupp
 attributed_frame <- data.frame(value = 1:2)
 attr(attributed_frame$value, "label") <- "meaning"
 assert_error(openwrangler_r_frame_contract$capture_frame(attributed_frame), "unsupported-column-attributes")
+
+malformed_named_column <- 1:2
+attr(malformed_named_column, "names") <- structure(c("row-a", "row-b"), class = "AsIs")
+malformed_named_frame <- structure(
+  list(value = malformed_named_column),
+  class = "data.frame",
+  row.names = c("row-a", "row-b")
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(malformed_named_frame),
+  "unsupported-column-attributes"
+)
 
 attributed_frame <- data.frame(value = 1:2)
 attr(attributed_frame, "origin") <- "test"
