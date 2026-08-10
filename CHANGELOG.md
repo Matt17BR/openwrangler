@@ -4,6 +4,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- Active viewing filters now stay visible above the grid as typed, individually removable chips. **Clear filters**
+  keeps the current sort order, while **Undo latest filter** restores only the most recent confirmed filter state and
+  remains separate from cleaning-plan **Undo**. Failed, cancelled, superseded, recovered, and schema-mutating work
+  cannot add stale entries to the bounded filter history.
+
 ### Changed
 
 - Column profiles now use one Counts/% setting in both the grid headers and the profile panel. The grid footer exposes
