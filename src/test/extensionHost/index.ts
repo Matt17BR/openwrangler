@@ -10039,27 +10039,70 @@ async function exerciseReleasedPythonFileEntrypoint(
 
 async function closeExactReleasedPythonInteractiveWindow(interactive: vscode.NotebookDocument): Promise<void> {
   assertExactOpenNotebookDocument(interactive, "before closing the Python entry-point Interactive Window");
-  const editor = await withBoundedAcceptancePromise(
-    vscode.window.showNotebookDocument(interactive, {
-      viewColumn: vscode.ViewColumn.One,
-      preserveFocus: false,
-      preview: false
-    }),
-    10_000,
-    "the exact Python entry-point Interactive Window to become active"
-  );
-  assert.equal(editor.notebook, interactive, "The Python entry-point Interactive Window editor must stay exact.");
-  assertExactOpenNotebookDocument(interactive, "after showing the Python entry-point Interactive Window for cleanup");
-  assertExactVisibleReleasedNotebookEditor(
-    interactive,
-    editor,
-    "before closing the Python entry-point Interactive Window"
-  );
-  await withBoundedAcceptancePromise(
-    vscode.commands.executeCommand("workbench.action.closeActiveEditor"),
-    10_000,
-    "the exact Python entry-point Interactive Window to close"
-  );
+  const closeBudget = vscode.window.visibleNotebookEditors.filter(
+    (candidate) => candidate.notebook === interactive
+  ).length;
+  assert.ok(closeBudget > 0, "The Python entry-point Interactive Window must have a visible editor for cleanup.");
+  let closeCount = 0;
+  while (!interactive.isClosed) {
+    const visibleEditors = vscode.window.visibleNotebookEditors.filter(
+      (candidate) => candidate.notebook === interactive
+    );
+    assert.ok(
+      visibleEditors.length > 0,
+      "The Python entry-point Interactive Window must stay visible until its final editor closes."
+    );
+    assert.ok(
+      closeCount < closeBudget,
+      "The Python entry-point Interactive Window cleanup exceeded its initial exact-editor count."
+    );
+
+    let editor = vscode.window.activeNotebookEditor;
+    if (editor?.notebook !== interactive) {
+      const groupCount = vscode.window.tabGroups.all.length;
+      for (let groupOffset = 0; groupOffset < groupCount; groupOffset += 1) {
+        await withBoundedAcceptancePromise(
+          vscode.commands.executeCommand("workbench.action.focusNextGroup"),
+          10_000,
+          "an editor group containing the exact Python entry-point Interactive Window to receive focus"
+        );
+        editor = vscode.window.activeNotebookEditor;
+        if (editor?.notebook === interactive) break;
+      }
+    }
+
+    assert.equal(
+      editor?.notebook,
+      interactive,
+      "Cleanup must focus the exact Python entry-point Interactive Window before closing an editor."
+    );
+    assert.equal(
+      vscode.window.activeNotebookEditor,
+      editor,
+      "Cleanup must not close an editor unless the exact Python entry-point Interactive Window is active."
+    );
+    const visibleCountBeforeClose = visibleEditors.length;
+    await withBoundedAcceptancePromise(
+      vscode.commands.executeCommand("workbench.action.closeActiveEditor"),
+      10_000,
+      "one exact Python entry-point Interactive Window editor to close"
+    );
+    closeCount += 1;
+    await waitFor(
+      () =>
+        interactive.isClosed ||
+        vscode.window.visibleNotebookEditors.filter((candidate) => candidate.notebook === interactive).length <
+          visibleCountBeforeClose,
+      10_000,
+      "the exact Python entry-point Interactive Window editor count to decrease"
+    );
+    if (
+      !interactive.isClosed &&
+      !vscode.window.visibleNotebookEditors.some((candidate) => candidate.notebook === interactive)
+    ) {
+      await waitFor(() => interactive.isClosed, 10_000, "the final Python Interactive Window document to close");
+    }
+  }
   await waitFor(() => interactive.isClosed, 10_000, "the private Python Interactive Window to close");
 }
 
