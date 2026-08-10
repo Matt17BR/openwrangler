@@ -4,42 +4,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.2] - 2026-08-10
+
 ### Added
 
 - Operations now lists dataframes from the active IRkernel notebook, including base data frames, tibbles, data
   tables, and ordinary frames created by `collapse::qDF()`, `qTBL()`, and `qDT()`. Its refresh action follows the
   active notebook or selected VS Code R terminal instead of being Python-only.
-
-### Changed
-
-- Extension and repository tags now call out support for desktop VS Code forks instead of repeating the product name.
-
-### Fixed
-
-- Filtering from a column profile now saves that column selection before loading the filtered rows, so the Column
-  panel no longer jumps back to the previously selected column.
-- Clicking a value or histogram bin in a column header now opens Column profiles with the active filter and its
-  **Clear** action visible immediately, including while the filtered profile reloads.
-- **Open in Open Wrangler** is visible as soon as a supported `.R`, `.Rmd`, or `.qmd` tab is active. The title action
-  now depends only on the active file, so it is available before R or Quarto activates.
-- Opening a dataframe from that R tab action now reuses the dataframe list already shown in Operations, avoiding a
-  second connection to the same R session.
-- R Markdown and Quarto now keep commas inside nested chunk options, skip valid `eval=FALSE` cells that refer to
-  external chunk content, and explain when a document contains no R cells.
-- **Show R dataframes…** in Operations now reads the selected R terminal on the first click. Previously it opened an
-  empty picker until the separate refresh command had run.
-- The **Open in Open Wrangler** action on `.R`, `.Rmd`, and `.qmd` tabs now opens a dataframe from the selected official
-  R terminal when one is active. Otherwise it runs the current document as before; both explicit choices remain in
-  the tab menu.
-- The `.py` editor action now asks for a kernel when Jupyter opens an unconfigured Interactive Window, restores the
-  source and cursor, and waits for the exact new cell before looking for dataframes. This also works when Jupyter adds
-  its empty Markdown placeholder before kernel selection. If Jupyter does not confirm what happened, Open Wrangler
-  stops instead of running the cell again.
-
-## [1.99.2] - 2026-08-09
-
-### Added
-
 - R can now group by one or more columns and calculate sum, mean, median, minimum, maximum, count, distinct count,
   first, or last. Results stay a base data frame, tibble, or data.table to match the input and use the usual preview,
   code, history, edit, and undo flow.
@@ -71,6 +42,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Extension and repository tags now call out support for desktop VS Code forks instead of repeating the product name.
 - Clickable grid headers, column-search results, and filter values now use consistent pointer, hover, and keyboard
   focus feedback.
 - Numeric histograms now use one full-chart control instead of a separate tab stop for every bin. Moving the pointer
@@ -89,6 +61,25 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Filtering from a column profile now saves that column selection before loading the filtered rows, so the Column
+  panel no longer jumps back to the previously selected column.
+- Clicking a value or histogram bin in a column header now opens Column profiles with the active filter and its
+  **Clear** action visible immediately, including while the filtered profile reloads.
+- **Open in Open Wrangler** is visible as soon as a supported `.R`, `.Rmd`, or `.qmd` tab is active. The title action
+  now depends only on the active file, so it is available before R or Quarto activates.
+- Opening a dataframe from that R tab action now reuses the dataframe list already shown in Operations, avoiding a
+  second connection to the same R session.
+- R Markdown and Quarto now keep commas inside nested chunk options, skip valid `eval=FALSE` cells that refer to
+  external chunk content, and explain when a document contains no R cells.
+- **Show R dataframes…** in Operations now reads the selected R terminal on the first click. Previously it opened an
+  empty picker until the separate refresh command had run.
+- The **Open in Open Wrangler** action on `.R`, `.Rmd`, and `.qmd` tabs now opens a dataframe from the selected official
+  R terminal when one is active. Otherwise it runs the current document as before; both explicit choices remain in
+  the tab menu.
+- The `.py` editor action now asks for a kernel when Jupyter opens an unconfigured Interactive Window, restores the
+  source and cursor, and waits for the exact new cell before looking for dataframes. This also works when Jupyter adds
+  its empty Markdown placeholder before kernel selection. If Jupyter does not confirm what happened, Open Wrangler
+  stops instead of running the cell again.
 - Discarding the only Python cleaning draft, or undoing the only applied step, now clears Code Preview instead of
   leaving an identity function behind.
 - Notebook, Python Interactive, R-file, and active-R dataframe pickers now let Quick Input return focus before opening
@@ -99,9 +90,6 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   wait for that passive scan or the unrelated profiles still queued behind it.
 - Dataframes opened from the active R terminal now show **Switch to Editing** in Viewing mode, matching the
   transition already available from live R notebook variables.
-- The editor-title action for `.R`, `.Rmd`, and `.qmd` always runs the current document. An active official R
-  terminal no longer replaces it with a different command; terminal dataframes remain available in Operations and
-  the editor-tab menu.
 - **Open in Open Wrangler** now appears immediately in trusted Python `.py` editors, including before Jupyter has
   detected the file's cells. It runs an ordinary file in Python Interactive, or only the cell under the cursor when
   the file uses `# %%` markers.
