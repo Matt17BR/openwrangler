@@ -10,6 +10,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   tables, and ordinary frames created by `collapse::qDF()`, `qTBL()`, and `qDT()`. Its refresh action follows the
   active notebook or selected VS Code R terminal instead of being Python-only.
 
+### Changed
+
+- Extension and repository tags now call out support for desktop VS Code forks instead of repeating the product name.
+
 ### Fixed
 
 - Filtering from a column profile now saves that column selection before loading the filtered rows, so the Column

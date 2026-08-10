@@ -5,7 +5,6 @@
     "csv",
     "cursor",
     "data-cleaning",
-    "data-preview",
     "data-table",
     "data-wrangling",
     "dataframe",
@@ -21,6 +20,7 @@
     "rmarkdown",
     "rstats",
     "tidyverse",
-    "vscode-extension"
+    "vscode-extension",
+    "vscode-forks"
   ]
 }
