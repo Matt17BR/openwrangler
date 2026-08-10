@@ -12,6 +12,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Filtering from a column profile now saves that column selection before loading the filtered rows, so the Column
+  panel no longer jumps back to the previously selected column.
 - Clicking a value or histogram bin in a column header now opens Column profiles with the active filter and its
   **Clear** action visible immediately, including while the filtered profile reloads.
 - **Open in Open Wrangler** is visible as soon as a supported `.R`, `.Rmd`, or `.qmd` tab is active. The title action

@@ -171,11 +171,32 @@ describe("App progressive profiling and view correlation", () => {
     };
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [profiledCity] });
+    dispatch({
+      kind: "viewState",
+      state: {
+        columnWidths: {},
+        selectedColumnId: "c:1",
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    });
+    expect(document.querySelector('th[data-column="sales"]')).toHaveAttribute("aria-selected", "true");
+    postMessage.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: "Filter city to Berlin; 500 rows" }));
 
+    const publishedMessages = postMessage.mock.calls.map(([message]) => message);
+    const selectedColumnUpdate = publishedMessages.findIndex(
+      (message) => message.kind === "updateViewState" && message.state.selectedColumnId === "c:0"
+    );
+    const filteredPageRequest = publishedMessages.findIndex(
+      (message) => message.kind === "runtimeRequest" && message.request.kind === "getPage"
+    );
+    expect(selectedColumnUpdate).toBeGreaterThanOrEqual(0);
+    expect(filteredPageRequest).toBeGreaterThan(selectedColumnUpdate);
+
     const drawer = screen.getByRole("complementary", { name: "Column profiles and filters" });
     expect(within(drawer).getByRole("tab", { name: "Column" })).toHaveAttribute("aria-selected", "true");
+    expect(within(drawer).getByRole("heading", { name: "city" })).toBeVisible();
     const clear = within(drawer).getByRole("button", { name: "Clear filter for city" });
     expect(clear).toBeVisible();
     expect(filterModelOf(onlyRequest("getPage")).filters).toHaveLength(1);
