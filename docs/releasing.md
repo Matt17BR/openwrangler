@@ -101,7 +101,9 @@ The strict runtime benchmark and Playwright cached/uncached scroll gates must pa
 
 A stable 2.x release links a reviewed Data Wrangler comparison from its README. The linked `review.md` and sibling
 `report.json` must both be tracked. `npm run docs:check` regenerates the marked results in memory and rejects a stale
-review; the rest of the review stays human-written.
+review; the rest of the review stays human-written. It also recalculates the published counts and timings from the raw
+samples. Stable release checks read that JSON from the release commit. A report made for the release must name the same
+version and VSIX checksum; a patch may reuse a reviewed report from its current major/minor line.
 
 The README may link to the dated 1.2.1 Data Wrangler comparison during the preview series. Before releasing 2.0,
 rerun the comparison with the final candidate VSIX, publish a dated 2.0 report, and update the short README summary.

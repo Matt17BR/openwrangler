@@ -18,6 +18,10 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
 import {
+  DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
+  assertReleaseCompleteStudyReport
+} from "./data-wrangler-comparison-report.mjs";
+import {
   inspectChangelog,
   inspectPerformanceEvidenceReadme,
   inspectPrimaryParityMatrix,
@@ -33,6 +37,7 @@ import { inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 const VSIX_MANIFEST_NAMESPACE = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 const PYTHON_VERSION = /^__version__\s*=\s*"([^"\r\n]+)"\s*$/gmu;
 const FULL_COMMIT_ID = /^[0-9a-f]{40}$/iu;
+const SHA256 = /^[0-9a-f]{64}$/u;
 const RELEASE_SOURCE_FILES = new Map([
   ["package.json", 1024 * 1024],
   ["python/openwrangler_runtime/version.py", 64 * 1024],
@@ -107,7 +112,14 @@ export function performanceReportLink(readme) {
   return path === undefined || version === undefined ? undefined : { path, version };
 }
 
-function inspectStablePerformanceEvidence(readme, label, version, trackedEvidencePaths) {
+function inspectStablePerformanceEvidence(
+  readme,
+  label,
+  version,
+  trackedEvidencePaths,
+  performanceReportFiles,
+  candidateSha256
+) {
   const major = /^(?<major>0|[1-9]\d*)\./u.exec(version ?? "")?.groups?.major;
   if (major === undefined || BigInt(major) < 2n) return [];
 
@@ -136,6 +148,33 @@ function inspectStablePerformanceEvidence(readme, label, version, trackedEvidenc
   const reportJsonPath = report.path.replace(/review\.md$/u, "report.json");
   if (!trackedEvidencePaths.has(reportJsonPath)) {
     problems.push(`${label} Performance data ${reportJsonPath} must be tracked.`);
+  }
+  const reportSource = performanceReportFiles.get(reportJsonPath);
+  if (reportSource === undefined) {
+    problems.push(`${label} Performance data ${reportJsonPath} must be read from the release commit.`);
+    return problems;
+  }
+  const reportData = parseJsonObject(reportSource, `${label} Performance data ${reportJsonPath}`, problems);
+  if (reportData === undefined) return problems;
+  try {
+    assertReleaseCompleteStudyReport(reportData);
+  } catch (error) {
+    problems.push(
+      `${label} Performance data ${reportJsonPath} is incomplete or invalid: ${String(error?.message ?? error)}`
+    );
+    return problems;
+  }
+  const reportedVersion = reportData?.provenance?.openWrangler?.version;
+  if (reportedVersion !== report.version) {
+    problems.push(
+      `${label} Performance data ${reportJsonPath} describes Open Wrangler ${String(reportedVersion)}, not ${report.version}.`
+    );
+  }
+  if (report.version === version) {
+    const reportedSha256 = reportData?.provenance?.openWrangler?.sha256;
+    if (!SHA256.test(candidateSha256 ?? "") || reportedSha256 !== candidateSha256) {
+      problems.push(`${label} Performance data ${reportJsonPath} does not match the release candidate VSIX.`);
+    }
   }
   return problems;
 }
@@ -246,7 +285,9 @@ function inspectReleaseReadiness(
     packagedPythonVersionFile,
     packagedReadme,
     vsixManifest,
-    trackedEvidencePaths = new Set()
+    trackedEvidencePaths = new Set(),
+    performanceReportFiles = new Map(),
+    candidateSha256
   },
   {
     allowedIncompleteRows = new Map(),
@@ -316,9 +357,25 @@ function inspectReleaseReadiness(
   problems.push(...inspectReadme(readme, "README.md"));
   problems.push(...inspectReadme(packagedReadme, "Packaged README"));
   if (inspectReadme === inspectStableReadme && sourceVersion !== undefined) {
-    problems.push(...inspectStablePerformanceEvidence(readme, "README.md", sourceVersion, trackedEvidencePaths));
     problems.push(
-      ...inspectStablePerformanceEvidence(packagedReadme, "Packaged README", sourceVersion, trackedEvidencePaths)
+      ...inspectStablePerformanceEvidence(
+        readme,
+        "README.md",
+        sourceVersion,
+        trackedEvidencePaths,
+        performanceReportFiles,
+        candidateSha256
+      )
+    );
+    problems.push(
+      ...inspectStablePerformanceEvidence(
+        packagedReadme,
+        "Packaged README",
+        sourceVersion,
+        trackedEvidencePaths,
+        performanceReportFiles,
+        candidateSha256
+      )
     );
   }
 
@@ -542,8 +599,9 @@ export function readReleaseSourceSnapshot({ expectedCommit, root }) {
       .filter(Boolean)
   );
   const files = new Map();
-  for (const [path, maxBytes] of RELEASE_SOURCE_FILES) {
+  const readCommitFile = (path, maxBytes, required) => {
     if (!trackedPaths.has(path)) {
+      if (!required) return;
       throw new Error(`Release commit is missing required tracked source ${path}.`);
     }
     const object = `${commit}:${path}`;
@@ -565,6 +623,26 @@ export function readReleaseSourceSnapshot({ expectedCommit, root }) {
       throw new Error(`Release source ${path} did not match its Git object size.`);
     }
     files.set(path, decodeUtf8(contents, path));
+  };
+  for (const [path, maxBytes] of RELEASE_SOURCE_FILES) {
+    readCommitFile(path, maxBytes, true);
+  }
+  let sourceVersion;
+  try {
+    sourceVersion = parseStrictJson(files.get("package.json"))?.version;
+  } catch {
+    // Stable readiness reports malformed package metadata after the immutable read.
+  }
+  const sourceMajor = /^(?<major>0|[1-9]\d*)\./u.exec(sourceVersion ?? "")?.groups?.major;
+  if (sourceMajor !== undefined && BigInt(sourceMajor) >= 2n) {
+    const linkedReport = performanceReportLink(files.get("README.md"));
+    if (linkedReport !== undefined) {
+      readCommitFile(
+        linkedReport.path.replace(/review\.md$/u, "report.json"),
+        DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
+        false
+      );
+    }
   }
   return Object.freeze({
     commit,
@@ -860,6 +938,8 @@ async function runCli() {
     packagedPackageJson: packaged.packagedPackageJson,
     packagedPythonVersionFile: packaged.packagedPythonVersionFile,
     packagedReadme: packaged.packagedReadme,
+    performanceReportFiles: source.files,
+    candidateSha256: snapshot.sha256,
     trackedEvidencePaths: source.trackedPaths,
     vsixManifest: packaged.vsixManifest
   });

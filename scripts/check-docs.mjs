@@ -76,11 +76,28 @@ if (readmeProblems.length > 0) {
   throw new Error(`README release/install region is stale:\n- ${readmeProblems.join("\n- ")}`);
 }
 const linkedComparison = performanceReportLink(readme);
+const packageMajor = /^(?<major>0|[1-9]\d*)\./u.exec(packageJson.version ?? "")?.groups?.major;
+const requiresVersionedComparison =
+  packageJson.preview === false && packageMajor !== undefined && BigInt(packageMajor) >= 2n;
+if (requiresVersionedComparison && linkedComparison === undefined) {
+  throw new Error("Stable version 2 documentation must link its versioned Data Wrangler comparison.");
+}
 if (linkedComparison !== undefined) {
   const reviewPath = resolve(root, linkedComparison.path);
   const reportPath = join(dirname(reviewPath), "report.json");
-  if (existsSync(reportPath)) {
+  if (!existsSync(reportPath)) {
+    if (requiresVersionedComparison) {
+      throw new Error(
+        `Stable version 2 documentation is missing ${join(dirname(linkedComparison.path), "report.json")}.`
+      );
+    }
+  } else {
     const report = parseStrictJson(readFileSync(reportPath, "utf8"));
+    if (report?.provenance?.openWrangler?.version !== linkedComparison.version) {
+      throw new Error(
+        `Data Wrangler comparison report version ${String(report?.provenance?.openWrangler?.version)} does not match its ${linkedComparison.version} directory.`
+      );
+    }
     const comparisonProblems = inspectDataWranglerComparisonReview(readFileSync(reviewPath, "utf8"), report);
     if (comparisonProblems.length > 0) {
       throw new Error(`Data Wrangler comparison review is stale:\n- ${comparisonProblems.join("\n- ")}`);
