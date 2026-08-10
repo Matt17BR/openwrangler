@@ -10,6 +10,8 @@ import type {
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
 import type { NotebookVariableDiscovery } from "../extension/notebooks/notebookVariableDiscovery";
 import type { RNotebookVariableDiscovery } from "../extension/r/rNotebookVariableDiscovery";
+import type { LiterateDocumentOrigin } from "../extension/literateDocumentOrigin";
+import type { LiterateCodeChunk, LiterateDocumentKind } from "../extension/literateDocumentChunks";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 type Listener<T> = (value: T) => unknown;
@@ -41,11 +43,13 @@ const pythonMocks = vi.hoisted(() => ({
 vi.mock("vscode", () => {
   class Uri {
     readonly path: string;
+    readonly fsPath: string;
     readonly scheme: string;
     private constructor(readonly value: string) {
       const match = /^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/[^/?#]*)?([^?#]*)/u.exec(value);
       this.scheme = match?.[1] ?? "file";
       this.path = match?.[2] ?? value;
+      this.fsPath = this.path;
     }
     static parse(value: string): Uri {
       return new Uri(value);
@@ -145,6 +149,7 @@ vi.mock("../extension/webviewPanel", () => ({
 import * as vscode from "vscode";
 import {
   registerPythonInteractiveCommands,
+  type LiteratePythonVariableProvider,
   type NotebookLiveVariableProvider
 } from "../extension/notebooks/pythonInteractiveCommands";
 
@@ -222,6 +227,114 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
     expect(pythonMocks.showQuickPick).not.toHaveBeenCalled();
+  });
+
+  it("runs the exact cursor-owned Quarto Python chunk through Quarto", async () => {
+    const source = textDocument(
+      "file:///workspace/analysis.qmd",
+      "# Analysis\n\n```{python}\n#| label: load-orders\nframe = make_frame()\n```\n"
+    );
+    const editor = textEditor(source, 4);
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = editor;
+    const origin = literateOrigin(editor, "quarto", {
+      language: "python",
+      executableSyntax: true,
+      supportedFence: true,
+      enabled: true,
+      fenceCharacter: "`",
+      openingLine: 2,
+      codeStartLine: 3,
+      codeEndLine: 4,
+      closingLine: 5,
+      code: "#| label: load-orders\nframe = make_frame()\n"
+    });
+    const interactive = notebook("untitled:/Interactive-quarto.interactive", "interactive", []);
+    pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+      if (id !== "quarto.runCurrentCell") return undefined;
+      interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 4, "quarto-run", true));
+      pythonMocks.notebookDocuments.push(interactive.document);
+      return undefined;
+    });
+    const frame = pandasFrame("frame");
+    pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
+
+    await expect(literateProvider(provider).runLiterateChunkAndOpen(origin)).resolves.toBe(true);
+
+    expect(pythonMocks.executeCommand).toHaveBeenCalledWith("quarto.runCurrentCell", 3);
+    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+  });
+
+  it("runs an R Markdown Python chunk through Jupyter without running the document", async () => {
+    const source = textDocument(
+      "file:///workspace/analysis.Rmd",
+      "```{python load-orders}\n#| echo: false\nframe = make_frame()\n```\n"
+    );
+    const editor = textEditor(source, 2);
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = editor;
+    const code = "#| echo: false\nframe = make_frame()\n";
+    const origin = literateOrigin(editor, "rmarkdown", {
+      language: "python",
+      executableSyntax: true,
+      supportedFence: true,
+      enabled: true,
+      fenceCharacter: "`",
+      openingLine: 0,
+      codeStartLine: 1,
+      codeEndLine: 2,
+      closingLine: 3,
+      code
+    });
+    const interactive = notebook("untitled:/Interactive-rmd.interactive", "interactive", []);
+    pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+      if (id !== "jupyter.execSelectionInteractive") return undefined;
+      interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 2, "rmd-run", true));
+      pythonMocks.notebookDocuments.push(interactive.document);
+      return undefined;
+    });
+    pythonMocks.discover.mockResolvedValue({ variables: [pandasFrame("frame")], truncated: false });
+
+    await expect(literateProvider(provider).runLiterateChunkAndOpen(origin)).resolves.toBe(true);
+
+    expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.execSelectionInteractive", code);
+    expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("jupyter.runFileInteractive", expect.anything());
+  });
+
+  it("drops a Quarto result when the exact cursor changes during command activation", async () => {
+    const source = textDocument("file:///workspace/analysis.qmd", "```{python}\nframe = make_frame()\n```\n");
+    const editor = textEditor(source, 1);
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = editor;
+    const origin = literateOrigin(editor, "quarto", {
+      language: "python",
+      executableSyntax: true,
+      supportedFence: true,
+      enabled: true,
+      fenceCharacter: "`",
+      openingLine: 0,
+      codeStartLine: 1,
+      codeEndLine: 1,
+      closingLine: 2,
+      code: "frame = make_frame()\n"
+    });
+    const interactive = notebook("untitled:/Interactive-stale.interactive", "interactive", []);
+    pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+      if (id !== "quarto.runCurrentCell") return undefined;
+      const moved = selection(2, 2);
+      editor.selection = moved;
+      editor.selections = [moved];
+      interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 1, "stale-run", true));
+      pythonMocks.notebookDocuments.push(interactive.document);
+      return undefined;
+    });
+
+    await expect(literateProvider(provider).runLiterateChunkAndOpen(origin)).resolves.toBe(false);
+
+    expect(pythonMocks.discover).not.toHaveBeenCalled();
+    expect(pythonMocks.openVariable).not.toHaveBeenCalled();
+    expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("changed"));
   });
 
   it("waits for Jupyter to publish and finish the Interactive Window cell", async () => {
@@ -1342,6 +1455,35 @@ function command(id: string): CommandHandler {
   return handler;
 }
 
+function literateProvider(value: NotebookLiveVariableProvider): LiteratePythonVariableProvider {
+  return value as NotebookLiveVariableProvider & LiteratePythonVariableProvider;
+}
+
+function literateOrigin(
+  editor: TextEditor,
+  kind: LiterateDocumentKind,
+  chunk: LiterateCodeChunk
+): LiterateDocumentOrigin {
+  const document = editor.document;
+  return Object.freeze({
+    editor,
+    document,
+    version: document.version,
+    uri: document.uri.toString(),
+    kind,
+    viewColumn: editor.viewColumn ?? vscode.ViewColumn.Active,
+    selections: Object.freeze(
+      editor.selections.map((selected) =>
+        Object.freeze({
+          anchor: Object.freeze({ line: selected.anchor.line, character: selected.anchor.character }),
+          active: Object.freeze({ line: selected.active.line, character: selected.active.character })
+        })
+      )
+    ),
+    chunk: Object.freeze(chunk)
+  });
+}
+
 function fire<T>(listeners: Set<Listener<T>>, value: T): void {
   for (const listener of listeners) listener(value);
 }
@@ -1373,19 +1515,21 @@ function textDocument(uri: string, text: string): TextDocument & { isClosed: boo
 }
 
 function textEditor(document: TextDocument, line: number): TextEditor {
+  const selected = selection(line, line);
   return {
     document,
-    selection: selection(line, line),
+    selection: selected,
+    selections: [selected],
     viewColumn: vscode.ViewColumn.One
   } as unknown as TextEditor;
 }
 
 function selection(anchorLine: number, activeLine: number): TextEditor["selection"] {
   return {
-    anchor: { line: anchorLine },
-    active: { line: activeLine },
-    start: { line: Math.min(anchorLine, activeLine) },
-    end: { line: Math.max(anchorLine, activeLine) }
+    anchor: { line: anchorLine, character: 0 },
+    active: { line: activeLine, character: 0 },
+    start: { line: Math.min(anchorLine, activeLine), character: 0 },
+    end: { line: Math.max(anchorLine, activeLine), character: 0 }
   } as TextEditor["selection"];
 }
 

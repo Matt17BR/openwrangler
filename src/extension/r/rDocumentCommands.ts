@@ -10,8 +10,20 @@ import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewP
 import { prepareRDocumentSource, rDocumentKind, rDocumentLabel } from "./rDocumentSource";
 import { RKernelBridge } from "./rKernelBridge";
 import { RProcessSessionTransport, type RProcessVariableDescriptor } from "./rProcessTransport";
+import {
+  captureLiterateDocumentOrigin,
+  isCurrentLiterateDocumentOrigin,
+  type LiterateDocumentOrigin
+} from "../literateDocumentOrigin";
+import type { LiteratePythonVariableProvider } from "../notebooks/pythonInteractiveCommands";
+import type { LiterateRVariableProvider } from "./rInteractiveCommands";
 
 export const OPEN_R_DOCUMENT_COMMAND = "openWrangler.runRDocument";
+
+export interface LiterateDocumentVariableProviders {
+  readonly python: LiteratePythonVariableProvider;
+  readonly r: LiterateRVariableProvider;
+}
 
 interface RDocumentQuickPickItem extends vscode.QuickPickItem {
   readonly variable: RProcessVariableDescriptor;
@@ -22,12 +34,20 @@ interface RDocumentQuickPickItem extends vscode.QuickPickItem {
  * exact in-memory R source, or the runnable R cells from an R Markdown/Quarto
  * source, once in an Open Wrangler-owned process.
  */
-export function registerRDocumentCommands(context: vscode.ExtensionContext, coordinator: SessionCoordinator): void {
+export function registerRDocumentCommands(
+  context: vscode.ExtensionContext,
+  coordinator: SessionCoordinator,
+  literateProviders?: LiterateDocumentVariableProviders
+): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(OPEN_R_DOCUMENT_COMMAND, async (resource?: unknown) => {
       if (!vscode.workspace.isTrusted) {
         void vscode.window.showWarningMessage("Trust this workspace before running an R document in Open Wrangler.");
         return false;
+      }
+      if (!(resource instanceof vscode.Uri) && literateProviders) {
+        const routed = await routeActiveLiterateDocument(literateProviders);
+        if (routed !== undefined) return routed;
       }
       if (!supportsRDocumentExecution()) {
         void vscode.window.showWarningMessage(
@@ -195,6 +215,104 @@ export function registerRDocumentCommands(context: vscode.ExtensionContext, coor
         return false;
       }
     })
+  );
+}
+
+async function routeActiveLiterateDocument(providers: LiterateDocumentVariableProviders): Promise<boolean | undefined> {
+  let origin: LiterateDocumentOrigin | undefined;
+  try {
+    origin = captureLiterateDocumentOrigin();
+  } catch (error) {
+    void vscode.window.showInformationMessage(`Could not read the current code chunk: ${errorMessage(error)}`);
+    return false;
+  }
+  if (!origin) return undefined;
+  const chunk = origin.chunk;
+  if (
+    !chunk ||
+    !chunk.executableSyntax ||
+    !chunk.supportedFence ||
+    !chunk.enabled ||
+    (chunk.language !== "python" && chunk.language !== "r")
+  ) {
+    return await openExistingLiterateSessionOrExplain(origin, providers);
+  }
+
+  if (chunk.language === "python") {
+    return await providers.python.runLiterateChunkAndOpen(origin);
+  }
+
+  const command = origin.kind === "quarto" ? "quarto.runCurrentCell" : "r.runSelection";
+  let available: readonly string[];
+  try {
+    available = await vscode.commands.getCommands(true);
+  } catch {
+    available = [];
+  }
+  if (!isCurrentLiterateDocumentOrigin(origin)) {
+    showStaleLiterateDocument();
+    return false;
+  }
+  if (!available.includes(command)) {
+    if (providers.r.hasActiveSession()) return await providers.r.openLiterateSession(origin);
+    void vscode.window.showInformationMessage(
+      origin.kind === "quarto"
+        ? "Install or enable the Quarto and R extensions, then run this R chunk again."
+        : "Install or enable the R extension, then run this R chunk again."
+    );
+    return false;
+  }
+
+  try {
+    if (origin.kind === "quarto") {
+      await vscode.commands.executeCommand(command, Math.max(1, chunk.openingLine + 1));
+    } else {
+      await vscode.commands.executeCommand(command, chunk.code);
+    }
+  } catch (error) {
+    if (!isCurrentLiterateDocumentOrigin(origin)) {
+      showStaleLiterateDocument();
+      return false;
+    }
+    void vscode.window.showInformationMessage(`Could not run the current R chunk: ${errorMessage(error)}`);
+    return false;
+  }
+  if (!isCurrentLiterateDocumentOrigin(origin)) {
+    showStaleLiterateDocument();
+    return false;
+  }
+  if (!providers.r.hasActiveSession()) {
+    void vscode.window.showInformationMessage(
+      "The R chunk did not produce an active R session. Check the R output, then try again."
+    );
+    return false;
+  }
+  return await providers.r.openLiterateSession(origin, true);
+}
+
+async function openExistingLiterateSessionOrExplain(
+  origin: LiterateDocumentOrigin,
+  providers: LiterateDocumentVariableProviders
+): Promise<boolean> {
+  if (providers.python.hasAssociatedLiterateSession(origin)) {
+    return await providers.python.openAssociatedLiterateSession(origin);
+  }
+  if (providers.r.hasActiveSession()) return await providers.r.openLiterateSession(origin);
+  const fenceHint =
+    origin.chunk?.language && !origin.chunk.supportedFence
+      ? " Use a backtick fence in R Markdown."
+      : origin.chunk && !origin.chunk.enabled
+        ? " The current chunk is disabled."
+        : "";
+  void vscode.window.showInformationMessage(
+    `Place the cursor in an enabled R or Python code chunk, or select its live session, then try again.${fenceHint}`
+  );
+  return false;
+}
+
+function showStaleLiterateDocument(): void {
+  void vscode.window.showWarningMessage(
+    "The document or cursor changed while its code chunk was running. Return to the chunk and try again."
   );
 }
 

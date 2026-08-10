@@ -90,7 +90,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
   activeRInteractive = rInteractive;
   const nativeViews = registerNativeViews(context, coordinator, notebookVariables, rInteractive);
   registerRuntimeCommands(context, bridge);
-  registerRDocumentCommands(context, coordinator);
+  registerRDocumentCommands(context, coordinator, { python: notebookVariables, r: rInteractive });
   registerNotebookCommands(context, coordinator);
   registerNotebookRendererMessaging(context, coordinator);
   context.subscriptions.push(new NotebookPreviewCoordinator(context));

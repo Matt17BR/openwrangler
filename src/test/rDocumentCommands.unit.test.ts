@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionContext, TextDocument } from "vscode";
+import type { ExtensionContext, TextDocument, TextEditor } from "vscode";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
+import type { LiterateDocumentVariableProviders } from "../extension/r/rDocumentCommands";
 
 type CommandHandler = (resource?: unknown) => Promise<unknown>;
 
@@ -8,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
   textDocuments: [] as TextDocument[],
   trusted: true,
-  activeDocument: undefined as TextDocument | undefined,
+  activeEditor: undefined as TextEditor | undefined,
   openTextDocument: vi.fn<(uri: unknown) => Promise<TextDocument>>(),
   showQuickPick: vi.fn<(items: readonly unknown[]) => Promise<unknown>>(),
   showInformationMessage: vi.fn(),
@@ -21,7 +22,9 @@ const mocks = vi.hoisted(() => ({
   bridgeDispose: vi.fn(async () => undefined),
   panelCreate: vi.fn(),
   restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined),
-  resolveExecutable: vi.fn(() => "/usr/bin/Rscript")
+  resolveExecutable: vi.fn(() => "/usr/bin/Rscript"),
+  executeCommand: vi.fn(async () => undefined),
+  getCommands: vi.fn(async () => [] as string[])
 }));
 
 vi.mock("vscode", () => {
@@ -30,7 +33,10 @@ vi.mock("vscode", () => {
       readonly fsPath: string,
       readonly scheme = "file",
       readonly authority = ""
-    ) {}
+    ) {
+      this.path = fsPath;
+    }
+    readonly path: string;
     static file(value: string): Uri {
       return new Uri(value);
     }
@@ -45,11 +51,14 @@ vi.mock("vscode", () => {
   return {
     Uri,
     ProgressLocation: { Notification: 15 },
+    ViewColumn: { Active: -1, One: 1 },
     commands: {
       registerCommand: (id: string, handler: CommandHandler) => {
         mocks.commands.set(id, handler);
         return { dispose: () => mocks.commands.delete(id) };
-      }
+      },
+      executeCommand: mocks.executeCommand,
+      getCommands: mocks.getCommands
     },
     workspace: {
       get isTrusted() {
@@ -62,7 +71,7 @@ vi.mock("vscode", () => {
     },
     window: {
       get activeTextEditor() {
-        return mocks.activeDocument ? { document: mocks.activeDocument } : undefined;
+        return mocks.activeEditor;
       },
       withProgress: async (_options: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) =>
         task(undefined, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }),
@@ -117,7 +126,7 @@ describe("R document command", () => {
     mocks.commands.clear();
     mocks.textDocuments.length = 0;
     mocks.trusted = true;
-    mocks.activeDocument = undefined;
+    mocks.activeEditor = undefined;
     mocks.openTextDocument.mockReset();
     mocks.showQuickPick.mockReset();
     mocks.showInformationMessage.mockReset();
@@ -137,6 +146,10 @@ describe("R document command", () => {
     mocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
     mocks.resolveExecutable.mockClear();
     mocks.resolveExecutable.mockReturnValue("/usr/bin/Rscript");
+    mocks.executeCommand.mockReset();
+    mocks.executeCommand.mockResolvedValue(undefined);
+    mocks.getCommands.mockReset();
+    mocks.getCommands.mockResolvedValue([]);
   });
 
   it("runs the exact in-memory R file, selects a frame, and binds its document origin", async () => {
@@ -289,6 +302,155 @@ describe("R document command", () => {
     );
   });
 
+  it("routes the primary Quarto action to the Python chunk at the exact cursor", async () => {
+    const source = [
+      "# Mixed analysis",
+      "",
+      "```{r}",
+      "orders_r <- data.frame(id = 1:3)",
+      "```",
+      "",
+      "~~~{python}",
+      "#| label: load-python-orders",
+      "orders_python = make_frame()",
+      "~~~~",
+      ""
+    ].join("\n");
+    const document = rDocument("/workspace/analysis/orders.qmd", source);
+    const editor = textEditor(document, 8);
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = editor;
+    const providers = literateProviders();
+    providers.python.runLiterateChunkAndOpen.mockResolvedValueOnce(true);
+    register(coordinatorMock(), providers.value);
+
+    await expect(command()()).resolves.toBe(true);
+
+    expect(providers.python.runLiterateChunkAndOpen).toHaveBeenCalledWith(
+      expect.objectContaining({
+        editor,
+        document,
+        version: 1,
+        uri: "file:///workspace/analysis/orders.qmd",
+        chunk: expect.objectContaining({
+          language: "python",
+          fenceCharacter: "~",
+          openingLine: 6,
+          closingLine: 9
+        })
+      })
+    );
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
+    expect(mocks.transportOptions).toHaveLength(0);
+  });
+
+  it("runs only the cursor-owned Quarto R chunk through the official Quarto command", async () => {
+    const source = [
+      "```{python}",
+      "ignore_me = True",
+      "```",
+      "",
+      "```{r load-orders}",
+      "#| label: load-orders",
+      "orders <- data.frame(id = 1:3)",
+      "```",
+      ""
+    ].join("\n");
+    const document = rDocument("/workspace/orders.qmd", source);
+    const editor = textEditor(document, 6);
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = editor;
+    mocks.getCommands.mockResolvedValue(["quarto.runCurrentCell"]);
+    const providers = literateProviders();
+    providers.r.hasActiveSession.mockReturnValue(true);
+    providers.r.openLiterateSession.mockResolvedValueOnce(true);
+    register(coordinatorMock(), providers.value);
+
+    await expect(command()()).resolves.toBe(true);
+
+    expect(mocks.executeCommand).toHaveBeenCalledWith("quarto.runCurrentCell", 5);
+    expect(providers.r.openLiterateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ editor, document, chunk: expect.objectContaining({ language: "r" }) }),
+      true
+    );
+    expect(mocks.transportOptions).toHaveLength(0);
+  });
+
+  it("runs only the cursor-owned R Markdown R chunk through the official R command", async () => {
+    const document = rDocument(
+      "/workspace/orders.Rmd",
+      "```{r load-orders, echo=FALSE}\n#| label: load-orders\norders <- data.frame(id = 1:3)\n```\n"
+    );
+    const editor = textEditor(document, 2);
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = editor;
+    mocks.getCommands.mockResolvedValue(["r.runSelection"]);
+    const providers = literateProviders();
+    providers.r.hasActiveSession.mockReturnValue(true);
+    providers.r.openLiterateSession.mockResolvedValueOnce(true);
+    register(coordinatorMock(), providers.value);
+
+    await expect(command()()).resolves.toBe(true);
+
+    expect(mocks.executeCommand).toHaveBeenCalledWith(
+      "r.runSelection",
+      "#| label: load-orders\norders <- data.frame(id = 1:3)\n"
+    );
+    expect(mocks.executeCommand).not.toHaveBeenCalledWith("r.runSource", expect.anything());
+    expect(providers.r.openLiterateSession).toHaveBeenCalledWith(expect.anything(), true);
+  });
+
+  it("falls back to the exact associated Python session when the cursor is outside a chunk", async () => {
+    const document = rDocument("/workspace/orders.qmd", "# Orders\n\nChoose the existing dataframe.\n");
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = textEditor(document, 2);
+    const providers = literateProviders();
+    providers.python.hasAssociatedLiterateSession.mockReturnValue(true);
+    providers.python.openAssociatedLiterateSession.mockResolvedValueOnce(true);
+    register(coordinatorMock(), providers.value);
+
+    await expect(command()()).resolves.toBe(true);
+
+    expect(providers.python.openAssociatedLiterateSession).toHaveBeenCalledOnce();
+    expect(providers.r.openLiterateSession).not.toHaveBeenCalled();
+    expect(mocks.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not route a result after the exact Quarto cursor changes across command discovery", async () => {
+    const document = rDocument("/workspace/orders.qmd", "```{r}\norders <- data.frame(id = 1:3)\n```\n");
+    const editor = textEditor(document, 1);
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = editor;
+    mocks.getCommands.mockImplementationOnce(async () => {
+      const moved = selection(2);
+      editor.selection = moved;
+      editor.selections = [moved];
+      return ["quarto.runCurrentCell"];
+    });
+    const providers = literateProviders();
+    register(coordinatorMock(), providers.value);
+
+    await expect(command()()).resolves.toBe(false);
+
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
+    expect(providers.r.openLiterateSession).not.toHaveBeenCalled();
+    expect(mocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("document or cursor changed"));
+  });
+
+  it("explains the supported chunk or session choices once when neither exists", async () => {
+    const document = rDocument("/workspace/orders.Rmd", "~~~{python}\nframe = make_frame()\n~~~\n");
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = textEditor(document, 1);
+    const providers = literateProviders();
+    register(coordinatorMock(), providers.value);
+
+    await expect(command()()).resolves.toBe(false);
+
+    expect(mocks.showInformationMessage).toHaveBeenCalledOnce();
+    expect(mocks.showInformationMessage).toHaveBeenCalledWith(expect.stringMatching(/backtick fence/u));
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
+  });
+
   it("does not start R for a literate document without a runnable R cell", async () => {
     const document = rDocument(
       "/workspace/analysis/orders.Rmd",
@@ -393,9 +555,12 @@ describe("R document command", () => {
   });
 });
 
-function register(coordinator: ReturnType<typeof coordinatorMock>): void {
+function register(
+  coordinator: ReturnType<typeof coordinatorMock>,
+  providers?: LiterateDocumentVariableProviders
+): void {
   const context = { extensionPath: "/extension", subscriptions: [] } as unknown as ExtensionContext;
-  registerRDocumentCommands(context, coordinator as unknown as SessionCoordinator);
+  registerRDocumentCommands(context, coordinator as unknown as SessionCoordinator, providers);
 }
 
 function command(): CommandHandler {
@@ -418,4 +583,40 @@ function rDocument(fsPath: string, text: string): TextDocument {
     isUntitled: false,
     getText: () => text
   } as TextDocument;
+}
+
+function textEditor(document: TextDocument, line: number): TextEditor {
+  const selected = selection(line);
+  return {
+    document,
+    selection: selected,
+    selections: [selected],
+    viewColumn: vscode.ViewColumn.One
+  } as unknown as TextEditor;
+}
+
+function selection(line: number): TextEditor["selection"] {
+  return {
+    anchor: { line, character: 0 },
+    active: { line, character: 0 },
+    start: { line, character: 0 },
+    end: { line, character: 0 }
+  } as TextEditor["selection"];
+}
+
+function literateProviders() {
+  const python = {
+    runLiterateChunkAndOpen: vi.fn(async () => false),
+    hasAssociatedLiterateSession: vi.fn(() => false),
+    openAssociatedLiterateSession: vi.fn(async () => false)
+  };
+  const r = {
+    hasActiveSession: vi.fn(() => false),
+    openLiterateSession: vi.fn(async () => false)
+  };
+  return {
+    python,
+    r,
+    value: { python, r } as LiterateDocumentVariableProviders
+  };
 }
