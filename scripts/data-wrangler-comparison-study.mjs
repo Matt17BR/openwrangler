@@ -30,7 +30,7 @@ export const STUDY_PROTOCOL = "openwrangler-data-wrangler-study-v2";
 export const TRIAL_REQUEST_PROTOCOL = "openwrangler-comparison-trial-request-v2";
 export const TRIAL_RESULT_PROTOCOL = "openwrangler-comparison-trial-result-v2";
 export const DATA_WRANGLER_VERSION = "1.24.2";
-export const WARM_REPETITIONS = 10;
+export const WARM_REPETITIONS = 5;
 export const SMOKE_REPETITIONS = 2;
 export const LOCAL_REPETITIONS = 3;
 const LOCAL_FIXTURE_MAX_BYTES = 640 * 1024 * 1024;
@@ -73,7 +73,7 @@ function sampleCountWord(value) {
   return new Map([
     [SMOKE_REPETITIONS, "two"],
     [LOCAL_REPETITIONS, "three"],
-    [WARM_REPETITIONS, "ten"]
+    [WARM_REPETITIONS, "five"]
   ]).get(value);
 }
 
@@ -137,7 +137,7 @@ export function buildStudyManifest({
     throw new TypeError(
       localProfile
         ? "The local comparison requires exactly three samples."
-        : "The release comparison requires two smoke or ten release samples."
+        : "The release comparison requires two smoke or five release samples."
     );
   }
   if (candidate.version === DATA_WRANGLER_VERSION) {
@@ -171,7 +171,9 @@ export function buildStudyManifest({
       },
       statistics: localProfile
         ? "three planned warm samples per product and engine; summaries require at least two successful samples; Hyndman-Fan type 7 min, max, median, and p95"
-        : `${sampleCountWord(repetitionsPerSession)} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
+        : repetitionsPerSession === WARM_REPETITIONS
+          ? "five planned warm samples per product and workload; Open Wrangler requires five successes and Data Wrangler at least three; Hyndman-Fan type 7 min, max, median, and p95"
+          : `${sampleCountWord(repetitionsPerSession)} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
       memory: "highest observed absolute process-tree PSS during each measured notebook workflow"
     },
     provenance: {

@@ -55,14 +55,14 @@ test("rejects a suspended or stalled PSS series with a gap longer than one secon
   );
 });
 
-test("validates exactly ten ordered samples inside one scheduled session", () => {
+test("validates exactly five ordered samples inside one scheduled session", () => {
   const manifest = manifestFixture();
   const entry = manifest.schedule[0];
   const trial = sessionResult(entry, manifest);
   assert.equal(validateDataWranglerComparisonStudyTrial(trial, entry, manifest), trial);
   assert.throws(
-    () => validateDataWranglerComparisonStudyTrial({ ...trial, samples: trial.samples.slice(0, 9) }, entry, manifest),
-    /exactly ten/u
+    () => validateDataWranglerComparisonStudyTrial({ ...trial, samples: trial.samples.slice(0, 4) }, entry, manifest),
+    /exactly five/u
   );
   const reordered = structuredClone(trial);
   reordered.samples[1].index = 1;
@@ -81,10 +81,10 @@ test("validates a two-sample smoke session without weakening the release gate", 
     trials: manifest.schedule.map((scheduled) => sessionResult(scheduled, manifest))
   });
   assert.equal(report.plannedSamples, 16);
-  assert.throws(() => assertReleaseCompleteStudyReport(report), /eighty successful samples/u);
+  assert.throws(() => assertReleaseCompleteStudyReport(report), /forty recorded samples/u);
 });
 
-test("flattens eight sessions into eighty raw samples and eight summaries", () => {
+test("flattens eight sessions into forty raw samples and eight summaries", () => {
   const manifest = manifestFixture();
   const trials = manifest.schedule.map((entry) => sessionResult(entry, manifest));
   const report = buildDataWranglerComparisonStudyReport({
@@ -95,20 +95,20 @@ test("flattens eight sessions into eighty raw samples and eight summaries", () =
   assert.equal(report.protocol, DATA_WRANGLER_STUDY_REPORT_PROTOCOL);
   assert.equal(report.plannedSessions, 8);
   assert.equal(report.completedSessions, 8);
-  assert.equal(report.plannedSamples, 80);
-  assert.equal(report.completedSamples, 80);
-  assert.equal(report.samples.length, 80);
+  assert.equal(report.plannedSamples, 40);
+  assert.equal(report.completedSamples, 40);
+  assert.equal(report.samples.length, 40);
   assert.equal(report.summaries.length, 8);
-  assert.deepEqual(report.outcomes, { success: 80, failure: 0, timeout: 0 });
-  assert.equal(report.summaries[0].metrics.inlinePreviewMs.count, 10);
-  assert.equal(report.summaries[0].memory.peakPssBytes.count, 10);
+  assert.deepEqual(report.outcomes, { success: 40, failure: 0, timeout: 0 });
+  assert.equal(report.summaries[0].metrics.inlinePreviewMs.count, 5);
+  assert.equal(report.summaries[0].memory.peakPssBytes.count, 5);
   assert.equal(assertReleaseCompleteStudyReport(report), report);
 });
 
 test("keeps p95 descriptive and gates material regressions on the median only", () => {
   const manifest = manifestFixture();
   const trials = manifest.schedule.map((entry) => {
-    const values = entry.product === "open-wrangler" ? [100, 100, 100, 100, 100, 100, 100, 100, 100, 10_000] : null;
+    const values = entry.product === "open-wrangler" ? [100, 100, 100, 100, 10_000] : null;
     return sessionResult(entry, manifest, values);
   });
   const report = buildDataWranglerComparisonStudyReport({
@@ -140,7 +140,7 @@ test("keeps p95 descriptive and gates material regressions on the median only", 
   assert.throws(() => assertReleaseCompleteStudyReport(regressed), /pandas-csv inlinePreviewMs median/u);
 });
 
-test("release completeness rejects missing sessions or unsuccessful samples", () => {
+test("release completeness requires every Open Wrangler sample and three Data Wrangler samples", () => {
   const manifest = manifestFixture();
   const trials = manifest.schedule.map((entry) => sessionResult(entry, manifest));
   const incomplete = buildDataWranglerComparisonStudyReport({
@@ -157,8 +157,29 @@ test("release completeness rejects missing sessions or unsuccessful samples", ()
     manifest,
     trials: failed
   });
-  assert.deepEqual(failedReport.outcomes, { success: 79, failure: 1, timeout: 0 });
-  assert.throws(() => assertReleaseCompleteStudyReport(failedReport), /eighty successful samples/u);
+  assert.deepEqual(failedReport.outcomes, { success: 39, failure: 1, timeout: 0 });
+  assert.throws(() => assertReleaseCompleteStudyReport(failedReport), /five Open Wrangler successes/u);
+
+  const baselineWithTwoFailures = structuredClone(trials);
+  const baselineTrial = baselineWithTwoFailures.find(({ product }) => product === "data-wrangler");
+  baselineTrial.samples[0] = failedSample(1);
+  baselineTrial.samples[1] = failedSample(2);
+  const baselineReport = buildDataWranglerComparisonStudyReport({
+    generatedAtUtc: "2026-08-04T12:00:00.000Z",
+    manifest,
+    trials: baselineWithTwoFailures
+  });
+  assert.deepEqual(baselineReport.outcomes, { success: 38, failure: 2, timeout: 0 });
+  assert.equal(baselineReport.samples.filter(({ status }) => status === "failure").length, 2);
+  assert.equal(assertReleaseCompleteStudyReport(baselineReport), baselineReport);
+
+  baselineTrial.samples[2] = failedSample(3);
+  const insufficientBaselineReport = buildDataWranglerComparisonStudyReport({
+    generatedAtUtc: "2026-08-04T12:00:00.000Z",
+    manifest,
+    trials: baselineWithTwoFailures
+  });
+  assert.throws(() => assertReleaseCompleteStudyReport(insufficientBaselineReport), /at least three Data Wrangler/u);
 });
 
 test("material allowances require both the relative and absolute bound", () => {
@@ -168,7 +189,7 @@ test("material allowances require both the relative and absolute bound", () => {
   assert.equal(exceedsMaterialRegressionLimit(1_000, 1_000, limit), false);
 });
 
-function manifestFixture({ repetitionsPerSession = 10 } = {}) {
+function manifestFixture({ repetitionsPerSession = 5 } = {}) {
   return buildStudyManifest({
     createdAtUtc: "2026-08-04T10:00:00.000Z",
     candidate: { version: "1.2.1", sha256: SHA },
@@ -262,7 +283,7 @@ function failedSample(index) {
   return {
     index,
     status: "failure",
-    failure: { stage: "harness", kind: "harness", message: "setup failed" },
+    failure: { stage: "inline-preview", kind: "product", message: "inline preview failed" },
     metrics: { inlinePreviewMs: null, workbenchOpenMs: null, firstProfileMs: null, completeProfileMs: null },
     milestones: [],
     publicUi: { runCell: null, inline: null, workbench: null, profiling: null },

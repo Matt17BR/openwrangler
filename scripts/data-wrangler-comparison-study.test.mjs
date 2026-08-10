@@ -45,7 +45,7 @@ test("writes diagnostic report bytes before enforcing release completeness", () 
   }
 });
 
-test("schedule has one ten-sample session per product and workload and no cold launches", () => {
+test("schedule has one five-sample session per product and workload and no cold launches", () => {
   const schedule = createDataWranglerComparisonSchedule();
   assert.equal(schedule.length, 8);
   assert.deepEqual(
@@ -230,12 +230,15 @@ test("local profile records all four arms through the existing study runner", as
   }
 });
 
-test("manifest records eight sessions, ten repetitions, fixed workloads, and public provenance", () => {
+test("manifest records eight sessions, five repetitions, fixed workloads, and public provenance", () => {
   const manifest = manifestFixture();
   assert.equal(manifest.protocol, STUDY_PROTOCOL);
   assert.equal(manifest.schedule.length, 8);
-  assert.equal(manifest.method.repetitionsPerSession, 10);
-  assert.match(manifest.method.statistics, /ten successful warm samples/u);
+  assert.equal(manifest.method.repetitionsPerSession, 5);
+  assert.match(
+    manifest.method.statistics,
+    /five planned warm samples.*Open Wrangler requires five successes.*Data Wrangler at least three/u
+  );
   assert.equal(Object.hasOwn(manifest.method, "coldOrder"), false);
   assert.equal(manifest.provenance.dataWrangler.version, DATA_WRANGLER_VERSION);
   assert.equal(manifest.provenance.dataWrangler.implementationInspection, "none");
@@ -296,7 +299,7 @@ test("study resumes at session granularity without replacing completed samples",
         .map(({ id }) => id)
         .sort()
     );
-    assert.equal(loadStudyResults(root).trials[0].samples.length, 10);
+    assert.equal(loadStudyResults(root).trials[0].samples.length, 5);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -339,7 +342,7 @@ test("an interrupted session is recorded and rerun without replacing successful 
     assert.equal(status.completed, 0);
     assert.equal(status.remaining, 8);
     const [trial] = loadStudyResults(root).trials;
-    assert.equal(trial.samples.length, 10);
+    assert.equal(trial.samples.length, 5);
     assert.equal(
       trial.samples.every(({ status: sampleStatus }) => sampleStatus === "failure"),
       true
@@ -387,20 +390,20 @@ test("a measured product failure remains in the study instead of being retried",
   }
 });
 
-test("session deadline yields ten timeout samples", async () => {
+test("session deadline yields five timeout samples", async () => {
   const manifest = manifestFixture();
   const entry = manifest.schedule[0];
   const request = requestForEntry(entry, manifest);
   const result = await runOneTrial({ entry, request, runTrial: () => new Promise(() => {}), timeoutMs: 5 });
   assert.equal(result.protocol, TRIAL_RESULT_PROTOCOL);
-  assert.equal(result.samples.length, 10);
+  assert.equal(result.samples.length, 5);
   assert.equal(
     result.samples.every(({ status }) => status === "timeout"),
     true
   );
 });
 
-test("prepared request loads one resident dataframe and asks the host for ten measured samples", () => {
+test("prepared request loads one resident dataframe and asks the host for five measured samples", () => {
   const root = mkdtempSync(join(tmpdir(), "ow-batched-prepare-"));
   const csv = join(root, "fixture.csv");
   const parquet = join(root, "fixture.parquet");
