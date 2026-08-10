@@ -15,6 +15,8 @@ import { restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 const PYTHON_CELL_MARKER = /^\s*#\s*%%(?:\s|$)/u;
 const MARKDOWN_CELL_MARKER = /^\s*#\s*%%.*\[markdown\]/iu;
 const MAX_INTERACTIVE_CELL_METADATA_TEXT = 64 * 1024;
+const PYTHON_CELL_PUBLICATION_TIMEOUT_MS = 10_000;
+const PYTHON_CELL_EXECUTION_TIMEOUT_MS = 120_000;
 
 export interface PythonLiveVariableItem {
   readonly handle: string;
@@ -53,12 +55,19 @@ interface PythonCellOrigin {
   readonly version: number;
   readonly sourceUri: string;
   readonly startLine: number;
+  readonly selection: vscode.Selection;
+  readonly viewColumn: vscode.ViewColumn;
 }
 
 interface InteractiveCellIdentity {
   readonly cell: vscode.NotebookCell;
   readonly id: string | undefined;
   readonly lineIndex: number | undefined;
+}
+
+interface PreviousInteractiveCells {
+  readonly cells: ReadonlySet<vscode.NotebookCell>;
+  readonly ids: ReadonlySet<string>;
 }
 
 interface AssociatedNotebook {
@@ -69,6 +78,13 @@ interface AssociatedNotebook {
 interface VariablePickItem extends vscode.QuickPickItem {
   readonly descriptor: NotebookVariableDescriptor;
 }
+
+type PythonExecutedCellResult =
+  | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument; readonly cell: vscode.NotebookCell }
+  | { readonly kind: "missing" }
+  | { readonly kind: "ambiguous" }
+  | { readonly kind: "timedOut" }
+  | { readonly kind: "stale" };
 
 /**
  * Registers the Python-file/Interactive Window actions and keeps a small cache
@@ -140,9 +156,14 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
       return;
     }
 
-    const beforeIds = new Set(
-      allAssociatedCells(origin.sourceUri).flatMap(({ cells }) =>
-        cells.flatMap((cell) => (cell.id === undefined ? [] : [cell.id]))
+    const existingCells = allAssociatedCells(origin.sourceUri).flatMap(({ cells }) => cells);
+    const beforeCells: PreviousInteractiveCells = {
+      cells: new Set(existingCells.map(({ cell }) => cell)),
+      ids: new Set(existingCells.flatMap(({ id }) => (id === undefined ? [] : [id])))
+    };
+    const beforeInteractiveWindows = new Set(
+      vscode.workspace.notebookDocuments.filter(
+        (notebook) => notebook.notebookType === "interactive" && !notebook.isClosed
       )
     );
     try {
@@ -161,7 +182,41 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
       return;
     }
 
-    const executed = newlyExecutedCell(origin, beforeIds);
+    if (newlyExecutedCell(origin, beforeCells).kind === "missing") {
+      const blankWindow = newlyOpenedBlankInteractiveWindow(beforeInteractiveWindows);
+      if (blankWindow.kind === "ambiguous") {
+        void vscode.window.showWarningMessage(
+          "Jupyter opened more than one Interactive Window. Close the extra windows, then try again."
+        );
+        return;
+      }
+      if (blankWindow.kind === "found") {
+        const restored = await selectKernelAndRestorePythonOrigin(blankWindow.notebook, origin);
+        if (!restored) return;
+        try {
+          await vscode.commands.executeCommand("jupyter.runcurrentcell");
+        } catch {
+          void vscode.window.showWarningMessage(
+            "The Jupyter extension could not run this Python cell after kernel selection. Check its kernel and try again."
+          );
+          return;
+        }
+        if (!isExactPythonOrigin(origin)) {
+          void vscode.window.showWarningMessage(
+            "The Python file changed or closed while its cell was running. Run the cell again before opening its dataframe."
+          );
+          return;
+        }
+      }
+    }
+
+    const executed = await waitForNewlyExecutedCell(origin, beforeCells);
+    if (executed.kind === "stale") {
+      void vscode.window.showWarningMessage(
+        "The Python file changed or closed while its cell was running. Run the cell again before opening its dataframe."
+      );
+      return;
+    }
     if (executed.kind === "ambiguous") {
       void vscode.window.showWarningMessage(
         "Open Wrangler could not identify one Interactive Window for the executed cell. Focus that window and try again."
@@ -171,6 +226,12 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
     if (executed.kind === "missing") {
       void vscode.window.showWarningMessage(
         "The cell did not produce an Interactive Window execution. Check the Jupyter output and try again."
+      );
+      return;
+    }
+    if (executed.kind === "timedOut") {
+      void vscode.window.showWarningMessage(
+        "The Python cell did not finish within two minutes. Check the Interactive Window before trying again."
       );
       return;
     }
@@ -458,7 +519,9 @@ function capturePythonCellOrigin(): PythonCellOrigin | undefined {
     document,
     version: document.version,
     sourceUri: document.uri.toString(),
-    startLine
+    startLine,
+    selection: editor.selection,
+    viewColumn: editor.viewColumn ?? vscode.ViewColumn.Active
   };
 }
 
@@ -569,14 +632,16 @@ function interactiveCellIdentity(
 
 function newlyExecutedCell(
   origin: PythonCellOrigin,
-  beforeIds: ReadonlySet<string>
+  before: PreviousInteractiveCells
 ):
   | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument; readonly cell: vscode.NotebookCell }
   | { readonly kind: "missing" }
   | { readonly kind: "ambiguous" } {
   const candidates = allAssociatedCells(origin.sourceUri).flatMap(({ notebook, cells }) =>
     cells.flatMap(({ cell, id, lineIndex }) =>
-      lineIndex === origin.startLine && (id === undefined || !beforeIds.has(id)) ? [{ notebook, cell }] : []
+      lineIndex === origin.startLine && id !== undefined && !before.ids.has(id) && !before.cells.has(cell)
+        ? [{ notebook, cell }]
+        : []
     )
   );
   if (candidates.length === 0) return { kind: "missing" };
@@ -586,6 +651,130 @@ function newlyExecutedCell(
     candidate.cell.index > selected.cell.index ? candidate : selected
   );
   return { kind: "found", ...latest };
+}
+
+function newlyOpenedBlankInteractiveWindow(
+  before: ReadonlySet<vscode.NotebookDocument>
+):
+  | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument }
+  | { readonly kind: "missing" }
+  | { readonly kind: "ambiguous" } {
+  const candidates = vscode.workspace.notebookDocuments.filter(
+    (notebook) =>
+      !before.has(notebook) &&
+      !notebook.isClosed &&
+      notebook.notebookType === "interactive" &&
+      notebook.cellCount === 0 &&
+      isSoleOpenNotebookDocument(notebook)
+  );
+  if (candidates.length === 0) return { kind: "missing" };
+  if (candidates.length !== 1) return { kind: "ambiguous" };
+  return { kind: "found", notebook: candidates[0]! };
+}
+
+async function selectKernelAndRestorePythonOrigin(
+  notebook: vscode.NotebookDocument,
+  origin: PythonCellOrigin
+): Promise<boolean> {
+  if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) return false;
+  let notebookEditor: vscode.NotebookEditor;
+  try {
+    notebookEditor = await vscode.window.showNotebookDocument(notebook, {
+      viewColumn: origin.viewColumn,
+      preserveFocus: false,
+      preview: false
+    });
+    if (notebookEditor.notebook !== notebook || !isSoleOpenNotebookDocument(notebook)) return false;
+    await vscode.commands.executeCommand("notebook.selectKernel", { notebookEditor });
+  } catch {
+    void vscode.window.showWarningMessage("Jupyter could not select a kernel for the Interactive Window.");
+    return false;
+  }
+  if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+    void vscode.window.showWarningMessage(
+      "The Python file or Interactive Window changed during kernel selection. Try again."
+    );
+    return false;
+  }
+  let restored: vscode.TextEditor;
+  try {
+    restored = await vscode.window.showTextDocument(origin.document, {
+      viewColumn: origin.viewColumn,
+      preserveFocus: false,
+      preview: false
+    });
+  } catch {
+    void vscode.window.showWarningMessage("Jupyter selected a kernel, but the Python file could not be restored.");
+    return false;
+  }
+  if (restored.document !== origin.document || !isExactPythonOrigin(origin)) {
+    void vscode.window.showWarningMessage("The Python file changed while its kernel was being selected. Try again.");
+    return false;
+  }
+  restored.selection = origin.selection;
+  if (vscode.window.activeTextEditor !== restored) {
+    void vscode.window.showWarningMessage("The Python file could not be focused after kernel selection. Try again.");
+    return false;
+  }
+  return true;
+}
+
+function waitForNewlyExecutedCell(
+  origin: PythonCellOrigin,
+  before: PreviousInteractiveCells
+): Promise<PythonExecutedCellResult> {
+  const completedCandidate = (): PythonExecutedCellResult | undefined => {
+    if (!isExactPythonOrigin(origin)) return { kind: "stale" };
+    const candidate = newlyExecutedCell(origin, before);
+    if (candidate.kind !== "found") return candidate.kind === "ambiguous" ? candidate : undefined;
+    const summary = candidate.cell.executionSummary;
+    if (summary?.success === undefined && summary?.timing?.endTime === undefined) return undefined;
+    return candidate;
+  };
+
+  const immediate = completedCandidate();
+  if (immediate) return Promise.resolve(immediate);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const subscriptions: vscode.Disposable[] = [];
+    const finish = (result: PythonExecutedCellResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(publicationTimeout);
+      clearTimeout(timeout);
+      for (const subscription of subscriptions.splice(0)) subscription.dispose();
+      resolve(result);
+    };
+    const check = (): void => {
+      const result = completedCandidate();
+      if (result) finish(result);
+    };
+    subscriptions.push(
+      vscode.workspace.onDidOpenNotebookDocument(check),
+      vscode.workspace.onDidChangeNotebookDocument(check),
+      vscode.workspace.onDidCloseNotebookDocument(check)
+    );
+    const publicationTimeout = setTimeout(() => {
+      if (!isExactPythonOrigin(origin)) {
+        finish({ kind: "stale" });
+        return;
+      }
+      const candidate = newlyExecutedCell(origin, before);
+      if (candidate.kind === "missing") finish(candidate);
+      else if (candidate.kind === "ambiguous") finish(candidate);
+    }, PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
+    const timeout = setTimeout(() => {
+      if (!isExactPythonOrigin(origin)) {
+        finish({ kind: "stale" });
+        return;
+      }
+      const candidate = newlyExecutedCell(origin, before);
+      if (candidate.kind === "found") finish({ kind: "timedOut" });
+      else finish(candidate);
+    }, PYTHON_CELL_EXECUTION_TIMEOUT_MS);
+    check();
+  });
 }
 
 function notebookLabel(notebook: vscode.NotebookDocument): string {
