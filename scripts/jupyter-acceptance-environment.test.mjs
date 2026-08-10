@@ -508,7 +508,7 @@ test("released-Jupyter R bootstrap stage rejects a replaced owned marker", async
           return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\n", stderr: "" };
         }
       }),
-      /did not reach the private IRkernel bootstrap/u
+      /did not reach the private IRkernel bootstrap \(last stage: not-entered\)/u
     );
     await probeJupyterAcceptanceRKernel(python, prepared, {
       async runCommand() {

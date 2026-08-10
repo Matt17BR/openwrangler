@@ -756,7 +756,10 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
     const readinessTokens = readRBootstrapTokens(receipt);
     const requiredPrefix = ["entered", "library-ready", "irkernel-loaded", "main-entered"];
     if (requiredPrefix.some((token, index) => readinessTokens[index] !== token)) {
-      throw new Error("Released-Jupyter R kernel readiness did not reach the private IRkernel bootstrap.");
+      const readinessStage = readinessTokens.length === 0 ? "not-entered" : readinessTokens.at(-1);
+      throw new Error(
+        `Released-Jupyter R kernel readiness did not reach the private IRkernel bootstrap (last stage: ${readinessStage}).`
+      );
     }
     receipt.readinessTokens = readinessTokens;
     return;
