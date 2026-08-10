@@ -1056,7 +1056,10 @@ async function runPythonCellAttempt(
   return await waitForPublishedCellAfterDispatch(observer, operationDeadline, allowKernelRecovery);
 }
 
-function boundedPythonCellDispatch(origin: PythonCellOrigin, deadline: number): {
+function boundedPythonCellDispatch(
+  origin: PythonCellOrigin,
+  deadline: number
+): {
   readonly promise: Promise<PythonCellDispatchOutcome>;
   dispose(): void;
 } {
