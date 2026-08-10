@@ -72,14 +72,17 @@ Windows extension host rejects it. IRkernel notebooks work on Windows.
 
 - View and clean Pandas, Polars, R, or file-backed DuckDB data without conversion. DuckDB notebook relations and local PySpark 4.2 Classic/Connect dataframes are view-only.
 - Each cleaning step previews changed values and generated code before you apply it.
-- Filters and multi-column sorts change only the view. Exports write a separate file.
+- Filters and multi-column sorts change only the view. Active typed filters stay above the grid, where each rule can
+  be removed, all filters can be cleared without dropping sorts, and the latest confirmed filter change can be
+  undone independently of cleaning history. Exports write a separate file.
 - The grid fetches visible rows and columns on demand. Supported file-backed Polars sources use lazy scans.
 
 ## Workbench
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/sidebar-overview.png"><img alt="Open Wrangler showing Operations, Summary, Filters and Sorts, and Cleaning Steps beside a dataframe draft" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/sidebar-overview.png" width="960"></a>
 
-The sidebar keeps operations, dataset health, filters, sorts, and cleaning history beside the grid. See the
+The sidebar keeps operations, dataset health, filter and sort builders, and cleaning history beside the grid. Active
+filter rules remain visible in a compact row above the data while the sidebar is closed. See the
 [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) for file entry points,
 by-example transformations, themes, Cursor, DuckDB types, and notebook engines.
 
