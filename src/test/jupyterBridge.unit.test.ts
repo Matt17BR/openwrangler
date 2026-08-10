@@ -226,7 +226,12 @@ vi.mock("../extension/r/rKernelBridge", () => ({
 }));
 
 import * as vscode from "vscode";
-import { registerNotebookCommands } from "../extension/notebooks/jupyterBridge";
+import {
+  discoverVariablesForSelectedKernel,
+  isRNotebookVariableDiscovery,
+  openDiscoveredRNotebookVariable,
+  registerNotebookCommands
+} from "../extension/notebooks/jupyterBridge";
 import {
   buildNotebookVariableDiscoveryCode,
   buildPySparkNotebookPreflightCode,
@@ -1103,6 +1108,174 @@ describe("notebook command provenance", () => {
       notebookMocks.createPanel.mock.invocationCallOrder[0]!
     );
     expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it("opens a cached R descriptor through its original notebook discovery", async () => {
+    const original = notebook("file:///workspace/r-cached.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.getKernel.mockResolvedValue(rNotebookKernel());
+    notebookMocks.executeCode.mockImplementation((code) =>
+      rDiscoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+      })
+    );
+    const { context, coordinator, coordinatedBridge } = register();
+
+    const discovery = await discoverVariablesForSelectedKernel(original);
+    expect(isRNotebookVariableDiscovery(discovery)).toBe(true);
+    if (!isRNotebookVariableDiscovery(discovery)) throw new Error("Expected an R notebook discovery.");
+    await openDiscoveredRNotebookVariable(
+      context,
+      coordinator as unknown as SessionCoordinator,
+      original,
+      discovery,
+      discovery.variables[0]!
+    );
+
+    expect(notebookMocks.executeCode).toHaveBeenCalledTimes(2);
+    expect(notebookMocks.rKernelOrigins).toEqual([{ uri: original.uri.toString(), document: original }]);
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+    expect(notebookMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      coordinatedBridge,
+      {
+        kind: "notebookVariable",
+        label: "sales_tbl",
+        variableName: "sales_tbl",
+        uri: original.uri.toString()
+      },
+      "r"
+    );
+    expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale cached R descriptor", async () => {
+    const original = notebook("file:///workspace/r-cached-stale.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.getKernel.mockResolvedValue(rNotebookKernel());
+    notebookMocks.executeCode.mockImplementation((code) =>
+      rDiscoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+      })
+    );
+    const { context, coordinator } = register();
+
+    const discovery = await discoverVariablesForSelectedKernel(original);
+    if (!isRNotebookVariableDiscovery(discovery)) throw new Error("Expected an R notebook discovery.");
+    await openDiscoveredRNotebookVariable(context, coordinator as unknown as SessionCoordinator, original, discovery, {
+      ...discovery.variables[0]!,
+      name: "renamed_sales_tbl"
+    });
+
+    expect(notebookMocks.executeCode).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The selected R dataframe no longer belongs to this variable list. Open the picker again."
+    );
+  });
+
+  it("rejects a cached R descriptor when its dataframe flavor changes", async () => {
+    const original = notebook("file:///workspace/r-cached-flavor.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.getKernel.mockResolvedValue(rNotebookKernel());
+    notebookMocks.executeCode.mockImplementation((code) =>
+      rDiscoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+      })
+    );
+    const { context, coordinator } = register();
+
+    const discovery = await discoverVariablesForSelectedKernel(original);
+    if (!isRNotebookVariableDiscovery(discovery)) throw new Error("Expected an R notebook discovery.");
+    await openDiscoveredRNotebookVariable(context, coordinator as unknown as SessionCoordinator, original, discovery, {
+      ...discovery.variables[0]!,
+      dataframeFlavor: "r.data.frame"
+    });
+
+    expect(notebookMocks.executeCode).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The selected R dataframe no longer belongs to this variable list. Open the picker again."
+    );
+  });
+
+  it("rejects a cached R descriptor after its selected kernel changes", async () => {
+    const original = notebook("file:///workspace/r-cached-kernel.ipynb");
+    const disposeStatusListener = vi.fn();
+    const selectedKernel = rNotebookKernel(disposeStatusListener);
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.getKernel.mockResolvedValue(selectedKernel);
+    notebookMocks.executeCode.mockImplementation((code) =>
+      rDiscoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+      })
+    );
+    const { context, coordinator } = register();
+
+    const discovery = await discoverVariablesForSelectedKernel(original);
+    if (!isRNotebookVariableDiscovery(discovery)) throw new Error("Expected an R notebook discovery.");
+    notebookMocks.getKernel.mockResolvedValue(rNotebookKernel());
+    await openDiscoveredRNotebookVariable(
+      context,
+      coordinator as unknown as SessionCoordinator,
+      original,
+      discovery,
+      discovery.variables[0]!
+    );
+
+    expect(notebookMocks.executeCode).toHaveBeenCalledOnce();
+    expect(disposeStatusListener).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The selected R notebook kernel changed while Open Wrangler inspected its variables. Try again."
+    );
+  });
+
+  it("rejects a cached R descriptor after its exact notebook document closes", async () => {
+    const original = notebook("file:///workspace/r-cached-document.ipynb");
+    const replacement = notebook("file:///workspace/r-cached-document.ipynb");
+    const disposeStatusListener = vi.fn();
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.getKernel.mockResolvedValue(rNotebookKernel(disposeStatusListener));
+    notebookMocks.executeCode.mockImplementation((code) =>
+      rDiscoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "sales_tbl", dataframeFlavor: "r.tibble" }]
+      })
+    );
+    const { context, coordinator } = register();
+
+    const discovery = await discoverVariablesForSelectedKernel(original);
+    if (!isRNotebookVariableDiscovery(discovery)) throw new Error("Expected an R notebook discovery.");
+    closeNotebook(original);
+    notebookMocks.notebookDocuments.splice(0, 1, replacement);
+    await openDiscoveredRNotebookVariable(
+      context,
+      coordinator as unknown as SessionCoordinator,
+      original,
+      discovery,
+      discovery.variables[0]!
+    );
+
+    expect(notebookMocks.executeCode).toHaveBeenCalledOnce();
+    expect(disposeStatusListener).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The originating notebook is no longer open. Reopen it and try again."
+    );
   });
 
   it("rechecks the R notebook after returning focus from its picker", async () => {
