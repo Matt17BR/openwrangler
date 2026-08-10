@@ -91,7 +91,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   single matching row, its stable source ID and row name, the filtered column and dataset profiles, Clear all, and the
   existing multi-sort controls. A serialized copy of the source frame must still match before and after that journey,
   and the private runtime binding must be gone after close. The exact hosted result is recorded below. CI does not
-  install R in packaging, Python, browser, or ordinary editor jobs.
+  install R in packaging, Python, browser, or ordinary editor jobs. The packaged R journey uses a private R profile
+  to put its run-owned library first; if the kernel cannot start, a fixed marker reports whether that profile loaded.
 
   VS Code runs the complete installed R journey. Cursor uses a named representative profile within the same
   300-second phase limit: real IRkernel discovery, one page round trip, profiles, filtering, Clear all, compound-sort
