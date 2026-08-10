@@ -38,7 +38,24 @@ describe("notebook renderer", () => {
     expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
   });
 
-  it("keeps an unlinked saved preview inline with an actionable refresh hint and no misleading open action", () => {
+  it("opens a current temporary result without exposing its opaque handle", () => {
+    const postMessage = vi.fn();
+    const element = document.createElement("div");
+    const handle = "__openwrangler_live_result_0123456789abcdef0123456789abcdef";
+    const payload = canonicalPayload(1, handle);
+
+    activate({ postMessage }).renderOutputItem({ json: () => payload }, element);
+
+    const action = Array.from(element.querySelectorAll("button")).find(
+      (button) => button.textContent === "Open in Open Wrangler"
+    );
+    expect(action?.title).toBe("Open the complete current notebook result");
+    expect(element.textContent).not.toContain(handle);
+    action?.click();
+    expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
+  });
+
+  it("keeps an unlinked legacy preview inline without a false rerun instruction", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
     const payload = canonicalPayload(1);
@@ -48,9 +65,8 @@ describe("notebook renderer", () => {
     expect(
       Array.from(element.querySelectorAll("button")).some((button) => button.textContent === "Open in Open Wrangler")
     ).toBe(false);
-    expect(element.querySelector('[role="note"]')?.textContent).toContain(
-      "Run this cell again to open the current dataframe"
-    );
+    expect(element.querySelector('[role="note"]')).toBeNull();
+    expect(element.textContent).not.toContain("Run this cell again");
     expect(postMessage).not.toHaveBeenCalled();
   });
 
