@@ -893,7 +893,7 @@ function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNo
     const startsSession = snapshot.terminalLabel === "R session";
     const label = startsSession ? "Start R and show dataframes…" : "Show R dataframes…";
     return [
-      new ViewNode(label, snapshot.message, "database", {
+      new ViewNode(label, snapshot.terminalLabel, "database", {
         command: startsSession ? OPEN_R_INTERACTIVE_VARIABLE_COMMAND : REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
         title: label
       })
