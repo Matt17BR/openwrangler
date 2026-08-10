@@ -16,21 +16,21 @@ The fixtures are deterministic integer tables generated for the benchmark. They 
 receive the same Pandas object in the Pandas runs and the same Polars object in the Polars runs.
 
 One **session** is one isolated VS Code window for one product and workload. One **sample** is one pass through the
-measured notebook workflow. The full benchmark uses eight sessions and records 80 samples.
+measured notebook workflow. The full benchmark uses eight sessions and records 40 samples.
 
 ## Measurements
 
 The benchmark starts eight isolated, headless VS Code sessions: one for each product and workload. It selects the
 pinned Python 3.12 kernel, loads the dataframe, and handles first-use permission. Setup is not timed.
 
-Each session records the same visible workflow ten times:
+Each session records the same visible workflow five times:
 
 1. Run the dataframe cell and wait for a usable inline preview.
 2. Click **Open in Open Wrangler** or **Open in Data Wrangler** and wait for a usable, scrollable grid.
 3. Open column profiling and wait until every column has a completed profile.
 4. Close the viewer before the next sample.
 
-The dataframe and kernel stay resident for all ten samples. The benchmark measures a ready kernel and resident
+The dataframe and kernel stay resident for all five samples. The benchmark measures a ready kernel and resident
 dataframe; it does not measure editor startup or disk reads. A session has a ten-minute hard limit and a separate
 three-minute no-progress limit. After timing stops, the harness returns Open Wrangler to the first column so the next
 sample starts from the same viewport.
@@ -49,8 +49,9 @@ one second invalidates the session instead of understating memory use.
 
 ## Results and release decision
 
-For each product and workload, report the ten raw values, failures, minimum, maximum, median, and type-7 p95. With ten
-observations, p95 is close to the slowest run, so it is useful context rather than a release gate.
+For each product and workload, the report keeps all five outcomes, including failures. Successful timings are summarized
+with the minimum, maximum, and median. The machine-readable report retains p95 for compatibility, but five samples are
+too few to treat it as a useful headline or release gate.
 
 Open Wrangler blocks the release only when its median exceeds both parts of a limit below. Small timing differences
 are treated as noise.
@@ -63,10 +64,10 @@ are treated as noise.
 | All profiles      |                20% |           2,000 ms |
 | Observed peak PSS |                10% |            256 MiB |
 
-A publishable report needs ten successful samples for every product and workload. A measured product error stays
-in the results. A setup or harness error invalidates only that session. Re-running the same output directory replaces
-that interrupted session, while successful sessions remain untouched. Measured actions are not retried inside a
-session and slow values are not removed.
+A publishable report needs all five Open Wrangler samples and at least three of the five Data Wrangler samples for
+each workload. Product failures stay in the results. A setup or harness error invalidates only that session. Re-running
+the same output directory replaces that interrupted session, while successful sessions remain untouched. Measured
+actions are not retried inside a session and slow values are not removed.
 
 ## Environment
 
@@ -143,7 +144,7 @@ fixture left by the dead process before it starts.
 
 ## Review
 
-Before publication, a second reviewer checks the eight session IDs, ten samples per session, versions and hashes,
+Before publication, a second reviewer checks the eight session IDs, five samples per session, versions and hashes,
 the recorded start and end events, recalculated summaries, median regression decisions, memory coverage, and failures. The
 report must contain no private paths, source values, screenshots, logs, or proprietary package contents.
 

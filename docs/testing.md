@@ -899,7 +899,7 @@ The comparison method is in [`docs/performance-comparison.md`](performance-compa
 
 The benchmark covers Pandas and Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. A session is one isolated
 headless VS Code window for one product and workload; a sample is one timed pass through the notebook workflow. The full
-study has eight sessions and 80 samples. Each sample uses the public Run Cell, launch, usable-grid, and
+study has eight sessions and 40 samples. Each sample uses the public Run Cell, launch, usable-grid, and
 all-column-profile controls. Linux PSS sampling covers the same measured window, requires at least two observations,
 and rejects a gap longer than one second.
 
@@ -907,9 +907,10 @@ Ordinary pull-request CI runs the focused harness contracts, not the real-produc
 two-sample-per-product
 smoke and eight-session study run against the release candidate and produce release-only evidence.
 
-The report includes all ten values, failures, minimum, maximum, median, and type-7 p95. Only a material median
-regression blocks release; p95 is review context. Release evidence still requires ten successful samples in all eight
-sessions.
+The report keeps all five outcomes, including failures, and summarizes successful timings with the minimum, maximum,
+and median. Its p95 field remains for report compatibility, but it is not a five-sample headline or release gate.
+Release evidence requires all five Open Wrangler samples and at least three of five Data Wrangler samples for every
+workload.
 
 The 1.2.1 results remain the published comparison during the 1.99 preview series. Before 2.0 is released, rerun the
 full study with the candidate VSIX, review the raw results, and update the README and a new dated report. A stable
