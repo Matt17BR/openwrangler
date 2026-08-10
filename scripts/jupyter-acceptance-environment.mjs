@@ -615,7 +615,7 @@ export async function prepareJupyterAcceptanceREnvironment(
     kernelSpecPath,
     `${JSON.stringify(
       {
-        argv: [rExecutable, "--slave", "--no-init-file", "-f", kernelBootstrapPath, "--args", "{connection_file}"],
+        argv: [canonicalRscript, "--vanilla", kernelBootstrapPath, "{connection_file}"],
         display_name: R_ACCEPTANCE_KERNEL_DISPLAY_NAME,
         language: "R",
         env: kernelEnvironment
