@@ -107,8 +107,20 @@ Generate the checked report after all eight sessions finish:
 ```bash
 npm run comparison:report -- \
   --study /absolute/path/benchmark-output \
-  --out /absolute/path/openwrangler-data-wrangler-report.json
+  --out /path/to/repo/docs/performance/data-wrangler-2.0.0/report.json \
+  --review /path/to/repo/docs/performance/data-wrangler-2.0.0/review.md
 ```
+
+Create `review.md` first and put the manual method and review notes around this empty block:
+
+```markdown
+<!-- open-wrangler-comparison-results:start -->
+<!-- open-wrangler-comparison-results:end -->
+```
+
+The command validates the complete report before it writes either file, then replaces only that block.
+`npm run docs:check` compares it with the sibling `report.json`, so an edited or out-of-date table fails the check.
+The 1.2.1 review predates this format and remains unchanged.
 
 Use `npm run comparison:smoke` with the same arguments before a full collection. The
 smoke runs two sessions—one per product—against the Pandas/CSV workload, with two samples in each. It catches broken selectors or permissions;
@@ -149,6 +161,6 @@ the recorded start and end events, recalculated summaries, median regression dec
 report must contain no private paths, source values, screenshots, logs, or proprietary package contents.
 
 The latest completed review is the
-[`1.2.1 comparison`](performance/data-wrangler-1.2.1/review.md). Create a new versioned review when a release
-intentionally reruns this comparison, using the VSIX that will be published. The README keeps only a short summary
-and a link to the dated report; it does not duplicate the results table.
+[`1.2.1 comparison`](performance/data-wrangler-1.2.1/review.md). Create a new versioned directory when a release
+reruns the comparison with the VSIX that will be published. Commit its `review.md` and `report.json` together. The
+README keeps a short summary and a link to the dated review instead of copying the results table.

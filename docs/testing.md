@@ -896,7 +896,7 @@ The comparison method is in [`docs/performance-comparison.md`](performance-compa
 
 - `npm run comparison:smoke` for both products on one Pandas/CSV workload;
 - `npm run comparison:study` for the eight-session benchmark; and
-- `npm run comparison:report` for the path-free summary.
+- `npm run comparison:report` for `report.json` and the generated results block in its sibling `review.md`.
 
 The benchmark covers Pandas and Polars with the 100k × 50 CSV and 1M × 20 Parquet fixtures. A session is one isolated
 headless VS Code window for one product and workload; a sample is one timed pass through the notebook workflow. The full
@@ -917,6 +917,9 @@ The 1.2.1 results remain the published comparison during the 1.99 preview series
 full study with the candidate VSIX, review the raw results, and update the README and a new dated report. A stable
 major or minor release needs a report from that exact release. Patch releases may keep the latest reviewed report
 from the same major/minor line; the runtime and installed-editor regression benchmarks still run for every release.
+For generated reviews, `npm run docs:check` follows the link in the README and compares the marked results with the
+sibling JSON. Stable 2.x readiness also requires both files to be tracked. The historical 1.2.1 review has no sibling
+JSON and is not rewritten by this check.
 
 Every session owns a mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
 extension directories are prepared once per arm to avoid repeated Marketplace downloads. One JSON result is written

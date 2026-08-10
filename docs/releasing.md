@@ -99,6 +99,10 @@ Pull-request and tag workflows pass only that exact non-glob path to the immedia
 
 The strict runtime benchmark and Playwright cached/uncached scroll gates must pass on the Linux release reference workstation. The runtime must import Polars before timing, record an accepted per-file source-cache eviction, and keep the canonical stdio first-grid round trip below 3s for the 100k×50 CSV and 5s for the 1M×20 Parquet fixture; a warm-source median cannot substitute for this gate. The report must retain separately named direct-manager cache metrics, real stdio protocol/JSON cache-miss round trips, the same-session statistics-contention latency, active-call proof, overlap result, native-frame evidence, source/machine/package provenance, and process resource samples. An in-process timing may not be cited as product-boundary performance, and none of these numbers may be described as VS Code, Cursor, webview, or editor first paint. The isolated benchmark bootstrap must prove from `header_stats` entry/exit events that statistics remained active when the page envelope finished sending; completed-before-send or otherwise inconclusive evidence fails release. The cache-miss response gap must then prove substantial overlap against the uncontented baseline, and both ordinary and contended stdio pages must remain within 500ms. Attach the generated `tmp/performance/report.json` values to parity evidence; opt-in Pandas and DuckDB smoke reports prove native coverage but do not replace the strict Polars release gate. Scheduled CI reports provide regression history but do not replace final local acceptance.
 
+A stable 2.x release links a reviewed Data Wrangler comparison from its README. The linked `review.md` and sibling
+`report.json` must both be tracked. `npm run docs:check` regenerates the marked results in memory and rejects a stale
+review; the rest of the review stays human-written.
+
 The README may link to the dated 1.2.1 Data Wrangler comparison during the preview series. Before releasing 2.0,
 rerun the comparison with the final candidate VSIX, publish a dated 2.0 report, and update the short README summary.
 
