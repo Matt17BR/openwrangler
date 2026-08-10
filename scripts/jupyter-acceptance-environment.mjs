@@ -84,12 +84,7 @@ const R_ACCEPTANCE_EXPECTED_VERSIONS = Object.entries(R_ACCEPTANCE_PACKAGE_VERSI
   .join(", ");
 const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
 const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
-const R_ACCEPTANCE_KERNEL_EXPRESSION = [
-  '.ow_library <- Sys.getenv("R_LIBS_USER", unset = NA_character_)',
-  'if (is.na(.ow_library) || !dir.exists(.ow_library)) stop("Open Wrangler R acceptance library is unavailable.")',
-  '.libPaths(unique(c(normalizePath(.ow_library, winslash = "/", mustWork = TRUE), .libPaths())))',
-  "IRkernel::main()"
-].join("; ");
+const R_ACCEPTANCE_KERNEL_EXPRESSION = "IRkernel::main()";
 const R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS = 300_000;
 const R_ACCEPTANCE_KERNEL_PROBE = String.raw`
 import subprocess, sys, time
