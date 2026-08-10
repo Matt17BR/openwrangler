@@ -345,7 +345,7 @@ describe("native operation commands", () => {
         [
           "Show R dataframes…",
           "Reads the selected R session. Wait for the R prompt first.",
-          expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
+          expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
         ],
         [
           "Open a data file",

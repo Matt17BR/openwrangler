@@ -2755,18 +2755,12 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "after starting the first active R terminal");
     await seedReleasedRInteractiveFrames(sourceTerminal, directory, 2_400_001, "first");
     assert.equal(vscode.window.activeTerminal, sourceTerminal, "Refresh must target the exact active R terminal.");
-    assert.equal(
-      await withBoundedAcceptancePromise(
-        vscode.commands.executeCommand<boolean>("openWrangler.refreshRInteractiveVariables"),
-        90_000,
-        "refreshing synthetic dataframes from the first active R terminal"
-      ),
-      true
-    );
-    await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "after refreshing the first active R terminal");
-
     let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
     let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+    const discovery = operations.getByRole("treeitem", { name: /^Show R dataframes\b/u });
+    await discovery.waitFor({ state: "visible", timeout: 10_000 });
+    await discovery.click();
+    await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "after refreshing the first active R terminal");
     await assertReleasedRInteractiveRows(operations);
     await waitFor(
       () => releasedRInteractiveMailboxRoots().length === initialMailboxes.length + 1,

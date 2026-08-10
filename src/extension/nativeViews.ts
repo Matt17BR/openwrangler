@@ -878,7 +878,7 @@ function rLiveVariableNodes(snapshot: RLiveVariableSnapshot | undefined): ViewNo
     const label = startsSession ? "Start R and show dataframes…" : "Show R dataframes…";
     return [
       new ViewNode(label, snapshot.message, "database", {
-        command: OPEN_R_INTERACTIVE_VARIABLE_COMMAND,
+        command: startsSession ? OPEN_R_INTERACTIVE_VARIABLE_COMMAND : REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
         title: label
       })
     ];
