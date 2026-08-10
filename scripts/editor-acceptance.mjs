@@ -2991,16 +2991,14 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
   const ownKeys = Reflect.ownKeys(jupyterEnvironment);
   const hasRProcessEnvironment =
     Object.prototype.hasOwnProperty.call(jupyterEnvironment, "rscriptPath") ||
-    Object.prototype.hasOwnProperty.call(jupyterEnvironment, "rLibraryDir") ||
-    Object.prototype.hasOwnProperty.call(jupyterEnvironment, "rProfilePath") ||
-    Object.prototype.hasOwnProperty.call(jupyterEnvironment, "rProfileStagePath");
-  const expectedOwnKeyCount = fields.length + (hasRProcessEnvironment ? 4 : 0);
+    Object.prototype.hasOwnProperty.call(jupyterEnvironment, "rLibraryDir");
+  const expectedOwnKeyCount = fields.length + (hasRProcessEnvironment ? 2 : 0);
   if (
     ownKeys.length !== expectedOwnKeyCount ||
     fields.some(([field]) => !Object.prototype.hasOwnProperty.call(jupyterEnvironment, field))
   ) {
     throw new Error(
-      "An editor acceptance Jupyter environment must define its four Jupyter directories and, when present, all four exact R process fields."
+      "An editor acceptance Jupyter environment must define its four Jupyter directories and, when present, both exact R process fields."
     );
   }
   const environment = {};
@@ -3039,8 +3037,6 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
   if (hasRProcessEnvironment) {
     const rscriptPath = jupyterEnvironment.rscriptPath;
     const rLibraryDir = jupyterEnvironment.rLibraryDir;
-    const rProfilePath = jupyterEnvironment.rProfilePath;
-    const rProfileStagePath = jupyterEnvironment.rProfileStagePath;
     if (
       typeof rscriptPath !== "string" ||
       !isAbsolute(rscriptPath) ||
@@ -3048,48 +3044,26 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
       typeof rLibraryDir !== "string" ||
       !isAbsolute(rLibraryDir) ||
       /[\0\r\n]/u.test(rLibraryDir) ||
-      typeof rProfilePath !== "string" ||
-      !isAbsolute(rProfilePath) ||
-      /[\0\r\n]/u.test(rProfilePath) ||
-      typeof rProfileStagePath !== "string" ||
-      !isAbsolute(rProfileStagePath) ||
-      /[\0\r\n]/u.test(rProfileStagePath) ||
       isSensitiveEditorEnvironmentValue(rscriptPath) ||
-      isSensitiveEditorEnvironmentValue(rLibraryDir) ||
-      isSensitiveEditorEnvironmentValue(rProfilePath) ||
-      isSensitiveEditorEnvironmentValue(rProfileStagePath)
+      isSensitiveEditorEnvironmentValue(rLibraryDir)
     ) {
       throw new Error("An editor acceptance R process environment must use safe absolute single-line paths.");
     }
     let canonicalRscript;
     let canonicalRLibrary;
-    let canonicalRProfile;
-    let canonicalRProfileStage;
     try {
       const rscriptMetadata = lstatSync(rscriptPath, { bigint: true });
       const libraryMetadata = lstatSync(rLibraryDir, { bigint: true });
-      const profileMetadata = lstatSync(rProfilePath, { bigint: true });
-      const profileStageMetadata = lstatSync(rProfileStagePath, { bigint: true });
       if (!rscriptMetadata.isFile() || rscriptMetadata.isSymbolicLink()) throw new Error("invalid Rscript");
       if (!libraryMetadata.isDirectory() || libraryMetadata.isSymbolicLink()) throw new Error("invalid R library");
-      if (!profileMetadata.isFile() || profileMetadata.isSymbolicLink()) throw new Error("invalid R profile");
-      if (!profileStageMetadata.isFile() || profileStageMetadata.isSymbolicLink()) {
-        throw new Error("invalid R profile stage");
-      }
       canonicalRscript = realpathSync(rscriptPath);
       canonicalRLibrary = realpathSync(rLibraryDir);
-      canonicalRProfile = realpathSync(rProfilePath);
-      canonicalRProfileStage = realpathSync(rProfileStagePath);
     } catch {
       throw new Error(
-        "An editor acceptance R process environment requires an existing exact Rscript, private R library, profile, and startup marker."
+        "An editor acceptance R process environment requires an existing exact Rscript and private R library."
       );
     }
-    for (const [label, path] of [
-      ["library", canonicalRLibrary],
-      ["profile", canonicalRProfile],
-      ["profile startup marker", canonicalRProfileStage]
-    ]) {
+    for (const [label, path] of [["library", canonicalRLibrary]]) {
       const containedPath = relative(canonicalRoot, path);
       if (
         containedPath.length === 0 ||
@@ -3102,8 +3076,6 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
     }
     environment.OPEN_WRANGLER_TEST_RSCRIPT = canonicalRscript;
     environment.R_LIBS_USER = canonicalRLibrary;
-    environment.R_PROFILE_USER = canonicalRProfile;
-    environment.OPEN_WRANGLER_R_PROFILE_STAGE = canonicalRProfileStage;
   }
   return environment;
 }
