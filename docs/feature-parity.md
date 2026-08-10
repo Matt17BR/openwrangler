@@ -110,8 +110,9 @@ Wrangler-managed R document; an active terminal has no source document to edit.
 A trusted local `.R`, `.Rmd`, or `.qmd` document on macOS or Linux can also run in an Open Wrangler-owned R process,
 after which the user chooses one of the dataframes it created. R Markdown and Quarto use supported top-level `{r}`
 cells rather than a document render. The editor-title action opens a dataframe from the selected official R terminal
-when one is active and otherwise runs the current document. On macOS and Linux, the tab menu keeps explicit commands
-for both paths. Pages, compound filters, ordered sorts,
+when one is active. Without an active R terminal, it runs the current document on macOS or Linux and explains that
+direct document execution is unavailable on Windows. On macOS and Linux, the tab menu keeps explicit commands for
+both paths. Pages, compound filters, ordered sorts,
 value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Editing mode
 currently supports twenty-one cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
@@ -207,9 +208,10 @@ all three document types.
 Cursor runs the complete plain `.R` document path, including cleaned CSV export; parser, runtime, and VS Code
 acceptance cover the literate formats without repeating them in Cursor's single installed-editor phase.
 The macOS preview and stable release cells must pass the same local document subjourney in packaged VS Code. Their Windows
-counterparts run the complete local IRkernel journey but skip direct documents. Local Windows file menus are hidden;
-remote-resource actions and the Command Palette remain reachable because static client keys cannot identify the
-extension-host platform. The runtime platform check is authoritative. Remote R-document execution is experimental
+counterparts run the complete local IRkernel journey but skip direct documents. Local Windows hides the explicit
+**Run R Document** Explorer and tab-menu actions; the stable title action can still open a dataframe from an active
+official R terminal. Remote-resource actions and the Command Palette remain reachable because static client keys
+cannot identify the extension-host platform. The runtime platform check is authoritative. Remote R-document execution is experimental
 and is not part of the release matrix. Direct document execution is disabled on a Windows extension host until the
 extension can own the complete spawned process tree. Operations
 outside the listed 21-operation set are not available in R yet.
