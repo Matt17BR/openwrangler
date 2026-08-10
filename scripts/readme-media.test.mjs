@@ -631,7 +631,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const performanceSection = readme.slice(readme.indexOf("## Performance"), readme.indexOf("## Roadmap"));
   const normalizedPerformanceSection = performanceSection.replace(/\s+/gu, " ");
   assert.match(normalizedPerformanceSection, /Microsoft Data Wrangler/u);
-  assert.match(normalizedPerformanceSection, /found Open Wrangler faster for notebook previews and CSV column profiling/u);
+  assert.match(
+    normalizedPerformanceSection,
+    /found Open Wrangler faster for notebook previews and CSV column profiling/u
+  );
   assert.match(normalizedPerformanceSection, /Parquet workbench and profiling times were similar/u);
   assert.match(normalizedPerformanceSection, /Open Wrangler used Polars directly/u);
   assert.match(normalizedPerformanceSection, /Data Wrangler converted the input to Pandas/u);
