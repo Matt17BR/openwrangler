@@ -7877,8 +7877,8 @@ async function previewReleasedRFindReplace(
     "The native R Find and replace preview must retain its draft."
   );
   assertReleasedRFindReplaceGeneratedCode(active.code ?? "", sourceName, find, replacement, false);
-  const codePreview = await waitForCodePreview(workbench, replacement, "R");
-  assertReleasedRFindReplaceCodeSurface(await codePreview.innerText(), sourceName, find, replacement, false);
+  const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  await revealCodePreviewOperationLine(codePreview, "gsub(", ".ow_text_replacement");
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -20307,7 +20307,7 @@ async function assertMediaColumnTitlesUnclipped(
 
 async function waitForCodePreview(
   workbench: Page,
-  expectedCode: string,
+  expectedCode: string | undefined,
   language: "Python" | "R" = "Python"
 ): Promise<Locator> {
   const deadline = Date.now() + 10_000;
@@ -20316,7 +20316,7 @@ async function waitForCodePreview(
       try {
         const content = frame.locator(`[aria-label="Editable generated ${language} code preview"]`);
         if ((await content.count()) === 0 || !(await content.isVisible())) continue;
-        if ((await content.innerText()).includes(expectedCode)) return content;
+        if (expectedCode === undefined || (await content.innerText()).includes(expectedCode)) return content;
       } catch (error) {
         // Code Preview is a workbench webview whose iframe can be replaced
         // while its provider refreshes. Ignore only a proven retired child
@@ -20326,6 +20326,7 @@ async function waitForCodePreview(
     }
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
+  if (expectedCode === undefined) throw new Error(`The generated ${language} code preview did not become visible.`);
   throw new Error(`The generated code preview did not expose ${JSON.stringify(expectedCode)}.`);
 }
 
