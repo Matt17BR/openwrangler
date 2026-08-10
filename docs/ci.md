@@ -45,9 +45,8 @@ Cross-platform, CodeQL, and performance workflows also run on schedules so chang
 ## Branches
 
 The repository does not need permanent `develop`, `staging`, or maintenance branches. Reviewed changes merge to
-`main`, and the release candidate VSIX is the staging artifact. The temporary `v2` integration branch is retired
-after the first preview is promoted. A maintenance branch can be cut later if two supported release lines genuinely
-need work at the same time.
+`main`, and the release candidate VSIX is the staging artifact. A maintenance branch can be cut later if two
+supported release lines genuinely need work at the same time.
 
 This keeps promotion simple:
 

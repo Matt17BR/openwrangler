@@ -2,7 +2,7 @@ name: CodeQL
 
 on:
   pull_request:
-    branches: [main, v2]
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   schedule:
     - cron: "23 4 * * 2"

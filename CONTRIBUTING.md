@@ -23,8 +23,7 @@ editorial read; do not rely on an AI detector or a word list.
 
 ## Pull requests
 
-- Target `main` for 1.x work and `v2` for native R work. Both branches require pull requests and the same protected
-  checks. Publication stays on `main` until the first Open Wrangler 2 preview is ready.
+- Target `main` for all work. Use a short-lived branch and pull request for each change.
 - Keep a pull request limited to one documented milestone or issue. Split unrelated work into separate pull requests.
 - Keep independently reviewable changes in separate commits. Use rebase merge when a pull request has several such
   commits; squash only when the pull request is already one coherent commit.
