@@ -32,14 +32,13 @@ import {
 
 const SHA = "a".repeat(64);
 
-test("writes diagnostic report bytes before enforcing release completeness", () => {
+test("validates a release report before writing it", () => {
   const root = mkdtempSync(join(tmpdir(), "ow-comparison-report-"));
   const output = join(root, "report.json");
   const report = { protocol: "openwrangler-data-wrangler-study-report-v2", completedSessions: 1 };
   try {
     assert.throws(() => writeDataWranglerComparisonStudyReport(output, report), /eight complete sessions/u);
-    assert.deepEqual(JSON.parse(readFileSync(output, "utf8")), report);
-    assert.throws(() => writeDataWranglerComparisonStudyReport(output, report), /new output path/u);
+    assert.equal(existsSync(output), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
