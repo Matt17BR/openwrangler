@@ -100,7 +100,7 @@ const rAcceptanceBootstrapReceipts = new WeakMap();
 const R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS = 300_000;
 const R_ACCEPTANCE_KERNEL_PROBE = String.raw`
 import os, subprocess, sys, time
-stage, manager, client, result = "start", None, None, None
+stage, manager, client, succeeded = "start", None, None, False
 try:
     from jupyter_client import KernelManager
     from jupyter_client.kernelspec import KernelSpec, KernelSpecManager, NoSuchKernel
@@ -131,14 +131,15 @@ try:
         elif kind == "error": raise RuntimeError("kernel error")
         elif kind == "status" and content.get("execution_state") == "idle":
             if not marker: raise RuntimeError("missing marker")
-            result = "ready"; break
-except BaseException: result = stage
+            succeeded = True; break
+except BaseException: pass
 finally:
     try:
         if client is not None: client.stop_channels()
         if manager is not None and manager.has_kernel: manager.shutdown_kernel(now=True)
-    except BaseException: result = "cleanup"
-sys.stdout.write("OPEN_WRANGLER_R_KERNEL_" + ("READY" if result == "ready" else "FAILED:" + (result or stage)) + "\n")
+    except BaseException:
+        stage, succeeded = "cleanup", False
+sys.stdout.write("OPEN_WRANGLER_R_KERNEL_" + ("READY" if succeeded else "FAILED:" + stage) + "\n")
 `.trimStart();
 
 function rAcceptanceKernelBootstrap(libraryDir, stagePath) {

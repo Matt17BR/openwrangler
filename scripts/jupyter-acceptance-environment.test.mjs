@@ -434,6 +434,11 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
       script,
       /class ExactKernelSpecManager\(KernelSpecManager\):[\s\S]+return self\._exact_spec[\s\S]+KernelSpec\.from_resource_dir\(os\.path\.dirname\(kernel_spec_path\)\)[\s\S]+kernel_spec_manager=specs[\s\S]+client\.wait_for_ready\(timeout=12\)[\s\S]+__OW_RELEASED_R_KERNEL__[\s\S]+manager\.shutdown_kernel\(now=True\)/u
     );
+    assert.match(script, /stage, manager, client, succeeded = "start", None, None, False/u);
+    assert.match(script, /if not marker: raise RuntimeError\("missing marker"\)\s+succeeded = True; break/u);
+    assert.match(script, /stage, succeeded = "cleanup", False/u);
+    assert.match(script, /"READY" if succeeded else "FAILED:" \+ stage/u);
+    assert.doesNotMatch(script, /result == "ready"/u);
     assert.deepEqual(options, { timeoutMs: 30_000, maxOutputBytes: 1_024 });
     assert.equal(input.environment.R_LIBS_USER, prepared.libraryDir);
     assert.equal(input.environment.R_PROFILE_USER, undefined);
