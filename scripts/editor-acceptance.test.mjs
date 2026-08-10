@@ -3645,7 +3645,7 @@ test("editor phases forward only a complete runner-owned Jupyter environment", a
   }
 });
 
-test("R Jupyter phases forward only their exact Rscript and private library", async () => {
+test("R Jupyter phases forward only their exact executable, library, and profile", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-r-process-environment-"));
   const resultPath = join(directory, "result.json");
   const rscriptPath = join(directory, "Rscript");
@@ -3655,7 +3655,9 @@ test("R Jupyter phases forward only their exact Rscript and private library", as
     configDir: join(directory, "jupyter", "config"),
     path: join(directory, "jupyter", "kernels"),
     rscriptPath,
-    rLibraryDir: join(directory, "r-library")
+    rLibraryDir: join(directory, "r-library"),
+    rProfilePath: join(directory, "r-profile"),
+    rProfileStagePath: join(directory, "r-profile-stage")
   };
   let launchedEnvironment;
   try {
@@ -3669,6 +3671,8 @@ test("R Jupyter phases forward only their exact Rscript and private library", as
       await mkdir(path, { recursive: true });
     }
     await writeFile(rscriptPath, "exact Rscript\n", { mode: 0o700 });
+    await writeFile(jupyterEnvironment.rProfilePath, "exact R profile\n", { mode: 0o600 });
+    await writeFile(jupyterEnvironment.rProfileStagePath, "", { mode: 0o600 });
     await chmod(rscriptPath, 0o700);
     await runEditorAcceptancePhase(
       {
@@ -3700,6 +3704,8 @@ test("R Jupyter phases forward only their exact Rscript and private library", as
 
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_RSCRIPT, rscriptPath);
     assert.equal(launchedEnvironment.R_LIBS_USER, jupyterEnvironment.rLibraryDir);
+    assert.equal(launchedEnvironment.R_PROFILE_USER, jupyterEnvironment.rProfilePath);
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_R_PROFILE_STAGE, jupyterEnvironment.rProfileStagePath);
     assert.equal(launchedEnvironment.JUPYTER_DATA_DIR, jupyterEnvironment.dataDir);
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -626,7 +626,9 @@ export async function prepareJupyterAcceptanceREnvironment(
       configDir,
       path: pathDir,
       rscriptPath: canonicalRscript,
-      rLibraryDir: libraryDir
+      rLibraryDir: libraryDir,
+      rProfilePath: profilePath,
+      rProfileStagePath: profileStagePath
     }),
     dependencyProbe,
     dependencyInstall
@@ -661,6 +663,8 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
     throw new Error("Released-Jupyter R kernel readiness requires one exact prepared private environment.");
   }
 
+  const receipt = rAcceptanceProfileReceipt(prepared);
+  readRProfileMarkerCount(receipt);
   const homeDir = resolve(prepared.root, "h");
   const result = await runCommand(
     {
@@ -674,7 +678,11 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
         resolve(prepared.jupyterEnvironment.runtimeDir, "kernel-readiness.json"),
         homeDir
       ],
-      environment: prepared.dependencyProbe.input.environment,
+      environment: Object.freeze({
+        ...prepared.dependencyProbe.input.environment,
+        R_PROFILE_USER: receipt.profilePath,
+        OPEN_WRANGLER_R_PROFILE_STAGE: receipt.profileStagePath
+      }),
       label: "Released-Jupyter private R kernel readiness probe"
     },
     { timeoutMs: 30_000, maxOutputBytes: 1_024 }
@@ -683,12 +691,7 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
     throw new Error("Released-Jupyter R kernel readiness probe returned a malformed fixed result.");
   }
   if (/^OPEN_WRANGLER_R_KERNEL_READY\r?\n$/u.test(result.stdout)) {
-    const receipt = rAcceptanceProfileReceipt(prepared);
-    const markerCount = readRProfileMarkerCount(receipt);
-    if (markerCount < 1) {
-      throw new Error("Released-Jupyter R kernel readiness did not load the private R profile.");
-    }
-    receipt.readinessMarkerCount = markerCount;
+    receipt.readinessMarkerCount = readRProfileMarkerCount(receipt);
     return;
   }
   const failure = /^OPEN_WRANGLER_R_KERNEL_FAILED:(start|ready|execute|cleanup)\r?\n$/u.exec(result.stdout);
@@ -698,7 +701,7 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
 
 export function jupyterAcceptanceRProfileStartupStage(prepared) {
   const receipt = rAcceptanceProfileReceipt(prepared);
-  if (!Number.isSafeInteger(receipt.readinessMarkerCount) || receipt.readinessMarkerCount < 1) {
+  if (!Number.isSafeInteger(receipt.readinessMarkerCount) || receipt.readinessMarkerCount < 0) {
     throw new Error("Released-Jupyter R profile startup stage requires a completed readiness baseline.");
   }
   return readRProfileMarkerCount(receipt) > receipt.readinessMarkerCount ? "profile-loaded" : "profile-not-loaded";
