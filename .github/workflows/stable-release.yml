@@ -123,7 +123,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - os: macos-latest
@@ -191,6 +191,7 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor
         name: Test packaged VS Code
+        continue-on-error: true
         run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
@@ -205,6 +206,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - name: Fail after VS Code diagnostics
+        if: ${{ always() && steps.packaged_editor.outcome == 'failure' }}
+        run: exit 1
       - id: canonical_cursor
         name: Reverify the exact canonical stable artifact for cross-platform Cursor
         env:
@@ -213,6 +217,7 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: cursor_smoke
         name: Test pinned Cursor platform smoke
+        continue-on-error: true
         run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: cursor
@@ -227,6 +232,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - name: Fail after Cursor diagnostics
+        if: ${{ always() && steps.cursor_smoke.outcome == 'failure' }}
+        run: exit 1
       - id: canonical_r_jupyter_platform
         name: Reverify the exact canonical stable artifact for cross-platform R Jupyter
         env:
@@ -235,6 +243,7 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r_platform
         name: Test local R Jupyter in packaged VS Code
+        continue-on-error: true
         run: node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
@@ -253,6 +262,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - name: Fail after cross-platform R-Jupyter diagnostics
+        if: ${{ always() && steps.packaged_editor_r_platform.outcome == 'failure' }}
+        run: exit 1
 
   linux-acceptance:
     name: Linux release acceptance
@@ -311,9 +323,11 @@ jobs:
       - name: Verify live repository metadata
         run: npm run repository:check-live
       - run: npm run test:scripts
-      - run: npm run test:webview-acceptance
+      - id: webview_acceptance
+        continue-on-error: true
+        run: npm run test:webview-acceptance
       - name: Upload webview failure diagnostics
-        if: failure()
+        if: ${{ always() && steps.webview_acceptance.outcome == 'failure' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stable-release-webview-${{ github.run_attempt }}
@@ -324,6 +338,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - name: Fail after webview diagnostics
+        if: ${{ always() && steps.webview_acceptance.outcome == 'failure' }}
+        run: exit 1
       - run: npm run test:coverage
       - run: npm audit --omit=dev
       - run: npm run audit:python
@@ -337,6 +354,7 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_vscode
         name: Test the full package in headless VS Code
+        continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
@@ -351,6 +369,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - name: Fail after full VS Code diagnostics
+        if: ${{ always() && steps.packaged_vscode.outcome == 'failure' }}
+        run: exit 1
       - id: prepare_cursor_xvfb
         name: Prepare pinned private Xvfb for Cursor
         shell: node {0}
@@ -384,6 +405,7 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_cursor
         name: Test the full package in private-display Cursor
+        continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: cursor
@@ -400,6 +422,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - name: Fail after full Cursor diagnostics
+        if: ${{ always() && steps.packaged_cursor.outcome == 'failure' }}
+        run: exit 1
 
   installed-performance:
     name: Installed performance in pinned VS Code and Cursor
@@ -441,6 +466,7 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: installed_performance
         name: Test the ordinary stable artifact in pinned editors
+        continue-on-error: true
         env:
           EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -461,6 +487,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - name: Fail after installed-performance diagnostics
+        if: ${{ always() && steps.installed_performance.outcome == 'failure' }}
+        run: exit 1
       - name: Upload installed-performance evidence
         if: ${{ steps.installed_performance.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -578,6 +607,7 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor
         name: Test released Jupyter in the exact packaged VSIX
+        continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
@@ -596,6 +626,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - name: Fail after released-Jupyter diagnostics
+        if: ${{ always() && steps.packaged_editor.outcome == 'failure' }}
+        run: exit 1
       - id: canonical_r_jupyter
         name: Reverify the exact canonical stable artifact for R Jupyter
         env:
@@ -604,6 +637,7 @@ jobs:
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor_r
         name: Test R Jupyter in the exact packaged VSIX
+        continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
@@ -624,6 +658,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - name: Fail after R-Jupyter diagnostics
+        if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' }}
+        run: exit 1
 
   remote-ssh:
     name: Remote SSH acceptance

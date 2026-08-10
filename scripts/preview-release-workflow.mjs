@@ -4,6 +4,7 @@ import {
   OPEN_VSX_VERIFY_PAT_RUN,
   PUBLIC_MEDIA_CONTRACT_RUN
 } from "./open-vsx-promotion-workflow.mjs";
+import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mjs";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const EVENT_SHA = "${{ github.sha }}";
@@ -291,7 +292,7 @@ function inspectPreviewRJupyter(job, problems) {
     verifier.env.RELEASE_TAG !== RELEASE_TAG ||
     command(verifier.run) !== "node scripts/verify-preview-release-artifact.mjs canonical-release" ||
     runnerMatches.length !== 1 ||
-    !exactKeys(runner, ["id", "name", "run", "env"]) ||
+    !exactKeys(runner, ["id", "name", "continue-on-error", "run", "env"]) ||
     runner.name !== "Test R Jupyter in the exact packaged VSIX" ||
     command(runner.run) !== R_JUPYTER_RUN ||
     !exactKeys(runner.env, [
@@ -367,7 +368,7 @@ function inspectCrossPlatformRJupyter(job, problems) {
     !(jobSteps.indexOf(setup) < jobSteps.indexOf(locate)) ||
     !(jobSteps.indexOf(locate) < jobSteps.indexOf(npmCi)) ||
     runnerMatches.length !== 1 ||
-    !exactKeys(runner, ["id", "name", "run", "env"]) ||
+    !exactKeys(runner, ["id", "name", "continue-on-error", "run", "env"]) ||
     runner.name !== "Test local R Jupyter in packaged VS Code" ||
     command(runner.run) !== CROSS_PLATFORM_R_JUPYTER_RUN ||
     !exactKeys(runner.env, [
@@ -474,10 +475,8 @@ export function inspectPreviewReleaseWorkflow(source) {
     if (job?.env !== undefined || job?.defaults !== undefined || job?.["continue-on-error"] !== undefined) {
       problems.push(`${jobName} must not inherit environment, shell defaults, or failure suppression.`);
     }
-    if (steps(job).some((step) => step?.["continue-on-error"] !== undefined)) {
-      problems.push(`${jobName} must not suppress a required step failure.`);
-    }
   }
+  problems.push(...inspectDeferredDiagnosticFailures(workflow, UPLOAD_ACTION));
 
   const packaging = workflow.jobs.package;
   inspectCheckout(packaging, "package", problems);
@@ -553,10 +552,23 @@ export function inspectPreviewReleaseWorkflow(source) {
   if (completeOwners.length !== 1 || completeOwners[0] !== "linux-acceptance") {
     problems.push("linux-acceptance must be the one and only complete source/full-suite owner.");
   }
-  if (runs(workflow.jobs["cross-platform"]).some((run) => run.startsWith("python -m pytest"))) {
+  const crossPlatform = workflow.jobs["cross-platform"];
+  const crossPlatformMatrix = crossPlatform.strategy?.matrix?.include;
+  if (
+    crossPlatform.strategy?.["fail-fast"] !== true ||
+    !Array.isArray(crossPlatformMatrix) ||
+    crossPlatformMatrix.length !== 2 ||
+    crossPlatformMatrix[0]?.os !== "macos-latest" ||
+    crossPlatformMatrix[0]?.python !== "3.12" ||
+    crossPlatformMatrix[1]?.os !== "windows-latest" ||
+    crossPlatformMatrix[1]?.python !== "3.14"
+  ) {
+    problems.push("cross-platform must fail fast across the pinned macOS and Windows release matrix.");
+  }
+  if (runs(crossPlatform).some((run) => run.startsWith("python -m pytest"))) {
     problems.push("cross-platform must retain native smoke coverage without repeating the complete Python suite.");
   }
-  inspectCrossPlatformRJupyter(workflow.jobs["cross-platform"], problems);
+  inspectCrossPlatformRJupyter(crossPlatform, problems);
   const installedPerformanceRun = runs(workflow.jobs["installed-performance"]).find((run) =>
     run.includes("benchmark:installed --")
   );

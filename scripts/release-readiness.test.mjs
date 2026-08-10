@@ -1644,6 +1644,17 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       workflow.jobs["cross-platform"].needs = "linux-acceptance";
     },
     (workflow) => {
+      workflow.jobs["cross-platform"].strategy["fail-fast"] = false;
+    },
+    (workflow) => {
+      workflow.jobs["cross-platform"].steps.find((step) => step.id === "packaged_editor")["continue-on-error"] = false;
+    },
+    (workflow) => {
+      const steps = workflow.jobs["cross-platform"].steps;
+      const runnerIndex = steps.findIndex((step) => step.id === "packaged_editor");
+      steps.splice(runnerIndex + 2, 1);
+    },
+    (workflow) => {
       workflow.jobs["cross-platform"].steps.push(
         { run: "npm run check" },
         { run: "npm run test:scripts" },

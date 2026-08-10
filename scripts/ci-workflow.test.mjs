@@ -519,6 +519,7 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
       { os: "macos-latest", python: "3.12" },
       { os: "windows-latest", python: "3.14" }
     ]);
+    assert.equal(native?.strategy?.["fail-fast"], true);
     assert.equal(
       native?.steps?.some(
         (step) => step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode" && step?.id === "packaged_editor"
