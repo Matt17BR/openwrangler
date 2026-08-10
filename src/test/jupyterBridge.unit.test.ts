@@ -6,6 +6,7 @@ import type { SessionCoordinator } from "../extension/sessionCoordinator";
 type CommandHandler = (...args: unknown[]) => unknown;
 
 const notebookMocks = vi.hoisted(() => ({
+  workspaceTrusted: true,
   commands: new Map<string, CommandHandler>(),
   notebookDocuments: [] as NotebookDocument[],
   activeNotebookEditor: undefined as NotebookEditor | undefined,
@@ -179,7 +180,9 @@ vi.mock("vscode", () => {
       showQuickPick: notebookMocks.showQuickPick
     },
     workspace: {
-      isTrusted: true,
+      get isTrusted() {
+        return notebookMocks.workspaceTrusted;
+      },
       get notebookDocuments() {
         return notebookMocks.notebookDocuments;
       }
@@ -240,6 +243,7 @@ import {
 
 describe("notebook command provenance", () => {
   beforeEach(() => {
+    notebookMocks.workspaceTrusted = true;
     notebookMocks.commands.clear();
     notebookMocks.notebookDocuments.length = 0;
     notebookMocks.activeNotebookEditor = undefined;
@@ -1149,6 +1153,20 @@ describe("notebook command provenance", () => {
       "r"
     );
     expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not activate Jupyter before workspace trust is granted", async () => {
+    const original = notebook("file:///workspace/untrusted-r.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.workspaceTrusted = false;
+
+    await expect(discoverVariablesForSelectedKernel(original)).rejects.toThrow(
+      "Trust this workspace before Open Wrangler inspects a notebook kernel."
+    );
+
+    expect(notebookMocks.activateJupyter).not.toHaveBeenCalled();
+    expect(notebookMocks.getKernel).not.toHaveBeenCalled();
+    expect(notebookMocks.executeCode).not.toHaveBeenCalled();
   });
 
   it("rejects a stale cached R descriptor", async () => {
