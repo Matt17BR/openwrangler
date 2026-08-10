@@ -2942,62 +2942,93 @@ async function activateReleasedRInteractiveTitleAction(
   sourceDocument: vscode.TextDocument
 ): Promise<void> {
   const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
+  const activeSourceTab = activeGroup
+    .locator(".tabs-container .tab.active:visible")
+    .filter({ hasText: path.basename(sourceDocument.uri.fsPath) })
+    .last();
   const titleActions = activeGroup.locator(".editor-actions:visible");
-  const direct = await resolveReleasedREditorAction(titleActions, "button", "active R editor title");
-  if (direct) {
-    assertExactActiveTextEditor(sourceDocument, "before dispatching its direct Open Wrangler title action");
-    await direct.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    return;
-  }
-
-  assertExactActiveTextEditor(sourceDocument, "before opening its Open Wrangler title-action overflow");
   const visibleMenus = workbench.locator(".context-view.monaco-menu-container:visible");
-  assert.equal(await visibleMenus.count(), 0, "R title-action discovery requires no pre-existing workbench menu.");
   const moreActions = titleActions.getByRole("button", { name: /^More Actions(?:\.\.\.)?$/u });
-  await moreActions.first().waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  assert.equal(await moreActions.count(), 1, "The active R editor title must expose one More Actions button.");
-  assert.equal(await moreActions.first().isEnabled(), true, "The active R editor More Actions button must be enabled.");
-  await moreActions.first().click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  const menu = visibleMenus.first();
-  let dispatchStarted = false;
-  try {
-    await workbench.waitForTimeout(150);
-    await menu.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    assert.equal(await visibleMenus.count(), 1, "The R editor More Actions button must open exactly one menu.");
-    const action = await resolveReleasedREditorAction(menu, "menuitem", "active R editor overflow");
-    if (!action) {
-      const items = await menu.getByRole("menuitem").evaluateAll((elements) =>
-        elements.slice(0, 32).map((element) => {
-          const normalize = (value: string | null | undefined): string =>
-            (value ?? "").replace(/\s+/gu, " ").trim().slice(0, 256);
-          const owner = element.closest(".action-item");
-          return {
-            label: normalize(element.getAttribute("aria-label") || element.textContent),
-            command: normalize(element.getAttribute("data-command-id") || owner?.getAttribute("data-command-id"))
-          };
-        })
-      );
-      assert.fail(
-        "The active R editor overflow must expose its Open Wrangler action. " +
-          `Context: ${JSON.stringify({
-            extension: path.extname(sourceDocument.uri.path),
-            languageId: sourceDocument.languageId,
-            scheme: sourceDocument.uri.scheme,
-            trusted: vscode.workspace.isTrusted,
-            platform: process.platform
-          })}. Visible items: ${JSON.stringify(items)}.`
-      );
+  await activeSourceTab.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  assertExactActiveTextEditor(sourceDocument, "before focusing its workbench tab");
+  await activeSourceTab.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+
+  const deadline = Date.now() + 10_000;
+  let lastItems: Array<{ label: string; command: string }> = [];
+  do {
+    assertExactActiveTextEditor(sourceDocument, "while waiting for its Open Wrangler title action");
+    assert.equal(
+      await activeSourceTab.isVisible(),
+      true,
+      "The exact R source must remain the active workbench tab while its title action binds."
+    );
+    const direct = await resolveReleasedREditorAction(titleActions, "button", "active R editor title");
+    if (direct) {
+      assertExactActiveTextEditor(sourceDocument, "before dispatching its direct Open Wrangler title action");
+      await direct.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+      return;
     }
-    assertExactActiveTextEditor(sourceDocument, "before dispatching its Open Wrangler overflow action");
-    dispatchStarted = true;
-    await action.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    await menu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  } finally {
-    if (!dispatchStarted && (await visibleMenus.count()) > 0) {
-      await workbench.locator("body").press("Escape");
-      await visibleMenus.first().waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+
+    assert.equal(await visibleMenus.count(), 0, "R title-action discovery requires no pre-existing workbench menu.");
+    if ((await moreActions.count()) === 1 && (await moreActions.first().isVisible())) {
+      assert.equal(
+        await moreActions.first().isEnabled(),
+        true,
+        "The active R editor More Actions button must be enabled."
+      );
+      await moreActions.first().click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+      const menu = visibleMenus.first();
+      let dispatchStarted = false;
+      try {
+        await workbench.waitForTimeout(150);
+        await menu.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+        assert.equal(await visibleMenus.count(), 1, "The R editor More Actions button must open exactly one menu.");
+        const action = await resolveReleasedREditorAction(menu, "menuitem", "active R editor overflow");
+        if (action) {
+          assertExactActiveTextEditor(sourceDocument, "before dispatching its Open Wrangler overflow action");
+          assert.equal(
+            await activeSourceTab.isVisible(),
+            true,
+            "The exact R source must remain the active workbench tab before its overflow action is dispatched."
+          );
+          dispatchStarted = true;
+          await action.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+          await menu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+          return;
+        }
+        lastItems = await menu.getByRole("menuitem").evaluateAll((elements) =>
+          elements.slice(0, 32).map((element) => {
+            const normalize = (value: string | null | undefined): string =>
+              (value ?? "").replace(/\s+/gu, " ").trim().slice(0, 256);
+            const owner = element.closest(".action-item");
+            return {
+              label: normalize(element.getAttribute("aria-label") || element.textContent),
+              command: normalize(element.getAttribute("data-command-id") || owner?.getAttribute("data-command-id"))
+            };
+          })
+        );
+      } finally {
+        if (!dispatchStarted && (await visibleMenus.count()) > 0) {
+          await workbench.locator("body").press("Escape");
+          await menu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+        }
+      }
     }
-  }
+    if (Date.now() >= deadline) break;
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+
+  assert.fail(
+    "The active R editor did not expose its Open Wrangler action after the workbench title context settled. " +
+      `Context: ${JSON.stringify({
+        extension: path.extname(sourceDocument.uri.path),
+        languageId: sourceDocument.languageId,
+        scheme: sourceDocument.uri.scheme,
+        trusted: vscode.workspace.isTrusted,
+        platform: process.platform,
+        activeTabVisible: await activeSourceTab.isVisible().catch(() => false)
+      })}. Last visible overflow items: ${JSON.stringify(lastItems)}.`
+  );
 }
 
 async function resolveReleasedREditorAction(
