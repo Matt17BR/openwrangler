@@ -12,7 +12,9 @@ matrix for release candidates or changes that cross all of its boundaries.
   `data.frame`, tibble, and `data.table` pages through the strict TypeScript decoder. The R assertions cover snapshot
   isolation, `data.table` by-reference mutation, duplicate and non-syntactic names, factors, ordered factors, dates,
   time zones, durations, exact `bit64::integer64` values, `NA`/`NaN`/infinity, unsupported semantics, factor-level and
-  page bounds, and rejection before an oversized page is fully allocated, including JSON escape amplification. It also
+  page bounds, aligned element names on atomic and classed columns across base, tibble, data-table, and `collapse`
+  frames, rejection of malformed names metadata, and rejection before an oversized page is fully allocated, including
+  JSON escape amplification. It also
   covers stable-reference compound filters and multi-column sorts, AND/OR logic, typed predicates and selections,
   value search, per-key direction and missing-value placement, exact integer64 ordering, duplicate-name references,
   filtered and sorted pagination, source immutability, malformed or stale rules, and source row IDs in logical view

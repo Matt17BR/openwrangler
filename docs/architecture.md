@@ -95,7 +95,9 @@ silently relabeled or rounded. Numeric display always uses a dot, regardless of 
 with no `tzone` attribute or an empty `tzone` uses UTC for display instead of the process's current time zone. The
 original null or empty-string value remains in metadata. R's reserved integer and `bit64::integer64` missing-value
 sentinels can appear only as typed nulls. Grouped or rowwise tibbles, list/matrix/raw/complex columns, subclasses, and
-unrecognized attributes fail instead of losing R semantics. Source positions provide stable row identity. Explicit R
+unrecognized attributes fail instead of losing R semantics. A plain `names` attribute is accepted on an atomic or
+classed column only when it is an unclassed character vector aligned to that column; those element labels never
+replace positional row or column identity. Source positions provide stable row identity. Explicit R
 row names travel separately as row labels and appear in the grid gutter instead of becoming a data column.
 
 This class-based boundary also covers the default frames created by the `collapse` package. `collapse::qDF()` returns a

@@ -168,6 +168,18 @@ openwrangler_r_frame_contract <- local({
     if (anyNA(attribute_names) || any(attribute_names == "") || anyDuplicated(attribute_names)) {
       abort("unsupported-column-attributes", sprintf("%s has malformed attribute names", label))
     }
+    if ("names" %in% attribute_names) {
+      column_names <- attr(column, "names", exact = TRUE)
+      if (
+        !is.character(column_names) ||
+          is.object(column_names) ||
+          !is.null(attributes(column_names)) ||
+          length(column_names) != length(column)
+      ) {
+        abort("unsupported-column-attributes", sprintf("%s has a malformed names attribute", label))
+      }
+      attribute_names <- setdiff(attribute_names, "names")
+    }
     extras <- setdiff(attribute_names, allowed)
     if (length(extras) != 0L) {
       abort(
@@ -413,7 +425,7 @@ openwrangler_r_frame_contract <- local({
 
   encode_value <- function(column, semantics, index, label, budget) {
     spend_payload_budget(budget, cell_fixed_bytes, label)
-    value <- column[index]
+    value <- unname(column[index])
     kind <- semantics$kind
 
     if (kind %in% c("date", "datetime", "difftime")) {
@@ -1340,7 +1352,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   exact_profile_integer_cell <- function(column, semantics, index, budget, label) {
-    exact <- as.character(column[index])
+    exact <- as.character(unname(column[index]))
     spend_json_string(budget, exact, label)
     digits <- if (startsWith(exact, "-")) substring(exact, 2L) else exact
     safe_limit <- "9007199254740991"

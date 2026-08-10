@@ -45,9 +45,10 @@ The first implementation slice is a transport-neutral frame/page contract. It ha
 - Row, column, cell, factor-level, text, and encoded-payload limits are checked by the R producer and again by the
   TypeScript decoder. The producer accounts for metadata and cells while building a page and stops before allocating
   a complete oversized page or JSON string.
-- Bounded explicit row names cross as row labels and remain attached to their source rows after sorting. Unsupported
-  classes, nested columns, and unrecognized attributes fail before a page is published. The contract does not
-  silently flatten them.
+- Bounded explicit row names cross as row labels and remain attached to their source rows after sorting. Aligned,
+  plain `names` attributes on atomic and classed columns are accepted as inert R column metadata but never become public
+  identity. Unsupported classes, nested columns, malformed column names metadata, and unrecognized attributes fail
+  before a page is published. The contract does not silently flatten them.
 
 The live notebook slice now connects this contract to the shared workbench. `DataBackend` includes `r`, session
 metadata records the R dataframe flavor, and `RKernelBridge` adapts the private R transport to protocol v2 and the

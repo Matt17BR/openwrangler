@@ -172,7 +172,8 @@ columns are blocked.
 
 The default `collapse::qDF()` output follows the base `data.frame` path. Default `collapse::qTBL()` and `qDT()` output
 follows the existing tibble and `data.table` paths. Open Wrangler does not require `collapse`, and grouped `GRP_df`
-and indexed `indexed_frame` objects are not supported.
+and indexed `indexed_frame` objects are not supported. Atomic and classed columns may carry a plain aligned `names`
+attribute; other unexpected column attributes remain unsupported.
 
 PR [#333](https://github.com/Matt17BR/openwrangler/pull/333) integrated the R notebook, document, editing, and export
 work. Its reviewed head `3355f897f62f50d766a6dd906dffc649443fca68` passed
