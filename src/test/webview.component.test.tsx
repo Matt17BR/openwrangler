@@ -133,14 +133,26 @@ describe("DataGrid", () => {
 
   it("selects a profile column from the header without stealing column controls", () => {
     const onViewStateChange = vi.fn();
+    const salesSummary: ColumnSummary = {
+      columnId: "c:1",
+      column: "sales",
+      type: "float",
+      rawType: "Float64",
+      totalCount: 2,
+      nullCount: 1,
+      nanCount: 0,
+      distinctCount: 1,
+      topValues: [],
+      numeric: { min: 10.5, max: 10.5 }
+    };
     render(
       <DataGrid
         metadata={metadata}
         page={page}
-        summaries={[]}
+        summaries={[salesSummary]}
         pageSize={2}
         defaultColumnWidth={190}
-        insightsOnOpen={false}
+        insightsOnOpen={true}
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
@@ -151,7 +163,7 @@ describe("DataGrid", () => {
     onViewStateChange.mockClear();
 
     const salesHeader = screen.getByRole("columnheader", { name: /^sales/u });
-    fireEvent.click(salesHeader);
+    fireEvent.click(within(salesHeader).getByText("Missing 50%"));
     expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:1" }));
 
     onViewStateChange.mockClear();
