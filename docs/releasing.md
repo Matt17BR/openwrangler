@@ -62,8 +62,11 @@ the verified VSIX, checksum, and provenance document. Every stable acceptance jo
 The preview workflow uses the separate preview form below; neither channel invents provenance after packaging.
 
 Every Open Wrangler 2 release candidate runs the R 4.5.2 contract tests. The preview and stable workflows then
-install their canonical VSIX in VS Code and Cursor and run the R notebook journey. The stable job verifies the
-artifact again immediately before that journey. Failed editor runs may upload only the usual sealed diagnostics.
+install their canonical VSIX in VS Code and Cursor and run the R notebook journey. Linux and macOS VS Code run the
+complete profile, with macOS also covering `.R`, `.Rmd`, and `.qmd`. Windows and Cursor run the representative notebook
+profile within the same hard deadline; Windows skips direct R documents. Direct R/runtime/webview suites retain the
+complete 21-operation and document matrix. The stable job verifies the artifact again immediately before that journey.
+Failed editor runs may upload only the usual sealed diagnostics.
 
 The preview-only form of the same author is `node scripts/create-canonical-release-artifact.mjs <candidate> --out-dir <directory> --preview-release`. It binds a clean exact `EXPECTED_SHA`, the intended numeric `RELEASE_TAG`, preview source/package/runtime identity, the VSIX pre-release marker, and immutable candidate bytes, but deliberately does not invoke stable parity, changelog, or README readiness and does not require the intended tag to exist. It emits the same three filenames as stable with the distinct `openwrangler-canonical-preview-release-artifact-v1` provenance protocol and `preview: true`. Pre-tag acceptance uses `scripts/verify-preview-release-artifact.mjs`; public registry intake independently revalidates the same triple. Historical two-file previews are not canonical inputs and are rejected rather than receiving invented provenance.
 
