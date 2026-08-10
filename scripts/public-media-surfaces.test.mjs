@@ -51,6 +51,8 @@ import {
   assertBoundedRelativeMediaPath,
   assertPngContract,
   inspectLocalPublicMediaInventory,
+  isTransientPublicSurfaceDomReplacement,
+  observeRegistryPropagation,
   resolveVerifiedSourceRoot,
   RetryablePublicMediaObservationError,
   runFreshPublicMediaContextAttempt,
@@ -241,6 +243,52 @@ test("each propagation retry owns and closes one fresh injected browser context"
     contexts.map((context) => context.closeCalls),
     [1, 1, 1]
   );
+});
+
+test("surface observation retries a transient detached locator without hiding source failures", async () => {
+  const sourceSurface = { name: "GitHub", versionKind: "source" };
+  const detached = new Error(
+    "locator.scrollIntoViewIfNeeded: Element is not attached to the DOM\nCall log:\n  - attempting scroll into view action"
+  );
+  assert.equal(isTransientPublicSurfaceDomReplacement(detached), true);
+  let attempts = 0;
+  let clock = 0;
+  const delays = [];
+  const result = await runPublicMediaPropagation({
+    attempts: 2,
+    delayMilliseconds: 5,
+    timeoutMilliseconds: 100,
+    attemptTimeoutMilliseconds: 50,
+    now: () => clock,
+    sleep: async (milliseconds) => {
+      delays.push(milliseconds);
+      clock += milliseconds;
+    },
+    report: () => {},
+    attempt: () =>
+      observeRegistryPropagation(sourceSurface, "has not rendered the complete README image set", async () => {
+        attempts += 1;
+        if (attempts === 1) throw detached;
+        return "stable render";
+      })
+  });
+  assert.equal(result, "stable render");
+  assert.equal(attempts, 2);
+  assert.deepEqual(delays, [5]);
+
+  for (const error of [
+    new Error("locator.scrollIntoViewIfNeeded: Timeout 30000ms exceeded"),
+    new Error("README image is wider than its container"),
+    "Element is not attached to the DOM"
+  ]) {
+    assert.equal(isTransientPublicSurfaceDomReplacement(error), false);
+    await assert.rejects(
+      observeRegistryPropagation(sourceSurface, "failed its render contract", async () => {
+        throw error;
+      }),
+      (observed) => observed === error
+    );
+  }
 });
 
 test("source-root verification rejects symlinks and resolves only real contained directories", (t) => {

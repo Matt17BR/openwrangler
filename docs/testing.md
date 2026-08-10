@@ -511,8 +511,9 @@ unavailable registry observations exhaust the exact attempt/delay count, and eve
 context. At most forty attempts are separated by thirty seconds inside a thirty-minute total deadline. Each fetch is
 bounded to sixty seconds, each render attempt to three minutes, per-page/image work to explicit Playwright defaults,
 and context cleanup to ten seconds. Local, exact-source, inventory, immutable-byte, GitHub-source, malformed-image,
-dimension, and harness validation run once or fail immediately; only explicitly classified Marketplace/Open VSX
-propagation observations retry.
+dimension, and harness validation run once or fail immediately. Explicitly classified Marketplace/Open VSX
+propagation observations retry. A Playwright locator detached by a page replacing its DOM may also retry in a fresh
+context; timeouts, layout failures, and other source-page errors remain terminal.
 
 Stable and preview callers both load the reusable promotion workflow from `main`. Registry rendering is
 post-publication evidence: it can fail the promotion workflow but cannot undo already-public GitHub or registry
