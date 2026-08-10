@@ -230,7 +230,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
         rExecutable,
         "--slave",
         "-e",
-        '.ow_library <- Sys.getenv("R_LIBS_USER", unset = NA_character_); if (is.na(.ow_library) || !dir.exists(.ow_library)) stop("Open Wrangler R acceptance library is unavailable."); .libPaths(unique(c(normalizePath(.ow_library, winslash = "/", mustWork = TRUE), .libPaths()))); IRkernel::main()',
+        "IRkernel::main()",
         "--args",
         "{connection_file}"
       ],
