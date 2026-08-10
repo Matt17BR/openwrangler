@@ -17008,7 +17008,12 @@ async function requireFreshExactSessionPanelHydration(
   sessionId: string,
   expectation: string
 ): Promise<void> {
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, `${expectation} The exact session must remain active.`);
+  assert.ok(active, `${expectation} The exact session must expose its current revision.`);
+  const expectedRevision = active.metadata.revision;
   const synchronized = await waitForFreshExactSessionPanelHydration(testing, sessionId, {
+    expectedRevision,
     timeoutMs: OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
     pollIntervalMs: 25
   });
@@ -17017,11 +17022,25 @@ async function requireFreshExactSessionPanelHydration(
     true,
     `${expectation} State: ${JSON.stringify({
       expectedSessionId: sessionId,
+      expectedRevision,
       activeSessionId: testing.activeSession()?.sessionId,
+      activeRevision: testing.activeSession()?.metadata.revision,
       panelHydrated: testing.panelHydrated(sessionId),
       panelSynchronizable: testing.panelSynchronizable(sessionId),
+      panelSynchronizationReceipt: testing.panelSynchronizationReceipt(sessionId),
       activeTab: activeEditorTabDiagnostic()
     })}`
+  );
+  const acknowledged = testing.activeSession();
+  assert.equal(
+    acknowledged?.sessionId,
+    sessionId,
+    `${expectation} The acknowledged renderer must still belong to the exact active session.`
+  );
+  assert.equal(
+    acknowledged?.metadata.revision,
+    expectedRevision,
+    `${expectation} The active session must not advance while its renderer is being acknowledged.`
   );
 }
 
