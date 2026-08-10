@@ -5031,20 +5031,25 @@ async function exerciseReleasedRPersistentRowsJourney(
     { id: "r:r:0", label: "case-0001", value: "1" }
   );
 
-  recordAcceptanceProgress(`${phase}:editing:persistent-filter-view`);
+  const persistentFilterViewCheckpoint = `${phase}:editing:persistent-filter-view`;
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:open`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R session before building a filtered view");
   const profiles = app.getByRole("button", { name: "Column profiles and filters", exact: true });
   await profiles.click();
   let drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:drawer-open`);
   await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
   let filterPanel = drawer.locator(".filterSortPanel").first();
   const advanced = filterPanel.getByRole("button", { name: "Use advanced filters", exact: true });
   if ((await advanced.count()) > 0) await advanced.click();
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:advanced-mode`);
   await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "group" });
   await filterPanel.getByLabel("Predicate operator", { exact: true }).selectOption("equals");
   await filterPanel.getByLabel("equals predicate value", { exact: true }).fill("B");
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:predicate-ready`);
   await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:predicate-dispatched`);
   await waitFor(
     () => {
       const current = testing.activeSession();
@@ -5057,11 +5062,15 @@ async function exerciseReleasedRPersistentRowsJourney(
     30_000,
     "the R group viewing filter"
   );
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:predicate-confirmed`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R persistent-row view");
   drawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await drawer.getByRole("button", { name: "Close panel" }).click();
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:drawer-closed`);
   await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:group-sort-confirmed`);
   await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:score-sort-confirmed`);
   active = testing.activeSession();
   assert.ok(active, "The R persistent-filter journey requires its active view.");
   assert.equal(active.metadata.shape.rows, 1_205);
@@ -5084,11 +5093,13 @@ async function exerciseReleasedRPersistentRowsJourney(
     label: "case-1205",
     values: ["1205", "B", "1205"]
   };
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:model-confirmed`);
   first = await releasedRFirstVisibleRow(testing, sessionId, `${phase}-filter-view`);
   assert.deepEqual(
     { id: first.id, label: first.rowLabel, values: first.values.slice(0, 3).map((cell) => cell.display) },
     expectedFilteredFirst
   );
+  recordAcceptanceProgress(`${persistentFilterViewCheckpoint}:complete`);
 
   recordAcceptanceProgress(`${phase}:editing:persistent-filter-discard`);
   app = await releasedRSessionApp(workbench, testing, sessionId, "the R view before Filter rows preview");
