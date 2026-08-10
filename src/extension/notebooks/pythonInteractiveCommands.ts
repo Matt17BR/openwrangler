@@ -22,8 +22,8 @@ import {
 } from "../r/rNotebookVariableDiscovery";
 import { restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 
-const PYTHON_CELL_MARKER = /^\s*#\s*%%(?:\s|$)/u;
-const MARKDOWN_CELL_MARKER = /^\s*#\s*%%.*\[markdown\]/iu;
+const PYTHON_CELL_MARKER = /^\s*#\s*(?:%%|<codecell>|In\[\d*?\]|In\[ \])/u;
+const MARKDOWN_CELL_MARKER = /^\s*#\s*(?:%%\s*\[markdown\]|<markdowncell>)/iu;
 const MAX_INTERACTIVE_CELL_METADATA_TEXT = 64 * 1024;
 const PYTHON_CELL_PUBLICATION_TIMEOUT_MS = 10_000;
 const PYTHON_CELL_EXECUTION_TIMEOUT_MS = 120_000;
@@ -73,6 +73,8 @@ interface PythonCellOrigin {
   readonly document: vscode.TextDocument;
   readonly version: number;
   readonly sourceUri: string;
+  readonly executionKind: "cell" | "file";
+  readonly command: "jupyter.runcurrentcell" | "jupyter.runFileInteractive";
   readonly startLine: number;
   readonly selection: vscode.Selection;
   readonly viewColumn: vscode.ViewColumn;
@@ -186,7 +188,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider {
 
   async runCellAndOpenVariable(): Promise<void> {
     if (this.runCellRunning) {
-      void vscode.window.showInformationMessage("Open Wrangler is already running this Python cell.");
+      void vscode.window.showInformationMessage("Open Wrangler is already running this Python file or cell.");
       return;
     }
     this.runCellRunning = true;
@@ -198,9 +200,13 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider {
   }
 
   private async performRunCellAndOpenVariable(): Promise<void> {
+    if (!vscode.workspace.isTrusted) {
+      void vscode.window.showWarningMessage("Trust this workspace before Open Wrangler runs Python code.");
+      return;
+    }
     const origin = capturePythonCellOrigin();
     if (!origin) {
-      void vscode.window.showInformationMessage("Place the cursor in a Python code cell marked # %%, then try again.");
+      void vscode.window.showInformationMessage("Place the cursor in a runnable Python cell, then try again.");
       return;
     }
 
@@ -218,7 +224,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider {
     const observer = new PythonCellDispatchObserver(origin, beforeCells, beforeInteractiveWindows);
     let attempt: PythonCellAttemptResult;
     try {
-      attempt = await runPythonCellAttempt(observer, operationDeadline, true);
+      attempt = await runPythonCellAttempt(origin, observer, operationDeadline, true);
       if (attempt.kind === "needsKernel") {
         const restored = await selectKernelAndRestorePythonOrigin(attempt.notebook, origin, operationDeadline);
         if (!restored) return;
@@ -235,7 +241,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider {
           if (blankWindow.kind !== "found" || blankWindow.notebook !== attempt.notebook) {
             attempt = blankWindow.kind === "ambiguous" ? blankWindow : { kind: "missing" };
           } else {
-            attempt = await runPythonCellAttempt(observer, operationDeadline, false);
+            attempt = await runPythonCellAttempt(origin, observer, operationDeadline, false);
           }
         }
       }
@@ -245,19 +251,19 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider {
 
     if (attempt.kind === "dispatchRejected") {
       void vscode.window.showWarningMessage(
-        "Jupyter didn't confirm whether this cell started. Check the Interactive Window before running it again."
+        `Jupyter didn't confirm whether this Python ${origin.executionKind} started. Check the Interactive Window before running it again.`
       );
       return;
     }
     if (attempt.kind === "dispatchTimedOut") {
       void vscode.window.showWarningMessage(
-        "Jupyter didn't confirm whether this cell started. Check the Interactive Window before running it again."
+        `Jupyter didn't confirm whether this Python ${origin.executionKind} started. Check the Interactive Window before running it again.`
       );
       return;
     }
     if (attempt.kind === "stale") {
       void vscode.window.showWarningMessage(
-        "The Python file changed or closed while its cell was running. Run the cell again before opening its dataframe."
+        "The Python file changed or closed while Python was running. Run it again before opening its dataframe."
       );
       return;
     }
@@ -269,7 +275,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider {
     }
     if (attempt.kind === "missing" || attempt.kind === "needsKernel") {
       void vscode.window.showWarningMessage(
-        "The cell did not produce an Interactive Window execution. Check the Jupyter output and try again."
+        `The Python ${origin.executionKind} did not produce an Interactive Window execution. Check the Jupyter output and try again.`
       );
       return;
     }
@@ -283,7 +289,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider {
     );
     if (executed.kind === "stale") {
       void vscode.window.showWarningMessage(
-        "The Python file changed or closed while its cell was running. Run the cell again before opening its dataframe."
+        "The Python file changed or closed while Python was running. Run it again before opening its dataframe."
       );
       return;
     }
@@ -295,19 +301,19 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider {
     }
     if (executed.kind === "missing") {
       void vscode.window.showWarningMessage(
-        "The cell did not produce an Interactive Window execution. Check the Jupyter output and try again."
+        `The Python ${origin.executionKind} did not produce an Interactive Window execution. Check the Jupyter output and try again.`
       );
       return;
     }
     if (executed.kind === "timedOut") {
       void vscode.window.showWarningMessage(
-        "The Python cell did not finish within two minutes. Check the Interactive Window before trying again."
+        `The Python ${origin.executionKind} did not finish within two minutes. Check the Interactive Window before trying again.`
       );
       return;
     }
     if (executed.cell.executionSummary?.success === false) {
       void vscode.window.showWarningMessage(
-        "The Python cell failed. Fix the error shown in the Interactive Window, then run it again."
+        `The Python ${origin.executionKind} failed. Fix the error shown in the Interactive Window, then run it again.`
       );
       return;
     }
@@ -600,12 +606,33 @@ function capturePythonCellOrigin(): PythonCellOrigin | undefined {
   const editor = vscode.window.activeTextEditor;
   const document = editor?.document;
   if (!editor || !document || !isPythonSourceDocument(document) || !isSoleOpenTextDocument(document)) return undefined;
+  let hasCellMarker = false;
+  for (let line = 0; line < document.lineCount; line += 1) {
+    const text = document.lineAt(line).text;
+    if (PYTHON_CELL_MARKER.test(text) || MARKDOWN_CELL_MARKER.test(text)) {
+      hasCellMarker = true;
+      break;
+    }
+  }
+  if (!hasCellMarker) {
+    return {
+      editor,
+      document,
+      version: document.version,
+      sourceUri: document.uri.toString(),
+      executionKind: "file",
+      command: "jupyter.runFileInteractive",
+      startLine: 0,
+      selection: editor.selection,
+      viewColumn: editor.viewColumn ?? vscode.ViewColumn.Active
+    };
+  }
   const activeLine = editor.selection.active.line;
   let startLine = -1;
   for (let line = Math.min(activeLine, document.lineCount - 1); line >= 0; line -= 1) {
     const text = document.lineAt(line).text;
-    if (!PYTHON_CELL_MARKER.test(text)) continue;
     if (MARKDOWN_CELL_MARKER.test(text)) return undefined;
+    if (!PYTHON_CELL_MARKER.test(text)) continue;
     startLine = line;
     break;
   }
@@ -615,6 +642,8 @@ function capturePythonCellOrigin(): PythonCellOrigin | undefined {
     document,
     version: document.version,
     sourceUri: document.uri.toString(),
+    executionKind: "cell",
+    command: "jupyter.runcurrentcell",
     startLine,
     selection: editor.selection,
     viewColumn: editor.viewColumn ?? vscode.ViewColumn.Active
@@ -982,6 +1011,7 @@ class PythonCellDispatchObserver implements vscode.Disposable {
 }
 
 async function runPythonCellAttempt(
+  origin: PythonCellOrigin,
   observer: PythonCellDispatchObserver,
   operationDeadline: number,
   allowKernelRecovery: boolean
@@ -992,7 +1022,7 @@ async function runPythonCellAttempt(
   if (initial.kind !== "missing") return initial;
 
   const dispatchDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
-  const dispatch = boundedPythonCellDispatch(dispatchDeadline);
+  const dispatch = boundedPythonCellDispatch(origin, dispatchDeadline);
   try {
     while (true) {
       const snapshot = observer.snapshot();
@@ -1026,7 +1056,7 @@ async function runPythonCellAttempt(
   return await waitForPublishedCellAfterDispatch(observer, operationDeadline, allowKernelRecovery);
 }
 
-function boundedPythonCellDispatch(deadline: number): {
+function boundedPythonCellDispatch(origin: PythonCellOrigin, deadline: number): {
   readonly promise: Promise<PythonCellDispatchOutcome>;
   dispose(): void;
 } {
@@ -1042,7 +1072,10 @@ function boundedPythonCellDispatch(deadline: number): {
     const timer = setTimeout(() => finish({ kind: "timedOut" }), Math.max(0, deadline - Date.now()));
     let command: Thenable<unknown>;
     try {
-      command = vscode.commands.executeCommand("jupyter.runcurrentcell");
+      command =
+        origin.executionKind === "file"
+          ? vscode.commands.executeCommand(origin.command, origin.document.uri)
+          : vscode.commands.executeCommand(origin.command);
     } catch {
       finish({ kind: "rejected" });
       return;

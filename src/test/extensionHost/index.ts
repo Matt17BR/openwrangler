@@ -9990,7 +9990,6 @@ async function exerciseReleasedPythonFileEntrypoint(
   const source = vscode.Uri.file(sourcePath);
   const sourceBytes = Buffer.from(
     [
-      "# %%",
       "import polars as pl",
       "",
       "python_entry_frame = pl.DataFrame({",
@@ -10147,7 +10146,7 @@ async function exerciseReleasedPythonFileEntrypoint(
     assert.equal(
       associatedCells.length,
       1,
-      "The live session must come from the exact # %% cell dispatched by the Python source action."
+      "The live session must come from the exact ordinary Python file dispatched by the editor action."
     );
     const page = await assertReleasedSessionPage(testing, active, "910001", "released-jupyter-python-file-polars-page");
     assert.deepEqual(
@@ -10158,7 +10157,7 @@ async function exerciseReleasedPythonFileEntrypoint(
         ["910003", "gamma", "41.25"]
       ]
     );
-    assertExactBytes(readFileSync(sourcePath), sourceBytes, "Opening the Python cell must not change its source file.");
+    assertExactBytes(readFileSync(sourcePath), sourceBytes, "Opening the Python file must not change its source file.");
 
     recordAcceptanceProgress(`${checkpoint}:close`);
     await disposePackagedSessionPanel(testing, active.sessionId, "the Python editor's live Polars session");
