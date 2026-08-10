@@ -529,6 +529,21 @@ export async function prepareJupyterAcceptanceREnvironment(
   }
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
 
+  const commandEnvironment = privateRCommandEnvironment(environment, {
+    homeDir,
+    libraryDir,
+    tempDir
+  });
+  const kernelEnvironment = {
+    HOME: commandEnvironment.HOME,
+    USERPROFILE: commandEnvironment.USERPROFILE,
+    TMPDIR: commandEnvironment.TMPDIR,
+    TMP: commandEnvironment.TMP,
+    TEMP: commandEnvironment.TEMP,
+    R_USER: commandEnvironment.R_USER,
+    R_LIBS_USER: commandEnvironment.R_LIBS_USER
+  };
+
   const kernelSpecPath = resolve(kernelDirectory, "kernel.json");
   writeFileSync(
     kernelSpecPath,
@@ -537,7 +552,7 @@ export async function prepareJupyterAcceptanceREnvironment(
         argv: [rExecutable, "--slave", "-e", R_ACCEPTANCE_KERNEL_EXPRESSION, "--args", "{connection_file}"],
         display_name: R_ACCEPTANCE_KERNEL_DISPLAY_NAME,
         language: "R",
-        env: { R_LIBS_USER: libraryDir }
+        env: kernelEnvironment
       },
       null,
       2
@@ -546,11 +561,6 @@ export async function prepareJupyterAcceptanceREnvironment(
   );
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
 
-  const commandEnvironment = privateRCommandEnvironment(environment, {
-    homeDir,
-    libraryDir,
-    tempDir
-  });
   const dependencyProbe = freezeRCommandInvocation(
     {
       executable: canonicalRscript,
