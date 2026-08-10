@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  appendFileSync,
   closeSync,
   constants,
   existsSync,
@@ -20,10 +19,8 @@ import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
   R_ACCEPTANCE_PACKAGE_VERSIONS,
   acceptancePythonForPhase,
-  appendJupyterAcceptanceRProfileStartupStage,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
-  jupyterAcceptanceRProfileStartupStage,
   prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceRKernel,
   probeJupyterAcceptanceJava,
@@ -209,12 +206,8 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       configDir: join(privateRoot, "c"),
       path: join(privateRoot, "p"),
       rscriptPath: rscript,
-      rLibraryDir: join(privateRoot, "l"),
-      rProfilePath: join(privateRoot, "profile.R"),
-      rProfileStagePath: join(privateRoot, "profile-stage")
+      rLibraryDir: join(privateRoot, "l")
     });
-    const profilePath = join(privateRoot, "profile.R");
-    const profileStagePath = join(privateRoot, "profile-stage");
     for (const path of [
       prepared.root,
       prepared.libraryDir,
@@ -230,17 +223,23 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       assert.equal(statSync(path).isDirectory(), true);
       assert.equal(statSync(path).mode & 0o777, 0o700);
     }
-    const profile = await readFile(profilePath, "utf8");
-    assert.match(profile, /\.libPaths\(unique\(c\(\.ow_library, \.libPaths\(\)\)\)\)/u);
-    assert.match(profile, /identical\(normalizePath\(\.libPaths\(\)\[\[1L\]\]/u);
-    assert.match(profile, /OPEN_WRANGLER_R_PROFILE_READY\\n/u);
-    assert.equal(await readFile(profileStagePath, "utf8"), "");
-    assert.equal(statSync(profilePath).mode & 0o777, 0o600);
-    assert.equal(statSync(profileStagePath).mode & 0o777, 0o600);
+    const bootstrap = await readFile(prepared.kernelBootstrapPath, "utf8");
+    assert.match(bootstrap, /\.libPaths\(unique\(c\(\.ow_library, \.libPaths\(\)\)\)\)/u);
+    assert.match(bootstrap, /identical\(normalizePath\(\.libPaths\(\)\[\[1L\]\]/u);
+    assert.match(bootstrap, /IRkernel::main\(\)/u);
+    assert.equal(statSync(prepared.kernelBootstrapPath).mode & 0o777, 0o600);
 
     const kernelSpec = JSON.parse(await readFile(prepared.kernelSpecPath, "utf8"));
     assert.deepEqual(kernelSpec, {
-      argv: [rExecutable, "--slave", "-e", "IRkernel::main()", "--args", "{connection_file}"],
+      argv: [
+        rExecutable,
+        "--slave",
+        "--no-init-file",
+        "-f",
+        prepared.kernelBootstrapPath,
+        "--args",
+        "{connection_file}"
+      ],
       display_name: "R (Open Wrangler)",
       language: "R",
       env: {
@@ -250,15 +249,14 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
         TMP: join(privateRoot, "t"),
         TEMP: join(privateRoot, "t"),
         R_USER: join(privateRoot, "h"),
-        R_LIBS_USER: prepared.libraryDir,
-        R_PROFILE_USER: profilePath,
-        OPEN_WRANGLER_R_PROFILE_STAGE: profileStagePath
+        R_LIBS_USER: prepared.libraryDir
       }
     });
     assert.equal(kernelSpec.argv.at(-1), "{connection_file}");
     assert.equal(kernelSpec.argv.filter((value) => value === "{connection_file}").length, 1);
     assert.notEqual(kernelSpec.argv[0], rscript);
     assert.equal(kernelSpec.argv.includes("--vanilla"), false);
+    assert.equal(kernelSpec.argv.includes("--no-init-file"), true);
     assert.equal(statSync(prepared.kernelSpecPath).mode & 0o777, 0o600);
 
     assert.equal(matchingRProbes.length, 1);
@@ -418,26 +416,11 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
     );
     assert.deepEqual(options, { timeoutMs: 30_000, maxOutputBytes: 1_024 });
     assert.equal(input.environment.R_LIBS_USER, prepared.libraryDir);
-    assert.equal(input.environment.R_PROFILE_USER, join(root, "profile.R"));
-    assert.equal(input.environment.OPEN_WRANGLER_R_PROFILE_STAGE, join(root, "profile-stage"));
-    assert.equal(jupyterAcceptanceRProfileStartupStage(prepared), "profile-not-loaded");
-    appendFileSync(join(root, "profile-stage"), "OPEN_WRANGLER_R_PROFILE_READY\n");
-    assert.equal(jupyterAcceptanceRProfileStartupStage(prepared), "profile-loaded");
     await probeJupyterAcceptanceRKernel(python, prepared, {
       async runCommand() {
         return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\r\n", stderr: "" };
       }
     });
-    assert.equal(jupyterAcceptanceRProfileStartupStage(prepared), "profile-not-loaded");
-    appendFileSync(join(root, "profile-stage"), "OPEN_WRANGLER_R_PROFILE_READY\n");
-    assert.equal(jupyterAcceptanceRProfileStartupStage(prepared), "profile-loaded");
-    const phaseError = new Error("editor failed");
-    assert.equal(appendJupyterAcceptanceRProfileStartupStage(phaseError, "profile-loaded"), phaseError);
-    assert.equal(phaseError.message, "editor failed\nReleased-Jupyter R profile startup: profile-loaded.");
-    const frozenError = Object.freeze(new Error("classified editor failure"));
-    const wrappedError = appendJupyterAcceptanceRProfileStartupStage(frozenError, "profile-not-loaded");
-    assert.equal(wrappedError instanceof AggregateError, true);
-    assert.deepEqual(wrappedError.errors, [frozenError]);
 
     await assert.rejects(
       probeJupyterAcceptanceRKernel(python, prepared, {
@@ -456,38 +439,6 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
       }),
       /malformed fixed result/u
     );
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("released-Jupyter R profile stage rejects a replaced owned marker", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-stage-"));
-  const python = join(directory, "python");
-  const rscript = join(directory, "Rscript");
-  const rExecutable = join(directory, "R");
-  try {
-    for (const executable of [python, rscript, rExecutable]) {
-      await writeFile(executable, "fake executable\n");
-      await chmod(executable, 0o700);
-    }
-    const root = join(directory, "r");
-    const prepared = await prepareJupyterAcceptanceREnvironment(root, rscript, {
-      containedBy: directory,
-      environment: Object.freeze({}),
-      async runCommand() {
-        return { stdout: rExecutable, stderr: "" };
-      }
-    });
-    await probeJupyterAcceptanceRKernel(python, prepared, {
-      async runCommand() {
-        appendFileSync(join(root, "profile-stage"), "OPEN_WRANGLER_R_PROFILE_READY\n");
-        return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\n", stderr: "" };
-      }
-    });
-    renameSync(join(root, "profile-stage"), join(root, "old-profile-stage"));
-    writeFileSync(join(root, "profile-stage"), "OPEN_WRANGLER_R_PROFILE_READY\n", { mode: 0o600 });
-    assert.throws(() => jupyterAcceptanceRProfileStartupStage(prepared), /lost its owned file identity/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -706,10 +657,7 @@ test("packaged-editor R acceptance wires the private R environment to local edit
   assert.match(rPhase, /phase: "jupyter-r"/u);
   assert.match(rPhase, /editor: "jupyter-r-remote"/u);
   assert.match(rPhase, /fixtureKind: "r"/u);
-  assert.match(rPhase, /if \(editorProcessTreeMayBeLive\(error\)\) throw error/u);
-  assert.match(rPhase, /jupyterAcceptanceRProfileStartupStage\(rAcceptanceEnvironment\)/u);
-  assert.match(rPhase, /appendJupyterAcceptanceRProfileStartupStage/u);
-  assert.match(rPhase, /\[error, profileStageError\]/u);
+  assert.doesNotMatch(rPhase, /RProfileStartupStage|profileStageError/u);
   assert.equal((source.match(/await runRemoteJupyterPhase\(\{/gu) ?? []).length, 2);
 });
 
