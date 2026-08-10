@@ -787,7 +787,7 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("Cursor uses one explicit representative R coverage profile while VS Code stays comprehensive", async () => {
+test("Cursor and Windows use the representative R coverage profile", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(", profileStart);
@@ -802,11 +802,11 @@ test("Cursor uses one explicit representative R coverage profile while VS Code s
   );
   assert.match(
     profiles,
-    /RELEASED_R_CURSOR_COVERAGE[\s\S]*name: "cursor-representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*documents: "plain-only"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
+    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*documents: "plain-only"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
   );
   assert.match(
     profiles,
-    /process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\s*\? RELEASED_R_CURSOR_COVERAGE\s*:\s*RELEASED_R_COMPREHENSIVE_COVERAGE/u
+    /process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\s*\|\|\s*process\.platform === "win32"\s*\? RELEASED_R_REPRESENTATIVE_COVERAGE\s*:\s*RELEASED_R_COMPREHENSIVE_COVERAGE/u
   );
   assert.doesNotMatch(
     journey,

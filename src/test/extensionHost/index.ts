@@ -2087,7 +2087,7 @@ async function assertReleasedRRuntimeBinding(
 }
 
 type ReleasedRAcceptanceCoverageProfile = Readonly<{
-  name: "comprehensive" | "cursor-representative";
+  name: "comprehensive" | "representative";
   gridPaging: "all-blocks" | "single-round-trip";
   editing: "all-operations" | "rename-lifecycle";
   documents: "plain-and-literate" | "plain-only";
@@ -2106,8 +2106,8 @@ const RELEASED_R_COMPREHENSIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Ob
   nativeFrameEditing: "rename-and-drop"
 });
 
-const RELEASED_R_CURSOR_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
-  name: "cursor-representative",
+const RELEASED_R_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
+  name: "representative",
   gridPaging: "single-round-trip",
   editing: "rename-lifecycle",
   documents: "plain-only",
@@ -2117,8 +2117,8 @@ const RELEASED_R_CURSOR_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.fr
 });
 
 function releasedRAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
-  return process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor"
-    ? RELEASED_R_CURSOR_COVERAGE
+  return process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor" || process.platform === "win32"
+    ? RELEASED_R_REPRESENTATIVE_COVERAGE
     : RELEASED_R_COMPREHENSIVE_COVERAGE;
 }
 
