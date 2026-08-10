@@ -4,9 +4,10 @@ import json
 from concurrent.futures import CancelledError
 from typing import Any
 
+import pandas as pd
 import pytest
 
-from openwrangler_runtime import kernel_agent
+from openwrangler_runtime import kernel_agent, notebook
 from openwrangler_runtime.engines import AmbiguousViewColumnError
 from openwrangler_runtime.session import (
     LiveSourceInvalidatedError,
@@ -27,6 +28,38 @@ def _envelope(request: dict[str, Any], *, request_id: str = "kernel-request") ->
             "priority": "interactive",
             "request": request,
         }
+    )
+
+
+def test_kernel_agent_opens_an_opaque_live_result_handle(monkeypatch) -> None:
+    manager = SessionManager()
+    monkeypatch.setattr(kernel_agent, "_manager", manager)
+    frame = pd.DataFrame({"value": [7]}).head(1)
+    handle = notebook._register_live_result(frame)
+
+    result = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "openSession",
+                    "source": {"kind": "notebookVariable", "label": "DataFrame", "variableName": handle},
+                    "backend": "pandas",
+                    "pageSize": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 64,
+                },
+                request_id="temporary-result-request",
+            )
+        )
+    )
+
+    assert result["requestId"] == "temporary-result-request"
+    assert result["response"]["kind"] == "sessionOpened"
+    assert result["response"]["metadata"]["source"]["variableName"] == handle
+    assert result["response"]["page"]["rows"][0]["values"][0]["display"] == "7"
+    manager.close_session(
+        result["response"]["metadata"]["sessionId"],
+        result["response"]["metadata"]["revision"],
     )
 
 
