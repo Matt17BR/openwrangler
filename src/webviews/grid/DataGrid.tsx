@@ -33,6 +33,12 @@ import {
 import { columnTypePresentation } from "../columnTypes";
 import { numericExtremumDisplay } from "../numericSummary";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
+import {
+  describeProfileValue,
+  formatProfileValue,
+  profileDistributionDenominator,
+  type ProfileValueMode
+} from "../profileValueMode";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -59,6 +65,7 @@ interface DataGridProps {
   sortControlsDisabledReason?: string;
   profilesDisabled?: boolean;
   profilesDisabledReason?: string;
+  profileValueMode?: ProfileValueMode;
   sortRules?: SortRule[];
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
@@ -154,6 +161,7 @@ export function DataGrid({
   sortControlsDisabledReason = "Sorting is unavailable for this dataframe.",
   profilesDisabled = false,
   profilesDisabledReason = "Column profiles are unavailable for this dataframe.",
+  profileValueMode = "percent",
   sortRules = metadata.filterModel.sort,
   onPage,
   onSortColumn,
@@ -1155,6 +1163,7 @@ export function DataGrid({
                     added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
                     showInsights={showInsights}
                     summary={summaryByColumnId.get(column.id)}
+                    profileValueMode={profileValueMode}
                     viewControlsDisabled={viewControlsDisabled}
                     viewControlsDisabledReason={viewControlsDisabledReason}
                     filterControlsDisabled={filterControlsDisabled}
@@ -1756,6 +1765,7 @@ function ColumnHeader({
   added,
   showInsights,
   summary,
+  profileValueMode,
   viewControlsDisabled,
   viewControlsDisabledReason,
   filterControlsDisabled,
@@ -1780,6 +1790,7 @@ function ColumnHeader({
   added: boolean;
   showInsights: boolean;
   summary: ColumnSummary | undefined;
+  profileValueMode: ProfileValueMode;
   viewControlsDisabled: boolean;
   viewControlsDisabledReason: string;
   filterControlsDisabled: boolean;
@@ -2028,8 +2039,18 @@ function ColumnHeader({
         (summary ? (
           <div className="columnInsight">
             <div className="exactSummaryStats">
-              <span>Missing {formatPercent(summary.nullCount + summary.nanCount, summary.totalCount)}</span>
-              <span>Distinct {formatPercent(summary.distinctCount ?? 0, summary.totalCount)}</span>
+              <HeaderProfileValue
+                label="Missing"
+                value={summary.nullCount + summary.nanCount}
+                denominator={summary.totalCount}
+                mode={profileValueMode}
+              />
+              <HeaderProfileValue
+                label="Distinct"
+                value={summary.distinctCount ?? 0}
+                denominator={summary.totalCount}
+                mode={profileValueMode}
+              />
               {summary.numeric && <CompactExtremum label="Min" summary={summary.numeric} bound="min" />}
               {summary.numeric && <CompactExtremum label="Max" summary={summary.numeric} bound="max" />}
             </div>
@@ -2038,6 +2059,8 @@ function ColumnHeader({
               <MiniChart
                 visualization={summary.visualization}
                 column={column}
+                valueMode={profileValueMode}
+                denominator={profileDistributionDenominator(summary)}
                 onApplyFilter={distributionFilterAvailable ? applyProfileFilter : undefined}
               />
             </div>
@@ -2046,6 +2069,25 @@ function ColumnHeader({
           <span className="columnInsight emptyInsight">Profiling…</span>
         ))}
     </th>
+  );
+}
+
+function HeaderProfileValue({
+  label,
+  value,
+  denominator,
+  mode
+}: {
+  label: string;
+  value: number;
+  denominator: number;
+  mode: ProfileValueMode;
+}) {
+  const description = describeProfileValue(label, value, denominator);
+  return (
+    <span title={description} aria-label={description}>
+      {label} {formatProfileValue(value, denominator, mode)}
+    </span>
   );
 }
 
@@ -2081,10 +2123,14 @@ function CompactExtremum({
 function MiniChart({
   visualization,
   column,
+  valueMode,
+  denominator,
   onApplyFilter
 }: {
   visualization: ColumnVisualization | undefined;
   column: ColumnSchema;
+  valueMode: ProfileValueMode;
+  denominator: number;
   onApplyFilter?: (filter: ColumnFilter) => void;
 }) {
   if (!visualization) return <span className="miniChart emptyInsight">No chart</span>;
@@ -2093,6 +2139,8 @@ function MiniChart({
       <NumericHistogram
         visualization={visualization}
         compact
+        valueMode={valueMode}
+        percentDenominator={denominator}
         onSelectBin={
           onApplyFilter
             ? (bin, index) => onApplyFilter(viewNumericBinFilter(column, bin, index === visualization.bins.length - 1))
@@ -2103,15 +2151,21 @@ function MiniChart({
   }
   if (visualization.kind === "boolean") {
     const total = Math.max(1, visualization.trueCount + visualization.falseCount);
+    const trueDescription = describeProfileValue("True", visualization.trueCount, denominator);
+    const falseDescription = describeProfileValue("False", visualization.falseCount, denominator);
     return (
       <span
         className="booleanMiniChart"
         role="img"
-        aria-label={`${visualization.sampled ? "Sampled " : ""}boolean distribution: true ${visualization.trueCount}, false ${visualization.falseCount}.`}
+        aria-label={`${visualization.sampled ? "Sampled " : ""}boolean distribution: ${trueDescription}, ${falseDescription}.`}
       >
         <span className="miniChartLegend">
-          <span>True {visualization.trueCount.toLocaleString()}</span>
-          <span>False {visualization.falseCount.toLocaleString()}</span>
+          <span title={trueDescription}>
+            True {formatProfileValue(visualization.trueCount, denominator, valueMode)}
+          </span>
+          <span title={falseDescription}>
+            False {formatProfileValue(visualization.falseCount, denominator, valueMode)}
+          </span>
         </span>
         <span className="stackedMiniChart" aria-hidden="true">
           <i style={{ width: `${(visualization.trueCount / total) * 100}%` }} />
@@ -2124,8 +2178,8 @@ function MiniChart({
     const max = Math.max(1, ...visualization.categories.map((category) => category.count), visualization.otherCount);
     const visibleCategories = visualization.categories.slice(0, 3);
     const categoryLabel = [
-      ...visibleCategories.map((category) => `${category.value}: ${category.count}`),
-      ...(visualization.otherCount > 0 ? [`Other: ${visualization.otherCount}`] : [])
+      ...visibleCategories.map((category) => describeProfileValue(category.value, category.count, denominator)),
+      ...(visualization.otherCount > 0 ? [describeProfileValue("Other", visualization.otherCount, denominator)] : [])
     ].join(", ");
     return (
       <span
@@ -2134,13 +2188,14 @@ function MiniChart({
         aria-label={`${visualization.sampled ? "Sampled " : ""}categorical distribution${categoryLabel ? `: ${categoryLabel}` : " with no values"}.`}
       >
         {visibleCategories.map((category, index) => {
+          const description = describeProfileValue(category.value || "Empty string", category.count, denominator);
           const contents = (
             <>
               <span className="categoryMiniLabel" title={category.value}>
                 {category.value}
               </span>
               <i aria-hidden="true" style={{ width: `${(category.count / max) * 100}%` }} />
-              <small title={`${category.count.toLocaleString()} rows`}>{category.count.toLocaleString()}</small>
+              <small title={description}>{formatProfileValue(category.count, denominator, valueMode)}</small>
             </>
           );
           return onApplyFilter ? (
@@ -2148,7 +2203,7 @@ function MiniChart({
               type="button"
               className="categoryMiniRow interactive"
               key={`${category.value}-${index}`}
-              aria-label={`Filter ${column.name} to ${category.value || "empty string"}; ${category.count.toLocaleString()} ${category.count === 1 ? "row" : "rows"}`}
+              aria-label={`Filter ${column.name} to ${category.value || "empty string"}; ${description}`}
               onClick={() => onApplyFilter(viewValueSelectionFilter(column, category.selectionValue ?? category.value))}
             >
               {contents}
@@ -2163,8 +2218,8 @@ function MiniChart({
           <span className="categoryMiniRow">
             <span className="categoryMiniLabel">Other</span>
             <i aria-hidden="true" style={{ width: `${(visualization.otherCount / max) * 100}%` }} />
-            <small title={`${visualization.otherCount.toLocaleString()} rows`}>
-              {visualization.otherCount.toLocaleString()}
+            <small title={describeProfileValue("Other", visualization.otherCount, denominator)}>
+              {formatProfileValue(visualization.otherCount, denominator, valueMode)}
             </small>
           </span>
         )}
@@ -2246,10 +2301,4 @@ function selectedColumnPosition(schema: ColumnSchema[], selectedColumnId: string
 
 function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
-}
-
-function formatPercent(value: number, total: number): string {
-  if (total <= 0) return "0%";
-  const percentage = (value / total) * 100;
-  return `${percentage < 1 && percentage > 0 ? "<1" : Math.round(percentage).toLocaleString()}%`;
 }

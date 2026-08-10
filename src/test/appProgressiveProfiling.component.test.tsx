@@ -182,7 +182,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(document.querySelector('th[data-column="sales"]')).toHaveAttribute("aria-selected", "true");
     postMessage.mockClear();
 
-    fireEvent.click(screen.getByRole("button", { name: "Filter city to Berlin; 500 rows" }));
+    fireEvent.click(screen.getByRole("button", { name: "Filter city to Berlin; Berlin: 500 (100%)" }));
 
     const publishedMessages = postMessage.mock.calls.map(([message]) => message);
     const selectedColumnUpdate = publishedMessages.findIndex(
@@ -204,6 +204,43 @@ describe("App progressive profiling and view correlation", () => {
     postMessage.mockClear();
     fireEvent.click(clear);
     expect(filterModelOf(onlyRequest("getPage")).filters).toEqual([]);
+  });
+
+  it("shares count and percent display across the grid and drawer and opens the bounded values list", () => {
+    const profiledCity: ColumnSummary = {
+      ...citySummary,
+      topValues: [{ value: "Berlin", count: 1 }],
+      visualization: {
+        kind: "categorical",
+        categories: [{ value: "Berlin", count: 1 }],
+        otherCount: 499
+      }
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [profiledCity] });
+
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    expect(within(cityHeader).getByText("Distinct 500")).toBeVisible();
+    expect(within(cityHeader).getByText("Distinct 500")).toHaveAttribute("title", "Distinct: 500 (100%)");
+    const berlinBar = within(cityHeader)
+      .getByRole("button", { name: "Filter city to Berlin; Berlin: 1 (0.2%)" })
+      .querySelector("i");
+    const countModeBarWidth = berlinBar?.getAttribute("style");
+
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
+    const drawer = screen.getByRole("complementary", { name: "Column profiles and filters" });
+    expect(within(drawer).getByText("Distinct").nextElementSibling).toHaveTextContent("500");
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "%" }));
+    expect(within(cityHeader).getByText("Distinct 100%")).toBeVisible();
+    expect(within(drawer).getByText("Distinct").nextElementSibling).toHaveTextContent("100%");
+    expect(berlinBar).toHaveAttribute("style", countModeBarWidth);
+
+    postMessage.mockClear();
+    fireEvent.click(within(drawer).getByRole("button", { name: "More values…" }));
+    expect(within(drawer).getByRole("tab", { name: "Filters / Sorts" })).toHaveAttribute("aria-selected", "true");
+    expect(onlyRequest("getColumnValues")).toMatchObject({ column: "city", limit: 100 });
   });
 
   it("keeps duplicate labels distinct through out-of-order profiles and selected-column state", async () => {
@@ -289,9 +326,9 @@ describe("App progressive profiling and view correlation", () => {
 
     const headers = [...document.querySelectorAll<HTMLElement>('th[data-column="duplicate"]')];
     expect(headers).toHaveLength(2);
-    expect(within(headers[0]!).getByText("Distinct 50%")).toBeVisible();
+    expect(within(headers[0]!).getByText("Distinct 1")).toBeVisible();
     expect(within(headers[0]!).getByText("Min 1")).toBeVisible();
-    expect(within(headers[1]!).getByText("Distinct 100%")).toBeVisible();
+    expect(within(headers[1]!).getByText("Distinct 2")).toBeVisible();
     expect(within(headers[1]!).getByText("Max 20")).toBeVisible();
     const duplicateRestriction =
       'View filters, sorts, and values are unavailable because 2 columns share the displayed name "duplicate". Rename one column in a cleaning step first.';
@@ -436,7 +473,7 @@ describe("App progressive profiling and view correlation", () => {
       });
     }
 
-    expect(await screen.findAllByText("Distinct 100%")).toHaveLength(2);
+    expect(await screen.findAllByText("Distinct 500")).toHaveLength(2);
     expect(screen.queryByText("Profiling…")).not.toBeInTheDocument();
     expect(messagesOfKind("ready")).toHaveLength(1);
   });
@@ -711,7 +748,7 @@ describe("App progressive profiling and view correlation", () => {
       viewRequestId: viewId(retry),
       summaries: [citySummary]
     });
-    expect(await screen.findByText("Distinct 100%")).toBeInTheDocument();
+    expect(await screen.findByText("Distinct 500")).toBeInTheDocument();
   });
 
   it("restores confirmed profile and value state after mutation errors and cancellation", async () => {
@@ -737,7 +774,7 @@ describe("App progressive profiling and view correlation", () => {
       values: [{ value: "Owned value", count: 4 }],
       hasMore: false
     });
-    expect(await screen.findByText("Distinct 100%")).toBeInTheDocument();
+    expect(await screen.findByText("Distinct 500")).toBeInTheDocument();
     expect(await screen.findByText("Owned value")).toBeInTheDocument();
     const confirmedContext = setViewContextMessages().at(-1)?.viewContextId;
 
@@ -753,7 +790,7 @@ describe("App progressive profiling and view correlation", () => {
     });
 
     expect(await screen.findByText("Owned value")).toBeInTheDocument();
-    expect(screen.getByText("Distinct 100%")).toBeInTheDocument();
+    expect(screen.getByText("Distinct 500")).toBeInTheDocument();
     expect(screen.getByText("The mutation failed")).toBeInTheDocument();
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
     expect(onlyRequest("getSummary").columnIds).toEqual(["c:1"]);
@@ -766,7 +803,7 @@ describe("App progressive profiling and view correlation", () => {
     dispatch({ kind: "cancelled", targetRequestId: "mutation" });
 
     expect(await screen.findByText("Owned value")).toBeInTheDocument();
-    expect(screen.getByText("Distinct 100%")).toBeInTheDocument();
+    expect(screen.getByText("Distinct 500")).toBeInTheDocument();
     expect(screen.getByText("The cleaning operation was cancelled.")).toBeInTheDocument();
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
     expect(onlyRequest("getSummary").columnIds).toEqual(["c:1"]);
@@ -993,7 +1030,7 @@ describe("App progressive profiling and view correlation", () => {
       summaries: [citySummary]
     });
 
-    expect(await screen.findByText("Distinct 100%")).toBeInTheDocument();
+    expect(await screen.findByText("Distinct 500")).toBeInTheDocument();
     expect(screen.getByText("Page fetch failed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry page" })).toBeInTheDocument();
     expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
@@ -1443,7 +1480,7 @@ describe("App progressive profiling and view correlation", () => {
     const profiledMetadata = { ...metadata, stats: emptyStats() };
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: profiledMetadata, page, summaries: [citySummary] });
-    await screen.findByText("Distinct 100%");
+    await screen.findByText("Distinct 500");
     openCityFilter();
     const valuesRequest = onlyRequest("getColumnValues");
     dispatch({
@@ -1474,7 +1511,7 @@ describe("App progressive profiling and view correlation", () => {
       viewRequestId: viewId(newest)
     });
 
-    expect(await screen.findByText("Distinct 100%")).toBeInTheDocument();
+    expect(await screen.findByText("Distinct 500")).toBeInTheDocument();
     expect(screen.getByText("Confirmed candidate")).toBeInTheDocument();
     selectInsightsView("Dataset");
     expect(screen.getByText("No missing values.")).toBeInTheDocument();

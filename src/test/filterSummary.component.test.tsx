@@ -6,6 +6,7 @@ import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
 import { MAX_VIEW_VALUE_TEXT_CHARACTERS, MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS } from "../shared/viewValueLimits";
 import { FilterPanel } from "../webviews/filters/FilterPanel";
+import type { ProfileValueMode } from "../webviews/profileValueMode";
 import { SummaryPanel } from "../webviews/summary/SummaryPanel";
 
 const metadata: SessionMetadata = {
@@ -1069,7 +1070,10 @@ describe("SummaryPanel", () => {
       filtersDisabled?: boolean;
       filtersLabel?: string;
       filterModel?: FilterModel;
+      profileValueMode?: ProfileValueMode;
       onSelectView?: (view: "column" | "dataset" | "filters") => void;
+      onProfileValueModeChange?: (mode: ProfileValueMode) => void;
+      onShowMoreValues?: (column: string) => void;
       onApplyFilterModel?: (model: FilterModel) => void;
     } = {}
   ) => {
@@ -1087,7 +1091,10 @@ describe("SummaryPanel", () => {
         filtersDisabled={options.filtersDisabled}
         filtersLabel={options.filtersLabel}
         filterModel={options.filterModel}
+        profileValueMode={options.profileValueMode}
         onSelectView={options.onSelectView ?? (() => undefined)}
+        onProfileValueModeChange={options.onProfileValueModeChange}
+        onShowMoreValues={options.onShowMoreValues}
         onApplyFilterModel={options.onApplyFilterModel}
       />
     );
@@ -1292,6 +1299,7 @@ describe("SummaryPanel", () => {
 
   it("switches counts to percentages and filters a categorical value through the shared view model", () => {
     const onApply = vi.fn();
+    const onShowMoreValues = vi.fn();
     const Harness = () => {
       const [model, setModel] = useState<FilterModel>({
         logic: "and",
@@ -1304,6 +1312,7 @@ describe("SummaryPanel", () => {
         ],
         sort: [{ column: "sales", direction: "desc", nulls: "last" }]
       });
+      const [profileValueMode, setProfileValueMode] = useState<ProfileValueMode>("count");
       return (
         <SummaryPanel
           metadata={metadata}
@@ -1312,7 +1321,10 @@ describe("SummaryPanel", () => {
           selectedColumnId="c:0"
           activeView="column"
           filterModel={model}
+          profileValueMode={profileValueMode}
           onSelectView={() => undefined}
+          onProfileValueModeChange={setProfileValueMode}
+          onShowMoreValues={onShowMoreValues}
           onApplyFilterModel={(next) => {
             onApply(next);
             setModel(next);
@@ -1322,11 +1334,26 @@ describe("SummaryPanel", () => {
     };
     render(<Harness />);
 
-    expect(screen.getByText("Percent uses 4 non-missing visible rows.")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "%" }));
-    expect(screen.getByRole("button", { name: "%" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText(/Percent uses/iu)).not.toBeInTheDocument();
+    const percentButton = screen.getByRole("button", { name: "%" });
+    expect(percentButton).toHaveAttribute("title", "Distributions use 4 non-missing visible rows.");
+    expect(screen.getByText("Null").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("3");
+    expect(screen.getByText("Empty").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("Other values").nextElementSibling).toHaveTextContent("1");
+
+    fireEvent.click(percentButton);
+    expect(percentButton).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Counts" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("Null").nextElementSibling).toHaveTextContent("0%");
+    expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("75%");
+    expect(screen.getByText("Distinct").nextElementSibling).toHaveAttribute("title", "Distinct: 3 (75%)");
+    expect(screen.getByText("Empty").nextElementSibling).toHaveTextContent("25%");
+    expect(screen.getByText("Other values").nextElementSibling).toHaveTextContent("25%");
     expect(screen.getByText("50%", { selector: ".profileDistributionRow small" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "More values…" }));
+    expect(onShowMoreValues).toHaveBeenCalledWith("city");
 
     fireEvent.click(screen.getByRole("button", { name: "Filter to Berlin; 2 rows, 50%" }));
     expect(onApply).toHaveBeenLastCalledWith({
@@ -1365,6 +1392,24 @@ describe("SummaryPanel", () => {
       ],
       sort: [{ column: "sales", direction: "desc", nulls: "last" }]
     });
+  });
+
+  it("lets users choose count or percent while the selected column is still profiling", () => {
+    const onProfileValueModeChange = vi.fn();
+    renderSummary({
+      summaries: [],
+      selectedColumnId: "c:0",
+      profileValueMode: "count",
+      onProfileValueModeChange
+    });
+
+    expect(screen.getByText("Profiling selected column...")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "%" }));
+    expect(onProfileValueModeChange).toHaveBeenCalledWith("percent");
+    expect(screen.getByRole("button", { name: "%" })).toHaveAttribute(
+      "title",
+      "Distributions use non-missing visible rows."
+    );
   });
 
   it("uses non-overlapping numeric bin filters and makes the final upper edge inclusive", () => {
