@@ -236,7 +236,15 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       ],
       display_name: "R (Open Wrangler)",
       language: "R",
-      env: { R_LIBS_USER: prepared.libraryDir }
+      env: {
+        HOME: join(privateRoot, "h"),
+        USERPROFILE: join(privateRoot, "h"),
+        TMPDIR: join(privateRoot, "t"),
+        TMP: join(privateRoot, "t"),
+        TEMP: join(privateRoot, "t"),
+        R_USER: join(privateRoot, "h"),
+        R_LIBS_USER: prepared.libraryDir
+      }
     });
     assert.equal(kernelSpec.argv.at(-1), "{connection_file}");
     assert.equal(kernelSpec.argv.filter((value) => value === "{connection_file}").length, 1);
@@ -266,7 +274,10 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       assert.equal(invocation.input.environment.R_LIBS_USER, prepared.libraryDir);
       assert.equal(invocation.input.environment.R_USER, join(privateRoot, "h"));
       assert.equal(invocation.input.environment.HOME, join(privateRoot, "h"));
+      assert.equal(invocation.input.environment.USERPROFILE, join(privateRoot, "h"));
       assert.equal(invocation.input.environment.TMPDIR, join(privateRoot, "t"));
+      assert.equal(invocation.input.environment.TMP, join(privateRoot, "t"));
+      assert.equal(invocation.input.environment.TEMP, join(privateRoot, "t"));
       assert.equal(Object.isFrozen(invocation), true);
       assert.equal(Object.isFrozen(invocation.input), true);
       assert.equal(Object.isFrozen(invocation.input.args), true);
