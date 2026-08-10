@@ -158,6 +158,33 @@ describe("App progressive profiling and view correlation", () => {
     expect(prioritizationMessages()).not.toContain(viewId(cityEnvelope.request));
   });
 
+  it("reveals and clears a filter applied from a column-header profile", async () => {
+    const profiledCity: ColumnSummary = {
+      ...citySummary,
+      distinctCount: 1,
+      topValues: [{ value: "Berlin", count: 500 }],
+      visualization: {
+        kind: "categorical",
+        categories: [{ value: "Berlin", count: 500 }],
+        otherCount: 0
+      }
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [profiledCity] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter city to Berlin; 500 rows" }));
+
+    const drawer = screen.getByRole("complementary", { name: "Column profiles and filters" });
+    expect(within(drawer).getByRole("tab", { name: "Column" })).toHaveAttribute("aria-selected", "true");
+    const clear = within(drawer).getByRole("button", { name: "Clear filter for city" });
+    expect(clear).toBeVisible();
+    expect(filterModelOf(onlyRequest("getPage")).filters).toHaveLength(1);
+
+    postMessage.mockClear();
+    fireEvent.click(clear);
+    expect(filterModelOf(onlyRequest("getPage")).filters).toEqual([]);
+  });
+
   it("keeps duplicate labels distinct through out-of-order profiles and selected-column state", async () => {
     const duplicateMetadata: SessionMetadata = {
       ...metadata,
@@ -1617,6 +1644,14 @@ function onlyRequest(kind: string): RuntimeRequest {
   const matches = requestsOfKind(kind);
   expect(matches).toHaveLength(1);
   return matches[0];
+}
+
+function filterModelOf(request: RuntimeRequest): FilterModel {
+  const value = request.filterModel;
+  if (typeof value !== "object" || value === null || !("filters" in value) || !Array.isArray(value.filters)) {
+    throw new Error(`Request ${request.kind} has no filter model.`);
+  }
+  return value as FilterModel;
 }
 
 function viewId(request: RuntimeRequest): string {

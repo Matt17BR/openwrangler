@@ -12,6 +12,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Clicking a value or histogram bin in a column header now opens Column profiles with the active filter and its
+  **Clear** action visible immediately, including while the filtered profile reloads.
 - **Open in Open Wrangler** is visible as soon as a supported `.R`, `.Rmd`, or `.qmd` tab is active. The title action
   now depends only on the active file, so it is available before R or Quarto activates.
 - Opening a dataframe from that R tab action now reuses the dataframe list already shown in Operations, avoiding a

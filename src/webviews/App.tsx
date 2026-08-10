@@ -2821,6 +2821,13 @@ export function App() {
                 }
                 onApplyProfileFilter={(filter) => {
                   if (inspectionMode || !filterSupported) return;
+                  sidePanelReturnFocus.current =
+                    document.activeElement instanceof HTMLElement ? document.activeElement : sidePanelToggleRef.current;
+                  setFilterColumn(filter.column);
+                  summaryPanelViewRef.current = "column";
+                  setSummaryPanelView("column");
+                  sidePanelOpenRef.current = true;
+                  setSidePanelOpen(true);
                   applyFilters(replaceViewColumnFilter(filterModelRef.current, filter));
                 }}
                 onOpenFilter={(column) => {
