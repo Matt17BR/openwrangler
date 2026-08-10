@@ -27,6 +27,15 @@ test("local validation rejects description, homepage, and topic drift", () => {
   assert.match(inspect({ ...metadata, topics: [...metadata.topics].reverse() }).join(" "), /topics/u);
 });
 
+test("local validation keeps Python and R discoverability topics", () => {
+  for (const topic of ["python", "polars", "pandas", "duckdb", "r", "quarto", "rmarkdown", "tidyverse", "data-table"]) {
+    assert.match(
+      inspect({ ...metadata, topics: metadata.topics.filter((candidate) => candidate !== topic) }).join(" "),
+      new RegExp(`missing:.*${topic}`, "u")
+    );
+  }
+});
+
 test("live validation accepts an exact response and rejects drift", async () => {
   const response = (value) => async () => new Response(JSON.stringify(value), { status: 200 });
   await verifyLivePublicRepositoryMetadata(metadata, response(metadata));
