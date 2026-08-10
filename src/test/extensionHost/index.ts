@@ -676,6 +676,8 @@ export async function run(): Promise<void> {
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const rDocumentPredicate =
     "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+  const rTitlePredicate =
+    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
@@ -716,11 +718,14 @@ export async function run(): Promise<void> {
   assert.ok(
     contributions.menus?.["editor/title"]?.some(
       (item) =>
-        item.command === "openWrangler.openRDataframe" &&
-        item.when === rDocumentPredicate &&
-        item.group === "navigation@1"
+        item.command === "openWrangler.openRDataframe" && item.when === rTitlePredicate && item.group === "navigation@1"
     ),
     "R document editors must expose the Open Wrangler title action."
+  );
+  assert.doesNotMatch(
+    rTitlePredicate,
+    /isLinux|isMac|editorLangId|resourceLangId/u,
+    "The stable R title action must not depend on platform or language-extension context."
   );
   assert.ok(
     contributions.menus?.["editor/title"]?.some(
@@ -2937,7 +2942,8 @@ async function invokeReleasedRInteractiveTitleAction(
 
 async function activateReleasedRInteractiveTitleAction(
   workbench: Page,
-  sourceDocument: vscode.TextDocument
+  sourceDocument: vscode.TextDocument,
+  dispatch = true
 ): Promise<void> {
   const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
   const activeSourceTab = activeGroup
@@ -2962,6 +2968,7 @@ async function activateReleasedRInteractiveTitleAction(
     );
     const direct = await resolveReleasedREditorAction(titleActions, "button", "active R editor title");
     if (direct) {
+      if (!dispatch) return;
       assertExactActiveTextEditor(sourceDocument, "before dispatching its direct Open Wrangler title action");
       await direct.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
       return;
@@ -2983,6 +2990,7 @@ async function activateReleasedRInteractiveTitleAction(
         assert.equal(await visibleMenus.count(), 1, "The R editor More Actions button must open exactly one menu.");
         const action = await resolveReleasedREditorAction(menu, "menuitem", "active R editor overflow");
         if (action) {
+          if (!dispatch) return;
           assertExactActiveTextEditor(sourceDocument, "before dispatching its Open Wrangler overflow action");
           assert.equal(
             await activeSourceTab.isVisible(),
@@ -17238,6 +17246,35 @@ async function exercisePackagedFileLaunchSurfaces(
   }
   if (availableCommands.has("notifications.hideList")) {
     await vscode.commands.executeCommand("notifications.hideList");
+  }
+
+  const rTitleSources = [
+    ["title-action.R", "orders <- data.frame(order_id = 1L)\n"],
+    ["title-action.Rmd", "```{r}\norders <- data.frame(order_id = 1L)\n```\n"],
+    ["title-action.qmd", "```{r}\norders <- data.frame(order_id = 1L)\n```\n"]
+  ] as const;
+  const rTitleUris = rTitleSources.map(([name]) => vscode.Uri.file(path.join(path.dirname(fixture.fsPath), name)));
+  try {
+    for (const [[, contents], source] of rTitleSources.map((entry, index) => [entry, rTitleUris[index]] as const)) {
+      writeFileSync(source.fsPath, contents, { encoding: "utf8", flag: "wx" });
+      recordAcceptanceProgress(`verify:r-title-action:${path.extname(source.fsPath).slice(1).toLowerCase()}`);
+      await vscode.commands.executeCommand("vscode.open", source, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.One
+      });
+      await waitFor(
+        () => vscode.window.activeTextEditor?.document.uri.toString() === source.toString(),
+        10_000,
+        `the ${path.extname(source.fsPath)} source to become active before checking its title action`
+      );
+      const sourceDocument = vscode.window.activeTextEditor?.document;
+      assert.ok(sourceDocument, `The ${path.extname(source.fsPath)} source must remain open for its title action.`);
+      await page.bringToFront();
+      await activateReleasedRInteractiveTitleAction(page, sourceDocument, false);
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    }
+  } finally {
+    for (const source of rTitleUris) rmSync(source.fsPath, { force: true });
   }
 
   recordAcceptanceProgress("verify:file-launch:explorer-context:source");

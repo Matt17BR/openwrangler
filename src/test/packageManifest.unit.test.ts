@@ -197,6 +197,8 @@ describe("file launch contributions", () => {
   it("offers one stable R action and keeps the explicit document command", () => {
     const rSourcePredicate =
       "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+    const rTitlePredicate =
+      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
 
     expect(manifest.activationEvents).toContain("onCommand:openWrangler.openRDataframe");
     expect(manifest.activationEvents).toContain("onCommand:openWrangler.runRDocument");
@@ -227,9 +229,10 @@ describe("file launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.openRDataframe",
-      when: rSourcePredicate,
+      when: rTitlePredicate,
       group: "navigation@1"
     });
+    expect(rTitlePredicate).not.toMatch(/isLinux|isMac|editorLangId|resourceLangId/u);
     expect(manifest.contributes?.menus?.["editor/title"]).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ when: expect.stringContaining("openWrangler.activeRTerminal") })
@@ -291,9 +294,7 @@ describe("file launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.openRDataframe",
-      when:
-        "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && " +
-        "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+      when: "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
       group: "navigation@1"
     });
   });

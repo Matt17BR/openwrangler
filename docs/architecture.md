@@ -25,7 +25,9 @@ Supported file resources share one `openWrangler.openFile` command across the Ex
 
 R source tabs use `openWrangler.openRDataframe` for their stable title action. When the selected terminal belongs to
 the official R extension, the action opens a dataframe from that live session. Otherwise it delegates to
-`openWrangler.runRDocument` on macOS and Linux extension hosts. On those platforms the tab menu keeps both explicit
+`openWrangler.runRDocument` on macOS and Linux extension hosts. The stable action is also visible on Windows so it can
+open a dataframe from an active official R terminal; direct document execution remains unavailable there. On macOS
+and Linux the tab menu keeps both explicit
 choices, and Explorer keeps the document command. Cursor pins the stable action alongside the file and notebook actions. The document
 command captures the exact open `TextDocument`, version, and in-memory text before R starts. It never substitutes a
 different active editor after an await. The document must remain the sole open object for its URI through variable
