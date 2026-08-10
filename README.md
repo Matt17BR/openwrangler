@@ -152,13 +152,14 @@ _This preview shows the changed values and generated Polars code. The two sorts 
 
 ## Notebook workflows
 
-In trusted Python notebooks, Open Wrangler previews Pandas, Polars, and DuckDB outputs and lists live variables from
-the notebook toolbar. **Open in Open Wrangler** loads the current live dataframe. If you reopened a notebook and only
-its saved output is available, rerun the cell first.
+In trusted Python notebooks and Python Interactive windows, Open Wrangler previews Pandas, Polars, and DuckDB outputs
+and lists the live dataframes in Operations and the notebook toolbar. **Open in Open Wrangler** loads the current
+dataframe from that same kernel.
 
 Python files have the same action in the editor toolbar and tab menu. For an ordinary `.py` file, Open Wrangler runs
 the file in Python Interactive and opens the live dataframe you choose. If the file uses `# %%` cells, it runs only
-the cell under the cursor.
+the cell under the cursor. Once the Interactive window is open, its own **Open in Open Wrangler** action lists the
+dataframes already in memory without rerunning the source cell.
 
 If Microsoft Data Wrangler is installed too, choose which extension owns automatic previews with **Open Wrangler:
 Choose Notebook Preview Provider**.
