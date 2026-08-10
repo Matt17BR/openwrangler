@@ -7878,7 +7878,11 @@ async function previewReleasedRFindReplace(
   );
   assertReleasedRFindReplaceGeneratedCode(active.code ?? "", sourceName, find, replacement, false);
   const codePreview = await waitForCodePreview(workbench, undefined, "R");
-  await revealCodePreviewOperationLine(codePreview, "gsub(", ".ow_text_replacement");
+  const visibleCode = await revealCodePreviewText(
+    codePreview,
+    `.ow_text_replacement <- ${JSON.stringify(replacement)}`
+  );
+  assertReleasedRFindReplaceCodeSurface(visibleCode, sourceName, find, replacement, false);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -20376,6 +20380,45 @@ async function revealCodePreviewOperationLine(
       `The generated-code ${subject} line must be fully visible in the Code Preview panel.`
     );
   }
+}
+
+async function revealCodePreviewText(codePreview: Locator, expectedText: string): Promise<string> {
+  const reveal = await codePreview.evaluate((element, text) => {
+    const content = element as unknown as {
+      cmTile?: {
+        view?: {
+          dispatch(spec: Readonly<{ selection: Readonly<{ anchor: number }>; scrollIntoView: boolean }>): void;
+          state: { doc: { toString(): string } };
+        };
+      };
+    };
+    const view = content.cmTile?.view;
+    if (!view) return { code: undefined, position: -1 };
+    const code = view.state.doc.toString();
+    const position = code.indexOf(text);
+    if (position >= 0) view.dispatch({ selection: { anchor: position }, scrollIntoView: true });
+    return { code, position };
+  }, expectedText);
+  assert.ok(reveal.code, "The generated-code preview must expose its CodeMirror document.");
+  assert.notEqual(reveal.position, -1, "The generated-code preview must contain the expected text.");
+
+  const line = codePreview.locator(".cm-line").filter({ hasText: expectedText }).first();
+  await line.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  await line.scrollIntoViewIfNeeded();
+  const [lineText, lineBounds, scrollerBounds] = await Promise.all([
+    line.innerText(),
+    line.boundingBox(),
+    codePreview.locator("xpath=..").boundingBox()
+  ]);
+  assert.ok(lineText.includes(expectedText), "The visible generated-code line must contain the expected text.");
+  assert.ok(lineBounds, "The generated-code line must have measurable geometry.");
+  assert.ok(scrollerBounds, "The generated-code preview must have measurable geometry.");
+  assert.ok(
+    lineBounds.y >= scrollerBounds.y - 1 &&
+      lineBounds.y + lineBounds.height <= scrollerBounds.y + scrollerBounds.height + 1,
+    "The generated-code line must be fully visible in the Code Preview panel."
+  );
+  return reveal.code;
 }
 
 async function ensureCodePreviewHeight(workbench: Page, minimumHeight: number): Promise<void> {
