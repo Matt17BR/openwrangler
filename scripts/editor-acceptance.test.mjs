@@ -512,6 +512,18 @@ test("native R tooling pins Quarto to an internal revealed preview", async () =>
     source.indexOf("async function exerciseReleasedRJupyterExtension("),
     source.indexOf("async function exerciseReleasedRInteractiveTerminalJourney(")
   );
+  const capturedFailure = notebookJourney.indexOf(
+    "failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint)"
+  );
+  const cleanup = notebookJourney.indexOf("await bestEffortReleasedJupyterCleanup", capturedFailure);
+  const restoredFailure = notebookJourney.indexOf(
+    "if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint)",
+    cleanup
+  );
+  assert.ok(
+    capturedFailure >= 0 && cleanup > capturedFailure && restoredFailure > cleanup,
+    "Released R failures must restore their last work checkpoint after cleanup diagnostics finish."
+  );
   assert.match(notebookJourney, /if \(phase === "jupyter-r" && \(await assertReleasedNativeREditorTooling\(\)\)\) \{/u);
   assert.doesNotMatch(notebookJourney, /assert\.equal\(\s*await assertReleasedNativeREditorTooling\(\),\s*true/u);
   const tooling = source.slice(
