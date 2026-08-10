@@ -3428,14 +3428,20 @@ async function exerciseReleasedRDocumentJourney(
     const exportPath = path.join(exportDirectory, "orders-cleaned.csv");
     const parquetExportPath = path.join(exportDirectory, "orders-cleaned.parquet");
     try {
-      await exportCleanedDataThroughCommand(workbench, exportPath);
+      await exportCleanedDataThroughWorkbench(app, workbench, exportPath);
       await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R CSV export to appear");
       assertExactBytes(
         readFileSync(exportPath),
         releasedRDocumentCleanedCsv(),
         "The public R export command must write every cleaned row and the renamed schema."
       );
-      await exportCleanedDataThroughCommand(workbench, parquetExportPath, "parquet");
+      app = await releasedRSessionApp(
+        workbench,
+        testing,
+        opened.sessionId,
+        "the applied plain R session after CSV export"
+      );
+      await exportCleanedDataThroughWorkbench(app, workbench, parquetExportPath, "parquet");
       await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R Parquet export to appear");
       assertParquetFile(parquetExportPath, "The public R document export");
       assert.deepEqual(
@@ -6156,7 +6162,8 @@ async function exerciseReleasedREditingJourney(
   const exportViewModel = JSON.parse(JSON.stringify(exportView.viewState.filterModel)) as FilterModel;
 
   const exportPath = path.join(outputDirectory, `${phase}.orders.clean.csv`);
-  await exportCleanedDataThroughCommand(workbench, exportPath);
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R notebook session before CSV export");
+  await exportCleanedDataThroughWorkbench(app, workbench, exportPath);
   await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R notebook CSV export to appear");
   const exportedLines = readFileSync(exportPath, "utf8").split(/\r?\n/u);
   assert.equal(exportedLines.at(-1), "", "The native R CSV export must end with one newline.");
@@ -6167,7 +6174,8 @@ async function exerciseReleasedREditingJourney(
   assert.equal(exportedLines[2], releasedRNotebookCleanedCsvRow(2));
   assert.equal(exportedLines[1_205], releasedRNotebookCleanedCsvRow(1_205));
   const parquetExportPath = path.join(outputDirectory, `${phase}.orders.clean.parquet`);
-  await exportCleanedDataThroughCommand(workbench, parquetExportPath, "parquet");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the R notebook session after CSV export");
+  await exportCleanedDataThroughWorkbench(app, workbench, parquetExportPath, "parquet");
   await waitFor(() => existsSync(parquetExportPath), 30_000, "the cleaned R notebook Parquet export to appear");
   assertParquetFile(parquetExportPath, "The public R notebook export");
   assert.deepEqual(
@@ -16811,10 +16819,15 @@ async function previewRevenueProjection(app: Locator, testing: TestApi, newColum
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
 }
 
-async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, destination: string): Promise<void> {
+async function exportCleanedDataThroughWorkbench(
+  app: Locator,
+  workbench: Page,
+  destination: string,
+  format: "csv" | "parquet" = "csv"
+): Promise<void> {
   await dismissStaleWorkbenchHover(workbench);
   await app.getByRole("button", { name: "Export", exact: true }).click();
-  await completeCleanedDataExportDialog(workbench, destination);
+  await completeCleanedDataExportDialog(workbench, destination, format);
 }
 
 async function dismissStaleWorkbenchHover(workbench: Page): Promise<void> {
@@ -16837,33 +16850,6 @@ function assertParquetFile(filePath: string, label: string): void {
   assert.equal(bytes.subarray(-4).toString("utf8"), "PAR1", `${label} has an invalid Parquet footer.`);
 }
 
-async function exportCleanedDataThroughCommand(
-  workbench: Page,
-  destination: string,
-  format: "csv" | "parquet" = "csv"
-): Promise<void> {
-  const completion = vscode.commands.executeCommand<boolean>("openWrangler.exportData");
-  await completeCleanedDataExportDialog(workbench, destination, format);
-  const outcome = await withBoundedAcceptancePromise(completion, 30_000, "the public cleaned-data export command");
-  const notifications =
-    outcome === true
-      ? []
-      : (
-          await workbench
-            .locator(
-              ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
-            )
-            .allInnerTexts()
-        )
-          .slice(0, 10)
-          .map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 500));
-  assert.equal(
-    outcome,
-    true,
-    `The zero-argument cleaned-data export command must report success. Notifications: ${JSON.stringify(notifications)}`
-  );
-}
-
 async function completeCleanedDataExportDialog(
   workbench: Page,
   destination: string,
@@ -16875,7 +16861,24 @@ async function completeCleanedDataExportDialog(
     .last();
   await formatPicker.waitFor({ state: "visible", timeout: 10_000 });
   const label = format === "csv" ? /^CSV/u : /^Parquet/u;
-  await formatPicker.getByRole("option").filter({ hasText: label }).first().click();
+  const formatOption = formatPicker.getByRole("option").filter({ hasText: label }).first();
+  try {
+    await formatOption.waitFor({ state: "visible", timeout: 10_000 });
+  } catch (error) {
+    const options = (await formatPicker.getByRole("option").allInnerTexts()).map((text) =>
+      text.replace(/\s+/gu, " ").trim().slice(0, 200)
+    );
+    const input = await formatPicker
+      .locator(".quick-input-box input")
+      .first()
+      .inputValue()
+      .catch(() => "");
+    throw new Error(
+      `The cleaned-data export picker did not offer ${format}. Visible options: ${JSON.stringify(options)}. Input: ${JSON.stringify(input)}.`,
+      { cause: error }
+    );
+  }
+  await formatOption.click();
   assert.equal(
     await pollAcceptanceCondition(
       async () =>

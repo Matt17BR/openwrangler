@@ -1027,6 +1027,26 @@ test("R view mutations reacquire the renderer before the next panel action", asy
   ]);
 });
 
+test("R cleaned-data exports use the exact dataframe toolbar", async () => {
+  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
+  const functionBody = (name) => {
+    const start = source.indexOf(`async function ${name}(`);
+    const end = source.indexOf("\nasync function ", start + 1);
+    assert.ok(start >= 0 && end > start, `${name} must exist.`);
+    return source.slice(start, end);
+  };
+  const documentJourney = functionBody("exerciseReleasedRDocumentJourney");
+  const notebookJourney = functionBody("exerciseReleasedREditingJourney");
+  const exportHelper = functionBody("exportCleanedDataThroughWorkbench");
+
+  for (const journey of [documentJourney, notebookJourney]) {
+    assert.equal((journey.match(/exportCleanedDataThroughWorkbench\(/gu) ?? []).length, 2);
+    assert.doesNotMatch(journey, /executeCommand<boolean>\("openWrangler\.exportData"\)/u);
+  }
+  assert.match(exportHelper, /getByRole\("button", \{ name: "Export", exact: true \}\)\.click\(\)/u);
+  assert.match(exportHelper, /completeCleanedDataExportDialog\(workbench, destination, format\)/u);
+});
+
 test("R native-frame editing waits for its visible renderer before notebook probes", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
