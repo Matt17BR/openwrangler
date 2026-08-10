@@ -34,6 +34,7 @@ a precise contract. Their introductions and summaries should still be direct.
 - Do not claim that something is faster, safer, complete, or production-ready without linked evidence.
 - Keep release-specific timing tables in a dated performance report. The README may summarize the latest reviewed
   result and link to it, but it must not copy a table that goes stale when the product changes.
+- When a summary uses performance evidence from an older release, name the tested product versions in the summary.
 - Do not paste architecture invariants or test-contract prose into the README, changelog, release notes, or a pull
   request summary. Link to the detailed document when a reader needs it.
 - Read the finished paragraph aloud. If several sentences have the same length or pattern, rewrite them.
