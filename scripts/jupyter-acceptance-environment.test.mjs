@@ -226,14 +226,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
 
     const kernelSpec = JSON.parse(await readFile(prepared.kernelSpecPath, "utf8"));
     assert.deepEqual(kernelSpec, {
-      argv: [
-        rExecutable,
-        "--slave",
-        "-e",
-        "IRkernel::main()",
-        "--args",
-        "{connection_file}"
-      ],
+      argv: [rExecutable, "--slave", "-e", "IRkernel::main()", "--args", "{connection_file}"],
       display_name: "R (Open Wrangler)",
       language: "R",
       env: {
