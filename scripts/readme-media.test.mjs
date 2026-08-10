@@ -529,7 +529,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(readme, /Open Wrangler stays inactive in Restricted Mode\./u);
   assert.match(readme, /Column search covers the full schema and includes data-type icons/u);
-  assert.match(readme, /Hover or focus the histogram to see a bin's range, row count, and percentage/u);
+  assert.match(
+    readme,
+    /Switch between counts and percentages from the grid or column panel\. Hover or focus a bin for both values/u
+  );
   assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
   assert.match(readme, /Choose from 28 operations/u);
   assert.match(readme, /preview shows the changed values and generated Polars code/u);
