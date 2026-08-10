@@ -809,7 +809,9 @@ export async function run(): Promise<void> {
     ["editor/title", notebookVariableWhenCompact],
     ["notebook/toolbar", notebookVariableToolbarWhen]
   ] as const) {
-    const entries = contributions.menus?.[menu]?.filter((item) => item.command === "openWrangler.openNotebookVariable");
+    const entries: Array<{ command?: string; when?: string; group?: string }> | undefined = contributions.menus?.[
+      menu
+    ]?.filter((item) => item.command === "openWrangler.openNotebookVariable");
     assert.equal(entries?.length, 1, `${menu} must expose exactly one Open Wrangler variable action.`);
     assert.deepEqual(entries?.[0], {
       command: "openWrangler.openNotebookVariable",
@@ -10220,6 +10222,99 @@ async function exerciseReleasedPythonFileEntrypoint(
     await disposePackagedSessionPanel(testing, active.sessionId, "the Python editor's live Polars session");
     assert.equal(testing.diagnostics().sessionCount, 0);
     assert.equal(sourceDocument.isClosed, false, "The Python-file journey must retain its exact source document.");
+
+    recordAcceptanceProgress(`${checkpoint}:interactive-toolbar`);
+    const interactiveEditor = await showExactReleasedNotebook(interactive);
+    const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+    assert.ok(jupyterExtension, "The Python Interactive journey requires the released Jupyter extension.");
+    const jupyterApi = await jupyterExtension.activate();
+    assertExactOpenNotebookDocument(interactive, "after acquiring Jupyter for its Interactive Window");
+    const originalKernel = await jupyterApi.kernels.getKernel(interactive.uri);
+    assertExactOpenNotebookDocument(interactive, "after acquiring its Interactive Window kernel");
+    assert.ok(originalKernel, "The Python Interactive Window must retain its selected kernel.");
+    assertExactVisibleReleasedNotebookEditor(
+      interactive,
+      interactiveEditor,
+      "before invoking its Open Wrangler toolbar action"
+    );
+
+    const originalInteractiveDocuments = vscode.workspace.notebookDocuments.filter(
+      (candidate) => !candidate.isClosed && candidate.notebookType === "interactive"
+    );
+    const originalInteractiveVersion = interactive.version;
+    const originalInteractiveCells = interactive.getCells().map((cell) => ({
+      cell,
+      executionSummary: {
+        success: cell.executionSummary?.success,
+        executionOrder: cell.executionSummary?.executionOrder,
+        startTime: cell.executionSummary?.timing?.startTime,
+        endTime: cell.executionSummary?.timing?.endTime
+      }
+    }));
+
+    await invokeReleasedNotebookToolbarVariable(workbench, interactive, "python_entry_frame");
+    const reopened = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      interactive,
+      {
+        name: "python_entry_frame",
+        type: "polars.dataframe.frame.DataFrame",
+        backend: "polars",
+        firstValue: "910001"
+      },
+      "the existing Polars dataframe reopened from the exact Python Interactive Window"
+    );
+    assert.equal(reopened.metadata.mode, "editing");
+    assert.deepEqual(reopened.metadata.shape, { rows: 3, columns: 3 });
+    await assertReleasedSessionPage(testing, reopened, "910001", "released-jupyter-python-interactive-toolbar-page");
+
+    const currentKernel = await jupyterApi.kernels.getKernel(interactive.uri);
+    assertExactOpenNotebookDocument(interactive, "after reopening from its Interactive Window toolbar");
+    assert.equal(currentKernel, originalKernel, "The Interactive Window toolbar action must reuse the same kernel.");
+    assert.equal(
+      interactive.version,
+      originalInteractiveVersion,
+      "Opening an existing Interactive variable must not edit or execute the Interactive notebook."
+    );
+    const currentInteractiveCells = interactive.getCells();
+    assert.equal(
+      currentInteractiveCells.length,
+      originalInteractiveCells.length,
+      "Opening an existing Interactive variable must not add another cell."
+    );
+    for (const [index, original] of originalInteractiveCells.entries()) {
+      const current = currentInteractiveCells[index];
+      assert.equal(current, original.cell, `Interactive cell ${index} changed while opening an existing variable.`);
+      assert.deepEqual(
+        {
+          success: current.executionSummary?.success,
+          executionOrder: current.executionSummary?.executionOrder,
+          startTime: current.executionSummary?.timing?.startTime,
+          endTime: current.executionSummary?.timing?.endTime
+        },
+        original.executionSummary,
+        `Interactive cell ${index} was executed again while opening an existing variable.`
+      );
+    }
+    const currentInteractiveDocuments = vscode.workspace.notebookDocuments.filter(
+      (candidate) => !candidate.isClosed && candidate.notebookType === "interactive"
+    );
+    assert.equal(
+      currentInteractiveDocuments.length,
+      originalInteractiveDocuments.length,
+      "The Interactive Window toolbar action must not create another Interactive Window."
+    );
+    for (const original of originalInteractiveDocuments) {
+      assert.ok(
+        currentInteractiveDocuments.includes(original),
+        "The Interactive Window toolbar action must retain every exact Interactive document."
+      );
+    }
+
+    recordAcceptanceProgress(`${checkpoint}:interactive-toolbar-close`);
+    await disposePackagedSessionPanel(testing, reopened.sessionId, "the Python Interactive toolbar Polars session");
+    assert.equal(testing.diagnostics().sessionCount, 0);
     await closeExactReleasedPythonInteractiveWindow(interactive);
     const sourceTab = textDocumentTab(source);
     assert.ok(sourceTab, "The Python-file journey must retain its exact source tab.");
