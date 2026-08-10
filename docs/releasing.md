@@ -105,8 +105,9 @@ review; the rest of the review stays human-written. It also recalculates the pub
 samples. Stable release checks read that JSON from the release commit. A report made for the release must name the same
 version and VSIX checksum; a patch may reuse a reviewed report from its current major/minor line.
 
-The README may link to the dated 1.2.1 Data Wrangler comparison during the preview series. Before releasing 2.0,
-rerun the comparison with the final candidate VSIX, publish a dated 2.0 report, and update the short README summary.
+The README keeps a short summary of the latest reviewed Data Wrangler comparison and links to its dated report. It
+does not put a release number or timing table in the prose. Before releasing 2.0, rerun the comparison with the final
+candidate VSIX, publish the 2.0 report, and update the link and summary.
 
 Public README/gallery PNGs are captured at 2× physical density against unchanged logical editor layouts and retain
 lossless pixels. Before tagging, `npm run verify:readme-media` must prove exact dimensions, crops, sRGB output, and

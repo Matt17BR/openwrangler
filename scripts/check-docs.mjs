@@ -3,7 +3,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { inspectDataWranglerComparisonReview } from "./data-wrangler-comparison-report.mjs";
 import { inspectPreviewReadme, inspectStablePublicCopy } from "./release-documents.mjs";
-import { inspectStableSourceReadiness, performanceReportLink } from "./release-readiness.mjs";
+import {
+  inspectPerformanceSummary,
+  inspectStableSourceReadiness,
+  performanceReportLink
+} from "./release-readiness.mjs";
 import { inspectPreviewReleaseWorkflow as inspectReleaseWorkflow } from "./preview-release-workflow.mjs";
 import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
@@ -76,6 +80,10 @@ if (readmeProblems.length > 0) {
   throw new Error(`README release/install region is stale:\n- ${readmeProblems.join("\n- ")}`);
 }
 const linkedComparison = performanceReportLink(readme);
+const performanceSummaryProblems = inspectPerformanceSummary(readme);
+if (performanceSummaryProblems.length > 0) {
+  throw new Error(`README performance summary is stale:\n- ${performanceSummaryProblems.join("\n- ")}`);
+}
 const packageMajor = /^(?<major>0|[1-9]\d*)\./u.exec(packageJson.version ?? "")?.groups?.major;
 const requiresVersionedComparison =
   packageJson.preview === false && packageMajor !== undefined && BigInt(packageMajor) >= 2n;

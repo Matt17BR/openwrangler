@@ -39,6 +39,7 @@ import {
 import {
   inspectPerformanceEvidenceCandidateReadiness,
   inspectPerformanceEvidenceSourceReadiness,
+  inspectPerformanceSummary,
   inspectStableReleaseReadiness,
   inspectStableSourceReadiness,
   PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
@@ -222,6 +223,31 @@ test("stable public copy rejects leftover 1.99 preview labels", () => {
   );
   assert.ok(
     problems.includes("README.md still contains a 1.99 preview label. Remove it before the stable version 2 release.")
+  );
+});
+
+test("keeps release numbers in the dated performance report", () => {
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      "# Open Wrangler\n\n## Performance\n\nOur latest reviewed comparison found faster notebook previews.\n"
+    ),
+    []
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      "# Open Wrangler\n\n## Performance\n\nOpen Wrangler 1.2.1 was faster for notebook previews.\n"
+    ),
+    ["README Performance prose must keep release numbers in the dated report link."]
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary("# Open Wrangler\n\n## Performance\n\nThe comparison used Data Wrangler 1.24.2.\n"),
+    ["README Performance prose must keep release numbers in the dated report link."]
+  );
+  assert.deepEqual(
+    inspectPerformanceSummary(
+      "# Open Wrangler\n\n## Performance\n\n| Product | Time |\n| --- | ---: |\n| Open Wrangler | 1 s |\n"
+    ),
+    ["README Performance must link to detailed results instead of embedding a table."]
   );
 });
 
