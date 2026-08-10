@@ -816,10 +816,15 @@ function readRBootstrapTokens(receipt) {
     expectedPathSnapshot: snapshot
   });
   if (contents.length === 0) return [];
-  if (!contents.endsWith("\n") || contents.includes("\r")) {
+  const lineEnding = contents.endsWith("\r\n") ? "\r\n" : contents.endsWith("\n") ? "\n" : undefined;
+  if (!lineEnding) {
     throw new Error("Released-Jupyter R bootstrap stage contained an invalid fixed value.");
   }
-  const tokens = contents.slice(0, -1).split("\n");
+  const withoutLineEndings = contents.replaceAll(lineEnding, "");
+  if (withoutLineEndings.includes("\r") || withoutLineEndings.includes("\n")) {
+    throw new Error("Released-Jupyter R bootstrap stage contained an invalid fixed value.");
+  }
+  const tokens = contents.slice(0, -lineEnding.length).split(lineEnding);
   let previous;
   for (const token of tokens) {
     if (!R_ACCEPTANCE_BOOTSTRAP_STAGES.includes(token)) {
