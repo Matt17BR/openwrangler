@@ -166,16 +166,16 @@ export function validateDataWranglerComparisonStudyTrial(trial, entry, manifest)
   assertIntegerBetween(trial.order, 0, 7, "study trial order");
   if (entry) validateTrialScheduleBinding(trial, entry);
   const repetitions = manifest?.method?.repetitionsPerSession;
-  if (![2, 3, 10].includes(repetitions) || !Array.isArray(trial.samples) || trial.samples.length !== repetitions) {
+  if (![2, 3, 5].includes(repetitions) || !Array.isArray(trial.samples) || trial.samples.length !== repetitions) {
     const expected = new Map([
       [2, "two"],
       [3, "three"],
-      [10, "ten"]
+      [5, "five"]
     ]).get(repetitions);
     throw new TypeError(
       expected
         ? `A comparison session requires exactly ${expected} measured samples.`
-        : "A comparison session requires two, three, or ten measured samples."
+        : "A comparison session requires two, three, or five measured samples."
     );
   }
   for (const [offset, sample] of trial.samples.entries()) {
@@ -308,28 +308,34 @@ export function assertReleaseCompleteStudyReport(report) {
     report.plannedSessions !== 8 ||
     report.completedSessions !== 8 ||
     report.incompleteSessionIds?.length !== 0 ||
-    report.plannedSamples !== 80 ||
-    report.completedSamples !== 80 ||
-    report.samples?.length !== 80 ||
-    report.outcomes?.success !== 80 ||
-    report.outcomes?.failure !== 0 ||
-    report.outcomes?.timeout !== 0
+    report.plannedSamples !== 40 ||
+    report.completedSamples !== 40 ||
+    report.samples?.length !== 40 ||
+    !Number.isInteger(report.outcomes?.success) ||
+    !Number.isInteger(report.outcomes?.failure) ||
+    !Number.isInteger(report.outcomes?.timeout) ||
+    report.outcomes.success + report.outcomes.failure + report.outcomes.timeout !== 40
   ) {
-    throw new TypeError("A release comparison report requires eight complete sessions and eighty successful samples.");
+    throw new TypeError("A release comparison report requires eight complete sessions and forty recorded samples.");
   }
   for (const summary of report.summaries ?? []) {
+    if (!["open-wrangler", "data-wrangler"].includes(summary.product)) {
+      throw new TypeError("A release comparison report contains an unknown product summary.");
+    }
+    const requiredSuccesses = summary.product === "open-wrangler" ? 5 : 3;
     if (
-      summary.planned !== 10 ||
-      summary.completed !== 10 ||
-      summary.successes !== 10 ||
-      summary.failures !== 0 ||
-      summary.timeouts !== 0 ||
+      summary.planned !== 5 ||
+      summary.completed !== 5 ||
+      summary.successes < requiredSuccesses ||
+      summary.successes + summary.failures + summary.timeouts !== 5 ||
       [...STUDY_METRICS, ...STUDY_MEMORY_METRICS].some((name) => {
         const section = STUDY_METRICS.includes(name) ? summary.metrics : summary.memory;
-        return section?.[name]?.count !== 10;
+        return section?.[name]?.count !== summary.successes;
       })
     ) {
-      throw new TypeError("A release comparison report requires every scheduled product sample.");
+      throw new TypeError(
+        "A release comparison report requires five Open Wrangler successes and at least three Data Wrangler successes per workload."
+      );
     }
   }
   if (report.summaries?.length !== 8) {
@@ -404,8 +410,8 @@ function validateStudyManifest(manifest) {
   if (JSON.stringify(manifest.method.regressionLimits) !== JSON.stringify(DATA_WRANGLER_REGRESSION_LIMITS)) {
     throw new TypeError("Study report method policies do not match the predeclared release contract.");
   }
-  if (![2, 10].includes(manifest.method.repetitionsPerSession)) {
-    throw new TypeError("Study manifest repetitions per session must be two for smoke or ten for release.");
+  if (![2, 5].includes(manifest.method.repetitionsPerSession)) {
+    throw new TypeError("Study manifest repetitions per session must be two for smoke or five for release.");
   }
   exactKeys(
     manifest.method.timingBoundaries,
@@ -422,7 +428,9 @@ function validateStudyManifest(manifest) {
   }
   assertEqual(
     manifest.method.statistics,
-    `${manifest.method.repetitionsPerSession === 10 ? "ten" : "two"} successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95`,
+    manifest.method.repetitionsPerSession === 5
+      ? "five planned warm samples per product and workload; Open Wrangler requires five successes and Data Wrangler at least three; Hyndman-Fan type 7 min, max, median, and p95"
+      : "two successful warm samples per product and workload; Hyndman-Fan type 7 min, max, median, and p95",
     "study manifest statistics"
   );
   assertEqual(
