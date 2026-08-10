@@ -19,6 +19,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { ZipFile } from "yazl";
+import { COMPARISON_TEST_SHA, createReleaseComparisonReport } from "./data-wrangler-comparison-test-fixtures.mjs";
 import { inspectVsixArchive, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 import {
@@ -232,6 +233,14 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
     `https://github.com/Matt17BR/openwrangler/blob/main/${reportPath(reportVersion)}`;
   const readmeWithReport = (reportVersion, prefix = "") =>
     `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${prefix}## Performance\n\n[dated report](${reportUrl(reportVersion)})\n`;
+  const reportSources = new Map();
+  const reportSource = (reportVersion, sha256 = COMPARISON_TEST_SHA) => {
+    const key = `${reportVersion}:${sha256}`;
+    if (!reportSources.has(key)) {
+      reportSources.set(key, JSON.stringify(createReleaseComparisonReport({ version: reportVersion, sha256 })));
+    }
+    return reportSources.get(key);
+  };
   const candidate = (reportVersion, overrides = {}, sourceVersion = version) =>
     ready({
       releaseTag: `v${sourceVersion}`,
@@ -247,6 +256,8 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
         reportPath(reportVersion),
         reportDataPath(reportVersion)
       ]),
+      performanceReportFiles: new Map([[reportDataPath(reportVersion), reportSource(reportVersion)]]),
+      candidateSha256: COMPARISON_TEST_SHA,
       vsixManifest: manifest({ version: sourceVersion }),
       ...overrides
     });
@@ -322,6 +333,77 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   for (const label of ["README.md", "Packaged README"]) {
     assert.ok(missingDataProblems.includes(`${label} Performance data ${reportDataPath(version)} must be tracked.`));
   }
+
+  const missingSourceProblems = inspectStableReleaseReadiness(
+    candidate(version, { performanceReportFiles: new Map() })
+  );
+  assert.ok(
+    missingSourceProblems.includes(
+      `README.md Performance data ${reportDataPath(version)} must be read from the release commit.`
+    )
+  );
+
+  const malformedSourceProblems = inspectStableReleaseReadiness(
+    candidate(version, { performanceReportFiles: new Map([[reportDataPath(version), "{"]]) })
+  );
+  assert.ok(
+    malformedSourceProblems.includes(
+      `README.md Performance data ${reportDataPath(version)} must contain valid bounded JSON.`
+    )
+  );
+
+  const truncatedSourceProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      performanceReportFiles: new Map([
+        [
+          reportDataPath(version),
+          JSON.stringify({
+            provenance: { openWrangler: { version, sha256: COMPARISON_TEST_SHA } }
+          })
+        ]
+      ])
+    })
+  );
+  assert.ok(
+    truncatedSourceProblems.some((problem) =>
+      problem.startsWith(`README.md Performance data ${reportDataPath(version)} is incomplete or invalid:`)
+    )
+  );
+
+  const copiedOldSourceProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      performanceReportFiles: new Map([[reportDataPath(version), reportSource("1.2.1")]])
+    })
+  );
+  assert.ok(
+    copiedOldSourceProblems.includes(
+      `README.md Performance data ${reportDataPath(version)} describes Open Wrangler 1.2.1, not ${version}.`
+    )
+  );
+
+  const wrongCandidateProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      performanceReportFiles: new Map([[reportDataPath(version), reportSource(version, "b".repeat(64))]])
+    })
+  );
+  assert.ok(
+    wrongCandidateProblems.includes(
+      `README.md Performance data ${reportDataPath(version)} does not match the release candidate VSIX.`
+    )
+  );
+
+  assert.deepEqual(
+    inspectStableReleaseReadiness(
+      candidate(
+        "2.0.0",
+        {
+          candidateSha256: "b".repeat(64)
+        },
+        "2.0.1"
+      )
+    ),
+    []
+  );
 
   const missingCurrentReport = inspectStableReleaseReadiness(
     candidate(version, {
@@ -1167,6 +1249,52 @@ test("reads release documentation from the exact immutable Git commit", () => {
       () => readReleaseSourceSnapshot({ expectedCommit: otherCommit, root: repository }),
       /exact checked-out event commit/u
     );
+  } finally {
+    rmSync(repository, { force: true, recursive: true });
+  }
+});
+
+test("reads the linked performance report from the immutable release commit", () => {
+  const repository = mkdtempSync(join(tmpdir(), "ow-release-performance-source-"));
+  try {
+    const reportDirectory = join(repository, "docs", "performance", "data-wrangler-2.0.0");
+    mkdirSync(join(repository, "python", "openwrangler_runtime"), { recursive: true });
+    mkdirSync(join(repository, "docs"), { recursive: true });
+    mkdirSync(reportDirectory, { recursive: true });
+    writeFileSync(join(repository, "package.json"), JSON.stringify({ ...stablePackage, version: "2.0.0" }));
+    writeFileSync(join(repository, "python", "openwrangler_runtime", "version.py"), '__version__ = "2.0.0"\n');
+    writeFileSync(join(repository, "docs", "feature-parity.md"), "# Feature parity\n");
+    writeFileSync(join(repository, "CHANGELOG.md"), "# Changelog\n");
+    writeFileSync(
+      join(repository, "README.md"),
+      `# Open Wrangler\n\n## Performance\n\n[full benchmark report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-2.0.0/review.md)\n`
+    );
+    writeFileSync(join(reportDirectory, "review.md"), "# Review\n");
+    const reportSource = JSON.stringify({
+      provenance: { openWrangler: { version: "2.0.0", sha256: COMPARISON_TEST_SHA } }
+    });
+    writeFileSync(join(reportDirectory, "report.json"), reportSource);
+    execFileSync("git", ["init", "--quiet"], { cwd: repository });
+    execFileSync("git", ["add", "."], { cwd: repository });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Open Wrangler Tests",
+        "-c",
+        "user.email=tests@openwrangler.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "release"
+      ],
+      { cwd: repository }
+    );
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
+    const source = readReleaseSourceSnapshot({ expectedCommit: commit, root: repository });
+    assert.equal(source.files.get("docs/performance/data-wrangler-2.0.0/report.json"), reportSource);
   } finally {
     rmSync(repository, { force: true, recursive: true });
   }

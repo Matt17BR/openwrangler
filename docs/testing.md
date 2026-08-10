@@ -919,7 +919,9 @@ major or minor release needs a report from that exact release. Patch releases ma
 from the same major/minor line; the runtime and installed-editor regression benchmarks still run for every release.
 For generated reviews, `npm run docs:check` follows the link in the README and compares the marked results with the
 sibling JSON. Stable 2.x readiness also requires both files to be tracked. The historical 1.2.1 review has no sibling
-JSON and is not rewritten by this check.
+JSON and is not rewritten by this check. The documentation check recalculates outcomes and summaries from the raw
+samples. The stable release gate then reads the report from the release commit and matches an exact-version report to
+the candidate VSIX checksum.
 
 Every session owns a mode-0700 root, user-data profile, notebook, read-only fixture copy, and process tree. Product
 extension directories are prepared once per arm to avoid repeated Marketplace downloads. One JSON result is written
