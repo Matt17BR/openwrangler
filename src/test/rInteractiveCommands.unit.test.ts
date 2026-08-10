@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionContext } from "vscode";
+import type { ExtensionContext, TextDocument, TextEditor } from "vscode";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
+import type { LiterateDocumentOrigin } from "../extension/literateDocumentOrigin";
 import type {
+  LiterateRVariableProvider,
   RInteractiveCommandTransport,
   RInteractiveTransportFactory,
   RLiveVariableProvider
@@ -26,10 +28,31 @@ const mocks = vi.hoisted(() => ({
   panelCreate: vi.fn(),
   restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined),
   bridgeArguments: [] as unknown[][],
-  bridgeDispose: vi.fn(async () => undefined)
+  bridgeDispose: vi.fn(async () => undefined),
+  activeEditor: undefined as TextEditor | undefined,
+  textDocuments: [] as TextDocument[]
 }));
 
 vi.mock("vscode", () => {
+  class Uri {
+    readonly fsPath: string;
+    private constructor(
+      readonly path: string,
+      readonly scheme = "file"
+    ) {
+      this.fsPath = path;
+    }
+    static file(path: string): Uri {
+      return new Uri(path);
+    }
+    static parse(value: string): Uri {
+      const match = /^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/[^/?#]*)?([^?#]*)/u.exec(value);
+      return new Uri(match?.[2] ?? value, match?.[1] ?? "file");
+    }
+    toString(): string {
+      return `${this.scheme}://${this.path}`;
+    }
+  }
   class EventEmitter<T> {
     private readonly listeners = new Set<Listener<T>>();
     readonly event = (listener: Listener<T>) => {
@@ -44,6 +67,7 @@ vi.mock("vscode", () => {
     }
   }
   return {
+    Uri,
     EventEmitter,
     ProgressLocation: { Notification: 15 },
     commands: {
@@ -56,6 +80,9 @@ vi.mock("vscode", () => {
     workspace: {
       get isTrusted() {
         return mocks.trusted;
+      },
+      get textDocuments() {
+        return mocks.textDocuments;
       }
     },
     window: {
@@ -64,6 +91,9 @@ vi.mock("vscode", () => {
       },
       get activeTerminal() {
         return mocks.activeTerminal;
+      },
+      get activeTextEditor() {
+        return mocks.activeEditor;
       },
       onDidChangeActiveTerminal: (listener: Listener<unknown>) => {
         mocks.activeTerminalListeners.add(listener);
@@ -104,6 +134,7 @@ vi.mock("../extension/webviewPanel", () => ({
   restoreEditorGroupAfterQuickPick: mocks.restoreEditorGroupAfterQuickPick
 }));
 
+import * as vscode from "vscode";
 import {
   OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND,
   OPEN_R_DATAFRAME_COMMAND,
@@ -120,6 +151,8 @@ describe("active R session commands", () => {
     mocks.trusted = true;
     mocks.terminals = [];
     mocks.activeTerminal = undefined;
+    mocks.activeEditor = undefined;
+    mocks.textDocuments.length = 0;
     mocks.activeTerminalListeners.clear();
     mocks.closeTerminalListeners.clear();
     mocks.showQuickPick.mockReset();
@@ -165,6 +198,62 @@ describe("active R session commands", () => {
     expect(transport.dispose).not.toHaveBeenCalled();
   });
 
+  it("opens a fresh R chunk session against the exact literate document origin", async () => {
+    setActiveTerminal(rTerminal("R"));
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, coordinator } = registerWith([transport]);
+
+    await expect(literateRProvider(provider).openLiterateSession(origin, true)).resolves.toBe(true);
+
+    expect(transport.discoverVariables).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), {
+      kind: "textDocument",
+      document: source,
+      version: 1
+    });
+    expect(mocks.panelCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      {
+        kind: "documentVariable",
+        label: "orders",
+        variableName: "orders",
+        uri: "file:///workspace/orders.qmd"
+      },
+      "r"
+    );
+  });
+
+  it("disposes R discovery when the exact literate cursor changes across its await", async () => {
+    setActiveTerminal(rTerminal("R"));
+    const transport = transportMock();
+    const source = literateDocument("/workspace/orders.Rmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor, "rmarkdown");
+    transport.discoverVariables.mockImplementationOnce(async () => {
+      const moved = selection(3);
+      editor.selection = moved;
+      editor.selections = [moved];
+      return discovery(tibble);
+    });
+    const { provider, coordinator } = registerWith([transport]);
+
+    await expect(literateRProvider(provider).openLiterateSession(origin, true)).resolves.toBe(false);
+
+    expect(transport.dispose).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+  });
+
   it("uses the active R session from the stable editor action", async () => {
     setActiveTerminal(rTerminal("R"));
     const transport = transportMock();
@@ -177,6 +266,32 @@ describe("active R session commands", () => {
     expect(transport.discoverVariables).toHaveBeenCalledOnce();
     expect(mocks.executeCommand).not.toHaveBeenCalledWith("openWrangler.runRDocument", expect.anything());
     expect(mocks.panelCreate).toHaveBeenCalledOnce();
+  });
+
+  it("routes a mixed literate editor through cursor-aware dispatch even when R is active", async () => {
+    setActiveTerminal(rTerminal("R"));
+    const source = literateDocument("/workspace/orders.qmd");
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = textEditor(source, 2);
+    registerWith([]);
+
+    await expect(command(OPEN_R_DATAFRAME_COMMAND)()).resolves.toBe(true);
+
+    expect(mocks.executeCommand).toHaveBeenCalledWith("openWrangler.runRDocument");
+    expect(mocks.showQuickPick).not.toHaveBeenCalled();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+  });
+
+  it("does not route an explicit different literate resource through the active cursor", async () => {
+    const source = literateDocument("/workspace/active.qmd");
+    const resource = (vscode.Uri as unknown as { file(path: string): vscode.Uri }).file("/workspace/other.qmd");
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = textEditor(source, 2);
+    registerWith([]);
+
+    await expect(command(OPEN_R_DATAFRAME_COMMAND)(resource)).resolves.toBe(true);
+
+    expect(mocks.executeCommand).toHaveBeenCalledWith("openWrangler.runRDocument", resource);
   });
 
   it("reuses the refreshed terminal transport from the stable editor action", async () => {
@@ -500,6 +615,52 @@ function command(id: string): CommandHandler {
   const handler = mocks.commands.get(id);
   if (!handler) throw new Error(`${id} was not registered.`);
   return handler;
+}
+
+function literateRProvider(provider: RLiveVariableProvider): LiterateRVariableProvider {
+  return provider as RLiveVariableProvider & LiterateRVariableProvider;
+}
+
+function literateDocument(filePath: string): TextDocument {
+  return {
+    uri: (vscode.Uri as unknown as { file(path: string): vscode.Uri }).file(filePath),
+    version: 1,
+    isClosed: false,
+    isUntitled: false
+  } as TextDocument;
+}
+
+function textEditor(document: TextDocument, line: number): TextEditor {
+  const selected = selection(line);
+  return {
+    document,
+    selection: selected,
+    selections: [selected],
+    viewColumn: 1
+  } as unknown as TextEditor;
+}
+
+function selection(line: number): TextEditor["selection"] {
+  const position = { line, character: 0 };
+  return { anchor: position, active: position, start: position, end: position } as TextEditor["selection"];
+}
+
+function literateOrigin(editor: TextEditor, kind: "quarto" | "rmarkdown" = "quarto"): LiterateDocumentOrigin {
+  const selected = editor.selection;
+  return Object.freeze({
+    editor,
+    document: editor.document,
+    version: editor.document.version,
+    uri: editor.document.uri.toString(),
+    kind,
+    viewColumn: 1,
+    selections: Object.freeze([
+      Object.freeze({
+        anchor: Object.freeze({ line: selected.anchor.line, character: selected.anchor.character }),
+        active: Object.freeze({ line: selected.active.line, character: selected.active.character })
+      })
+    ])
+  });
 }
 
 function coordinatorMock() {

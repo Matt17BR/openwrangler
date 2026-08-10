@@ -9,6 +9,11 @@ import { RInteractiveSessionTransport } from "./rInteractiveSessionTransport";
 import { OPEN_R_DOCUMENT_COMMAND } from "./rDocumentCommands";
 import { RKernelBridge, type RKernelBridgeTransport } from "./rKernelBridge";
 import type { RProcessVariableDescriptor, RProcessVariableDiscovery } from "./rProcessTransport";
+import {
+  isCurrentLiterateDocumentOrigin,
+  isSupportedLiterateUri,
+  type LiterateDocumentOrigin
+} from "../literateDocumentOrigin";
 
 export const OPEN_R_INTERACTIVE_VARIABLE_COMMAND = "openWrangler.openRInteractiveVariable";
 export const OPEN_R_DATAFRAME_COMMAND = "openWrangler.openRDataframe";
@@ -59,6 +64,11 @@ export interface RLiveVariableProvider extends vscode.Disposable {
   shutdown(): Promise<void>;
 }
 
+export interface LiterateRVariableProvider {
+  hasActiveSession(): boolean;
+  openLiterateSession(origin: LiterateDocumentOrigin, fresh?: boolean): Promise<boolean>;
+}
+
 export interface RInteractiveCommandTransport extends RKernelBridgeTransport {
   discoverVariables(options?: {
     readonly cancellation?: vscode.CancellationToken;
@@ -88,14 +98,16 @@ export function registerRInteractiveCommands(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   transportFactory: RInteractiveTransportFactory = defaultTransportFactory
-): RLiveVariableProvider {
+): RLiveVariableProvider & LiterateRVariableProvider {
   const provider = new RInteractiveVariableCoordinator(context, coordinator, transportFactory);
   context.subscriptions.push(
     provider,
     vscode.commands.registerCommand(OPEN_R_DATAFRAME_COMMAND, (resource?: unknown) =>
-      isOfficialRTerminal(vscode.window.activeTerminal)
-        ? provider.chooseAndOpen()
-        : vscode.commands.executeCommand<boolean>(OPEN_R_DOCUMENT_COMMAND, resource)
+      isLiterateDocumentResource(resource)
+        ? vscode.commands.executeCommand<boolean>(OPEN_R_DOCUMENT_COMMAND)
+        : isOfficialRTerminal(vscode.window.activeTerminal)
+          ? provider.chooseAndOpen()
+          : vscode.commands.executeCommand<boolean>(OPEN_R_DOCUMENT_COMMAND, resource)
     ),
     vscode.commands.registerCommand(OPEN_R_INTERACTIVE_VARIABLE_COMMAND, () => provider.chooseAndOpen()),
     vscode.commands.registerCommand(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND, () => provider.refreshFromCommand()),
@@ -106,7 +118,7 @@ export function registerRInteractiveCommands(
   return provider;
 }
 
-class RInteractiveVariableCoordinator implements RLiveVariableProvider {
+class RInteractiveVariableCoordinator implements RLiveVariableProvider, LiterateRVariableProvider {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private readonly subscriptions: vscode.Disposable[];
   private currentSnapshot: RLiveVariableSnapshot;
@@ -191,18 +203,28 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     );
   }
 
-  async chooseAndOpen(): Promise<boolean> {
+  hasActiveSession(): boolean {
+    return isOfficialRTerminal(vscode.window.activeTerminal);
+  }
+
+  openLiterateSession(origin: LiterateDocumentOrigin, fresh = false): Promise<boolean> {
+    if (!isCurrentLiterateDocumentOrigin(origin)) return Promise.resolve(false);
+    return this.chooseAndOpen(origin, fresh);
+  }
+
+  async chooseAndOpen(origin?: LiterateDocumentOrigin, fresh = false): Promise<boolean> {
     if (!requireTrustedRSession()) return false;
     if (this.disposed) return false;
-    const cached = this.cachedPickerState();
-    if (cached) return this.chooseCachedAndOpen(cached);
+    if (origin && !isCurrentLiterateDocumentOrigin(origin)) return false;
+    const cached = fresh ? undefined : this.cachedPickerState();
+    if (cached) return this.chooseCachedAndOpen(cached, origin);
 
     const generation = ++this.generation;
     const previous = this.releaseOwnedTransport();
     if (previous) {
       this.replaceSnapshot(idleSnapshot(vscode.window.activeTerminal));
       const cleanupError = await this.disposeManagedTransport(previous);
-      if (!this.isCurrent(generation)) return false;
+      if (!this.isCurrent(generation) || (origin && !isCurrentLiterateDocumentOrigin(origin))) return false;
       if (cleanupError) {
         showCleanupError(cleanupError);
         return false;
@@ -222,7 +244,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       discovery = await discoverWithProgress(transport);
     } catch (error) {
       const cleanupError = await this.disposeManagedTransport(transport);
-      if (!this.isCurrent(generation)) return false;
+      if (!this.isCurrent(generation) || (origin && !isCurrentLiterateDocumentOrigin(origin))) return false;
       if (error instanceof DetachedBridgeRequestError && error.reason === "cancellation" && !cleanupError) return false;
       void vscode.window.showErrorMessage(
         `Could not inspect the active R session: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
@@ -230,7 +252,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       return false;
     }
 
-    if (!this.isCurrent(generation)) {
+    if (!this.isCurrent(generation) || (origin && !isCurrentLiterateDocumentOrigin(origin))) {
       const cleanupError = await this.disposeManagedTransport(transport);
       if (cleanupError) showCleanupError(cleanupError);
       return false;
@@ -262,13 +284,13 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       });
     } catch (error) {
       const cleanupError = await this.disposeManagedTransport(transport);
-      if (!this.isCurrent(generation)) return false;
+      if (!this.isCurrent(generation) || (origin && !isCurrentLiterateDocumentOrigin(origin))) return false;
       void vscode.window.showErrorMessage(
         `Could not choose an R dataframe: ${errorMessage(error)}${cleanupSuffix(cleanupError)}`
       );
       return false;
     }
-    if (!this.isCurrent(generation)) {
+    if (!this.isCurrent(generation) || (origin && !isCurrentLiterateDocumentOrigin(origin))) {
       const cleanupError = await this.disposeManagedTransport(transport);
       if (cleanupError) showCleanupError(cleanupError);
       return false;
@@ -279,13 +301,13 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
       return false;
     }
     await restoreEditorGroupAfterQuickPick();
-    if (!this.isCurrent(generation)) {
+    if (!this.isCurrent(generation) || (origin && !isCurrentLiterateDocumentOrigin(origin))) {
       const cleanupError = await this.disposeManagedTransport(transport);
       if (cleanupError) showCleanupError(cleanupError);
       return false;
     }
     if (!this.managedTransports.delete(transport)) return false;
-    return this.openWithTransport(transport, picked.variable);
+    return this.openWithTransport(transport, picked.variable, origin);
   }
 
   private cachedPickerState(): CachedRInteractivePickerState | undefined {
@@ -315,7 +337,10 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     });
   }
 
-  private async chooseCachedAndOpen(state: CachedRInteractivePickerState): Promise<boolean> {
+  private async chooseCachedAndOpen(
+    state: CachedRInteractivePickerState,
+    origin?: LiterateDocumentOrigin
+  ): Promise<boolean> {
     let picked: CachedRInteractiveQuickPickItem | undefined;
     try {
       picked = await vscode.window.showQuickPick(state.items, {
@@ -328,14 +353,14 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
         ignoreFocusOut: true
       });
     } catch (error) {
-      if (this.isCurrentCachedPicker(state)) {
+      if (this.isCurrentCachedPicker(state) && (!origin || isCurrentLiterateDocumentOrigin(origin))) {
         void vscode.window.showErrorMessage(`Could not choose an R dataframe: ${errorMessage(error)}`);
       }
       return false;
     }
     if (!picked || !state.items.includes(picked)) return false;
     await restoreEditorGroupAfterQuickPick();
-    if (!this.isCurrentCachedPicker(state)) {
+    if (!this.isCurrentCachedPicker(state) || (origin && !isCurrentLiterateDocumentOrigin(origin))) {
       void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
       return false;
     }
@@ -351,7 +376,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     }
     this.generation += 1;
     this.replaceSnapshot(idleSnapshot(state.terminal));
-    return this.openWithTransport(state.transport, cached.variable);
+    return this.openWithTransport(state.transport, cached.variable, origin);
   }
 
   private isCurrentCachedPicker(state: CachedRInteractivePickerState): boolean {
@@ -506,16 +531,30 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
 
   private async openWithTransport(
     transport: RInteractiveCommandTransport,
-    selected: RProcessVariableDescriptor
+    selected: RProcessVariableDescriptor,
+    origin?: LiterateDocumentOrigin
   ): Promise<boolean> {
-    const source: SessionSource = {
-      kind: "rInteractiveVariable",
-      label: selected.name,
-      variableName: selected.name
-    };
+    const source: SessionSource = origin
+      ? {
+          kind: "documentVariable",
+          label: selected.name,
+          variableName: selected.name,
+          uri: origin.uri
+        }
+      : {
+          kind: "rInteractiveVariable",
+          label: selected.name,
+          variableName: selected.name
+        };
     const delegate = new RKernelBridge(this.context, transport, undefined, undefined, selected);
     try {
-      const bridge = this.coordinator.createBridge(delegate);
+      const bridge = origin
+        ? this.coordinator.createBridge(delegate, {
+            kind: "textDocument",
+            document: origin.document,
+            version: origin.version
+          })
+        : this.coordinator.createBridge(delegate);
       OpenWranglerPanel.create(this.context, bridge, source, "r");
       return true;
     } catch (error) {
@@ -643,6 +682,12 @@ function idleSnapshot(terminal: vscode.Terminal | undefined): RLiveVariableSnaps
 
 function isOfficialRTerminal(terminal: vscode.Terminal | undefined): terminal is vscode.Terminal {
   return terminal?.name === "R" || terminal?.name === "R Interactive";
+}
+
+function isLiterateDocumentResource(resource: unknown): boolean {
+  const activeUri = vscode.window.activeTextEditor?.document.uri;
+  if (!activeUri || !isSupportedLiterateUri(activeUri)) return false;
+  return !(resource instanceof vscode.Uri) || resource.toString() === activeUri.toString();
 }
 
 function requireTrustedRSession(): boolean {
