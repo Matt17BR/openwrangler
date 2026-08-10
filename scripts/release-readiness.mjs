@@ -95,7 +95,7 @@ const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
 const PERFORMANCE_REPORT_LINK =
   /\[[^\]\r\n]+\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)\)/gu;
 
-export function performanceReportLink(readme) {
+function performanceSection(readme) {
   const normalized = readme.replace(/\r\n?/gu, "\n");
   const headings = [...normalized.matchAll(/^## Performance[ \t]*$/gmu)];
   if (headings.length !== 1 || headings[0]?.index === undefined) return undefined;
@@ -103,13 +103,31 @@ export function performanceReportLink(readme) {
   const sectionStart = headings[0].index + headings[0][0].length;
   const following = normalized.slice(sectionStart);
   const nextHeading = /^## [^\n]+$/mu.exec(following);
-  const section = nextHeading === null ? following : following.slice(0, nextHeading.index);
+  return nextHeading === null ? following : following.slice(0, nextHeading.index);
+}
+
+export function performanceReportLink(readme) {
+  const section = performanceSection(readme);
+  if (section === undefined) return undefined;
   const links = [...section.matchAll(PERFORMANCE_REPORT_LINK)];
   if (links.length !== 1) return undefined;
 
   const path = links[0]?.groups?.path;
   const version = links[0]?.groups?.version;
   return path === undefined || version === undefined ? undefined : { path, version };
+}
+
+export function inspectPerformanceSummary(readme) {
+  const section = performanceSection(readme);
+  if (section === undefined) return [];
+  const problems = [];
+  if (/\b(?:Open|Data) Wrangler v?\d+\.\d+\.\d+\b/u.test(section)) {
+    problems.push("README Performance prose must keep release numbers in the dated report link.");
+  }
+  if (/^[ \t]*\|[^\r\n]*\|[ \t]*$/mu.test(section)) {
+    problems.push("README Performance must link to detailed results instead of embedding a table.");
+  }
+  return problems;
 }
 
 function inspectStablePerformanceEvidence(
