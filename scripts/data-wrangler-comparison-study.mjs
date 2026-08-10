@@ -17,8 +17,10 @@ import {
 import { arch, cpus, platform, release, totalmem } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import {
   DATA_WRANGLER_STUDY_TOOL_NAMES,
+  DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
   DATA_WRANGLER_REGRESSION_LIMITS,
   assertReleaseCompleteStudyReport,
   buildDataWranglerComparisonStudyReport,
@@ -480,9 +482,15 @@ export function writeDataWranglerComparisonStudyReport(output, report) {
   assertReleaseCompleteStudyReport(report);
   const path = resolve(output);
   if (existsSync(path)) {
-    throw new Error("Comparison report requires a new output path.");
+    const existing = readJson(path, DATA_WRANGLER_STUDY_REPORT_MAX_BYTES);
+    assertReleaseCompleteStudyReport(existing);
+    if (!isDeepStrictEqual(existing, report)) {
+      throw new Error("Comparison report output already contains different evidence.");
+    }
+    return false;
   }
   writeJsonAtomic(path, report);
+  return true;
 }
 
 export function removePreparedExtensionDirectories(output) {
@@ -1066,9 +1074,9 @@ function digest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function readJson(path) {
+function readJson(path, maxBytes = MAX_JSON_BYTES) {
   const source = readFileSync(path);
-  if (source.byteLength <= 0 || source.byteLength > MAX_JSON_BYTES) {
+  if (source.byteLength <= 0 || source.byteLength > maxBytes) {
     throw new Error(`${basename(path)} is empty or too large.`);
   }
   return JSON.parse(source.toString("utf8"));
@@ -1183,7 +1191,11 @@ async function main() {
     return;
   }
   const { manifest, trials } = loadStudyResults(options.study);
-  const report = buildDataWranglerComparisonStudyReport({ generatedAtUtc: new Date().toISOString(), manifest, trials });
+  const reportPath = resolve(options.output);
+  const generatedAtUtc = existsSync(reportPath)
+    ? readJson(reportPath, DATA_WRANGLER_STUDY_REPORT_MAX_BYTES).generatedAtUtc
+    : new Date().toISOString();
+  const report = buildDataWranglerComparisonStudyReport({ generatedAtUtc, manifest, trials });
   assertReleaseCompleteStudyReport(report);
   let review;
   if (options.review !== undefined) {
