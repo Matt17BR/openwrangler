@@ -9776,6 +9776,9 @@ async function exerciseReleasedJupyterExtension(
       "Terminal cleanup must leave no Open Wrangler session in the replacement kernel."
     );
     assert.equal(testing.diagnostics().sessionCount, 0);
+    if (phase === "jupyter-allow") {
+      await exerciseReleasedPythonFileEntrypoint(testing, workbench, directory, kernelTarget);
+    }
   } catch (error) {
     failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint);
     throw error;
@@ -9794,6 +9797,227 @@ async function exerciseReleasedJupyterExtension(
     } finally {
       if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint);
     }
+  }
+}
+
+async function exerciseReleasedPythonFileEntrypoint(
+  testing: TestApi,
+  workbench: Page,
+  directory: string,
+  kernelTarget: ReleasedJupyterKernelTarget
+): Promise<void> {
+  const checkpoint = "jupyter-allow:python-file-entrypoint";
+  const sourcePath = path.join(directory, "python-entrypoint.py");
+  const source = vscode.Uri.file(sourcePath);
+  const sourceBytes = Buffer.from(
+    [
+      "# %%",
+      "import polars as pl",
+      "",
+      "python_entry_frame = pl.DataFrame({",
+      '    "entry_id": [910001, 910002, 910003],',
+      '    "segment": ["alpha", "beta", "gamma"],',
+      '    "amount": [12.5, None, 41.25],',
+      "})",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  writeFileSync(sourcePath, sourceBytes);
+
+  const existingInteractive = new Set(
+    vscode.workspace.notebookDocuments
+      .filter((candidate) => !candidate.isClosed && candidate.notebookType === "interactive")
+      .map((candidate) => candidate.uri.toString())
+  );
+  assert.equal(existingInteractive.size, 0, "The Python-file journey must start without an Interactive Window.");
+
+  let interactive: vscode.NotebookDocument | undefined;
+  try {
+    recordAcceptanceProgress(`${checkpoint}:source`);
+    const sourceDocument = await vscode.workspace.openTextDocument(source);
+    assert.equal(sourceDocument.languageId, "python");
+    const sourceEditor = await vscode.window.showTextDocument(sourceDocument, {
+      preview: false,
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false
+    });
+    sourceEditor.selection = new vscode.Selection(3, 0, 3, 0);
+    await waitFor(
+      () => vscode.window.activeTextEditor?.document === sourceDocument,
+      10_000,
+      "the exact Python source before its editor action"
+    );
+
+    recordAcceptanceProgress(`${checkpoint}:title-action`);
+    await workbench.bringToFront();
+    const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible");
+    assert.equal(await activeGroup.count(), 1, "The Python entry point requires one active editor group.");
+    const action = activeGroup.getByRole("button", { name: "Open in Open Wrangler", exact: true });
+    await action.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    assert.equal(await action.count(), 1, "The Python editor must expose one Open in Open Wrangler title action.");
+    assert.equal(await action.isEnabled(), true, "The trusted Python editor title action must be enabled.");
+    await action.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+
+    const deadline = Date.now() + RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS;
+    const traversed = new Set<string>();
+    let filterForTarget = false;
+    let targetSelected = false;
+    do {
+      const candidates = vscode.workspace.notebookDocuments.filter(
+        (candidate) =>
+          !candidate.isClosed &&
+          candidate.notebookType === "interactive" &&
+          !existingInteractive.has(candidate.uri.toString())
+      );
+      assert.ok(candidates.length <= 1, "The Python editor action must create at most one Interactive Window.");
+      if (candidates[0]) {
+        if (interactive) {
+          assert.equal(candidates[0], interactive, "The Python editor action replaced its Interactive Window.");
+        } else {
+          interactive = candidates[0];
+          recordAcceptanceProgress(`${checkpoint}:interactive-window`);
+        }
+      }
+
+      const active = testing.activeSession();
+      if (
+        interactive &&
+        active?.metadata.source.kind === "notebookVariable" &&
+        active.metadata.source.variableName === "python_entry_frame" &&
+        active.metadata.backend === "polars"
+      ) {
+        break;
+      }
+
+      const picker = await visibleReleasedJupyterQuickInput(workbench);
+      if (!picker) {
+        await workbench.waitForTimeout(100);
+        continue;
+      }
+      const target = await releasedJupyterQuickPickRow(picker, kernelTarget.label);
+      if (target) {
+        if (!targetSelected) {
+          recordAcceptanceProgress(`${checkpoint}:kernel-picker-target`);
+          await target.click();
+          targetSelected = true;
+        }
+        await workbench.waitForTimeout(100);
+        continue;
+      }
+      if (filterForTarget && !(await releasedJupyterRouteLabel(picker, kernelTarget.routeLabels))) {
+        const input = picker.locator(".quick-input-box input:visible").first();
+        if ((await input.count()) > 0) {
+          await input.fill(kernelTarget.label);
+          filterForTarget = false;
+          await workbench.waitForTimeout(100);
+          continue;
+        }
+      }
+      let advanced = false;
+      for (const label of ["Select Another Kernel...", ...kernelTarget.routeLabels]) {
+        if (traversed.has(label)) continue;
+        const row = await releasedJupyterQuickPickRow(picker, label);
+        if (!row) continue;
+        traversed.add(label);
+        recordAcceptanceProgress(`${checkpoint}:kernel-picker-route`);
+        await row.click();
+        filterForTarget = kernelTarget.routeLabels.includes(label);
+        advanced = true;
+        break;
+      }
+      await workbench.waitForTimeout(advanced ? 100 : 50);
+    } while (Date.now() < deadline);
+
+    assert.ok(interactive, "The Python editor action must create one exact Interactive Window.");
+    const active = testing.activeSession();
+    if (
+      !active ||
+      active.metadata.source.kind !== "notebookVariable" ||
+      active.metadata.source.variableName !== "python_entry_frame" ||
+      active.metadata.backend !== "polars"
+    ) {
+      throw new Error(
+        "The Python editor action did not open its native Polars dataframe. " +
+          `Coordinator: ${JSON.stringify(testing.diagnostics())}. ` +
+          `Quick Input: ${JSON.stringify(await releasedJupyterQuickInputDiagnostics(workbench))}.`
+      );
+    }
+    assertExactOpenNotebookDocument(interactive, "after the Python editor action opened its dataframe");
+    assert.equal(active.metadata.mode, "editing");
+    assert.deepEqual(active.metadata.shape, { rows: 3, columns: 3 });
+    assert.deepEqual(
+      active.metadata.schema.map((column) => column.name),
+      ["entry_id", "segment", "amount"]
+    );
+    assert.equal(active.metadata.capabilities.notebookInsert, true);
+    assert.equal(active.metadata.source.uri, interactive.uri.toString());
+
+    const sourceNotebookMatches = vscode.workspace.notebookDocuments.filter(
+      (candidate) => !candidate.isClosed && candidate.uri.toString() === active.metadata.source.uri
+    );
+    assert.equal(sourceNotebookMatches.length, 1);
+    assert.equal(sourceNotebookMatches[0], interactive);
+    const associatedCells = interactive.getCells().filter((cell) => {
+      const metadata = cell.metadata as {
+        interactive?: { uristring?: unknown; lineIndex?: unknown };
+      };
+      return metadata.interactive?.uristring === source.toString() && metadata.interactive.lineIndex === 0;
+    });
+    assert.equal(
+      associatedCells.length,
+      1,
+      "The live session must come from the exact # %% cell dispatched by the Python source action."
+    );
+    const page = await assertReleasedSessionPage(testing, active, "910001", "released-jupyter-python-file-polars-page");
+    assert.deepEqual(
+      page.page.rows.map((row) => row.values.map((value) => value.display)),
+      [
+        ["910001", "alpha", "12.5"],
+        ["910002", "beta", ""],
+        ["910003", "gamma", "41.25"]
+      ]
+    );
+    assertExactBytes(readFileSync(sourcePath), sourceBytes, "Opening the Python cell must not change its source file.");
+
+    recordAcceptanceProgress(`${checkpoint}:close`);
+    await disposePackagedSessionPanel(testing, active.sessionId, "the Python editor's live Polars session");
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    const tabs = [textDocumentTab(source), notebookTab(interactive.uri)].filter((tab): tab is vscode.Tab =>
+      Boolean(tab)
+    );
+    assert.equal(tabs.length, 2, "The Python-file journey must retain its exact source and Interactive Window tabs.");
+    assert.equal(await vscode.window.tabGroups.close(tabs, true), true);
+    await waitFor(() => interactive?.isClosed === true, 10_000, "the private Python Interactive Window to close");
+    recordAcceptanceProgress(`${checkpoint}:complete`);
+  } finally {
+    const active = testing.activeSession();
+    if (
+      active?.metadata.source.kind === "notebookVariable" &&
+      active.metadata.source.variableName === "python_entry_frame"
+    ) {
+      try {
+        await disposePackagedSessionPanel(testing, active.sessionId, "the failed Python editor entry-point session");
+      } catch {
+        // The outer editor-process teardown remains the bounded fallback for the original failure.
+      }
+    }
+    const tabs = [
+      textDocumentTab(source),
+      ...(interactive && !interactive.isClosed ? [notebookTab(interactive.uri)] : [])
+    ].filter((tab): tab is vscode.Tab => Boolean(tab));
+    if (tabs.length > 0) {
+      try {
+        await vscode.window.tabGroups.close(tabs, true);
+      } catch {
+        // Preserve the original acceptance failure.
+      }
+    }
+    assertExactBytes(
+      readFileSync(sourcePath),
+      sourceBytes,
+      "Python entry-point cleanup must not change its source file."
+    );
   }
 }
 
