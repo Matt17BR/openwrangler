@@ -14,7 +14,11 @@ import {
   writeSync
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
+import {
+  createEditorAcceptanceEnvironment,
+  readBoundedAcceptanceText,
+  runBoundedEditorCommand
+} from "./editor-acceptance.mjs";
 import {
   assertEditorAcceptancePrivateRootReceipt,
   createEditorAcceptancePrivateRootReceipt
@@ -85,7 +89,27 @@ const R_ACCEPTANCE_EXPECTED_VERSIONS = Object.entries(R_ACCEPTANCE_PACKAGE_VERSI
 const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
 const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
 const R_ACCEPTANCE_KERNEL_EXPRESSION = "IRkernel::main()";
+const R_ACCEPTANCE_PROFILE_MARKER = "OPEN_WRANGLER_R_PROFILE_READY\n";
+const R_ACCEPTANCE_PROFILE = String.raw`local({
+  .ow_library <- Sys.getenv("R_LIBS_USER", unset = NA_character_)
+  .ow_stage <- Sys.getenv("OPEN_WRANGLER_R_PROFILE_STAGE", unset = NA_character_)
+  if (is.na(.ow_library) || !dir.exists(.ow_library) || is.na(.ow_stage)) {
+    stop("Open Wrangler R acceptance profile is incomplete.")
+  }
+  .ow_library <- normalizePath(.ow_library, winslash = "/", mustWork = TRUE)
+  .libPaths(unique(c(.ow_library, .libPaths())))
+  if (!identical(normalizePath(.libPaths()[[1L]], winslash = "/", mustWork = TRUE), .ow_library)) {
+    stop("Open Wrangler R acceptance library is not first.")
+  }
+  .ow_connection <- file(.ow_stage, open = "ab")
+  tryCatch(
+    writeChar("OPEN_WRANGLER_R_PROFILE_READY\n", .ow_connection, eos = NULL, useBytes = TRUE),
+    finally = close(.ow_connection)
+  )
+})
+`;
 const R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS = 300_000;
+const rAcceptanceProfileReceipts = new WeakMap();
 const R_ACCEPTANCE_KERNEL_PROBE = String.raw`
 import subprocess, sys, time
 stage, manager, client, result = "start", None, None, None
@@ -518,6 +542,8 @@ export async function prepareJupyterAcceptanceREnvironment(
   const runtimeDir = resolve(root, "r");
   const configDir = resolve(root, "c");
   const pathDir = resolve(root, "p");
+  const profilePath = resolve(root, "profile.R");
+  const profileStagePath = resolve(root, "profile-stage");
   const kernelDirectory = resolve(dataDir, "kernels", R_ACCEPTANCE_KERNEL_ID);
   for (const path of [libraryDir, homeDir, tempDir, dataDir, runtimeDir, configDir, pathDir, kernelDirectory]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -529,6 +555,11 @@ export async function prepareJupyterAcceptanceREnvironment(
     libraryDir,
     tempDir
   });
+  writeFileSync(profilePath, R_ACCEPTANCE_PROFILE, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  writeFileSync(profileStagePath, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
+  const profileIdentity = ownedRProfileFileIdentity(profilePath, "profile");
+  const profileStageIdentity = ownedRProfileFileIdentity(profileStagePath, "startup marker");
+  assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
   const kernelEnvironment = {
     HOME: commandEnvironment.HOME,
     USERPROFILE: commandEnvironment.USERPROFILE,
@@ -536,7 +567,9 @@ export async function prepareJupyterAcceptanceREnvironment(
     TMP: commandEnvironment.TMP,
     TEMP: commandEnvironment.TEMP,
     R_USER: commandEnvironment.R_USER,
-    R_LIBS_USER: commandEnvironment.R_LIBS_USER
+    R_LIBS_USER: commandEnvironment.R_LIBS_USER,
+    R_PROFILE_USER: profilePath,
+    OPEN_WRANGLER_R_PROFILE_STAGE: profileStagePath
   };
 
   const kernelSpecPath = resolve(kernelDirectory, "kernel.json");
@@ -575,7 +608,7 @@ export async function prepareJupyterAcceptanceREnvironment(
     600_000
   );
 
-  return Object.freeze({
+  const prepared = Object.freeze({
     root,
     libraryDir,
     kernelId: R_ACCEPTANCE_KERNEL_ID,
@@ -598,6 +631,15 @@ export async function prepareJupyterAcceptanceREnvironment(
     dependencyProbe,
     dependencyInstall
   });
+  rAcceptanceProfileReceipts.set(prepared, {
+    directoryReceipt,
+    profilePath,
+    profileIdentity,
+    profileStagePath,
+    profileStageIdentity,
+    readinessMarkerCount: undefined
+  });
+  return prepared;
 }
 
 export async function probeJupyterAcceptanceRKernel(python, prepared, { runCommand = runBoundedEditorCommand } = {}) {
@@ -640,10 +682,91 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
   if (result?.stderr !== "") {
     throw new Error("Released-Jupyter R kernel readiness probe returned a malformed fixed result.");
   }
-  if (/^OPEN_WRANGLER_R_KERNEL_READY\r?\n$/u.test(result.stdout)) return;
+  if (/^OPEN_WRANGLER_R_KERNEL_READY\r?\n$/u.test(result.stdout)) {
+    const receipt = rAcceptanceProfileReceipt(prepared);
+    const markerCount = readRProfileMarkerCount(receipt);
+    if (markerCount !== 1) {
+      throw new Error("Released-Jupyter R kernel readiness did not load the private R profile exactly once.");
+    }
+    receipt.readinessMarkerCount = markerCount;
+    return;
+  }
   const failure = /^OPEN_WRANGLER_R_KERNEL_FAILED:(start|ready|execute|cleanup)\r?\n$/u.exec(result.stdout);
   if (failure) throw new Error(`Released-Jupyter R kernel readiness failed during ${failure[1]}.`);
   throw new Error("Released-Jupyter R kernel readiness probe returned a malformed fixed result.");
+}
+
+export function jupyterAcceptanceRProfileStartupStage(prepared) {
+  const receipt = rAcceptanceProfileReceipt(prepared);
+  if (receipt.readinessMarkerCount !== 1) {
+    throw new Error("Released-Jupyter R profile startup stage requires a completed readiness baseline.");
+  }
+  return readRProfileMarkerCount(receipt) > receipt.readinessMarkerCount ? "profile-loaded" : "profile-not-loaded";
+}
+
+export function appendJupyterAcceptanceRProfileStartupStage(error, stage) {
+  if (stage !== "profile-loaded" && stage !== "profile-not-loaded") {
+    throw new Error("Released-Jupyter R profile startup received an invalid fixed stage.");
+  }
+  const suffix = `Released-Jupyter R profile startup: ${stage}.`;
+  if (error instanceof Error) {
+    try {
+      error.message = `${error.message}\n${suffix}`;
+      return error;
+    } catch {
+      // Keep the original classified failure as a leaf if it cannot be annotated in place.
+    }
+  }
+  return new AggregateError([error], suffix);
+}
+
+function rAcceptanceProfileReceipt(prepared) {
+  const receipt = rAcceptanceProfileReceipts.get(prepared);
+  if (!receipt) throw new Error("Released-Jupyter R profile startup requires its exact prepared environment.");
+  assertEditorAcceptancePrivateRootReceipt(receipt.directoryReceipt);
+  assertOwnedRProfileFileIdentity(receipt.profilePath, receipt.profileIdentity, "profile");
+  return receipt;
+}
+
+function readRProfileMarkerCount(receipt) {
+  const snapshot = assertOwnedRProfileFileIdentity(
+    receipt.profileStagePath,
+    receipt.profileStageIdentity,
+    "startup marker"
+  );
+  const contents = readBoundedAcceptanceText(
+    receipt.profileStagePath,
+    1_024,
+    "Released-Jupyter R profile startup marker",
+    { expectedPathSnapshot: snapshot }
+  );
+  if (contents.length === 0) return 0;
+  if (contents.replaceAll(R_ACCEPTANCE_PROFILE_MARKER, "").length !== 0) {
+    throw new Error("Released-Jupyter R profile startup marker contained an invalid fixed value.");
+  }
+  return contents.length / R_ACCEPTANCE_PROFILE_MARKER.length;
+}
+
+function ownedRProfileFileIdentity(path, description) {
+  const metadata = lstatSync(path, { bigint: true });
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1n) {
+    throw new Error(`Released-Jupyter R ${description} must be one owned regular file.`);
+  }
+  return Object.freeze({ dev: metadata.dev, ino: metadata.ino });
+}
+
+function assertOwnedRProfileFileIdentity(path, expected, description) {
+  const metadata = lstatSync(path, { bigint: true });
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    metadata.dev !== expected.dev ||
+    metadata.ino !== expected.ino
+  ) {
+    throw new Error(`Released-Jupyter R ${description} lost its owned file identity.`);
+  }
+  return metadata;
 }
 
 async function resolveJupyterAcceptanceRExecutable(rscript, { environment, runCommand }) {
