@@ -209,7 +209,9 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
       configDir: join(privateRoot, "c"),
       path: join(privateRoot, "p"),
       rscriptPath: rscript,
-      rLibraryDir: join(privateRoot, "l")
+      rLibraryDir: join(privateRoot, "l"),
+      rProfilePath: join(privateRoot, "profile.R"),
+      rProfileStagePath: join(privateRoot, "profile-stage")
     });
     const profilePath = join(privateRoot, "profile.R");
     const profileStagePath = join(privateRoot, "profile-stage");
@@ -230,6 +232,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     }
     const profile = await readFile(profilePath, "utf8");
     assert.match(profile, /\.libPaths\(unique\(c\(\.ow_library, \.libPaths\(\)\)\)\)/u);
+    assert.match(profile, /identical\(normalizePath\(\.libPaths\(\)\[\[1L\]\]/u);
     assert.match(profile, /OPEN_WRANGLER_R_PROFILE_READY\\n/u);
     assert.equal(await readFile(profileStagePath, "utf8"), "");
     assert.equal(statSync(profilePath).mode & 0o777, 0o600);
@@ -394,7 +397,6 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
     await probeJupyterAcceptanceRKernel(python, prepared, {
       async runCommand(input, options) {
         invocation = { input, options };
-        appendFileSync(join(root, "profile-stage"), "OPEN_WRANGLER_R_PROFILE_READY\nOPEN_WRANGLER_R_PROFILE_READY\n");
         return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\r\n", stderr: "" };
       }
     });
@@ -416,6 +418,16 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
     );
     assert.deepEqual(options, { timeoutMs: 30_000, maxOutputBytes: 1_024 });
     assert.equal(input.environment.R_LIBS_USER, prepared.libraryDir);
+    assert.equal(input.environment.R_PROFILE_USER, join(root, "profile.R"));
+    assert.equal(input.environment.OPEN_WRANGLER_R_PROFILE_STAGE, join(root, "profile-stage"));
+    assert.equal(jupyterAcceptanceRProfileStartupStage(prepared), "profile-not-loaded");
+    appendFileSync(join(root, "profile-stage"), "OPEN_WRANGLER_R_PROFILE_READY\n");
+    assert.equal(jupyterAcceptanceRProfileStartupStage(prepared), "profile-loaded");
+    await probeJupyterAcceptanceRKernel(python, prepared, {
+      async runCommand() {
+        return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\r\n", stderr: "" };
+      }
+    });
     assert.equal(jupyterAcceptanceRProfileStartupStage(prepared), "profile-not-loaded");
     appendFileSync(join(root, "profile-stage"), "OPEN_WRANGLER_R_PROFILE_READY\n");
     assert.equal(jupyterAcceptanceRProfileStartupStage(prepared), "profile-loaded");
