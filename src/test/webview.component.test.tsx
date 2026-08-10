@@ -3162,8 +3162,9 @@ describe("App file import options", () => {
 
     dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
     expect(await screen.findByRole("tab", { name: "Filters / Sorts" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("button", { name: 'Remove equals "Milan" filter from city' })).toBeVisible();
-    expect(screen.getByRole("button", { name: 'Remove contains "il" filter from city' })).toBeVisible();
+    const filtersPanel = screen.getByRole("complementary", { name: "Column profiles and filters" });
+    expect(within(filtersPanel).getByRole("button", { name: 'Remove equals "Milan" filter from city' })).toBeVisible();
+    expect(within(filtersPanel).getByRole("button", { name: 'Remove contains "il" filter from city' })).toBeVisible();
     const sortOrder = screen.getByRole("list", { name: "Active sort order" });
     expect(
       within(sortOrder)
@@ -3214,7 +3215,8 @@ describe("App file import options", () => {
       "city, sorted descending, priority 1 of 2"
     );
     dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
-    expect(await screen.findByRole("button", { name: 'Remove contains "il" filter from city' })).toBeVisible();
+    const filtersPanel = await screen.findByRole("complementary", { name: "Column profiles and filters" });
+    expect(within(filtersPanel).getByRole("button", { name: 'Remove contains "il" filter from city' })).toBeVisible();
     const sortOrder = screen.getByRole("list", { name: "Active sort order" });
     expect(
       within(sortOrder)
