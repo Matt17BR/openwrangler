@@ -31,7 +31,7 @@ export const PUBLIC_SURFACE_CONTENT = [
 
 export const REPRESENTATIVE_PUBLIC_IMAGES = [
   "Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views",
-  "Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows",
+  "Revenue column profile with Counts and % controls and a focused 20,174 to 21,357 bin tooltip showing 398 rows (0.4%)",
   "PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges",
   "An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R"
 ];

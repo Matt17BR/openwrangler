@@ -59,8 +59,10 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
 
 ### Explore and clean
 
-- `filter-result.png`: 1440 × 861 with one exact viewing filter and synchronized sidebar state.
-- `gallery/histogram-hover.png` and `gallery/sort-priority.png`: 448 × 480 interaction details.
+- `filter-result.png`: 1440 × 861 with a Benelux header-profile filter, its Column-profile Clear action, and
+  synchronized sidebar state.
+- `gallery/histogram-hover.png`: 448 × 480 with Counts / % controls and a focused tooltip that includes the bin's
+  rows and percentage; `gallery/sort-priority.png`: 448 × 480 with ordered-sort interaction details.
 - `gallery/column-search-wide.png`: 1440 × 865; `column-search-wide-detail.png`: 540 × 420.
 - `gallery/operation-catalog.png`: complete operation selection.
 - `gallery/operation-configuration.png`: grouped mean missing-value configuration for `revenue`, using `market` and
@@ -89,6 +91,8 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
   PySpark badges, representative native rows, exact statistics, and distribution.
 - `gallery/notebook-r-editing.png`: complete R notebook workbench with a Group and aggregate draft, generated R, and
   the native cleaning history.
+- `vscode-notebook-r-operations-dark.png`: complete R notebook source beside the Operations list; its
+  `vscode-notebook-r-operations-detail-dark.png` crop keeps the supported IRkernel dataframe rows readable.
 - `gallery/r-quarto-variable-picker.png`: complete Quarto source document beside its rendered preview and native
   dataframe picker; its 1440 × 760 detail keeps all three parts readable in the README.
 
@@ -113,12 +117,13 @@ workbench screenshot instead.
 
 - Operations, Summary, Filters / Sorts, and Cleaning Steps are visible and populated.
 - Summary identifies source, backend, mode, shape, selected column, missing cells, and duplicate rows.
-- Numeric profiles show Min, Max, Mean, Median, standard deviation, and a usable distribution.
+- Numeric profiles show Min, Max, Mean, Median, standard deviation, Counts / % controls, and a usable distribution.
 - Column names, type icons, sidebar rows, toolbar controls, and profile values remain contained.
 
 ### Viewing and history
 
-- The filter scene shows the exact row count, active predicate, individual clear action, and Clear all.
+- The filter scene shows the exact row count, `Filter: Benelux`, its Column-profile Clear action, and matching native
+  Filters / Sorts state.
 - The sort scene shows two keys, priorities, directions, null placement, reorder controls, and removal.
 - Column search reaches the final fixture column without capping the result list.
 - A new operation remains a draft until Apply; viewing filters/sorts remain outside the cleaning plan.

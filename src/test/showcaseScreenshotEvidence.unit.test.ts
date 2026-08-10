@@ -34,6 +34,10 @@ describe("wide-schema showcase evidence", () => {
 
   it("keeps final product captures full-size, varied, and geometrically complete", () => {
     const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
+    const filterResultCapture = extensionHost.slice(
+      extensionHost.indexOf("async function capturePackagedFilterResultScene("),
+      extensionHost.indexOf("async function alignPackagedSceneRowBoundary(")
+    );
     const pySparkAcceptance = extensionHost.slice(
       extensionHost.indexOf("async function exerciseReleasedPySparkJupyterExtension("),
       extensionHost.indexOf("async function dispatchReleasedJupyterVariableAction(")
@@ -51,6 +55,21 @@ describe("wide-schema showcase evidence", () => {
     expect(extensionHost).toContain("Cleaned-data export must preserve the source bytes.");
     expect(extensionHost).toContain('packagedScreenshotFileName(editor, "filter-result", "dark")');
     expect(extensionHost).toContain("The filter-result grid must show only complete visible rows.");
+    expect(filterResultCapture).toContain("Filter market to ${filterValue}; ${expectedRows.toLocaleString()} rows");
+    expect(filterResultCapture).toContain("active.viewState.selectedColumnId === marketColumnId");
+    expect(filterResultCapture).toContain("getByText(`Filter: ${filterValue}`");
+    expect(filterResultCapture).toContain('getByRole("treeitem", { name: /^market, 1 selected value/u })');
+    expect(filterResultCapture).toContain('getByRole("button", { name: "Clear filter for market", exact: true })');
+    expect(filterResultCapture).toContain("await clearMarket.click()");
+    expect(filterResultCapture).toContain("the Column-profile Clear action to restore the complete file session");
+    expect(filterResultCapture).not.toContain('getByLabel("Filter column"');
+    expect(extensionHost).not.toContain('"exact statistics", "min", "max", "mean", "median", "distribution"');
+    expect(extensionHost).toContain('["min", "max", "mean", "median", "distribution", "counts"]');
+    expect(extensionHost).toContain('getByRole("button", { name: "Counts", exact: true })');
+    expect(extensionHost).toContain('getByRole("button", { name: "%", exact: true })');
+    expect(extensionHost).toContain("The product histogram must expose one full-chart control.");
+    expect(extensionHost).toContain('"20,174-21,357: 398 rows (0.4%); lower bound included, upper bound excluded"');
+    expect(extensionHost).not.toContain("The product histogram must expose all twenty interactive bins.");
     expect(extensionHost).toContain('"notebook-pyspark-picker"');
     expect(extensionHost).toContain("Viewing only · First page loads without counting rows · PySpark 4.2.x required");
     expect(extensionHost).toContain("The notebook-variable capture must show only complete rows.");

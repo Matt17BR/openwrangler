@@ -42,18 +42,18 @@ encoding, quote style, and header automatically. **Import options** is an explic
 
 ## Filters, profiles, sorts, and column search
 
-<a href="images/readme/v1.2/filter-result.png"><img alt="A Polars file session filtered to 14,285 DACH rows with the active predicate and matching native sidebar state" src="images/readme/v1.2/filter-result.png" width="960"></a>
+<a href="images/readme/v1.2/filter-result.png"><img alt="A Polars file session filtered to 14,287 Benelux rows with Filter and Clear in Column profiles and matching native sidebar state" src="images/readme/v1.2/filter-result.png" width="960"></a>
 
-The result count, predicate, clear controls, grid, and native Filters / Sorts view stay synchronized without
-changing the source.
+The result count, Column-profile filter, Clear action, grid, and native Filters / Sorts view stay synchronized
+without changing the source.
 
 <table>
   <tr>
-    <td width="50%"><a href="images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows" src="images/readme/v1.2/gallery/histogram-hover.png" width="448"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with Counts and % controls and a focused 20,174 to 21,357 bin tooltip showing 398 rows (0.4%)" src="images/readme/v1.2/gallery/histogram-hover.png" width="448"></a></td>
     <td width="50%"><a href="images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with priority, reorder, edit, and remove controls" src="images/readme/v1.2/gallery/sort-priority.png" width="448"></a></td>
   </tr>
   <tr>
-    <td>Focus a histogram bin to see its interval and row count.</td>
+    <td>Focus the histogram to see a bin's interval, row count, and percentage.</td>
     <td>Reorder sort keys, change their direction and null placement, or remove them.</td>
   </tr>
 </table>
@@ -159,10 +159,10 @@ final sort key.
 
 ## R notebooks and documents (1.99 preview)
 
-<a href="images/editor-acceptance/vscode-notebook-r-picker-dark.png"><img alt="An IRkernel variable picker listing data.frame, data.table, and tibble objects, including collapse frames" src="images/editor-acceptance/vscode-notebook-r-picker-detail-dark.png" width="960"></a>
+<a href="images/editor-acceptance/vscode-notebook-r-operations-dark.png"><img alt="Open Wrangler Operations listing base data.frame, tibble, data.table, and collapse dataframes from IRkernel" src="images/editor-acceptance/vscode-notebook-r-operations-detail-dark.png" width="960"></a>
 
-Open Wrangler finds base `data.frame`, tibble, and `data.table` objects in the active IRkernel and opens them without
-converting them to Python.
+Operations lists base `data.frame`, tibble, and `data.table` objects from the active IRkernel, including supported
+collapse frames. Open Wrangler opens them without converting them to Python.
 
 <a href="images/readme/v1.2/gallery/r-quarto-variable-picker.png"><img alt="A rendered Quarto table beside the source document and Open Wrangler dataframe picker" src="images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
 

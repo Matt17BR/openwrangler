@@ -204,7 +204,7 @@ const assets = [
 ];
 
 const editorDetailCrops = [
-  nativeCrop("vscode-notebook-r-picker-detail-dark.png", "vscode-notebook-r-picker-dark.png", 1_440, 900, {
+  nativeCrop("vscode-notebook-r-operations-detail-dark.png", "vscode-notebook-r-operations-dark.png", 1_440, 900, {
     x: 0,
     y: 0,
     width: 1_040,

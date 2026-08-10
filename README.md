@@ -99,18 +99,18 @@ JSONL/NDJSON open directly.
   </tr>
 </table>
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/filter-result.png"><img alt="Open Wrangler showing a DACH filter, 14,285 matching rows, clear controls, and the same filter in the native sidebar" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/filter-result.png" width="960"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/filter-result.png"><img alt="Open Wrangler showing 14,287 Benelux rows, Filter and Clear in Column profiles, and the same filter in the native sidebar" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/filter-result.png" width="960"></a>
 
-_The active filter matches 14,285 rows. The grid and sidebar show the same predicate and clear controls without
-changing the source._
+_The active filter matches 14,287 rows. Column profiles, the grid, and the sidebar show the same filter and Clear
+action without changing the source._
 
 <table>
   <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/gallery/histogram-hover.png" width="448"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with Counts and % controls and a focused 20,174 to 21,357 bin tooltip showing 398 rows (0.4%)" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/gallery/histogram-hover.png" width="448"></a></td>
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with inline priority, reorder, edit, and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/1878b45ba13ddc4c1c755a8cf29b9f239bd1bc5b/docs/images/readme/v1.2/gallery/sort-priority.png" width="448"></a></td>
   </tr>
   <tr>
-    <td>Hover or focus any histogram bin to see its range and row count.</td>
+    <td>Hover or focus the histogram to see a bin's range, row count, and percentage.</td>
     <td>Add multiple sort keys, then reorder them or change direction and null placement.</td>
   </tr>
 </table>

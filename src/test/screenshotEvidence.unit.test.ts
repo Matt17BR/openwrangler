@@ -225,7 +225,7 @@ describe("packaged editor screenshot evidence", () => {
       "notebook-pandas",
       "notebook-code-insertion",
       "notebook-variable-picker",
-      "notebook-r-picker",
+      "notebook-r-operations",
       "notebook-pyspark-picker",
       "notebook-polars",
       "notebook-duckdb",
@@ -265,7 +265,9 @@ describe("packaged editor screenshot evidence", () => {
     expect(packagedScreenshotFileName("vscode", "notebook-pyspark-picker", "dark")).toBe(
       "vscode-notebook-pyspark-picker-dark.png"
     );
-    expect(packagedScreenshotFileName("vscode", "notebook-r-picker", "dark")).toBe("vscode-notebook-r-picker-dark.png");
+    expect(packagedScreenshotFileName("vscode", "notebook-r-operations", "dark")).toBe(
+      "vscode-notebook-r-operations-dark.png"
+    );
     expect(packagedScreenshotFileName("vscode", "notebook-r", "dark")).toBe("vscode-notebook-r-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-r-editing", "dark")).toBe(
       "vscode-notebook-r-editing-dark.png"
@@ -295,7 +297,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(rJourney).toContain('["orders_table", "data.table"]');
     expect(extensionHost).not.toContain('"base_frame <- data.frame("');
     expect(rJourney).toContain("prepareReleasedRNotebookScreenshotWorkbench(workbench, notebook, notebookEditor)");
-    expect(rJourney).toContain("captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput)");
+    expect(rJourney).toContain("captureReleasedRJupyterOperations(workbench, sidebar, screenshotOutput)");
     expect(rJourney).toContain(
       "captureReleasedRJupyterWorkbench(workbench, testing, mediaSession.sessionId, screenshotOutput)"
     );
@@ -307,7 +309,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).toContain("\"  market = rep(c('DACH', 'Nordics', 'France', 'Iberia')");
     expect(extensionHost).toContain('"  revenue = media_revenue,"');
     expect(extensionHost).toContain(
-      'packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-picker", "dark")'
+      'packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-operations", "dark")'
     );
     expect(rJourney).toContain(
       'packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r", "dark")'
@@ -320,7 +322,12 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:quarto-picker")');
     expect(extensionHost).toContain('progress: "jupyter-r:screenshot:code-insertion"');
     expect(extensionHost).toContain("PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT");
-    expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:variable-picker")');
+    expect(extensionHost).toContain('recordAcceptanceProgress("jupyter-r:screenshot:operations")');
+    expect(rJourney.indexOf("captureReleasedRJupyterOperations(workbench, sidebar, screenshotOutput)")).toBeLessThan(
+      rJourney.indexOf("picker = await activateReleasedNotebookVariableAction(workbench, notebook)")
+    );
+    expect(extensionHost).not.toContain("captureReleasedRJupyterVariablePicker");
+    expect(extensionHost).not.toContain('"notebook-r-picker"');
     expect(rJourney).toContain('recordAcceptanceProgress("jupyter-r:screenshot:workbench")');
     expect(rJourney).toContain('selectOption("gte")');
     expect(rJourney).toContain('selectOption("equals")');
