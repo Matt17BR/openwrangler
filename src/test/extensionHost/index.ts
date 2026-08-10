@@ -9386,7 +9386,7 @@ async function exerciseReleasedJupyterExtension(
     assert.ok(temporaryMimePayload, "The temporary dataframe MIME item must satisfy the saved-output contract.");
     assert.equal(temporaryMimePayload.metadata.backend, "pandas");
     assert.equal(temporaryMimePayload.metadata.source.label, "DataFrame");
-    assert.equal(temporaryMimePayload.metadata.source.kind, "notebookVariable");
+    assert.equal(temporaryMimePayload.metadata.source.kind, "notebookOutput");
     const temporaryResultHandle = temporaryMimePayload.metadata.source.variableName;
     assert.equal(typeof temporaryResultHandle, "string");
     if (typeof temporaryResultHandle !== "string") {
