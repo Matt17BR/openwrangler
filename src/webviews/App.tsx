@@ -38,7 +38,16 @@ import {
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
+import { ActiveFilterBar } from "./filters/ActiveFilterBar";
 import { FilterPanel } from "./filters/FilterPanel";
+import {
+  confirmLatestFilterUndo,
+  emptyConfirmedFilterHistory,
+  latestConfirmedFilterUndo,
+  recordConfirmedFilterTransition,
+  type ConfirmedFilterHistory,
+  type ConfirmedFilterState
+} from "./filters/filterHistory";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
 import { SummaryPanel, summaryPanelId, summaryTabId, type SummaryPanelView } from "./summary/SummaryPanel";
 import type { ProfileValueMode } from "./profileValueMode";
@@ -76,6 +85,8 @@ export function App() {
   const [summaries, setSummaries] = useState<ColumnSummary[]>([]);
   const [profileValueMode, setProfileValueMode] = useState<ProfileValueMode>("count");
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
+  const [confirmedFilterHistory, setConfirmedFilterHistory] =
+    useState<ConfirmedFilterHistory>(emptyConfirmedFilterHistory);
   const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
   const [foregroundError, setForegroundError] = useState<string | undefined>();
   const [foregroundErrorCode, setForegroundErrorCode] = useState<string | undefined>();
@@ -127,6 +138,7 @@ export function App() {
   const columnValuesRef = useRef<ReadonlyMap<string, ValuesResponse>>(new Map());
   const backgroundDiagnosticsRef = useRef<ReadonlyMap<string, BackgroundDiagnostic>>(new Map());
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
+  const confirmedFilterHistoryRef = useRef<ConfirmedFilterHistory>(emptyConfirmedFilterHistory());
   const clearFilterColumnActionRef = useRef<(column: string) => void>(() => undefined);
   const changeViewSortActionRef = useRef<(target: ViewSortActionTarget) => void>(() => undefined);
   const sidePanelOpenRef = useRef(false);
@@ -260,6 +272,15 @@ export function App() {
     filterModelRef.current = next;
     setFilterModel(next);
   }, []);
+
+  const storeConfirmedFilterHistory = useCallback((next: ConfirmedFilterHistory) => {
+    confirmedFilterHistoryRef.current = next;
+    setConfirmedFilterHistory(next);
+  }, []);
+
+  const resetConfirmedFilterHistory = useCallback(() => {
+    storeConfirmedFilterHistory(emptyConfirmedFilterHistory());
+  }, [storeConfirmedFilterHistory]);
 
   const storeSummaries = useCallback((next: ColumnSummary[]) => {
     summariesRef.current = next;
@@ -1440,6 +1461,7 @@ export function App() {
         setDiff(undefined);
         setRemainingMissingCells(undefined);
         setDraftWarnings([]);
+        resetConfirmedFilterHistory();
         resetViewProfiling();
         summaryOwnersByColumnId.current.clear();
         const openedProfileSupported = supportsViewingCapability(response.metadata.capabilities, "profile");
@@ -1497,6 +1519,28 @@ export function App() {
         const nextMetadata = previousStats
           ? { ...response.metadata, stats: previousStats }
           : withoutDatasetStats(response.metadata);
+        if (pendingPage.changesView) {
+          if (pendingPage.filterHistoryUndoTarget) {
+            storeConfirmedFilterHistory(
+              confirmLatestFilterUndo(
+                confirmedFilterHistoryRef.current,
+                pendingPage.filterHistoryUndoTarget,
+                nextMetadata.filterModel
+              )
+            );
+          } else {
+            const previousFilterModel = pendingPage.previousConfirmedState?.metadata.filterModel;
+            if (previousFilterModel) {
+              storeConfirmedFilterHistory(
+                recordConfirmedFilterTransition(
+                  confirmedFilterHistoryRef.current,
+                  previousFilterModel,
+                  nextMetadata.filterModel
+                )
+              );
+            }
+          }
+        }
         confirmView(nextMetadata, pendingPage.viewContextId);
         storeMetadata(nextMetadata);
         storeFilterModel(nextMetadata.filterModel);
@@ -1529,6 +1573,7 @@ export function App() {
         setProjectionLoading(false);
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
+        resetConfirmedFilterHistory();
         resetViewProfiling();
         const nextMetadata = withoutDatasetStats(response.metadata);
         const undoFocusOriginIsActive =
@@ -1691,6 +1736,7 @@ export function App() {
     requestColumnReveal,
     requestStatsForConfirmedView,
     requestStepInspection,
+    resetConfirmedFilterHistory,
     restoreSessionModeChangeFocus,
     restartProfilingAfterMutation,
     restartProfilingForConfirmedView,
@@ -1700,6 +1746,7 @@ export function App() {
     sendSummaryColumn,
     storeBackgroundDiagnostics,
     storeColumnValues,
+    storeConfirmedFilterHistory,
     storeFailedPageRequest,
     storeFilterModel,
     storeGridViewState,
@@ -1920,7 +1967,8 @@ export function App() {
       model,
       columnWindow,
       reason,
-      previousConfirmedState
+      previousConfirmedState,
+      ...(options.filterHistoryUndoTarget ? { filterHistoryUndoTarget: options.filterHistoryUndoTarget } : {})
     };
     latestPageRequest.current = pendingPage;
     foregroundRequest.current = { kind: "page", viewRequestId };
@@ -2033,7 +2081,7 @@ export function App() {
     });
   };
 
-  const applyFilters = (model: FilterModel) => {
+  const applyFilters = (model: FilterModel, options: ApplyFilterOptions = {}) => {
     if (
       importOptionsPendingRef.current ||
       foregroundRequest.current === "mutation" ||
@@ -2065,7 +2113,12 @@ export function App() {
         changesView: failed.changesView,
         viewContextId: failed.viewContextId,
         columnWindow: failed.columnWindow,
-        reason: failed.reason
+        reason: failed.reason,
+        ...(failed.filterHistoryUndoTarget
+          ? { filterHistoryUndoTarget: failed.filterHistoryUndoTarget }
+          : options.filterHistoryUndoTarget
+            ? { filterHistoryUndoTarget: options.filterHistoryUndoTarget }
+            : {})
       });
       return;
     }
@@ -2078,7 +2131,17 @@ export function App() {
       return;
     }
 
-    requestPage(0, nextModel, { changesView: true });
+    requestPage(0, nextModel, {
+      changesView: true,
+      ...(options.filterHistoryUndoTarget ? { filterHistoryUndoTarget: options.filterHistoryUndoTarget } : {})
+    });
+  };
+
+  const undoLatestFilter = () => {
+    if (foregroundRequest.current || importOptionsPendingRef.current || stepInspectionTargetRef.current) return;
+    const undo = latestConfirmedFilterUndo(confirmedFilterHistoryRef.current, filterModelRef.current);
+    if (!undo) return;
+    applyFilters(undo.model, { filterHistoryUndoTarget: undo.target });
   };
 
   useEffect(() => {
@@ -2308,7 +2371,8 @@ export function App() {
       changesView: failed.changesView,
       viewContextId: failed.viewContextId,
       columnWindow: failed.columnWindow,
-      reason: failed.reason
+      reason: failed.reason,
+      ...(failed.filterHistoryUndoTarget ? { filterHistoryUndoTarget: failed.filterHistoryUndoTarget } : {})
     });
   };
 
@@ -2746,6 +2810,16 @@ export function App() {
                 Profile warning: {backgroundDiagnosticMessages.join(" ")}
               </div>
             )}
+            {metadata && filterSupported && (
+              <ActiveFilterBar
+                metadata={metadata}
+                model={filterModel}
+                disabled={loading || projectionLoading || mutationPending || importOptionsPending || inspectionMode}
+                canUndo={confirmedFilterHistory.entries.length > 0}
+                onApply={applyFilters}
+                onUndo={undoLatestFilter}
+              />
+            )}
             {loading && displayMetadata && displayPage && (
               <div className="loading" role="status" aria-live="polite">
                 Loading...
@@ -3125,6 +3199,7 @@ interface PendingPageRequest {
   columnWindow: ColumnWindow;
   reason: PageRequestReason;
   previousConfirmedState?: ConfirmedViewState;
+  filterHistoryUndoTarget?: ConfirmedFilterState;
 }
 
 export interface ColumnWindow {
@@ -3168,6 +3243,11 @@ interface PageRequestOptions {
   viewContextId?: string;
   columnWindow?: ColumnWindow;
   reason?: PageRequestReason;
+  filterHistoryUndoTarget?: ConfirmedFilterState;
+}
+
+interface ApplyFilterOptions {
+  filterHistoryUndoTarget?: ConfirmedFilterState;
 }
 
 function backgroundDiagnosticKey(pending: PendingBackgroundRequest): string {
