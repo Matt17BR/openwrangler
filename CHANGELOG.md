@@ -6,8 +6,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
-- **Open in Open Wrangler** is visible as soon as a supported `.R`, `.Rmd`, or `.qmd` tab is active. Its menu entry no
-  longer depends on extension-owned terminal state that may not exist before activation.
+- **Open in Open Wrangler** is visible as soon as a supported `.R`, `.Rmd`, or `.qmd` tab is active. The title action
+  now depends only on the active file, so it is available before R or Quarto activates.
 - Opening a dataframe from that R tab action now reuses the dataframe list already shown in Operations, avoiding a
   second connection to the same R session.
 - R Markdown and Quarto now keep commas inside nested chunk options, skip valid `eval=FALSE` cells that refer to
@@ -37,8 +37,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Stable release candidates now run the R 4.5.2 contract and the packaged R notebook journey in VS Code and Cursor
   before publication. Preview candidates already used this gate.
 - Preview and stable release candidates now run the packaged local R notebook journey in VS Code on macOS and
-  Windows. macOS also runs the `.R`, `.Rmd`, and `.qmd` document checks. Local Windows file actions are hidden, while
-  remote and Command Palette entry points remain available. Remote R-document execution is still experimental and is
+  Windows. macOS also runs the `.R`, `.Rmd`, and `.qmd` document checks. The explicit local Windows document actions
+  are hidden, while the stable title action can open from an active R terminal. Remote and Command Palette entry
+  points remain available. Remote R-document execution is still experimental and is
   not part of the release matrix. These jobs keep the native Python environment smoke but leave the full Python suite
   to Linux.
 - Local R notebook and R document sessions can now export committed cleaning results as Parquet with `nanoparquet`

@@ -658,8 +658,9 @@ artifacts. A local packaged run on 2026-08-07 passed the earlier CSV-only journe
 
 On macOS and Linux, the same local R editor launch also tests R documents without starting another editor process.
 VS Code covers `.R`, `.Rmd`, and `.qmd`; Cursor covers the representative plain `.R` journey. Windows skips that
-document subjourney. For local Windows files, the package manifest hides
-the Explorer and editor actions. Remote-resource actions and the Command Palette stay available because the client
+document subjourney. For local Windows files, the package manifest hides the explicit **Run R Document** Explorer and
+tab-menu actions. The stable title action remains available so an active official R terminal can supply its
+dataframes. Remote-resource actions and the Command Palette stay available because the client
 cannot identify the extension-host platform through static menu keys. The existing `process.platform` check rejects
 a Windows extension host. Remote R-document execution is experimental and is not part of this release matrix.
 The fixture reads a relative CSV, creates a base data frame, tibble, and keyed data table, and runs through the public
