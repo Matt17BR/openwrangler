@@ -335,6 +335,9 @@ async function selectedNotebookKernelLanguage(notebook: vscode.NotebookDocument)
   if (!isExactOpenNotebook(notebook)) {
     throw new NotebookVariableDiscoveryError("The originating notebook is no longer open. Reopen it and try again.");
   }
+  if (!vscode.workspace.isTrusted) {
+    throw new NotebookVariableDiscoveryError("Trust this workspace before Open Wrangler inspects a notebook kernel.");
+  }
   const extension = vscode.extensions.getExtension<JupyterLikeApi>("ms-toolsai.jupyter");
   if (!extension) {
     throw new NotebookVariableDiscoveryError(
