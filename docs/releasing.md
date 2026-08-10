@@ -147,7 +147,7 @@ The same installed-editor report must prove that the production renderer and for
 
 Each coherent change uses a feature branch and pull request. Drafts run `Fast feedback` and report a separate `Draft
 feedback` check; the protected `validate` context appears only when the pull request is marked ready. Ready code
-changes targeting `main` or `v2` run source, runtime, UI, accessibility, packaging, Linux packaged-editor, native
+changes targeting `main` run source, runtime, UI, accessibility, packaging, Linux packaged-editor, native
 extension-host, platform, and security checks. The slower native editor, Jupyter, Remote SSH, and
 installed-performance checks run against the exact release candidate before publication. Pushes to `main` repeat
 fast feedback only; publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
@@ -294,7 +294,7 @@ with `release_tag=v<version>`. Historical backfill is supported only when that r
 provenance format remains compatible with the current registry verifier; incompatibility fails rather than weakening
 validation. The verifier reads the exact release tag before checking the package inventory. A historical v1 tag from
 before `r/openwrangler_runtime/frame_contract.R` was added may omit its packaged copy. If the tagged source includes
-that file, the VSIX must include it too; every `1.99.x` or v2 release must include both. Verification of current
+that file, the VSIX must include it too; every `1.99.x` or 2.x release must include both. Verification of current
 packages still requires the R file. The public-media contract is skipped below `1.2.1`; newer releases use the
 verifier and inventory in their exact tag. Repeating the dispatch is safe only when
 the registry already serves identical bytes; a conflict fails without replacement. Do not dispatch from an old
