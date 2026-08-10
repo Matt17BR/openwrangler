@@ -9,6 +9,7 @@ import type {
 } from "vscode";
 import type { SessionCoordinator } from "../extension/sessionCoordinator";
 import type { NotebookVariableDiscovery } from "../extension/notebooks/notebookVariableDiscovery";
+import type { RNotebookVariableDiscovery } from "../extension/r/rNotebookVariableDiscovery";
 
 type CommandHandler = (...args: unknown[]) => unknown;
 type Listener<T> = (value: T) => unknown;
@@ -30,8 +31,9 @@ const pythonMocks = vi.hoisted(() => ({
   openNotebookListeners: new Set<Listener<NotebookDocument>>(),
   closeNotebookListeners: new Set<Listener<NotebookDocument>>(),
   changeNotebookListeners: new Set<Listener<NotebookDocumentChangeEvent>>(),
-  discover: vi.fn<(notebook: NotebookDocument) => Promise<NotebookVariableDiscovery>>(),
+  discover: vi.fn<(notebook: NotebookDocument) => Promise<NotebookVariableDiscovery | RNotebookVariableDiscovery>>(),
   openVariable: vi.fn(async () => undefined),
+  openRVariable: vi.fn(async () => undefined),
   restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined)
 }));
 
@@ -125,7 +127,11 @@ vi.mock("../extension/notebooks/notebookVariableDiscovery", async () => {
 });
 
 vi.mock("../extension/notebooks/jupyterBridge", () => ({
-  openDiscoveredPythonNotebookVariable: pythonMocks.openVariable
+  discoverVariablesForSelectedKernel: pythonMocks.discover,
+  isRNotebookVariableDiscovery: (discovery: NotebookVariableDiscovery | RNotebookVariableDiscovery) =>
+    discovery.variables.length > 0 && discovery.variables.every((variable) => "dataframeFlavor" in variable),
+  openDiscoveredPythonNotebookVariable: pythonMocks.openVariable,
+  openDiscoveredRNotebookVariable: pythonMocks.openRVariable
 }));
 
 vi.mock("../extension/webviewPanel", () => ({
@@ -135,12 +141,12 @@ vi.mock("../extension/webviewPanel", () => ({
 import * as vscode from "vscode";
 import {
   registerPythonInteractiveCommands,
-  type PythonLiveVariableProvider
+  type NotebookLiveVariableProvider
 } from "../extension/notebooks/pythonInteractiveCommands";
 
 describe("Python Interactive Window entry points", () => {
   let context: ExtensionContext;
-  let provider: PythonLiveVariableProvider;
+  let provider: NotebookLiveVariableProvider;
   const coordinator = {} as SessionCoordinator;
 
   beforeEach(() => {
@@ -181,6 +187,7 @@ describe("Python Interactive Window entry points", () => {
     pythonMocks.discover.mockReset();
     pythonMocks.discover.mockResolvedValue({ variables: [], truncated: false });
     pythonMocks.openVariable.mockClear();
+    pythonMocks.openRVariable.mockClear();
     pythonMocks.restoreEditorGroupAfterQuickPick.mockReset();
     pythonMocks.restoreEditorGroupAfterQuickPick.mockResolvedValue(undefined);
     context = { subscriptions: [], extensionPath: "/extension" } as unknown as ExtensionContext;
@@ -1032,6 +1039,46 @@ describe("Python Interactive Window entry points", () => {
     const handle = snapshot?.variables[0]?.handle;
     await command("openWrangler.openCachedNotebookVariable")(handle);
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, active.document, frame);
+  });
+
+  it("shows and opens dataframes from the exact active IRkernel notebook", async () => {
+    const active = notebook("file:///workspace/analysis-r.ipynb", "jupyter-notebook", [], "r");
+    const inactive = notebook("file:///workspace/inactive-r.ipynb", "jupyter-notebook", [], "r");
+    pythonMocks.notebookDocuments.push(active.document, inactive.document);
+    pythonMocks.activeNotebookEditor = { notebook: active.document } as NotebookEditor;
+    const discovery: RNotebookVariableDiscovery = {
+      variables: [
+        { name: "orders_frame", backend: "r", dataframeFlavor: "r.data.frame" },
+        { name: "orders_tbl", backend: "r", dataframeFlavor: "r.tibble" },
+        { name: "orders_dt", backend: "r", dataframeFlavor: "r.data.table" }
+      ],
+      truncated: false
+    };
+    pythonMocks.discover.mockResolvedValue(discovery);
+
+    fire(pythonMocks.activeNotebookListeners, pythonMocks.activeNotebookEditor);
+    await settle();
+
+    expect(pythonMocks.discover).toHaveBeenCalledWith(active.document);
+    expect(pythonMocks.discover).not.toHaveBeenCalledWith(inactive.document);
+    const snapshot = provider.snapshot();
+    expect(snapshot?.state).toBe("ready");
+    expect(snapshot?.variables.map((variable) => [variable.label, variable.description])).toEqual([
+      ["orders_frame", "R · data.frame"],
+      ["orders_tbl", "R · tibble"],
+      ["orders_dt", "R · data.table"]
+    ]);
+
+    const handle = snapshot?.variables[1]?.handle;
+    await command("openWrangler.openCachedNotebookVariable")(handle);
+    expect(pythonMocks.openRVariable).toHaveBeenCalledWith(
+      context,
+      coordinator,
+      active.document,
+      discovery,
+      discovery.variables[1]
+    );
+    expect(pythonMocks.openVariable).not.toHaveBeenCalled();
   });
 
   it("does not lose the active notebook when VS Code also reports its focused cell text editor", async () => {

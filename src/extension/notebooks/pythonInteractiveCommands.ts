@@ -9,7 +9,17 @@ import {
   type NotebookVariableDiscovery
 } from "./notebookVariableDiscovery";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
-import { openDiscoveredPythonNotebookVariable } from "./jupyterBridge";
+import {
+  discoverVariablesForSelectedKernel,
+  isRNotebookVariableDiscovery,
+  openDiscoveredPythonNotebookVariable,
+  openDiscoveredRNotebookVariable
+} from "./jupyterBridge";
+import {
+  RNotebookVariableDiscoveryError,
+  type RNotebookVariableDescriptor,
+  type RNotebookVariableDiscovery
+} from "../r/rNotebookVariableDiscovery";
 import { restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 
 const PYTHON_CELL_MARKER = /^\s*#\s*%%(?:\s|$)/u;
@@ -18,14 +28,14 @@ const MAX_INTERACTIVE_CELL_METADATA_TEXT = 64 * 1024;
 const PYTHON_CELL_PUBLICATION_TIMEOUT_MS = 10_000;
 const PYTHON_CELL_EXECUTION_TIMEOUT_MS = 120_000;
 
-export interface PythonLiveVariableItem {
+export interface NotebookLiveVariableItem {
   readonly handle: string;
   readonly label: string;
   readonly description: string;
   readonly detail: string;
 }
 
-export type PythonLiveVariableSnapshot =
+export type NotebookLiveVariableSnapshot =
   | {
       readonly state: "loading" | "empty" | "error";
       readonly notebookLabel: string;
@@ -36,18 +46,27 @@ export type PythonLiveVariableSnapshot =
       readonly state: "ready";
       readonly notebookLabel: string;
       readonly message: string;
-      readonly variables: readonly PythonLiveVariableItem[];
+      readonly variables: readonly NotebookLiveVariableItem[];
     };
 
-export interface PythonLiveVariableProvider extends vscode.Disposable {
+export interface NotebookLiveVariableProvider extends vscode.Disposable {
   readonly onDidChangeVariables: vscode.Event<void>;
-  snapshot(): PythonLiveVariableSnapshot | undefined;
+  snapshot(): NotebookLiveVariableSnapshot | undefined;
+  refreshFromCommand(): Promise<void>;
 }
 
-interface CachedVariable {
-  readonly descriptor: NotebookVariableDescriptor;
-  readonly item: PythonLiveVariableItem;
-}
+type CachedVariable =
+  | {
+      readonly kind: "python";
+      readonly descriptor: NotebookVariableDescriptor;
+      readonly item: NotebookLiveVariableItem;
+    }
+  | {
+      readonly kind: "r";
+      readonly discovery: RNotebookVariableDiscovery;
+      readonly descriptor: RNotebookVariableDescriptor;
+      readonly item: NotebookLiveVariableItem;
+    };
 
 interface PythonCellOrigin {
   readonly editor: vscode.TextEditor;
@@ -109,8 +128,8 @@ type PythonCellDispatchOutcome =
 export function registerPythonInteractiveCommands(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator
-): PythonLiveVariableProvider {
-  const provider = new PythonInteractiveCoordinator(context, coordinator);
+): NotebookLiveVariableProvider {
+  const provider = new NotebookInteractiveCoordinator(context, coordinator);
   context.subscriptions.push(
     provider,
     vscode.commands.registerCommand("openWrangler.runPythonCellAndOpenVariable", () =>
@@ -124,12 +143,12 @@ export function registerPythonInteractiveCommands(
   return provider;
 }
 
-class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
+class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private readonly subscriptions: vscode.Disposable[] = [];
   private activeTarget: vscode.NotebookDocument | undefined;
   private activeSource: vscode.TextDocument | undefined;
-  private currentSnapshot: PythonLiveVariableSnapshot | undefined;
+  private currentSnapshot: NotebookLiveVariableSnapshot | undefined;
   private readonly variablesByHandle = new Map<string, CachedVariable>();
   private refreshRunning = false;
   private refreshAgain = false;
@@ -152,7 +171,7 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
     this.synchronizeInitialFocus();
   }
 
-  snapshot(): PythonLiveVariableSnapshot | undefined {
+  snapshot(): NotebookLiveVariableSnapshot | undefined {
     return this.currentSnapshot;
   }
 
@@ -315,6 +334,16 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
       );
       return;
     }
+    if (cached.kind === "r") {
+      await openDiscoveredRNotebookVariable(
+        this.context,
+        this.coordinator,
+        notebook,
+        cached.discovery,
+        cached.descriptor
+      );
+      return;
+    }
     await openDiscoveredPythonNotebookVariable(this.context, this.coordinator, notebook, cached.descriptor);
   }
 
@@ -330,7 +359,7 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
   private onActiveNotebookChanged(editor: vscode.NotebookEditor | undefined): void {
     this.activeSource = undefined;
     const notebook = editor?.notebook;
-    if (!notebook || !isSupportedPythonNotebook(notebook) || !isSoleOpenNotebookDocument(notebook)) {
+    if (!notebook || !isSupportedLiveNotebook(notebook) || !isSoleOpenNotebookDocument(notebook)) {
       this.setActiveTarget(undefined);
       return;
     }
@@ -343,7 +372,7 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
       this.activeSource = undefined;
       const notebook = vscode.window.activeNotebookEditor?.notebook;
       this.setActiveTarget(
-        notebook && isSupportedPythonNotebook(notebook) && isSoleOpenNotebookDocument(notebook) ? notebook : undefined
+        notebook && isSupportedLiveNotebook(notebook) && isSoleOpenNotebookDocument(notebook) ? notebook : undefined
       );
       return;
     }
@@ -415,12 +444,12 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
         const notebook = this.activeTarget;
         if (!notebook || !isSoleOpenNotebookDocument(notebook)) return;
         try {
-          const discovery = await discoverNotebookVariables(notebook);
+          const discovery = await discoverVariablesForSelectedKernel(notebook);
           if (this.activeTarget !== notebook || !isSoleOpenNotebookDocument(notebook)) continue;
           this.publishDiscovery(notebook, discovery);
           if (showEmptyMessage && discovery.variables.length === 0) {
             void vscode.window.showInformationMessage(
-              "No live Pandas, Polars, DuckDB, or PySpark dataframe was found in this kernel."
+              "No live Pandas, Polars, DuckDB, PySpark, or R dataframe was found in this kernel."
             );
           }
         } catch (error) {
@@ -430,7 +459,7 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
             state: "error",
             notebookLabel: notebookLabel(notebook),
             message:
-              error instanceof NotebookVariableDiscoveryError
+              error instanceof NotebookVariableDiscoveryError || error instanceof RNotebookVariableDiscoveryError
                 ? error.message
                 : "Open Wrangler could not inspect this notebook kernel.",
             variables: []
@@ -443,18 +472,34 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
     }
   }
 
-  private publishDiscovery(notebook: vscode.NotebookDocument, discovery: NotebookVariableDiscovery): void {
+  private publishDiscovery(
+    notebook: vscode.NotebookDocument,
+    discovery: NotebookVariableDiscovery | RNotebookVariableDiscovery
+  ): void {
     this.variablesByHandle.clear();
-    const variables = discovery.variables.map((descriptor): PythonLiveVariableItem => {
+    const rDiscovery = isRNotebookVariableDiscovery(discovery) ? discovery : undefined;
+    const variables = discovery.variables.map((descriptor): NotebookLiveVariableItem => {
       const handle = randomUUID();
-      const presentation = notebookVariablePresentation(descriptor.type);
-      const item = {
-        handle,
-        label: descriptor.name,
-        description: `${presentation.family} · ${presentation.kind}`,
-        detail: `Live in ${notebookLabel(notebook)}`
-      };
-      this.variablesByHandle.set(handle, { descriptor, item });
+      let item: NotebookLiveVariableItem;
+      if ("dataframeFlavor" in descriptor) {
+        if (!rDiscovery) throw new Error("Open Wrangler received a mixed notebook dataframe discovery.");
+        item = {
+          handle,
+          label: descriptor.name,
+          description: `R · ${rDataframeFlavorLabel(descriptor.dataframeFlavor)}`,
+          detail: `Live in ${notebookLabel(notebook)}`
+        };
+        this.variablesByHandle.set(handle, { kind: "r", discovery: rDiscovery, descriptor, item });
+      } else {
+        const presentation = notebookVariablePresentation(descriptor.type);
+        item = {
+          handle,
+          label: descriptor.name,
+          description: `${presentation.family} · ${presentation.kind}`,
+          detail: `Live in ${notebookLabel(notebook)}`
+        };
+        this.variablesByHandle.set(handle, { kind: "python", descriptor, item });
+      }
       return item;
     });
     this.currentSnapshot =
@@ -610,6 +655,23 @@ function isSupportedPythonNotebook(notebook: vscode.NotebookDocument): boolean {
   if (notebook.notebookType !== "interactive" && notebook.notebookType !== "jupyter-notebook") return false;
   const language = notebookLanguageHint(notebook);
   return language === undefined || language === "python";
+}
+
+function isSupportedLiveNotebook(notebook: vscode.NotebookDocument): boolean {
+  if (notebook.notebookType !== "interactive" && notebook.notebookType !== "jupyter-notebook") return false;
+  const language = notebookLanguageHint(notebook);
+  return language === undefined || language === "python" || language === "r";
+}
+
+function rDataframeFlavorLabel(flavor: RNotebookVariableDescriptor["dataframeFlavor"]): string {
+  switch (flavor) {
+    case "r.data.frame":
+      return "data.frame";
+    case "r.tibble":
+      return "tibble";
+    case "r.data.table":
+      return "data.table";
+  }
 }
 
 function notebookLanguageHint(notebook: vscode.NotebookDocument): string | undefined {

@@ -13,7 +13,8 @@
 | `openWrangler.launchDataViewer`               | Open Wrangler: Launch Selected Notebook Variable               |
 | `openWrangler.openNotebookVariable`           | Open in Open Wrangler                                          |
 | `openWrangler.runPythonCellAndOpenVariable`   | Open in Open Wrangler                                          |
-| `openWrangler.refreshNotebookVariables`       | Open Wrangler: Refresh Python Dataframes                       |
+| `openWrangler.refreshLiveDataframes`          | Open Wrangler: Refresh Live Dataframes                         |
+| `openWrangler.refreshNotebookVariables`       | Open Wrangler: Refresh Notebook Dataframes                     |
 | `openWrangler.openCachedNotebookVariable`     | Open Wrangler: Open Live Dataframe                             |
 | `openWrangler.openRDataframe`                 | Open Wrangler: Open R Dataframe                                |
 | `openWrangler.runRDocument`                   | Run R Document in Open Wrangler…                               |

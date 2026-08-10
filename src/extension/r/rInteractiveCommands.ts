@@ -55,6 +55,7 @@ export type RLiveVariableSnapshot =
 export interface RLiveVariableProvider extends vscode.Disposable {
   readonly onDidChangeVariables: vscode.Event<void>;
   snapshot(): RLiveVariableSnapshot;
+  refreshFromCommand(): Promise<boolean>;
   shutdown(): Promise<void>;
 }
 
