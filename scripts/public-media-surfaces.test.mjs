@@ -386,6 +386,15 @@ test("representative media remains bound to each immutable README URL", () => {
   );
 });
 
+test("representative media contract matches the checked-in README", () => {
+  const references = expectedRepresentativeReferences(readFileSync(resolve(root, "README.md"), "utf8"));
+  assert.deepEqual(
+    references.map(({ alt }) => alt),
+    REPRESENTATIVE_PUBLIC_IMAGES
+  );
+  assert.equal(new Set(references.map(({ sourceSha: referenceSha }) => referenceSha)).size, 1);
+});
+
 test("rendered README images keep their source, cap, density, aspect ratio, and container", () => {
   const expected = {
     alt: "Synthetic public image",
