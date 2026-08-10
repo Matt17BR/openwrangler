@@ -14,7 +14,6 @@ export const OPEN_R_INTERACTIVE_VARIABLE_COMMAND = "openWrangler.openRInteractiv
 export const OPEN_R_DATAFRAME_COMMAND = "openWrangler.openRDataframe";
 export const REFRESH_R_INTERACTIVE_VARIABLES_COMMAND = "openWrangler.refreshRInteractiveVariables";
 export const OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND = "openWrangler.openCachedRInteractiveVariable";
-export const ACTIVE_R_TERMINAL_CONTEXT = "openWrangler.activeRTerminal";
 
 interface RInteractiveQuickPickItem extends vscode.QuickPickItem {
   readonly variable: RProcessVariableDescriptor;
@@ -115,7 +114,6 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     private readonly transportFactory: RInteractiveTransportFactory
   ) {
     this.currentSnapshot = idleSnapshot(vscode.window.activeTerminal);
-    this.updateActiveTerminalContext(vscode.window.activeTerminal);
     this.subscriptions = [
       vscode.window.onDidChangeActiveTerminal((terminal) => this.onActiveTerminalChanged(terminal)),
       vscode.window.onDidCloseTerminal((terminal) => this.onTerminalClosed(terminal))
@@ -432,7 +430,6 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
   }
 
   private onActiveTerminalChanged(terminal: vscode.Terminal | undefined): void {
-    this.updateActiveTerminalContext(terminal);
     if (!this.ownedTerminal) {
       if (isOfficialRTerminal(terminal) && this.currentSnapshot.state === "idle") {
         // VS Code and vscode-R expose no public signal that an R prompt is idle.
@@ -447,7 +444,6 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
   }
 
   private onTerminalClosed(terminal: vscode.Terminal): void {
-    if (terminal === vscode.window.activeTerminal) this.updateActiveTerminalContext(undefined);
     if (terminal === this.ownedTerminal) {
       this.invalidateOwnedTransport("The R terminal closed. Start or select another R session.");
     }
@@ -475,10 +471,6 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     this.currentSnapshot = snapshot;
     if (snapshot.state !== "ready") this.variablesByHandle.clear();
     this.changeEmitter.fire();
-  }
-
-  private updateActiveTerminalContext(terminal: vscode.Terminal | undefined): void {
-    void vscode.commands.executeCommand("setContext", ACTIVE_R_TERMINAL_CONTEXT, isOfficialRTerminal(terminal));
   }
 
   private isCurrent(generation: number): boolean {

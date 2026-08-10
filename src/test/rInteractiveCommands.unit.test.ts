@@ -105,7 +105,6 @@ vi.mock("../extension/webviewPanel", () => ({
 }));
 
 import {
-  ACTIVE_R_TERMINAL_CONTEXT,
   OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND,
   OPEN_R_DATAFRAME_COMMAND,
   OPEN_R_INTERACTIVE_VARIABLE_COMMAND,
@@ -189,19 +188,6 @@ describe("active R session commands", () => {
     expect(mocks.executeCommand).toHaveBeenCalledWith("openWrangler.runRDocument", resource);
     expect(mocks.showQuickPick).not.toHaveBeenCalled();
     expect(mocks.panelCreate).not.toHaveBeenCalled();
-  });
-
-  it("tracks whether the selected terminal is an official R session", () => {
-    const r = rTerminal("R");
-    const shell = { name: "bash", sendText: vi.fn() };
-    setActiveTerminal(r);
-    registerWith([]);
-
-    expect(mocks.executeCommand).toHaveBeenCalledWith("setContext", ACTIVE_R_TERMINAL_CONTEXT, true);
-
-    emitActiveTerminal(shell);
-
-    expect(mocks.executeCommand).toHaveBeenLastCalledWith("setContext", ACTIVE_R_TERMINAL_CONTEXT, false);
   });
 
   it("rechecks the active R picker after returning focus", async () => {
