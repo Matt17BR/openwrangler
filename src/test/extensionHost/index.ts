@@ -15134,9 +15134,9 @@ async function exercisePackagedBackendSwitchJourney(
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       `the file session to switch from ${current} to ${next}`
     );
-    assert.equal(
-      await testing.ensurePanelSynchronized(sessionId, Date.now() + SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS),
-      true,
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
       `The ${next} renderer must acknowledge the switched file session.`
     );
 
