@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 import { DataGrid, requestedGridPageOffset } from "../webviews/grid/DataGrid";
@@ -333,7 +334,7 @@ describe("DataGrid", () => {
     onViewStateChange.mockClear();
 
     const salesHeader = screen.getByRole("columnheader", { name: /^sales/u });
-    fireEvent.click(within(salesHeader).getByText("Missing 50%"));
+    fireEvent.click(within(salesHeader).getByText("Missing 1"));
     expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:1" }));
 
     onViewStateChange.mockClear();
@@ -344,6 +345,77 @@ describe("DataGrid", () => {
     const cityHeader = screen.getByRole("columnheader", { name: /^city/u });
     fireEvent.keyDown(cityHeader, { key: "Enter" });
     expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:0" }));
+  });
+
+  it("switches compact header profiles between counts and percentages from the status bar", () => {
+    const salesSummary: ColumnSummary = {
+      columnId: "c:1",
+      column: "sales",
+      type: "float",
+      rawType: "Float64",
+      totalCount: 2,
+      nullCount: 1,
+      nanCount: 0,
+      distinctCount: 1,
+      topValues: [],
+      numeric: { min: 10.5, max: 10.5 }
+    };
+    const Harness = () => {
+      const [mode, setMode] = useState<"count" | "percent">("count");
+      return (
+        <DataGrid
+          metadata={metadata}
+          page={page}
+          summaries={[salesSummary]}
+          pageSize={2}
+          defaultColumnWidth={190}
+          insightsOnOpen={true}
+          profileValueMode={mode}
+          onProfileValueModeChange={setMode}
+          onPage={() => undefined}
+          onSortColumn={() => undefined}
+          onOpenFilter={() => undefined}
+          onVisibleSummaryColumnsChange={() => undefined}
+        />
+      );
+    };
+    render(<Harness />);
+
+    const statusBar = document.querySelector<HTMLElement>(".gridStatusBar");
+    if (!statusBar) throw new Error("Expected the grid status bar.");
+    const profileValues = within(statusBar).getByRole("group", { name: "Header profile values" });
+    const counts = within(profileValues).getByRole("button", { name: "Show header profile counts" });
+    const percentages = within(profileValues).getByRole("button", { name: "Show header profile percentages" });
+    const salesHeader = screen.getByRole("columnheader", { name: /^sales/u });
+
+    expect(counts).toHaveAttribute("aria-pressed", "true");
+    expect(within(salesHeader).getByText("Missing 1")).toHaveAttribute("title", "Missing: 1 (50%)");
+    fireEvent.click(percentages);
+    expect(percentages).toHaveAttribute("aria-pressed", "true");
+    expect(within(salesHeader).getByText("Missing 50%")).toHaveAttribute("title", "Missing: 1 (50%)");
+    fireEvent.click(counts);
+    expect(within(salesHeader).getByText("Missing 1")).toBeVisible();
+  });
+
+  it("hides the compact profile value switch when header profiles are unavailable", () => {
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
+        profilesDisabled
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    expect(screen.queryByRole("group", { name: "Header profile values" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Profiles unavailable" })).toBeDisabled();
   });
 
   it("keeps explicit row labels readable without hiding keyboard-focused columns in a narrow grid", async () => {

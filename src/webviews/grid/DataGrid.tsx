@@ -32,6 +32,7 @@ import {
 } from "./rowScrollModel";
 import { columnTypePresentation } from "../columnTypes";
 import { numericExtremumDisplay } from "../numericSummary";
+import { ProfileValueToggle } from "../ProfileValueToggle";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
 import {
   describeProfileValue,
@@ -66,6 +67,7 @@ interface DataGridProps {
   profilesDisabled?: boolean;
   profilesDisabledReason?: string;
   profileValueMode?: ProfileValueMode;
+  onProfileValueModeChange?(mode: ProfileValueMode): void;
   sortRules?: SortRule[];
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
@@ -161,7 +163,8 @@ export function DataGrid({
   sortControlsDisabledReason = "Sorting is unavailable for this dataframe.",
   profilesDisabled = false,
   profilesDisabledReason = "Column profiles are unavailable for this dataframe.",
-  profileValueMode = "percent",
+  profileValueMode = "count",
+  onProfileValueModeChange,
   sortRules = metadata.filterModel.sort,
   onPage,
   onSortColumn,
@@ -1447,26 +1450,38 @@ export function DataGrid({
                   page.totalRows
                 ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
         </span>
-        <button
-          type="button"
-          className="headerProfilesButton"
-          aria-pressed={showInsights}
-          disabled={profilesDisabled}
-          title={
-            profilesDisabled
-              ? profilesDisabledReason
-              : metadata.backend === "pyspark"
-                ? "Runs Spark profiling queries for the visible columns."
-                : metadata.backend === "r"
-                  ? "Runs R profiling queries for the visible columns."
-                  : undefined
-          }
-          onClick={() => {
-            if (!profilesDisabled) setShowInsights((current) => !current);
-          }}
-        >
-          {profilesDisabled ? "Profiles unavailable" : "Header profiles"}
-        </button>
+        <div className="gridProfileControls">
+          {!profilesDisabled && (
+            <ProfileValueToggle
+              mode={profileValueMode}
+              onChange={onProfileValueModeChange}
+              ariaLabel="Header profile values"
+              countAriaLabel="Show header profile counts"
+              percentAriaLabel="Show header profile percentages"
+              compact
+            />
+          )}
+          <button
+            type="button"
+            className="headerProfilesButton"
+            aria-pressed={showInsights}
+            disabled={profilesDisabled}
+            title={
+              profilesDisabled
+                ? profilesDisabledReason
+                : metadata.backend === "pyspark"
+                  ? "Runs Spark profiling queries for the visible columns."
+                  : metadata.backend === "r"
+                    ? "Runs R profiling queries for the visible columns."
+                    : undefined
+            }
+            onClick={() => {
+              if (!profilesDisabled) setShowInsights((current) => !current);
+            }}
+          >
+            {profilesDisabled ? "Profiles unavailable" : "Header profiles"}
+          </button>
+        </div>
       </div>
     </div>
   );
