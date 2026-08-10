@@ -348,7 +348,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   }
   assert.match(
     compositor,
-    /nativeCrop\("vscode-notebook-r-picker-detail-dark\.png", "vscode-notebook-r-picker-dark\.png", 1_440, 900/u
+    /nativeCrop\("vscode-notebook-r-operations-detail-dark\.png", "vscode-notebook-r-operations-dark\.png", 1_440, 900/u
   );
   assert.match(
     compositor,
@@ -516,7 +516,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     readme,
     /sidebar keeps operations, dataset health, filters, sorts, and cleaning history beside the grid/u
   );
-  assert.match(readme, /14,285 matching rows/u);
+  assert.match(readme, /showing 14,287 Benelux rows/u);
   assert.match(readme, /automatic delimiter, encoding, quote, and header detection/u);
   assert.match(readme, /^## Open files$/mu);
   assert.match(
@@ -525,11 +525,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /The active filter matches 14,285 rows\. The grid and sidebar show the same predicate and clear controls without\s+changing the source\./u
+    /The active filter matches 14,285 rows\. Column profiles, the grid, and the sidebar show the same filter and Clear\s+action without changing the source\./u
   );
   assert.match(readme, /Open Wrangler stays inactive in Restricted Mode\./u);
   assert.match(readme, /Column search covers the full schema and includes data-type icons/u);
-  assert.match(readme, /Hover or focus any histogram bin to see its range and row count/u);
+  assert.match(readme, /Hover or focus the histogram to see a bin's range, row count, and percentage/u);
   assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
   assert.match(readme, /Choose from 28 operations/u);
   assert.match(readme, /preview shows the changed values and generated Polars code/u);
@@ -578,7 +578,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /\| R \(1\.99 preview\)\s+\|/u);
   assert.match(
     readme,
-    /alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows"/u
+    /alt="Revenue column profile with Counts and % controls and a focused 20,174 to 21,357 bin tooltip showing 398 rows \(0\.4%\)"/u
   );
   assert.match(
     readme,
@@ -735,7 +735,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /The workbench places the grid, column summaries, detailed profiles, and editor controls together/u
   );
   assert.match(gallery, /Operations, dataset health, viewing state, and cleaning history appear beside the grid/u);
-  assert.match(gallery, /Focus a histogram bin to see its interval and row count\./u);
+  assert.match(gallery, /Focus the histogram to see a bin's interval, row count, and percentage\./u);
   assert.match(gallery, /Reorder sort keys, change their direction and null placement, or remove them\./u);
   assert.match(
     gallery,
@@ -753,7 +753,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     gallery,
-    /base `data\.frame`, tibble, and `data\.table` objects in the active IRkernel[\s\S]{0,120}without\s+converting them to Python/u
+    /Operations lists base `data\.frame`, tibble, and `data\.table` objects from the active IRkernel[\s\S]{0,180}without converting them to Python/u
   );
   assert.match(gallery, /For a trusted `\.R`, `\.Rmd`, or `\.qmd` file, \*\*Run R Document in Open Wrangler…\*\*/u);
   assert.match(gallery, /Open Wrangler-managed R process/u);
@@ -781,13 +781,14 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     gallery,
     /alt="[^"]*Quarto[^"]*"[^>]*src="images\/readme\/v1\.2\/gallery\/r-quarto-variable-picker-detail\.png"/u
   );
+  assert.match(gallery, /vscode-notebook-r-operations-detail-dark\.png/u);
   assert.match(gallery, /vscode-notebook-r-code-insertion-detail-dark\.png/u);
   assert.match(gallery, /^## DuckDB nested and temporal values$/mu);
   assert.match(gallery, /^## Editor and theme support$/mu);
   assert.doesNotMatch(gallery, /<td><strong>/u);
   assert.match(
     gallery,
-    /alt="Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows"/u
+    /alt="Revenue column profile with Counts and % controls and a focused 20,174 to 21,357 bin tooltip showing 398 rows \(0\.4%\)"/u
   );
   assert.match(
     gallery,
@@ -813,19 +814,19 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.doesNotMatch(gallery, /images\/readme\/v1\.1/u);
 
-  const rNotebookPicker = readFileSync(
-    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-picker-dark.png")
+  const rNotebookOperations = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-operations-dark.png")
   );
-  assertPng(rNotebookPicker, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(900), false);
-  const rNotebookPickerDetail = readFileSync(
-    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-picker-detail-dark.png")
+  assertPng(rNotebookOperations, publicMediaPhysicalLength(1_440), publicMediaPhysicalLength(900), false);
+  const rNotebookOperationsDetail = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-operations-detail-dark.png")
   );
-  assertPng(rNotebookPickerDetail, publicMediaPhysicalLength(1_040), publicMediaPhysicalLength(380), false);
+  assertPng(rNotebookOperationsDetail, publicMediaPhysicalLength(1_040), publicMediaPhysicalLength(380), false);
   assertExactPixels(
-    PNG.sync.read(rNotebookPickerDetail).data,
-    cropPixels(PNG.sync.read(rNotebookPicker), publicMediaPhysicalRect({ x: 0, y: 0, width: 1_040, height: 380 })),
+    PNG.sync.read(rNotebookOperationsDetail).data,
+    cropPixels(PNG.sync.read(rNotebookOperations), publicMediaPhysicalRect({ x: 0, y: 0, width: 1_040, height: 380 })),
     publicMediaPhysicalLength(1_040),
-    "The R notebook picker detail must remain an exact crop of its accepted source."
+    "The R notebook Operations detail must remain an exact crop of its accepted source."
   );
   const rNotebookWorkbench = readFileSync(
     resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-r-dark.png")

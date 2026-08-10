@@ -2248,11 +2248,16 @@ async function exerciseReleasedRJupyterExtension(
       notebookEditor,
       "The first R toolbar action must retain the exact editor used to execute setup."
     );
-    const restorePickerWorkbench = screenshotOutput
+    const restoreOperationsWorkbench = screenshotOutput
       ? await prepareReleasedRNotebookScreenshotWorkbench(workbench, notebook, notebookEditor)
       : undefined;
     let picker: Locator | undefined;
     try {
+      if (screenshotOutput) {
+        sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
+        operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+        await captureReleasedRJupyterOperations(workbench, sidebar, screenshotOutput);
+      }
       picker = await activateReleasedNotebookVariableAction(workbench, notebook);
       for (const [name, flavor] of [
         ["orders_frame", "data.frame"],
@@ -2276,11 +2281,10 @@ async function exerciseReleasedRJupyterExtension(
           `The real R variable picker must omit unsupported ${name}.`
         );
       }
-      if (screenshotOutput) await captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput);
       await workbench.keyboard.press("Escape");
       await picker.waitFor({ state: "hidden", timeout: 10_000 });
     } finally {
-      await restorePickerWorkbench?.();
+      await restoreOperationsWorkbench?.();
     }
     sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
     operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
@@ -18619,7 +18623,7 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
         return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
       }),
       PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
-      "The R notebook picker scene requires the standard 1440 by 900 editor viewport."
+      "The R notebook Operations scene requires the standard 1440 by 900 editor viewport."
     );
     const requiredCommands = ["notebook.cell.collapseCellInput", "notebook.cell.collapseCellOutput"] as const;
     const commands = new Set(await vscode.commands.getCommands(true));
@@ -18650,7 +18654,7 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
             visible.start <= RELEASED_JUPYTER_R_SHOWCASE_CELL && visible.end > RELEASED_JUPYTER_R_SHOWCASE_CELL
         ),
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-      "the public R notebook cell to be visible before picker capture"
+      "the public R notebook cell to be visible before Operations capture"
     );
     await workbench.waitForTimeout(600);
     await assertReleasedRPrivateNotebookContentHidden(workbench);
@@ -18661,38 +18665,37 @@ async function prepareReleasedRNotebookScreenshotWorkbench(
   }
 }
 
-async function captureReleasedRJupyterVariablePicker(
+async function captureReleasedRJupyterOperations(
   workbench: Page,
-  picker: Locator,
+  sidebar: Locator,
   outputDirectory: string
 ): Promise<void> {
   if (process.platform !== "linux") return;
   assert.equal(path.isAbsolute(outputDirectory), true, "R notebook screenshot output must be one absolute directory.");
+  const operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
   const expected = [
     ["orders_frame", "R · data.frame"],
     ["orders_tibble", "R · tibble"],
-    ["orders_table", "R · data.table"]
+    ["orders_table", "R · data.table"],
+    ["collapse_frame", "R · data.frame"],
+    ["collapse_tibble", "R · tibble"],
+    ["collapse_table", "R · data.table"]
   ] as const;
   for (const [name, typeLabel] of expected) {
-    const row = await releasedJupyterQuickPickRow(picker, name);
-    assert.ok(row, `The R media picker must expose ${name}.`);
+    const row = operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).first();
     await row.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
     const label = (await row.innerText()).replace(/\s+/gu, " ");
-    assert.ok(label.includes(typeLabel), `The R media picker must label ${name} as ${typeLabel}.`);
-    assert.ok(label.includes("Live notebook session"), `The R media picker must mark ${name} as a live session.`);
+    assert.ok(label.includes(typeLabel), `R notebook Operations must label ${name} as ${typeLabel}.`);
   }
-  await assertReleasedNotebookVariablePickerGeometry(
-    picker,
-    expected.map(([name]) => name)
-  );
+  await assertPackagedProductSidebarGeometry(sidebar);
   await assertReleasedRPrivateNotebookContentHidden(workbench);
   mkdirSync(outputDirectory, { recursive: true });
-  recordAcceptanceProgress("jupyter-r:screenshot:variable-picker");
+  recordAcceptanceProgress("jupyter-r:screenshot:operations");
   await captureNotebookWorkbenchScreenshot(
     workbench,
     path.resolve(
       outputDirectory,
-      packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-picker", "dark")
+      packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-r-operations", "dark")
     )
   );
 }
@@ -21219,9 +21222,7 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
         const normalized = text.toLowerCase();
         return (
           !normalized.includes("profiling selected column") &&
-          ["exact statistics", "min", "max", "mean", "median", "distribution"].every((label) =>
-            normalized.includes(label)
-          )
+          ["min", "max", "mean", "median", "distribution", "counts"].every((label) => normalized.includes(label))
         );
       },
       30_000,
@@ -21240,9 +21241,7 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
         const normalized = text.toLowerCase();
         return (
           !normalized.includes("profiling selected column") &&
-          ["exact statistics", "min", "max", "mean", "median", "distribution"].every((label) =>
-            normalized.includes(label)
-          )
+          ["min", "max", "mean", "median", "distribution", "counts"].every((label) => normalized.includes(label))
         );
       },
       30_000,
@@ -21548,18 +21547,29 @@ async function capturePackagedHistogramInteractionScene(
   editor: string
 ): Promise<void> {
   recordAcceptanceProgress("verify:screenshots:file-scenes:histogram-hover");
-  const bins = profiles.locator(".numericHistogramHitTarget");
-  assert.equal(await bins.count(), 20, "The product histogram must expose all twenty interactive bins.");
-  const target = bins.nth(17);
-  const label = await target.getAttribute("aria-label");
-  assert.match(label ?? "", /: [\d,.]+ rows? \([\d.,]+%\)/u);
-  await target.focus();
+  const counts = profiles.getByRole("button", { name: "Counts", exact: true });
+  const percent = profiles.getByRole("button", { name: "%", exact: true });
+  await counts.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  await percent.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  assert.equal(await counts.getAttribute("aria-pressed"), "true");
+  assert.equal(await percent.getAttribute("aria-pressed"), "false");
+  const histogramControl = profiles.locator(".numericHistogramHitTarget");
+  assert.equal(await histogramControl.count(), 1, "The product histogram must expose one full-chart control.");
+  await histogramControl.focus();
+  await histogramControl.press("Home");
+  for (let index = 0; index < 17; index += 1) await histogramControl.press("ArrowRight");
+  const label = await histogramControl.getAttribute("aria-label");
+  assert.equal(
+    label,
+    "20,174-21,357: 398 rows (0.4%); lower bound included, upper bound excluded",
+    "The focused histogram bin must expose its interval, row count, and percentage."
+  );
   const tooltip = profiles.getByRole("tooltip");
   await tooltip.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
   assert.equal((await tooltip.innerText()).trim(), label);
   mkdirSync(outputDirectory, { recursive: true });
   await captureWorkbenchScreenshot(workbench, path.resolve(outputDirectory, `${editor}-histogram-hover-dark.png`));
-  await target.evaluate((element) => {
+  await histogramControl.evaluate((element) => {
     (element as unknown as { blur(): void }).blur();
   });
   await tooltip.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
@@ -21582,44 +21592,59 @@ async function capturePackagedFilterResultScene(
     PACKAGED_PRODUCT_VIEWPORT,
     "The filter-result scene must begin at the standard packaged product viewport."
   );
+  const filterValue = "Benelux";
   const expectedRows = Array.from({ length: PACKAGED_SCREENSHOT_ROW_COUNT }, (_, index) => index).filter(
-    (index) => packagedScreenshotRow(index)[1] === "DACH"
+    (index) => packagedScreenshotRow(index)[1] === filterValue
   ).length;
   assert.ok(expectedRows > 0 && expectedRows < PACKAGED_SCREENSHOT_ROW_COUNT);
+  const marketColumnId = testing.activeSession()?.metadata.schema.find((column) => column.name === "market")?.id;
+  assert.ok(marketColumnId, "The filter-result scene requires the market column identity.");
+  let captureError: unknown;
 
   try {
     let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
     let app = await exactSessionApp(target.frame, sessionId);
     assert.ok(app, "The filter-result scene requires the exact production renderer.");
-    const profilesToggle = app.getByRole("button", { name: "Column profiles and filters" });
-    if ((await profilesToggle.getAttribute("aria-expanded")) !== "true") await profilesToggle.click();
     let drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
+    if (await drawer.isVisible().catch(() => false)) {
+      await drawer.getByRole("button", { name: "Close panel", exact: true }).click();
+      await drawer.waitFor({ state: "hidden", timeout: 10_000 });
+    }
+    const profileCategory = app.getByRole("button", {
+      name: `Filter market to ${filterValue}; ${expectedRows.toLocaleString()} rows`,
+      exact: true
+    });
+    await profileCategory.waitFor({ state: "visible", timeout: 30_000 });
+    await profileCategory.click();
     await drawer.waitFor({ state: "visible", timeout: 10_000 });
-    await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
-    let filterPanel = drawer.locator(".filterSortPanel").first();
-    await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
-    await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "market" });
-    await filterPanel.getByLabel("Predicate operator").selectOption("equals");
-    await filterPanel.getByLabel("equals predicate value").fill("DACH");
-    await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+    assert.equal(await drawer.getByRole("tab", { name: "Column", exact: true }).getAttribute("aria-selected"), "true");
+    await drawer.getByRole("heading", { name: "market", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await drawer.getByText(`Filter: ${filterValue}`, { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await drawer.getByRole("button", { name: "Clear filter for market", exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000
+    });
     await waitFor(
       () => {
         const active = testing.activeSession();
         const filter = active?.viewState.filterModel.filters[0];
         return (
           active?.sessionId === sessionId &&
+          active.viewState.selectedColumnId === marketColumnId &&
           active.metadata.filteredShape.rows === expectedRows &&
           active.viewState.filterModel.filters.length === 1 &&
           active.viewState.filterModel.sort.length === 0 &&
           filter?.column === "market" &&
-          filter.predicates.length === 1 &&
-          filter.predicates[0]?.kind === "predicate" &&
-          filter.predicates[0].operator === "equals" &&
-          filter.predicates[0].value === "DACH"
+          filter.predicates.length === 0 &&
+          filter.valueFilter?.kind === "values" &&
+          filter.valueFilter.selectedValues.length === 1 &&
+          filter.valueFilter.selectedValues[0] === filterValue &&
+          filter.valueFilter.includeNulls === false &&
+          filter.valueFilter.includeNaN === false
         );
       },
       30_000,
-      "the applied DACH filter to publish its exact file-session result"
+      "the Benelux header-profile filter to publish its exact file-session result"
     );
     assert.equal(await testing.synchronizePanel(sessionId), true);
     await testing.updateViewState(sessionId, {
@@ -21630,27 +21655,19 @@ async function capturePackagedFilterResultScene(
 
     const sidebar = await arrangePackagedProductSidebar(workbench, "filter-result");
     const filtersTree = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
-    const nativeFilter = filtersTree.getByRole("treeitem", { name: /^market, 1 condition/u }).first();
+    const nativeFilter = filtersTree.getByRole("treeitem", { name: /^market, 1 selected value/u }).first();
     await nativeFilter.waitFor({ state: "visible", timeout: 10_000 });
 
     target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
     app = await exactSessionApp(target.frame, sessionId);
     assert.ok(app, "The filter-result scene must retain its renderer after arranging the native sidebar.");
     drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
-    await drawer.getByRole("heading", { name: "Filters / Sorts", exact: true }).waitFor({
-      state: "visible",
-      timeout: 10_000
-    });
-    filterPanel = drawer.locator(".filterSortPanel").first();
-    const clearAll = filterPanel.getByRole("button", { name: "Clear all", exact: true });
+    assert.equal(await drawer.getByRole("tab", { name: "Column", exact: true }).getAttribute("aria-selected"), "true");
+    await drawer.getByRole("heading", { name: "market", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await drawer.getByText(`Filter: ${filterValue}`, { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     const clearMarket = drawer.getByRole("button", { name: "Clear filter for market", exact: true });
-    const removeDach = drawer.getByRole("button", {
-      name: 'Remove equals "DACH" filter from market',
-      exact: true
-    });
-    for (const control of [clearAll, clearMarket, removeDach]) {
-      await control.waitFor({ state: "visible", timeout: 10_000 });
-    }
+    await clearMarket.waitFor({ state: "visible", timeout: 10_000 });
+    await drawer.getByRole("button", { name: "Counts", exact: true }).waitFor({ state: "visible", timeout: 30_000 });
     const visibleRows = app.getByRole("status", { name: "Visible rows" });
     await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
     assert.match(
@@ -21659,7 +21676,7 @@ async function capturePackagedFilterResultScene(
     );
     await app
       .locator('td[data-grid-row="0"][data-grid-column="1"]')
-      .filter({ hasText: "DACH" })
+      .filter({ hasText: filterValue })
       .waitFor({ state: "visible", timeout: 10_000 });
     await clearPackagedProductSceneTransientUi(workbench);
     await alignPackagedSceneRowBoundary(workbench, app);
@@ -21669,52 +21686,76 @@ async function capturePackagedFilterResultScene(
       workbench,
       path.resolve(outputDirectory, packagedScreenshotFileName(editor, "filter-result", "dark"))
     );
-  } finally {
-    try {
-      const active = testing.activeSession();
-      if (active?.sessionId === sessionId && active.viewState.filterModel.filters.length > 0) {
-        const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
-        const app = await exactSessionApp(target.frame, sessionId);
-        assert.ok(app, "Filter-result cleanup requires the exact production renderer.");
-        const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
-        if (!(await drawer.isVisible().catch(() => false))) {
-          await app.getByRole("button", { name: "Column profiles and filters" }).click();
-          await drawer.waitFor({ state: "visible", timeout: 10_000 });
-        }
-        await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
-        await drawer
-          .locator(".filterSortPanel")
-          .first()
-          .getByRole("button", { name: "Clear all", exact: true })
-          .click();
-        await waitFor(
-          () => {
-            const current = testing.activeSession();
-            return (
-              current?.sessionId === sessionId &&
-              current.viewState.filterModel.filters.length === 0 &&
-              current.viewState.filterModel.sort.length === 0 &&
-              current.metadata.filteredShape.rows === PACKAGED_SCREENSHOT_ROW_COUNT
-            );
-          },
-          30_000,
-          "the filter-result scene to restore the complete unfiltered file session"
+    await clearMarket.click();
+    await waitFor(
+      () => {
+        const current = testing.activeSession();
+        return (
+          current?.sessionId === sessionId &&
+          current.viewState.filterModel.filters.length === 0 &&
+          current.viewState.filterModel.sort.length === 0 &&
+          current.metadata.filteredShape.rows === PACKAGED_SCREENSHOT_ROW_COUNT
         );
-        assert.equal(await testing.synchronizePanel(sessionId), true);
-        await drawer.getByRole("tab", { name: "Column", exact: true }).click();
-      }
-    } finally {
-      await workbench.setViewportSize(originalViewport);
-      assert.deepEqual(
-        await workbench.evaluate(() => {
-          const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
-          return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
-        }),
-        PACKAGED_PRODUCT_VIEWPORT,
-        "The filter-result scene must restore the standard packaged product viewport."
-      );
-    }
+      },
+      30_000,
+      "the Column-profile Clear action to restore the complete file session"
+    );
+    assert.equal(await testing.synchronizePanel(sessionId), true);
+  } catch (error) {
+    captureError = error;
   }
+
+  let cleanupError: unknown;
+  try {
+    const active = testing.activeSession();
+    if (active?.sessionId === sessionId && active.viewState.filterModel.filters.length > 0) {
+      const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+      const app = await exactSessionApp(target.frame, sessionId);
+      assert.ok(app, "Filter-result cleanup requires the exact production renderer.");
+      const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
+      if (!(await drawer.isVisible().catch(() => false))) {
+        await app.getByRole("button", { name: "Column profiles and filters" }).click();
+        await drawer.waitFor({ state: "visible", timeout: 10_000 });
+      }
+      await drawer.getByRole("tab", { name: "Filters / Sorts", exact: true }).click();
+      await drawer.getByRole("button", { name: "Clear all", exact: true }).click();
+      await waitFor(
+        () => {
+          const current = testing.activeSession();
+          return (
+            current?.sessionId === sessionId &&
+            current.viewState.filterModel.filters.length === 0 &&
+            current.viewState.filterModel.sort.length === 0 &&
+            current.metadata.filteredShape.rows === PACKAGED_SCREENSHOT_ROW_COUNT
+          );
+        },
+        30_000,
+        "filter-result emergency cleanup to restore the complete file session"
+      );
+      assert.equal(await testing.synchronizePanel(sessionId), true);
+    }
+  } catch (error) {
+    cleanupError = error;
+  }
+
+  let viewportError: unknown;
+  try {
+    await workbench.setViewportSize(originalViewport);
+    assert.deepEqual(
+      await workbench.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_PRODUCT_VIEWPORT,
+      "The filter-result scene must restore the standard packaged product viewport."
+    );
+  } catch (error) {
+    viewportError = error;
+  }
+
+  const errors = [captureError, cleanupError, viewportError].filter((error) => error !== undefined);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "The filter-result capture or its cleanup failed.");
 }
 
 async function alignPackagedSceneRowBoundary(
@@ -21868,9 +21909,7 @@ async function assertPackagedFilterResultGeometry(app: Locator, sidebar: Locator
       );
     });
     const controls = Array.from(
-      drawer.querySelectorAll(
-        '.panelHeader button, .activeFilterGroup button, .rulePillButton, select[aria-label="Filter column"], select[aria-label="Predicate operator"]'
-      )
+      drawer.querySelectorAll(".panelHeader button, .profileFilterStatus button, .distributionValueControls button")
     ).filter((control) => control.getBoundingClientRect().height > 0);
     return {
       layoutOverflow: layout.scrollWidth - layout.clientWidth,
@@ -21909,14 +21948,14 @@ async function assertPackagedFilterResultGeometry(app: Locator, sidebar: Locator
   });
   assert.ok(geometry.layoutOverflow <= 1, "The filter-result workspace must not overflow horizontally.");
   assert.ok(geometry.drawerOverflow <= 1, "The filter-result editor must not overflow horizontally.");
-  for (const label of ["Filters / Sorts", "Active filters", "market", 'equals "DACH"']) {
+  for (const label of ["Selected column", "market", "Filter: Benelux", "Counts", "%", "Top values"]) {
     assert.ok(geometry.drawerText.includes(label), `The filter-result editor must visibly include ${label}.`);
   }
   assert.deepEqual(geometry.partialHeaders, [], "The filter-result grid must show only complete columns.");
   assert.deepEqual(geometry.clippedTitles, [], "The filter-result grid must not clip visible column names.");
   assert.equal(geometry.partialRows, 0, "The filter-result grid must show only complete visible rows.");
   assert.deepEqual(geometry.clippedCells, [], "The filter-result grid must not clip visible cell values.");
-  assert.deepEqual(geometry.clippedControls, [], "The filter-result editor must not clip clear/remove controls.");
+  assert.deepEqual(geometry.clippedControls, [], "The filter-result editor must not clip profile controls.");
 }
 
 async function capturePackagedSortPriorityScene(
@@ -23909,7 +23948,7 @@ async function assertPackagedExploreScene(
   assert.deepEqual(measurement.partialHeaders, []);
   assert.deepEqual(measurement.clippedTitles, []);
   assert.deepEqual(measurement.visibleColumns, ["order_id", "market", "revenue"]);
-  for (const label of ["Min", "Max", "Mean", "Median", "Distribution"]) {
+  for (const label of ["Min", "Max", "Mean", "Median", "Distribution", "Counts"]) {
     assert.ok(measurement.drawerText.includes(label), `Explore Column profiles must show ${label}.`);
   }
   assert.equal(
