@@ -407,7 +407,10 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
     await probeJupyterAcceptanceRKernel(python, prepared, {
       async runCommand(input, options) {
         invocation = { input, options };
-        appendFileSync(prepared.kernelBootstrapStagePath, "entered\nlibrary-ready\nirkernel-loaded\nmain-entered\n");
+        appendFileSync(
+          prepared.kernelBootstrapStagePath,
+          "entered\r\nlibrary-ready\r\nirkernel-loaded\r\nmain-entered\r\n"
+        );
         return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\r\n", stderr: "" };
       }
     });
@@ -441,16 +444,19 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
     assert.equal(input.environment.JUPYTER_PATH, prepared.jupyterEnvironment.path);
     assert.equal(input.environment.OPEN_WRANGLER_TEST_RSCRIPT, rscript);
     assert.equal(jupyterAcceptanceRKernelBootstrapStage(prepared), "not-entered");
-    appendFileSync(prepared.kernelBootstrapStagePath, "entered\nlibrary-ready\n");
+    appendFileSync(prepared.kernelBootstrapStagePath, "entered\r\nlibrary-ready\r\n");
     assert.equal(jupyterAcceptanceRKernelBootstrapStage(prepared), "library-ready");
     await probeJupyterAcceptanceRKernel(python, prepared, {
       async runCommand() {
-        appendFileSync(prepared.kernelBootstrapStagePath, "entered\nlibrary-ready\nirkernel-loaded\nmain-entered\n");
+        appendFileSync(
+          prepared.kernelBootstrapStagePath,
+          "entered\r\nlibrary-ready\r\nirkernel-loaded\r\nmain-entered\r\n"
+        );
         return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\r\n", stderr: "" };
       }
     });
     assert.equal(jupyterAcceptanceRKernelBootstrapStage(prepared), "not-entered");
-    appendFileSync(prepared.kernelBootstrapStagePath, "entered\nlibrary-ready\nirkernel-loaded\n");
+    appendFileSync(prepared.kernelBootstrapStagePath, "entered\r\nlibrary-ready\r\nirkernel-loaded\r\n");
     assert.equal(jupyterAcceptanceRKernelBootstrapStage(prepared), "irkernel-loaded");
     const phaseError = new Error("editor failed");
     assert.equal(appendJupyterAcceptanceRKernelBootstrapStage(phaseError, "irkernel-loaded"), phaseError);
