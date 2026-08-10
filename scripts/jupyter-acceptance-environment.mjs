@@ -14,7 +14,11 @@ import {
   writeSync
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
+import {
+  createEditorAcceptanceEnvironment,
+  readBoundedAcceptanceText,
+  runBoundedEditorCommand
+} from "./editor-acceptance.mjs";
 import {
   assertEditorAcceptancePrivateRootReceipt,
   createEditorAcceptancePrivateRootReceipt
@@ -84,6 +88,15 @@ const R_ACCEPTANCE_EXPECTED_VERSIONS = Object.entries(R_ACCEPTANCE_PACKAGE_VERSI
   .join(", ");
 const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
 const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
+const R_ACCEPTANCE_BOOTSTRAP_STAGES = Object.freeze([
+  "entered",
+  "library-ready",
+  "irkernel-loaded",
+  "main-entered",
+  "main-error",
+  "main-returned"
+]);
+const rAcceptanceBootstrapReceipts = new WeakMap();
 const R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS = 300_000;
 const R_ACCEPTANCE_KERNEL_PROBE = String.raw`
 import subprocess, sys, time
@@ -119,15 +132,30 @@ finally:
 sys.stdout.write("OPEN_WRANGLER_R_KERNEL_" + ("READY" if result == "ready" else "FAILED:" + (result or stage)) + "\n")
 `.trimStart();
 
-function rAcceptanceKernelBootstrap(libraryDir) {
+function rAcceptanceKernelBootstrap(libraryDir, stagePath) {
   const libraryLiteral = JSON.stringify(libraryDir.replaceAll("\\", "/"));
+  const stageLiteral = JSON.stringify(stagePath.replaceAll("\\", "/"));
   return `local({
+  .ow_stage_path <- ${stageLiteral}
+  .ow_stage <- function(value) cat(value, "\\n", file = .ow_stage_path, append = TRUE, sep = "")
+  .ow_stage("entered")
   .ow_library <- normalizePath(${libraryLiteral}, winslash = "/", mustWork = TRUE)
   .libPaths(unique(c(.ow_library, .libPaths())))
   if (!identical(normalizePath(.libPaths()[[1L]], winslash = "/", mustWork = TRUE), .ow_library)) {
     stop("Open Wrangler R acceptance library is not first.")
   }
-  IRkernel::main()
+  .ow_stage("library-ready")
+  .ow_namespace <- loadNamespace("IRkernel", lib.loc = .ow_library)
+  .ow_stage("irkernel-loaded")
+  .ow_stage("main-entered")
+  tryCatch(
+    get("main", envir = .ow_namespace, inherits = FALSE)(),
+    error = function(error) {
+      .ow_stage("main-error")
+      stop(error)
+    }
+  )
+  .ow_stage("main-returned")
 })
 `;
 }
@@ -530,9 +558,21 @@ export async function prepareJupyterAcceptanceREnvironment(
   const runtimeDir = resolve(root, "r");
   const configDir = resolve(root, "c");
   const pathDir = resolve(root, "p");
+  const kernelProbeWorkingDirectory = resolve(root, "Notebook workspace");
   const kernelBootstrapPath = resolve(root, "kernel-bootstrap.R");
+  const kernelBootstrapStagePath = resolve(root, "kernel-bootstrap-stage");
   const kernelDirectory = resolve(dataDir, "kernels", R_ACCEPTANCE_KERNEL_ID);
-  for (const path of [libraryDir, homeDir, tempDir, dataDir, runtimeDir, configDir, pathDir, kernelDirectory]) {
+  for (const path of [
+    libraryDir,
+    homeDir,
+    tempDir,
+    dataDir,
+    runtimeDir,
+    configDir,
+    pathDir,
+    kernelProbeWorkingDirectory,
+    kernelDirectory
+  ]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
   }
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
@@ -542,7 +582,9 @@ export async function prepareJupyterAcceptanceREnvironment(
     libraryDir,
     tempDir
   });
-  writeFileSync(kernelBootstrapPath, rAcceptanceKernelBootstrap(libraryDir), {
+  writeFileSync(kernelBootstrapStagePath, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
+  const kernelBootstrapStageIdentity = ownedRBootstrapStageIdentity(kernelBootstrapStagePath);
+  writeFileSync(kernelBootstrapPath, rAcceptanceKernelBootstrap(libraryDir, kernelBootstrapStagePath), {
     encoding: "utf8",
     flag: "wx",
     mode: 0o600
@@ -600,7 +642,9 @@ export async function prepareJupyterAcceptanceREnvironment(
     kernelId: R_ACCEPTANCE_KERNEL_ID,
     kernelDisplayName: R_ACCEPTANCE_KERNEL_DISPLAY_NAME,
     rExecutable,
+    kernelProbeWorkingDirectory,
     kernelBootstrapPath,
+    kernelBootstrapStagePath,
     kernelSpecPath,
     packages: R_ACCEPTANCE_PACKAGES,
     packageVersions: R_ACCEPTANCE_PACKAGE_VERSIONS,
@@ -618,6 +662,12 @@ export async function prepareJupyterAcceptanceREnvironment(
     dependencyProbe,
     dependencyInstall
   });
+  rAcceptanceBootstrapReceipts.set(prepared, {
+    directoryReceipt,
+    stagePath: kernelBootstrapStagePath,
+    stageIdentity: kernelBootstrapStageIdentity,
+    readinessTokens: undefined
+  });
   return prepared;
 }
 
@@ -634,6 +684,8 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
     !isAbsolute(prepared.kernelSpecPath) ||
     typeof prepared.kernelBootstrapPath !== "string" ||
     !isAbsolute(prepared.kernelBootstrapPath) ||
+    typeof prepared.kernelProbeWorkingDirectory !== "string" ||
+    !isAbsolute(prepared.kernelProbeWorkingDirectory) ||
     typeof prepared.jupyterEnvironment?.runtimeDir !== "string" ||
     !isAbsolute(prepared.jupyterEnvironment.runtimeDir) ||
     typeof prepared.dependencyProbe?.input?.environment !== "object" ||
@@ -641,6 +693,7 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
   ) {
     throw new Error("Released-Jupyter R kernel readiness requires one exact prepared private environment.");
   }
+  const receipt = rAcceptanceBootstrapReceipt(prepared);
 
   const bootstrapMetadata = lstatSync(prepared.kernelBootstrapPath, { bigint: true });
   if (!bootstrapMetadata.isFile() || bootstrapMetadata.isSymbolicLink() || bootstrapMetadata.nlink !== 1n) {
@@ -657,7 +710,19 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
   ) {
     throw new Error("Released-Jupyter R kernel bootstrap must stay inside its private environment.");
   }
-  const homeDir = resolve(prepared.root, "h");
+  const probeWorkingDirectoryMetadata = lstatSync(prepared.kernelProbeWorkingDirectory, { bigint: true });
+  if (!probeWorkingDirectoryMetadata.isDirectory() || probeWorkingDirectoryMetadata.isSymbolicLink()) {
+    throw new Error("Released-Jupyter R kernel readiness requires one owned probe workspace.");
+  }
+  const probeEnvironment = Object.freeze({
+    ...prepared.dependencyProbe.input.environment,
+    JUPYTER_DATA_DIR: prepared.jupyterEnvironment.dataDir,
+    JUPYTER_RUNTIME_DIR: prepared.jupyterEnvironment.runtimeDir,
+    JUPYTER_CONFIG_DIR: prepared.jupyterEnvironment.configDir,
+    JUPYTER_PATH: prepared.jupyterEnvironment.path,
+    OPEN_WRANGLER_TEST_RSCRIPT: prepared.jupyterEnvironment.rscriptPath,
+    R_LIBS_USER: prepared.jupyterEnvironment.rLibraryDir
+  });
   const result = await runCommand(
     {
       executable: python,
@@ -668,9 +733,9 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
         prepared.kernelId,
         dirname(dirname(prepared.kernelSpecPath)),
         resolve(prepared.jupyterEnvironment.runtimeDir, "kernel-readiness.json"),
-        homeDir
+        prepared.kernelProbeWorkingDirectory
       ],
-      environment: prepared.dependencyProbe.input.environment,
+      environment: probeEnvironment,
       label: "Released-Jupyter private R kernel readiness probe"
     },
     { timeoutMs: 30_000, maxOutputBytes: 1_024 }
@@ -678,10 +743,110 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
   if (result?.stderr !== "") {
     throw new Error("Released-Jupyter R kernel readiness probe returned a malformed fixed result.");
   }
-  if (/^OPEN_WRANGLER_R_KERNEL_READY\r?\n$/u.test(result.stdout)) return;
+  if (/^OPEN_WRANGLER_R_KERNEL_READY\r?\n$/u.test(result.stdout)) {
+    const readinessTokens = readRBootstrapTokens(receipt);
+    const requiredPrefix = ["entered", "library-ready", "irkernel-loaded", "main-entered"];
+    if (requiredPrefix.some((token, index) => readinessTokens[index] !== token)) {
+      throw new Error("Released-Jupyter R kernel readiness did not reach the private IRkernel bootstrap.");
+    }
+    receipt.readinessTokens = readinessTokens;
+    return;
+  }
   const failure = /^OPEN_WRANGLER_R_KERNEL_FAILED:(start|ready|execute|cleanup)\r?\n$/u.exec(result.stdout);
   if (failure) throw new Error(`Released-Jupyter R kernel readiness failed during ${failure[1]}.`);
   throw new Error("Released-Jupyter R kernel readiness probe returned a malformed fixed result.");
+}
+
+export function jupyterAcceptanceRKernelBootstrapStage(prepared) {
+  const receipt = rAcceptanceBootstrapReceipt(prepared);
+  if (!Array.isArray(receipt.readinessTokens)) {
+    throw new Error("Released-Jupyter R bootstrap stage requires a completed readiness baseline.");
+  }
+  const tokens = readRBootstrapTokens(receipt);
+  if (
+    tokens.length < receipt.readinessTokens.length ||
+    receipt.readinessTokens.some((token, index) => tokens[index] !== token)
+  ) {
+    throw new Error("Released-Jupyter R bootstrap stage no longer matches its readiness baseline.");
+  }
+  const editorTokens = tokens.slice(receipt.readinessTokens.length);
+  return editorTokens.length === 0 ? "not-entered" : editorTokens.at(-1);
+}
+
+export function appendJupyterAcceptanceRKernelBootstrapStage(error, stage) {
+  if (stage !== "not-entered" && !R_ACCEPTANCE_BOOTSTRAP_STAGES.includes(stage)) {
+    throw new Error("Released-Jupyter R bootstrap received an invalid fixed stage.");
+  }
+  const suffix = `Released-Jupyter R kernel bootstrap: ${stage}.`;
+  if (error instanceof Error) {
+    try {
+      error.message = `${error.message}\n${suffix}`;
+      return error;
+    } catch {
+      // Keep the original classified failure as a leaf if it cannot be annotated in place.
+    }
+  }
+  return new AggregateError([error], suffix);
+}
+
+function rAcceptanceBootstrapReceipt(prepared) {
+  const receipt = rAcceptanceBootstrapReceipts.get(prepared);
+  if (!receipt) throw new Error("Released-Jupyter R bootstrap requires its exact prepared environment.");
+  assertEditorAcceptancePrivateRootReceipt(receipt.directoryReceipt);
+  assertOwnedRBootstrapStageIdentity(receipt.stagePath, receipt.stageIdentity);
+  return receipt;
+}
+
+function readRBootstrapTokens(receipt) {
+  const snapshot = assertOwnedRBootstrapStageIdentity(receipt.stagePath, receipt.stageIdentity);
+  const contents = readBoundedAcceptanceText(receipt.stagePath, 1_024, "Released-Jupyter R bootstrap stage", {
+    expectedPathSnapshot: snapshot
+  });
+  if (contents.length === 0) return [];
+  if (!contents.endsWith("\n") || contents.includes("\r")) {
+    throw new Error("Released-Jupyter R bootstrap stage contained an invalid fixed value.");
+  }
+  const tokens = contents.slice(0, -1).split("\n");
+  let previous;
+  for (const token of tokens) {
+    if (!R_ACCEPTANCE_BOOTSTRAP_STAGES.includes(token)) {
+      throw new Error("Released-Jupyter R bootstrap stage contained an invalid fixed value.");
+    }
+    if (token === "entered") {
+      previous = token;
+      continue;
+    }
+    const valid =
+      (token === "library-ready" && previous === "entered") ||
+      (token === "irkernel-loaded" && previous === "library-ready") ||
+      (token === "main-entered" && previous === "irkernel-loaded") ||
+      ((token === "main-error" || token === "main-returned") && previous === "main-entered");
+    if (!valid) throw new Error("Released-Jupyter R bootstrap stage contained an invalid fixed sequence.");
+    previous = token;
+  }
+  return tokens;
+}
+
+function ownedRBootstrapStageIdentity(path) {
+  const metadata = lstatSync(path, { bigint: true });
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1n) {
+    throw new Error("Released-Jupyter R bootstrap stage must be one owned regular file.");
+  }
+  return Object.freeze({ dev: metadata.dev, ino: metadata.ino });
+}
+
+function assertOwnedRBootstrapStageIdentity(path, expected) {
+  const metadata = lstatSync(path, { bigint: true });
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    metadata.dev !== expected.dev ||
+    metadata.ino !== expected.ino
+  ) {
+    throw new Error("Released-Jupyter R bootstrap stage lost its owned file identity.");
+  }
+  return metadata;
 }
 
 async function resolveJupyterAcceptanceRExecutable(rscript, { environment, runCommand }) {
