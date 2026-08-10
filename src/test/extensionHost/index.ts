@@ -14096,6 +14096,7 @@ async function exercisePackagedPlatformSmoke(
     active.metadata.sessionId,
     "platform-smoke:sort-journey"
   );
+  await exercisePackagedBackendSwitchJourney(testing, page, active.metadata.sessionId, fixture, sourceBytes);
   await exercisePackagedFirstUseInteractionJourney(testing, page, active.metadata.sessionId, fixture, sourceBytes);
 
   recordAcceptanceProgress("platform-smoke:theme");
@@ -14509,6 +14510,137 @@ async function focusAndSynchronizeExactSessionPanel(
     "The focused import-reconfigured renderer must acknowledge one authoritative synchronization."
   );
   return waitForExactSessionWebviewButton(workbench, testing, expectedSessionId, "Import options", true);
+}
+
+async function exercisePackagedBackendSwitchJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  fixture: vscode.Uri,
+  sourceBytes: Uint8Array
+): Promise<void> {
+  recordAcceptanceProgress("platform-smoke:backend-switch");
+  const initial = testing.activeSession();
+  assert.equal(initial?.sessionId, sessionId, "The backend switch must start from the active file session.");
+  assert.ok(initial, "The backend switch requires one active file session.");
+  assert.equal(initial.metadata.source.kind, "file");
+  assert.equal(initial.metadata.backend, "polars");
+  const initialRevision = initial.metadata.revision;
+  const initialSource = initial.metadata.source;
+  const selectedColumn = columnReference(initial.metadata, "market");
+  await testing.updateViewState(sessionId, {
+    ...initial.viewState,
+    columnWidths: {
+      ...initial.viewState.columnWidths,
+      [selectedColumn.id]: 287
+    },
+    selectedColumnId: selectedColumn.id,
+    viewport: { firstVisibleRow: 37, scrollLeft: 113 }
+  });
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The backend-switch journey must publish its non-default view before changing engines."
+  );
+  const expectedViewState = testing.activeSession()?.viewState;
+  assert.ok(expectedViewState, "The backend-switch journey must retain its confirmed view state.");
+
+  const chooseBackend = async (current: "Polars" | "Pandas", next: "Polars" | "Pandas"): Promise<void> => {
+    const before = testing.activeSession();
+    assert.equal(before?.sessionId, sessionId);
+    assert.ok(before, `Switching from ${current} requires the active file session.`);
+    const app = await synchronizedSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      `The ${current} renderer must acknowledge the current session before its engine badge is clicked.`
+    );
+    const badge = app.getByRole("button", {
+      name: `Change dataframe engine. Current engine: ${current}`,
+      exact: true
+    });
+    await badge.waitFor({ state: "visible", timeout: 10_000 });
+    await badge.click();
+
+    const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Dataframe engine" }).last();
+    await picker.waitFor({ state: "visible", timeout: 10_000 });
+    const labels = picker.locator(".quick-input-list [role='option'] .label-name:visible");
+    const matchingLabels = labels.filter({ hasText: new RegExp(`^${next}$`, "u") });
+    assert.equal(await matchingLabels.count(), 1, `The engine picker must expose one exact ${next} option.`);
+    await matchingLabels.first().click();
+    await picker.waitFor({ state: "hidden", timeout: 10_000 });
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.backend === next.toLowerCase() &&
+          active.metadata.revision > before.metadata.revision
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      `the file session to switch from ${current} to ${next}`
+    );
+    assert.equal(
+      await testing.ensurePanelSynchronized(sessionId, SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS),
+      true,
+      `The ${next} renderer must acknowledge the switched file session.`
+    );
+
+    const switched = testing.activeSession();
+    assert.equal(switched?.sessionId, sessionId, "Changing engines must retain the public session ID.");
+    assert.ok(switched, `The ${next} file session must remain active.`);
+    assert.equal(switched.metadata.source.uri, fixture.toString());
+    assert.deepEqual(switched.metadata.source, initialSource);
+    assert.deepEqual(switched.viewState, expectedViewState);
+    assertExactBytes(
+      await vscode.workspace.fs.readFile(fixture),
+      sourceBytes,
+      `Switching the file session to ${next} must not modify its source.`
+    );
+    const switchedApp = await exactSessionApp(
+      (await waitForOpenWranglerGridTarget(workbench, testing, sessionId)).frame,
+      sessionId
+    );
+    assert.ok(switchedApp, `The ${next} switch must leave one exact live renderer.`);
+    await switchedApp
+      .getByRole("button", { name: `Change dataframe engine. Current engine: ${next}`, exact: true })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    const selectedHeader = switchedApp.locator('th[data-column="market"]');
+    const restoredRow = switchedApp.locator('td[data-grid-row="37"][data-grid-column="1"]');
+    await selectedHeader.waitFor({ state: "visible", timeout: 10_000 });
+    await restoredRow.waitFor({ state: "visible", timeout: 10_000 });
+    const headerBox = await selectedHeader.boundingBox();
+    const rowBox = await restoredRow.locator("xpath=ancestor::tr[1]").boundingBox();
+    assert.ok(headerBox, `The ${next} selected header must have rendered geometry.`);
+    assert.ok(rowBox, `The ${next} restored row must have rendered geometry.`);
+    const scroller = switchedApp.locator('[data-testid="data-grid-scroller"]');
+    const renderedView = await scroller.evaluate((element) => ({
+      scrollLeft: Number(Reflect.get(element, "scrollLeft")),
+      scrollTop: Number(Reflect.get(element, "scrollTop"))
+    }));
+    const headerSelected = await selectedHeader.getAttribute("aria-selected");
+    assert.equal(headerSelected, "true", `${next} must render market as the selected column.`);
+    assert.ok(
+      Math.abs(headerBox.width - 287) <= 1.5,
+      `${next} must restore the 287px market width; rendered ${headerBox.width}px.`
+    );
+    assert.ok(
+      Math.abs(renderedView.scrollLeft - 113) <= 1,
+      `${next} must restore horizontal scroll 113; rendered ${renderedView.scrollLeft}.`
+    );
+    assert.ok(rowBox.height > 0, `${next} must render a measurable restored row.`);
+    assert.ok(
+      Math.abs(renderedView.scrollTop / rowBox.height - 37) <= 0.1,
+      `${next} must restore row 37 as the first visible row; rendered scroll ${renderedView.scrollTop}.`
+    );
+  };
+
+  await chooseBackend("Polars", "Pandas");
+  await chooseBackend("Pandas", "Polars");
+  const restored = testing.activeSession();
+  assert.equal(restored?.metadata.backend, "polars");
+  assert.ok((restored?.metadata.revision ?? initialRevision) > initialRevision);
 }
 
 async function exercisePrimarySortJourney(
