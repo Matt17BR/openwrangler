@@ -86,6 +86,21 @@ type PythonExecutedCellResult =
   | { readonly kind: "timedOut" }
   | { readonly kind: "stale" };
 
+type PythonCellAttemptResult =
+  | { readonly kind: "published"; readonly notebook: vscode.NotebookDocument; readonly cell: vscode.NotebookCell }
+  | { readonly kind: "needsKernel"; readonly notebook: vscode.NotebookDocument }
+  | { readonly kind: "dispatchRejected" }
+  | { readonly kind: "dispatchTimedOut" }
+  | { readonly kind: "missing" }
+  | { readonly kind: "ambiguous" }
+  | { readonly kind: "stale" };
+
+type PythonCellDispatchOutcome =
+  | { readonly kind: "fulfilled" }
+  | { readonly kind: "rejected" }
+  | { readonly kind: "timedOut" }
+  | { readonly kind: "cancelled" };
+
 /**
  * Registers the Python-file/Interactive Window actions and keeps a small cache
  * for the one notebook that is currently active. It does not poll kernels and
@@ -118,6 +133,7 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
   private readonly variablesByHandle = new Map<string, CachedVariable>();
   private refreshRunning = false;
   private refreshAgain = false;
+  private runCellRunning = false;
   private disposed = false;
 
   readonly onDidChangeVariables = this.changeEmitter.event;
@@ -150,6 +166,19 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
   }
 
   async runCellAndOpenVariable(): Promise<void> {
+    if (this.runCellRunning) {
+      void vscode.window.showInformationMessage("Open Wrangler is already running this Python cell.");
+      return;
+    }
+    this.runCellRunning = true;
+    try {
+      await this.performRunCellAndOpenVariable();
+    } finally {
+      this.runCellRunning = false;
+    }
+  }
+
+  private async performRunCellAndOpenVariable(): Promise<void> {
     const origin = capturePythonCellOrigin();
     if (!origin) {
       void vscode.window.showInformationMessage("Place the cursor in a Python code cell marked # %%, then try again.");
@@ -166,51 +195,73 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
         (notebook) => notebook.notebookType === "interactive" && !notebook.isClosed
       )
     );
+    const operationDeadline = Date.now() + PYTHON_CELL_EXECUTION_TIMEOUT_MS;
+    const observer = new PythonCellDispatchObserver(origin, beforeCells, beforeInteractiveWindows);
+    let attempt: PythonCellAttemptResult;
     try {
-      await vscode.commands.executeCommand("jupyter.runcurrentcell");
-    } catch {
+      attempt = await runPythonCellAttempt(observer, operationDeadline, true);
+      if (attempt.kind === "needsKernel") {
+        const restored = await selectKernelAndRestorePythonOrigin(attempt.notebook, origin, operationDeadline);
+        if (!restored) return;
+
+        const afterSelection = observer.snapshot();
+        if (afterSelection.kind === "found") {
+          attempt = { kind: "published", notebook: afterSelection.notebook, cell: afterSelection.cell };
+        } else if (afterSelection.kind === "ambiguous") {
+          attempt = afterSelection;
+        } else if (!isExactPythonOrigin(origin)) {
+          attempt = { kind: "stale" };
+        } else {
+          const blankWindow = observer.blankWindow();
+          if (blankWindow.kind !== "found" || blankWindow.notebook !== attempt.notebook) {
+            attempt = blankWindow.kind === "ambiguous" ? blankWindow : { kind: "missing" };
+          } else {
+            attempt = await runPythonCellAttempt(observer, operationDeadline, false);
+          }
+        }
+      }
+    } finally {
+      observer.dispose();
+    }
+
+    if (attempt.kind === "dispatchRejected") {
       void vscode.window.showWarningMessage(
-        "The Jupyter extension could not run this Python cell. Check its kernel and try again."
+        "Jupyter didn't confirm whether this cell started. Check the Interactive Window before running it again."
       );
       return;
     }
-
-    if (!isExactPythonOrigin(origin)) {
+    if (attempt.kind === "dispatchTimedOut") {
+      void vscode.window.showWarningMessage(
+        "Jupyter didn't confirm whether this cell started. Check the Interactive Window before running it again."
+      );
+      return;
+    }
+    if (attempt.kind === "stale") {
       void vscode.window.showWarningMessage(
         "The Python file changed or closed while its cell was running. Run the cell again before opening its dataframe."
       );
       return;
     }
-
-    if (newlyExecutedCell(origin, beforeCells).kind === "missing") {
-      const blankWindow = newlyOpenedBlankInteractiveWindow(beforeInteractiveWindows);
-      if (blankWindow.kind === "ambiguous") {
-        void vscode.window.showWarningMessage(
-          "Jupyter opened more than one Interactive Window. Close the extra windows, then try again."
-        );
-        return;
-      }
-      if (blankWindow.kind === "found") {
-        const restored = await selectKernelAndRestorePythonOrigin(blankWindow.notebook, origin);
-        if (!restored) return;
-        try {
-          await vscode.commands.executeCommand("jupyter.runcurrentcell");
-        } catch {
-          void vscode.window.showWarningMessage(
-            "The Jupyter extension could not run this Python cell after kernel selection. Check its kernel and try again."
-          );
-          return;
-        }
-        if (!isExactPythonOrigin(origin)) {
-          void vscode.window.showWarningMessage(
-            "The Python file changed or closed while its cell was running. Run the cell again before opening its dataframe."
-          );
-          return;
-        }
-      }
+    if (attempt.kind === "ambiguous") {
+      void vscode.window.showWarningMessage(
+        "Jupyter changed the Interactive Window or produced more than one matching cell. Check the window before trying again."
+      );
+      return;
+    }
+    if (attempt.kind === "missing" || attempt.kind === "needsKernel") {
+      void vscode.window.showWarningMessage(
+        "The cell did not produce an Interactive Window execution. Check the Jupyter output and try again."
+      );
+      return;
     }
 
-    const executed = await waitForNewlyExecutedCell(origin, beforeCells);
+    const executed = await waitForPinnedCellCompletion(
+      origin,
+      beforeCells,
+      attempt.notebook,
+      attempt.cell,
+      operationDeadline
+    );
     if (executed.kind === "stale") {
       void vscode.window.showWarningMessage(
         "The Python file changed or closed while its cell was running. Run the cell again before opening its dataframe."
@@ -219,7 +270,7 @@ class PythonInteractiveCoordinator implements PythonLiveVariableProvider {
     }
     if (executed.kind === "ambiguous") {
       void vscode.window.showWarningMessage(
-        "Open Wrangler could not identify one Interactive Window for the executed cell. Focus that window and try again."
+        "Jupyter changed the Interactive Window or produced more than one matching cell. Check the window before trying again."
       );
       return;
     }
@@ -639,18 +690,14 @@ function newlyExecutedCell(
   | { readonly kind: "ambiguous" } {
   const candidates = allAssociatedCells(origin.sourceUri).flatMap(({ notebook, cells }) =>
     cells.flatMap(({ cell, id, lineIndex }) =>
-      lineIndex === origin.startLine && id !== undefined && !before.ids.has(id) && !before.cells.has(cell)
+      lineIndex === origin.startLine && !before.cells.has(cell) && (id === undefined || !before.ids.has(id))
         ? [{ notebook, cell }]
         : []
     )
   );
   if (candidates.length === 0) return { kind: "missing" };
-  const notebooks = new Set(candidates.map(({ notebook }) => notebook));
-  if (notebooks.size !== 1) return { kind: "ambiguous" };
-  const latest = candidates.reduce((selected, candidate) =>
-    candidate.cell.index > selected.cell.index ? candidate : selected
-  );
-  return { kind: "found", ...latest };
+  if (candidates.length !== 1) return { kind: "ambiguous" };
+  return { kind: "found", ...candidates[0]! };
 }
 
 function newlyOpenedBlankInteractiveWindow(
@@ -674,19 +721,48 @@ function newlyOpenedBlankInteractiveWindow(
 
 async function selectKernelAndRestorePythonOrigin(
   notebook: vscode.NotebookDocument,
-  origin: PythonCellOrigin
+  origin: PythonCellOrigin,
+  operationDeadline: number
 ): Promise<boolean> {
-  if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) return false;
-  let notebookEditor: vscode.NotebookEditor;
-  try {
-    notebookEditor = await vscode.window.showNotebookDocument(notebook, {
-      viewColumn: origin.viewColumn,
-      preserveFocus: false,
-      preview: false
-    });
-    if (notebookEditor.notebook !== notebook || !isSoleOpenNotebookDocument(notebook)) return false;
-    await vscode.commands.executeCommand("notebook.selectKernel", { notebookEditor });
-  } catch {
+  if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+    void vscode.window.showWarningMessage(
+      "The Python file or Interactive Window changed while its kernel was being selected. Try again."
+    );
+    return false;
+  }
+  const shown = await settleBeforeDeadline(
+    () =>
+      vscode.window.showNotebookDocument(notebook, {
+        viewColumn: origin.viewColumn,
+        preserveFocus: false,
+        preview: false
+      }),
+    operationDeadline
+  );
+  if (shown.kind === "timedOut") {
+    void vscode.window.showWarningMessage("Jupyter did not finish opening the Interactive Window in time.");
+    return false;
+  }
+  if (shown.kind === "rejected") {
+    void vscode.window.showWarningMessage("Jupyter could not select a kernel for the Interactive Window.");
+    return false;
+  }
+  const notebookEditor = shown.value;
+  if (notebookEditor.notebook !== notebook || !isSoleOpenNotebookDocument(notebook)) {
+    void vscode.window.showWarningMessage(
+      "The Python file or Interactive Window changed while its kernel was being selected. Try again."
+    );
+    return false;
+  }
+  const selected = await settleBeforeDeadline(
+    () => vscode.commands.executeCommand("notebook.selectKernel", { notebookEditor }),
+    operationDeadline
+  );
+  if (selected.kind === "timedOut") {
+    void vscode.window.showWarningMessage("Kernel selection did not finish in time.");
+    return false;
+  }
+  if (selected.kind === "rejected") {
     void vscode.window.showWarningMessage("Jupyter could not select a kernel for the Interactive Window.");
     return false;
   }
@@ -696,17 +772,24 @@ async function selectKernelAndRestorePythonOrigin(
     );
     return false;
   }
-  let restored: vscode.TextEditor;
-  try {
-    restored = await vscode.window.showTextDocument(origin.document, {
-      viewColumn: origin.viewColumn,
-      preserveFocus: false,
-      preview: false
-    });
-  } catch {
+  const restoredResult = await settleBeforeDeadline(
+    () =>
+      vscode.window.showTextDocument(origin.document, {
+        viewColumn: origin.viewColumn,
+        preserveFocus: false,
+        preview: false
+      }),
+    operationDeadline
+  );
+  if (restoredResult.kind === "timedOut") {
+    void vscode.window.showWarningMessage("The Python file could not be restored in time.");
+    return false;
+  }
+  if (restoredResult.kind === "rejected") {
     void vscode.window.showWarningMessage("Jupyter selected a kernel, but the Python file could not be restored.");
     return false;
   }
+  const restored = restoredResult.value;
   if (restored.document !== origin.document || !isExactPythonOrigin(origin)) {
     void vscode.window.showWarningMessage("The Python file changed while its kernel was being selected. Try again.");
     return false;
@@ -719,17 +802,242 @@ async function selectKernelAndRestorePythonOrigin(
   return true;
 }
 
-function waitForNewlyExecutedCell(
+function settleBeforeDeadline<T>(
+  work: () => Thenable<T>,
+  deadline: number
+): Promise<
+  { readonly kind: "fulfilled"; readonly value: T } | { readonly kind: "rejected" } | { readonly kind: "timedOut" }
+> {
+  if (Date.now() >= deadline) return Promise.resolve({ kind: "timedOut" });
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (
+      result:
+        | { readonly kind: "fulfilled"; readonly value: T }
+        | { readonly kind: "rejected" }
+        | { readonly kind: "timedOut" }
+    ): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ kind: "timedOut" }), Math.max(0, deadline - Date.now()));
+    let pending: Thenable<T>;
+    try {
+      pending = work();
+    } catch {
+      finish({ kind: "rejected" });
+      return;
+    }
+    void Promise.resolve(pending).then(
+      (value) => finish({ kind: "fulfilled", value }),
+      () => finish({ kind: "rejected" })
+    );
+  });
+}
+
+class PythonCellDispatchObserver implements vscode.Disposable {
+  private readonly changeEmitter = new vscode.EventEmitter<void>();
+  private readonly subscriptions: vscode.Disposable[];
+  private disposed = false;
+
+  constructor(
+    private readonly origin: PythonCellOrigin,
+    private readonly beforeCells: PreviousInteractiveCells,
+    private readonly beforeInteractiveWindows: ReadonlySet<vscode.NotebookDocument>
+  ) {
+    const changed = (): void => this.changeEmitter.fire();
+    this.subscriptions = [
+      vscode.workspace.onDidOpenNotebookDocument(changed),
+      vscode.workspace.onDidChangeNotebookDocument(changed),
+      vscode.workspace.onDidCloseNotebookDocument(changed)
+    ];
+  }
+
+  snapshot():
+    | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument; readonly cell: vscode.NotebookCell }
+    | { readonly kind: "missing" }
+    | { readonly kind: "ambiguous" }
+    | { readonly kind: "stale" } {
+    if (!isExactPythonOrigin(this.origin)) return { kind: "stale" };
+    return newlyExecutedCell(this.origin, this.beforeCells);
+  }
+
+  blankWindow():
+    | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument }
+    | { readonly kind: "missing" }
+    | { readonly kind: "ambiguous" } {
+    return newlyOpenedBlankInteractiveWindow(this.beforeInteractiveWindows);
+  }
+
+  waitForChange(timeoutMs: number): Promise<"changed" | "timedOut" | "cancelled"> {
+    return this.cancelableWaitForChange(timeoutMs).promise;
+  }
+
+  cancelableWaitForChange(timeoutMs: number): {
+    readonly promise: Promise<"changed" | "timedOut" | "cancelled">;
+    dispose(): void;
+  } {
+    if (this.disposed || timeoutMs <= 0) {
+      return { promise: Promise.resolve("timedOut"), dispose: () => undefined };
+    }
+    let cancel = (): void => undefined;
+    const promise = new Promise<"changed" | "timedOut" | "cancelled">((resolve) => {
+      let settled = false;
+      const finish = (result: "changed" | "timedOut" | "cancelled"): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        subscription.dispose();
+        resolve(result);
+      };
+      const subscription = this.changeEmitter.event(() => finish("changed"));
+      const timer = setTimeout(() => finish("timedOut"), timeoutMs);
+      cancel = () => finish("cancelled");
+    });
+    return { promise, dispose: () => cancel() };
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const subscription of this.subscriptions.splice(0)) subscription.dispose();
+    this.changeEmitter.dispose();
+  }
+}
+
+async function runPythonCellAttempt(
+  observer: PythonCellDispatchObserver,
+  operationDeadline: number,
+  allowKernelRecovery: boolean
+): Promise<PythonCellAttemptResult> {
+  if (Date.now() >= operationDeadline) return { kind: "dispatchTimedOut" };
+  const initial = observer.snapshot();
+  if (initial.kind === "found") return { kind: "published", notebook: initial.notebook, cell: initial.cell };
+  if (initial.kind !== "missing") return initial;
+
+  const dispatchDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
+  const dispatch = boundedPythonCellDispatch(dispatchDeadline);
+  try {
+    while (true) {
+      const snapshot = observer.snapshot();
+      if (snapshot.kind === "found") return { kind: "published", notebook: snapshot.notebook, cell: snapshot.cell };
+      if (snapshot.kind !== "missing") return snapshot;
+
+      const remaining = dispatchDeadline - Date.now();
+      const change = observer.cancelableWaitForChange(remaining);
+      const event = await Promise.race([
+        dispatch.promise.then((outcome) => ({ kind: "dispatch" as const, outcome })),
+        change.promise.then((outcome) => ({ kind: "change" as const, outcome }))
+      ]).finally(() => change.dispose());
+      if (event.kind === "change" && event.outcome === "changed") continue;
+
+      const afterDispatch = observer.snapshot();
+      if (afterDispatch.kind === "found") {
+        return { kind: "published", notebook: afterDispatch.notebook, cell: afterDispatch.cell };
+      }
+      if (afterDispatch.kind !== "missing") return afterDispatch;
+      if (event.kind === "change") return { kind: "dispatchTimedOut" };
+      if (event.outcome.kind === "rejected") return { kind: "dispatchRejected" };
+      if (event.outcome.kind === "timedOut" || event.outcome.kind === "cancelled") {
+        return { kind: "dispatchTimedOut" };
+      }
+      break;
+    }
+  } finally {
+    dispatch.dispose();
+  }
+
+  return await waitForPublishedCellAfterDispatch(observer, operationDeadline, allowKernelRecovery);
+}
+
+function boundedPythonCellDispatch(deadline: number): {
+  readonly promise: Promise<PythonCellDispatchOutcome>;
+  dispose(): void;
+} {
+  let cancel = (): void => undefined;
+  const promise = new Promise<PythonCellDispatchOutcome>((resolve) => {
+    let settled = false;
+    const finish = (result: PythonCellDispatchOutcome): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ kind: "timedOut" }), Math.max(0, deadline - Date.now()));
+    let command: Thenable<unknown>;
+    try {
+      command = vscode.commands.executeCommand("jupyter.runcurrentcell");
+    } catch {
+      finish({ kind: "rejected" });
+      return;
+    }
+    void Promise.resolve(command).then(
+      () => finish({ kind: "fulfilled" }),
+      () => finish({ kind: "rejected" })
+    );
+    cancel = () => finish({ kind: "cancelled" });
+  });
+  return { promise, dispose: () => cancel() };
+}
+
+async function waitForPublishedCellAfterDispatch(
+  observer: PythonCellDispatchObserver,
+  operationDeadline: number,
+  allowKernelRecovery: boolean
+): Promise<PythonCellAttemptResult> {
+  const publicationDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
+  let pinnedBlankWindow: vscode.NotebookDocument | undefined;
+  while (true) {
+    const snapshot = observer.snapshot();
+    if (snapshot.kind === "found") {
+      return { kind: "published", notebook: snapshot.notebook, cell: snapshot.cell };
+    }
+    if (snapshot.kind !== "missing") return snapshot;
+
+    const blankWindow = observer.blankWindow();
+    if (blankWindow.kind === "ambiguous") return blankWindow;
+    if (blankWindow.kind === "found") {
+      if (pinnedBlankWindow && pinnedBlankWindow !== blankWindow.notebook) return { kind: "ambiguous" };
+      pinnedBlankWindow ??= blankWindow.notebook;
+    } else if (pinnedBlankWindow) {
+      return { kind: "missing" };
+    }
+    const event = await observer.waitForChange(publicationDeadline - Date.now());
+    if (event === "changed") continue;
+
+    const finalSnapshot = observer.snapshot();
+    if (finalSnapshot.kind === "found") {
+      return { kind: "published", notebook: finalSnapshot.notebook, cell: finalSnapshot.cell };
+    }
+    if (finalSnapshot.kind !== "missing") return finalSnapshot;
+    if (event === "cancelled") return { kind: "dispatchTimedOut" };
+    if (pinnedBlankWindow) {
+      const finalBlank = observer.blankWindow();
+      if (finalBlank.kind === "ambiguous") return finalBlank;
+      if (finalBlank.kind !== "found" || finalBlank.notebook !== pinnedBlankWindow) return { kind: "missing" };
+      return allowKernelRecovery ? { kind: "needsKernel", notebook: pinnedBlankWindow } : { kind: "missing" };
+    }
+    return { kind: "missing" };
+  }
+}
+
+function waitForPinnedCellCompletion(
   origin: PythonCellOrigin,
-  before: PreviousInteractiveCells
+  before: PreviousInteractiveCells,
+  notebook: vscode.NotebookDocument,
+  cell: vscode.NotebookCell,
+  operationDeadline: number
 ): Promise<PythonExecutedCellResult> {
   const completedCandidate = (): PythonExecutedCellResult | undefined => {
     if (!isExactPythonOrigin(origin)) return { kind: "stale" };
     const candidate = newlyExecutedCell(origin, before);
-    if (candidate.kind !== "found") return candidate.kind === "ambiguous" ? candidate : undefined;
-    const summary = candidate.cell.executionSummary;
+    if (candidate.kind !== "found") return candidate;
+    if (candidate.notebook !== notebook || candidate.cell !== cell) return { kind: "ambiguous" };
+    const summary = cell.executionSummary;
     if (summary?.success === undefined && summary?.timing?.endTime === undefined) return undefined;
-    return candidate;
+    return { kind: "found", notebook, cell };
   };
 
   const immediate = completedCandidate();
@@ -741,7 +1049,6 @@ function waitForNewlyExecutedCell(
     const finish = (result: PythonExecutedCellResult): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(publicationTimeout);
       clearTimeout(timeout);
       for (const subscription of subscriptions.splice(0)) subscription.dispose();
       resolve(result);
@@ -755,24 +1062,16 @@ function waitForNewlyExecutedCell(
       vscode.workspace.onDidChangeNotebookDocument(check),
       vscode.workspace.onDidCloseNotebookDocument(check)
     );
-    const publicationTimeout = setTimeout(() => {
-      if (!isExactPythonOrigin(origin)) {
-        finish({ kind: "stale" });
-        return;
-      }
-      const candidate = newlyExecutedCell(origin, before);
-      if (candidate.kind === "missing") finish(candidate);
-      else if (candidate.kind === "ambiguous") finish(candidate);
-    }, PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
-    const timeout = setTimeout(() => {
-      if (!isExactPythonOrigin(origin)) {
-        finish({ kind: "stale" });
-        return;
-      }
-      const candidate = newlyExecutedCell(origin, before);
-      if (candidate.kind === "found") finish({ kind: "timedOut" });
-      else finish(candidate);
-    }, PYTHON_CELL_EXECUTION_TIMEOUT_MS);
+    const timeout = setTimeout(
+      () => {
+        if (!isExactPythonOrigin(origin)) {
+          finish({ kind: "stale" });
+          return;
+        }
+        finish({ kind: "timedOut" });
+      },
+      Math.max(0, operationDeadline - Date.now())
+    );
     check();
   });
 }
