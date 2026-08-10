@@ -420,6 +420,7 @@ describe("notebook launch contributions", () => {
     expect(manifest.activationEvents).toEqual(
       expect.arrayContaining([
         "onCommand:openWrangler.runPythonCellAndOpenVariable",
+        "onCommand:openWrangler.refreshLiveDataframes",
         "onCommand:openWrangler.refreshNotebookVariables"
       ])
     );
@@ -430,7 +431,13 @@ describe("notebook launch contributions", () => {
           title: "Open in Open Wrangler"
         }),
         expect.objectContaining({
+          command: "openWrangler.refreshLiveDataframes",
+          title: "Open Wrangler: Refresh Live Dataframes",
+          icon: "$(refresh)"
+        }),
+        expect.objectContaining({
           command: "openWrangler.refreshNotebookVariables",
+          title: "Open Wrangler: Refresh Notebook Dataframes",
           icon: "$(refresh)"
         })
       ])
@@ -451,9 +458,13 @@ describe("notebook launch contributions", () => {
       expect(entry?.when).not.toContain("jupyter.hascodecells");
     }
     expect(manifest.contributes?.menus?.["view/title"]).toContainEqual({
-      command: "openWrangler.refreshNotebookVariables",
+      command: "openWrangler.refreshLiveDataframes",
       when: "view == openWrangler.operations",
       group: "navigation@1"
+    });
+    expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
+      command: "openWrangler.refreshNotebookVariables",
+      when: "false"
     });
     expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
       command: "openWrangler.openCachedNotebookVariable",

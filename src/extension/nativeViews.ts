@@ -19,7 +19,7 @@ import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewP
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
 import { exportFileSafely } from "./files/safeFileExport";
 import { insertGeneratedRDocumentCode } from "./r/rDocumentInsertion";
-import type { PythonLiveVariableProvider, PythonLiveVariableSnapshot } from "./notebooks/pythonInteractiveCommands";
+import type { NotebookLiveVariableProvider, NotebookLiveVariableSnapshot } from "./notebooks/pythonInteractiveCommands";
 import {
   OPEN_R_INTERACTIVE_VARIABLE_COMMAND,
   REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
@@ -63,7 +63,7 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
   constructor(
     private readonly kind: ViewKind,
     coordinator: SessionCoordinator,
-    private readonly pythonVariables?: PythonLiveVariableProvider,
+    private readonly notebookVariables?: NotebookLiveVariableProvider,
     private readonly rVariables?: RLiveVariableProvider
   ) {
     this.snapshot = coordinator.activeSession();
@@ -79,8 +79,8 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
       }
       this.changeEmitter.fire(undefined);
     });
-    if (this.kind === "operations" && this.pythonVariables) {
-      this.pythonVariableSubscription = this.pythonVariables.onDidChangeVariables(() =>
+    if (this.kind === "operations" && this.notebookVariables) {
+      this.notebookVariableSubscription = this.notebookVariables.onDidChangeVariables(() =>
         this.changeEmitter.fire(undefined)
       );
     }
@@ -89,7 +89,7 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     }
   }
 
-  private pythonVariableSubscription: vscode.Disposable | undefined;
+  private notebookVariableSubscription: vscode.Disposable | undefined;
   private rVariableSubscription: vscode.Disposable | undefined;
 
   getTreeItem(element: ViewNode): vscode.TreeItem {
@@ -98,7 +98,7 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
 
   getChildren(): ViewNode[] {
     if (this.kind === "operations") {
-      return operationNodes(this.snapshot?.metadata, this.pythonVariables?.snapshot(), this.rVariables?.snapshot());
+      return operationNodes(this.snapshot?.metadata, this.notebookVariables?.snapshot(), this.rVariables?.snapshot());
     }
     if (!this.snapshot) return [new ViewNode("No active dataframe", "Open a data file or notebook variable", "info")];
     if (this.kind === "summary") return summaryNodes(this.snapshot);
@@ -119,7 +119,7 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     this.sortTargets.clear();
     this.sortTokens.clear();
     this.subscription.dispose();
-    this.pythonVariableSubscription?.dispose();
+    this.notebookVariableSubscription?.dispose();
     this.rVariableSubscription?.dispose();
     this.changeEmitter.dispose();
   }
@@ -325,7 +325,7 @@ export interface NativeViewsTestController {
 export function registerNativeViews(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
-  pythonVariables?: PythonLiveVariableProvider,
+  notebookVariables?: NotebookLiveVariableProvider,
   rVariables?: RLiveVariableProvider
 ): NativeViewsTestController {
   const updatePlanContexts = (snapshot: ActiveSessionSnapshot | undefined) => {
@@ -348,7 +348,7 @@ export function registerNativeViews(
   const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
   const filterProvider = new OpenWranglerTreeProvider("filters", coordinator);
   const providers = {
-    "openWrangler.operations": new OpenWranglerTreeProvider("operations", coordinator, pythonVariables, rVariables),
+    "openWrangler.operations": new OpenWranglerTreeProvider("operations", coordinator, notebookVariables, rVariables),
     "openWrangler.summary": new OpenWranglerTreeProvider("summary", coordinator),
     "openWrangler.filters": filterProvider,
     "openWrangler.cleaningSteps": new OpenWranglerTreeProvider("steps", coordinator)
@@ -356,6 +356,19 @@ export function registerNativeViews(
   for (const [id, provider] of Object.entries(providers)) {
     context.subscriptions.push(provider, vscode.window.registerTreeDataProvider(id, provider));
   }
+  context.subscriptions.push(
+    vscode.commands.registerCommand("openWrangler.refreshLiveDataframes", async () => {
+      if (notebookVariables?.snapshot()) {
+        await notebookVariables.refreshFromCommand();
+        return;
+      }
+      if (rVariables) {
+        await rVariables.refreshFromCommand();
+        return;
+      }
+      void vscode.window.showInformationMessage("Focus a notebook or R session before refreshing live dataframes.");
+    })
+  );
   const codePreview = new CodePreviewViewProvider(context, coordinator);
   let lastNotebookInsertionStatus: NotebookInsertionDiagnosticStatus | undefined;
   let lastViewSortDispatchStatus: ViewSortDispatchStatus | undefined;
@@ -805,10 +818,13 @@ export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefin
 
 function operationNodes(
   metadata: SessionMetadata | undefined,
-  pythonVariables: PythonLiveVariableSnapshot | undefined,
+  notebookVariables: NotebookLiveVariableSnapshot | undefined,
   rVariables: RLiveVariableSnapshot | undefined
 ): ViewNode[] {
-  const liveVariables = [...pythonLiveVariableNodes(pythonVariables), ...rLiveVariableNodes(rVariables)];
+  const liveVariables = [
+    ...notebookLiveVariableNodes(notebookVariables),
+    ...rLiveVariableNodes(notebookVariables && rVariables?.state === "idle" ? undefined : rVariables)
+  ];
   if (!metadata) {
     return [
       ...liveVariables,
@@ -846,11 +862,11 @@ function operationNodes(
   ];
 }
 
-function pythonLiveVariableNodes(snapshot: PythonLiveVariableSnapshot | undefined): ViewNode[] {
+function notebookLiveVariableNodes(snapshot: NotebookLiveVariableSnapshot | undefined): ViewNode[] {
   if (!snapshot) return [];
-  const refresh = new ViewNode("Refresh Python dataframes", snapshot.notebookLabel, "refresh", {
+  const refresh = new ViewNode("Refresh notebook dataframes", snapshot.notebookLabel, "refresh", {
     command: "openWrangler.refreshNotebookVariables",
-    title: "Refresh Python dataframes"
+    title: "Refresh notebook dataframes"
   });
   if (snapshot.state !== "ready") {
     return [

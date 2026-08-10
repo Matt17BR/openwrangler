@@ -85,10 +85,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
 
   registerFileCommands(context, coordinatedBridge);
   registerTrustedPickleConversion(context, bridge, { runWorker: (options) => pickleWorkers.run(options) });
-  const pythonInteractive = registerPythonInteractiveCommands(context, coordinator);
+  const notebookVariables = registerPythonInteractiveCommands(context, coordinator);
   const rInteractive = registerRInteractiveCommands(context, coordinator);
   activeRInteractive = rInteractive;
-  const nativeViews = registerNativeViews(context, coordinator, pythonInteractive, rInteractive);
+  const nativeViews = registerNativeViews(context, coordinator, notebookVariables, rInteractive);
   registerRuntimeCommands(context, bridge);
   registerRDocumentCommands(context, coordinator);
   registerNotebookCommands(context, coordinator);

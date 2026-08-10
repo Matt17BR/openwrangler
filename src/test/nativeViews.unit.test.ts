@@ -5,7 +5,7 @@ import * as path from "node:path";
 import type { ExtensionContext } from "vscode";
 import type { SessionCoordinator, ActiveSessionSnapshot } from "../extension/sessionCoordinator";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
-import type { PythonLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
+import type { NotebookLiveVariableProvider } from "../extension/notebooks/pythonInteractiveCommands";
 import type { RLiveVariableProvider } from "../extension/r/rInteractiveCommands";
 
 type CommandHandler = (...args: unknown[]) => unknown;
@@ -232,7 +232,7 @@ describe("native operation commands", () => {
   });
 
   it("shows cached variables from the exact active notebook in Operations", () => {
-    const variableProvider: PythonLiveVariableProvider = {
+    const variableProvider: NotebookLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
       snapshot: () => ({
         state: "ready",
@@ -247,6 +247,7 @@ describe("native operation commands", () => {
           }
         ]
       }),
+      refreshFromCommand: async () => undefined,
       dispose: () => undefined
     };
     const registered = register(noDraftSnapshot(), undefined, undefined, variableProvider);
@@ -260,9 +261,83 @@ describe("native operation commands", () => {
           arguments: ["live-frame-handle"]
         })
       ],
-      ["Refresh Python dataframes", expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })],
+      ["Refresh notebook dataframes", expect.objectContaining({ command: "openWrangler.refreshNotebookVariables" })],
       ["Open a data file", expect.objectContaining({ command: "openWrangler.openPath" })]
     ]);
+  });
+
+  it("shows IRkernel dataframes without an unrelated terminal prompt and refreshes that notebook", async () => {
+    const refreshNotebook = vi.fn(async () => undefined);
+    const refreshTerminal = vi.fn(async () => true);
+    const notebookProvider: NotebookLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "ready",
+        notebookLabel: "analysis-r.ipynb",
+        message: "Live dataframes",
+        variables: [
+          {
+            handle: "r-notebook-handle",
+            label: "orders_tbl",
+            description: "R · tibble",
+            detail: "Live in analysis-r.ipynb"
+          }
+        ]
+      }),
+      refreshFromCommand: refreshNotebook,
+      dispose: () => undefined
+    };
+    const terminalProvider: RLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "idle",
+        terminalLabel: "R session",
+        message: "Start or select an R session.",
+        variables: []
+      }),
+      refreshFromCommand: refreshTerminal,
+      shutdown: async () => undefined,
+      dispose: () => undefined
+    };
+    const registered = register(noDraftSnapshot(), undefined, undefined, notebookProvider, terminalProvider);
+    registered.setActiveSession(undefined);
+
+    expect(treeChildren("openWrangler.operations").map((node) => node.label)).toEqual([
+      "orders_tbl",
+      "Refresh notebook dataframes",
+      "Open a data file"
+    ]);
+
+    await command("openWrangler.refreshLiveDataframes")();
+    expect(refreshNotebook).toHaveBeenCalledOnce();
+    expect(refreshTerminal).not.toHaveBeenCalled();
+  });
+
+  it("routes the Operations refresh action to the active R terminal when no notebook is active", async () => {
+    const refreshTerminal = vi.fn(async () => true);
+    const terminalProvider: RLiveVariableProvider = {
+      onDidChangeVariables: () => ({ dispose: () => undefined }),
+      snapshot: () => ({
+        state: "ready",
+        terminalLabel: "R",
+        message: "1 loaded",
+        variables: [
+          {
+            handle: "r-terminal-handle",
+            label: "orders_dt",
+            description: "R · data.table",
+            detail: "R"
+          }
+        ]
+      }),
+      refreshFromCommand: refreshTerminal,
+      shutdown: async () => undefined,
+      dispose: () => undefined
+    };
+    register(noDraftSnapshot(), undefined, undefined, undefined, terminalProvider);
+
+    await command("openWrangler.refreshLiveDataframes")();
+    expect(refreshTerminal).toHaveBeenCalledOnce();
   });
 
   it("shows dataframes discovered in the exact active R terminal", () => {
@@ -287,6 +362,7 @@ describe("native operation commands", () => {
           }
         ]
       }),
+      refreshFromCommand: async () => true,
       shutdown: async () => undefined,
       dispose: () => undefined
     };
@@ -334,6 +410,7 @@ describe("native operation commands", () => {
         message: "Reads the selected R session. Wait for the R prompt first.",
         variables: []
       }),
+      refreshFromCommand: async () => true,
       shutdown: async () => undefined,
       dispose: () => undefined
     };
@@ -365,6 +442,7 @@ describe("native operation commands", () => {
         message: "The R terminal closed. Start or select another R session.",
         variables: []
       }),
+      refreshFromCommand: async () => true,
       shutdown: async () => undefined,
       dispose: () => undefined
     };
@@ -1335,7 +1413,7 @@ function register(
   snapshot: ActiveSessionSnapshot,
   notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number },
   textDocumentOrigin?: unknown,
-  pythonVariables?: PythonLiveVariableProvider,
+  pythonVariables?: NotebookLiveVariableProvider,
   rVariables?: RLiveVariableProvider
 ): {
   setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void;

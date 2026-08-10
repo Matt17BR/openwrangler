@@ -155,6 +155,7 @@
     "onCommand:openWrangler.launchDataViewer",
     "onCommand:openWrangler.openNotebookVariable",
     "onCommand:openWrangler.runPythonCellAndOpenVariable",
+    "onCommand:openWrangler.refreshLiveDataframes",
     "onCommand:openWrangler.refreshNotebookVariables",
     "onCommand:openWrangler.openRDataframe",
     "onCommand:openWrangler.runRDocument",
@@ -254,9 +255,16 @@
         }
       },
       {
+        "command": "openWrangler.refreshLiveDataframes",
+        "title": "Open Wrangler: Refresh Live Dataframes",
+        "shortTitle": "Refresh Live Dataframes",
+        "category": "Open Wrangler",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "openWrangler.refreshNotebookVariables",
-        "title": "Open Wrangler: Refresh Python Dataframes",
-        "shortTitle": "Refresh Python Dataframes",
+        "title": "Open Wrangler: Refresh Notebook Dataframes",
+        "shortTitle": "Refresh Notebook Dataframes",
         "category": "Open Wrangler",
         "icon": "$(refresh)"
       },
@@ -669,6 +677,10 @@
       ],
       "commandPalette": [
         {
+          "command": "openWrangler.refreshNotebookVariables",
+          "when": "false"
+        },
+        {
           "command": "openWrangler.launchDataViewer",
           "when": "false"
         },
@@ -702,7 +714,7 @@
       ],
       "view/title": [
         {
-          "command": "openWrangler.refreshNotebookVariables",
+          "command": "openWrangler.refreshLiveDataframes",
           "when": "view == openWrangler.operations",
           "group": "navigation@1"
         },
