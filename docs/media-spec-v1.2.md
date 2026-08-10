@@ -59,7 +59,7 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
 
 ### Explore and clean
 
-- `filter-result.png`: 1440 × 861 with a Benelux header-profile filter, its Column-profile Clear action, and
+- `filter-result.png`: 1440 × 846 with a Benelux header-profile filter, its Column-profile Clear action, and
   synchronized sidebar state.
 - `gallery/histogram-hover.png`: 448 × 480 with Counts / % controls and a focused tooltip that includes the bin's
   rows and percentage; `gallery/sort-priority.png`: 448 × 480 with ordered-sort interaction details.
@@ -69,7 +69,7 @@ The README uses six visual chapters instead of an unexplained screenshot wall:
   `segment` as group keys before preview.
 - `workflow.png`: 1440 × 870 draft, highlighted values, Apply / Discard, history, and native Polars code.
 - `gallery/applied-step-inspection.png`: 1440 × 870; detail: 995 × 320.
-- `gallery/latest-step-edited.png` and `gallery/latest-step-undone.png`: 1440 × 865; details: 448 × 440.
+- `gallery/latest-step-edited.png` and `gallery/latest-step-undone.png`: 1440 × 856; details: 448 × 440.
 - `gallery/by-example-setup.png` and `gallery/by-example-preview.png`: complete dialogs with readable details.
   These focused webview-only scenes come from the current production-bundle browser harness.
 

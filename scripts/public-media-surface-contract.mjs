@@ -26,7 +26,7 @@ export const PUBLIC_MEDIA_RESPONSIVE_WIDTHS = Object.freeze([760, 1_400]);
 export const PUBLIC_SURFACE_CONTENT = [
   "A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks.",
   "Open files",
-  "The active filter matches 14,285 rows."
+  "The active filter matches 14,287 rows."
 ];
 
 export const REPRESENTATIVE_PUBLIC_IMAGES = [
