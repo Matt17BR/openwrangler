@@ -16728,8 +16728,22 @@ async function previewRevenueProjection(app: Locator, testing: TestApi, newColum
 }
 
 async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, destination: string): Promise<void> {
+  await dismissStaleWorkbenchHover(workbench);
   await app.getByRole("button", { name: "Export", exact: true }).click();
   await completeCleanedDataExportDialog(workbench, destination);
+}
+
+async function dismissStaleWorkbenchHover(workbench: Page): Promise<void> {
+  await workbench.keyboard.press("Escape");
+  await workbench.mouse.move(1, 1);
+  assert.equal(
+    await pollAcceptanceCondition(async () => (await workbench.locator(".monaco-hover:visible").count()) === 0, {
+      timeoutMs: 3_000,
+      intervalMs: 50
+    }),
+    true,
+    "The workbench must dismiss stale toolbar hovers before the next webview action."
+  );
 }
 
 function assertParquetFile(filePath: string, label: string): void {
@@ -17060,6 +17074,7 @@ async function exercisePackagedReopenAndUndoJourney(
     .waitFor({ state: "visible", timeout: 10_000 });
 
   recordAcceptanceProgress("platform-smoke:undo");
+  await dismissStaleWorkbenchHover(workbench);
   await replayedApp.getByRole("button", { name: "Undo", exact: true }).click();
   await waitFor(
     () => {
