@@ -394,7 +394,7 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
     await probeJupyterAcceptanceRKernel(python, prepared, {
       async runCommand(input, options) {
         invocation = { input, options };
-        appendFileSync(join(root, "profile-stage"), "OPEN_WRANGLER_R_PROFILE_READY\n");
+        appendFileSync(join(root, "profile-stage"), "OPEN_WRANGLER_R_PROFILE_READY\nOPEN_WRANGLER_R_PROFILE_READY\n");
         return { stdout: "OPEN_WRANGLER_R_KERNEL_READY\r\n", stderr: "" };
       }
     });

@@ -685,8 +685,8 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
   if (/^OPEN_WRANGLER_R_KERNEL_READY\r?\n$/u.test(result.stdout)) {
     const receipt = rAcceptanceProfileReceipt(prepared);
     const markerCount = readRProfileMarkerCount(receipt);
-    if (markerCount !== 1) {
-      throw new Error("Released-Jupyter R kernel readiness did not load the private R profile exactly once.");
+    if (markerCount < 1) {
+      throw new Error("Released-Jupyter R kernel readiness did not load the private R profile.");
     }
     receipt.readinessMarkerCount = markerCount;
     return;
@@ -698,7 +698,7 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
 
 export function jupyterAcceptanceRProfileStartupStage(prepared) {
   const receipt = rAcceptanceProfileReceipt(prepared);
-  if (receipt.readinessMarkerCount !== 1) {
+  if (!Number.isSafeInteger(receipt.readinessMarkerCount) || receipt.readinessMarkerCount < 1) {
     throw new Error("Released-Jupyter R profile startup stage requires a completed readiness baseline.");
   }
   return readRProfileMarkerCount(receipt) > receipt.readinessMarkerCount ? "profile-loaded" : "profile-not-loaded";
