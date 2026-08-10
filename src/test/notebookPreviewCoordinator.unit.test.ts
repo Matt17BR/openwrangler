@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => {
     visibleEditors: [] as Array<{ notebook: NotebookDocument }>,
     extensions: new Set(["ms-toolsai.jupyter"]),
     preference: "ask",
-    prepare: vi.fn(async () => undefined),
+    prepare: vi.fn<() => Promise<void>>(async () => undefined),
     disposeBridge: vi.fn(),
     invalidationListeners: new Set<() => void>(),
     information: vi.fn(async () => undefined as string | undefined),
