@@ -9996,7 +9996,12 @@ async function exerciseReleasedPythonFileEntrypoint(
       ),
       true
     );
-    await waitFor(() => sourceDocument.isClosed, 10_000, "the Python entry-point source document to close");
+    await waitFor(() => textDocumentTab(source) === undefined, 10_000, "the Python entry-point source tab to close");
+    assert.equal(
+      vscode.window.visibleTextEditors.some((editor) => editor.document === sourceDocument),
+      false,
+      "The closed Python entry-point source must not remain visible in another editor."
+    );
     recordAcceptanceProgress(`${checkpoint}:complete`);
   } finally {
     const active = testing.activeSession();
