@@ -534,7 +534,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Choose from 28 operations/u);
   assert.match(readme, /preview shows the changed values and generated Polars code/u);
   assert.match(readme, /Insert generated code into the notebook that opened the dataframe/u);
-  assert.match(readme, /\*\*Open in Open Wrangler\*\* loads the current live dataframe/u);
+  assert.match(readme, /\*\*Open in Open Wrangler\*\* loads the current live\s+dataframe/u);
   assert.match(readme, /DuckDB relations are view-only and do not require dataframe conversion/u);
   assert.match(
     readme,
