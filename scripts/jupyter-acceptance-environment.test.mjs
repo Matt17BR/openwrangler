@@ -854,7 +854,15 @@ test("Cursor and Windows use the representative R coverage profile", async () =>
   assert.match(grid, /"Clear all"/u);
   assert.match(grid, /applyReleasedRQuickSort\(workbench, testing, "group", "ascending", \["group"\]\)/u);
   assert.match(grid, /applyReleasedRQuickSort\(workbench, testing, "score", "descending", \["score", "group"\]\)/u);
-  assert.match(grid, /Move View Sort Up/u);
+  assert.match(
+    grid,
+    /openWorkbenchContextMenu\([\s\S]*groupPriorityTwo[\s\S]*"Filters \/ Sorts row"[\s\S]*getByRole\("menuitem", \{ name: \/Move View Sort Up\$\/u \}\)/u
+  );
+  assert.doesNotMatch(
+    grid,
+    /groupPriorityTwo\.getByRole\("button", \{ name: \/Move View Sort Up\$\/u \}\)/u,
+    "The representative Cursor path must not depend on an inline action that narrow sidebars can hide."
+  );
   assert.equal((representative.match(/previewReleasedRRename\(/gu) ?? []).length, 2);
   for (const marker of [
     "No value changes in this block",

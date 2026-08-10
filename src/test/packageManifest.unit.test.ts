@@ -134,6 +134,33 @@ describe("operation command contributions", () => {
       group: "inline@10"
     });
   });
+
+  it("keeps sort-priority actions in both inline controls and the row context menu", () => {
+    const sortMenus = manifest.contributes?.menus?.["view/item/context"] ?? [];
+    const expected = [
+      {
+        command: "openWrangler.moveViewSortUp",
+        when: "view == openWrangler.filters && (viewItem == openWrangler.viewSortMiddle || viewItem == openWrangler.viewSortLast)",
+        groups: ["inline@10", "navigation@10"]
+      },
+      {
+        command: "openWrangler.moveViewSortDown",
+        when: "view == openWrangler.filters && (viewItem == openWrangler.viewSortFirst || viewItem == openWrangler.viewSortMiddle)",
+        groups: ["inline@11", "navigation@11"]
+      },
+      {
+        command: "openWrangler.removeViewSort",
+        when: "view == openWrangler.filters && (viewItem == openWrangler.viewSortOnly || viewItem == openWrangler.viewSortFirst || viewItem == openWrangler.viewSortMiddle || viewItem == openWrangler.viewSortLast)",
+        groups: ["inline@12", "navigation@12"]
+      }
+    ];
+
+    for (const { command, when, groups } of expected) {
+      for (const group of groups) {
+        expect(sortMenus).toContainEqual({ command, when, group });
+      }
+    }
+  });
 });
 
 describe("file launch contributions", () => {

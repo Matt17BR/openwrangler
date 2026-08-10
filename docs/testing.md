@@ -96,7 +96,8 @@ matrix for release candidates or changes that cross all of its boundaries.
 
   Linux and macOS VS Code run the complete installed R journey. Windows and Cursor use a named representative profile
   within the same 300-second phase limit: real IRkernel discovery, one page round trip, profiles, filtering, Clear all,
-  compound-sort priority, Viewing-to-Editing replay, the Rename draft/apply/inspection/undo lifecycle, one native
+  compound-sort priority through the row context menu, Viewing-to-Editing replay, the Rename
+  draft/apply/inspection/undo lifecycle, one native
   tibble operation, one keyed `data.table` operation, kernel restart, and the official R terminal and Operations
   sidebar. Cursor also runs one plain `.R` document where the host supports it; Windows skips R documents. The initial
   picker still checks base, tibble, `data.table`, and supported `collapse` frames. Focused R runtime and webview tests

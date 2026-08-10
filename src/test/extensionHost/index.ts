@@ -4899,8 +4899,15 @@ async function exerciseReleasedRGridJourney(
     .getByRole("treeitem", { name: /^group, Priority 2 · Ascending · nulls last/u })
     .first();
   await groupPriorityTwo.waitFor({ state: "visible", timeout: 10_000 });
-  await groupPriorityTwo.hover();
-  await groupPriorityTwo.getByRole("button", { name: /Move View Sort Up$/u }).click();
+  const { menu: sortContextMenu } = await openWorkbenchContextMenu(
+    workbench,
+    groupPriorityTwo,
+    undefined,
+    "Filters / Sorts row"
+  );
+  const moveGroupUp = sortContextMenu.getByRole("menuitem", { name: /Move View Sort Up$/u }).last();
+  await moveGroupUp.waitFor({ state: "visible", timeout: 3_000 });
+  await moveGroupUp.click();
   await waitFor(
     () =>
       testing
