@@ -2819,6 +2819,10 @@ export function App() {
                         sort: filterModelRef.current.sort.filter((rule) => rule.column !== column)
                       })
                 }
+                onApplyCellFilter={(filter) => {
+                  if (inspectionMode || !filterSupported) return;
+                  applyFilters(replaceViewColumnFilter(filterModelRef.current, filter));
+                }}
                 onApplyProfileFilter={(filter) => {
                   if (inspectionMode || !filterSupported) return;
                   sidePanelReturnFocus.current =

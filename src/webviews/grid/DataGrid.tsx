@@ -18,6 +18,7 @@ import {
   ambiguousViewColumnMessage,
   countViewColumnNames,
   supportsTypedViewComparison,
+  viewCellSelectionFilter,
   viewNumericBinFilter,
   viewValueSelectionFilter
 } from "../../shared/filterModel";
@@ -62,6 +63,7 @@ interface DataGridProps {
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onClearSortColumn?(column: string): void;
+  onApplyCellFilter?(filter: ColumnFilter): void;
   onApplyProfileFilter?(filter: ColumnFilter): void;
   onOpenFilter(column: string): void;
   onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
@@ -79,6 +81,12 @@ interface ProgrammaticViewportTarget {
   firstVisibleRow: number;
   scrollTop: number;
   scrollLeft: number;
+}
+
+interface CellFilterMenuTarget {
+  row: number;
+  column: number;
+  columnId: string;
 }
 
 interface ScrollInputs {
@@ -150,6 +158,7 @@ export function DataGrid({
   onPage,
   onSortColumn,
   onClearSortColumn = () => undefined,
+  onApplyCellFilter,
   onApplyProfileFilter,
   onOpenFilter,
   onGoToColumnHandled = () => undefined,
@@ -243,6 +252,41 @@ export function DataGrid({
     row: viewState.viewport.firstVisibleRow,
     column: selectedColumnPosition(metadata.schema, viewState.selectedColumnId)
   });
+  const [cellFilterMenuTarget, setCellFilterMenuTarget] = useState<CellFilterMenuTarget>();
+
+  useLayoutEffect(() => {
+    if (!cellFilterMenuTarget) return;
+    const cell = scrollerRef.current?.querySelector<HTMLElement>(
+      `[data-grid-row="${cellFilterMenuTarget.row}"][data-grid-column="${cellFilterMenuTarget.column}"]`
+    );
+    const menu = cell?.querySelector<HTMLElement>(".cellFilterMenuPopup");
+    const action = menu?.querySelector<HTMLButtonElement>("button:not([disabled])");
+    (action ?? menu)?.focus({ preventScroll: true });
+  }, [cellFilterMenuTarget]);
+
+  useEffect(() => {
+    if (!cellFilterMenuTarget) return;
+    const dismissOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const activeCell = scrollerRef.current?.querySelector<HTMLElement>(
+        `[data-grid-row="${cellFilterMenuTarget.row}"][data-grid-column="${cellFilterMenuTarget.column}"]`
+      );
+      if (!activeCell?.contains(target)) setCellFilterMenuTarget(undefined);
+    };
+    const dismiss = () => setCellFilterMenuTarget(undefined);
+    const scroller = scrollerRef.current;
+    document.addEventListener("pointerdown", dismissOutside, true);
+    scroller?.addEventListener("scroll", dismiss, { passive: true });
+    window.addEventListener("resize", dismiss);
+    window.addEventListener("blur", dismiss);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      scroller?.removeEventListener("scroll", dismiss);
+      window.removeEventListener("resize", dismiss);
+      window.removeEventListener("blur", dismiss);
+    };
+  }, [cellFilterMenuTarget]);
 
   useLayoutEffect(() => {
     viewStateRef.current = viewState;
@@ -300,6 +344,7 @@ export function DataGrid({
   useLayoutEffect(() => {
     if (previousViewContext.current === logicalViewContext) return;
     previousViewContext.current = logicalViewContext;
+    setCellFilterMenuTarget(undefined);
     requestedOffset.current = page.offset;
     focusRequested.current = false;
     preserveGridFocusAfterScroll.current = false;
@@ -1182,6 +1227,49 @@ export function DataGrid({
                       : undefined;
                   const accessibleLabel =
                     diffLabel ?? (cellUnavailable ? `Loading ${column.name}, row ${row.rowNumber + 1}` : undefined);
+                  const ambiguityReason =
+                    (viewColumnNameCounts.get(column.name) ?? 0) > 1
+                      ? ambiguousViewColumnMessage(column.name, viewColumnNameCounts.get(column.name) ?? 0)
+                      : undefined;
+                  const cellFilterUnavailableReason = viewControlsDisabled
+                    ? viewControlsDisabledReason
+                    : filterControlsDisabled
+                      ? filterControlsDisabledReason
+                      : ambiguityReason
+                        ? ambiguityReason
+                        : projecting || cellUnavailable
+                          ? "Wait for this cell to finish loading before filtering by value."
+                          : !cell || !supportsTypedViewComparison(column.type)
+                            ? `Filtering by individual ${column.rawType} values is unavailable.`
+                            : onApplyCellFilter === undefined
+                              ? "Filtering by individual cell values is unavailable for this dataframe."
+                              : undefined;
+                  const cellMenuOpen =
+                    cellFilterMenuTarget?.row === row.rowNumber && cellFilterMenuTarget.columnId === column.id;
+                  const cellMenuOpensAbove =
+                    row.rowNumber >=
+                    viewport.firstVisibleRow + Math.max(2, Math.floor(viewport.height / gridRowHeight) - 4);
+                  const cellMenuId = `cell-filter-menu-${row.rowNumber}-${column.position}`;
+                  const closeCellMenu = (restoreFocus = false) => {
+                    setCellFilterMenuTarget(undefined);
+                    if (restoreFocus) {
+                      scrollerRef.current
+                        ?.querySelector<HTMLElement>(
+                          `[data-grid-row="${row.rowNumber}"][data-grid-column="${column.position}"]`
+                        )
+                        ?.focus({ preventScroll: true });
+                    }
+                  };
+                  const openCellMenu = () => {
+                    reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
+                    setFocusedCell({ row: row.rowNumber, column: column.position });
+                    setCellFilterMenuTarget({ row: row.rowNumber, column: column.position, columnId: column.id });
+                  };
+                  const filterAction = (action: "include" | "exclude") => {
+                    if (cellFilterUnavailableReason || !cell || !onApplyCellFilter) return;
+                    closeCellMenu(true);
+                    onApplyCellFilter(viewCellSelectionFilter(column, cell, action));
+                  };
                   return (
                     <td
                       key={`${row.id}-${column.id}`}
@@ -1189,14 +1277,16 @@ export function DataGrid({
                       data-grid-column={column.position}
                       aria-colindex={column.position + 2}
                       aria-selected={viewState.selectedColumnId === column.id}
-                      aria-label={accessibleLabel}
+                      aria-label={accessibleLabel ?? renderedCell ?? ""}
                       data-diff-state={cellDiff ? "changed" : addedColumn ? "added" : undefined}
                       tabIndex={rovingRow === row.rowNumber && rovingColumn === column.position ? 0 : -1}
                       className={[
+                        "gridCell",
                         cell?.isNull || cell?.isNaN ? "missingCell" : "",
                         viewState.selectedColumnId === column.id ? "selectedColumn" : "",
                         cellDiff ? "diffChangedCell" : "",
-                        addedColumn ? "diffAddedColumn" : ""
+                        addedColumn ? "diffAddedColumn" : "",
+                        cellMenuOpen ? "cellFilterMenuOpen" : ""
                       ]
                         .filter(Boolean)
                         .join(" ")}
@@ -1206,11 +1296,97 @@ export function DataGrid({
                         setFocusedCell({ row: row.rowNumber, column: column.position });
                         reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       }}
-                      onKeyDown={(event) =>
-                        navigateGrid(event, row.rowNumber, column.position, metadata.schema.length, logicalRowExtent)
-                      }
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        openCellMenu();
+                      }}
+                      onKeyDown={(event) => {
+                        if (
+                          event.target === event.currentTarget &&
+                          (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+                        ) {
+                          event.preventDefault();
+                          openCellMenu();
+                          return;
+                        }
+                        if (event.target !== event.currentTarget) return;
+                        navigateGrid(event, row.rowNumber, column.position, metadata.schema.length, logicalRowExtent);
+                      }}
                     >
-                      {renderedCell}
+                      <span className="gridCellText" title={displayCell.title ?? renderedCell}>
+                        {renderedCell}
+                      </span>
+                      <button
+                        type="button"
+                        className="cellFilterButton codicon codicon-filter"
+                        tabIndex={-1}
+                        aria-label={`Filter ${column.name} by this cell`}
+                        aria-haspopup="menu"
+                        aria-expanded={cellMenuOpen}
+                        aria-controls={cellMenuOpen ? cellMenuId : undefined}
+                        title={cellFilterUnavailableReason ?? `Filter ${column.name} by this cell`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (cellMenuOpen) closeCellMenu(true);
+                          else openCellMenu();
+                        }}
+                      />
+                      {cellMenuOpen && (
+                        <div
+                          id={cellMenuId}
+                          className={`cellFilterMenuPopup${cellMenuOpensAbove ? " openAbove" : ""}`}
+                          role="menu"
+                          tabIndex={-1}
+                          aria-label={`Filter ${column.name} by this cell`}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              closeCellMenu(true);
+                              return;
+                            }
+                            if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+                            const actions = [
+                              ...event.currentTarget.querySelectorAll<HTMLButtonElement>("button")
+                            ].filter((button) => !button.disabled);
+                            if (actions.length === 0) return;
+                            const current = actions.indexOf(document.activeElement as HTMLButtonElement);
+                            const next =
+                              event.key === "Home"
+                                ? 0
+                                : event.key === "End"
+                                  ? actions.length - 1
+                                  : event.key === "ArrowDown"
+                                    ? (current + 1) % actions.length
+                                    : (current - 1 + actions.length) % actions.length;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            actions[next]?.focus({ preventScroll: true });
+                          }}
+                        >
+                          {cellFilterUnavailableReason && (
+                            <span className="cellFilterMenuNotice">{cellFilterUnavailableReason}</span>
+                          )}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled={cellFilterUnavailableReason !== undefined}
+                            title={cellFilterUnavailableReason}
+                            onClick={() => filterAction("include")}
+                          >
+                            {cellFilterActionLabel(cell, "include")}
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            disabled={cellFilterUnavailableReason !== undefined}
+                            title={cellFilterUnavailableReason}
+                            onClick={() => filterAction("exclude")}
+                          >
+                            {cellFilterActionLabel(cell, "exclude")}
+                          </button>
+                        </div>
+                      )}
                     </td>
                   );
                 })}
@@ -1564,6 +1740,12 @@ function describeCellValue(value: CellValue | null | undefined): string {
   if (value.display.length === 0) return value.kind === "string" ? "empty string" : "empty value";
   const normalized = value.display.replace(/\s+/gu, " ");
   return normalized.length > 160 ? `${normalized.slice(0, 159)}…` : normalized;
+}
+
+function cellFilterActionLabel(cell: CellValue | undefined, action: "include" | "exclude"): string {
+  if (cell?.isNull) return action === "include" ? "Keep only null values" : "Exclude null values";
+  if (cell?.isNaN) return action === "include" ? "Keep only NaN values" : "Exclude NaN values";
+  return action === "include" ? "Keep only this value" : "Exclude this value";
 }
 
 function ColumnHeader({
