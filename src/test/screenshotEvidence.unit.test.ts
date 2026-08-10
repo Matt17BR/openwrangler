@@ -447,7 +447,7 @@ describe("packaged editor screenshot evidence", () => {
     const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
       ["explore.png", 1_440, 870, 50_000],
-      ["filter-result.png", 1_440, 861, 50_000],
+      ["filter-result.png", 1_440, 846, 50_000],
       ["gallery/sidebar-overview.png", 1_440, 874, 50_000],
       ["gallery/file-explorer-action.png", 1_440, 870, 50_000],
       ["gallery/file-explorer-action-detail.png", 920, 616, 20_000],
@@ -456,9 +456,9 @@ describe("packaged editor screenshot evidence", () => {
       ["workflow.png", 1_440, 870, 50_000],
       ["gallery/histogram-hover.png", 448, 480, 20_000],
       ["gallery/sort-priority.png", 448, 480, 20_000],
-      ["gallery/latest-step-edited.png", 1_440, 860, 50_000],
+      ["gallery/latest-step-edited.png", 1_440, 856, 50_000],
       ["gallery/latest-step-edited-detail.png", 448, 440, 10_000],
-      ["gallery/latest-step-undone.png", 1_440, 860, 50_000],
+      ["gallery/latest-step-undone.png", 1_440, 856, 50_000],
       ["gallery/latest-step-undone-detail.png", 448, 440, 10_000],
       ["gallery/export-script.png", 1_440, 870, 50_000],
       ["gallery/export-data.png", 1_440, 870, 50_000],
