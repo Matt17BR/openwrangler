@@ -711,12 +711,26 @@ function newlyOpenedBlankInteractiveWindow(
       !before.has(notebook) &&
       !notebook.isClosed &&
       notebook.notebookType === "interactive" &&
-      notebook.cellCount === 0 &&
+      isSupportedPythonNotebook(notebook) &&
+      isEmptyInteractiveWindow(notebook) &&
       isSoleOpenNotebookDocument(notebook)
   );
   if (candidates.length === 0) return { kind: "missing" };
   if (candidates.length !== 1) return { kind: "ambiguous" };
   return { kind: "found", notebook: candidates[0]! };
+}
+
+function isEmptyInteractiveWindow(notebook: vscode.NotebookDocument): boolean {
+  const cells = notebook.getCells();
+  if (cells.length === 0) return true;
+  if (cells.length !== 1) return false;
+  const [cell] = cells;
+  return (
+    cell?.kind === vscode.NotebookCellKind.Markup &&
+    cell.document.languageId.trim().toLowerCase() === "markdown" &&
+    isRecord(cell.metadata) &&
+    !("interactive" in cell.metadata)
+  );
 }
 
 async function selectKernelAndRestorePythonOrigin(

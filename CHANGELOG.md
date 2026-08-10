@@ -14,8 +14,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   R terminal when one is active. Otherwise it runs the current document as before; both explicit choices remain in
   the tab menu.
 - The `.py` editor action now asks for a kernel when Jupyter opens an unconfigured Interactive Window, restores the
-  source and cursor, and waits for the exact new cell before looking for dataframes. If Jupyter does not confirm what
-  happened, Open Wrangler stops instead of running the cell again.
+  source and cursor, and waits for the exact new cell before looking for dataframes. This also works when Jupyter adds
+  its empty Markdown placeholder before kernel selection. If Jupyter does not confirm what happened, Open Wrangler
+  stops instead of running the cell again.
 
 ## [1.99.2] - 2026-08-09
 
