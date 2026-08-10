@@ -587,7 +587,9 @@ The active-terminal path has focused tests for selecting one exact official R te
 invalidation when the user switches or closes the terminal. Packaged acceptance uses the official R extension in
 isolated editor profiles and clicks **Operations → Show R dataframes…** as the first discovery action. It then opens
 and profiles a dataframe, switches from Viewing to Editing, exercises generated code and export, replaces the
-terminal, and checks that the previous bridge is gone.
+terminal, and checks that the previous bridge is gone. Command-routing tests also require the stable R title action
+to use that selected terminal, and the packaged document journey checks the document fallback when no official R
+terminal is active.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed from commit
 `67422557e2377f5fe806e3b4892b261dd48d9d6a` on 2026-08-06. It covered local R 4.5.2 in VS Code and Cursor, plus the

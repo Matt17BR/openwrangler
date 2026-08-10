@@ -218,11 +218,13 @@ The entry point determines which process owns the session:
 - For an interactive session from the official R extension, select its terminal and choose **Operations → Show R
   dataframes…**. If no R terminal is running, **Start R and show dataframes…** opens one first. The list and every
   opened dataframe stay tied to that terminal. These dataframes open in Viewing mode and can switch to Editing.
-  Generated R can be copied or saved, but it cannot be inserted because the terminal has no source document.
+  The **Open in Open Wrangler** title action uses this session while it is active. Generated R can be copied or saved,
+  but it cannot be inserted because the terminal has no source document.
 - On local macOS and Linux workspaces, **Run R Document in Open Wrangler…** runs a trusted `.R` file or the supported
   top-level R cells in an `.Rmd` or `.qmd` document, including unsaved changes. It uses its own R process and follows
-  the file start-mode setting, which defaults to Editing. Generated R can be inserted back into the exact open
-  document. This command does not replace Quarto or R Markdown rendering.
+  the file start-mode setting, which defaults to Editing. This does not replace Quarto or R Markdown rendering.
+  Generated R can be inserted back into the exact open document. The title action uses this path when no official R
+  terminal is active.
 
 Remote R-document execution is experimental.
 
