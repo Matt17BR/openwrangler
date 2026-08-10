@@ -426,13 +426,13 @@ test("released-Jupyter R readiness launches only the exact private kernelspec an
       "-c",
       script,
       prepared.kernelId,
-      join(prepared.jupyterEnvironment.dataDir, "kernels"),
+      prepared.kernelSpecPath,
       join(prepared.jupyterEnvironment.runtimeDir, "kernel-readiness.json"),
       prepared.kernelProbeWorkingDirectory
     ]);
     assert.match(
       script,
-      /KernelSpecManager\(kernel_dirs=\[kernel_dir\], ensure_native_kernel=False[\s\S]+client\.wait_for_ready\(timeout=12\)[\s\S]+__OW_RELEASED_R_KERNEL__[\s\S]+manager\.shutdown_kernel\(now=True\)/u
+      /class ExactKernelSpecManager\(KernelSpecManager\):[\s\S]+return self\._exact_spec[\s\S]+KernelSpec\.from_resource_dir\(os\.path\.dirname\(kernel_spec_path\)\)[\s\S]+kernel_spec_manager=specs[\s\S]+client\.wait_for_ready\(timeout=12\)[\s\S]+__OW_RELEASED_R_KERNEL__[\s\S]+manager\.shutdown_kernel\(now=True\)/u
     );
     assert.deepEqual(options, { timeoutMs: 30_000, maxOutputBytes: 1_024 });
     assert.equal(input.environment.R_LIBS_USER, prepared.libraryDir);
