@@ -6,12 +6,15 @@ import { DetachedBridgeRequestError } from "../dataBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { RInteractiveSessionTransport } from "./rInteractiveSessionTransport";
+import { OPEN_R_DOCUMENT_COMMAND } from "./rDocumentCommands";
 import { RKernelBridge, type RKernelBridgeTransport } from "./rKernelBridge";
 import type { RProcessVariableDescriptor, RProcessVariableDiscovery } from "./rProcessTransport";
 
 export const OPEN_R_INTERACTIVE_VARIABLE_COMMAND = "openWrangler.openRInteractiveVariable";
+export const OPEN_R_DATAFRAME_COMMAND = "openWrangler.openRDataframe";
 export const REFRESH_R_INTERACTIVE_VARIABLES_COMMAND = "openWrangler.refreshRInteractiveVariables";
 export const OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND = "openWrangler.openCachedRInteractiveVariable";
+export const ACTIVE_R_TERMINAL_CONTEXT = "openWrangler.activeRTerminal";
 
 interface RInteractiveQuickPickItem extends vscode.QuickPickItem {
   readonly variable: RProcessVariableDescriptor;
@@ -77,6 +80,11 @@ export function registerRInteractiveCommands(
   const provider = new RInteractiveVariableCoordinator(context, coordinator, transportFactory);
   context.subscriptions.push(
     provider,
+    vscode.commands.registerCommand(OPEN_R_DATAFRAME_COMMAND, (resource?: unknown) =>
+      isOfficialRTerminal(vscode.window.activeTerminal)
+        ? provider.chooseAndOpen()
+        : vscode.commands.executeCommand<boolean>(OPEN_R_DOCUMENT_COMMAND, resource)
+    ),
     vscode.commands.registerCommand(OPEN_R_INTERACTIVE_VARIABLE_COMMAND, () => provider.chooseAndOpen()),
     vscode.commands.registerCommand(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND, () => provider.refreshFromCommand()),
     vscode.commands.registerCommand(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND, (handle: unknown) =>
@@ -107,6 +115,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     private readonly transportFactory: RInteractiveTransportFactory
   ) {
     this.currentSnapshot = idleSnapshot(vscode.window.activeTerminal);
+    this.updateActiveTerminalContext(vscode.window.activeTerminal);
     this.subscriptions = [
       vscode.window.onDidChangeActiveTerminal((terminal) => this.onActiveTerminalChanged(terminal)),
       vscode.window.onDidCloseTerminal((terminal) => this.onTerminalClosed(terminal))
@@ -423,6 +432,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
   }
 
   private onActiveTerminalChanged(terminal: vscode.Terminal | undefined): void {
+    this.updateActiveTerminalContext(terminal);
     if (!this.ownedTerminal) {
       if (isOfficialRTerminal(terminal) && this.currentSnapshot.state === "idle") {
         // VS Code and vscode-R expose no public signal that an R prompt is idle.
@@ -437,6 +447,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
   }
 
   private onTerminalClosed(terminal: vscode.Terminal): void {
+    if (terminal === vscode.window.activeTerminal) this.updateActiveTerminalContext(undefined);
     if (terminal === this.ownedTerminal) {
       this.invalidateOwnedTransport("The R terminal closed. Start or select another R session.");
     }
@@ -464,6 +475,10 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     this.currentSnapshot = snapshot;
     if (snapshot.state !== "ready") this.variablesByHandle.clear();
     this.changeEmitter.fire();
+  }
+
+  private updateActiveTerminalContext(terminal: vscode.Terminal | undefined): void {
+    void vscode.commands.executeCommand("setContext", ACTIVE_R_TERMINAL_CONTEXT, isOfficialRTerminal(terminal));
   }
 
   private isCurrent(generation: number): boolean {

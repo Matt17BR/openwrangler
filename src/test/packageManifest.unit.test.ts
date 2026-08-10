@@ -146,7 +146,7 @@ describe("file launch contributions", () => {
       "openWrangler.changeImportOptions",
       "openWrangler.openNotebookVariable",
       "openWrangler.runPythonCellAndOpenVariable",
-      "openWrangler.runRDocument"
+      "openWrangler.openRDataframe"
     ]);
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openFile",
@@ -194,11 +194,24 @@ describe("file launch contributions", () => {
     });
   });
 
-  it("offers the trusted R document command on local and remote R, R Markdown, and Quarto sources", () => {
+  it("offers one stable R action and keeps the explicit document command", () => {
     const rSourcePredicate =
       "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+    const rLaunchPredicate =
+      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i && (openWrangler.activeRTerminal || resourceScheme == vscode-remote || isLinux || isMac)";
 
+    expect(manifest.activationEvents).toContain("onCommand:openWrangler.openRDataframe");
     expect(manifest.activationEvents).toContain("onCommand:openWrangler.runRDocument");
+    expect(manifest.contributes?.commands).toContainEqual({
+      command: "openWrangler.openRDataframe",
+      title: "Open Wrangler: Open R Dataframe",
+      shortTitle: "Open in Open Wrangler",
+      category: "Open Wrangler",
+      icon: {
+        light: "media/action-icon-light.svg",
+        dark: "media/action-icon-dark.svg"
+      }
+    });
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.runRDocument",
       title: "Run R Document in Open Wrangler…",
@@ -215,8 +228,8 @@ describe("file launch contributions", () => {
       group: "navigation@49"
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
-      command: "openWrangler.runRDocument",
-      when: rSourcePredicate,
+      command: "openWrangler.openRDataframe",
+      when: rLaunchPredicate,
       group: "navigation@1"
     });
     expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
@@ -232,6 +245,7 @@ describe("file launch contributions", () => {
   it("opens existing dataframes from the official R Workspace without claiming private tree nodes", () => {
     expect(manifest.activationEvents).toEqual(
       expect.arrayContaining([
+        "onCommand:openWrangler.openRDataframe",
         "onCommand:openWrangler.openRInteractiveVariable",
         "onCommand:openWrangler.refreshRInteractiveVariables",
         "onCommand:openWrangler.openCachedRInteractiveVariable"
@@ -273,10 +287,10 @@ describe("file launch contributions", () => {
       when: "false"
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
-      command: "openWrangler.runRDocument",
+      command: "openWrangler.openRDataframe",
       when:
-        "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && " +
-        "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+        "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && " +
+        "resourceExtname =~ /\\.(r|rmd|qmd)$/i && (openWrangler.activeRTerminal || resourceScheme == vscode-remote || isLinux || isMac)",
       group: "navigation@1"
     });
   });
