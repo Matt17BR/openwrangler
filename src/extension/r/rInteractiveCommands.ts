@@ -19,6 +19,18 @@ interface RInteractiveQuickPickItem extends vscode.QuickPickItem {
   readonly variable: RProcessVariableDescriptor;
 }
 
+interface CachedRInteractiveQuickPickItem extends RInteractiveQuickPickItem {
+  readonly handle: string;
+}
+
+interface CachedRInteractivePickerState {
+  readonly generation: number;
+  readonly terminal: vscode.Terminal;
+  readonly transport: RInteractiveCommandTransport;
+  readonly items: readonly CachedRInteractiveQuickPickItem[];
+  readonly truncated: boolean;
+}
+
 export interface RLiveVariableItem {
   readonly handle: string;
   readonly label: string;
@@ -181,7 +193,20 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
   async chooseAndOpen(): Promise<boolean> {
     if (!requireTrustedRSession()) return false;
     if (this.disposed) return false;
-    const generation = this.generation;
+    const cached = this.cachedPickerState();
+    if (cached) return this.chooseCachedAndOpen(cached);
+
+    const generation = ++this.generation;
+    const previous = this.releaseOwnedTransport();
+    if (previous) {
+      this.replaceSnapshot(idleSnapshot(vscode.window.activeTerminal));
+      const cleanupError = await this.disposeManagedTransport(previous);
+      if (!this.isCurrent(generation)) return false;
+      if (cleanupError) {
+        showCleanupError(cleanupError);
+        return false;
+      }
+    }
     let transport: RInteractiveCommandTransport;
     try {
       transport = this.transportFactory.create(this.context, { terminalMode: "activeOrCreate" });
@@ -260,6 +285,83 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider {
     }
     if (!this.managedTransports.delete(transport)) return false;
     return this.openWithTransport(transport, picked.variable);
+  }
+
+  private cachedPickerState(): CachedRInteractivePickerState | undefined {
+    const terminal = vscode.window.activeTerminal;
+    const transport = this.ownedTransport;
+    if (
+      this.currentSnapshot.state !== "ready" ||
+      !transport ||
+      !terminal ||
+      terminal !== this.ownedTerminal ||
+      !vscode.window.terminals.includes(terminal) ||
+      !isOfficialRTerminal(terminal)
+    ) {
+      return undefined;
+    }
+    const items = this.currentSnapshot.variables.map((item) => {
+      const cached = this.variablesByHandle.get(item.handle);
+      return cached ? Object.freeze({ ...cached.item, handle: item.handle, variable: cached.variable }) : undefined;
+    });
+    if (items.some((item) => item === undefined)) return undefined;
+    return Object.freeze({
+      generation: this.generation,
+      terminal,
+      transport,
+      items: Object.freeze(items as CachedRInteractiveQuickPickItem[]),
+      truncated: this.currentSnapshot.message.startsWith("Showing the first")
+    });
+  }
+
+  private async chooseCachedAndOpen(state: CachedRInteractivePickerState): Promise<boolean> {
+    let picked: CachedRInteractiveQuickPickItem | undefined;
+    try {
+      picked = await vscode.window.showQuickPick(state.items, {
+        title: "Open Wrangler: Choose a dataframe from the active R session",
+        placeHolder: state.truncated
+          ? "Select a dataframe (the variable list was truncated)"
+          : "Select a data.frame, tibble, or data.table",
+        matchOnDescription: true,
+        matchOnDetail: true,
+        ignoreFocusOut: true
+      });
+    } catch (error) {
+      if (this.isCurrentCachedPicker(state)) {
+        void vscode.window.showErrorMessage(`Could not choose an R dataframe: ${errorMessage(error)}`);
+      }
+      return false;
+    }
+    if (!picked || !state.items.includes(picked)) return false;
+    await restoreEditorGroupAfterQuickPick();
+    if (!this.isCurrentCachedPicker(state)) {
+      void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
+      return false;
+    }
+    const cached = this.variablesByHandle.get(picked.handle);
+    if (!cached || cached.variable !== picked.variable) {
+      void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
+      return false;
+    }
+    const transferred = this.releaseOwnedTransport();
+    if (transferred !== state.transport || !this.managedTransports.delete(state.transport)) {
+      void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
+      return false;
+    }
+    this.generation += 1;
+    this.replaceSnapshot(idleSnapshot(state.terminal));
+    return this.openWithTransport(state.transport, cached.variable);
+  }
+
+  private isCurrentCachedPicker(state: CachedRInteractivePickerState): boolean {
+    return (
+      this.isCurrent(state.generation) &&
+      this.ownedTransport === state.transport &&
+      this.ownedTerminal === state.terminal &&
+      vscode.window.activeTerminal === state.terminal &&
+      vscode.window.terminals.includes(state.terminal) &&
+      isOfficialRTerminal(state.terminal)
+    );
   }
 
   async openCachedVariable(handle: unknown): Promise<boolean> {
