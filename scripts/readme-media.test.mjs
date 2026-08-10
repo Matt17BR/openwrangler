@@ -589,8 +589,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R"/u
   );
   assert.match(readme, /alt="A rendered Quarto table beside the source document and Open Wrangler dataframe picker"/u);
-  assert.match(readme, /Data Wrangler converted Polars input to\s+Pandas/u);
-  assert.match(readme, /Open Wrangler kept it in\s+Polars/u);
+  assert.match(readme.replace(/\s+/gu, " "), /Data Wrangler converted Polars input to Pandas/u);
+  assert.match(readme.replace(/\s+/gu, " "), /Open Wrangler kept it in Polars/u);
   assert.doesNotMatch(readme, /That explains part of the difference/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
@@ -629,12 +629,13 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Closing the view leaves Spark work that has already started alone/u);
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   const performanceSection = readme.slice(readme.indexOf("## Performance"), readme.indexOf("## Roadmap"));
-  assert.match(performanceSection, /Microsoft Data\s+Wrangler/u);
-  assert.match(performanceSection, /was faster for notebook previews and\s+CSV column\s+profiling/u);
-  assert.match(performanceSection, /Parquet workbench\s+and profiling times were similar/u);
-  assert.match(performanceSection, /Data Wrangler converted Polars input to\s+Pandas/u);
-  assert.match(performanceSection, /Open Wrangler kept it in Polars/u);
-  assert.match(performanceSection, /did not time conversion separately/u);
+  const normalizedPerformanceSection = performanceSection.replace(/\s+/gu, " ");
+  assert.match(normalizedPerformanceSection, /Microsoft Data Wrangler/u);
+  assert.match(normalizedPerformanceSection, /was faster for notebook previews and CSV column profiling/u);
+  assert.match(normalizedPerformanceSection, /Parquet workbench and profiling times were similar/u);
+  assert.match(normalizedPerformanceSection, /Data Wrangler converted Polars input to Pandas/u);
+  assert.match(normalizedPerformanceSection, /Open Wrangler kept it in Polars/u);
+  assert.match(normalizedPerformanceSection, /did not time conversion separately/u);
   const performanceProse = performanceSection
     .replace(/\[full benchmark report\]\([^)]+\)/gu, "[benchmark report]")
     .replace(/\]\([^)]+\)/gu, "]");
