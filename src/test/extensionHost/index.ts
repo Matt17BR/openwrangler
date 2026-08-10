@@ -9359,6 +9359,125 @@ async function exerciseReleasedJupyterExtension(
       "Producing an automatic notebook preview must not implicitly open a dataframe session."
     );
 
+    recordAcceptanceProgress(`${phase}:temporary-result-mime-v2`);
+    const temporaryResultKernel = await jupyterApi.kernels.getKernel(notebook.uri);
+    assert.ok(temporaryResultKernel, "The temporary-result check requires the exact active notebook kernel.");
+    const temporaryResultCell = new vscode.NotebookRange(2, 3);
+    executionEditor.selection = temporaryResultCell;
+    executionEditor.selections = [temporaryResultCell];
+    executionEditor.revealRange(temporaryResultCell, vscode.NotebookEditorRevealType.InCenter);
+    await waitFor(
+      () => executionEditor.visibleRanges.some((range) => range.start <= 2 && range.end > 2),
+      WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+      "the temporary Pandas expression cell to become visible before its single execution"
+    );
+    await executeReleasedNotebookCell(notebook, 2, undefined, `${phase}:temporary-result-cell`, executionEditor);
+    const temporaryMimeItem = notebook
+      .cellAt(2)
+      .outputs.flatMap((output) => output.items)
+      .find((item) => item.mime === OPEN_WRANGLER_MIME_V2);
+    assert.ok(
+      temporaryMimeItem,
+      "A single execution of an unassigned dataframe expression must emit Open Wrangler MIME v2."
+    );
+    const temporaryMimePayload = normalizeNotebookOutputPayload(
+      JSON.parse(new TextDecoder().decode(temporaryMimeItem.data)) as unknown
+    );
+    assert.ok(temporaryMimePayload, "The temporary dataframe MIME item must satisfy the saved-output contract.");
+    assert.equal(temporaryMimePayload.metadata.backend, "pandas");
+    assert.equal(temporaryMimePayload.metadata.source.label, "DataFrame");
+    assert.equal(temporaryMimePayload.metadata.source.kind, "notebookVariable");
+    const temporaryResultHandle = temporaryMimePayload.metadata.source.variableName;
+    assert.equal(typeof temporaryResultHandle, "string");
+    if (typeof temporaryResultHandle !== "string") {
+      throw new Error("The temporary dataframe MIME item did not include its live-result handle.");
+    }
+    assert.match(
+      temporaryResultHandle,
+      /^__openwrangler_live_result_[0-9a-f]{32}$/u,
+      "An unassigned dataframe expression must publish an opaque live-result handle."
+    );
+    assert.deepEqual(temporaryMimePayload.metadata.shape, { rows: 3, columns: 12 });
+    assert.equal(temporaryMimePayload.page.totalRows, 3);
+    assert.equal(temporaryMimePayload.page.rows[0]?.values[0]?.display, "2499998");
+    assert.equal(temporaryMimePayload.page.rows[2]?.values[0]?.display, "2500000");
+    assert.equal(
+      testing.diagnostics().sessionCount,
+      0,
+      "Rendering a temporary dataframe result must not open a session before the user clicks its action."
+    );
+
+    let temporaryRendererButton: NotebookRendererButton;
+    try {
+      temporaryRendererButton = await waitForNotebookRendererButton(workbench, "DataFrame", "Open in Open Wrangler");
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} Host: ${JSON.stringify(
+          releasedNotebookRendererHostDiagnostics(notebook, 2)
+        )} Browser: ${JSON.stringify(rendererLoadObserver.snapshot())}`
+      );
+    }
+    let temporaryResultSession: NonNullable<ReturnType<TestApi["activeSession"]>>;
+    try {
+      temporaryResultSession = await openReleasedRendererVariableSession(
+        temporaryRendererButton,
+        workbench,
+        testing,
+        notebook,
+        {
+          name: temporaryResultHandle,
+          type: "DataFrame",
+          backend: "pandas",
+          firstValue: "2499998"
+        },
+        "the exact temporary Pandas expression opened from its physical renderer action",
+        `${phase}:temporary-result-inline`
+      );
+    } finally {
+      await temporaryRendererButton.dispose();
+    }
+    try {
+      assert.equal(temporaryResultSession.metadata.source.kind, "notebookVariable");
+      assert.equal(temporaryResultSession.metadata.source.variableName, temporaryResultHandle);
+      assert.equal(temporaryResultSession.metadata.source.label, "DataFrame");
+      assert.equal(temporaryResultSession.metadata.source.uri, notebook.uri.toString());
+      assert.notEqual(
+        temporaryResultSession.sessionId,
+        temporaryMimePayload.metadata.sessionId,
+        "The primary renderer action must open a live kernel session rather than its saved inline snapshot."
+      );
+      assert.deepEqual(temporaryResultSession.metadata.shape, { rows: 3, columns: 12 });
+      assert.deepEqual(temporaryResultSession.metadata.filteredShape, { rows: 3, columns: 12 });
+      const temporaryPage = await testing.request({
+        kind: "getPage",
+        columnOffset: 0,
+        columnLimit: 12,
+        viewRequestId: "released-jupyter-temporary-result-page",
+        sessionId: temporaryResultSession.sessionId,
+        revision: temporaryResultSession.metadata.revision,
+        offset: 0,
+        limit: 3,
+        filterModel: temporaryResultSession.metadata.filterModel
+      });
+      assert.equal(temporaryPage.kind, "page");
+      if (temporaryPage.kind !== "page") throw new Error("The temporary-result live page did not resolve.");
+      assert.equal(temporaryPage.page.totalRows, 3);
+      assert.equal(temporaryPage.page.rows[0]?.values[0]?.display, "2499998");
+      assert.equal(temporaryPage.page.rows[2]?.values[0]?.display, "2500000");
+      assertExactOpenNotebookDocument(notebook, "after opening its temporary dataframe result");
+      assert.equal(
+        await jupyterApi.kernels.getKernel(notebook.uri),
+        temporaryResultKernel,
+        "Opening a temporary result must retain the exact originating notebook kernel."
+      );
+    } finally {
+      await disposePackagedSessionPanel(
+        testing,
+        temporaryResultSession.sessionId,
+        "the released-Jupyter temporary dataframe session"
+      );
+    }
+
     assertExactVisibleReleasedNotebookEditor(
       notebook,
       variableNotebookEditor,
@@ -11764,7 +11883,7 @@ function writeReleasedJupyterNotebook(
           execution_count: null,
           metadata: {},
           outputs: [],
-          source: ["polars_frame\n"]
+          source: ["# Open a temporary result without assigning it\n", "orders_preview_df.tail(3)\n"]
         },
         {
           cell_type: "code",
