@@ -227,14 +227,27 @@ describe("App progressive profiling and view correlation", () => {
       .getByRole("button", { name: "Filter city to Berlin; Berlin: 1 (0.2%)" })
       .querySelector("i");
     const countModeBarWidth = berlinBar?.getAttribute("style");
+    const headerCounts = screen.getByRole("button", { name: "Show header profile counts" });
+    const headerPercentages = screen.getByRole("button", { name: "Show header profile percentages" });
+    expect(headerCounts).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(headerPercentages);
+    expect(within(cityHeader).getByText("Distinct 100%")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     const drawer = screen.getByRole("complementary", { name: "Column profiles and filters" });
+    expect(within(drawer).getByRole("button", { name: "%" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(drawer).getByText("Distinct").nextElementSibling).toHaveTextContent("100%");
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Counts" }));
+    expect(headerCounts).toHaveAttribute("aria-pressed", "true");
+    expect(within(cityHeader).getByText("Distinct 500")).toBeVisible();
     expect(within(drawer).getByText("Distinct").nextElementSibling).toHaveTextContent("500");
 
-    fireEvent.click(within(drawer).getByRole("button", { name: "%" }));
+    fireEvent.click(headerPercentages);
     expect(within(cityHeader).getByText("Distinct 100%")).toBeVisible();
     expect(within(drawer).getByText("Distinct").nextElementSibling).toHaveTextContent("100%");
+    expect(within(drawer).getByRole("button", { name: "%" })).toHaveAttribute("aria-pressed", "true");
     expect(berlinBar).toHaveAttribute("style", countModeBarWidth);
 
     postMessage.mockClear();

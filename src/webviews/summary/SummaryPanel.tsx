@@ -12,6 +12,7 @@ import {
   viewValueSelectionFilter
 } from "../../shared/filterModel";
 import { formatNumericSummaryNumber, numericExtremumDisplay } from "../numericSummary";
+import { ProfileValueToggle } from "../ProfileValueToggle";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
 import {
   describeProfileValue,
@@ -478,22 +479,12 @@ function DistributionValueToggle({
         : `Distributions use ${denominator.toLocaleString()} non-missing visible ${denominator === 1 ? "row" : "rows"}.`;
   return (
     <div className="distributionValueControls">
-      <div className="segmentedControl" role="group" aria-label="Distribution values">
-        <button type="button" aria-pressed={mode === "count"} disabled={!onChange} onClick={() => onChange?.("count")}>
-          Counts
-        </button>
-        <button
-          type="button"
-          aria-label="%"
-          aria-description={denominatorDescription}
-          title={denominatorDescription}
-          aria-pressed={mode === "percent"}
-          disabled={!onChange}
-          onClick={() => onChange?.("percent")}
-        >
-          %
-        </button>
-      </div>
+      <ProfileValueToggle
+        mode={mode}
+        onChange={onChange}
+        ariaLabel="Distribution values"
+        percentDescription={denominatorDescription}
+      />
     </div>
   );
 }
