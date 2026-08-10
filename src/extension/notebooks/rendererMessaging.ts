@@ -1,5 +1,9 @@
 import * as vscode from "vscode";
-import { isPythonIdentifier, normalizeNotebookOutputPayload } from "../../shared/notebookOutput";
+import {
+  isNotebookLiveResultHandle,
+  isPythonIdentifier,
+  normalizeNotebookOutputPayload
+} from "../../shared/notebookOutput";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
@@ -49,20 +53,24 @@ export function registerNotebookRendererMessaging(
       }
 
       try {
+        const label = isNotebookLiveResultHandle(variableName) ? payload.metadata.source.label : variableName;
         OpenWranglerPanel.create(
           context,
           coordinator.createBridge(new KernelBridge(context, notebook, shouldRegisterNotebookFormatters()), notebook),
           {
             kind: "notebookVariable",
-            label: variableName,
+            label,
             variableName,
             uri: notebook.uri.toString()
           }
         );
       } catch (error) {
         const detail = error instanceof Error ? ` ${error.message}` : "";
+        const recovery = isNotebookLiveResultHandle(variableName)
+          ? "run the cell again and try again."
+          : `run the cell that defines ${variableName}, and try again.`;
         void vscode.window.showErrorMessage(
-          `Open Wrangler could not access the live dataframe. Select or start the notebook's Python kernel, run the cell that defines ${variableName}, and try again.${detail}`
+          `Open Wrangler could not access the live dataframe. Select or start the notebook's Python kernel, ${recovery}${detail}`
         );
       }
     })

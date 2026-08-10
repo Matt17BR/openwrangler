@@ -2,6 +2,7 @@ import type { ColumnSummary, GridPage, LiveGridPage, SessionMetadata } from "./p
 import { isOpenWranglerResponse } from "./protocolValidation";
 
 export const OPEN_WRANGLER_MIME_V2 = "application/vnd.openwrangler.viewer.v2+json";
+const NOTEBOOK_LIVE_RESULT_HANDLE = /^__openwrangler_live_result_[0-9a-f]{32}$/u;
 
 export const NOTEBOOK_OUTPUT_LIMITS = {
   rows: 10_000,
@@ -149,6 +150,10 @@ function isCanonicalSavedOutput(metadata: SessionMetadata, page: LiveGridPage): 
 
 export function isPythonIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
+}
+
+export function isNotebookLiveResultHandle(value: string): boolean {
+  return NOTEBOOK_LIVE_RESULT_HANDLE.test(value);
 }
 
 function isWithinSavedOutputBudget(metadata: SessionMetadata, page: GridPage): boolean {

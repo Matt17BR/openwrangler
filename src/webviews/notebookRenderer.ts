@@ -1,4 +1,5 @@
 import {
+  isNotebookLiveResultHandle,
   isPythonIdentifier,
   normalizeNotebookOutputPayload,
   type NotebookOutputPayload
@@ -66,17 +67,14 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
       ? boundedText(variableName, INLINE_COLUMN_CHARACTERS).text
       : undefined;
   if (liveVariableName && context.postMessage) {
+    const actionDescription = isNotebookLiveResultHandle(liveVariableName)
+      ? "Open the complete current notebook result"
+      : `Open the complete current value of ${liveVariableName}`;
     actions.appendChild(
-      actionButton("Open in Open Wrangler", `Open the complete current value of ${liveVariableName}`, () => {
+      actionButton("Open in Open Wrangler", actionDescription, () => {
         context.postMessage?.({ kind: "openInOpenWrangler", payload });
       })
     );
-  } else if (!liveVariableName) {
-    const liveHint = document.createElement("span");
-    liveHint.setAttribute("role", "note");
-    liveHint.style.color = "var(--vscode-descriptionForeground)";
-    liveHint.textContent = "Run this cell again to open the current dataframe in Open Wrangler.";
-    actions.appendChild(liveHint);
   }
   header.appendChild(actions);
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { OPEN_WRANGLER_MIME_V2, normalizeNotebookOutputPayload } from "../shared/notebookOutput";
+import {
+  isNotebookLiveResultHandle,
+  OPEN_WRANGLER_MIME_V2,
+  normalizeNotebookOutputPayload
+} from "../shared/notebookOutput";
 import { runtimeIdentityForDataBackend } from "../shared/runtimeIdentity";
 
 const page = {
@@ -147,6 +151,22 @@ describe("notebook output", () => {
         })
       ).toBeUndefined();
     }
+  });
+
+  it("recognizes only the reserved opaque live-result handle shape", () => {
+    const handle = "__openwrangler_live_result_0123456789abcdef0123456789abcdef";
+    const normalized = normalizeNotebookOutputPayload({
+      mimeVersion: 2,
+      metadata: { ...metadata, source: { ...metadata.source, variableName: handle } },
+      page,
+      summaries: []
+    });
+
+    expect(normalized?.metadata.source.variableName).toBe(handle);
+    expect(isNotebookLiveResultHandle(handle)).toBe(true);
+    expect(isNotebookLiveResultHandle("__openwrangler_live_result_0123")).toBe(false);
+    expect(isNotebookLiveResultHandle("__openwrangler_live_result_0123456789ABCDEF0123456789ABCDEF")).toBe(false);
+    expect(isNotebookLiveResultHandle("ordinary_frame")).toBe(false);
   });
 
   it("requires current MIME v2 pages to declare their column identities", () => {

@@ -106,6 +106,24 @@ describe("notebook renderer messaging", () => {
     expect(rendererMocks.activeEditorReads).toBe(0);
   });
 
+  it("opens an opaque live-result handle under the readable output label", () => {
+    const notebookA = notebook("file:///workspace/a.ipynb");
+    const editorA = editor(notebookA);
+    rendererMocks.notebookDocuments.push(notebookA);
+    rendererMocks.visibleNotebookEditors.push(editorA);
+    const { context, coordinatedBridge } = register();
+    const handle = "__openwrangler_live_result_0123456789abcdef0123456789abcdef";
+
+    dispatch(editorA, validPayload(handle));
+
+    expect(rendererMocks.createPanel).toHaveBeenCalledWith(context, coordinatedBridge, {
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: handle,
+      uri: "file:///workspace/a.ipynb"
+    });
+  });
+
   it("never falls back to a snapshot when the primary action has no live variable link", () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");
