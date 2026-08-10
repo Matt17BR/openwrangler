@@ -9984,12 +9984,19 @@ async function exerciseReleasedPythonFileEntrypoint(
     recordAcceptanceProgress(`${checkpoint}:close`);
     await disposePackagedSessionPanel(testing, active.sessionId, "the Python editor's live Polars session");
     assert.equal(testing.diagnostics().sessionCount, 0);
-    const tabs = [textDocumentTab(source), notebookTab(interactive.uri)].filter((tab): tab is vscode.Tab =>
-      Boolean(tab)
+    assert.equal(sourceDocument.isClosed, false, "The Python-file journey must retain its exact source document.");
+    await closeExactReleasedPythonInteractiveWindow(interactive);
+    const sourceTab = textDocumentTab(source);
+    assert.ok(sourceTab, "The Python-file journey must retain its exact source tab.");
+    assert.equal(
+      await withBoundedAcceptancePromise(
+        vscode.window.tabGroups.close(sourceTab, true),
+        10_000,
+        "the Python entry-point source tab to close"
+      ),
+      true
     );
-    assert.equal(tabs.length, 2, "The Python-file journey must retain its exact source and Interactive Window tabs.");
-    assert.equal(await vscode.window.tabGroups.close(tabs, true), true);
-    await waitFor(() => interactive?.isClosed === true, 10_000, "the private Python Interactive Window to close");
+    await waitFor(() => sourceDocument.isClosed, 10_000, "the Python entry-point source document to close");
     recordAcceptanceProgress(`${checkpoint}:complete`);
   } finally {
     const active = testing.activeSession();
@@ -10003,13 +10010,21 @@ async function exerciseReleasedPythonFileEntrypoint(
         // The outer editor-process teardown remains the bounded fallback for the original failure.
       }
     }
-    const tabs = [
-      textDocumentTab(source),
-      ...(interactive && !interactive.isClosed ? [notebookTab(interactive.uri)] : [])
-    ].filter((tab): tab is vscode.Tab => Boolean(tab));
-    if (tabs.length > 0) {
+    if (interactive && !interactive.isClosed) {
       try {
-        await vscode.window.tabGroups.close(tabs, true);
+        await closeExactReleasedPythonInteractiveWindow(interactive);
+      } catch {
+        // Preserve the original acceptance failure.
+      }
+    }
+    const sourceTab = textDocumentTab(source);
+    if (sourceTab) {
+      try {
+        await withBoundedAcceptancePromise(
+          vscode.window.tabGroups.close(sourceTab, true),
+          10_000,
+          "the failed Python entry-point source tab to close"
+        );
       } catch {
         // Preserve the original acceptance failure.
       }
@@ -10020,6 +10035,32 @@ async function exerciseReleasedPythonFileEntrypoint(
       "Python entry-point cleanup must not change its source file."
     );
   }
+}
+
+async function closeExactReleasedPythonInteractiveWindow(interactive: vscode.NotebookDocument): Promise<void> {
+  assertExactOpenNotebookDocument(interactive, "before closing the Python entry-point Interactive Window");
+  const editor = await withBoundedAcceptancePromise(
+    vscode.window.showNotebookDocument(interactive, {
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false,
+      preview: false
+    }),
+    10_000,
+    "the exact Python entry-point Interactive Window to become active"
+  );
+  assert.equal(editor.notebook, interactive, "The Python entry-point Interactive Window editor must stay exact.");
+  assertExactOpenNotebookDocument(interactive, "after showing the Python entry-point Interactive Window for cleanup");
+  assertExactVisibleReleasedNotebookEditor(
+    interactive,
+    editor,
+    "before closing the Python entry-point Interactive Window"
+  );
+  await withBoundedAcceptancePromise(
+    vscode.commands.executeCommand("workbench.action.closeActiveEditor"),
+    10_000,
+    "the exact Python entry-point Interactive Window to close"
+  );
+  await waitFor(() => interactive.isClosed, 10_000, "the private Python Interactive Window to close");
 }
 
 function releasedPythonEntrypointDiagnostics(
