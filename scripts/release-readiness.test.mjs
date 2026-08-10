@@ -227,6 +227,7 @@ test("stable public copy rejects leftover 1.99 preview labels", () => {
 test("requires one tracked, release-matched Data Wrangler review in the stable Performance section", () => {
   const version = "2.0.0";
   const reportPath = (reportVersion) => `docs/performance/data-wrangler-${reportVersion}/review.md`;
+  const reportDataPath = (reportVersion) => `docs/performance/data-wrangler-${reportVersion}/report.json`;
   const reportUrl = (reportVersion) =>
     `https://github.com/Matt17BR/openwrangler/blob/main/${reportPath(reportVersion)}`;
   const readmeWithReport = (reportVersion, prefix = "") =>
@@ -241,7 +242,11 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
       packagedPackageJson: JSON.stringify({ ...stablePackage, version: sourceVersion }),
       packagedPythonVersionFile: `__version__ = "${sourceVersion}"\n`,
       packagedReadme: readmeWithReport(reportVersion),
-      trackedEvidencePaths: new Set([...ready().trackedEvidencePaths, reportPath(reportVersion)]),
+      trackedEvidencePaths: new Set([
+        ...ready().trackedEvidencePaths,
+        reportPath(reportVersion),
+        reportDataPath(reportVersion)
+      ]),
       vsixManifest: manifest({ version: sourceVersion }),
       ...overrides
     });
@@ -263,7 +268,12 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   const sourceProblems = inspectStableReleaseReadiness(
     candidate(version, {
       readme: readmeWithReport("1.2.1"),
-      trackedEvidencePaths: new Set([...ready().trackedEvidencePaths, reportPath("1.2.1"), reportPath(version)])
+      trackedEvidencePaths: new Set([
+        ...ready().trackedEvidencePaths,
+        reportPath("1.2.1"),
+        reportPath(version),
+        reportDataPath(version)
+      ])
     })
   );
   assert.ok(
@@ -275,7 +285,12 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   const packagedProblems = inspectStableReleaseReadiness(
     candidate(version, {
       packagedReadme: readmeWithReport("1.2.1"),
-      trackedEvidencePaths: new Set([...ready().trackedEvidencePaths, reportPath("1.2.1"), reportPath(version)])
+      trackedEvidencePaths: new Set([
+        ...ready().trackedEvidencePaths,
+        reportPath("1.2.1"),
+        reportPath(version),
+        reportDataPath(version)
+      ])
     })
   );
   assert.ok(
@@ -296,6 +311,16 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
   );
   for (const label of ["README.md", "Packaged README"]) {
     assert.ok(untrackedProblems.includes(`${label} Performance report ${reportPath(version)} must be tracked.`));
+    assert.ok(untrackedProblems.includes(`${label} Performance data ${reportDataPath(version)} must be tracked.`));
+  }
+
+  const missingDataProblems = inspectStableReleaseReadiness(
+    candidate(version, {
+      trackedEvidencePaths: new Set([...ready().trackedEvidencePaths, reportPath(version)])
+    })
+  );
+  for (const label of ["README.md", "Packaged README"]) {
+    assert.ok(missingDataProblems.includes(`${label} Performance data ${reportDataPath(version)} must be tracked.`));
   }
 
   const missingCurrentReport = inspectStableReleaseReadiness(
