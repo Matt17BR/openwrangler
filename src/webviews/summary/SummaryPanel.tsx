@@ -503,8 +503,12 @@ function TopValues({
   onSelectValue?: (item: ValueCount) => void;
 }) {
   const categorical = summary.visualization?.kind === "categorical" ? summary.visualization : undefined;
-  const values = categorical?.categories ?? (summary.type === "string" ? summary.topValues : []);
-  const otherCount = categorical?.otherCount ?? 0;
+  const compactValues = categorical?.categories ?? [];
+  const values =
+    summary.type === "string" && summary.topValues.length > compactValues.length ? summary.topValues : compactValues;
+  const compactDistributionCount =
+    compactValues.reduce((total, item) => total + item.count, 0) + (categorical?.otherCount ?? 0);
+  const otherCount = Math.max(0, compactDistributionCount - values.reduce((total, item) => total + item.count, 0));
   const valuesTruncated =
     (categorical !== undefined || summary.type === "string") &&
     (otherCount > 0 || (summary.distinctCount ?? values.length) > values.length);
