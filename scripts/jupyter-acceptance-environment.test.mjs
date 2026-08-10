@@ -250,15 +250,7 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
 
     const kernelSpec = JSON.parse(await readFile(prepared.kernelSpecPath, "utf8"));
     assert.deepEqual(kernelSpec, {
-      argv: [
-        rExecutable,
-        "--slave",
-        "--no-init-file",
-        "-f",
-        prepared.kernelBootstrapPath,
-        "--args",
-        "{connection_file}"
-      ],
+      argv: [rscript, "--vanilla", prepared.kernelBootstrapPath, "{connection_file}"],
       display_name: "R (Open Wrangler)",
       language: "R",
       env: {
@@ -273,9 +265,10 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
     });
     assert.equal(kernelSpec.argv.at(-1), "{connection_file}");
     assert.equal(kernelSpec.argv.filter((value) => value === "{connection_file}").length, 1);
-    assert.notEqual(kernelSpec.argv[0], rscript);
-    assert.equal(kernelSpec.argv.includes("--vanilla"), false);
-    assert.equal(kernelSpec.argv.includes("--no-init-file"), true);
+    assert.equal(kernelSpec.argv[0], rscript);
+    assert.equal(kernelSpec.argv.includes("--vanilla"), true);
+    assert.equal(kernelSpec.argv.includes("--no-init-file"), false);
+    assert.equal(kernelSpec.argv.includes("--args"), false);
     assert.equal(statSync(prepared.kernelSpecPath).mode & 0o777, 0o600);
 
     assert.equal(matchingRProbes.length, 1);
