@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Column profiles now use one Counts/% setting in both the grid headers and the profile panel. The grid footer exposes
+  the switch before a profile is opened, and **More values…** opens the longer value list when a compact profile omits
+  categories.
 - Preview and stable candidates now run macOS, Windows, Linux, performance, and Jupyter checks in one fail-fast
   matrix. Once a check fails, GitHub cancels the remaining cells. Remote SSH runs afterward so cancellation cannot
   interrupt its cleanup.
