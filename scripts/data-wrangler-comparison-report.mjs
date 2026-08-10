@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 const SHA256 = /^[0-9a-f]{64}$/u;
 const NUMERIC_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
 const DATA_WRANGLER_BASELINE_VERSION = "1.24.2";
@@ -30,6 +32,7 @@ export const DATA_WRANGLER_STUDY_TOOL_NAMES = Object.freeze([
 ]);
 
 export const DATA_WRANGLER_STUDY_REPORT_PROTOCOL = "openwrangler-data-wrangler-study-report-v2";
+export const DATA_WRANGLER_STUDY_REPORT_MAX_BYTES = 16 * 1024 * 1024;
 export const DATA_WRANGLER_REVIEW_START = "<!-- open-wrangler-comparison-results:start -->";
 export const DATA_WRANGLER_REVIEW_END = "<!-- open-wrangler-comparison-results:end -->";
 export const DATA_WRANGLER_REGRESSION_LIMITS = Object.freeze({
@@ -42,6 +45,15 @@ export const DATA_WRANGLER_REGRESSION_LIMITS = Object.freeze({
 
 const STUDY_METRICS = Object.freeze(["inlinePreviewMs", "workbenchOpenMs", "firstProfileMs", "completeProfileMs"]);
 const STUDY_MEMORY_METRICS = Object.freeze(["peakPssBytes"]);
+const STUDY_SAMPLE_KEYS = Object.freeze(["index", "status", "failure", "metrics", "milestones", "publicUi", "memory"]);
+const FLATTENED_STUDY_SAMPLE_KEYS = Object.freeze([
+  "sessionId",
+  "product",
+  "engine",
+  "format",
+  "order",
+  ...STUDY_SAMPLE_KEYS
+]);
 const STUDY_MILESTONES = Object.freeze([
   "run-cell-click",
   "inline-ready",
@@ -312,11 +324,7 @@ export function assertReleaseCompleteStudyReport(report) {
     report.incompleteSessionIds?.length !== 0 ||
     report.plannedSamples !== 40 ||
     report.completedSamples !== 40 ||
-    report.samples?.length !== 40 ||
-    !Number.isInteger(report.outcomes?.success) ||
-    !Number.isInteger(report.outcomes?.failure) ||
-    !Number.isInteger(report.outcomes?.timeout) ||
-    report.outcomes.success + report.outcomes.failure + report.outcomes.timeout !== 40
+    report.samples?.length !== 40
   ) {
     throw new TypeError("A release comparison report requires eight complete sessions and forty recorded samples.");
   }
@@ -339,17 +347,21 @@ export function assertReleaseCompleteStudyReport(report) {
     assertEqual(fixture?.valuesValidated, true, `report ${cell.format} fixture validation`);
     assertMatch(fixture?.sha256, SHA256, `report ${cell.format} fixture SHA-256`);
   }
-  const expectedSummaries = report.method?.cells?.flatMap(({ id }) =>
-    ["open-wrangler", "data-wrangler"].map((product) => `${id}:${product}`)
+  const derived = recomputeReleaseStudyFields(report, expectedCells);
+  if (!isDeepStrictEqual(report.outcomes, derived.outcomes)) {
+    throw new TypeError("Comparison report outcomes do not match the raw samples.");
+  }
+  const observedSummaries = new Map(
+    (report.summaries ?? []).map((summary) => [`${summary.cellId}:${summary.product}`, summary])
   );
-  const observedSummaries = report.summaries?.map(({ cellId, product }) => `${cellId}:${product}`);
   if (
-    expectedSummaries?.length !== 8 ||
-    observedSummaries?.length !== 8 ||
-    new Set(observedSummaries).size !== 8 ||
-    expectedSummaries.some((identity) => !observedSummaries.includes(identity))
+    !Array.isArray(report.summaries) ||
+    observedSummaries.size !== derived.summaries.length ||
+    derived.summaries.some(
+      (summary) => !isDeepStrictEqual(observedSummaries.get(`${summary.cellId}:${summary.product}`), summary)
+    )
   ) {
-    throw new TypeError("A release comparison report requires one summary for each product and workload.");
+    throw new TypeError("Comparison report summaries do not match the raw samples.");
   }
   for (const summary of report.summaries ?? []) {
     if (!["open-wrangler", "data-wrangler"].includes(summary.product)) {
@@ -384,6 +396,124 @@ export function assertReleaseCompleteStudyReport(report) {
   }
   assertPublicEvidence(report);
   return report;
+}
+
+function recomputeReleaseStudyFields(report, cells) {
+  const cellById = new Map(cells.map((cell) => [cell.id, cell]));
+  const productOrders = [
+    ["open-wrangler", "data-wrangler"],
+    ["data-wrangler", "open-wrangler"],
+    ["data-wrangler", "open-wrangler"],
+    ["open-wrangler", "data-wrangler"]
+  ];
+  const expectedSessions = new Map(
+    cells.flatMap((cell, cellIndex) =>
+      productOrders[cellIndex].map((product, productIndex) => {
+        const order = cellIndex * 2 + productIndex;
+        const id = `warm.${cell.id}.${product}`;
+        return [id, { cell, identity: `${cell.id}:${product}`, order }];
+      })
+    )
+  );
+  const sessions = new Map();
+  const pairs = new Map();
+  for (const sample of report.samples) {
+    exactKeys(sample, FLATTENED_STUDY_SAMPLE_KEYS, "flattened study sample");
+    assertMatch(sample.sessionId, STUDY_TRIAL_ID, "flattened study session ID");
+    if (!["open-wrangler", "data-wrangler"].includes(sample.product)) {
+      throw new TypeError("Flattened study sample product is invalid.");
+    }
+    const cell = cellById.get(`${sample.engine}-${sample.format}`);
+    if (!cell) throw new TypeError("Flattened study sample workload is invalid.");
+    assertIntegerBetween(sample.order, 0, 7, "flattened study sample order");
+
+    const identity = `${cell.id}:${sample.product}`;
+    const existing = sessions.get(sample.sessionId);
+    if (
+      existing !== undefined &&
+      (existing.identity !== identity || existing.order !== sample.order || existing.cell !== cell)
+    ) {
+      throw new TypeError("A study session cannot change product, workload, or order.");
+    }
+    const session = existing ?? { cell, identity, order: sample.order, samples: [] };
+    session.samples.push(sample);
+    sessions.set(sample.sessionId, session);
+  }
+
+  for (const [sessionId, session] of sessions) {
+    const expected = expectedSessions.get(sessionId);
+    if (
+      expected === undefined ||
+      expected.cell !== session.cell ||
+      expected.identity !== session.identity ||
+      expected.order !== session.order
+    ) {
+      throw new TypeError("Raw study samples do not match the canonical release schedule.");
+    }
+    if (pairs.has(session.identity)) throw new TypeError("A product and workload can have only one study session.");
+    pairs.set(session.identity, sessionId);
+    session.samples.sort((left, right) => left.index - right.index);
+    if (session.samples.length !== 5) throw new TypeError("Each release study session requires five raw samples.");
+    session.samples.forEach((sample, offset) => {
+      const evidence = Object.fromEntries(STUDY_SAMPLE_KEYS.map((key) => [key, sample[key]]));
+      validateStudySample(evidence, offset + 1, session.cell);
+    });
+  }
+
+  const expectedPairs = cells.flatMap(({ id }) =>
+    ["open-wrangler", "data-wrangler"].map((product) => `${id}:${product}`)
+  );
+  if (
+    sessions.size !== 8 ||
+    pairs.size !== 8 ||
+    expectedPairs.some((identity) => !pairs.has(identity)) ||
+    expectedSessions.size !== 8 ||
+    [...expectedSessions.keys()].some((sessionId) => !sessions.has(sessionId))
+  ) {
+    throw new TypeError("Raw study samples must cover one ordered session for every product and workload.");
+  }
+  const canonicalSamples = [...sessions.values()]
+    .sort((left, right) => left.order - right.order)
+    .flatMap(({ samples }) => samples);
+  if (canonicalSamples.some((sample, index) => sample !== report.samples[index])) {
+    throw new TypeError("Raw study samples are not in canonical session and sample order.");
+  }
+
+  const outcomes = {
+    success: report.samples.filter(({ status }) => status === "success").length,
+    failure: report.samples.filter(({ status }) => status === "failure").length,
+    timeout: report.samples.filter(({ status }) => status === "timeout").length
+  };
+  const summaries = cells.flatMap((cell) =>
+    ["open-wrangler", "data-wrangler"].map((product) => {
+      const group = report.samples.filter(
+        (sample) => sample.engine === cell.engine && sample.format === cell.format && sample.product === product
+      );
+      const successful = group.filter(({ status }) => status === "success");
+      return {
+        cellId: cell.id,
+        product,
+        planned: 5,
+        completed: group.length,
+        successes: successful.length,
+        failures: group.filter(({ status }) => status === "failure").length,
+        timeouts: group.filter(({ status }) => status === "timeout").length,
+        metrics: Object.fromEntries(
+          STUDY_METRICS.map((name) => [
+            name,
+            summarizeComparisonValues(successful.map((sample) => sample.metrics[name]))
+          ])
+        ),
+        memory: Object.fromEntries(
+          STUDY_MEMORY_METRICS.map((name) => [
+            name,
+            summarizeComparisonValues(successful.map((sample) => sample.memory[name]))
+          ])
+        )
+      };
+    })
+  );
+  return { outcomes, summaries };
 }
 
 export function renderDataWranglerComparisonReview(report) {
@@ -424,7 +554,7 @@ export function renderDataWranglerComparisonReview(report) {
 
 <!-- prettier-ignore-start -->
 
-Collected ${report.generatedAtUtc.slice(0, 10)} with Open Wrangler ${candidate}, Data Wrangler ${baseline}, and VS Code ${editor}.
+Report generated ${report.generatedAtUtc.slice(0, 10)} for Open Wrangler ${candidate}, Data Wrangler ${baseline}, and VS Code ${editor}.
 Each row shows successful samples out of five. Measurements are median (minimum–maximum).
 
 - Raw report: [report.json](report.json)

@@ -142,7 +142,7 @@ test("keeps p95 descriptive and gates material regressions on the median only", 
     openWrangler: 1_000,
     dataWrangler: baseline.metrics.inlinePreviewMs.median
   });
-  assert.throws(() => assertReleaseCompleteStudyReport(regressed), /pandas-csv inlinePreviewMs median/u);
+  assert.throws(() => assertReleaseCompleteStudyReport(regressed), /summaries do not match the raw samples/u);
 });
 
 test("release completeness requires every Open Wrangler sample and three Data Wrangler samples", () => {
@@ -201,7 +201,7 @@ test("renders comparison results in workload and product order", () => {
   reordered.summaries.reverse();
 
   assert.equal(renderDataWranglerComparisonReview(reordered), expected);
-  assert.match(expected, /Collected 2026-08-04 with Open Wrangler 1\.2\.1, Data Wrangler 1\.24\.2/u);
+  assert.match(expected, /Report generated 2026-08-04 for Open Wrangler 1\.2\.1, Data Wrangler 1\.24\.2/u);
   assert.match(expected, /\[report\.json\]\(report\.json\)/u);
   assert.ok(expected.includes(`Open Wrangler VSIX SHA-256: \`${SHA}\``));
   assert.ok(expected.includes(`CSV fixture: 100,000 × 50, SHA-256 \`${SHA}\``));
@@ -241,6 +241,44 @@ test("requires one ordered pair of standalone review markers", () => {
   ]) {
     assert.throws(() => updateDataWranglerComparisonReview(review, report), /Comparison review/u);
   }
+});
+
+test("recomputes report outcomes and summaries from validated raw samples", () => {
+  const report = releaseReport();
+
+  const changedRaw = structuredClone(report);
+  changedRaw.samples[0].milestones[1].monotonicNs = "11099000000";
+  changedRaw.samples[0].metrics.inlinePreviewMs = 99;
+  assert.throws(() => assertReleaseCompleteStudyReport(changedRaw), /summaries do not match the raw samples/u);
+
+  const changedOutcome = structuredClone(report);
+  changedOutcome.outcomes.success -= 1;
+  changedOutcome.outcomes.failure += 1;
+  assert.throws(() => assertReleaseCompleteStudyReport(changedOutcome), /outcomes do not match the raw samples/u);
+
+  const reorderedRaw = structuredClone(report);
+  [reorderedRaw.samples[0], reorderedRaw.samples[1]] = [reorderedRaw.samples[1], reorderedRaw.samples[0]];
+  assert.throws(() => assertReleaseCompleteStudyReport(reorderedRaw), /canonical session and sample order/u);
+
+  const duplicateIndex = structuredClone(report);
+  duplicateIndex.samples[1].index = duplicateIndex.samples[0].index;
+  assert.throws(() => assertReleaseCompleteStudyReport(duplicateIndex), /study sample 2 index/u);
+
+  const changedSession = structuredClone(report);
+  changedSession.samples.slice(0, 5).forEach((sample) => {
+    sample.sessionId = "warm.pandas-csv.renamed";
+  });
+  assert.throws(() => assertReleaseCompleteStudyReport(changedSession), /canonical release schedule/u);
+});
+
+test("rejects non-finite raw and derived measurements", () => {
+  const raw = releaseReport();
+  raw.samples[0].metrics.inlinePreviewMs = Number.POSITIVE_INFINITY;
+  assert.throws(() => assertReleaseCompleteStudyReport(raw), /does not match its milestones/u);
+
+  const derived = structuredClone(releaseReport());
+  derived.summaries[0].metrics.inlinePreviewMs.median = Number.NaN;
+  assert.throws(() => assertReleaseCompleteStudyReport(derived), /summaries do not match the raw samples/u);
 });
 
 function releaseReport() {
