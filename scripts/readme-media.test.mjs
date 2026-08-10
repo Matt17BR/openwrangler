@@ -16,7 +16,7 @@ const root = resolve(import.meta.dirname, "..");
 
 const nativeAssets = [
   nativeAsset("explore.png", "vscode-explore-dark.png", 1_440, 870),
-  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 861),
+  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 846),
   nativeAsset("workflow.png", "vscode-workflow-dark.png", 1_440, 870),
   nativeCrop("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600, {
     x: 45,
@@ -26,7 +26,7 @@ const nativeAssets = [
   }),
   nativeAsset("gallery/column-search-wide.png", "vscode-column-search-wide-dark.png", 1_440, 865),
   nativeAsset("gallery/file-explorer-action.png", "vscode-file-explorer-action-dark.png", 1_440, 870),
-  nativeAsset("gallery/high-contrast-explore.png", "vscode-high-contrast-explore-high-contrast.png", 1_440, 845),
+  nativeAsset("gallery/high-contrast-explore.png", "vscode-high-contrast-explore-high-contrast.png", 1_440, 870),
   nativeAsset("gallery/import-options.png", "vscode-import-options-dark.png", 1_440, 870),
   nativeAsset("gallery/export-script.png", "vscode-export-code-dark.png", 1_440, 870),
   nativeAsset("gallery/export-data.png", "vscode-export-data-dark.png", 1_440, 870),
@@ -52,8 +52,8 @@ const nativeAssets = [
   nativeAsset("gallery/operation-catalog.png", "vscode-operation-catalog-dark.png", 1_280, 874),
   nativeAsset("gallery/operation-configuration.png", "vscode-operation-configuration-dark.png", 1_280, 874),
   nativeAsset("gallery/applied-step-inspection.png", "vscode-applied-step-inspection-dark.png", 1_440, 870),
-  nativeAsset("gallery/latest-step-edited.png", "vscode-latest-step-edited-dark.png", 1_440, 860),
-  nativeAsset("gallery/latest-step-undone.png", "vscode-latest-step-undone-dark.png", 1_440, 860),
+  nativeAsset("gallery/latest-step-edited.png", "vscode-latest-step-edited-dark.png", 1_440, 856),
+  nativeAsset("gallery/latest-step-undone.png", "vscode-latest-step-undone-dark.png", 1_440, 856),
   nativeCrop("gallery/file-explorer-action-detail.png", "vscode-file-explorer-action-dark.png", 1_440, 870, {
     x: 48,
     y: 0,
@@ -66,13 +66,13 @@ const nativeAssets = [
     width: 540,
     height: 420
   }),
-  nativeCrop("gallery/latest-step-edited-detail.png", "vscode-latest-step-edited-dark.png", 1_440, 860, {
+  nativeCrop("gallery/latest-step-edited-detail.png", "vscode-latest-step-edited-dark.png", 1_440, 856, {
     x: 0,
     y: 0,
     width: 448,
     height: 440
   }),
-  nativeCrop("gallery/latest-step-undone-detail.png", "vscode-latest-step-undone-dark.png", 1_440, 860, {
+  nativeCrop("gallery/latest-step-undone-detail.png", "vscode-latest-step-undone-dark.png", 1_440, 856, {
     x: 0,
     y: 0,
     width: 448,
@@ -525,7 +525,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /The active filter matches 14,285 rows\. Column profiles, the grid, and the sidebar show the same filter and Clear\s+action without changing the source\./u
+    /The active filter matches 14,287 rows\. Column profiles, the grid, and the sidebar show the same filter and Clear\s+action without changing the source\./u
   );
   assert.match(readme, /Open Wrangler stays inactive in Restricted Mode\./u);
   assert.match(readme, /Column search covers the full schema and includes data-type icons/u);

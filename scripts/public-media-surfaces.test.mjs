@@ -333,7 +333,7 @@ test("surface content and versions fail closed on stale publication", () => {
   assert.deepEqual(PUBLIC_SURFACE_CONTENT, [
     "A dataframe workbench for VS Code, Cursor, and other desktop VS Code forks.",
     "Open files",
-    "The active filter matches 14,285 rows."
+    "The active filter matches 14,287 rows."
   ]);
   const content = PUBLIC_SURFACE_CONTENT.join("\n");
   assert.doesNotThrow(() => assertExpectedSurfaceContent("Synthetic", content));
