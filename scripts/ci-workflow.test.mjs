@@ -1585,10 +1585,21 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
   assert.equal(job?.name, "Released Jupyter in VS Code and Cursor");
   assert.equal(job?.if, "${{ inputs.target == 'linux-all' }}");
   assert.equal(job?.["timeout-minutes"], 90);
-  assert.equal(
-    job?.steps?.some((step) => step?.run === "npm run package -- --out openwrangler.vsix"),
-    true,
-    "Standalone released-Jupyter acceptance must let package.json select its VSIX channel."
+  const linuxPackageCommand = "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix";
+  const linuxPackageIndex = job?.steps?.findIndex((step) => step?.run === linuxPackageCommand) ?? -1;
+  const linuxVerifyIndex =
+    job?.steps?.findIndex((step) => step?.run === "npm run verify:vsix -- openwrangler.vsix") ?? -1;
+  const linuxTestExtensionIndex = job?.steps?.findIndex((step) => step?.run === "npm run build:test-extension") ?? -1;
+  assert.ok(linuxPackageIndex >= 0, "Released-Jupyter acceptance must package the explicit clean production build.");
+  assert.ok(linuxVerifyIndex > linuxPackageIndex, "Released-Jupyter acceptance must verify the freshly packaged VSIX.");
+  assert.ok(
+    linuxTestExtensionIndex > linuxVerifyIndex,
+    "Released-Jupyter acceptance must build its test driver only after VSIX verification."
+  );
+  assert.doesNotMatch(
+    source,
+    /npm run package -- --out openwrangler\.vsix/u,
+    "The focused Released-Jupyter workflow must not rerun the full source suite through npm run package."
   );
   assert.doesNotMatch(source, /npm run package -- --pre-release/u);
   assert.equal(
