@@ -2767,7 +2767,7 @@ export function App() {
                 page={displayPage}
                 summaries={inspectionMode ? [] : summaries}
                 profileValueMode={profileValueMode}
-                onProfileValueModeChange={setProfileValueMode}
+                onProfileValueModeChange={sidePanelOpen ? undefined : setProfileValueMode}
                 onPage={(offset) => {
                   const stepId = stepInspectionTarget?.stepId;
                   if (stepId) requestStepInspection(stepId, offset, inspectionColumnWindow.current, "row");

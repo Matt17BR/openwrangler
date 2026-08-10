@@ -1451,7 +1451,7 @@ export function DataGrid({
                 ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
         </span>
         <div className="gridProfileControls">
-          {!profilesDisabled && (
+          {!profilesDisabled && onProfileValueModeChange && (
             <ProfileValueToggle
               mode={profileValueMode}
               onChange={onProfileValueModeChange}

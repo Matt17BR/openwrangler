@@ -931,8 +931,8 @@ textarea {
 }
 
 .profileValueToggle.compact button {
-  min-height: 22px;
-  min-width: 28px;
+  min-height: 30px;
+  min-width: 30px;
   padding: 1px 5px;
 }
 
