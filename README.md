@@ -153,7 +153,7 @@ _This preview shows the changed values and generated Polars code. The two sorts 
 ## Notebook workflows
 
 In trusted Python notebooks and Python Interactive windows, Open Wrangler previews Pandas, Polars, and DuckDB outputs
-and lists the live dataframes in Operations and the notebook toolbar. **Open in Open Wrangler** loads the current
+and lists the live dataframes in Operations and the notebook toolbar. **Open in Open Wrangler** loads the current live
 dataframe from that same kernel.
 
 Python files have the same action in the editor toolbar and tab menu. For an ordinary `.py` file, Open Wrangler runs
