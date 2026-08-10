@@ -419,11 +419,7 @@ describe("native operation commands", () => {
 
     expect(treeChildren("openWrangler.operations").map((node) => [node.label, node.description, node.command])).toEqual(
       [
-        [
-          "Show R dataframes…",
-          "Reads the selected R session. Wait for the R prompt first.",
-          expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })
-        ],
+        ["Show R dataframes…", "R", expect.objectContaining({ command: "openWrangler.refreshRInteractiveVariables" })],
         [
           "Open a data file",
           "Choose CSV, Parquet, Excel, or JSONL",
@@ -453,7 +449,7 @@ describe("native operation commands", () => {
       [
         [
           "Start R and show dataframes…",
-          "The R terminal closed. Start or select another R session.",
+          "R session",
           expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
         ],
         [
