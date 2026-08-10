@@ -23,15 +23,25 @@ The source dataframe is immutable from Open Wrangler's perspective. A session st
 
 Supported file resources share one `openWrangler.openFile` command across the Explorer menu, editor-tab menu, editor-title toolbar, and Command Palette. The handler prefers the URI supplied by the invoking menu and otherwise resolves the active text, third-party custom, or modified diff tab before falling back to the file picker. Direct targets and native-picker results both pass the same URI-scheme, enabled-format, regular-file, and existence validation before automatic import detection or runtime creation; Quick Input is reserved for the explicit **Change Import Options** recovery path. Explicit **Reopen Editor With** selection applies the same resource safety checks but deliberately remains available for a format omitted from the launch-command and picker enabled-format list. The standalone runtime resolver consumes the exact persisted source URI, preserving a `vscode-remote` scheme and authority for resource-scoped Python settings and Python-extension environment selection; only absent or malformed URI metadata falls back to a concrete file path. The title and tab-menu contributions are hidden inside Open Wrangler itself and on unsupported virtual resources. Cursor intentionally hides third-party editor-title actions unless pinned, so the manifest declaratively contributes `openWrangler.openFile` to Cursor's `cursor.general.pinnedTitleActions` default. This changes no stored setting, preserves an explicit setting override, and avoids command aliases, built-in-prefix impersonation, or activation-time editor mutation; VS Code renders the same standard `navigation` contribution directly. Cursor 3.11's normal icon-visibility toggle cannot outrank this pinned default, so a user who wants the icon hidden must explicitly configure the pinned-title-action list without this command.
 
-R source tabs use `openWrangler.openRDataframe` for their stable title action. When the selected terminal belongs to
-the official R extension, the action opens a dataframe from that live session. Otherwise it delegates to
-`openWrangler.runRDocument` on macOS and Linux extension hosts. The stable action is also visible on Windows so it can
-open a dataframe from an active official R terminal; direct document execution remains unavailable there. On macOS
-and Linux the tab menu keeps both explicit
-choices, and Explorer keeps the document command. Cursor pins the stable action alongside the file and notebook actions. The document
-command captures the exact open `TextDocument`, version, and in-memory text before R starts. It never substitutes a
-different active editor after an await. The document must remain the sole open object for its URI through variable
-discovery and selection. Plain `.R` text is one source unit. R Markdown and Quarto use only top-level
+R source tabs use `openWrangler.openRDataframe` for their stable title action. A plain `.R` editor opens from the
+selected official R terminal when one is active and otherwise delegates to `openWrangler.runRDocument` on macOS and
+Linux extension hosts. An `.Rmd` or `.qmd` editor instead captures the exact active `TextEditor`, `TextDocument`,
+version, URI, view column, and every selection before command activation can await. A bounded Markdown fence parser
+identifies the one chunk that owns the primary cursor, including ordinary labels and `#|` options. Quarto accepts
+backtick and tilde fences; R Markdown accepts backtick fences. An enabled Python chunk runs through
+`quarto.runCurrentCell` or `jupyter.execSelectionInteractive` and stays pinned to the exact new Interactive Window
+cell associated with the source URI. An enabled R chunk runs through `quarto.runCurrentCell` or `r.runSelection` and
+opens from the exact active official R terminal. Every activation, execution, discovery, picker, and focus-restoration
+await revalidates the captured editor object, document object, version, URI uniqueness, and all cursor selections.
+The primary literate action never renders or executes the complete document. Outside a supported chunk it can reuse
+one exact associated Python Interactive Window or the active R session; otherwise it gives one actionable message.
+
+The stable action remains visible on Windows because live R and Python sessions do not require Open Wrangler to own a
+local document process. On macOS and Linux the tab menu keeps the explicit R-document choices, and Explorer keeps the
+document command. Cursor pins the stable action alongside the file and notebook actions. The explicit
+`openWrangler.runRDocument` command captures the exact open `TextDocument`, version, and in-memory text before R
+starts. It never substitutes a different active editor after an await. The document must remain the sole open object
+for its URI through variable discovery and selection. Plain `.R` text is one source unit. R Markdown and Quarto use only top-level
 backtick-fenced `{r}` cells from a first-line-YAML document. Every cell is parsed separately before any cell runs,
 then the parsed cells share one private R environment in document order. This is an isolated lexical R-cell run, not
 a knitr/Quarto render or an attachment to a terminal or editor extension. Safe prose, horizontal rules, display math,
@@ -39,14 +49,15 @@ and closed raw-TeX blocks are ignored. Enabled cells reject syntax that can repl
 engines and external chunk references. A syntactically valid cell with literal `eval=FALSE` is skipped instead.
 Indented cells, raw-string chunk options, and R-looking fences inside an opaque Markdown container remain errors.
 
-The active-R path is separate from document execution. It activates the official R extension, captures one exact `R`
+The active-R path is separate from explicit document execution. It activates the official R extension, captures one exact `R`
 or `R Interactive` terminal, and uses VS Code's public terminal API to load the bundled dispatcher into that session.
 The Operations view can then refresh and open supported dataframes from that terminal. A terminal switch or close
 invalidates the list and bridge; discovery, requests, cleanup, and reopening never retarget another terminal. The
 integration does not read vscode-R extension storage or private process details. These variables follow the notebook
 start-mode setting, so they open in Viewing mode by default and can be reopened in Editing mode without changing the
-live R object. The session has no notebook or text-document origin. Its generated R can therefore be copied or saved,
-but the insertion commands are not offered.
+live R object. A session opened directly from Operations has no notebook or text-document origin, so its generated R
+can be copied or saved but not inserted. A cursor-owned literate R chunk retains its exact source-document origin and
+may insert generated code only while that same document object and version remain valid.
 
 The notebook launch command uses the same **Open in Open Wrangler** primary and compact title. VS Code can render the compact title in its global notebook toolbar while Cursor renders the primary title for its pinned editor action; keeping the accessible names identical prevents host-specific command drift without adding aliases or editor-specific activation logic.
 

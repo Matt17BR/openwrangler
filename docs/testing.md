@@ -701,8 +701,13 @@ The R Markdown and Quarto fixtures each contain first-line YAML, prose, and top-
 read a relative CSV. The R Markdown parser fixture also contains a non-R cell and a disabled R cell. The journey opens
 the dataframe, checks its full schema and page, applies Rename, inserts generated R as a new fenced cell, and proves
 the source file on disk is unchanged.
-Parser tests cover horizontal rules, display math, closed raw-TeX blocks, numeric labels, nested option calls, and
-disabled external chunk references. They reject R-looking fences inside opaque containers, indented or tilde R
+The Quarto title-action portion puts the cursor in the exact dataframe-producing chunk, invokes the stable editor
+action, and requires the official `quarto.runCurrentCell` and `r.runSelection` commands before opening the active R
+session. Focused TypeScript tests separately route Quarto and R Markdown R/Python chunks, backtick and supported tilde
+fences, chunk labels, `#|` options, disabled chunks, associated Python sessions, and editor/version/cursor changes
+across awaits. The primary action must never fall back to an all-document run.
+The separate owned-process parser tests cover horizontal rules, display math, closed raw-TeX blocks, numeric labels,
+nested option calls, and disabled external chunk references. They reject R-looking fences inside opaque containers, indented or tilde R
 fences, enabled alternate engines or external references (including Quarto's hyphenated option keys), malformed options, cross-cell syntax joining, and R
 Markdown fence-length mismatches. Raw-string chunk options and special infix operators in options are rejected instead
 of being partially parsed. Open Wrangler
@@ -715,12 +720,12 @@ R extension at the test R executable and private package library. R Markdown use
 CLI, and the Quarto extension uses the same private installation. No extension or package is installed into the
 user's editor profile or R library.
 
-The packaged journey activates all three extensions, checks their exact versions and public commands, and confirms
+The packaged journey activates all three extensions, checks their exact versions and public current-cell/selection commands, and confirms
 that `.Rmd` and `.qmd` have the expected editor language modes. It asks the Quarto extension to render the real `.qmd`
-fixture and verifies the rendered table before invoking **Run R Document in Open Wrangler…**. Open Wrangler then runs
-the supported R cells in its own process and presents the dataframe picker. Screenshot mode also requires Quarto's
-internal preview to be visible. This proves that the two extensions work together without claiming that they share an
-R session. Offline runs may
+fixture and verifies the rendered table before invoking **Open in Open Wrangler** with the exact cursor in its R
+chunk. Open Wrangler asks Quarto to run only that chunk and presents dataframes from the official R session. The R
+Markdown fixture still exercises the explicit owned-process command. Screenshot mode also requires Quarto's internal
+preview to be visible. Offline runs may
 supply the same verified artifacts through `OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSIX`,
 `OPEN_WRANGLER_R_EXTENSION_VSIX`, `OPEN_WRANGLER_QUARTO_EXTENSION_VSIX`, and
 `OPEN_WRANGLER_QUARTO_CLI_ARCHIVE`.
