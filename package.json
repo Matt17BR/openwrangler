@@ -594,7 +594,7 @@
       "explorer/context": [
         {
           "command": "openWrangler.runRDocument",
-          "when": "!explorerResourceIsFolder && isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "!explorerResourceIsFolder && isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/",
           "group": "navigation@49"
         },
         {
@@ -616,7 +616,7 @@
         },
         {
           "command": "openWrangler.openRDataframe",
-          "when": "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/",
           "group": "navigation@1"
         },
         {
@@ -643,12 +643,12 @@
         },
         {
           "command": "openWrangler.openRInteractiveVariable",
-          "when": "isWorkspaceTrusted && rSessionActive && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "isWorkspaceTrusted && rSessionActive && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/",
           "group": "navigation@48"
         },
         {
           "command": "openWrangler.runRDocument",
-          "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/",
           "group": "navigation@49"
         },
         {

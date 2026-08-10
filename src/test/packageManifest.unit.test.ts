@@ -196,9 +196,9 @@ describe("file launch contributions", () => {
 
   it("offers one stable R action and keeps the explicit document command", () => {
     const rSourcePredicate =
-      "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+      "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/";
     const rTitlePredicate =
-      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/";
 
     expect(manifest.activationEvents).toContain("onCommand:openWrangler.openRDataframe");
     expect(manifest.activationEvents).toContain("onCommand:openWrangler.runRDocument");
@@ -279,7 +279,7 @@ describe("file launch contributions", () => {
     const allMenuEntries = Object.values(manifest.contributes?.menus ?? {}).flat();
     expect(allMenuEntries.some((entry) => entry.when?.includes("view == workspaceViewer"))).toBe(false);
     const activeRSourcePredicate =
-      "isWorkspaceTrusted && rSessionActive && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+      "isWorkspaceTrusted && rSessionActive && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/";
     expect(manifest.contributes?.menus?.["editor/title"]).not.toContainEqual(
       expect.objectContaining({ command: "openWrangler.openRInteractiveVariable" })
     );
@@ -294,9 +294,24 @@ describe("file launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.openRDataframe",
-      when: "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+      when: "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/",
       group: "navigation@1"
     });
+  });
+
+  it("spells out R source casing for VS Code menu matching", () => {
+    const match = /\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/u;
+    for (const first of ["r", "R", "q", "Q"]) {
+      for (const middle of ["m", "M"]) {
+        for (const last of ["d", "D"]) {
+          expect(match.test(`report.${first}${middle}${last}`)).toBe(true);
+        }
+      }
+    }
+    expect(match.test("analysis.R")).toBe(true);
+    expect(match.test("analysis.r")).toBe(true);
+    expect(match.test("analysis.r.backup")).toBe(false);
+    expect(match.test("notes.md")).toBe(false);
   });
 
   it("keeps the supported extension predicate case-insensitive and closed to unrelated files", () => {

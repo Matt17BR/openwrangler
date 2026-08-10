@@ -675,9 +675,9 @@ export async function run(): Promise<void> {
   const fileResourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const rDocumentPredicate =
-    "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+    "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/";
   const rTitlePredicate =
-    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.([Rr]|[Rr][Mm][Dd]|[Qq][Mm][Dd])$/";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
