@@ -145,16 +145,16 @@ async function verifyNotebookPreviewDisclosure(browser) {
   if ((await page.getByRole("button", { name: "Open in Open Wrangler" }).count()) !== 0) {
     throw new Error(`${harness} exposed a workbench action for an unlinked saved preview.`);
   }
-  const guidance = await page.locator(".openwrangler-notebook").textContent();
-  if (!guidance?.includes("Run this cell again to open the current dataframe in Open Wrangler.")) {
-    throw new Error(`${harness} did not explain how to open the complete live dataframe.`);
+  const previewText = await page.locator(".openwrangler-notebook").textContent();
+  if (previewText?.includes("Run this cell again")) {
+    throw new Error(`${harness} exposed stale rerun guidance for a saved preview.`);
   }
   const messages = await page.evaluate(() => globalThis.openWranglerNotebookMessages);
   if (messages.length !== 0) {
     throw new Error(`${harness} sent a renderer action for an unlinked saved preview.`);
   }
   await page.close();
-  console.log("Notebook MIME v2 truncation disclosure and live-only opening guidance verified.");
+  console.log("Notebook MIME v2 truncation disclosure and unlinked-preview behavior verified.");
 }
 
 async function verifyCodePreviewOrigin(browser) {

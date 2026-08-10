@@ -26764,7 +26764,7 @@ async function waitForNotebookRendererButton(
 }
 
 async function waitForNotebookRendererPreviewOnly(workbench: Page, label: string): Promise<void> {
-  const expectedHint = "Run this cell again to open the current dataframe in Open Wrangler.";
+  const removedHint = "Run this cell again to open the current dataframe in Open Wrangler.";
   const deadline = Date.now() + NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS;
   do {
     const browser = workbench.context().browser();
@@ -26776,13 +26776,13 @@ async function waitForNotebookRendererPreviewOnly(workbench: Page, label: string
           hasText: `Open Wrangler preview: ${label}`
         });
         if ((await preview.count()) === 1) {
-          const note = preview.locator('[role="note"]').filter({ hasText: expectedHint });
           const action = preview.getByRole("button", { name: "Open in Open Wrangler", exact: true });
-          if ((await note.count()) === 1 && (await note.isVisible()) && (await action.count()) === 0) return;
+          const previewText = await preview.textContent();
+          if ((await action.count()) === 0 && !previewText?.includes(removedHint)) return;
         }
 
         const nestedMatches = await target.frame.evaluate(
-          ({ expectedLabel, expectedNote }) => {
+          ({ expectedLabel, forbiddenNote }) => {
             type NestedDocument = NestedElement & { readonly readyState: string };
             type NestedElement = {
               readonly contentDocument?: NestedDocument | null;
@@ -26803,12 +26803,9 @@ async function waitForNotebookRendererPreviewOnly(workbench: Page, label: string
             const openActions = Array.from(preview.querySelectorAll("button")).filter(
               (button) => button.isConnected && (button.textContent ?? "").trim() === "Open in Open Wrangler"
             );
-            const notes = Array.from(preview.querySelectorAll('[role="note"]')).filter(
-              (note) => note.isConnected && (note.textContent ?? "").trim() === expectedNote
-            );
-            return openActions.length === 0 && notes.length === 1;
+            return openActions.length === 0 && !(preview.textContent ?? "").includes(forbiddenNote);
           },
-          { expectedLabel: label, expectedNote: expectedHint }
+          { expectedLabel: label, forbiddenNote: removedHint }
         );
         if (nestedMatches) return;
       } catch (error) {
