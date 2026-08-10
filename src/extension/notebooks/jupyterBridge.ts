@@ -10,6 +10,7 @@ import {
   disposeVerifiedRNotebookVariableSelection,
   RNotebookVariableDiscoveryError,
   verifyRNotebookVariableSelection,
+  type RNotebookVariableDiscovery,
   type RNotebookVariableDescriptor,
   type VerifiedRNotebookVariableSelection
 } from "../r/rNotebookVariableDiscovery";
@@ -17,6 +18,7 @@ import {
   discoverNotebookVariables,
   NotebookVariableDiscoveryError,
   notebookVariablePresentation,
+  type NotebookVariableDiscovery as PythonNotebookVariableDiscovery,
   type NotebookVariableDescriptor
 } from "./notebookVariableDiscovery";
 
@@ -39,8 +41,7 @@ interface JupyterLikeApi {
 }
 
 type NotebookPickerVariable = NotebookVariableDescriptor | RNotebookVariableDescriptor;
-type NotebookVariableDiscovery =
-  Awaited<ReturnType<typeof discoverNotebookVariables>> | Awaited<ReturnType<typeof discoverRNotebookVariables>>;
+export type NotebookVariableDiscovery = PythonNotebookVariableDiscovery | RNotebookVariableDiscovery;
 
 interface NotebookVariableQuickPickItem extends vscode.QuickPickItem {
   readonly variable: NotebookPickerVariable;
@@ -290,16 +291,43 @@ export async function openDiscoveredPythonNotebookVariable(
   await openLiveNotebookVariable(context, coordinator, variable.name, notebook, variable.backend);
 }
 
-async function discoverVariablesForSelectedKernel(
+/**
+ * Opens one R descriptor from the exact discovery receipt that produced it.
+ * Cached entry points retain the discovery object so verification can recheck
+ * the original notebook, selected kernel, variable name, and dataframe flavor
+ * immediately before the bridge claims the kernel binding.
+ */
+export async function openDiscoveredRNotebookVariable(
+  context: vscode.ExtensionContext,
+  coordinator: SessionCoordinator,
+  notebook: vscode.NotebookDocument,
+  discovery: RNotebookVariableDiscovery,
+  variable: RNotebookVariableDescriptor
+): Promise<void> {
+  let verified: VerifiedRNotebookVariableSelection;
+  try {
+    verified = await verifyRNotebookVariableSelection(notebook, discovery, variable);
+  } catch (error) {
+    vscode.window.showWarningMessage(
+      error instanceof RNotebookVariableDiscoveryError
+        ? error.message
+        : "Open Wrangler could not confirm the selected R dataframe. Open the picker again."
+    );
+    return;
+  }
+  await openLiveNotebookVariable(context, coordinator, variable.name, notebook, variable.backend, verified);
+}
+
+export async function discoverVariablesForSelectedKernel(
   notebook: vscode.NotebookDocument
 ): Promise<NotebookVariableDiscovery> {
   const language = await selectedNotebookKernelLanguage(notebook);
   return language === "r" ? discoverRNotebookVariables(notebook) : discoverNotebookVariables(notebook);
 }
 
-function isRNotebookVariableDiscovery(
+export function isRNotebookVariableDiscovery(
   discovery: NotebookVariableDiscovery
-): discovery is Awaited<ReturnType<typeof discoverRNotebookVariables>> {
+): discovery is RNotebookVariableDiscovery {
   return discovery.variables.length > 0 && discovery.variables.every((variable) => "dataframeFlavor" in variable);
 }
 
