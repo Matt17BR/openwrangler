@@ -589,8 +589,8 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R"/u
   );
   assert.match(readme, /alt="A rendered Quarto table beside the source document and Open Wrangler dataframe picker"/u);
-  assert.match(readme.replace(/\s+/gu, " "), /Data Wrangler converted the input to Pandas/u);
-  assert.match(readme.replace(/\s+/gu, " "), /Open Wrangler used Polars directly/u);
+  assert.match(readme.replace(/\s+/gu, " "), /Data Wrangler converts it to Pandas/u);
+  assert.match(readme.replace(/\s+/gu, " "), /Open Wrangler keeps it in Polars/u);
   assert.doesNotMatch(readme, /That explains part of the difference/u);
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
@@ -630,21 +630,17 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.doesNotMatch(readme, /scan and index|scans and indexes|cache(?:s|d)? the complete (?:frame|dataframe)/iu);
   const performanceSection = readme.slice(readme.indexOf("## Performance"), readme.indexOf("## Roadmap"));
   const normalizedPerformanceSection = performanceSection.replace(/\s+/gu, " ");
-  assert.match(normalizedPerformanceSection, /Microsoft Data Wrangler/u);
-  assert.match(
-    normalizedPerformanceSection,
-    /found Open Wrangler faster for notebook previews and CSV column profiling/u
-  );
-  assert.match(normalizedPerformanceSection, /Parquet workbench and profiling times were similar/u);
-  assert.match(normalizedPerformanceSection, /Open Wrangler used Polars directly/u);
-  assert.match(normalizedPerformanceSection, /Data Wrangler converted the input to Pandas/u);
-  assert.match(normalizedPerformanceSection, /conversion was not measured separately/u);
-  assert.match(normalizedPerformanceSection, /does not attribute the timing difference to conversion/u);
+  assert.match(normalizedPerformanceSection, /latest reviewed comparison/u);
+  assert.match(normalizedPerformanceSection, /faster notebook previews and CSV column profiling in Open Wrangler/u);
+  assert.match(normalizedPerformanceSection, /Parquet workbench and profiling times were close/u);
+  assert.match(normalizedPerformanceSection, /Open Wrangler keeps it in Polars/u);
+  assert.match(normalizedPerformanceSection, /Data Wrangler converts it to Pandas/u);
+  assert.match(normalizedPerformanceSection, /does not measure the conversion itself/u);
   assert.doesNotMatch(performanceSection, /before the stable \d/u);
   assert.doesNotMatch(readme, /clean-room comparison|successful journeys|did not complete|10 \/ (?:9|10)/iu);
   const reportLinks = [
     ...performanceSection.matchAll(
-      /\[full benchmark report\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/(?<directory>data-wrangler-(?<openWranglerVersion>\d+\.\d+\.\d+))\/review\.md\)/gu
+      /\[dated benchmark report\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/docs\/performance\/(?<directory>data-wrangler-(?<openWranglerVersion>\d+\.\d+\.\d+))\/review\.md\)/gu
     )
   ];
   assert.equal(reportLinks.length, 1, "The performance summary must link one dated, versioned report.");
@@ -660,13 +656,18 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const dataWranglerVersion = /^# Data Wrangler (?<version>\d+\.\d+\.\d+) comparison review$/mu.exec(comparisonReview)
     ?.groups?.version;
   assert.ok(dataWranglerVersion, "The linked report must name the compared Data Wrangler version.");
-  assert.match(
+  assert.doesNotMatch(
     normalizedPerformanceSection,
+    /\b(?:Open|Data) Wrangler v?\d+\.\d+\.\d+\b/u,
+    "Release numbers belong in the dated report rather than the README summary."
+  );
+  assert.match(
+    comparisonReview,
     new RegExp(
-      `Open Wrangler ${openWranglerVersion.replaceAll(".", "\\.")} and Microsoft Data Wrangler ${dataWranglerVersion.replaceAll(".", "\\.")}`,
+      `Open Wrangler ${openWranglerVersion.replaceAll(".", "\\.")} VSIX[\\s\\S]{0,600}Microsoft Data Wrangler ${dataWranglerVersion.replaceAll(".", "\\.")}`,
       "u"
     ),
-    "The README must name the exact releases used by an older performance comparison."
+    "The dated report must identify both compared releases."
   );
   assert.match(comparisonReview, new RegExp(`Open Wrangler ${openWranglerVersion.replaceAll(".", "\\.")} VSIX`, "u"));
   assert.match(comparisonReview, /^## Method$/mu);
