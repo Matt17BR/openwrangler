@@ -179,6 +179,75 @@ describe("active R session commands", () => {
     expect(mocks.panelCreate).toHaveBeenCalledOnce();
   });
 
+  it("reuses the refreshed terminal transport from the stable editor action", async () => {
+    const terminal = rTerminal("R");
+    setActiveTerminal(terminal);
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const { factory, provider } = registerWith([transport]);
+
+    await expect(command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)()).resolves.toBe(true);
+    await expect(command(OPEN_R_DATAFRAME_COMMAND)()).resolves.toBe(true);
+
+    expect(factory.create).toHaveBeenCalledOnce();
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active" });
+    expect(transport.discoverVariables).toHaveBeenCalledOnce();
+    expect(mocks.bridgeArguments[0]?.[1]).toBe(transport);
+    expect(mocks.bridgeArguments[0]?.[4]).toEqual(tibble);
+    expect(provider.snapshot().state).toBe("idle");
+    expect(transport.dispose).not.toHaveBeenCalled();
+  });
+
+  it("keeps a refreshed terminal transport when its stable picker is dismissed", async () => {
+    const terminal = rTerminal("R");
+    setActiveTerminal(terminal);
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockResolvedValueOnce(undefined);
+    const { factory, provider } = registerWith([transport]);
+
+    await expect(command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)()).resolves.toBe(true);
+    const ready = provider.snapshot();
+    await expect(command(OPEN_R_DATAFRAME_COMMAND)()).resolves.toBe(false);
+
+    expect(factory.create).toHaveBeenCalledOnce();
+    expect(transport.discoverVariables).toHaveBeenCalledOnce();
+    expect(provider.snapshot()).toBe(ready);
+    expect(transport.dispose).not.toHaveBeenCalled();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a cached picker selection after the active R terminal changes", async () => {
+    const first = rTerminal("R");
+    const second = rTerminal("R Interactive");
+    setActiveTerminal(first);
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    const choose = deferred<"choose">();
+    mocks.showQuickPick.mockImplementationOnce(async (items) => {
+      await choose.promise;
+      return items[0];
+    });
+    const { provider } = registerWith([transport]);
+
+    await expect(command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)()).resolves.toBe(true);
+    const opening = command(OPEN_R_DATAFRAME_COMMAND)();
+    await vi.waitFor(() => expect(mocks.showQuickPick).toHaveBeenCalledOnce());
+
+    emitActiveTerminal(second);
+    await vi.waitFor(() => expect(transport.dispose).toHaveBeenCalledOnce());
+    choose.resolve("choose");
+    await expect(opening).resolves.toBe(false);
+
+    expect(provider.snapshot()).toMatchObject({
+      state: "idle",
+      message: "A different R terminal is active. Wait for its prompt before reading it."
+    });
+    expect(transport.dispose).toHaveBeenCalledOnce();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+  });
+
   it("runs the current R document when no official R terminal is active", async () => {
     const resource = { scheme: "file", path: "/workspace/analysis.R" };
     registerWith([]);
