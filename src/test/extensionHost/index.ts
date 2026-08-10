@@ -17048,9 +17048,12 @@ async function exercisePackagedReopenAndUndoJourney(
     sourceBytes,
     "Replaying the edited step must preserve the first-use source bytes."
   );
-  const replayedTarget = await waitForOpenWranglerGridTarget(workbench, testing, replayed.sessionId);
-  const replayedApp = await exactSessionApp(replayedTarget.frame, replayed.sessionId);
-  assert.ok(replayedApp, "The replayed edited step must expose its exact Open Wrangler application.");
+  const replayedApp = await synchronizedSessionApp(
+    workbench,
+    testing,
+    replayed.sessionId,
+    "The replayed edited step must acknowledge its current session before Undo."
+  );
   await replayedApp
     .getByRole("group", { name: "Cleaning plan" })
     .getByText("1 applied step")
