@@ -5,6 +5,19 @@ const root = resolve(import.meta.dirname, "..");
 const marketplace = "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler";
 const projectHomepage = "https://github.com/Matt17BR/openwrangler#readme";
 const repositoryApi = "https://api.github.com/repos/Matt17BR/openwrangler";
+const requiredTopics = [
+  "data-table",
+  "dataframe",
+  "duckdb",
+  "jupyter",
+  "pandas",
+  "polars",
+  "python",
+  "quarto",
+  "r",
+  "rmarkdown",
+  "tidyverse"
+];
 
 export function inspectPublicRepositoryMetadata({ contractSource, packageSource }) {
   let metadata;
@@ -35,6 +48,12 @@ export function inspectPublicRepositoryMetadata({ contractSource, packageSource 
     JSON.stringify([...topics].sort()) !== JSON.stringify(topics)
   ) {
     problems.push("GitHub About topics must be normalized, unique, sorted, and contain at most 20 entries.");
+  }
+  if (Array.isArray(topics)) {
+    const missingTopics = requiredTopics.filter((topic) => !topics.includes(topic));
+    if (missingTopics.length > 0) {
+      problems.push(`GitHub About topics are missing: ${missingTopics.join(", ")}.`);
+    }
   }
   return problems;
 }
