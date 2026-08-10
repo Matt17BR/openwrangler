@@ -529,6 +529,7 @@ export async function run(): Promise<void> {
     "openWrangler.openNotebookVariable",
     "openWrangler.runPythonCellAndOpenVariable",
     "openWrangler.refreshRInteractiveVariables",
+    "openWrangler.openRDataframe",
     "openWrangler.runRDocument",
     "openWrangler.chooseNotebookPreviewProvider",
     "openWrangler.checkJupyterIntegration",
@@ -609,13 +610,26 @@ export async function run(): Promise<void> {
     "openWrangler.changeImportOptions",
     "openWrangler.openNotebookVariable",
     "openWrangler.runPythonCellAndOpenVariable",
-    "openWrangler.runRDocument"
+    "openWrangler.openRDataframe"
   ]);
   assert.deepEqual(
     contributions.commands?.find((command) => command.command === "openWrangler.openFile"),
     {
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
+      icon: {
+        light: "media/action-icon-light.svg",
+        dark: "media/action-icon-dark.svg"
+      }
+    }
+  );
+  assert.deepEqual(
+    contributions.commands?.find((command) => command.command === "openWrangler.openRDataframe"),
+    {
+      command: "openWrangler.openRDataframe",
+      title: "Open Wrangler: Open R Dataframe",
+      shortTitle: "Open in Open Wrangler",
+      category: "Open Wrangler",
       icon: {
         light: "media/action-icon-light.svg",
         dark: "media/action-icon-dark.svg"
@@ -661,6 +675,8 @@ export async function run(): Promise<void> {
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const rDocumentPredicate =
     "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
+  const rLaunchPredicate =
+    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i && (openWrangler.activeRTerminal || resourceScheme == vscode-remote || isLinux || isMac)";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
@@ -701,8 +717,8 @@ export async function run(): Promise<void> {
   assert.ok(
     contributions.menus?.["editor/title"]?.some(
       (item) =>
-        item.command === "openWrangler.runRDocument" &&
-        item.when === rDocumentPredicate &&
+        item.command === "openWrangler.openRDataframe" &&
+        item.when === rLaunchPredicate &&
         item.group === "navigation@1"
     ),
     "R document editors must expose the Open Wrangler title action."
@@ -2811,7 +2827,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
     await assertReleasedRInteractiveRows(operations);
     recordAcceptanceProgress("jupyter-r:interactive:open-base-frame");
-    await operations.getByRole("treeitem", { name: /^base_orders\b/u }).click();
+    await invokeReleasedRInteractiveTitleAction(workbench, directory, "base_orders");
     await waitFor(
       () => {
         const active = testing.activeSession();
@@ -2884,6 +2900,41 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     );
     cleanupAcceptanceTemporaryDirectory(directory);
   }
+}
+
+async function invokeReleasedRInteractiveTitleAction(
+  workbench: Page,
+  directory: string,
+  variableName: string
+): Promise<void> {
+  const source = vscode.Uri.file(path.join(directory, "live-session.R"));
+  writeFileSync(source.fsPath, "# Dataframes are already loaded in the selected R terminal.\n", "utf8");
+  await vscode.commands.executeCommand("vscode.open", source, {
+    preview: false,
+    viewColumn: vscode.ViewColumn.One
+  });
+  await waitFor(
+    () => vscode.window.activeTextEditor?.document.uri.toString() === source.toString(),
+    10_000,
+    "the live-session R source to become active before its title action"
+  );
+  await workbench.bringToFront();
+  const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
+  const action = activeGroup.getByRole("button", { name: "Open in Open Wrangler", exact: true }).first();
+  await action.waitFor({ state: "visible", timeout: 10_000 });
+  await action.click();
+
+  const picker = workbench
+    .locator(".quick-input-widget:visible")
+    .filter({ hasText: "Open Wrangler: Choose a dataframe from the active R session" })
+    .last();
+  await picker.waitFor({ state: "visible", timeout: 30_000 });
+  const input = picker.locator(".quick-input-box input:visible").first();
+  await input.fill(variableName);
+  const row = await releasedJupyterQuickPickRow(picker, variableName);
+  assert.ok(row, `The stable R title action did not expose ${JSON.stringify(variableName)}.`);
+  await row.click();
+  await picker.waitFor({ state: "hidden", timeout: 10_000 });
 }
 
 async function assertReleasedWorkbenchHasNoBlockingDialog(workbench: Page, checkpoint: string): Promise<void> {
@@ -4034,7 +4085,7 @@ async function invokeReleasedRDocumentTitleAction(
     );
     await workbench.bringToFront();
     const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
-    const action = activeGroup.getByRole("button", { name: /Run(?: R Document)? in Open Wrangler/u }).first();
+    const action = activeGroup.getByRole("button", { name: "Open in Open Wrangler", exact: true }).first();
     if ((await action.count()) > 0 && (await action.isVisible())) {
       await action.click();
     } else {
