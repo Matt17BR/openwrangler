@@ -65,6 +65,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Clickable grid headers, column-search results, and filter values now use consistent pointer, hover, and keyboard
+  focus feedback.
 - Numeric histograms now use one full-chart control instead of a separate tab stop for every bin. Moving the pointer
   still selects the exact bin, while arrow keys choose a bin and Enter or Space applies its filter. Category values
   also keep a usable click target at reduced zoom.

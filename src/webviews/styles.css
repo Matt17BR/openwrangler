@@ -479,7 +479,7 @@ textarea {
 .columnSearchResults [role="option"] {
   align-items: center;
   border-radius: 3px;
-  cursor: default;
+  cursor: pointer;
   display: grid;
   gap: 8px;
   grid-template-columns: 18px minmax(100px, 1fr) auto auto;
@@ -489,6 +489,10 @@ textarea {
   padding: 2px 7px;
   position: absolute;
   right: 3px;
+}
+
+.columnSearchResults [role="option"]:hover:not(.active) {
+  background: var(--vscode-list-hoverBackground);
 }
 
 .columnSearchResults [role="option"].active {
@@ -823,9 +827,19 @@ textarea {
 }
 
 .checkboxRow {
-  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
+  border-radius: 3px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   padding: 4px 6px;
+}
+
+.checkboxRow:has(input:not(:disabled)) {
+  cursor: pointer;
+}
+
+.checkboxRow:has(input:not(:disabled)):hover,
+.checkboxRow:focus-within {
+  background: var(--vscode-list-hoverBackground);
 }
 
 .checkboxRow span {
@@ -947,6 +961,14 @@ th {
   background: var(--vscode-editorGroupHeader-tabsBackground);
   text-align: left;
   vertical-align: top;
+}
+
+th[data-grid-column] {
+  cursor: pointer;
+}
+
+th[data-grid-column]:hover:not(.selectedColumn) {
+  background: var(--vscode-list-hoverBackground);
 }
 
 tbody tr:hover td {
