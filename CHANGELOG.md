@@ -4,6 +4,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Fixed
+
+- Public README checks now retry when a registry page replaces an image while Playwright is inspecting it. Other
+  rendering failures still stop immediately.
+
 ## [1.99.2] - 2026-08-10
 
 ### Added

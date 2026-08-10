@@ -626,15 +626,24 @@ function readPreflightedFile(file) {
   }
 }
 
-async function observeRegistryPropagation(surface, description, operation) {
+export async function observeRegistryPropagation(surface, description, operation) {
   try {
     return await operation();
   } catch (error) {
-    if (surface.versionKind === "source" || error instanceof RetryablePublicMediaObservationError) throw error;
+    if (error instanceof RetryablePublicMediaObservationError) throw error;
+    if (surface.versionKind === "source" && !isTransientPublicSurfaceDomReplacement(error)) throw error;
     throw new RetryablePublicMediaObservationError(`${surface.name} ${description}: ${boundedError(error)}`, {
       cause: error
     });
   }
+}
+
+export function isTransientPublicSurfaceDomReplacement(error) {
+  if (!(error instanceof Error)) return false;
+  return (
+    /^locator\.(?:evaluate|scrollIntoViewIfNeeded|waitFor):/u.test(error.message) &&
+    /Element is not attached to the DOM/u.test(error.message)
+  );
 }
 
 async function closeContextBounded(context, timeoutMilliseconds) {
