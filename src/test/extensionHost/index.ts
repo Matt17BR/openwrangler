@@ -9000,6 +9000,15 @@ async function applyReleasedRQuickSort(
       timeout: 10_000
     });
   await columnSearch.press("Enter");
+  const searchClosed = await pollAcceptanceCondition(
+    async () => (await columnSearch.getAttribute("aria-expanded")) === "false",
+    {
+      timeoutMs: 10_000,
+      intervalMs: 50,
+      wait: (durationMs) => workbench.waitForTimeout(durationMs)
+    }
+  );
+  assert.equal(searchClosed, true, `The R ${column} column search must close after selection.`);
   await waitFor(
     () =>
       testing.activeSession()?.sessionId === sessionId &&
@@ -9051,6 +9060,7 @@ async function waitForReleasedRColumnMenu(
           const summary = menu.getByLabel(`Column actions for ${column}`, { exact: true });
           if ((await summary.count()) !== 1 || !(await summary.isVisible())) continue;
           try {
+            await summary.scrollIntoViewIfNeeded({ timeout: trialTimeoutMs });
             await summary.click({ trial: true, timeout: trialTimeoutMs });
           } catch (error) {
             if (isReleasedRColumnMenuPreparationError(error)) continue;
@@ -9063,7 +9073,10 @@ async function waitForReleasedRColumnMenu(
       }
       return undefined;
     },
-    prepare: ({ summary }) => summary.click({ trial: true, timeout: trialTimeoutMs }),
+    prepare: async ({ summary }) => {
+      await summary.scrollIntoViewIfNeeded({ timeout: trialTimeoutMs });
+      await summary.click({ trial: true, timeout: trialTimeoutMs });
+    },
     dispose: async () => undefined,
     isRetryablePreparationError: isReleasedRColumnMenuPreparationError,
     wait: (durationMs) => workbench.waitForTimeout(durationMs)
