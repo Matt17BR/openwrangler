@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { NumericVisualization } from "../../shared/protocol";
 
 interface NumericHistogramProps {
@@ -35,6 +35,8 @@ export function NumericHistogram({
   const [hoveredBin, setHoveredBin] = useState<ActiveHistogramBin>();
   const [focusedBin, setFocusedBin] = useState<ActiveHistogramBin>();
   const [tooltipVisible, setTooltipVisible] = useState(false);
+  const viewportDismissalArmed = useRef(true);
+  const focusArmFrame = useRef<number | undefined>(undefined);
   const tooltipId = useId();
   const maximumCount = Math.max(1, ...visualization.bins.map((bin) => bin.count));
   const width = compact ? 160 : 320;
@@ -58,6 +60,8 @@ export function NumericHistogram({
   const activeBinLabel = activeBin
     ? histogramBinLabel(activeBin, denominator, valueMode, activeBinIndex === visualization.bins.length - 1)
     : undefined;
+  const compactActiveBinLabel =
+    compact && activeBin ? compactHistogramBinLabel(activeBin, denominator, valueMode) : undefined;
   const interactive = onSelectBin !== undefined;
   const currentBinIndex = activeBinIndex ?? 0;
   const currentBin = visualization.bins[currentBinIndex];
@@ -66,24 +70,45 @@ export function NumericHistogram({
     : "No finite values";
   const tooltipOpen = activeBinLabel !== undefined && tooltipVisible;
 
+  const armViewportDismissal = useCallback(() => {
+    if (focusArmFrame.current !== undefined) window.cancelAnimationFrame(focusArmFrame.current);
+    focusArmFrame.current = undefined;
+    viewportDismissalArmed.current = true;
+  }, []);
+
+  const armViewportDismissalAfterFocus = useCallback(() => {
+    armViewportDismissal();
+    viewportDismissalArmed.current = false;
+    focusArmFrame.current = window.requestAnimationFrame(() => {
+      focusArmFrame.current = undefined;
+      viewportDismissalArmed.current = true;
+    });
+  }, [armViewportDismissal]);
+
   const dismissTooltip = useCallback(() => {
+    armViewportDismissal();
     setHoveredBin(undefined);
     setTooltipVisible(false);
-  }, []);
+  }, [armViewportDismissal]);
+
+  const dismissTooltipOnScroll = useCallback(() => {
+    if (viewportDismissalArmed.current) dismissTooltip();
+  }, [dismissTooltip]);
 
   useEffect(() => {
     if (!tooltipOpen) return;
-    window.addEventListener("scroll", dismissTooltip, true);
+    window.addEventListener("scroll", dismissTooltipOnScroll, true);
     window.addEventListener("resize", dismissTooltip);
     window.addEventListener("blur", dismissTooltip);
     document.addEventListener("visibilitychange", dismissTooltip);
     return () => {
-      window.removeEventListener("scroll", dismissTooltip, true);
+      window.removeEventListener("scroll", dismissTooltipOnScroll, true);
       window.removeEventListener("resize", dismissTooltip);
       window.removeEventListener("blur", dismissTooltip);
       document.removeEventListener("visibilitychange", dismissTooltip);
+      armViewportDismissal();
     };
-  }, [dismissTooltip, tooltipOpen]);
+  }, [armViewportDismissal, dismissTooltip, dismissTooltipOnScroll, tooltipOpen]);
 
   const binIndexAt = (clientX: number, element: Element): number => {
     const bounds = element.getBoundingClientRect();
@@ -119,7 +144,10 @@ export function NumericHistogram({
           role="tooltip"
           aria-label={compact ? activeBinLabel : undefined}
         >
-          {compact && activeBin ? compactHistogramBinLabel(activeBin, denominator, valueMode) : activeBinLabel}
+          {compactActiveBinLabel ?? activeBinLabel}
+          {compactActiveBinLabel && activeBinLabel && (
+            <span className="numericHistogramTooltipDetail">{activeBinLabel.slice(compactActiveBinLabel.length)}</span>
+          )}
         </span>
       )}
       <span className="numericHistogramChart">
@@ -134,6 +162,7 @@ export function NumericHistogram({
             interactive
               ? undefined
               : (event) => {
+                  armViewportDismissal();
                   setHoveredBin({ view, index: binIndexAt(event.clientX, event.currentTarget) });
                   setTooltipVisible(true);
                 }
@@ -166,12 +195,14 @@ export function NumericHistogram({
             className="numericHistogramHitTarget"
             aria-label={currentBinLabel}
             onPointerMove={(event) => {
+              armViewportDismissal();
               setHoveredBin({ view, index: binIndexAt(event.clientX, event.currentTarget) });
               setTooltipVisible(true);
             }}
             onPointerLeave={dismissTooltip}
             onPointerCancel={dismissTooltip}
             onFocus={() => {
+              armViewportDismissalAfterFocus();
               setFocusedBin((focused) => (focused?.view === view ? focused : { view, index: hoveredBinIndex ?? 0 }));
               setTooltipVisible(true);
             }}
