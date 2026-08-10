@@ -6286,10 +6286,16 @@ async function exerciseReleasedREditingJourney(
   recordAcceptanceProgress(`${phase}:editing:copy-export`);
   const generatedCode = reapplied.code ?? "";
   const priorClipboard = await vscode.env.clipboard.readText();
-  const copied = await vscode.commands.executeCommand<string>("openWrangler.copyCode");
-  assert.equal(copied, generatedCode, "The public Copy Generated Code command must copy native R code.");
-  assert.equal(await vscode.env.clipboard.readText(), generatedCode);
-  await vscode.env.clipboard.writeText(priorClipboard);
+  try {
+    const copied = await vscode.commands.executeCommand<string>("openWrangler.copyCode");
+    assert.equal(copied, generatedCode, "The public Copy Generated Code command must copy native R code.");
+    assert.equal(
+      (await vscode.env.clipboard.readText()).replaceAll("\r\n", "\n"),
+      generatedCode.replaceAll("\r\n", "\n")
+    );
+  } finally {
+    await vscode.env.clipboard.writeText(priorClipboard);
+  }
   await assert.rejects(
     testing.exportCodeTo(vscode.Uri.file(notebookPath)),
     /never overwrites the active source/u,
