@@ -1297,6 +1297,30 @@ describe("SummaryPanel", () => {
     expect(screen.getByRole("meter", { name: "Berlin: 2 rows, 50%" })).toHaveValue(2);
   });
 
+  it("uses the fuller top-value list in the drawer before offering the value browser", () => {
+    const topValues = Array.from({ length: 10 }, (_, index) => ({ value: `value-${index + 1}`, count: 1 }));
+    renderSummary({
+      summaries: [
+        {
+          ...categoricalSummary,
+          totalCount: 20,
+          distinctCount: 20,
+          topValues,
+          visualization: {
+            kind: "categorical",
+            categories: topValues.slice(0, 6),
+            otherCount: 14
+          }
+        }
+      ],
+      onShowMoreValues: () => undefined
+    });
+
+    expect(screen.getByText("value-10")).toBeVisible();
+    expect(screen.getByRole("meter", { name: "Other: 10 rows, 50%" })).toHaveValue(10);
+    expect(screen.getByRole("button", { name: "More values…" })).toBeVisible();
+  });
+
   it("switches counts to percentages and filters a categorical value through the shared view model", () => {
     const onApply = vi.fn();
     const onShowMoreValues = vi.fn();
