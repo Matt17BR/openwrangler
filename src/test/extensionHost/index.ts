@@ -9940,7 +9940,8 @@ async function exerciseReleasedPythonFileEntrypoint(
       throw new Error(
         "The Python editor action did not open its native Polars dataframe. " +
           `Coordinator: ${JSON.stringify(testing.diagnostics())}. ` +
-          `Quick Input: ${JSON.stringify(await releasedJupyterQuickInputDiagnostics(workbench))}.`
+          `Quick Input: ${JSON.stringify(await releasedJupyterQuickInputDiagnostics(workbench))}. ` +
+          `Interactive Window: ${releasedPythonEntrypointDiagnostics(interactive, sourceDocument)}.`
       );
     }
     assertExactOpenNotebookDocument(interactive, "after the Python editor action opened its dataframe");
@@ -10019,6 +10020,43 @@ async function exerciseReleasedPythonFileEntrypoint(
       "Python entry-point cleanup must not change its source file."
     );
   }
+}
+
+function releasedPythonEntrypointDiagnostics(
+  interactive: vscode.NotebookDocument | undefined,
+  source: vscode.TextDocument
+): string {
+  const cells =
+    interactive
+      ?.getCells()
+      .slice(-8)
+      .map((cell) => {
+        const metadata = cell.metadata as {
+          interactive?: { uristring?: unknown; lineIndex?: unknown };
+          id?: unknown;
+        };
+        return {
+          index: cell.index,
+          language: cell.document.languageId,
+          associatedSource: metadata.interactive?.uristring === source.uri.toString(),
+          lineIndex: metadata.interactive?.lineIndex,
+          hasId: typeof metadata.id === "string" && metadata.id.length > 0,
+          success: cell.executionSummary?.success,
+          executionOrder: cell.executionSummary?.executionOrder,
+          ended: cell.executionSummary?.timing?.endTime !== undefined
+        };
+      }) ?? [];
+  return JSON.stringify({
+    opened: Boolean(interactive && !interactive.isClosed),
+    cellCount: interactive?.cellCount ?? 0,
+    visible: interactive
+      ? vscode.window.visibleNotebookEditors.some((editor) => editor.notebook === interactive)
+      : false,
+    activeNotebook: interactive ? vscode.window.activeNotebookEditor?.notebook === interactive : false,
+    sourceOpen: !source.isClosed,
+    sourceActive: vscode.window.activeTextEditor?.document === source,
+    cells
+  });
 }
 
 async function exerciseReleasedPySparkJupyterExtension(

@@ -13,6 +13,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - The **Open in Open Wrangler** action on `.R`, `.Rmd`, and `.qmd` tabs now opens a dataframe from the selected official
   R terminal when one is active. Otherwise it runs the current document as before; both explicit choices remain in
   the tab menu.
+- The `.py` editor action now asks for a kernel when Jupyter opens an unconfigured Interactive Window, restores the
+  source and cursor, and waits for the new cell to finish before looking for dataframes.
 
 ## [1.99.2] - 2026-08-09
 

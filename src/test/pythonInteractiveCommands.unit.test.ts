@@ -19,6 +19,8 @@ const pythonMocks = vi.hoisted(() => ({
   showInformationMessage: vi.fn(async () => undefined),
   showWarningMessage: vi.fn(async () => undefined),
   showQuickPick: vi.fn(async (items: readonly unknown[]) => items[0]),
+  showNotebookDocument: vi.fn(),
+  showTextDocument: vi.fn(),
   activeTextEditor: undefined as TextEditor | undefined,
   activeNotebookEditor: undefined as NotebookEditor | undefined,
   textDocuments: [] as TextDocument[],
@@ -75,6 +77,7 @@ vi.mock("vscode", () => {
     Uri,
     EventEmitter,
     NotebookCellKind: { Markup: 1, Code: 2 },
+    ViewColumn: { Active: -1, One: 1 },
     commands: {
       registerCommand: (id: string, handler: CommandHandler) => {
         pythonMocks.commands.set(id, handler);
@@ -93,7 +96,9 @@ vi.mock("vscode", () => {
       onDidChangeActiveNotebookEditor: subscribe(pythonMocks.activeNotebookListeners),
       showInformationMessage: pythonMocks.showInformationMessage,
       showWarningMessage: pythonMocks.showWarningMessage,
-      showQuickPick: pythonMocks.showQuickPick
+      showQuickPick: pythonMocks.showQuickPick,
+      showNotebookDocument: pythonMocks.showNotebookDocument,
+      showTextDocument: pythonMocks.showTextDocument
     },
     workspace: {
       get textDocuments() {
@@ -159,6 +164,20 @@ describe("Python Interactive Window entry points", () => {
     pythonMocks.showWarningMessage.mockClear();
     pythonMocks.showQuickPick.mockReset();
     pythonMocks.showQuickPick.mockImplementation(async (items: readonly unknown[]) => items[0]);
+    pythonMocks.showNotebookDocument.mockReset();
+    pythonMocks.showNotebookDocument.mockImplementation(async (notebookDocument: NotebookDocument) => {
+      const editor = { notebook: notebookDocument } as NotebookEditor;
+      pythonMocks.activeNotebookEditor = editor;
+      pythonMocks.activeTextEditor = undefined;
+      return editor;
+    });
+    pythonMocks.showTextDocument.mockReset();
+    pythonMocks.showTextDocument.mockImplementation(async (document: TextDocument) => {
+      const editor = textEditor(document, 0);
+      pythonMocks.activeTextEditor = editor;
+      pythonMocks.activeNotebookEditor = undefined;
+      return editor;
+    });
     pythonMocks.discover.mockReset();
     pythonMocks.discover.mockResolvedValue({ variables: [], truncated: false });
     pythonMocks.openVariable.mockClear();
@@ -191,6 +210,119 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
     expect(pythonMocks.showQuickPick).not.toHaveBeenCalled();
+  });
+
+  it("waits for Jupyter to publish and finish the Interactive Window cell", async () => {
+    const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = textEditor(source, 1);
+    fire(pythonMocks.activeTextListeners, pythonMocks.activeTextEditor);
+
+    const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
+    pythonMocks.executeCommand.mockResolvedValue(undefined);
+    const frame = polarsFrame("frame");
+    pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
+
+    const opening = command("openWrangler.runPythonCellAndOpenVariable")();
+    await settle();
+    expect(pythonMocks.discover).not.toHaveBeenCalled();
+
+    const cell = interactiveCell(interactive.document, source.uri.toString(), 0, "run-1", true);
+    Object.defineProperty(cell, "executionSummary", { value: undefined, writable: true });
+    interactive.cells.push(cell);
+    pythonMocks.notebookDocuments.push(interactive.document);
+    fire(pythonMocks.openNotebookListeners, interactive.document);
+    await settle();
+    expect(pythonMocks.openVariable).not.toHaveBeenCalled();
+    const discoveryCallsBeforeCompletion = pythonMocks.discover.mock.calls.length;
+
+    Object.defineProperty(cell, "executionSummary", {
+      value: { success: true, timing: { startTime: 1, endTime: 2 } },
+      writable: true
+    });
+    fire(pythonMocks.changeNotebookListeners, {
+      notebook: interactive.document,
+      cellChanges: [{ cell, executionSummary: cell.executionSummary }],
+      contentChanges: []
+    } as unknown as NotebookDocumentChangeEvent);
+    await opening;
+
+    expect(pythonMocks.discover.mock.calls.length).toBeGreaterThan(discoveryCallsBeforeCompletion);
+    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+  });
+
+  it("selects a kernel once and retries when Jupyter creates a blank Interactive Window", async () => {
+    const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
+    pythonMocks.textDocuments.push(source);
+    const sourceEditor = textEditor(source, 1);
+    pythonMocks.activeTextEditor = sourceEditor;
+    fire(pythonMocks.activeTextListeners, sourceEditor);
+
+    const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
+    const frame = polarsFrame("frame");
+    pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
+    let runCount = 0;
+    pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+      if (id === "jupyter.runcurrentcell") {
+        runCount += 1;
+        if (runCount === 1) {
+          pythonMocks.notebookDocuments.push(interactive.document);
+          fire(pythonMocks.openNotebookListeners, interactive.document);
+        } else {
+          const cell = interactiveCell(interactive.document, source.uri.toString(), 0, "run-1", true);
+          interactive.cells.push(cell);
+          fire(pythonMocks.changeNotebookListeners, {
+            notebook: interactive.document,
+            cellChanges: [{ cell, executionSummary: cell.executionSummary }],
+            contentChanges: []
+          } as unknown as NotebookDocumentChangeEvent);
+        }
+      }
+      return undefined;
+    });
+    pythonMocks.showTextDocument.mockImplementation(async (document: TextDocument) => {
+      expect(document).toBe(source);
+      pythonMocks.activeTextEditor = sourceEditor;
+      pythonMocks.activeNotebookEditor = undefined;
+      return sourceEditor;
+    });
+
+    await command("openWrangler.runPythonCellAndOpenVariable")();
+
+    expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
+      "jupyter.runcurrentcell",
+      "notebook.selectKernel",
+      "jupyter.runcurrentcell"
+    ]);
+    expect(pythonMocks.showNotebookDocument).toHaveBeenCalledWith(interactive.document, {
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false,
+      preview: false
+    });
+    expect(sourceEditor.selection.active.line).toBe(1);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+  });
+
+  it("stops waiting when Jupyter never publishes the Interactive Window cell", async () => {
+    vi.useFakeTimers();
+    try {
+      const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
+      pythonMocks.textDocuments.push(source);
+      pythonMocks.activeTextEditor = textEditor(source, 1);
+
+      const opening = command("openWrangler.runPythonCellAndOpenVariable")();
+      await settle();
+      await vi.advanceTimersByTimeAsync(120_000);
+      await opening;
+
+      expect(pythonMocks.openVariable).not.toHaveBeenCalled();
+      expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining("did not produce an Interactive Window execution")
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("explains how to mark a Python file that has no runnable cell", async () => {
@@ -463,7 +595,8 @@ function textDocument(uri: string, text: string): TextDocument & { isClosed: boo
 function textEditor(document: TextDocument, line: number): TextEditor {
   return {
     document,
-    selection: { active: { line }, start: { line } }
+    selection: { active: { line }, start: { line } },
+    viewColumn: vscode.ViewColumn.One
   } as unknown as TextEditor;
 }
 
