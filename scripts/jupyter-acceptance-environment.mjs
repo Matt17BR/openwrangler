@@ -99,14 +99,23 @@ const R_ACCEPTANCE_BOOTSTRAP_STAGES = Object.freeze([
 const rAcceptanceBootstrapReceipts = new WeakMap();
 const R_ACCEPTANCE_EXECUTABLE_PROBE_TIMEOUT_MS = 300_000;
 const R_ACCEPTANCE_KERNEL_PROBE = String.raw`
-import subprocess, sys, time
+import os, subprocess, sys, time
 stage, manager, client, result = "start", None, None, None
 try:
     from jupyter_client import KernelManager
-    from jupyter_client.kernelspec import KernelSpecManager
-    kernel_id, kernel_dir, connection_file, private_cwd = sys.argv[1:]
-    specs = KernelSpecManager(kernel_dirs=[kernel_dir], ensure_native_kernel=False, allowed_kernelspecs={kernel_id})
+    from jupyter_client.kernelspec import KernelSpec, KernelSpecManager, NoSuchKernel
+    class ExactKernelSpecManager(KernelSpecManager):
+        def __init__(self, exact_name, exact_spec):
+            super().__init__(ensure_native_kernel=False, allowed_kernelspecs={exact_name})
+            self._exact_name, self._exact_spec = exact_name, exact_spec
+        def get_kernel_spec(self, kernel_name):
+            if kernel_name != self._exact_name: raise NoSuchKernel(kernel_name)
+            return self._exact_spec
+    kernel_id, kernel_spec_path, connection_file, private_cwd = sys.argv[1:]
+    kernel_spec = KernelSpec.from_resource_dir(os.path.dirname(kernel_spec_path))
+    specs = ExactKernelSpecManager(kernel_id, kernel_spec)
     manager = KernelManager(kernel_name=kernel_id, kernel_spec_manager=specs, connection_file=connection_file)
+    if manager.kernel_spec is not kernel_spec: raise RuntimeError("kernel spec mismatch")
     manager.start_kernel(cwd=private_cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     stage = "ready"
     client = manager.blocking_client(); client.start_channels(); client.wait_for_ready(timeout=12)
@@ -731,7 +740,7 @@ export async function probeJupyterAcceptanceRKernel(python, prepared, { runComma
         "-c",
         R_ACCEPTANCE_KERNEL_PROBE,
         prepared.kernelId,
-        dirname(dirname(prepared.kernelSpecPath)),
+        prepared.kernelSpecPath,
         resolve(prepared.jupyterEnvironment.runtimeDir, "kernel-readiness.json"),
         prepared.kernelProbeWorkingDirectory
       ],
