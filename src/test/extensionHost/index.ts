@@ -6151,7 +6151,7 @@ async function exerciseReleasedREditingJourney(
   const exportPath = path.join(outputDirectory, `${phase}.orders.clean.csv`);
   await exportCleanedDataThroughCommand(workbench, exportPath);
   await waitFor(() => existsSync(exportPath), 30_000, "the cleaned R notebook CSV export to appear");
-  const exportedLines = readFileSync(exportPath, "utf8").split("\n");
+  const exportedLines = readFileSync(exportPath, "utf8").split(/\r?\n/u);
   assert.equal(exportedLines.at(-1), "", "The native R CSV export must end with one newline.");
   exportedLines.pop();
   assert.equal(exportedLines.length, 1_206, "The native R CSV export must contain all source rows plus its header.");
