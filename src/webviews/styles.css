@@ -1372,6 +1372,13 @@ th:hover .columnResizeHandle,
   z-index: 2;
 }
 
+.numericHistogram.compact .numericHistogramTooltip {
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .miniChartCaption,
 .miniChartLegend {
   color: var(--vscode-descriptionForeground);

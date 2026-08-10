@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import type { NumericVisualization } from "../../shared/protocol";
 
 interface NumericHistogramProps {
@@ -9,6 +9,18 @@ interface NumericHistogramProps {
   onSelectBin?(bin: NumericVisualization["bins"][number], index: number): void;
 }
 
+interface HistogramView {
+  visualization: NumericVisualization;
+  compact: boolean;
+  valueMode: "count" | "percent";
+  percentDenominator: number | undefined;
+}
+
+interface ActiveHistogramBin {
+  view: HistogramView;
+  index: number;
+}
+
 export function NumericHistogram({
   visualization,
   compact = false,
@@ -16,8 +28,13 @@ export function NumericHistogram({
   percentDenominator,
   onSelectBin
 }: NumericHistogramProps) {
-  const [hoveredBinIndex, setHoveredBinIndex] = useState<number>();
-  const [focusedBinIndex, setFocusedBinIndex] = useState<number>();
+  const view = useMemo(
+    () => ({ visualization, compact, valueMode, percentDenominator }),
+    [compact, percentDenominator, valueMode, visualization]
+  );
+  const [hoveredBin, setHoveredBin] = useState<ActiveHistogramBin>();
+  const [focusedBin, setFocusedBin] = useState<ActiveHistogramBin>();
+  const [tooltipVisible, setTooltipVisible] = useState(false);
   const tooltipId = useId();
   const maximumCount = Math.max(1, ...visualization.bins.map((bin) => bin.count));
   const width = compact ? 160 : 320;
@@ -34,6 +51,8 @@ export function NumericHistogram({
     0,
     percentDenominator ?? visualization.bins.reduce((total, bin) => total + bin.count, 0)
   );
+  const hoveredBinIndex = hoveredBin?.view === view ? hoveredBin.index : undefined;
+  const focusedBinIndex = focusedBin?.view === view ? focusedBin.index : undefined;
   const activeBinIndex = hoveredBinIndex ?? focusedBinIndex;
   const activeBin = activeBinIndex === undefined ? undefined : visualization.bins[activeBinIndex];
   const activeBinLabel = activeBin
@@ -45,6 +64,26 @@ export function NumericHistogram({
   const currentBinLabel = currentBin
     ? histogramBinLabel(currentBin, denominator, valueMode, currentBinIndex === visualization.bins.length - 1)
     : "No finite values";
+  const tooltipOpen = activeBinLabel !== undefined && tooltipVisible;
+
+  const dismissTooltip = useCallback(() => {
+    setHoveredBin(undefined);
+    setTooltipVisible(false);
+  }, []);
+
+  useEffect(() => {
+    if (!tooltipOpen) return;
+    window.addEventListener("scroll", dismissTooltip, true);
+    window.addEventListener("resize", dismissTooltip);
+    window.addEventListener("blur", dismissTooltip);
+    document.addEventListener("visibilitychange", dismissTooltip);
+    return () => {
+      window.removeEventListener("scroll", dismissTooltip, true);
+      window.removeEventListener("resize", dismissTooltip);
+      window.removeEventListener("blur", dismissTooltip);
+      document.removeEventListener("visibilitychange", dismissTooltip);
+    };
+  }, [dismissTooltip, tooltipOpen]);
 
   const binIndexAt = (clientX: number, element: Element): number => {
     const bounds = element.getBoundingClientRect();
@@ -54,13 +93,17 @@ export function NumericHistogram({
   };
 
   const moveFocusedBin = (direction: "first" | "last" | "previous" | "next") => {
-    setFocusedBinIndex((focused) => {
-      const current = focused ?? hoveredBinIndex ?? 0;
-      if (direction === "first") return 0;
-      if (direction === "last") return Math.max(0, visualization.bins.length - 1);
-      if (direction === "previous") return Math.max(0, current - 1);
-      return Math.min(Math.max(0, visualization.bins.length - 1), current + 1);
+    setFocusedBin((focused) => {
+      const currentIndex = focused?.view === view ? focused.index : (hoveredBinIndex ?? 0);
+      let nextIndex: number;
+      if (direction === "first") nextIndex = 0;
+      else if (direction === "last") nextIndex = Math.max(0, visualization.bins.length - 1);
+      else if (direction === "previous") nextIndex = Math.max(0, currentIndex - 1);
+      else nextIndex = Math.min(Math.max(0, visualization.bins.length - 1), currentIndex + 1);
+      return { view, index: nextIndex };
     });
+    setHoveredBin(undefined);
+    setTooltipVisible(true);
   };
 
   return (
@@ -69,9 +112,14 @@ export function NumericHistogram({
       role={interactive ? "group" : undefined}
       aria-label={interactive ? chartLabel : undefined}
     >
-      {activeBinLabel && (
-        <span id={tooltipId} className="numericHistogramTooltip" role="tooltip">
-          {activeBinLabel}
+      {tooltipOpen && (
+        <span
+          id={tooltipId}
+          className="numericHistogramTooltip"
+          role="tooltip"
+          aria-label={compact ? activeBinLabel : undefined}
+        >
+          {compact && activeBin ? compactHistogramBinLabel(activeBin, denominator, valueMode) : activeBinLabel}
         </span>
       )}
       <span className="numericHistogramChart">
@@ -83,10 +131,15 @@ export function NumericHistogram({
           aria-hidden={interactive ? "true" : undefined}
           aria-label={interactive ? undefined : chartLabel}
           onPointerMove={
-            interactive ? undefined : (event) => setHoveredBinIndex(binIndexAt(event.clientX, event.currentTarget))
+            interactive
+              ? undefined
+              : (event) => {
+                  setHoveredBin({ view, index: binIndexAt(event.clientX, event.currentTarget) });
+                  setTooltipVisible(true);
+                }
           }
-          onPointerLeave={interactive ? undefined : () => setHoveredBinIndex(undefined)}
-          onPointerCancel={interactive ? undefined : () => setHoveredBinIndex(undefined)}
+          onPointerLeave={interactive ? undefined : dismissTooltip}
+          onPointerCancel={interactive ? undefined : dismissTooltip}
         >
           {visualization.bins.map((bin, index) => {
             const barHeight = Math.max(2, (bin.count / maximumCount) * height);
@@ -112,11 +165,20 @@ export function NumericHistogram({
             type="button"
             className="numericHistogramHitTarget"
             aria-label={currentBinLabel}
-            onPointerMove={(event) => setHoveredBinIndex(binIndexAt(event.clientX, event.currentTarget))}
-            onPointerLeave={() => setHoveredBinIndex(undefined)}
-            onPointerCancel={() => setHoveredBinIndex(undefined)}
-            onFocus={() => setFocusedBinIndex((focused) => focused ?? hoveredBinIndex ?? 0)}
-            onBlur={() => setFocusedBinIndex(undefined)}
+            onPointerMove={(event) => {
+              setHoveredBin({ view, index: binIndexAt(event.clientX, event.currentTarget) });
+              setTooltipVisible(true);
+            }}
+            onPointerLeave={dismissTooltip}
+            onPointerCancel={dismissTooltip}
+            onFocus={() => {
+              setFocusedBin((focused) => (focused?.view === view ? focused : { view, index: hoveredBinIndex ?? 0 }));
+              setTooltipVisible(true);
+            }}
+            onBlur={() => {
+              setFocusedBin(undefined);
+              dismissTooltip();
+            }}
             onClick={(event) => {
               const index = event.detail > 0 ? binIndexAt(event.clientX, event.currentTarget) : currentBinIndex;
               const bin = visualization.bins[index];
@@ -137,6 +199,8 @@ export function NumericHistogram({
                 moveFocusedBin("last");
               } else if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
+                setFocusedBin({ view, index: currentBinIndex });
+                setTooltipVisible(true);
                 const bin = visualization.bins[currentBinIndex];
                 if (bin) onSelectBin(bin, currentBinIndex);
               }
@@ -149,6 +213,16 @@ export function NumericHistogram({
       </span>
     </span>
   );
+}
+
+function compactHistogramBinLabel(
+  bin: NumericVisualization["bins"][number],
+  denominator: number,
+  valueMode: "count" | "percent"
+): string {
+  const count = `${bin.count.toLocaleString()} ${bin.count === 1 ? "row" : "rows"}`;
+  const value = valueMode === "count" ? count : formatDistributionPercent(bin.count, denominator);
+  return `${formatHistogramValue(bin.min)}-${formatHistogramValue(bin.max)}: ${value}`;
 }
 
 function histogramBinLabel(
