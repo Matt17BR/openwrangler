@@ -12,6 +12,15 @@ test("ordinary stable release packages once and gates publishing behind exact-ar
 test("stable release inspector rejects unsafe publication and artifact drift", () => {
   const mutations = [
     source.replace("default: false", "default: true"),
+    source.replace("      fail-fast: true", "      fail-fast: false"),
+    source.replace(
+      "        continue-on-error: true\n        run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix",
+      "        continue-on-error: false\n        run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
+    ),
+    source.replace(
+      "        if: ${{ always() && steps.packaged_editor.outcome == 'failure' }}\n        run: exit 1",
+      "        if: ${{ always() && steps.packaged_editor.outcome == 'failure' }}\n        run: exit 0"
+    ),
     source.replace("permissions:\n  contents: read", "permissions:\n  contents: write"),
     source.replace("\njobs:\n", "\nenv:\n  OPEN_WRANGLER_EDITOR_DISPLAY: current\n\njobs:\n"),
     source.replace("\njobs:\n", "\ndefaults:\n  run:\n    shell: bash\n\njobs:\n"),

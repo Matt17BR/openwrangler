@@ -175,6 +175,11 @@ For an intentional release-candidate pull request, apply the `acceptance:remote-
 
 `npm run docs:check` semantically parses `.github/workflows/release.yml`. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Cross-platform native smoke, complete Linux acceptance, installed performance, released and remote Jupyter, and Remote SSH consume only that artifact ID in parallel. Linux is the sole owner of the complete source/full-suite commands; specialized lanes retain their distinct real-editor evidence without repeating the full Python or TypeScript corpus. An `always()` fan-in requires every result to equal `success`. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate. The inspector enforces these behavior invariants rather than mirroring every YAML line or a workflow-file hash.
 
+The macOS and Windows cells share a fail-fast matrix in both release workflows. If either platform fails, GitHub
+cancels the other cell because the candidate can no longer publish. The final gate still requires both cells to have
+finished successfully. Editor, performance, and webview commands that can produce diagnostics defer their failure
+only until the immediately following upload has run, then fail before another expensive command can start.
+
 A `publish: false` run proves source binding, package integrity, and the complete acceptance topology only. It does not enter the `publishing` environment, receive registry secrets or `contents: write`, push a tag, call a registry, or trigger the Marketplace pipeline. Its run-scoped artifact is not promoted by a later dispatch; an explicitly authorized `publish: true` run repeats acceptance and promotes only the exact artifact created and tested in that same run. Consequently a rehearsal does **not** prove protected-environment approval, secret availability, GitHub publication API behavior, the global publication queue under live contention, Azure workload federation, or registry propagation.
 
 The stable workflow is manual and defaults to validation-only. It accepts only the exact current protected `main`

@@ -7,6 +7,7 @@ import {
   OPEN_VSX_VERIFY_PAT_RUN,
   PUBLIC_MEDIA_CONTRACT_RUN
 } from "./open-vsx-promotion-workflow.mjs";
+import { inspectDeferredDiagnosticFailures, isExplicitOutcomeFailureStep } from "./release-diagnostic-order.mjs";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const EVENT_SHA = "${{ github.sha }}";
@@ -437,7 +438,7 @@ function inspectCrossPlatformRJupyter(job, problems) {
     !(jobSteps.indexOf(setup) < jobSteps.indexOf(locate)) ||
     !(jobSteps.indexOf(locate) < jobSteps.indexOf(npmCi)) ||
     runnerMatches.length !== 1 ||
-    !exactKeys(runner, ["id", "name", "run", "env"]) ||
+    !exactKeys(runner, ["id", "name", "continue-on-error", "run", "env"]) ||
     runner.name !== "Test local R Jupyter in packaged VS Code" ||
     command(runner.run) !== CROSS_PLATFORM_R_PACKAGED_EDITOR_COMMAND ||
     !exactKeys(runner.env, [
@@ -531,11 +532,8 @@ export function inspectStableReleaseWorkflow(source) {
     if (job?.env !== undefined || job?.defaults !== undefined) {
       problems.push(`${jobName} must not inherit job-level environment or shell defaults.`);
     }
-    if (
-      job?.["continue-on-error"] !== undefined ||
-      steps(job).some((step) => step?.["continue-on-error"] !== undefined)
-    ) {
-      problems.push(`${jobName} must not convert a failed release step or job into success.`);
+    if (job?.["continue-on-error"] !== undefined) {
+      problems.push(`${jobName} must not convert a failed release job into success.`);
     }
     for (const step of steps(job)) {
       if (
@@ -553,7 +551,8 @@ export function inspectStableReleaseWorkflow(source) {
           step.if === "${{ steps.public_media_contract.outputs.required == 'true' }}" &&
           (command(step.run) === "npx playwright-core install --with-deps chromium" ||
             command(step.run).includes("verify-public-media-surfaces.mjs"))
-        )
+        ) &&
+        !isExplicitOutcomeFailureStep(step)
       ) {
         problems.push(`${jobName} must not conditionally skip a required release step.`);
       }
@@ -584,6 +583,7 @@ export function inspectStableReleaseWorkflow(source) {
       }
     }
   }
+  problems.push(...inspectDeferredDiagnosticFailures(workflow, UPLOAD_ACTION));
   inspectPinnedActions(workflow, problems);
 
   const allRuns = Object.values(workflow.jobs).flatMap((job) => steps(job).map((step) => command(step?.run)));
@@ -680,7 +680,7 @@ export function inspectStableReleaseWorkflow(source) {
   const crossPlatform = workflow.jobs["cross-platform"];
   const matrix = crossPlatform.strategy?.matrix?.include;
   if (
-    crossPlatform.strategy?.["fail-fast"] !== false ||
+    crossPlatform.strategy?.["fail-fast"] !== true ||
     !Array.isArray(matrix) ||
     matrix.length !== 2 ||
     matrix[0]?.os !== "macos-latest" ||
@@ -688,7 +688,7 @@ export function inspectStableReleaseWorkflow(source) {
     matrix[1]?.os !== "windows-latest" ||
     matrix[1]?.python !== "3.14"
   ) {
-    problems.push("cross-platform must cover the pinned macOS and Windows release matrix.");
+    problems.push("cross-platform must fail fast across the pinned macOS and Windows release matrix.");
   }
   const environmentSmokeSteps = steps(crossPlatform).filter(
     (step) => command(step?.run) === "npm run test:python-environment-smoke"
@@ -712,7 +712,7 @@ export function inspectStableReleaseWorkflow(source) {
     "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
   );
   if (
-    !exactKeys(crossPlatformEditorStep, ["id", "name", "run", "env"]) ||
+    !exactKeys(crossPlatformEditorStep, ["id", "name", "continue-on-error", "run", "env"]) ||
     crossPlatformEditorStep.id !== "packaged_editor" ||
     crossPlatformEditorStep.name !== "Test packaged VS Code" ||
     !exactKeys(crossPlatformEditorStep.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "VSCODE_TEST_VERSION"]) ||
@@ -731,7 +731,7 @@ export function inspectStableReleaseWorkflow(source) {
   );
   const cursorSmokeStep = steps(crossPlatform).find((step) => step?.id === "cursor_smoke");
   if (
-    !exactKeys(cursorSmokeStep, ["id", "name", "run", "env"]) ||
+    !exactKeys(cursorSmokeStep, ["id", "name", "continue-on-error", "run", "env"]) ||
     cursorSmokeStep.name !== "Test pinned Cursor platform smoke" ||
     command(cursorSmokeStep.run) !== "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix" ||
     !exactKeys(cursorSmokeStep.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "OPEN_WRANGLER_PACKAGED_MODE"]) ||
@@ -761,7 +761,13 @@ export function inspectStableReleaseWorkflow(source) {
     "npm run benchmark:runtime"
   ]) {
     const requiredSteps = steps(linux).filter((step) => command(step?.run) === required);
-    if (requiredSteps.length !== 1 || !exactKeys(requiredSteps[0], ["run"])) {
+    const expectedKeys = required === "npm run test:webview-acceptance" ? ["id", "continue-on-error", "run"] : ["run"];
+    if (
+      requiredSteps.length !== 1 ||
+      !exactKeys(requiredSteps[0], expectedKeys) ||
+      (required === "npm run test:webview-acceptance" &&
+        (requiredSteps[0].id !== "webview_acceptance" || requiredSteps[0]["continue-on-error"] !== true))
+    ) {
       problems.push(`linux-acceptance must run ${required} exactly once as an unconditional required step.`);
     }
   }
@@ -772,12 +778,12 @@ export function inspectStableReleaseWorkflow(source) {
   const linuxCursorStep = linuxEditorSteps.find((step) => step?.id === "packaged_cursor");
   if (
     linuxEditorSteps.length !== 2 ||
-    !exactKeys(linuxVscodeStep, ["id", "name", "run", "env"]) ||
+    !exactKeys(linuxVscodeStep, ["id", "name", "continue-on-error", "run", "env"]) ||
     linuxVscodeStep?.name !== "Test the full package in headless VS Code" ||
     !exactKeys(linuxVscodeStep?.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "VSCODE_TEST_VERSION"]) ||
     linuxVscodeStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
     linuxVscodeStep.env.VSCODE_TEST_VERSION !== "stable" ||
-    !exactKeys(linuxCursorStep, ["id", "name", "run", "env"]) ||
+    !exactKeys(linuxCursorStep, ["id", "name", "continue-on-error", "run", "env"]) ||
     linuxCursorStep?.name !== "Test the full package in private-display Cursor" ||
     !exactKeys(linuxCursorStep?.env, [
       "OPEN_WRANGLER_PACKAGED_EDITORS",
@@ -832,7 +838,7 @@ export function inspectStableReleaseWorkflow(source) {
   const performanceStep = steps(performance).find((step) => step?.id === "installed_performance");
   const performanceRun = command(performanceStep?.run);
   if (
-    !exactKeys(performanceStep, ["id", "name", "env", "run"]) ||
+    !exactKeys(performanceStep, ["id", "name", "continue-on-error", "env", "run"]) ||
     performanceStep.name !== "Test the ordinary stable artifact in pinned editors" ||
     !exactKeys(performanceStep.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
     performanceStep.env.EXPECTED_SHA !== EVENT_SHA ||
@@ -858,7 +864,7 @@ export function inspectStableReleaseWorkflow(source) {
   const jupyter = workflow.jobs["released-jupyter"];
   const jupyterStep = steps(jupyter).find((step) => step?.id === "packaged_editor");
   if (
-    !exactKeys(jupyterStep, ["id", "name", "run", "env"]) ||
+    !exactKeys(jupyterStep, ["id", "name", "continue-on-error", "run", "env"]) ||
     jupyterStep.name !== "Test released Jupyter in the exact packaged VSIX" ||
     command(jupyterStep.run) !== PACKAGED_EDITOR_COMMAND ||
     !exactKeys(jupyterStep.env, [
@@ -950,7 +956,7 @@ export function inspectStableReleaseWorkflow(source) {
   );
   const rJupyterStep = steps(jupyter).find((step) => step?.id === "packaged_editor_r");
   if (
-    !exactKeys(rJupyterStep, ["id", "name", "run", "env"]) ||
+    !exactKeys(rJupyterStep, ["id", "name", "continue-on-error", "run", "env"]) ||
     rJupyterStep.name !== "Test R Jupyter in the exact packaged VSIX" ||
     command(rJupyterStep.run) !== command(R_PACKAGED_EDITOR_COMMAND) ||
     !exactKeys(rJupyterStep.env, [
