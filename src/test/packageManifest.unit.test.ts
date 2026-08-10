@@ -197,8 +197,6 @@ describe("file launch contributions", () => {
   it("offers one stable R action and keeps the explicit document command", () => {
     const rSourcePredicate =
       "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
-    const rLaunchPredicate =
-      "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i && (openWrangler.activeRTerminal || resourceScheme == vscode-remote || isLinux || isMac)";
 
     expect(manifest.activationEvents).toContain("onCommand:openWrangler.openRDataframe");
     expect(manifest.activationEvents).toContain("onCommand:openWrangler.runRDocument");
@@ -229,9 +227,14 @@ describe("file launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.openRDataframe",
-      when: rLaunchPredicate,
+      when: rSourcePredicate,
       group: "navigation@1"
     });
+    expect(manifest.contributes?.menus?.["editor/title"]).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ when: expect.stringContaining("openWrangler.activeRTerminal") })
+      ])
+    );
     expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
       command: "openWrangler.runRDocument",
       when: rSourcePredicate,
@@ -289,8 +292,8 @@ describe("file launch contributions", () => {
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.openRDataframe",
       when:
-        "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && " +
-        "resourceExtname =~ /\\.(r|rmd|qmd)$/i && (openWrangler.activeRTerminal || resourceScheme == vscode-remote || isLinux || isMac)",
+        "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && " +
+        "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
       group: "navigation@1"
     });
   });

@@ -676,8 +676,6 @@ export async function run(): Promise<void> {
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const rDocumentPredicate =
     "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i";
-  const rLaunchPredicate =
-    "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i && (openWrangler.activeRTerminal || resourceScheme == vscode-remote || isLinux || isMac)";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
@@ -719,7 +717,7 @@ export async function run(): Promise<void> {
     contributions.menus?.["editor/title"]?.some(
       (item) =>
         item.command === "openWrangler.openRDataframe" &&
-        item.when === rLaunchPredicate &&
+        item.when === rDocumentPredicate &&
         item.group === "navigation@1"
     ),
     "R document editors must expose the Open Wrangler title action."
