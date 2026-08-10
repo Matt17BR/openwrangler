@@ -2776,7 +2776,7 @@ async function exerciseReleasedRJupyterExtension(
       acceptanceError ??= { value: error };
     }
     try {
-      rmSync(directory, { recursive: true, force: true });
+      cleanupAcceptanceTemporaryDirectory(directory);
     } catch (error) {
       acceptanceError ??= { value: error };
     }
