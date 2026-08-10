@@ -96,10 +96,10 @@ test("the lock compiler accepts only the exact resolver version output", () => {
 });
 
 test("ordinary and released audit workflows cannot omit the fixture lock", async () => {
-  const [packageText, ci, release, releasedJupyter, vscodeIgnore] = await Promise.all([
+  const [packageText, ci, candidateAcceptance, releasedJupyter, vscodeIgnore] = await Promise.all([
     readFile(resolve(REPOSITORY_ROOT, "package.json"), "utf8"),
     readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
-    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "release.yml"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "candidate-acceptance.yml"), "utf8"),
     readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "released-jupyter.yml"), "utf8"),
     readFile(resolve(REPOSITORY_ROOT, ".vscodeignore"), "utf8")
   ]);
@@ -116,9 +116,9 @@ test("ordinary and released audit workflows cannot omit the fixture lock", async
   assert.match(ci, uvBootstrap);
   assert.match(ci, /run: npm run lock:remote-jupyter:check/u);
   assert.match(ci, /run: npm run audit:python/u);
-  assert.match(release, uvBootstrap);
-  assert.match(release, /run: npm run lock:remote-jupyter:check/u);
-  assert.match(release, /run: npm run audit:python/u);
+  assert.match(candidateAcceptance, uvBootstrap);
+  assert.match(candidateAcceptance, /run: npm run lock:remote-jupyter:check/u);
+  assert.match(candidateAcceptance, /run: npm run audit:python/u);
   assert.match(releasedJupyter, uvBootstrap);
   assert.match(releasedJupyter, /run: npm run lock:remote-jupyter:check/u);
   assert.match(releasedJupyter, /run: npm run audit:remote-jupyter/u);

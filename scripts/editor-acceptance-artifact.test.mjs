@@ -609,8 +609,7 @@ test("local packaged preflight reports one removable relative artifact path", as
 test("CI hands the exact emitted artifact path directly to the upload action", async () => {
   const workflows = new Map([
     ["ci.yml", "b7c566a772e6b6bfb58ed0dc250532a479d7789f"],
-    ["release.yml", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"],
-    ["stable-release.yml", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"]
+    ["candidate-acceptance.yml", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"]
   ]);
   for (const [workflowName, uploadArtifactRevision] of workflows) {
     const source = await readFile(join(repositoryRoot, ".github", "workflows", workflowName), "utf8");
