@@ -10,6 +10,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   external chunk content, and explain when a document contains no R cells.
 - **Show R dataframes…** in Operations now reads the selected R terminal on the first click. Previously it opened an
   empty picker until the separate refresh command had run.
+- The **Open in Open Wrangler** action on `.R`, `.Rmd`, and `.qmd` tabs now opens a dataframe from the selected official
+  R terminal when one is active. Otherwise it runs the current document as before; both explicit choices remain in
+  the tab menu.
 
 ## [1.99.2] - 2026-08-09
 
