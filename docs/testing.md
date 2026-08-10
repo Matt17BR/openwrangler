@@ -552,8 +552,10 @@ Python real-kernel tests require Pandas and Polars to emit MIME v2 with a `text/
 
 Generated-code insertion tests cover Python and R cells, the 10-second observation bound, event-driven exact-document success, sole-open-document ownership, exact language and unique-marker proof, rejected and indeterminate edits, and suppression of queued dispatch behind an unresolved indeterminate edit. VSIX tests parse the exact packaged `media/notebookRenderer.js` bytes and reject an empty or invalid bundle, static or dynamic imports, dependency re-exports, and a missing named `activate` export.
 
-R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. Every path uses R
-4.5.2. Linux runs the local journey in VS Code and Cursor and the remote journey in VS Code. Preview and stable
+R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. It checks that the
+active notebook's base, tibble, data.table, `collapse::qDF()`, `qTBL()`, and `qDT()` variables appear in Operations,
+that unsupported grouped/indexed collapse objects do not, and that an Operations row opens through the exact kernel.
+Every path uses R 4.5.2. Linux runs the local journey in VS Code and Cursor and the remote journey in VS Code. Preview and stable
 release candidates also run the complete local journey in VS Code on macOS and Windows. The cross-platform jobs reuse
 the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the complete Python suite or the
 standalone R contract suite.

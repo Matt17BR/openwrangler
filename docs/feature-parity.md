@@ -98,9 +98,10 @@ native Polars session, known page values, unchanged source bytes, and complete s
 ## Native R preview
 
 Open Wrangler 1.99 previews can open base `data.frame`, tibble, and `data.table` variables through IRkernel or from
-the exact active terminal owned by the official R extension. The Operations view refreshes that terminal's loaded
-dataframes and opens the selected object without converting it through Python. Changing or closing the R terminal
-invalidates the list instead of retargeting another session.
+the exact active terminal owned by the official R extension. The Operations view lists dataframes from the active
+IRkernel notebook or selected R terminal and opens them without converting through Python. Notebook rows refresh
+after a cell finishes; changing the notebook, kernel, or R terminal invalidates its cached handles instead of
+retargeting another session.
 
 IRkernel and active-terminal variables start in Viewing mode and can switch to Editing without changing the source
 object. R documents follow the file start-mode setting, which defaults to Editing. Generated R can be copied or saved

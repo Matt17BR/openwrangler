@@ -60,7 +60,7 @@ The 1.99 preview has three R entry points:
 
 | Workflow                    | How it opens dataframes                                                                 | Available in                                          |
 | --------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| IRkernel notebook           | From the notebook toolbar or Jupyter Variables                                          | VS Code on Linux, macOS, and Windows; Cursor on Linux |
+| IRkernel notebook           | From Operations, the notebook toolbar, or Jupyter Variables                             | VS Code on Linux, macOS, and Windows; Cursor on Linux |
 | Selected VS Code R terminal | Choose **Operations → Show R dataframes…**; Open Wrangler starts R when needed          | VS Code and Cursor on Linux                           |
 | `.R`, `.Rmd`, or `.qmd`     | Choose **Run R Document in Open Wrangler…** to start an Open Wrangler-managed R process | VS Code and Cursor on Linux; VS Code on macOS         |
 
@@ -213,8 +213,9 @@ jobs.
 Open Wrangler handles base R `data.frame`, tibble, and `data.table` objects in the R process where they already live.
 The entry point determines which process owns the session:
 
-- In an IRkernel notebook, use the notebook toolbar or Jupyter Variables. The dataframe opens in Viewing mode; use
-  **Switch to Editing** when you want to build a cleaning plan. Generated R can be inserted into that exact notebook.
+- In an IRkernel notebook, open a loaded dataframe from Operations, the notebook toolbar, or Jupyter Variables.
+  Operations refreshes after a cell finishes. The dataframe opens in Viewing mode; use **Switch to Editing** when you
+  want to build a cleaning plan. Generated R can be inserted into that exact notebook.
 - For an interactive session from the official R extension, select its terminal and choose **Operations → Show R
   dataframes…**. If no R terminal is running, **Start R and show dataframes…** opens one first. The list and every
   opened dataframe stay tied to that terminal. These dataframes open in Viewing mode and can switch to Editing.
