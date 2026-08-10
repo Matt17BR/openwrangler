@@ -57,8 +57,10 @@ import {
 } from "./packaged-editor-orchestration.mjs";
 import {
   acceptancePythonForPhase,
+  appendJupyterAcceptanceRProfileStartupStage,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
+  jupyterAcceptanceRProfileStartupStage,
   prepareJupyterAcceptanceREnvironment,
   probeJupyterAcceptanceRKernel,
   writeJupyterAcceptanceEnvironment,
@@ -1349,21 +1351,35 @@ try {
                 }
                 if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter") {
                   activePhase = "jupyter-r";
-                  await runEditorAcceptancePhase({
-                    editor: identifiedEditor,
-                    workspace: jupyterRWorkspace,
-                    userData: jupyterRUserData,
-                    extensions: jupyterExtensions,
-                    developmentPaths: [],
-                    testModule,
-                    python: acceptancePythonForPhase("jupyter-r", testPython, jupyterKernelPython),
-                    phase: "jupyter-r",
-                    resultPath: resultPaths["jupyter-r"],
-                    runId: runIds["jupyter-r"],
-                    progressPath: progressPaths["jupyter-r"],
-                    requiresWorkbenchCdp: true,
-                    jupyterEnvironment: jupyterREnvironment
-                  });
+                  try {
+                    await runEditorAcceptancePhase({
+                      editor: identifiedEditor,
+                      workspace: jupyterRWorkspace,
+                      userData: jupyterRUserData,
+                      extensions: jupyterExtensions,
+                      developmentPaths: [],
+                      testModule,
+                      python: acceptancePythonForPhase("jupyter-r", testPython, jupyterKernelPython),
+                      phase: "jupyter-r",
+                      resultPath: resultPaths["jupyter-r"],
+                      runId: runIds["jupyter-r"],
+                      progressPath: progressPaths["jupyter-r"],
+                      requiresWorkbenchCdp: true,
+                      jupyterEnvironment: jupyterREnvironment
+                    });
+                  } catch (error) {
+                    if (editorProcessTreeMayBeLive(error)) throw error;
+                    let profileStage;
+                    try {
+                      profileStage = jupyterAcceptanceRProfileStartupStage(rAcceptanceEnvironment);
+                    } catch (profileStageError) {
+                      throw new AggregateError(
+                        [error, profileStageError],
+                        "Released-Jupyter R failed and its profile startup stage could not be verified."
+                      );
+                    }
+                    throw appendJupyterAcceptanceRProfileStartupStage(error, profileStage);
+                  }
                   if (remoteRJupyterEnabled) {
                     await runRemoteJupyterPhase({
                       phaseNames: {
