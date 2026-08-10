@@ -17,6 +17,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Grid cells now expose **Keep only this value** and **Exclude this value** from a small hover action, right-click,
   or the keyboard context-menu shortcut. The filter uses the cell's typed value, so large integers, booleans, nulls,
   and NaN are not confused with similarly formatted text.
+- Notebook expressions such as `frame.head()` and `frame.tail()` now keep a live link behind their inline
+  **Open in Open Wrangler** button. Clicking it opens that exact result from the same kernel instead of showing a
+  rerun instruction. Old saved outputs without a live link stay readable inline but do not show a button that cannot
+  work.
 - Python Interactive windows now expose the same **Open in Open Wrangler** action as `.ipynb` notebooks. The action
   lists dataframes from that exact live kernel, and Operations refreshes from the same window instead of asking the
   user to return to the source `.py` cell.
