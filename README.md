@@ -156,9 +156,9 @@ In trusted Python notebooks, Open Wrangler previews Pandas, Polars, and DuckDB o
 the notebook toolbar. **Open in Open Wrangler** loads the current live dataframe. If you reopened a notebook and only
 its saved output is available, rerun the cell first.
 
-Python files divided into `# %%` cells have the same action in the editor toolbar and tab menu. Put the cursor in the
-cell that creates the dataframe; Open Wrangler runs that cell in the Python Interactive window and then opens the
-live dataframe you choose. It does not run the whole file.
+Python files have the same action in the editor toolbar and tab menu. For an ordinary `.py` file, Open Wrangler runs
+the file in Python Interactive and opens the live dataframe you choose. If the file uses `# %%` cells, it runs only
+the cell under the cursor.
 
 If Microsoft Data Wrangler is installed too, choose which extension owns automatic previews with **Open Wrangler:
 Choose Notebook Preview Provider**.
@@ -298,14 +298,14 @@ for the complete surface.
 
 Open Wrangler fetches the grid blocks you can see instead of loading the whole dataset into the webview. File-backed
 Polars sessions use lazy scans and push filtering, sorting, and column selection into the source when the format
-supports it. Pandas and DuckDB also stay in their native engines.
+supports it. Pandas data stays in Pandas, and DuckDB relations stay in DuckDB.
 
-In the linked comparison with Microsoft Data Wrangler, Open Wrangler was faster for notebook previews and CSV column
-profiling; Parquet workbench and profiling times were similar. Data Wrangler converted Polars input to Pandas, while
-Open Wrangler kept it in Polars. The test did not time conversion separately, so it cannot say how much that difference
-affected the result.
+The published 1.2.1 comparison with Microsoft Data Wrangler 1.24.2 found that Open Wrangler was faster for notebook
+previews and CSV column profiling; Parquet workbench and profiling times were similar. Data Wrangler converted Polars
+input to Pandas, while Open Wrangler kept it in Polars. The test did not time conversion separately, so it cannot say
+how much that difference affected the result.
 
-The [full benchmark report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
+The [full 1.2.1 benchmark report](https://github.com/Matt17BR/openwrangler/blob/main/docs/performance/data-wrangler-1.2.1/review.md)
 includes the fixtures, median and p95 timings, memory use, exact versions, failures, and method.
 
 ## Roadmap

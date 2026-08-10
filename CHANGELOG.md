@@ -93,7 +93,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   terminal no longer replaces it with a different command; terminal dataframes remain available in Operations and
   the editor-tab menu.
 - **Open in Open Wrangler** now appears immediately in trusted Python `.py` editors, including before Jupyter has
-  detected the file's cells. The action still runs only the `# %%` cell under the cursor, never the whole file.
+  detected the file's cells. It runs an ordinary file in Python Interactive, or only the cell under the cursor when
+  the file uses `# %%` markers.
 - The operation search icon now stays inside the search field.
 - The getting-started walkthrough now distinguishes editable DuckDB file sessions from view-only notebook
   relations.
