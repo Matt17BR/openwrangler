@@ -22,6 +22,7 @@ import {
   DATA_WRANGLER_REGRESSION_LIMITS,
   assertReleaseCompleteStudyReport,
   buildDataWranglerComparisonStudyReport,
+  updateDataWranglerComparisonReview,
   validateDataWranglerComparisonStudyTrial
 } from "./data-wrangler-comparison-report.mjs";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
@@ -476,12 +477,12 @@ export async function runDataWranglerComparisonSmoke(options, dependencies = {})
 }
 
 export function writeDataWranglerComparisonStudyReport(output, report) {
+  assertReleaseCompleteStudyReport(report);
   const path = resolve(output);
   if (existsSync(path)) {
     throw new Error("Comparison report requires a new output path.");
   }
   writeJsonAtomic(path, report);
-  assertReleaseCompleteStudyReport(report);
 }
 
 export function removePreparedExtensionDirectories(output) {
@@ -1084,6 +1085,16 @@ function writeJsonAtomic(path, value) {
   }
 }
 
+function writeTextAtomic(path, value) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, value, { flag: "wx", mode: 0o644 });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
 function sanitizeError(error) {
   return String(error?.message ?? error)
     .replaceAll(/\bfile:(?:\/+|\\+)[^\s:]+/giu, "<path>")
@@ -1114,7 +1125,14 @@ function parseArguments(arguments_) {
     }
     values.set(flag, value);
   }
-  if (command === "report") return { command, study: required(values, "--study"), output: required(values, "--out") };
+  if (command === "report") {
+    return {
+      command,
+      study: required(values, "--study"),
+      output: required(values, "--out"),
+      review: values.get("--review")
+    };
+  }
   const paths = ["--candidate", "--python", "--editor", "--editor-cli"];
   if (command !== "local") paths.push("--csv", "--parquet");
   for (const flag of paths) {
@@ -1166,7 +1184,22 @@ async function main() {
   }
   const { manifest, trials } = loadStudyResults(options.study);
   const report = buildDataWranglerComparisonStudyReport({ generatedAtUtc: new Date().toISOString(), manifest, trials });
+  assertReleaseCompleteStudyReport(report);
+  let review;
+  if (options.review !== undefined) {
+    const reportPath = resolve(options.output);
+    const reviewPath = resolve(options.review);
+    if (
+      basename(reportPath) !== "report.json" ||
+      basename(reviewPath) !== "review.md" ||
+      dirname(reportPath) !== dirname(reviewPath)
+    ) {
+      throw new Error("--review must be review.md beside the report.json output.");
+    }
+    review = updateDataWranglerComparisonReview(readFileSync(reviewPath, "utf8"), report);
+  }
   writeDataWranglerComparisonStudyReport(options.output, report);
+  if (review !== undefined) writeTextAtomic(resolve(options.review), review);
   console.log(`Comparison report written to ${options.output}.`);
 }
 
