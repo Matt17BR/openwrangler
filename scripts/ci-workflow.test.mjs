@@ -135,7 +135,7 @@ test("script groups are pairwise-disjoint and exactly cover the filesystem inven
   assert.equal(manifest?.scripts?.["test:scripts:media"], "npm run test:scripts:media:run");
   assert.equal(manifest?.scripts?.test, "npm run test:run");
   assert.equal(manifest?.scripts?.["test:run"], "npm run test:scripts && npm run test:ts && npm run test:python");
-  assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs"]);
+  assert.deepEqual(groups.workflow, ["scripts/candidate-acceptance-workflow.test.mjs", "scripts/ci-workflow.test.mjs"]);
   assert.deepEqual(groups.media, ["scripts/public-media-surfaces.test.mjs", "scripts/readme-media.test.mjs"]);
   assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
   assert.deepEqual(
@@ -511,78 +511,53 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     assert.equal(ci?.jobs?.[jobId], undefined, `${jobId} must not run on every pull request.`);
   }
 
+  const expectedMatrix = [
+    { name: "macOS platform", lane: "platform", os: "macos-latest", python: "3.12" },
+    { name: "Windows platform", lane: "platform", os: "windows-latest", python: "3.14" },
+    { name: "Linux acceptance", lane: "linux", os: "ubuntu-24.04", python: "3.12" },
+    { name: "Installed performance", lane: "performance", os: "ubuntu-24.04", python: "3.12" },
+    { name: "Released Jupyter", lane: "jupyter", os: "ubuntu-24.04", python: "3.12" }
+  ];
   for (const relativePath of [".github/workflows/release.yml", ".github/workflows/stable-release.yml"]) {
-    const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
-    const workflow = parseYaml(source);
-    const native = workflow?.jobs?.["cross-platform"];
-    assert.deepEqual(native?.strategy?.matrix?.include, [
-      { os: "macos-latest", python: "3.12" },
-      { os: "windows-latest", python: "3.14" }
-    ]);
-    assert.equal(native?.strategy?.["fail-fast"], true);
-    assert.equal(
-      native?.steps?.some(
-        (step) => step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode" && step?.id === "packaged_editor"
-      ),
-      true
-    );
-    assert.equal(
-      native?.steps?.some(
-        (step) => step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "cursor" && step?.id === "cursor_smoke"
-      ),
-      true
-    );
-    const nativeRSetup = native?.steps?.find((step) => step?.uses === SETUP_R_ACTION);
-    assert.deepEqual(nativeRSetup?.with, { "r-version": "4.5.2", "use-public-rspm": true });
-    const nativeRscript = native?.steps?.find((step) => step?.id === "rscript");
-    assert.equal(nativeRscript?.shell, "Rscript {0}");
-    assert.match(nativeRscript?.run ?? "", /Rscript\.exe/u);
-    assert.match(nativeRscript?.run ?? "", /GITHUB_OUTPUT/u);
-    const nativeR = native?.steps?.find((step) => step?.id === "packaged_editor_r_platform");
-    assert.deepEqual(nativeR?.env, {
-      OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-      OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
-      OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-      OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-      OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-      VSCODE_TEST_VERSION: "stable"
-    });
-    assert.equal(
-      nativeR?.run,
-      "node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}"
-    );
-    const nativeRIndex = native?.steps?.indexOf(nativeR) ?? -1;
-    assert.equal(native?.steps?.[nativeRIndex - 1]?.id, "canonical_r_jupyter_platform");
-    assert.equal(native?.steps?.[nativeRIndex + 1]?.name, "Upload cross-platform R-Jupyter failure diagnostics");
-    assert.equal(native?.steps?.filter((step) => step?.run === "npm run test:r-contract").length, 0);
-    assert.equal(
-      workflow?.jobs?.["released-jupyter"]?.steps?.some(
-        (step) =>
-          step?.env?.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION === "1" &&
-          step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode,cursor"
-      ),
-      true
-    );
-    const releasedJupyter = workflow?.jobs?.["released-jupyter"];
-    const rSetup = releasedJupyter?.steps?.find((step) => step?.uses === SETUP_R_ACTION);
-    assert.deepEqual(rSetup?.with, { "r-version": "4.5.2", "use-public-rspm": true });
-    assert.equal(
-      releasedJupyter?.steps?.filter((step) => step?.run === "npm run test:r-contract").length,
-      1,
-      `${relativePath} must run the R contract exactly once.`
-    );
-    assert.equal(
-      releasedJupyter?.steps?.some(
-        (step) =>
-          step?.id === "packaged_editor_r" &&
-          step?.env?.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter" &&
-          step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode,cursor" &&
-          step?.env?.OPEN_WRANGLER_TEST_RSCRIPT === "${{ steps.rscript.outputs.executable }}"
-      ),
-      true,
-      `${relativePath} must run packaged R Jupyter acceptance in both editors.`
-    );
+    const workflow = parseYaml(readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8"));
+    const candidate = workflow?.jobs?.["candidate-acceptance"];
+    assert.equal(candidate?.uses, "./.github/workflows/candidate-acceptance.yml");
+    assert.equal(candidate?.strategy?.["fail-fast"], true);
+    assert.deepEqual(candidate?.strategy?.matrix?.include, expectedMatrix);
   }
+
+  const acceptance = parseYaml(
+    readFileSync(new URL("../.github/workflows/candidate-acceptance.yml", import.meta.url), "utf8")
+  );
+  const platform = acceptance?.jobs?.platform;
+  assert.equal(
+    platform?.steps?.some(
+      (step) => step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode" && step?.id === "packaged_editor"
+    ),
+    true
+  );
+  assert.equal(
+    platform?.steps?.some(
+      (step) => step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "cursor" && step?.id === "cursor_smoke"
+    ),
+    true
+  );
+  assert.deepEqual(platform?.steps?.find((step) => step?.uses === SETUP_R_ACTION)?.with, {
+    "r-version": "4.5.2",
+    "use-public-rspm": true
+  });
+  const releasedJupyter = acceptance?.jobs?.jupyter;
+  assert.equal(releasedJupyter?.steps?.filter((step) => step?.run === "npm run test:r-contract").length, 1);
+  assert.equal(
+    releasedJupyter?.steps?.some(
+      (step) =>
+        step?.id === "packaged_editor_r" &&
+        step?.env?.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter" &&
+        step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode,cursor" &&
+        step?.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "1"
+    ),
+    true
+  );
 });
 
 test("PR CI starts one bounded static fast-feedback lane and preserves every static gate", () => {

@@ -6,8 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
-- Preview and stable release candidates now cancel the remaining macOS or Windows matrix job after either platform
-  fails, instead of continuing work for a candidate that cannot be published.
+- Preview and stable candidates now run macOS, Windows, Linux, performance, and Jupyter checks in one fail-fast
+  matrix. Once a check fails, GitHub cancels the remaining cells. Remote SSH runs afterward so cancellation cannot
+  interrupt its cleanup.
 - Editor, performance, and webview failures now upload available diagnostics before failing their job. The failure
   is raised immediately after the upload, so later acceptance work in that job does not start.
 
