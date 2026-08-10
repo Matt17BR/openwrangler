@@ -25,15 +25,17 @@ editorial read; do not rely on an AI detector or a word list.
 
 - Target `main` for all work. Use a short-lived branch and pull request for each change.
 - Keep a pull request limited to one documented milestone or issue. Split unrelated work into separate pull requests.
-- Keep independently reviewable changes in separate commits. Use rebase merge when a pull request has several such
-  commits; squash only when the pull request is already one coherent commit.
+- Give each commit one reviewable purpose. Product code may travel with its directly related tests and required docs;
+  keep unrelated product slices, test-harness changes, generated media, standalone docs/metadata, and release/version
+  changes separate. Use rebase merge when a pull request has several reviewable commits; squash only when the pull
+  request is already one coherent commit.
 - Add or update tests with every behavior change.
 - Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable generated-code coverage for every editing-capable engine.
 - Update the documentation listed in the `AGENTS.md` matrix.
 - Review user-facing text and pull request summaries against `docs/writing-style.md`.
 - Add and review `docs/release-notes/<version>.md` in every release pull request; the publisher does not generate it.
-- Keep release pull requests limited to version and release metadata. Merge feature pull requests before preparing a
-  release; do not collect unrelated features in the release pull request.
+- A release pull request contains only the version bump, changelog, release notes, and release metadata. Merge
+  product, test-harness, media, and unrelated documentation work first.
 - Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
 - Push independently green branch commits before opening a pull request when early review is not needed. A draft pull request runs bounded feedback and remains non-mergeable until marking it ready reruns the required evidence at the same commit.
