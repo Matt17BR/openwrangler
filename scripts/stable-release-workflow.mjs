@@ -7,7 +7,7 @@ import {
   OPEN_VSX_VERIFY_PAT_RUN,
   PUBLIC_MEDIA_CONTRACT_RUN
 } from "./open-vsx-promotion-workflow.mjs";
-import { inspectDeferredDiagnosticFailures, isExplicitOutcomeFailureStep } from "./release-diagnostic-order.mjs";
+import { inspectCandidateMatrixCaller } from "./candidate-acceptance-workflow.mjs";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const EVENT_SHA = "${{ github.sha }}";
@@ -24,56 +24,7 @@ const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af8
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
-const SETUP_JAVA_ACTION = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
-const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
-const PYSPARK_COVERAGE_INSTALL = 'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"';
-const PYSPARK_COVERAGE_VERIFY_RUN = `python - <<'PY'
-import pandas
-import pyspark
-from packaging.version import Version
-
-assert pyspark.__version__ == "4.2.0", pyspark.__version__
-assert Version("2.2") <= Version(pandas.__version__) < Version("3"), pandas.__version__
-PY
-java -XshowSettings:properties -version 2>&1 |
-  grep -Eq '^[[:space:]]*java\\.specification\\.version = 17$'
-`;
-const PACKAGED_EDITOR_COMMAND =
-  "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
-const R_PACKAGED_EDITOR_COMMAND =
-  "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}";
-const CROSS_PLATFORM_R_PACKAGED_EDITOR_COMMAND =
-  "node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}";
-const PORTABLE_RSCRIPT_DISCOVERY_RUN = `version <- as.character(getRversion())
-if (!identical(version, "4.5.2")) stop("Expected hosted R 4.5.2, got ", version, ".")
-executable <- normalizePath(
-  file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript"),
-  winslash = "/",
-  mustWork = TRUE
-)
-if (!nzchar(executable) || grepl("[\\r\\n]", executable)) stop("Rscript resolved to an unsafe path.")
-output <- Sys.getenv("GITHUB_OUTPUT")
-if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
-cat(sprintf("executable=%s\\nversion=%s\\n", executable, version), file = output, append = TRUE)`;
-const RSCRIPT_DISCOVERY_RUN = `set -euo pipefail
-rscript="$(command -v Rscript)"
-if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
-  echo "Rscript did not resolve to an absolute executable." >&2
-  exit 1
-fi
-r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
-if [[ "$r_version" != "4.5.2" ]]; then
-  echo "Expected hosted R 4.5.2, got $r_version." >&2
-  exit 1
-fi
-printf 'executable=%s\\n' "$rscript" >> "$GITHUB_OUTPUT"
-printf 'version=%s\\n' "$r_version" >> "$GITHUB_OUTPUT"
-printf 'Hosted R: %s\\n' "$r_version"`;
-const R_CONTRACT_INSTALL_RUN = `"$RSCRIPT" --vanilla -e
-'install.packages(c("jsonlite", "tibble", "readr", "dplyr", "data.table", "bit64", "collapse", "nanoparquet"), repos = "https://cloud.r-project.org")'`;
-const PREPARED_CURSOR_XVFB = "${{ steps.prepare_cursor_xvfb.outputs.executable }}";
-const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
-const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release"];
+const JOBS = ["package", "candidate-acceptance", "remote-ssh", "release"];
 const REMOTE_SSH_SYSTEM_ANCESTOR_REPAIR = [
   "system_runtime_ancestors=(",
   "  /usr",
@@ -118,30 +69,6 @@ function command(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : "";
 }
 
-const PINNED_CURSOR_XVFB_PREPARATION = [
-  'const { execFileSync } = require("node:child_process");',
-  'const { X_OK } = require("node:constants");',
-  'const { accessSync, appendFileSync, lstatSync } = require("node:fs");',
-  'const { isAbsolute } = require("node:path");',
-  "",
-  'const output = execFileSync(process.execPath, ["scripts/prepare-xvfb.mjs", "--print-path"], {',
-  "cwd: process.cwd(),",
-  'encoding: "utf8",',
-  'stdio: ["ignore", "pipe", "inherit"]',
-  "});",
-  "if (!/^[^\\0\\r\\n]+\\n?$/u.test(output)) {",
-  'throw new Error("The Xvfb preparer must print exactly one path.");',
-  "}",
-  'const executable = output.endsWith("\\n") ? output.slice(0, -1) : output;',
-  'if (!isAbsolute(executable)) throw new Error("The prepared Xvfb path must be absolute.");',
-  "const stat = lstatSync(executable);",
-  "if (!stat.isFile() || stat.isSymbolicLink()) {",
-  'throw new Error("The prepared Xvfb path must be a regular, non-symlink file.");',
-  "}",
-  "accessSync(executable, X_OK);",
-  'appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\\n`, "utf8");'
-].join("\n");
-
 function exactKeys(value, expected) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const actual = Object.keys(value).sort();
@@ -155,47 +82,6 @@ function steps(job) {
 
 function findRun(job, expected) {
   return steps(job).find((step) => command(step?.run) === expected);
-}
-
-function inspectCoverageRuntime(job, name, problems) {
-  const jobSteps = steps(job);
-  const coverage = jobSteps.find((step) => command(step?.run) === "npm run test:coverage");
-  const javaSteps = jobSteps.filter((step) => step?.uses === SETUP_JAVA_ACTION);
-  const javaStep = javaSteps[0];
-  if (
-    javaSteps.length !== 1 ||
-    !exactKeys(javaStep, ["uses", "with"]) ||
-    !exactKeys(javaStep.with, ["distribution", "java-version"]) ||
-    javaStep.with.distribution !== "temurin" ||
-    javaStep.with["java-version"] !== "17"
-  ) {
-    problems.push(`${name} coverage must provision one pinned Temurin Java 17 runtime.`);
-  }
-  const installs = jobSteps.filter((step) => command(step?.run) === PYSPARK_COVERAGE_INSTALL);
-  const install = installs[0];
-  if (installs.length !== 1 || !exactKeys(install, ["run"])) {
-    problems.push(`${name} coverage must install exact PySpark 4.2.0 and compatible Pandas.`);
-  }
-  const verifications = jobSteps.filter((step) => step?.name === "Verify exact coverage runtimes");
-  const verification = verifications[0];
-  if (
-    verifications.length !== 1 ||
-    !exactKeys(verification, ["name", "run"]) ||
-    command(verification.run) !== command(PYSPARK_COVERAGE_VERIFY_RUN)
-  ) {
-    problems.push(`${name} coverage must verify exact PySpark, Pandas, and Java runtimes.`);
-  }
-  if (
-    coverage === undefined ||
-    javaStep === undefined ||
-    install === undefined ||
-    verification === undefined ||
-    jobSteps.indexOf(javaStep) >= jobSteps.indexOf(coverage) ||
-    jobSteps.indexOf(install) >= jobSteps.indexOf(coverage) ||
-    jobSteps.indexOf(verification) >= jobSteps.indexOf(coverage)
-  ) {
-    problems.push(`${name} coverage runtime setup and verification must precede the coverage gate.`);
-  }
 }
 
 function inspectCheckout(job, name, problems) {
@@ -354,34 +240,6 @@ function inspectPinnedActions(workflow, problems) {
   }
 }
 
-function inspectFailureUpload(jobSteps, editorStep, expectedName, label, problems) {
-  const editorIndex = jobSteps.indexOf(editorStep);
-  const upload = jobSteps[editorIndex + 1];
-  if (
-    editorIndex < 0 ||
-    !exactKeys(upload, ["name", "if", "uses", "with"]) ||
-    upload?.uses !== UPLOAD_ACTION ||
-    upload?.if !==
-      `\${{ always() && steps.${editorStep?.id}.outcome == 'failure' && steps.${editorStep?.id}.outputs.evidence_ready == 'true' }}` ||
-    !exactKeys(upload.with, [
-      "name",
-      "path",
-      "if-no-files-found",
-      "retention-days",
-      "compression-level",
-      "include-hidden-files"
-    ]) ||
-    upload.with.name !== expectedName ||
-    upload.with.path !== `\${{ steps.${editorStep?.id}.outputs.evidence_path }}` ||
-    upload.with["if-no-files-found"] !== "error" ||
-    upload.with["retention-days"] !== 7 ||
-    upload.with["compression-level"] !== 9 ||
-    upload.with["include-hidden-files"] !== false
-  ) {
-    problems.push(`${label} must immediately upload only its sealed failure diagnostics.`);
-  }
-}
-
 function inspectAdjacentCanonicalVerification(jobSteps, editorStep, expectedId, expectedName, label, problems) {
   const editorIndex = jobSteps.indexOf(editorStep);
   const verifier = jobSteps[editorIndex - 1];
@@ -397,84 +255,6 @@ function inspectAdjacentCanonicalVerification(jobSteps, editorStep, expectedId, 
   ) {
     problems.push(`${label} must immediately follow a fresh verification of the exact canonical artifact.`);
   }
-}
-
-function inspectCursorXvfbPreparation(jobSteps, cursorStep, problems) {
-  const preparations = jobSteps.filter((step) => step?.id === "prepare_cursor_xvfb");
-  const preparation = preparations[0];
-  if (
-    preparations.length !== 1 ||
-    !exactKeys(preparation, ["id", "name", "shell", "run"]) ||
-    preparation.name !== "Prepare pinned private Xvfb for Cursor" ||
-    preparation.shell !== "node {0}" ||
-    command(preparation.run) !== command(PINNED_CURSOR_XVFB_PREPARATION) ||
-    jobSteps.indexOf(preparation) >= jobSteps.indexOf(cursorStep)
-  ) {
-    problems.push("linux-acceptance must prepare and verify one pinned private Xvfb before launching Cursor.");
-  }
-}
-
-function inspectCrossPlatformRJupyter(job, problems) {
-  const jobSteps = steps(job);
-  const setupMatches = jobSteps.filter((step) => step?.uses === SETUP_R_ACTION);
-  const setup = setupMatches[0];
-  const locateMatches = jobSteps.filter((step) => step?.id === "rscript");
-  const locate = locateMatches[0];
-  const runnerMatches = jobSteps.filter((step) => step?.id === "packaged_editor_r_platform");
-  const runner = runnerMatches[0];
-  const npmCi = findRun(job, "npm ci");
-  if (
-    setupMatches.length !== 1 ||
-    !exactKeys(setup, ["uses", "with"]) ||
-    !exactKeys(setup.with, ["r-version", "use-public-rspm"]) ||
-    setup.with["r-version"] !== "4.5.2" ||
-    setup.with["use-public-rspm"] !== true ||
-    locateMatches.length !== 1 ||
-    !exactKeys(locate, ["id", "name", "shell", "run"]) ||
-    locate.name !== "Locate hosted Rscript" ||
-    locate.shell !== "Rscript {0}" ||
-    command(locate.run) !== command(PORTABLE_RSCRIPT_DISCOVERY_RUN) ||
-    npmCi === undefined ||
-    !(jobSteps.indexOf(setup) < jobSteps.indexOf(locate)) ||
-    !(jobSteps.indexOf(locate) < jobSteps.indexOf(npmCi)) ||
-    runnerMatches.length !== 1 ||
-    !exactKeys(runner, ["id", "name", "continue-on-error", "run", "env"]) ||
-    runner.name !== "Test local R Jupyter in packaged VS Code" ||
-    command(runner.run) !== CROSS_PLATFORM_R_PACKAGED_EDITOR_COMMAND ||
-    !exactKeys(runner.env, [
-      "OPEN_WRANGLER_PACKAGED_EDITORS",
-      "OPEN_WRANGLER_PACKAGED_MODE",
-      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
-      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
-      "OPEN_WRANGLER_TEST_RSCRIPT",
-      "VSCODE_TEST_VERSION"
-    ]) ||
-    runner.env.OPEN_WRANGLER_PACKAGED_MODE !== "r-jupyter" ||
-    runner.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
-    runner.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
-    runner.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "0" ||
-    runner.env.OPEN_WRANGLER_TEST_RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
-    runner.env.VSCODE_TEST_VERSION !== "stable" ||
-    command(findRun(job, "npm run test:r-contract")?.run) !== ""
-  ) {
-    problems.push("cross-platform must run one local VS Code R-Jupyter journey with portable R 4.5.2 setup.");
-    return;
-  }
-  inspectAdjacentCanonicalVerification(
-    jobSteps,
-    runner,
-    "canonical_r_jupyter_platform",
-    "Reverify the exact canonical stable artifact for cross-platform R Jupyter",
-    "cross-platform R Jupyter",
-    problems
-  );
-  inspectFailureUpload(
-    jobSteps,
-    runner,
-    "stable-release-r-jupyter-platform-${{ runner.os }}-${{ github.run_attempt }}",
-    "cross-platform R Jupyter",
-    problems
-  );
 }
 
 export function inspectStableReleaseWorkflow(source) {
@@ -551,39 +331,15 @@ export function inspectStableReleaseWorkflow(source) {
           step.if === "${{ steps.public_media_contract.outputs.required == 'true' }}" &&
           (command(step.run) === "npx playwright-core install --with-deps chromium" ||
             command(step.run).includes("verify-public-media-surfaces.mjs"))
-        ) &&
-        !isExplicitOutcomeFailureStep(step)
+        )
       ) {
         problems.push(`${jobName} must not conditionally skip a required release step.`);
       }
-      if (
-        step?.shell !== undefined &&
-        !(
-          (jobName === "linux-acceptance" &&
-            step.id === "prepare_cursor_xvfb" &&
-            step.shell === "node {0}" &&
-            command(step.run) === command(PINNED_CURSOR_XVFB_PREPARATION)) ||
-          (jobName === "released-jupyter" &&
-            step.id === "prepare_xvfb" &&
-            step.shell === "node {0}" &&
-            command(step.run) === command(PINNED_CURSOR_XVFB_PREPARATION)) ||
-          (jobName === "released-jupyter" &&
-            step.id === "rscript" &&
-            step.name === "Locate hosted Rscript" &&
-            step.shell === "bash" &&
-            command(step.run) === command(RSCRIPT_DISCOVERY_RUN)) ||
-          (jobName === "cross-platform" &&
-            step.id === "rscript" &&
-            step.name === "Locate hosted Rscript" &&
-            step.shell === "Rscript {0}" &&
-            command(step.run) === command(PORTABLE_RSCRIPT_DISCOVERY_RUN))
-        )
-      ) {
+      if (step?.shell !== undefined) {
         problems.push(`${jobName} must not override the shell of a required release step.`);
       }
     }
   }
-  problems.push(...inspectDeferredDiagnosticFailures(workflow, UPLOAD_ACTION));
   inspectPinnedActions(workflow, problems);
 
   const allRuns = Object.values(workflow.jobs).flatMap((job) => steps(job).map((step) => command(step?.run)));
@@ -653,348 +409,23 @@ export function inspectStableReleaseWorkflow(source) {
     problems.push("package must expose the immutable artifact ID.");
   }
 
-  for (const consumerName of CONSUMERS) {
-    const consumer = workflow.jobs[consumerName];
-    if (consumer.needs !== "package") {
-      problems.push(`${consumerName} must depend directly on package so consumers run in parallel.`);
-    }
-    if (consumer.permissions !== undefined || consumer.environment !== undefined) {
-      problems.push(`${consumerName} must inherit read-only permissions and use no release environment.`);
-    }
-    inspectCheckout(consumer, consumerName, problems);
-    inspectDownloadAndVerification(consumer, consumerName, problems);
-    if (
-      steps(consumer).some((step) => {
-        const run = command(step?.run);
-        return (
-          /^npm run package(?:\s|$)/u.test(run) ||
-          run.includes("npm run package:prepared") ||
-          run.includes("scripts/create-canonical-release-artifact.mjs")
-        );
-      })
-    ) {
-      problems.push(`${consumerName} must consume the exact artifact without repackaging it.`);
-    }
-  }
+  problems.push(...inspectCandidateMatrixCaller(workflow, "stable"));
 
-  const crossPlatform = workflow.jobs["cross-platform"];
-  const matrix = crossPlatform.strategy?.matrix?.include;
+  const remoteDependency = workflow.jobs["remote-ssh"]?.needs;
   if (
-    crossPlatform.strategy?.["fail-fast"] !== true ||
-    !Array.isArray(matrix) ||
-    matrix.length !== 2 ||
-    matrix[0]?.os !== "macos-latest" ||
-    matrix[0]?.python !== "3.12" ||
-    matrix[1]?.os !== "windows-latest" ||
-    matrix[1]?.python !== "3.14"
+    !Array.isArray(remoteDependency) ||
+    remoteDependency.length !== 2 ||
+    !remoteDependency.includes("package") ||
+    !remoteDependency.includes("candidate-acceptance")
   ) {
-    problems.push("cross-platform must fail fast across the pinned macOS and Windows release matrix.");
+    problems.push("remote-ssh must start only after the package and candidate matrix succeed.");
   }
-  const environmentSmokeSteps = steps(crossPlatform).filter(
-    (step) => command(step?.run) === "npm run test:python-environment-smoke"
-  );
-  if (environmentSmokeSteps.length !== 1 || !exactKeys(environmentSmokeSteps[0], ["run"])) {
-    problems.push("cross-platform must run the Python environment smoke exactly once as an unconditional step.");
-  }
-  if (steps(crossPlatform).some((step) => command(step?.run).startsWith("python -m pytest"))) {
-    problems.push("cross-platform must keep native smoke coverage without repeating Linux's complete Python suite.");
-  }
-  const extensionHostStep = findRun(crossPlatform, "npm run test:extension-host");
-  if (
-    !exactKeys(extensionHostStep, ["run", "env"]) ||
-    !exactKeys(extensionHostStep.env, ["VSCODE_TEST_VERSION"]) ||
-    extensionHostStep.env.VSCODE_TEST_VERSION !== "stable"
-  ) {
-    problems.push("cross-platform must run stable extension-host acceptance unconditionally.");
-  }
-  const crossPlatformEditorStep = findRun(
-    crossPlatform,
-    "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
-  );
-  if (
-    !exactKeys(crossPlatformEditorStep, ["id", "name", "continue-on-error", "run", "env"]) ||
-    crossPlatformEditorStep.id !== "packaged_editor" ||
-    crossPlatformEditorStep.name !== "Test packaged VS Code" ||
-    !exactKeys(crossPlatformEditorStep.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "VSCODE_TEST_VERSION"]) ||
-    crossPlatformEditorStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
-    crossPlatformEditorStep.env.VSCODE_TEST_VERSION !== "stable"
-  ) {
-    problems.push("cross-platform must run full stable VS Code packaged acceptance unconditionally.");
-  }
-  inspectAdjacentCanonicalVerification(
-    steps(crossPlatform),
-    crossPlatformEditorStep,
-    "canonical_vscode",
-    "Reverify the exact canonical stable artifact for cross-platform VS Code",
-    "cross-platform VS Code",
-    problems
-  );
-  const cursorSmokeStep = steps(crossPlatform).find((step) => step?.id === "cursor_smoke");
-  if (
-    !exactKeys(cursorSmokeStep, ["id", "name", "continue-on-error", "run", "env"]) ||
-    cursorSmokeStep.name !== "Test pinned Cursor platform smoke" ||
-    command(cursorSmokeStep.run) !== "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix" ||
-    !exactKeys(cursorSmokeStep.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "OPEN_WRANGLER_PACKAGED_MODE"]) ||
-    cursorSmokeStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "cursor" ||
-    cursorSmokeStep.env.OPEN_WRANGLER_PACKAGED_MODE !== "platform-smoke"
-  ) {
-    problems.push("cross-platform must run the pinned Cursor platform smoke unconditionally.");
-  }
-  inspectAdjacentCanonicalVerification(
-    steps(crossPlatform),
-    cursorSmokeStep,
-    "canonical_cursor",
-    "Reverify the exact canonical stable artifact for cross-platform Cursor",
-    "cross-platform Cursor",
-    problems
-  );
-  inspectCrossPlatformRJupyter(crossPlatform, problems);
-
-  const linux = workflow.jobs["linux-acceptance"];
-  for (const required of [
-    "npm run check",
-    "npm run test:scripts",
-    "npm run test:webview-acceptance",
-    "npm run test:coverage",
-    "npm audit --omit=dev",
-    "npm run audit:python",
-    "npm run benchmark:runtime"
-  ]) {
-    const requiredSteps = steps(linux).filter((step) => command(step?.run) === required);
-    const expectedKeys = required === "npm run test:webview-acceptance" ? ["id", "continue-on-error", "run"] : ["run"];
-    if (
-      requiredSteps.length !== 1 ||
-      !exactKeys(requiredSteps[0], expectedKeys) ||
-      (required === "npm run test:webview-acceptance" &&
-        (requiredSteps[0].id !== "webview_acceptance" || requiredSteps[0]["continue-on-error"] !== true))
-    ) {
-      problems.push(`linux-acceptance must run ${required} exactly once as an unconditional required step.`);
-    }
-  }
-  inspectCoverageRuntime(linux, "linux-acceptance", problems);
-  const linuxSteps = steps(linux);
-  const linuxEditorSteps = linuxSteps.filter((step) => command(step?.run) === PACKAGED_EDITOR_COMMAND);
-  const linuxVscodeStep = linuxEditorSteps.find((step) => step?.id === "packaged_vscode");
-  const linuxCursorStep = linuxEditorSteps.find((step) => step?.id === "packaged_cursor");
-  if (
-    linuxEditorSteps.length !== 2 ||
-    !exactKeys(linuxVscodeStep, ["id", "name", "continue-on-error", "run", "env"]) ||
-    linuxVscodeStep?.name !== "Test the full package in headless VS Code" ||
-    !exactKeys(linuxVscodeStep?.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "VSCODE_TEST_VERSION"]) ||
-    linuxVscodeStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
-    linuxVscodeStep.env.VSCODE_TEST_VERSION !== "stable" ||
-    !exactKeys(linuxCursorStep, ["id", "name", "continue-on-error", "run", "env"]) ||
-    linuxCursorStep?.name !== "Test the full package in private-display Cursor" ||
-    !exactKeys(linuxCursorStep?.env, [
-      "OPEN_WRANGLER_PACKAGED_EDITORS",
-      "OPEN_WRANGLER_EDITOR_DISPLAY",
-      "OPEN_WRANGLER_XVFB_EXECUTABLE",
-      "VSCODE_TEST_VERSION"
-    ]) ||
-    linuxCursorStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "cursor" ||
-    linuxCursorStep.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
-    linuxCursorStep.env.OPEN_WRANGLER_XVFB_EXECUTABLE !== PREPARED_CURSOR_XVFB ||
-    linuxCursorStep.env.VSCODE_TEST_VERSION !== "stable" ||
-    linuxSteps.indexOf(linuxVscodeStep) >= linuxSteps.indexOf(linuxCursorStep)
-  ) {
-    problems.push(
-      "linux-acceptance must test the exact package in headless VS Code and pinned private-Xvfb Cursor under D-Bus."
-    );
-  } else {
-    inspectAdjacentCanonicalVerification(
-      linuxSteps,
-      linuxVscodeStep,
-      "canonical_vscode",
-      "Reverify the exact canonical stable artifact for VS Code",
-      "linux-acceptance VS Code",
-      problems
-    );
-    inspectFailureUpload(
-      linuxSteps,
-      linuxVscodeStep,
-      "stable-release-vscode-${{ runner.os }}-${{ github.run_attempt }}",
-      "linux-acceptance VS Code",
-      problems
-    );
-    inspectCursorXvfbPreparation(linuxSteps, linuxCursorStep, problems);
-    inspectAdjacentCanonicalVerification(
-      linuxSteps,
-      linuxCursorStep,
-      "canonical_cursor",
-      "Reverify the exact canonical stable artifact for Cursor",
-      "linux-acceptance Cursor",
-      problems
-    );
-    inspectFailureUpload(
-      linuxSteps,
-      linuxCursorStep,
-      "stable-release-cursor-${{ runner.os }}-${{ github.run_attempt }}",
-      "linux-acceptance Cursor",
-      problems
-    );
-  }
-
-  const performance = workflow.jobs["installed-performance"];
-  const performanceStep = steps(performance).find((step) => step?.id === "installed_performance");
-  const performanceRun = command(performanceStep?.run);
-  if (
-    !exactKeys(performanceStep, ["id", "name", "continue-on-error", "env", "run"]) ||
-    performanceStep.name !== "Test the ordinary stable artifact in pinned editors" ||
-    !exactKeys(performanceStep.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
-    performanceStep.env.EXPECTED_SHA !== EVENT_SHA ||
-    performanceStep.env.RELEASE_TAG !== RELEASE_TAG ||
-    performanceRun.includes("--performance-evidence") ||
-    performanceRun.includes("--preview-release") ||
-    !performanceRun.includes("--pinned-editors") ||
-    !performanceRun.includes("--candidate-in canonical-release/openwrangler.vsix") ||
-    !performanceRun.includes("--candidate-checksum canonical-release/openwrangler.vsix.sha256") ||
-    !performanceRun.includes("--candidate-provenance canonical-release/openwrangler.vsix.provenance.json")
-  ) {
-    problems.push("installed-performance must consume ordinary stable provenance in both pinned editors.");
-  }
-  inspectAdjacentCanonicalVerification(
-    steps(performance),
-    performanceStep,
-    "canonical",
-    "Verify the exact canonical stable artifact",
-    "installed-performance",
-    problems
-  );
-
-  const jupyter = workflow.jobs["released-jupyter"];
-  const jupyterStep = steps(jupyter).find((step) => step?.id === "packaged_editor");
-  if (
-    !exactKeys(jupyterStep, ["id", "name", "continue-on-error", "run", "env"]) ||
-    jupyterStep.name !== "Test released Jupyter in the exact packaged VSIX" ||
-    command(jupyterStep.run) !== PACKAGED_EDITOR_COMMAND ||
-    !exactKeys(jupyterStep.env, [
-      "OPEN_WRANGLER_PACKAGED_EDITORS",
-      "OPEN_WRANGLER_EDITOR_DISPLAY",
-      "OPEN_WRANGLER_XVFB_EXECUTABLE",
-      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
-      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
-      "VSCODE_TEST_VERSION"
-    ]) ||
-    jupyterStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode,cursor" ||
-    jupyterStep.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
-    jupyterStep.env.OPEN_WRANGLER_XVFB_EXECUTABLE !== "${{ steps.prepare_xvfb.outputs.executable }}" ||
-    jupyterStep.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
-    jupyterStep.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "1" ||
-    jupyterStep.env.VSCODE_TEST_VERSION !== "stable"
-  ) {
-    problems.push("released-jupyter must cover local and remote Jupyter in both VS Code and Cursor.");
-  }
-  const jupyterPreparations = steps(jupyter).filter((step) => step?.id === "prepare_xvfb");
-  const jupyterPreparation = jupyterPreparations[0];
-  if (
-    jupyterPreparations.length !== 1 ||
-    !exactKeys(jupyterPreparation, ["id", "name", "shell", "run"]) ||
-    jupyterPreparation.name !== "Prepare pinned private Xvfb" ||
-    jupyterPreparation.shell !== "node {0}" ||
-    command(jupyterPreparation.run) !== command(PINNED_CURSOR_XVFB_PREPARATION) ||
-    steps(jupyter).indexOf(jupyterPreparation) >= steps(jupyter).indexOf(jupyterStep)
-  ) {
-    problems.push("released-jupyter must prepare and verify one pinned private Xvfb before its editor gate.");
-  }
-  const javaSteps = steps(jupyter).filter((step) => step?.uses === SETUP_JAVA_ACTION);
-  const javaStep = javaSteps[0];
-  if (
-    javaSteps.length !== 1 ||
-    !exactKeys(javaStep, ["uses", "with"]) ||
-    !exactKeys(javaStep.with, ["distribution", "java-version"]) ||
-    javaStep.with.distribution !== "temurin" ||
-    javaStep.with["java-version"] !== "17" ||
-    steps(jupyter).indexOf(javaStep) >= steps(jupyter).indexOf(jupyterStep)
-  ) {
-    problems.push("released-jupyter must provision one pinned Temurin Java 17 before its PySpark editor gate.");
-  }
-  const rSetupSteps = steps(jupyter).filter((step) => step?.uses === SETUP_R_ACTION);
-  const rSetup = rSetupSteps[0];
-  const rscriptSteps = steps(jupyter).filter((step) => step?.id === "rscript");
-  const rscript = rscriptSteps[0];
-  const rInstallSteps = steps(jupyter).filter((step) => step?.name === "Install R contract packages");
-  const rInstall = rInstallSteps[0];
-  const rContractSteps = steps(jupyter).filter((step) => command(step?.run) === "npm run test:r-contract");
-  const rContract = rContractSteps[0];
-  const npmCiSteps = steps(jupyter).filter((step) => command(step?.run) === "npm ci");
-  const npmCi = npmCiSteps[0];
-  if (
-    rSetupSteps.length !== 1 ||
-    !exactKeys(rSetup, ["uses", "with"]) ||
-    !exactKeys(rSetup.with, ["r-version", "use-public-rspm"]) ||
-    rSetup.with["r-version"] !== "4.5.2" ||
-    rSetup.with["use-public-rspm"] !== true ||
-    rscriptSteps.length !== 1 ||
-    !exactKeys(rscript, ["id", "name", "shell", "run"]) ||
-    rscript.name !== "Locate hosted Rscript" ||
-    rscript.shell !== "bash" ||
-    command(rscript.run) !== command(RSCRIPT_DISCOVERY_RUN) ||
-    rInstallSteps.length !== 1 ||
-    !exactKeys(rInstall, ["name", "env", "run"]) ||
-    !exactKeys(rInstall.env, ["RSCRIPT"]) ||
-    rInstall.env.RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
-    command(rInstall.run) !== command(R_CONTRACT_INSTALL_RUN) ||
-    rContractSteps.length !== 1 ||
-    !exactKeys(rContract, ["run", "env"]) ||
-    !exactKeys(rContract.env, ["RSCRIPT"]) ||
-    rContract.env.RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
-    npmCiSteps.length !== 1 ||
-    steps(jupyter).indexOf(rSetup) >= steps(jupyter).indexOf(rscript) ||
-    steps(jupyter).indexOf(rscript) >= steps(jupyter).indexOf(npmCi) ||
-    steps(jupyter).indexOf(npmCi) >= steps(jupyter).indexOf(rInstall) ||
-    steps(jupyter).indexOf(rInstall) >= steps(jupyter).indexOf(rContract)
-  ) {
-    problems.push("released-jupyter must run the R 4.5.2 contract with the exact hosted Rscript.");
-  }
-  inspectAdjacentCanonicalVerification(
-    steps(jupyter),
-    jupyterStep,
-    "canonical_jupyter",
-    "Reverify the exact canonical stable artifact for released Jupyter",
-    "released-jupyter",
-    problems
-  );
-  const rJupyterStep = steps(jupyter).find((step) => step?.id === "packaged_editor_r");
-  if (
-    !exactKeys(rJupyterStep, ["id", "name", "continue-on-error", "run", "env"]) ||
-    rJupyterStep.name !== "Test R Jupyter in the exact packaged VSIX" ||
-    command(rJupyterStep.run) !== command(R_PACKAGED_EDITOR_COMMAND) ||
-    !exactKeys(rJupyterStep.env, [
-      "OPEN_WRANGLER_PACKAGED_MODE",
-      "OPEN_WRANGLER_PACKAGED_EDITORS",
-      "OPEN_WRANGLER_EDITOR_DISPLAY",
-      "OPEN_WRANGLER_XVFB_EXECUTABLE",
-      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
-      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
-      "OPEN_WRANGLER_TEST_RSCRIPT",
-      "VSCODE_TEST_VERSION"
-    ]) ||
-    rJupyterStep.env.OPEN_WRANGLER_PACKAGED_MODE !== "r-jupyter" ||
-    rJupyterStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode,cursor" ||
-    rJupyterStep.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
-    rJupyterStep.env.OPEN_WRANGLER_XVFB_EXECUTABLE !== "${{ steps.prepare_xvfb.outputs.executable }}" ||
-    rJupyterStep.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
-    rJupyterStep.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "1" ||
-    rJupyterStep.env.OPEN_WRANGLER_TEST_RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
-    rJupyterStep.env.VSCODE_TEST_VERSION !== "stable" ||
-    steps(jupyter).indexOf(rContract) >= steps(jupyter).indexOf(rJupyterStep)
-  ) {
-    problems.push("released-jupyter must cover R Jupyter in both VS Code and Cursor with exact R 4.5.2.");
-  }
-  inspectAdjacentCanonicalVerification(
-    steps(jupyter),
-    rJupyterStep,
-    "canonical_r_jupyter",
-    "Reverify the exact canonical stable artifact for R Jupyter",
-    "released-jupyter R",
-    problems
-  );
-  inspectFailureUpload(
-    steps(jupyter),
-    rJupyterStep,
-    "stable-release-r-jupyter-${{ runner.os }}-${{ github.run_attempt }}",
-    "released-jupyter R",
-    problems
+  inspectCheckout(workflow.jobs["remote-ssh"], "remote-ssh", problems);
+  inspectDownloadAndVerification(
+    workflow.jobs["remote-ssh"],
+    "remote-ssh",
+    problems,
+    "Verify the exact canonical stable artifact"
   );
 
   const remote = workflow.jobs["remote-ssh"];
@@ -1035,50 +466,8 @@ export function inspectStableReleaseWorkflow(source) {
     "remote-ssh",
     problems
   );
-
-  const acceptanceGate = workflow.jobs["acceptance-gate"];
-  const expectedGateNeeds = ["package", ...CONSUMERS];
-  if (
-    !Array.isArray(acceptanceGate.needs) ||
-    acceptanceGate.needs.length !== expectedGateNeeds.length ||
-    expectedGateNeeds.some((job) => !acceptanceGate.needs.includes(job)) ||
-    acceptanceGate.if !== "${{ always() }}" ||
-    acceptanceGate.permissions !== undefined ||
-    acceptanceGate.environment !== undefined ||
-    steps(acceptanceGate).length !== 1
-  ) {
-    problems.push("acceptance-gate must always inspect every required job under inherited read-only permissions.");
-  } else {
-    const gate = steps(acceptanceGate)[0];
-    const expectedEnvironment = {
-      PACKAGE_RESULT: "${{ needs.package.result }}",
-      CROSS_PLATFORM_RESULT: "${{ needs.cross-platform.result }}",
-      LINUX_ACCEPTANCE_RESULT: "${{ needs.linux-acceptance.result }}",
-      INSTALLED_PERFORMANCE_RESULT: "${{ needs.installed-performance.result }}",
-      RELEASED_JUPYTER_RESULT: "${{ needs.released-jupyter.result }}",
-      REMOTE_SSH_RESULT: "${{ needs.remote-ssh.result }}"
-    };
-    const expectedRun = [
-      'test "$PACKAGE_RESULT" = "success"',
-      'test "$CROSS_PLATFORM_RESULT" = "success"',
-      'test "$LINUX_ACCEPTANCE_RESULT" = "success"',
-      'test "$INSTALLED_PERFORMANCE_RESULT" = "success"',
-      'test "$RELEASED_JUPYTER_RESULT" = "success"',
-      'test "$REMOTE_SSH_RESULT" = "success"'
-    ].join(" ");
-    if (
-      !exactKeys(gate, ["name", "env", "run"]) ||
-      gate.name !== "Fail closed unless every required job succeeded" ||
-      !exactKeys(gate.env, Object.keys(expectedEnvironment)) ||
-      Object.entries(expectedEnvironment).some(([key, value]) => gate.env[key] !== value) ||
-      command(gate.run) !== expectedRun
-    ) {
-      problems.push("acceptance-gate must fail closed unless every required result is exactly success.");
-    }
-  }
-
   const release = workflow.jobs.release;
-  const expectedNeeds = ["package", "acceptance-gate"];
+  const expectedNeeds = ["package", "candidate-acceptance", "remote-ssh"];
   if (
     !Array.isArray(release.needs) ||
     release.needs.length !== expectedNeeds.length ||

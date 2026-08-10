@@ -886,9 +886,11 @@ The main/release runtime matrix must pass on Linux/Python 3.10, macOS/Python 3.1
 
 Preview-workflow contract tests parse behavior rather than pinning the complete YAML text or its SHA-256. They require
 manual protected-main dispatch, default `publish: false`, one package producer and canonical triple, one complete
-Linux full-suite owner, parallel native/performance/Jupyter/Remote SSH consumers, an exact-success fan-in, and a
-protected publication boundary. Mutations prove that validation-only jobs cannot gain an environment, secret route,
-write permission, tag push, registry call, or rebuild. Separate contracts require stable, preview, and reusable Open
+Linux full-suite owner, and a shared fail-fast matrix for macOS, Windows, Linux, performance, and Jupyter. Remote SSH
+runs after that matrix, and publication depends on all three exact-artifact boundaries. Mutations prove that
+validation-only jobs cannot gain an environment, secret route, write permission, tag push, registry call, or rebuild.
+The shared-workflow tests also reject unknown matrix tuples, unbound artifacts, missing diagnostic failure steps, and
+changes that disable required editor/runtime checks. Separate contracts require stable, preview, and reusable Open
 VSX public mutation owners to use the same non-cancelling `queue: max` publication group; the Open VSX call must be
 explicit for both channels and must select `--pre-release` only from verified public release metadata. These tests do
 not claim that a `publish: false` hosted run exercised live environment approval, secrets, GitHub mutation, Azure

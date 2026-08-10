@@ -4,7 +4,7 @@ import {
   OPEN_VSX_VERIFY_PAT_RUN,
   PUBLIC_MEDIA_CONTRACT_RUN
 } from "./open-vsx-promotion-workflow.mjs";
-import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mjs";
+import { inspectCandidateMatrixCaller } from "./candidate-acceptance-workflow.mjs";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const EVENT_SHA = "${{ github.sha }}";
@@ -15,24 +15,13 @@ const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
-const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
-const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
-const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release"];
+const JOBS = ["package", "candidate-acceptance", "remote-ssh", "release"];
 const CANONICAL_PATHS = [
   "canonical-release/openwrangler.vsix",
   "canonical-release/openwrangler.vsix.sha256",
   "canonical-release/openwrangler.vsix.provenance.json"
-];
-const FULL_SUITE = [
-  "npm run check",
-  "npm run test:scripts",
-  "npm run test:webview-acceptance",
-  "npm run test:coverage",
-  "npm audit --omit=dev",
-  "npm run audit:python",
-  "npm run benchmark:runtime"
 ];
 const PROTECTED_MAIN_SOURCE_RUN = `test "$EVENT_REF_TYPE" = "branch"
 test "$EVENT_REF" = "refs/heads/main"
@@ -41,37 +30,6 @@ test "\${#EXPECTED_SHA}" -eq 40`;
 const EXACT_MAIN_SOURCE_RUN = `test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
 test -z "$(git status --porcelain --untracked-files=no)"
 test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"`;
-const LOCATE_RSCRIPT_RUN = `set -euo pipefail
-rscript="$(command -v Rscript)"
-if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
-  echo "Rscript did not resolve to an absolute executable." >&2
-  exit 1
-fi
-r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
-if [[ "$r_version" != "4.5.2" ]]; then
-  echo "Expected hosted R 4.5.2, got $r_version." >&2
-  exit 1
-fi
-printf 'executable=%s\\n' "$rscript" >> "$GITHUB_OUTPUT"
-printf 'version=%s\\n' "$r_version" >> "$GITHUB_OUTPUT"
-printf 'Hosted R: %s\\n' "$r_version"`;
-const INSTALL_R_CONTRACT_PACKAGES =
-  'Rscript --vanilla -e \'install.packages(c("jsonlite", "tibble", "readr", "dplyr", "data.table", "bit64", "collapse", "nanoparquet"), repos = "https://cloud.r-project.org")\'';
-const R_JUPYTER_RUN =
-  "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}";
-const CROSS_PLATFORM_R_JUPYTER_RUN =
-  "node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}";
-const PORTABLE_LOCATE_RSCRIPT_RUN = `version <- as.character(getRversion())
-if (!identical(version, "4.5.2")) stop("Expected hosted R 4.5.2, got ", version, ".")
-executable <- normalizePath(
-  file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript"),
-  winslash = "/",
-  mustWork = TRUE
-)
-if (!nzchar(executable) || grepl("[\\r\\n]", executable)) stop("Rscript resolved to an unsafe path.")
-output <- Sys.getenv("GITHUB_OUTPUT")
-if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
-cat(sprintf("executable=%s\\nversion=%s\\n", executable, version), file = output, append = TRUE)`;
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -238,187 +196,6 @@ function inspectPinnedActions(workflow, problems) {
   }
 }
 
-function inspectPreviewRJupyter(job, problems) {
-  const jobSteps = steps(job);
-  const setupMatches = jobSteps.filter((step) => step?.uses === SETUP_R_ACTION);
-  const setup = setupMatches[0];
-  const locateMatches = jobSteps.filter((step) => step?.id === "rscript");
-  const locate = locateMatches[0];
-  const npmCi = findRun(job, "npm ci");
-  const installMatches = jobSteps.filter((step) => command(step?.run) === INSTALL_R_CONTRACT_PACKAGES);
-  const install = installMatches[0];
-  const contractMatches = jobSteps.filter((step) => command(step?.run) === "npm run test:r-contract");
-  const contract = contractMatches[0];
-
-  if (
-    setupMatches.length !== 1 ||
-    !exactKeys(setup, ["uses", "with"]) ||
-    !exactKeys(setup.with, ["r-version", "use-public-rspm"]) ||
-    setup.with["r-version"] !== "4.5.2" ||
-    setup.with["use-public-rspm"] !== true ||
-    locateMatches.length !== 1 ||
-    !exactKeys(locate, ["id", "name", "shell", "run"]) ||
-    locate.name !== "Locate hosted Rscript" ||
-    locate.shell !== "bash" ||
-    command(locate.run) !== command(LOCATE_RSCRIPT_RUN) ||
-    installMatches.length !== 1 ||
-    !exactKeys(install, ["name", "run"]) ||
-    install.name !== "Install R contract packages" ||
-    contractMatches.length !== 1 ||
-    !exactKeys(contract, ["run", "env"]) ||
-    !exactKeys(contract.env, ["RSCRIPT"]) ||
-    contract.env.RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
-    npmCi === undefined ||
-    !(jobSteps.indexOf(setup) < jobSteps.indexOf(locate)) ||
-    !(jobSteps.indexOf(locate) < jobSteps.indexOf(npmCi)) ||
-    !(jobSteps.indexOf(npmCi) < jobSteps.indexOf(install)) ||
-    !(jobSteps.indexOf(install) < jobSteps.indexOf(contract))
-  ) {
-    problems.push("released-jupyter must run the native R contract with exact hosted R 4.5.2.");
-  }
-
-  const verifierMatches = jobSteps.filter((step) => step?.id === "canonical_r_jupyter");
-  const verifier = verifierMatches[0];
-  const runnerMatches = jobSteps.filter((step) => step?.id === "packaged_editor_r");
-  const runner = runnerMatches[0];
-  const diagnosticsMatches = jobSteps.filter((step) => step?.name === "Upload R-Jupyter failure diagnostics");
-  const diagnostics = diagnosticsMatches[0];
-  if (
-    verifierMatches.length !== 1 ||
-    !exactKeys(verifier, ["id", "name", "env", "run"]) ||
-    verifier.name !== "Reverify the exact canonical preview artifact for R Jupyter" ||
-    !exactKeys(verifier.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
-    verifier.env.EXPECTED_SHA !== EVENT_SHA ||
-    verifier.env.RELEASE_TAG !== RELEASE_TAG ||
-    command(verifier.run) !== "node scripts/verify-preview-release-artifact.mjs canonical-release" ||
-    runnerMatches.length !== 1 ||
-    !exactKeys(runner, ["id", "name", "continue-on-error", "run", "env"]) ||
-    runner.name !== "Test R Jupyter in the exact packaged VSIX" ||
-    command(runner.run) !== R_JUPYTER_RUN ||
-    !exactKeys(runner.env, [
-      "OPEN_WRANGLER_EDITOR_DISPLAY",
-      "OPEN_WRANGLER_PACKAGED_EDITORS",
-      "OPEN_WRANGLER_PACKAGED_MODE",
-      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
-      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
-      "OPEN_WRANGLER_TEST_RSCRIPT",
-      "OPEN_WRANGLER_XVFB_EXECUTABLE",
-      "VSCODE_TEST_VERSION"
-    ]) ||
-    runner.env.OPEN_WRANGLER_PACKAGED_MODE !== "r-jupyter" ||
-    runner.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode,cursor" ||
-    runner.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
-    runner.env.OPEN_WRANGLER_XVFB_EXECUTABLE !== "${{ steps.prepare_xvfb.outputs.executable }}" ||
-    runner.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
-    runner.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "1" ||
-    runner.env.OPEN_WRANGLER_TEST_RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
-    runner.env.VSCODE_TEST_VERSION !== "stable" ||
-    jobSteps.indexOf(runner) !== jobSteps.indexOf(verifier) + 1 ||
-    diagnosticsMatches.length !== 1 ||
-    !exactKeys(diagnostics, ["name", "if", "uses", "with"]) ||
-    diagnostics.if !==
-      "${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}" ||
-    diagnostics.uses !== UPLOAD_ACTION ||
-    !exactKeys(diagnostics.with, [
-      "name",
-      "path",
-      "if-no-files-found",
-      "retention-days",
-      "compression-level",
-      "include-hidden-files"
-    ]) ||
-    diagnostics.with.name !== "preview-release-r-jupyter-${{ runner.os }}-${{ github.run_attempt }}" ||
-    diagnostics.with.path !== "${{ steps.packaged_editor_r.outputs.evidence_path }}" ||
-    diagnostics.with["if-no-files-found"] !== "error" ||
-    diagnostics.with["retention-days"] !== 7 ||
-    diagnostics.with["compression-level"] !== 9 ||
-    diagnostics.with["include-hidden-files"] !== false ||
-    jobSteps.indexOf(diagnostics) !== jobSteps.indexOf(runner) + 1
-  ) {
-    problems.push(
-      "released-jupyter must reverify and test the exact preview VSIX through R Jupyter in VS Code and Cursor."
-    );
-  }
-}
-
-function inspectCrossPlatformRJupyter(job, problems) {
-  const jobSteps = steps(job);
-  const setupMatches = jobSteps.filter((step) => step?.uses === SETUP_R_ACTION);
-  const setup = setupMatches[0];
-  const locateMatches = jobSteps.filter((step) => step?.id === "rscript");
-  const locate = locateMatches[0];
-  const runnerMatches = jobSteps.filter((step) => step?.id === "packaged_editor_r_platform");
-  const runner = runnerMatches[0];
-  const runnerIndex = jobSteps.indexOf(runner);
-  const verifier = jobSteps[runnerIndex - 1];
-  const diagnostics = jobSteps[runnerIndex + 1];
-  const npmCi = findRun(job, "npm ci");
-  if (
-    setupMatches.length !== 1 ||
-    !exactKeys(setup, ["uses", "with"]) ||
-    !exactKeys(setup.with, ["r-version", "use-public-rspm"]) ||
-    setup.with["r-version"] !== "4.5.2" ||
-    setup.with["use-public-rspm"] !== true ||
-    locateMatches.length !== 1 ||
-    !exactKeys(locate, ["id", "name", "shell", "run"]) ||
-    locate.name !== "Locate hosted Rscript" ||
-    locate.shell !== "Rscript {0}" ||
-    command(locate.run) !== command(PORTABLE_LOCATE_RSCRIPT_RUN) ||
-    npmCi === undefined ||
-    !(jobSteps.indexOf(setup) < jobSteps.indexOf(locate)) ||
-    !(jobSteps.indexOf(locate) < jobSteps.indexOf(npmCi)) ||
-    runnerMatches.length !== 1 ||
-    !exactKeys(runner, ["id", "name", "continue-on-error", "run", "env"]) ||
-    runner.name !== "Test local R Jupyter in packaged VS Code" ||
-    command(runner.run) !== CROSS_PLATFORM_R_JUPYTER_RUN ||
-    !exactKeys(runner.env, [
-      "OPEN_WRANGLER_PACKAGED_EDITORS",
-      "OPEN_WRANGLER_PACKAGED_MODE",
-      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
-      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
-      "OPEN_WRANGLER_TEST_RSCRIPT",
-      "VSCODE_TEST_VERSION"
-    ]) ||
-    runner.env.OPEN_WRANGLER_PACKAGED_MODE !== "r-jupyter" ||
-    runner.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
-    runner.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
-    runner.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "0" ||
-    runner.env.OPEN_WRANGLER_TEST_RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
-    runner.env.VSCODE_TEST_VERSION !== "stable" ||
-    !exactKeys(verifier, ["id", "name", "env", "run"]) ||
-    verifier.id !== "canonical_r_jupyter_platform" ||
-    verifier.name !== "Reverify the exact canonical preview artifact for cross-platform R Jupyter" ||
-    !exactKeys(verifier.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
-    verifier.env.EXPECTED_SHA !== EVENT_SHA ||
-    verifier.env.RELEASE_TAG !== RELEASE_TAG ||
-    command(verifier.run) !== "node scripts/verify-preview-release-artifact.mjs canonical-release" ||
-    !exactKeys(diagnostics, ["name", "if", "uses", "with"]) ||
-    diagnostics.name !== "Upload cross-platform R-Jupyter failure diagnostics" ||
-    diagnostics.if !==
-      "${{ always() && steps.packaged_editor_r_platform.outcome == 'failure' && steps.packaged_editor_r_platform.outputs.evidence_ready == 'true' }}" ||
-    diagnostics.uses !== UPLOAD_ACTION ||
-    !exactKeys(diagnostics.with, [
-      "name",
-      "path",
-      "if-no-files-found",
-      "retention-days",
-      "compression-level",
-      "include-hidden-files"
-    ]) ||
-    diagnostics.with.name !== "preview-release-r-jupyter-platform-${{ runner.os }}-${{ github.run_attempt }}" ||
-    diagnostics.with.path !== "${{ steps.packaged_editor_r_platform.outputs.evidence_path }}" ||
-    diagnostics.with["if-no-files-found"] !== "error" ||
-    diagnostics.with["retention-days"] !== 7 ||
-    diagnostics.with["compression-level"] !== 9 ||
-    diagnostics.with["include-hidden-files"] !== false ||
-    command(findRun(job, "npm run test:r-contract")?.run) !== ""
-  ) {
-    problems.push(
-      "cross-platform must run one local VS Code R-Jupyter journey with portable R 4.5.2 setup, fresh artifact verification, and sealed failure diagnostics."
-    );
-  }
-}
-
 export function inspectPreviewReleaseWorkflow(source) {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_WORKFLOW_BYTES) {
     return ["release.yml must be bounded YAML text."];
@@ -476,8 +253,6 @@ export function inspectPreviewReleaseWorkflow(source) {
       problems.push(`${jobName} must not inherit environment, shell defaults, or failure suppression.`);
     }
   }
-  problems.push(...inspectDeferredDiagnosticFailures(workflow, UPLOAD_ACTION));
-
   const packaging = workflow.jobs.package;
   inspectCheckout(packaging, "package", problems);
   inspectPackageSourceBinding(packaging, problems);
@@ -525,94 +300,36 @@ export function inspectPreviewReleaseWorkflow(source) {
   ) {
     problems.push("package must verify and upload only the canonical preview triple.");
   }
-  for (const consumerName of CONSUMERS) {
-    const consumer = workflow.jobs[consumerName];
-    if (
-      consumer.needs !== "package" ||
-      consumer.permissions !== undefined ||
-      consumer.environment !== undefined ||
-      consumer.concurrency !== undefined
-    ) {
-      problems.push(`${consumerName} must consume package directly in parallel under read-only permissions.`);
-    }
-    inspectCheckout(consumer, consumerName, problems);
-    inspectCanonicalConsumer(consumer, consumerName, problems);
-    if (
-      runs(consumer).some(
-        (run) => /^npm run package(?:\s|$)/u.test(run) || run.includes("create-canonical-release-artifact.mjs")
-      )
-    ) {
-      problems.push(`${consumerName} must not rebuild or repackage the candidate.`);
-    }
-  }
+  problems.push(...inspectCandidateMatrixCaller(workflow, "preview"));
 
-  const completeOwners = Object.entries(workflow.jobs)
-    .filter(([, job]) => FULL_SUITE.every((required) => runs(job).includes(required)))
-    .map(([name]) => name);
-  if (completeOwners.length !== 1 || completeOwners[0] !== "linux-acceptance") {
-    problems.push("linux-acceptance must be the one and only complete source/full-suite owner.");
-  }
-  const crossPlatform = workflow.jobs["cross-platform"];
-  const crossPlatformMatrix = crossPlatform.strategy?.matrix?.include;
+  const remote = workflow.jobs["remote-ssh"];
   if (
-    crossPlatform.strategy?.["fail-fast"] !== true ||
-    !Array.isArray(crossPlatformMatrix) ||
-    crossPlatformMatrix.length !== 2 ||
-    crossPlatformMatrix[0]?.os !== "macos-latest" ||
-    crossPlatformMatrix[0]?.python !== "3.12" ||
-    crossPlatformMatrix[1]?.os !== "windows-latest" ||
-    crossPlatformMatrix[1]?.python !== "3.14"
+    !Array.isArray(remote.needs) ||
+    remote.needs.length !== 2 ||
+    !remote.needs.includes("package") ||
+    !remote.needs.includes("candidate-acceptance") ||
+    remote.permissions !== undefined ||
+    remote.environment !== undefined ||
+    remote.concurrency !== undefined
   ) {
-    problems.push("cross-platform must fail fast across the pinned macOS and Windows release matrix.");
+    problems.push("remote-ssh must start only after the package and candidate matrix succeed.");
   }
-  if (runs(crossPlatform).some((run) => run.startsWith("python -m pytest"))) {
-    problems.push("cross-platform must retain native smoke coverage without repeating the complete Python suite.");
-  }
-  inspectCrossPlatformRJupyter(crossPlatform, problems);
-  const installedPerformanceRun = runs(workflow.jobs["installed-performance"]).find((run) =>
-    run.includes("benchmark:installed --")
-  );
-  if (!installedPerformanceRun?.includes("--preview-release")) {
-    problems.push("installed-performance must retain canonical preview performance acceptance.");
-  }
-  const jupyter = workflow.jobs["released-jupyter"];
-  const jupyterRuns = runs(jupyter);
-  const pythonJupyter = steps(jupyter).find((step) => step?.id === "packaged_editor");
+  inspectCheckout(remote, "remote-ssh", problems);
+  inspectCanonicalConsumer(remote, "remote-ssh", problems);
   if (
-    !jupyterRuns.includes("npm run audit:remote-jupyter") ||
-    pythonJupyter?.env?.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
-    pythonJupyter?.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "1"
+    runs(remote).some(
+      (run) => /^npm run package(?:\s|$)/u.test(run) || run.includes("create-canonical-release-artifact.mjs")
+    ) ||
+    !runs(remote).some((run) => run.includes("npm run test:remote-workspace --"))
   ) {
-    problems.push("released-jupyter must retain released-extension and remote-kernel acceptance.");
+    problems.push("remote-ssh must consume the verified candidate without rebuilding it.");
   }
-  inspectPreviewRJupyter(jupyter, problems);
-  if (!runs(workflow.jobs["remote-ssh"]).some((run) => run.includes("npm run test:remote-workspace --"))) {
-    problems.push("remote-ssh must retain real packaged Remote SSH acceptance.");
-  }
-
-  const gate = workflow.jobs["acceptance-gate"];
-  const expectedNeeds = ["package", ...CONSUMERS];
-  if (
-    !Array.isArray(gate.needs) ||
-    gate.needs.length !== expectedNeeds.length ||
-    expectedNeeds.some((name) => !gate.needs.includes(name)) ||
-    gate.if !== "${{ always() }}" ||
-    gate.environment !== undefined ||
-    gate.permissions !== undefined ||
-    steps(gate).length !== 1 ||
-    !CONSUMERS.every((name) =>
-      runs(gate)[0]?.includes(`test "$${name.replaceAll("-", "_").toUpperCase()}_RESULT" = "success"`)
-    )
-  ) {
-    problems.push("acceptance-gate must fail closed unless package and every parallel acceptance lane succeeds.");
-  }
-
   const release = workflow.jobs.release;
+  const releaseNeeds = ["package", "candidate-acceptance", "remote-ssh"];
   if (
     !Array.isArray(release.needs) ||
-    release.needs.length !== 2 ||
-    !release.needs.includes("package") ||
-    !release.needs.includes("acceptance-gate") ||
+    release.needs.length !== releaseNeeds.length ||
+    releaseNeeds.some((job) => !release.needs.includes(job)) ||
     release.if !== "${{ inputs.publish == true }}" ||
     release.environment !== "publishing" ||
     release["runs-on"] !== "ubuntu-24.04" ||
@@ -624,7 +341,9 @@ export function inspectPreviewReleaseWorkflow(source) {
     release.concurrency["cancel-in-progress"] !== false ||
     release.concurrency.queue !== "max"
   ) {
-    problems.push("release must be an explicit protected publication using the global non-cancelling queue.");
+    problems.push(
+      "release must wait for the package, candidate matrix, and downstream Remote SSH before protected publication."
+    );
   }
   inspectCheckout(release, "release", problems);
   inspectCanonicalConsumer(release, "release", problems);

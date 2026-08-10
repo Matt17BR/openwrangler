@@ -173,21 +173,21 @@ version, changelog, release notes, and required release metadata.
 
 For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR artifact and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. A failed candidate is recorded and is not automatically retried.
 
-`npm run docs:check` semantically parses `.github/workflows/release.yml`. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Cross-platform native smoke, complete Linux acceptance, installed performance, released and remote Jupyter, and Remote SSH consume only that artifact ID in parallel. Linux is the sole owner of the complete source/full-suite commands; specialized lanes retain their distinct real-editor evidence without repeating the full Python or TypeScript corpus. An `always()` fan-in requires every result to equal `success`. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate. The inspector enforces these behavior invariants rather than mirroring every YAML line or a workflow-file hash.
+`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. A five-cell matrix runs macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH starts only after all five cells pass, and publication depends directly on the package, matrix, and Remote SSH results. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
 
-The macOS and Windows cells share a fail-fast matrix in both release workflows. If either platform fails, GitHub
-cancels the other cell because the candidate can no longer publish. The final gate still requires both cells to have
-finished successfully. Editor, performance, and webview commands that can produce diagnostics defer their failure
-only until the immediately following upload has run, then fail before another expensive command can start.
+The candidate matrix uses GitHub's fail-fast behavior. Once a cell reports failure, GitHub cancels the other running
+cells because that candidate cannot publish. A suspected failure is not enough: the command must finish and return
+failure first. Editor, performance, and webview commands that produce diagnostics therefore upload them immediately
+after the failing command and then exit before another expensive command starts. Remote SSH stays outside the matrix
+so matrix cancellation cannot interrupt its cleanup.
 
 A `publish: false` run proves source binding, package integrity, and the complete acceptance topology only. It does not enter the `publishing` environment, receive registry secrets or `contents: write`, push a tag, call a registry, or trigger the Marketplace pipeline. Its run-scoped artifact is not promoted by a later dispatch; an explicitly authorized `publish: true` run repeats acceptance and promotes only the exact artifact created and tested in that same run. Consequently a rehearsal does **not** prove protected-environment approval, secret availability, GitHub publication API behavior, the global publication queue under live contention, Azure workload federation, or registry propagation.
 
 The stable workflow is manual and defaults to validation-only. It accepts only the exact current protected `main`
 commit. Packaging may preflight an absent tag or one that already resolves to that commit; publication accepts only
 an absent or exact lightweight tag. One job builds the VSIX and uploads `openwrangler.vsix`, its lowercase SHA-256,
-and stable provenance JSON. Parallel jobs download that artifact ID for Linux source and coverage checks,
-macOS/Windows checks, packaged VS Code/Cursor acceptance, performance, Jupyter, and Remote SSH. Every job must pass
-before promotion.
+and stable provenance JSON. The same shared five-cell matrix validates it before Remote SSH runs. The package,
+matrix, and Remote SSH jobs must all pass before promotion.
 
 `publish: true` makes the final job eligible for the branch-and-tag-restricted `publishing` environment. That job
 alone receives `contents: write`, downloads the artifact ID again, and revalidates it before each publisher. Both

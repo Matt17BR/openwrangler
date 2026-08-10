@@ -1590,20 +1590,16 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       workflow.on.workflow_dispatch.inputs.publish.default = true;
     },
     (workflow) => {
-      delete workflow.jobs["released-jupyter"];
+      delete workflow.jobs["candidate-acceptance"];
     },
     (workflow) => {
-      workflow.jobs["cross-platform"].steps.find((step) => step.id === "rscript").shell = "bash";
+      workflow.jobs["candidate-acceptance"].uses = "./.github/workflows/other.yml";
     },
     (workflow) => {
-      workflow.jobs["cross-platform"].steps.find(
-        (step) => step.id === "packaged_editor_r_platform"
-      ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "1";
+      workflow.jobs["candidate-acceptance"].strategy["fail-fast"] = false;
     },
     (workflow) => {
-      const steps = workflow.jobs["cross-platform"].steps;
-      const runnerIndex = steps.findIndex((step) => step.id === "packaged_editor_r_platform");
-      steps.splice(runnerIndex, 0, { run: "echo intervening" });
+      workflow.jobs["candidate-acceptance"].strategy.matrix.include.pop();
     },
     (workflow) => {
       workflow.jobs.package.steps.find((step) => String(step.uses ?? "").startsWith("actions/checkout@")).uses =
@@ -1641,79 +1637,13 @@ test("structurally gates the candidate-first preview workflow and exact artifact
         "node scripts/verify-canonical-release-artifact.mjs canonical-release";
     },
     (workflow) => {
-      workflow.jobs["cross-platform"].needs = "linux-acceptance";
+      workflow.jobs["candidate-acceptance"].with.channel = "stable";
     },
     (workflow) => {
-      workflow.jobs["cross-platform"].strategy["fail-fast"] = false;
+      workflow.jobs["candidate-acceptance"].with.artifact_id = "openwrangler-preview-release";
     },
     (workflow) => {
-      workflow.jobs["cross-platform"].steps.find((step) => step.id === "packaged_editor")["continue-on-error"] = false;
-    },
-    (workflow) => {
-      const steps = workflow.jobs["cross-platform"].steps;
-      const runnerIndex = steps.findIndex((step) => step.id === "packaged_editor");
-      steps.splice(runnerIndex + 2, 1);
-    },
-    (workflow) => {
-      workflow.jobs["cross-platform"].steps.push(
-        { run: "npm run check" },
-        { run: "npm run test:scripts" },
-        { run: "npm run test:webview-acceptance" },
-        { run: "npm run test:coverage" },
-        { run: "npm audit --omit=dev" },
-        { run: "npm run audit:python" },
-        { run: "npm run benchmark:runtime" }
-      );
-    },
-    (workflow) => {
-      workflow.jobs["linux-acceptance"].steps.find((step) => step.run === "npm run test:coverage").run =
-        "npm run test:coverage:partial";
-    },
-    (workflow) => {
-      workflow.jobs["cross-platform"].steps.push({ run: "python -m pytest python/tests -q" });
-    },
-    (workflow) => {
-      workflow.jobs["installed-performance"].steps.find((step) =>
-        String(step.run ?? "").includes("benchmark:installed --")
-      ).run = "echo skipped";
-    },
-    (workflow) => {
-      const step = workflow.jobs["installed-performance"].steps.find((candidate) =>
-        String(candidate.run ?? "").includes("benchmark:installed --")
-      );
-      step.run = String(step.run).replace("--preview-release", "");
-    },
-    (workflow) => {
-      workflow.jobs["released-jupyter"].steps.find(
-        (step) => step.id === "packaged_editor"
-      ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "0";
-    },
-    (workflow) => {
-      workflow.jobs["released-jupyter"].steps.find((step) =>
-        String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")
-      ).with["r-version"] = "4.5";
-    },
-    (workflow) => {
-      workflow.jobs["released-jupyter"].steps.find((step) => step.name === "Install R contract packages").run =
-        "echo skipped";
-    },
-    (workflow) => {
-      workflow.jobs["released-jupyter"].steps.find((step) => step.run === "npm run test:r-contract").env.RSCRIPT =
-        "Rscript";
-    },
-    (workflow) => {
-      const jupyterSteps = workflow.jobs["released-jupyter"].steps;
-      const runIndex = jupyterSteps.findIndex((step) => step.id === "packaged_editor_r");
-      jupyterSteps.splice(runIndex, 0, { run: "echo changed-after-verification" });
-    },
-    (workflow) => {
-      workflow.jobs["released-jupyter"].steps.find((step) => step.id === "packaged_editor_r").run =
-        "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
-    },
-    (workflow) => {
-      workflow.jobs["released-jupyter"].steps.find(
-        (step) => step.name === "Upload R-Jupyter failure diagnostics"
-      ).with.path = "tmp/**";
+      workflow.jobs["remote-ssh"].needs = ["package"];
     },
     (workflow) => {
       workflow.jobs["remote-ssh"].steps.find((step) =>
@@ -1721,7 +1651,7 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       ).run = "echo skipped";
     },
     (workflow) => {
-      workflow.jobs["acceptance-gate"].steps[0].run = 'test "$PACKAGE_RESULT" = "success"';
+      workflow.jobs.release.needs = ["package", "candidate-acceptance"];
     },
     (workflow) => {
       workflow.jobs.release.if = "${{ inputs.publish != false }}";
