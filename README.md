@@ -112,7 +112,7 @@ Hover or right-click a scalar grid cell to keep or exclude its exact value. Null
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with inline priority, reorder, edit, and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/sort-priority.png" width="448"></a></td>
   </tr>
   <tr>
-    <td>Hover or focus the histogram to see a bin's range, row count, and percentage.</td>
+    <td>Switch between counts and percentages from the grid or column panel. Hover or focus a bin for both values.</td>
     <td>Add multiple sort keys, then reorder them or change direction and null placement.</td>
   </tr>
 </table>
