@@ -30,6 +30,8 @@ export const DATA_WRANGLER_STUDY_TOOL_NAMES = Object.freeze([
 ]);
 
 export const DATA_WRANGLER_STUDY_REPORT_PROTOCOL = "openwrangler-data-wrangler-study-report-v2";
+export const DATA_WRANGLER_REVIEW_START = "<!-- open-wrangler-comparison-results:start -->";
+export const DATA_WRANGLER_REVIEW_END = "<!-- open-wrangler-comparison-results:end -->";
 export const DATA_WRANGLER_REGRESSION_LIMITS = Object.freeze({
   inlinePreviewMs: Object.freeze({ relative: 0.2, absolute: 250 }),
   workbenchOpenMs: Object.freeze({ relative: 0.2, absolute: 250 }),
@@ -318,6 +320,37 @@ export function assertReleaseCompleteStudyReport(report) {
   ) {
     throw new TypeError("A release comparison report requires eight complete sessions and forty recorded samples.");
   }
+  canonicalUtcTimestamp(report.generatedAtUtc);
+  const expectedCells = Object.entries(STUDY_CELL_CONTRACT).map(([id, cell]) => ({ id, ...cell }));
+  if (JSON.stringify(report.method?.cells) !== JSON.stringify(expectedCells)) {
+    throw new TypeError("A release comparison report requires the fixed four workloads in canonical order.");
+  }
+  assertEqual(report.provenance?.openWrangler?.extensionId, "Matt17BR.openwrangler", "report Open Wrangler ID");
+  assertMatch(report.provenance?.openWrangler?.version, NUMERIC_VERSION, "report Open Wrangler version");
+  assertMatch(report.provenance?.openWrangler?.sha256, SHA256, "report Open Wrangler SHA-256");
+  assertEqual(report.provenance?.dataWrangler?.extensionId, "ms-toolsai.datawrangler", "report Data Wrangler ID");
+  assertEqual(report.provenance?.dataWrangler?.version, DATA_WRANGLER_BASELINE_VERSION, "report Data Wrangler version");
+  assertEqual(report.provenance?.dataWrangler?.source, "Visual Studio Marketplace", "report Data Wrangler source");
+  assertMatch(report.provenance?.editor?.version, NUMERIC_VERSION, "report editor version");
+  for (const cell of expectedCells) {
+    const fixture = report.provenance?.fixtures?.[cell.format];
+    assertEqual(fixture?.rows, cell.rows, `report ${cell.format} fixture rows`);
+    assertEqual(fixture?.columns, cell.columns, `report ${cell.format} fixture columns`);
+    assertEqual(fixture?.valuesValidated, true, `report ${cell.format} fixture validation`);
+    assertMatch(fixture?.sha256, SHA256, `report ${cell.format} fixture SHA-256`);
+  }
+  const expectedSummaries = report.method?.cells?.flatMap(({ id }) =>
+    ["open-wrangler", "data-wrangler"].map((product) => `${id}:${product}`)
+  );
+  const observedSummaries = report.summaries?.map(({ cellId, product }) => `${cellId}:${product}`);
+  if (
+    expectedSummaries?.length !== 8 ||
+    observedSummaries?.length !== 8 ||
+    new Set(observedSummaries).size !== 8 ||
+    expectedSummaries.some((identity) => !observedSummaries.includes(identity))
+  ) {
+    throw new TypeError("A release comparison report requires one summary for each product and workload.");
+  }
   for (const summary of report.summaries ?? []) {
     if (!["open-wrangler", "data-wrangler"].includes(summary.product)) {
       throw new TypeError("A release comparison report contains an unknown product summary.");
@@ -349,7 +382,120 @@ export function assertReleaseCompleteStudyReport(report) {
         .join(", ")}.`
     );
   }
+  assertPublicEvidence(report);
   return report;
+}
+
+export function renderDataWranglerComparisonReview(report) {
+  assertReleaseCompleteStudyReport(report);
+  const summaries = new Map(report.summaries.map((summary) => [`${summary.cellId}:${summary.product}`, summary]));
+  const workloadNames = new Map([
+    ["pandas-csv", "Pandas CSV"],
+    ["polars-csv", "Polars CSV"],
+    ["pandas-parquet", "Pandas Parquet"],
+    ["polars-parquet", "Polars Parquet"]
+  ]);
+  const productNames = new Map([
+    ["open-wrangler", "Open Wrangler"],
+    ["data-wrangler", "Data Wrangler"]
+  ]);
+  const rows = report.method.cells.flatMap((cell) =>
+    ["open-wrangler", "data-wrangler"].map((product) => {
+      const summary = summaries.get(`${cell.id}:${product}`);
+      return [
+        workloadNames.get(cell.id),
+        productNames.get(product),
+        `${summary.successes}/${summary.planned}`,
+        formatTiming(summary.metrics.inlinePreviewMs),
+        formatTiming(summary.metrics.workbenchOpenMs),
+        formatTiming(summary.metrics.firstProfileMs),
+        formatTiming(summary.metrics.completeProfileMs),
+        formatMemory(summary.memory.peakPssBytes)
+      ];
+    })
+  );
+  const candidate = report.provenance.openWrangler.version;
+  const baseline = report.provenance.dataWrangler.version;
+  const editor = report.provenance.editor.version;
+  const candidateSha = report.provenance.openWrangler.sha256;
+  const csv = report.provenance.fixtures.csv;
+  const parquet = report.provenance.fixtures.parquet;
+  return `${DATA_WRANGLER_REVIEW_START}
+
+<!-- prettier-ignore-start -->
+
+Collected ${report.generatedAtUtc.slice(0, 10)} with Open Wrangler ${candidate}, Data Wrangler ${baseline}, and VS Code ${editor}.
+Each row shows successful samples out of five. Measurements are median (minimum–maximum).
+
+- Raw report: [report.json](report.json)
+- Open Wrangler VSIX SHA-256: \`${candidateSha}\`
+- CSV fixture: ${formatInteger(csv.rows)} × ${formatInteger(csv.columns)}, SHA-256 \`${csv.sha256}\`
+- Parquet fixture: ${formatInteger(parquet.rows)} × ${formatInteger(parquet.columns)}, SHA-256 \`${parquet.sha256}\`
+- Data Wrangler: ${baseline} from ${report.provenance.dataWrangler.source}
+
+| Workload | Product | Successful | Inline preview | Full workbench | First profile | All profiles | Peak PSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+${rows.map((row) => `| ${row.join(" | ")} |`).join("\n")}
+
+<!-- prettier-ignore-end -->
+
+${DATA_WRANGLER_REVIEW_END}`;
+}
+
+export function updateDataWranglerComparisonReview(review, report) {
+  const { end, start } = comparisonReviewRegion(review);
+  return `${review.slice(0, start)}${renderDataWranglerComparisonReview(report)}${review.slice(end)}`;
+}
+
+export function inspectDataWranglerComparisonReview(review, report) {
+  let region;
+  try {
+    region = comparisonReviewRegion(review);
+  } catch (error) {
+    return [String(error?.message ?? error)];
+  }
+  const expected = renderDataWranglerComparisonReview(report);
+  return review.slice(region.start, region.end) === expected
+    ? []
+    : ["The generated Data Wrangler comparison results in review.md are stale."];
+}
+
+function comparisonReviewRegion(review) {
+  if (typeof review !== "string") throw new TypeError("Comparison review must be text.");
+  const start = uniqueReviewMarker(review, DATA_WRANGLER_REVIEW_START);
+  const endStart = uniqueReviewMarker(review, DATA_WRANGLER_REVIEW_END);
+  const end = endStart + DATA_WRANGLER_REVIEW_END.length;
+  if (start >= endStart) throw new TypeError("Comparison review result markers are out of order.");
+  return { start, end };
+}
+
+function uniqueReviewMarker(review, marker) {
+  const occurrences = review.split(marker).length - 1;
+  if (occurrences !== 1) throw new TypeError(`Comparison review must contain exactly one ${marker} marker.`);
+  const index = review.indexOf(marker);
+  const before = index === 0 ? "" : review[index - 1];
+  const after = review[index + marker.length];
+  if ((before !== "" && before !== "\n") || (after !== undefined && after !== "\r" && after !== "\n")) {
+    throw new TypeError(`Comparison review marker ${marker} must be on its own line.`);
+  }
+  return index;
+}
+
+function formatTiming(summary) {
+  return `${formatDecimal(summary.median)} ms (${formatDecimal(summary.minimum)}–${formatDecimal(summary.maximum)})`;
+}
+
+function formatMemory(summary) {
+  const mib = (value) => formatDecimal(value / (1024 * 1024));
+  return `${mib(summary.median)} MiB (${mib(summary.minimum)}–${mib(summary.maximum)})`;
+}
+
+function formatDecimal(value) {
+  return Number(value).toFixed(1);
+}
+
+function formatInteger(value) {
+  return String(value).replace(/\B(?=(?:\d{3})+(?!\d))/gu, ",");
 }
 
 export function exceedsMaterialRegressionLimit(openWrangler, dataWrangler, limit) {

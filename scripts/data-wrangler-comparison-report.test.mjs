@@ -3,13 +3,18 @@ import test from "node:test";
 import {
   DATA_WRANGLER_STUDY_REPORT_PROTOCOL,
   DATA_WRANGLER_STUDY_TOOL_NAMES,
+  DATA_WRANGLER_REVIEW_END,
+  DATA_WRANGLER_REVIEW_START,
   assertReleaseCompleteStudyReport,
   buildDataWranglerComparisonStudyReport,
   exceedsMaterialRegressionLimit,
+  inspectDataWranglerComparisonReview,
   materialRegressionBreaches,
+  renderDataWranglerComparisonReview,
   summarizeComparisonValues,
   summarizeStudyPssSamples,
   type7Quantile,
+  updateDataWranglerComparisonReview,
   validateDataWranglerComparisonStudyTrial
 } from "./data-wrangler-comparison-report.mjs";
 import {
@@ -188,6 +193,64 @@ test("material allowances require both the relative and absolute bound", () => {
   assert.equal(exceedsMaterialRegressionLimit(1_251, 1_000, limit), true);
   assert.equal(exceedsMaterialRegressionLimit(1_000, 1_000, limit), false);
 });
+
+test("renders comparison results in workload and product order", () => {
+  const report = releaseReport();
+  const expected = renderDataWranglerComparisonReview(report);
+  const reordered = structuredClone(report);
+  reordered.summaries.reverse();
+
+  assert.equal(renderDataWranglerComparisonReview(reordered), expected);
+  assert.match(expected, /Collected 2026-08-04 with Open Wrangler 1\.2\.1, Data Wrangler 1\.24\.2/u);
+  assert.match(expected, /\[report\.json\]\(report\.json\)/u);
+  assert.ok(expected.includes(`Open Wrangler VSIX SHA-256: \`${SHA}\``));
+  assert.ok(expected.includes(`CSV fixture: 100,000 × 50, SHA-256 \`${SHA}\``));
+  assert.ok(expected.includes(`Parquet fixture: 1,000,000 × 20, SHA-256 \`${SHA}\``));
+  assert.match(expected, /Data Wrangler: 1\.24\.2 from Visual Studio Marketplace/u);
+  assert.ok(expected.indexOf("| Pandas CSV | Open Wrangler |") < expected.indexOf("| Pandas CSV | Data Wrangler |"));
+  assert.ok(expected.indexOf("| Pandas CSV | Data Wrangler |") < expected.indexOf("| Polars CSV | Open Wrangler |"));
+  assert.match(expected, /102\.0 ms \(100\.0–104\.0\)/u);
+
+  const changedProvenance = structuredClone(report);
+  changedProvenance.provenance.fixtures.csv.sha256 = "not-a-hash";
+  assert.throws(() => renderDataWranglerComparisonReview(changedProvenance), /fixture SHA-256/u);
+});
+
+test("updates only the marked comparison region and detects stale output", () => {
+  const report = releaseReport();
+  const prefix = "# Comparison review\n\nA reviewer owns this text.\n\n";
+  const suffix = "\n\n## Notes\n\nThese notes also stay untouched.\n";
+  const review = `${prefix}${DATA_WRANGLER_REVIEW_START}\nstale\n${DATA_WRANGLER_REVIEW_END}${suffix}`;
+  const updated = updateDataWranglerComparisonReview(review, report);
+
+  assert.ok(updated.startsWith(prefix));
+  assert.ok(updated.endsWith(suffix));
+  assert.deepEqual(inspectDataWranglerComparisonReview(updated, report), []);
+  assert.deepEqual(inspectDataWranglerComparisonReview(review, report), [
+    "The generated Data Wrangler comparison results in review.md are stale."
+  ]);
+});
+
+test("requires one ordered pair of standalone review markers", () => {
+  const report = releaseReport();
+  for (const review of [
+    "# Missing markers\n",
+    `${DATA_WRANGLER_REVIEW_START}\n${DATA_WRANGLER_REVIEW_START}\n${DATA_WRANGLER_REVIEW_END}`,
+    `${DATA_WRANGLER_REVIEW_END}\n${DATA_WRANGLER_REVIEW_START}`,
+    `prefix ${DATA_WRANGLER_REVIEW_START}\n${DATA_WRANGLER_REVIEW_END}`
+  ]) {
+    assert.throws(() => updateDataWranglerComparisonReview(review, report), /Comparison review/u);
+  }
+});
+
+function releaseReport() {
+  const manifest = manifestFixture();
+  return buildDataWranglerComparisonStudyReport({
+    generatedAtUtc: "2026-08-04T12:00:00.000Z",
+    manifest,
+    trials: manifest.schedule.map((entry) => sessionResult(entry, manifest))
+  });
+}
 
 function manifestFixture({ repetitionsPerSession = 5 } = {}) {
   return buildStudyManifest({
