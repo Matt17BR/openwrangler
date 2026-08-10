@@ -4,6 +4,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- Operations now lists dataframes from the active IRkernel notebook, including base data frames, tibbles, data
+  tables, and ordinary frames created by `collapse::qDF()`, `qTBL()`, and `qDT()`. Its refresh action follows the
+  active notebook or selected VS Code R terminal instead of being Python-only.
+
 ### Fixed
 
 - **Open in Open Wrangler** is visible as soon as a supported `.R`, `.Rmd`, or `.qmd` tab is active. The title action

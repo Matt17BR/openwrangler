@@ -2212,6 +2212,36 @@ async function exerciseReleasedRJupyterExtension(
 
     recordReleasedRAcceptanceSection(phase, coverage, "variable-discovery", "start");
 
+    const consent = await waitForReleasedJupyterConsent(workbench, testing);
+    await consent.allow.click();
+    await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+
+    let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
+    let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+    for (const [name, flavor] of [
+      ["orders_frame", "data.frame"],
+      ["orders_tibble", "tibble"],
+      ["orders_table", "data.table"],
+      ["collapse_frame", "data.frame"],
+      ["collapse_tibble", "tibble"],
+      ["collapse_table", "data.table"]
+    ] as const) {
+      const row = operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") });
+      await row.waitFor({ state: "visible", timeout: 90_000 });
+      assert.match(
+        (await row.innerText()).replace(/\s+/gu, " "),
+        new RegExp(`${name}.*R · ${flavor}`, "u"),
+        `Operations must label ${name} with its native R dataframe flavor.`
+      );
+    }
+    for (const name of ["collapse_grouped", "collapse_indexed"] as const) {
+      assert.equal(
+        await operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).count(),
+        0,
+        `Operations must omit unsupported ${name}.`
+      );
+    }
+
     const actionNotebookEditor = await showExactReleasedNotebook(notebook);
     assert.equal(
       actionNotebookEditor,
@@ -2223,11 +2253,7 @@ async function exerciseReleasedRJupyterExtension(
       : undefined;
     let picker: Locator | undefined;
     try {
-      picker = await activateReleasedNotebookVariableAction(workbench, notebook, async () => {
-        const consent = await waitForReleasedJupyterConsent(workbench, testing);
-        await consent.allow.click();
-        await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
-      });
+      picker = await activateReleasedNotebookVariableAction(workbench, notebook);
       for (const [name, flavor] of [
         ["orders_frame", "data.frame"],
         ["orders_tibble", "tibble"],
@@ -2251,12 +2277,16 @@ async function exerciseReleasedRJupyterExtension(
         );
       }
       if (screenshotOutput) await captureReleasedRJupyterVariablePicker(workbench, picker, screenshotOutput);
-      const ordersRow = await releasedJupyterQuickPickRow(picker, "orders_frame");
-      assert.ok(ordersRow);
-      await ordersRow.click();
+      await workbench.keyboard.press("Escape");
+      await picker.waitFor({ state: "hidden", timeout: 10_000 });
     } finally {
       await restorePickerWorkbench?.();
     }
+    sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
+    operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+    const ordersOperation = operations.getByRole("treeitem", { name: /^orders_frame\b/u });
+    await ordersOperation.waitFor({ state: "visible", timeout: 10_000 });
+    await ordersOperation.click();
     recordReleasedRAcceptanceSection(phase, coverage, "variable-discovery", "complete");
 
     let base = await waitForReleasedVariableSession(
@@ -2271,7 +2301,7 @@ async function exerciseReleasedRJupyterExtension(
         firstValue: "1",
         notebookInsert: true
       },
-      "the orders R data.frame opened from the notebook picker"
+      "the orders R data.frame opened from Operations"
     );
     await assertReleasedSessionPage(testing, base, "1", `${phase}-base-page`);
     assert.deepEqual(base.metadata.capabilities, {
