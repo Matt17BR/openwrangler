@@ -15,6 +15,7 @@
 | `openWrangler.runPythonCellAndOpenVariable`   | Open in Open Wrangler                                          |
 | `openWrangler.refreshNotebookVariables`       | Open Wrangler: Refresh Python Dataframes                       |
 | `openWrangler.openCachedNotebookVariable`     | Open Wrangler: Open Live Dataframe                             |
+| `openWrangler.openRDataframe`                 | Open Wrangler: Open R Dataframe                                |
 | `openWrangler.runRDocument`                   | Run R Document in Open Wrangler…                               |
 | `openWrangler.openRInteractiveVariable`       | Open Wrangler: Open Dataframe from Active R Session…           |
 | `openWrangler.refreshRInteractiveVariables`   | Open Wrangler: Refresh R Dataframes                            |

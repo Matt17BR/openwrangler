@@ -156,6 +156,7 @@
     "onCommand:openWrangler.openNotebookVariable",
     "onCommand:openWrangler.runPythonCellAndOpenVariable",
     "onCommand:openWrangler.refreshNotebookVariables",
+    "onCommand:openWrangler.openRDataframe",
     "onCommand:openWrangler.runRDocument",
     "onCommand:openWrangler.openRInteractiveVariable",
     "onCommand:openWrangler.refreshRInteractiveVariables",
@@ -201,7 +202,7 @@
         "openWrangler.changeImportOptions",
         "openWrangler.openNotebookVariable",
         "openWrangler.runPythonCellAndOpenVariable",
-        "openWrangler.runRDocument"
+        "openWrangler.openRDataframe"
       ]
     },
     "commands": [
@@ -262,6 +263,16 @@
       {
         "command": "openWrangler.openCachedNotebookVariable",
         "title": "Open Wrangler: Open Live Dataframe"
+      },
+      {
+        "command": "openWrangler.openRDataframe",
+        "title": "Open Wrangler: Open R Dataframe",
+        "shortTitle": "Open in Open Wrangler",
+        "category": "Open Wrangler",
+        "icon": {
+          "light": "media/action-icon-light.svg",
+          "dark": "media/action-icon-dark.svg"
+        }
       },
       {
         "command": "openWrangler.runRDocument",
@@ -604,8 +615,8 @@
           "group": "navigation@1"
         },
         {
-          "command": "openWrangler.runRDocument",
-          "when": "isWorkspaceTrusted && (resourceScheme == vscode-remote || isLinux || isMac) && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i",
+          "command": "openWrangler.openRDataframe",
+          "when": "isWorkspaceTrusted && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(r|rmd|qmd)$/i && (openWrangler.activeRTerminal || resourceScheme == vscode-remote || isLinux || isMac)",
           "group": "navigation@1"
         },
         {

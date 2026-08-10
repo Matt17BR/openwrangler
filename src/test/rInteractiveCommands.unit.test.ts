@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   showInformationMessage: vi.fn(),
   showWarningMessage: vi.fn(),
   showErrorMessage: vi.fn(),
+  executeCommand: vi.fn(),
   withProgress: vi.fn(),
   panelCreate: vi.fn(),
   restoreEditorGroupAfterQuickPick: vi.fn(async () => undefined),
@@ -49,7 +50,8 @@ vi.mock("vscode", () => {
       registerCommand: (id: string, handler: CommandHandler) => {
         mocks.commands.set(id, handler);
         return { dispose: () => mocks.commands.delete(id) };
-      }
+      },
+      executeCommand: mocks.executeCommand
     },
     workspace: {
       get isTrusted() {
@@ -103,7 +105,9 @@ vi.mock("../extension/webviewPanel", () => ({
 }));
 
 import {
+  ACTIVE_R_TERMINAL_CONTEXT,
   OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND,
+  OPEN_R_DATAFRAME_COMMAND,
   OPEN_R_INTERACTIVE_VARIABLE_COMMAND,
   REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
   registerRInteractiveCommands
@@ -123,6 +127,8 @@ describe("active R session commands", () => {
     mocks.showInformationMessage.mockReset();
     mocks.showWarningMessage.mockReset();
     mocks.showErrorMessage.mockReset();
+    mocks.executeCommand.mockReset();
+    mocks.executeCommand.mockResolvedValue(true);
     mocks.withProgress.mockReset();
     mocks.withProgress.mockImplementation(
       async (_options: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) =>
@@ -158,6 +164,44 @@ describe("active R session commands", () => {
       mocks.panelCreate.mock.invocationCallOrder[0]!
     );
     expect(transport.dispose).not.toHaveBeenCalled();
+  });
+
+  it("uses the active R session from the stable editor action", async () => {
+    setActiveTerminal(rTerminal("R"));
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    registerWith([transport]);
+
+    await expect(command(OPEN_R_DATAFRAME_COMMAND)()).resolves.toBe(true);
+
+    expect(transport.discoverVariables).toHaveBeenCalledOnce();
+    expect(mocks.executeCommand).not.toHaveBeenCalledWith("openWrangler.runRDocument", expect.anything());
+    expect(mocks.panelCreate).toHaveBeenCalledOnce();
+  });
+
+  it("runs the current R document when no official R terminal is active", async () => {
+    const resource = { scheme: "file", path: "/workspace/analysis.R" };
+    registerWith([]);
+
+    await expect(command(OPEN_R_DATAFRAME_COMMAND)(resource)).resolves.toBe(true);
+
+    expect(mocks.executeCommand).toHaveBeenCalledWith("openWrangler.runRDocument", resource);
+    expect(mocks.showQuickPick).not.toHaveBeenCalled();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+  });
+
+  it("tracks whether the selected terminal is an official R session", () => {
+    const r = rTerminal("R");
+    const shell = { name: "bash", sendText: vi.fn() };
+    setActiveTerminal(r);
+    registerWith([]);
+
+    expect(mocks.executeCommand).toHaveBeenCalledWith("setContext", ACTIVE_R_TERMINAL_CONTEXT, true);
+
+    emitActiveTerminal(shell);
+
+    expect(mocks.executeCommand).toHaveBeenLastCalledWith("setContext", ACTIVE_R_TERMINAL_CONTEXT, false);
   });
 
   it("rechecks the active R picker after returning focus", async () => {
