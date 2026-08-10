@@ -120,7 +120,8 @@ Create `review.md` first and put the manual method and review notes around this 
 
 The command validates the complete report before it writes either file, then replaces only that block.
 `npm run docs:check` compares it with the sibling `report.json`, so an edited or out-of-date table fails the check.
-The 1.2.1 review predates this format and remains unchanged.
+If the review write is interrupted after `report.json` is saved, rerun the same command. It reuses the report only
+when the raw evidence is identical. The 1.2.1 review predates this format and remains unchanged.
 
 Use `npm run comparison:smoke` with the same arguments before a full collection. The
 smoke runs two sessions—one per product—against the Pandas/CSV workload, with two samples in each. It catches broken selectors or permissions;

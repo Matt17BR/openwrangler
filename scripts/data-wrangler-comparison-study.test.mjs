@@ -4,7 +4,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { DATA_WRANGLER_STUDY_TOOL_NAMES, summarizeStudyPssSamples } from "./data-wrangler-comparison-report.mjs";
+import { createReleaseComparisonReport } from "./data-wrangler-comparison-test-fixtures.mjs";
+import {
+  DATA_WRANGLER_STUDY_REPORT_MAX_BYTES,
+  DATA_WRANGLER_STUDY_TOOL_NAMES,
+  buildDataWranglerComparisonStudyReport,
+  summarizeStudyPssSamples
+} from "./data-wrangler-comparison-report.mjs";
 import {
   DATA_WRANGLER_VERSION,
   LOCAL_MIXED_CELLS,
@@ -39,6 +45,43 @@ test("validates a release report before writing it", () => {
   try {
     assert.throws(() => writeDataWranglerComparisonStudyReport(output, report), /eight complete sessions/u);
     assert.equal(existsSync(output), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reuses an identical report after a later review write fails", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-comparison-report-retry-"));
+  const output = join(root, "report.json");
+  const manifest = manifestFixture();
+  const report = buildDataWranglerComparisonStudyReport({
+    generatedAtUtc: "2026-08-04T12:00:00.000Z",
+    manifest,
+    trials: manifest.schedule.map((entry) => sessionResult(entry, manifest))
+  });
+  try {
+    assert.equal(writeDataWranglerComparisonStudyReport(output, report), true);
+    assert.equal(writeDataWranglerComparisonStudyReport(output, report), false);
+    assert.deepEqual(JSON.parse(readFileSync(output, "utf8")), report);
+
+    const changed = structuredClone(report);
+    changed.generatedAtUtc = "2026-08-04T12:00:01.000Z";
+    assert.throws(() => writeDataWranglerComparisonStudyReport(output, changed), /different evidence/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("retries a valid comparison report larger than the generic JSON limit", () => {
+  const root = mkdtempSync(join(tmpdir(), "ow-comparison-large-report-retry-"));
+  const output = join(root, "report.json");
+  const report = createReleaseComparisonReport({ pssSampleCount: 2_000 });
+  const bytes = Buffer.from(`${JSON.stringify(report, null, 2)}\n`);
+  try {
+    assert.ok(bytes.byteLength > 8 * 1024 * 1024);
+    assert.ok(bytes.byteLength <= DATA_WRANGLER_STUDY_REPORT_MAX_BYTES);
+    writeFileSync(output, bytes);
+    assert.equal(writeDataWranglerComparisonStudyReport(output, report), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
