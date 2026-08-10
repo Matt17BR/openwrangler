@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
+import secrets
+import weakref
 from contextlib import suppress
 from typing import Any
 
@@ -20,6 +23,9 @@ MAX_SAVED_CELL_CHARACTERS = 65_536
 MAX_SAVED_PAYLOAD_NODES = 1_000_000
 MAX_SAVED_PAYLOAD_DEPTH = 64
 _JSON_UTF8_VALIDATION_CHUNK_CHARACTERS = 16 * 1024
+_LIVE_RESULT_HANDLE_PREFIX = "__openwrangler_live_result_"
+_LIVE_RESULT_HANDLE_PATTERN = re.compile(r"\A__openwrangler_live_result_[0-9a-f]{32}\Z")
+_LIVE_RESULTS: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
 
 
 def show(
@@ -328,11 +334,43 @@ def register_formatters(shell: Any | None = None) -> bool:
 
 def _build_formatter_payload(value: Any, shell: Any) -> dict[str, Any]:
     variable_name = _unique_user_variable_name(value, shell)
+    if variable_name is None:
+        variable_name = _register_live_result(value)
     return build_payload(
         value,
-        label=variable_name or type(value).__name__,
+        label=variable_name if not is_live_result_handle(variable_name) else type(value).__name__,
         variable_name=variable_name,
     )
+
+
+def _register_live_result(value: Any) -> str:
+    """Return an opaque handle without extending the displayed value's lifetime."""
+    handle = f"{_LIVE_RESULT_HANDLE_PREFIX}{secrets.token_hex(16)}"
+    try:
+        _LIVE_RESULTS[handle] = value
+    except TypeError as error:
+        raise EngineError("This notebook dataframe cannot be linked to its live result.") from error
+    return handle
+
+
+def is_live_result_handle(value: str) -> bool:
+    return _LIVE_RESULT_HANDLE_PATTERN.fullmatch(value) is not None
+
+
+def is_reserved_live_result_name(value: str) -> bool:
+    return value.startswith(_LIVE_RESULT_HANDLE_PREFIX)
+
+
+def resolve_live_result(handle: str) -> Any:
+    if not is_live_result_handle(handle):
+        raise EngineError("The notebook output contains an invalid Open Wrangler live-result handle.")
+    try:
+        return _LIVE_RESULTS[handle]
+    except KeyError as error:
+        raise EngineError(
+            "This notebook result is no longer available in the selected kernel. "
+            "Run the cell again to create a new preview."
+        ) from error
 
 
 def _unique_user_variable_name(value: Any, shell: Any) -> str | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import duckdb
 import pandas as pd
@@ -396,7 +397,34 @@ def test_duckdb_formatter_links_the_exact_live_relation_without_conversion(monke
         connection.close()
 
 
-def test_formatter_omits_an_ambiguous_live_variable_link():
+@pytest.mark.parametrize(
+    "value",
+    [
+        pd.DataFrame({"value": [1, 2]}).head(1),
+        pl.DataFrame({"value": [1, 2]}).tail(1),
+    ],
+)
+def test_formatter_links_temporary_results_through_an_opaque_weak_handle(value):
+    formatter = FakeFormatter()
+    shell = type(
+        "FakeShell",
+        (),
+        {
+            "user_ns": {},
+            "display_formatter": type("DisplayFormatter", (), {"mimebundle_formatter": formatter})(),
+        },
+    )()
+
+    assert notebook.register_formatters(shell) is True
+    payload = formatter.registered[type(value)](value)[notebook.MIME_TYPE_V2]
+    handle = payload["metadata"]["source"]["variableName"]
+
+    assert re.fullmatch(r"__openwrangler_live_result_[0-9a-f]{32}", handle)
+    assert payload["metadata"]["source"]["label"] == type(value).__name__
+    assert notebook.resolve_live_result(handle) is value
+
+
+def test_formatter_links_an_ambiguous_value_through_an_opaque_weak_handle():
     formatter = FakeFormatter()
     frame = pd.DataFrame({"value": [1]})
     shell = type(
@@ -411,7 +439,8 @@ def test_formatter_omits_an_ambiguous_live_variable_link():
     assert notebook.register_formatters(shell) is True
     payload = formatter.registered[pd.DataFrame](frame)[notebook.MIME_TYPE_V2]
 
-    assert "variableName" not in payload["metadata"]["source"]
+    assert notebook.is_live_result_handle(payload["metadata"]["source"]["variableName"])
+    assert notebook.resolve_live_result(payload["metadata"]["source"]["variableName"]) is frame
     assert payload["metadata"]["source"]["label"] == "DataFrame"
 
 

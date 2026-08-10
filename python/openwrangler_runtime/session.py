@@ -1801,6 +1801,13 @@ class SessionManager:
         if not variable_name:
             raise EngineError("Notebook source is missing a variable name.")
 
+        from . import notebook as notebook_runtime
+
+        if notebook_runtime.is_live_result_handle(variable_name):
+            return notebook_runtime.resolve_live_result(variable_name)
+        if notebook_runtime.is_reserved_live_result_name(variable_name):
+            raise EngineError("The notebook source contains an invalid Open Wrangler live-result handle.")
+
         main = importlib.import_module("__main__")
         if hasattr(main, variable_name):
             return getattr(main, variable_name)
