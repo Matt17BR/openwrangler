@@ -1,10 +1,12 @@
 import type {
+  CellValue,
   ColumnFilter,
   ColumnSchema,
   ColumnType,
   FilterModel,
   NumericBin,
-  PredicateFilter
+  PredicateFilter,
+  TypedSelectionToken
 } from "./protocol.generated";
 
 export type { ColumnFilter, ColumnType, FilterModel, PredicateFilter };
@@ -168,6 +170,66 @@ export const viewValueSelectionFilter = (column: ColumnSchema, value: unknown): 
   },
   predicates: []
 });
+
+export type ViewCellFilterAction = "include" | "exclude";
+
+/**
+ * Build a viewing filter from the typed value transported with a grid cell.
+ * Display text is intentionally never used as value identity.
+ */
+export const viewCellSelectionFilter = (
+  column: ColumnSchema,
+  cell: CellValue,
+  action: ViewCellFilterAction
+): ColumnFilter => {
+  if (cell.isNull) {
+    return action === "include"
+      ? {
+          column: column.name,
+          type: column.type,
+          logic: "and",
+          valueFilter: { kind: "values", selectedValues: [], includeNulls: true, includeNaN: false },
+          predicates: []
+        }
+      : {
+          column: column.name,
+          type: column.type,
+          logic: "and",
+          predicates: [{ kind: "predicate", operator: "isNotNull" }]
+        };
+  }
+  if (cell.isNaN) {
+    return action === "include"
+      ? {
+          column: column.name,
+          type: column.type,
+          logic: "and",
+          valueFilter: { kind: "values", selectedValues: [], includeNulls: false, includeNaN: true },
+          predicates: []
+        }
+      : {
+          column: column.name,
+          type: column.type,
+          logic: "and",
+          predicates: [{ kind: "predicate", operator: "isNotNaN" }]
+        };
+  }
+
+  const value: TypedSelectionToken = {
+    kind: "typedSelection",
+    version: 1,
+    columnType: column.type,
+    cell
+  };
+  return action === "include"
+    ? viewValueSelectionFilter(column, value)
+    : {
+        column: column.name,
+        type: column.type,
+        logic: "and",
+        predicates: [{ kind: "predicate", operator: "notEquals", value }]
+      };
+};
 
 /**
  * Build a half-open histogram filter so adjacent bins never claim the same

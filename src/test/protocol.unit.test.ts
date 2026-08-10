@@ -5,8 +5,10 @@ import {
   hasActiveFilters,
   hasActiveSort,
   hasActiveViewQuery,
-  prioritizeSortRule
+  prioritizeSortRule,
+  viewCellSelectionFilter
 } from "../shared/filterModel";
+import type { CellValue, ColumnSchema } from "../shared/protocol";
 import { dataBackendLabel } from "../shared/protocol";
 
 describe("filter model", () => {
@@ -129,6 +131,72 @@ describe("filter model", () => {
       { column: "city", direction: "asc", nulls: "last" },
       { column: "sales", direction: "desc", nulls: "first" }
     ]);
+  });
+
+  it.each([
+    ["string", { kind: "string", raw: "Milan", display: "Milan", isNull: false, isNaN: false }],
+    ["integer", { kind: "integer", raw: "9007199254740993", display: "9007199254740993", isNull: false, isNaN: false }],
+    ["boolean", { kind: "boolean", raw: true, display: "True", isNull: false, isNaN: false }]
+  ] as const)("keeps the typed %s cell as the exact include/exclude identity", (type, cell) => {
+    const column: ColumnSchema = { id: "c:0", name: "value", position: 0, rawType: type, type, nullable: false };
+    const token = { kind: "typedSelection", version: 1, columnType: type, cell };
+
+    expect(viewCellSelectionFilter(column, cell, "include")).toEqual({
+      column: "value",
+      type,
+      logic: "and",
+      valueFilter: {
+        kind: "values",
+        selectedValues: [token],
+        includeNulls: false,
+        includeNaN: false
+      },
+      predicates: []
+    });
+    expect(viewCellSelectionFilter(column, cell, "exclude")).toEqual({
+      column: "value",
+      type,
+      logic: "and",
+      predicates: [{ kind: "predicate", operator: "notEquals", value: token }]
+    });
+  });
+
+  it.each([
+    [
+      "null",
+      { kind: "null", raw: null, display: "not the identity", isNull: true, isNaN: false } satisfies CellValue,
+      "isNotNull",
+      { includeNulls: true, includeNaN: false }
+    ],
+    [
+      "NaN",
+      { kind: "nan", raw: null, display: "not the identity", isNull: false, isNaN: true } satisfies CellValue,
+      "isNotNaN",
+      { includeNulls: false, includeNaN: true }
+    ]
+  ] as const)("uses dedicated %s filter semantics", (_label, cell, excludeOperator, inclusion) => {
+    const column: ColumnSchema = {
+      id: "c:0",
+      name: "value",
+      position: 0,
+      rawType: "Float64",
+      type: "float",
+      nullable: true
+    };
+
+    expect(viewCellSelectionFilter(column, cell, "include")).toEqual({
+      column: "value",
+      type: "float",
+      logic: "and",
+      valueFilter: { kind: "values", selectedValues: [], ...inclusion },
+      predicates: []
+    });
+    expect(viewCellSelectionFilter(column, cell, "exclude")).toEqual({
+      column: "value",
+      type: "float",
+      logic: "and",
+      predicates: [{ kind: "predicate", operator: excludeOperator }]
+    });
   });
 });
 
