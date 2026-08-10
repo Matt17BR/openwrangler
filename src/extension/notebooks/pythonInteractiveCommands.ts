@@ -658,9 +658,7 @@ function isSupportedPythonNotebook(notebook: vscode.NotebookDocument): boolean {
 }
 
 function isSupportedLiveNotebook(notebook: vscode.NotebookDocument): boolean {
-  if (notebook.notebookType !== "interactive" && notebook.notebookType !== "jupyter-notebook") return false;
-  const language = notebookLanguageHint(notebook);
-  return language === undefined || language === "python" || language === "r";
+  return notebook.notebookType === "interactive" || notebook.notebookType === "jupyter-notebook";
 }
 
 function rDataframeFlavorLabel(flavor: RNotebookVariableDescriptor["dataframeFlavor"]): string {

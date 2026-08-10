@@ -1081,6 +1081,27 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.openVariable).not.toHaveBeenCalled();
   });
 
+  it("uses the selected IRkernel when stored notebook metadata still says Python", async () => {
+    const active = notebook("file:///workspace/switched-to-r.ipynb", "jupyter-notebook", [], "python");
+    pythonMocks.notebookDocuments.push(active.document);
+    pythonMocks.activeNotebookEditor = { notebook: active.document } as NotebookEditor;
+    pythonMocks.discover.mockResolvedValue({
+      variables: [{ name: "orders_tbl", backend: "r", dataframeFlavor: "r.tibble" }],
+      truncated: false
+    });
+
+    fire(pythonMocks.activeNotebookListeners, pythonMocks.activeNotebookEditor);
+    await settle();
+
+    expect(pythonMocks.discover).toHaveBeenCalledWith(active.document);
+    expect(provider.snapshot()).toEqual(
+      expect.objectContaining({
+        state: "ready",
+        variables: [expect.objectContaining({ label: "orders_tbl", description: "R · tibble" })]
+      })
+    );
+  });
+
   it("does not lose the active notebook when VS Code also reports its focused cell text editor", async () => {
     const active = notebook("file:///workspace/active.ipynb", "jupyter-notebook", [], "python");
     pythonMocks.notebookDocuments.push(active.document);
