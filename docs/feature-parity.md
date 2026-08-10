@@ -89,6 +89,8 @@ Trusted Python `.py` editors expose **Open in Open Wrangler** before Jupyter has
 command runs only the `# %%` code cell under the cursor in the selected Python Interactive kernel, then
 opens a dataframe from that exact Interactive Window. A missing marker, failed cell, changed source, or ambiguous
 window stops before variable discovery; the command never runs the whole file or switches to a different source.
+Packaged released-Jupyter acceptance clicks the visible editor action against a private Python file and checks the
+native Polars session, known page values, unchanged source bytes, and complete session cleanup.
 
 ## Native R preview
 

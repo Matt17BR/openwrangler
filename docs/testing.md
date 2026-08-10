@@ -557,6 +557,11 @@ R notebook acceptance opens real `data.frame`, tibble, and data.table variables 
 release candidates also run the complete local journey in VS Code on macOS and Windows. The cross-platform jobs reuse
 the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the complete Python suite or the
 standalone R contract suite.
+The allow phase also starts with a private `# %%` Python file and no Interactive Window. It clicks the visible
+**Open in Open Wrangler** editor action once, selects the pinned kernel if Jupyter asks, and checks that the cell opens
+its native Polars dataframe with the expected values. The source file must stay byte-for-byte unchanged, and closing
+the panel must leave no Open Wrangler session behind.
+
 The focused R 4.4/4.5 contract jobs and release contract gate install `readr` and `dplyr` alongside the other frame
 packages because the suite opens actual readr and grouped tibbles rather than hand-built stand-ins.
 The local kernel installs missing packages into a temporary library. Linux uses
