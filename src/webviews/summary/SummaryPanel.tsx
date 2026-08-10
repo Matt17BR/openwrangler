@@ -195,6 +195,21 @@ function SelectedColumnSummary({
         </span>
       </header>
 
+      {activeFilter && (
+        <div className="profileFilterStatus" role="status" aria-live="polite">
+          <span className="codicon codicon-filter" aria-hidden="true" />
+          <span title={describeProfileFilter(activeFilter)}>{describeProfileFilter(activeFilter)}</span>
+          <button
+            type="button"
+            className="profileFilterClear codicon codicon-close"
+            aria-label={`Clear filter for ${displayName}`}
+            title={`Clear filter for ${displayName}`}
+            disabled={filtersDisabled || !filtersSupported || !onApplyFilterModel}
+            onClick={clearProfileFilter}
+          />
+        </div>
+      )}
+
       {!summary ? (
         <p className="summaryPlaceholder" role="status" aria-live="polite">
           Profiling selected column...
@@ -207,21 +222,6 @@ function SelectedColumnSummary({
               title="The chart uses a sample. The statistics above it use all visible rows."
             >
               Distribution based on a sample
-            </div>
-          )}
-
-          {activeFilter && (
-            <div className="profileFilterStatus" role="status" aria-live="polite">
-              <span className="codicon codicon-filter" aria-hidden="true" />
-              <span title={describeProfileFilter(activeFilter)}>{describeProfileFilter(activeFilter)}</span>
-              <button
-                type="button"
-                className="profileFilterClear codicon codicon-close"
-                aria-label={`Clear filter for ${displayName}`}
-                title={`Clear filter for ${displayName}`}
-                disabled={filtersDisabled || !filtersSupported || !onApplyFilterModel}
-                onClick={clearProfileFilter}
-              />
             </div>
           )}
 
