@@ -437,6 +437,21 @@ describe("R document command", () => {
     expect(mocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("document or cursor changed"));
   });
 
+  it("does not fall back to an all-document run when the literate origin is ambiguous", async () => {
+    const source = "```{r}\norders <- data.frame(id = 1:3)\n```\n";
+    const document = rDocument("/workspace/orders.qmd", source);
+    const duplicate = rDocument("/workspace/orders.qmd", source);
+    mocks.textDocuments.push(document, duplicate);
+    mocks.activeEditor = textEditor(document, 1);
+    register(coordinatorMock(), literateProviders().value);
+
+    await expect(command()()).resolves.toBe(false);
+
+    expect(mocks.transportOptions).toHaveLength(0);
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
+    expect(mocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("exact document and cursor"));
+  });
+
   it("explains the supported chunk or session choices once when neither exists", async () => {
     const document = rDocument("/workspace/orders.Rmd", "~~~{python}\nframe = make_frame()\n~~~\n");
     mocks.textDocuments.push(document);

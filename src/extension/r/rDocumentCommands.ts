@@ -13,6 +13,7 @@ import { RProcessSessionTransport, type RProcessVariableDescriptor } from "./rPr
 import {
   captureLiterateDocumentOrigin,
   isCurrentLiterateDocumentOrigin,
+  isSupportedLiterateUri,
   type LiterateDocumentOrigin
 } from "../literateDocumentOrigin";
 import type { LiteratePythonVariableProvider } from "../notebooks/pythonInteractiveCommands";
@@ -219,6 +220,8 @@ export function registerRDocumentCommands(
 }
 
 async function routeActiveLiterateDocument(providers: LiterateDocumentVariableProviders): Promise<boolean | undefined> {
+  const activeDocument = vscode.window.activeTextEditor?.document;
+  if (!activeDocument || !isSupportedLiterateUri(activeDocument.uri)) return undefined;
   let origin: LiterateDocumentOrigin | undefined;
   try {
     origin = captureLiterateDocumentOrigin();
@@ -226,7 +229,12 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
     void vscode.window.showInformationMessage(`Could not read the current code chunk: ${errorMessage(error)}`);
     return false;
   }
-  if (!origin) return undefined;
+  if (!origin) {
+    void vscode.window.showWarningMessage(
+      "Open Wrangler could not safely identify this exact document and cursor. Close duplicate editors, return to the chunk, and try again."
+    );
+    return false;
+  }
   const chunk = origin.chunk;
   if (
     !chunk ||
