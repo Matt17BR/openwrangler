@@ -1,14 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { inspectDataWranglerComparisonReview } from "./data-wrangler-comparison-report.mjs";
 import { inspectPreviewReadme, inspectStablePublicCopy } from "./release-documents.mjs";
-import { inspectStableSourceReadiness } from "./release-readiness.mjs";
+import { inspectStableSourceReadiness, performanceReportLink } from "./release-readiness.mjs";
 import { inspectPreviewReleaseWorkflow as inspectReleaseWorkflow } from "./preview-release-workflow.mjs";
 import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 import { inspectPublicWriting } from "./public-writing.mjs";
 import { inspectPublicRepositoryMetadata } from "./public-repository-metadata.mjs";
+import { parseStrictJson } from "./strict-json.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const required = [
@@ -72,6 +74,18 @@ const readmeProblems = packageJson.preview
     });
 if (readmeProblems.length > 0) {
   throw new Error(`README release/install region is stale:\n- ${readmeProblems.join("\n- ")}`);
+}
+const linkedComparison = performanceReportLink(readme);
+if (linkedComparison !== undefined) {
+  const reviewPath = resolve(root, linkedComparison.path);
+  const reportPath = join(dirname(reviewPath), "report.json");
+  if (existsSync(reportPath)) {
+    const report = parseStrictJson(readFileSync(reportPath, "utf8"));
+    const comparisonProblems = inspectDataWranglerComparisonReview(readFileSync(reviewPath, "utf8"), report);
+    if (comparisonProblems.length > 0) {
+      throw new Error(`Data Wrangler comparison review is stale:\n- ${comparisonProblems.join("\n- ")}`);
+    }
+  }
 }
 if (!packageJson.preview) {
   const galleryProblems = inspectStablePublicCopy(mediaGallery, "docs/media-gallery.md");

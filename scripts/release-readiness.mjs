@@ -90,7 +90,7 @@ const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
 const PERFORMANCE_REPORT_LINK =
   /\[[^\]\r\n]+\]\(https:\/\/github\.com\/Matt17BR\/openwrangler\/blob\/main\/(?<path>docs\/performance\/data-wrangler-(?<version>\d+\.\d+\.\d+)\/review\.md)\)/gu;
 
-function performanceReportLink(readme) {
+export function performanceReportLink(readme) {
   const normalized = readme.replace(/\r\n?/gu, "\n");
   const headings = [...normalized.matchAll(/^## Performance[ \t]*$/gmu)];
   if (headings.length !== 1 || headings[0]?.index === undefined) return undefined;
@@ -132,6 +132,10 @@ function inspectStablePerformanceEvidence(readme, label, version, trackedEvidenc
   }
   if (!trackedEvidencePaths.has(report.path)) {
     problems.push(`${label} Performance report ${report.path} must be tracked.`);
+  }
+  const reportJsonPath = report.path.replace(/review\.md$/u, "report.json");
+  if (!trackedEvidencePaths.has(reportJsonPath)) {
+    problems.push(`${label} Performance data ${reportJsonPath} must be tracked.`);
   }
   return problems;
 }
