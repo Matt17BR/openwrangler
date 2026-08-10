@@ -14587,13 +14587,26 @@ async function exercisePackagedPlatformSmoke(
   if (screenshotOutput) {
     recordAcceptanceProgress("platform-smoke:file-action:screenshots");
     mkdirSync(screenshotOutput, { recursive: true });
+    await page.setViewportSize(PACKAGED_PRODUCT_VIEWPORT);
+    assert.deepEqual(
+      await page.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_PRODUCT_VIEWPORT,
+      "File-action public media requires the dedicated 1440 by 900 logical editor viewport."
+    );
     await titleAction.hover();
     await page
       .locator(".monaco-hover:visible")
       .filter({ hasText: "Open in Open Wrangler" })
       .waitFor({ state: "visible", timeout: 2_000 })
       .catch(() => {});
-    await captureWorkbenchScreenshot(page, path.resolve(screenshotOutput, `${editorKey}-file-title-action.png`));
+    await captureWorkbenchScreenshot(
+      page,
+      path.resolve(screenshotOutput, `${editorKey}-file-title-action.png`),
+      PACKAGED_FILE_ACTION_MEDIA_HEIGHT
+    );
     await page.keyboard.press("Escape");
 
     const sourceTab = activeEditorGroup
@@ -14601,7 +14614,11 @@ async function exercisePackagedPlatformSmoke(
       .filter({ hasText: path.basename(fixture.fsPath) })
       .last();
     const { menu } = await openEditorTabContextMenu(page, sourceTab, "Open in Open Wrangler");
-    await captureWorkbenchScreenshot(page, path.resolve(screenshotOutput, `${editorKey}-tab-context-menu.png`));
+    await captureWorkbenchScreenshot(
+      page,
+      path.resolve(screenshotOutput, `${editorKey}-tab-context-menu.png`),
+      PACKAGED_FILE_ACTION_MEDIA_HEIGHT
+    );
     await page.keyboard.press("Escape");
     await menu.waitFor({ state: "hidden", timeout: 3_000 });
     await titleAction.waitFor({ state: "visible", timeout: 3_000 });
