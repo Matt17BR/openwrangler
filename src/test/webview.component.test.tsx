@@ -131,6 +131,176 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid").querySelector("col")).toHaveStyle({ width: "58px" });
   });
 
+  it("filters a cell through its exact typed value without changing ordinary cell selection", async () => {
+    const onApplyCellFilter = vi.fn();
+    const onViewStateChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onApplyCellFilter={onApplyCellFilter}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+        onViewStateChange={onViewStateChange}
+      />
+    );
+
+    const city = screen.getByRole("cell", { name: "Milan" });
+    act(() => city.focus());
+    expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:0" }));
+    expect(onApplyCellFilter).not.toHaveBeenCalled();
+
+    const funnel = within(city).getByRole("button", { name: "Filter city by this cell" });
+    expect(funnel).toHaveAttribute("tabindex", "-1");
+    fireEvent.click(funnel);
+    const menu = await screen.findByRole("menu", { name: "Filter city by this cell" });
+    expect(document.activeElement).toBe(within(menu).getByRole("menuitem", { name: "Keep only this value" }));
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Keep only this value" }));
+
+    expect(onApplyCellFilter).toHaveBeenCalledWith({
+      column: "city",
+      type: "string",
+      logic: "and",
+      valueFilter: {
+        kind: "values",
+        selectedValues: [
+          {
+            kind: "typedSelection",
+            version: 1,
+            columnType: "string",
+            cell: { kind: "string", raw: "Milan", display: "Milan", isNull: false, isNaN: false }
+          }
+        ],
+        includeNulls: false,
+        includeNaN: false
+      },
+      predicates: []
+    });
+  });
+
+  it("opens cell filters from the keyboard and context menu with null and NaN actions", async () => {
+    const nanPage: GridPage = {
+      ...page,
+      rows: [
+        { ...page.rows[1]!, id: "r:null", rowNumber: 0 },
+        {
+          ...page.rows[0]!,
+          id: "r:nan",
+          rowNumber: 1,
+          values: [page.rows[0]!.values[0]!, { kind: "nan", raw: null, display: "NaN", isNull: false, isNaN: true }]
+        }
+      ]
+    };
+    const onApplyCellFilter = vi.fn();
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={nanPage}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onApplyCellFilter={onApplyCellFilter}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const nullCell = document.querySelector<HTMLElement>('[data-grid-row="0"][data-grid-column="1"]');
+    if (!nullCell) throw new Error("Expected the null cell.");
+    act(() => nullCell.focus());
+    fireEvent.keyDown(nullCell, { key: "F10", shiftKey: true });
+    let menu = await screen.findByRole("menu", { name: "Filter sales by this cell" });
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    const excludeNull = within(menu).getByRole("menuitem", { name: "Exclude null values" });
+    expect(document.activeElement).toBe(excludeNull);
+    fireEvent.click(excludeNull);
+    expect(onApplyCellFilter).toHaveBeenLastCalledWith({
+      column: "sales",
+      type: "float",
+      logic: "and",
+      predicates: [{ kind: "predicate", operator: "isNotNull" }]
+    });
+
+    const nanCell = document.querySelector<HTMLElement>('[data-grid-row="1"][data-grid-column="1"]');
+    if (!nanCell) throw new Error("Expected the NaN cell.");
+    fireEvent.contextMenu(nanCell);
+    menu = await screen.findByRole("menu", { name: "Filter sales by this cell" });
+    expect(within(menu).getByRole("menuitem", { name: "Keep only NaN values" })).toBeEnabled();
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "Filter sales by this cell" })).toBeNull();
+    expect(document.activeElement).toBe(nanCell);
+  });
+
+  it.each([
+    [
+      "duplicate column labels",
+      {
+        metadata: {
+          ...metadata,
+          schema: [{ ...metadata.schema[0]! }, { ...metadata.schema[1]!, name: "city" }]
+        } satisfies SessionMetadata
+      },
+      "2 columns share the displayed name"
+    ],
+    ["a projected cell", { projecting: true }, "Wait for this cell to finish loading"],
+    ["a backend without filters", { filterControlsDisabled: true }, "Filtering is unavailable for this dataframe"],
+    [
+      "a nested value",
+      {
+        metadata: {
+          ...metadata,
+          schema: [{ ...metadata.schema[0]!, rawType: "List(String)", type: "list" }]
+        } satisfies SessionMetadata,
+        page: {
+          ...page,
+          columnIds: ["c:0"],
+          rows: page.rows.map((row) => ({
+            ...row,
+            values: [{ kind: "list" as const, raw: ["x"], display: '["x"]', isNull: false, isNaN: false }]
+          }))
+        } satisfies GridPage
+      },
+      "Filtering by individual List(String) values is unavailable"
+    ]
+  ])("explains why direct filtering is disabled for %s", async (_label, overrides, reason) => {
+    const resolvedMetadata = "metadata" in overrides ? overrides.metadata : metadata;
+    const resolvedPage = "page" in overrides ? overrides.page : page;
+    render(
+      <DataGrid
+        metadata={resolvedMetadata}
+        page={resolvedPage}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        projecting={"projecting" in overrides ? overrides.projecting : false}
+        filterControlsDisabled={"filterControlsDisabled" in overrides ? overrides.filterControlsDisabled : false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onApplyCellFilter={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const cell = document.querySelector<HTMLElement>('td[data-grid-column="0"]');
+    if (!cell) throw new Error("Expected a grid cell.");
+    fireEvent.contextMenu(cell);
+    const menu = await screen.findByRole("menu", { name: /Filter .* by this cell/u });
+    expect(menu).toHaveTextContent(reason);
+    expect(within(menu).getByRole("menuitem", { name: /Keep only/u })).toBeDisabled();
+    expect(within(menu).getByRole("menuitem", { name: /Exclude/u })).toBeDisabled();
+  });
+
   it("selects a profile column from the header without stealing column controls", () => {
     const onViewStateChange = vi.fn();
     const salesSummary: ColumnSummary = {
@@ -259,6 +429,7 @@ describe("DataGrid", () => {
 
   it("hides floating-point noise in grid text while preserving the exact value on hover", () => {
     const noisyValue = 4201.559999999995;
+    const onApplyCellFilter = vi.fn();
     const noisyPage: GridPage = {
       ...page,
       limit: 1,
@@ -291,6 +462,7 @@ describe("DataGrid", () => {
         insightsOnOpen={false}
         onPage={() => undefined}
         onSortColumn={() => undefined}
+        onApplyCellFilter={onApplyCellFilter}
         onOpenFilter={() => undefined}
         onVisibleSummaryColumnsChange={() => undefined}
       />
@@ -299,6 +471,17 @@ describe("DataGrid", () => {
     const rendered = screen.getByText("4201.56");
     expect(rendered).toHaveAttribute("title", String(noisyValue));
     expect(screen.queryByText(String(noisyValue))).toBeNull();
+    const cell = rendered.closest("td");
+    if (!cell) throw new Error("Expected the formatted number cell.");
+    fireEvent.click(within(cell).getByRole("button", { name: "Filter sales by this cell" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Keep only this value" }));
+    expect(onApplyCellFilter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        valueFilter: expect.objectContaining({
+          selectedValues: [expect.objectContaining({ cell: expect.objectContaining({ raw: noisyValue }) })]
+        })
+      })
+    );
   });
 
   it("keeps block navigation and the exact live range in a status bar after the scroller", () => {
@@ -2750,6 +2933,58 @@ describe("App file import options", () => {
     expect(help).not.toBeVisible();
     fireEvent.click(orderingBadge!);
     expect(help).toBeVisible();
+  });
+
+  it("orders repeated direct-cell filters by their latest typed request", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    const milan = await screen.findByRole("cell", { name: "Milan" });
+    const paris = screen.getByRole("cell", { name: "Paris" });
+    webviewPostMessage.mockClear();
+
+    fireEvent.click(within(milan).getByRole("button", { name: "Filter city by this cell" }));
+    fireEvent.click(
+      within(await screen.findByRole("menu", { name: "Filter city by this cell" })).getByRole("menuitem", {
+        name: "Keep only this value"
+      })
+    );
+    fireEvent.click(within(paris).getByRole("button", { name: "Filter city by this cell" }));
+    fireEvent.click(
+      within(await screen.findByRole("menu", { name: "Filter city by this cell" })).getByRole("menuitem", {
+        name: "Exclude this value"
+      })
+    );
+
+    const requests = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage")
+      .map((message) => message.request);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.viewRequestId).not.toBe(requests[1]?.viewRequestId);
+    expect(requests[0]?.filterModel.filters[0]?.valueFilter?.selectedValues[0]).toMatchObject({
+      kind: "typedSelection",
+      columnType: "string",
+      cell: { raw: "Milan" }
+    });
+    expect(requests[1]?.filterModel.filters).toEqual([
+      {
+        column: "city",
+        type: "string",
+        logic: "and",
+        predicates: [
+          {
+            kind: "predicate",
+            operator: "notEquals",
+            value: {
+              kind: "typedSelection",
+              version: 1,
+              columnType: "string",
+              cell: { kind: "string", raw: "Paris", display: "Paris", isNull: false, isNaN: false }
+            }
+          }
+        ]
+      }
+    ]);
   });
 
   it("removes one native-tree column filter while preserving sibling filters and all sorts", async () => {
