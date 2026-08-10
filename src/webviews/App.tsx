@@ -2828,6 +2828,7 @@ export function App() {
                   setSummaryPanelView("column");
                   sidePanelOpenRef.current = true;
                   setSidePanelOpen(true);
+                  flushGridViewState();
                   applyFilters(replaceViewColumnFilter(filterModelRef.current, filter));
                 }}
                 onOpenFilter={(column) => {
