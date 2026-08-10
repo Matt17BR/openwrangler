@@ -33,7 +33,7 @@ export const REPRESENTATIVE_PUBLIC_IMAGES = [
   "Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views",
   "Revenue column profile with exact statistics and a focused histogram bin showing 20,174 to 21,357 and 398 rows",
   "PySpark dataframe grid beside the revenue profile, with Source Order, Viewing Only, and PySpark badges",
-  "An R Rename Column draft in Open Wrangler with cleaning history, Apply and Discard controls, and generated R"
+  "An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R"
 ];
 
 export function parsePublicMediaVerifierArguments(arguments_) {
