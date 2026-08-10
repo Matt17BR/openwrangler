@@ -1070,6 +1070,14 @@ Header-profile filter visibility, 2026-08-08:
   sent to the runtime. Existing profile-filter tests continue to cover categories, numeric ranges, keyboard use, and
   duplicate column labels.
 
+Direct grid-cell filtering, 2026-08-10:
+
+- Scalar cells expose **Keep only this value** and **Exclude this value** by hover action, right-click, or keyboard
+  context menu. The filter is built from the transported typed cell rather than its display text, with dedicated
+  null and NaN behavior.
+- Focused model and React coverage includes strings, booleans, integers beyond JavaScript's safe range, null, NaN,
+  duplicate labels, projected cells, unsupported nested values, keyboard focus restoration, and superseded requests.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, DuckDB Excel and `.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. DuckDB notebook relations remain intentionally limited to native viewing plus their portable inline preview; cleaning, generated-code insertion, and data export are unavailable. PySpark's supported v1.2 surface is the local, viewing-only live-notebook matrix above. Editing, exports, saved output, running-request cancellation, external or authenticated Spark Connect execution, and provisioning are not supported. Packaged VS Code/Cursor and local kernel-recovery evidence is recorded above; any future expansion needs its own acceptance evidence rather than broadening the current claim by implication. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.

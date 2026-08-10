@@ -104,6 +104,8 @@ JSONL/NDJSON open directly.
 _The active filter matches 14,287 rows. Column profiles, the grid, and the sidebar show the same filter and Clear
 action without changing the source._
 
+Hover or right-click a scalar grid cell to keep or exclude its exact value. Null and NaN have separate actions.
+
 <table>
   <tr>
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="Revenue column profile with Counts and % controls and a focused 20,174 to 21,357 bin tooltip showing 398 rows (0.4%)" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/histogram-hover.png" width="448"></a></td>
