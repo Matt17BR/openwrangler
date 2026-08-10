@@ -122,16 +122,42 @@ describe("NotebookPreviewCoordinator", () => {
     for (const channel of Object.values(mocks.channels)) channel.clear();
   });
 
-  it("prepares the first supported notebook without a prompt when there is no competing provider", async () => {
-    const notebook = fakeNotebook();
+  it.each(["jupyter-notebook", "interactive"])(
+    "prepares the first visible %s document without a prompt when there is no competing provider",
+    async (notebookType) => {
+      const notebook = fakeNotebook(notebookType);
+      mocks.documents.push(notebook);
+      mocks.visibleEditors.push({ notebook });
+      const coordinator = new NotebookPreviewCoordinator({} as never);
+
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(mocks.prepare).toHaveBeenCalledOnce();
+      expect(mocks.information).not.toHaveBeenCalled();
+      coordinator.dispose();
+    }
+  );
+
+  it("keeps Interactive Window formatter preparation single-flight across overlapping notebook events", async () => {
+    const notebook = fakeNotebook("interactive");
+    const preparation = deferred<void>();
     mocks.documents.push(notebook);
     mocks.visibleEditors.push({ notebook });
+    mocks.prepare.mockImplementationOnce(() => preparation.promise);
     const coordinator = new NotebookPreviewCoordinator({} as never);
 
-    await vi.runOnlyPendingTimersAsync();
-
+    await vi.advanceTimersByTimeAsync(0);
     expect(mocks.prepare).toHaveBeenCalledOnce();
-    expect(mocks.information).not.toHaveBeenCalled();
+
+    for (const listener of mocks.channels.active) listener({ notebook });
+    for (const listener of mocks.channels.visible) listener(mocks.visibleEditors);
+    for (const listener of mocks.channels.change) listener({ notebook });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.prepare).toHaveBeenCalledOnce();
+
+    preparation.resolve(undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.prepare).toHaveBeenCalledOnce();
     coordinator.dispose();
   });
 
@@ -280,11 +306,14 @@ describe("NotebookPreviewCoordinator", () => {
   });
 });
 
-function fakeNotebook(): NotebookDocument {
+function fakeNotebook(notebookType = "jupyter-notebook"): NotebookDocument {
   return {
-    notebookType: "jupyter-notebook",
+    notebookType,
     isClosed: false,
-    uri: { toString: () => "file:///workspace/notebook.ipynb" }
+    uri: {
+      toString: () =>
+        notebookType === "interactive" ? "untitled:/Interactive-1.interactive" : "file:///workspace/notebook.ipynb"
+    }
   } as unknown as NotebookDocument;
 }
 

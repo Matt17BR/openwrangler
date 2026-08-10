@@ -1166,39 +1166,53 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("cell failed"));
   });
 
-  it("refreshes only the exact active notebook and exposes cached variables without polling", async () => {
-    const active = notebook("file:///workspace/active.ipynb", "jupyter-notebook", [], "python");
-    const inactive = notebook("file:///workspace/inactive.ipynb", "jupyter-notebook", [], "python");
-    pythonMocks.notebookDocuments.push(active.document, inactive.document);
-    pythonMocks.activeNotebookEditor = { notebook: active.document } as NotebookEditor;
-    const frame = pandasFrame("frame");
-    pythonMocks.discover.mockImplementation(async (document) => ({
-      variables: document === active.document ? [frame] : [],
-      truncated: false
-    }));
+  it.each([
+    {
+      notebookType: "jupyter-notebook",
+      activeUri: "file:///workspace/active.ipynb",
+      inactiveUri: "file:///workspace/inactive.ipynb"
+    },
+    {
+      notebookType: "interactive",
+      activeUri: "untitled:/Interactive-1.interactive",
+      inactiveUri: "untitled:/Interactive-2.interactive"
+    }
+  ])(
+    "refreshes only the exact active $notebookType document and exposes cached variables without polling",
+    async ({ notebookType, activeUri, inactiveUri }) => {
+      const active = notebook(activeUri, notebookType, [], "python");
+      const inactive = notebook(inactiveUri, notebookType, [], "python");
+      pythonMocks.notebookDocuments.push(active.document, inactive.document);
+      pythonMocks.activeNotebookEditor = { notebook: active.document } as NotebookEditor;
+      const frame = pandasFrame("frame");
+      pythonMocks.discover.mockImplementation(async (document) => ({
+        variables: document === active.document ? [frame] : [],
+        truncated: false
+      }));
 
-    fire(pythonMocks.activeNotebookListeners, pythonMocks.activeNotebookEditor);
-    await settle();
+      fire(pythonMocks.activeNotebookListeners, pythonMocks.activeNotebookEditor);
+      await settle();
 
-    expect(pythonMocks.discover).toHaveBeenCalledWith(active.document);
-    expect(pythonMocks.discover).not.toHaveBeenCalledWith(inactive.document);
-    const snapshot = provider.snapshot();
-    expect(snapshot?.state).toBe("ready");
-    expect(snapshot?.variables.map((variable) => variable.label)).toEqual(["frame"]);
+      expect(pythonMocks.discover).toHaveBeenCalledWith(active.document);
+      expect(pythonMocks.discover).not.toHaveBeenCalledWith(inactive.document);
+      const snapshot = provider.snapshot();
+      expect(snapshot?.state).toBe("ready");
+      expect(snapshot?.variables.map((variable) => variable.label)).toEqual(["frame"]);
 
-    const callsBeforeExecution = pythonMocks.discover.mock.calls.length;
-    fire(pythonMocks.changeNotebookListeners, {
-      notebook: inactive.document,
-      cellChanges: [{ executionSummary: { success: true } }],
-      contentChanges: []
-    } as unknown as NotebookDocumentChangeEvent);
-    await settle();
-    expect(pythonMocks.discover).toHaveBeenCalledTimes(callsBeforeExecution);
+      const callsBeforeExecution = pythonMocks.discover.mock.calls.length;
+      fire(pythonMocks.changeNotebookListeners, {
+        notebook: inactive.document,
+        cellChanges: [{ executionSummary: { success: true } }],
+        contentChanges: []
+      } as unknown as NotebookDocumentChangeEvent);
+      await settle();
+      expect(pythonMocks.discover).toHaveBeenCalledTimes(callsBeforeExecution);
 
-    const handle = snapshot?.variables[0]?.handle;
-    await command("openWrangler.openCachedNotebookVariable")(handle);
-    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, active.document, frame);
-  });
+      const handle = snapshot?.variables[0]?.handle;
+      await command("openWrangler.openCachedNotebookVariable")(handle);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, active.document, frame);
+    }
+  );
 
   it("shows and opens dataframes from the exact active IRkernel notebook", async () => {
     const active = notebook("file:///workspace/analysis-r.ipynb", "jupyter-notebook", [], "r");

@@ -797,24 +797,25 @@ export async function run(): Promise<void> {
     ),
     "R document sessions must expose generated-code insertion only when their exact source is active."
   );
-  const notebookVariableWhen = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
+  const notebookVariableWhen =
+    "(notebookType == 'jupyter-notebook' || notebookType == 'interactive') && isWorkspaceTrusted";
   const notebookVariableToolbarWhen =
     `${notebookVariableWhen} && config.notebook.globalToolbar == true && ` +
     "!openWrangler.forceNotebookEditorTitleAction";
   const notebookVariableWhenCompact =
-    "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && " +
+    `${notebookVariableWhen} && ` +
     "(config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)";
   for (const [menu, when] of [
     ["editor/title", notebookVariableWhenCompact],
     ["notebook/toolbar", notebookVariableToolbarWhen]
   ] as const) {
-    assert.ok(
-      contributions.menus?.[menu]?.some(
-        (item) =>
-          item.command === "openWrangler.openNotebookVariable" && item.when === when && item.group === "navigation@50"
-      ),
-      `${menu} must expose the manual Open Wrangler variable action for a real Jupyter kernel.`
-    );
+    const entries = contributions.menus?.[menu]?.filter((item) => item.command === "openWrangler.openNotebookVariable");
+    assert.equal(entries?.length, 1, `${menu} must expose exactly one Open Wrangler variable action.`);
+    assert.deepEqual(entries?.[0], {
+      command: "openWrangler.openNotebookVariable",
+      when,
+      group: "navigation@50"
+    });
   }
   assert.deepEqual(
     contributions.keybindings?.map((binding) => ({
