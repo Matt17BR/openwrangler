@@ -21,6 +21,7 @@ recovery ignores them; an operator may recover one explicitly from its immutable
 Update `package.json`,
 `python/openwrangler_runtime/version.py`, `CHANGELOG.md`, and parity evidence in the release pull request. Do not put
 the release channel in a hyphenated manifest version.
+Do not include product code, test-harness changes, generated media, or unrelated documentation in the release commit.
 
 The GitHub About description, homepage, and topics live in `.github/repository-metadata.json`. Its homepage points to
 the Marketplace. The package description must match it, while the package homepage points to the project README so
