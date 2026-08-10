@@ -14062,20 +14062,39 @@ async function restartReleasedJupyterKernelAndWait(notebook: vscode.NotebookDocu
 
   let restartDispatched = false;
   let observedRestart = false;
+  let restartCommandState: "pending" | "fulfilled" | "rejected" = "pending";
+  let restartCommandError: unknown;
   const statuses = new Set<KernelStatus>();
   const recordStatus = (status: KernelStatus): void => {
     statuses.add(status);
     if (restartDispatched && status !== "idle") observedRestart = true;
   };
+  const throwIfRestartCommandRejected = (): void => {
+    if (restartCommandState === "rejected") {
+      throw new Error("The released Jupyter kernel restart command was rejected.", {
+        cause: restartCommandError
+      });
+    }
+  };
   recordStatus(originalKernel.status);
   const statusListener = originalKernel.onDidChangeStatus(recordStatus);
   try {
+    const deadline = Date.now() + 90_000;
     restartDispatched = true;
-    await vscode.commands.executeCommand("jupyter.restartkernel", notebook.uri);
+    const restartCommand = vscode.commands.executeCommand("jupyter.restartkernel", notebook.uri);
+    void Promise.resolve(restartCommand).then(
+      () => {
+        restartCommandState = "fulfilled";
+      },
+      (error: unknown) => {
+        restartCommandState = "rejected";
+        restartCommandError = error;
+      }
+    );
     assertExactOpenNotebookDocument(notebook, "after dispatching the released Jupyter kernel restart");
 
-    const deadline = Date.now() + 90_000;
     do {
+      throwIfRestartCommandRejected();
       assertExactOpenNotebookDocument(notebook, "while waiting for its released Jupyter kernel restart");
       const currentKernel = await api.kernels.getKernel(notebook.uri);
       assertExactOpenNotebookDocument(notebook, "after polling its released Jupyter kernel restart");
@@ -14084,13 +14103,14 @@ async function restartReleasedJupyterKernelAndWait(notebook: vscode.NotebookDocu
       } else {
         recordStatus(currentKernel.status);
         if (currentKernel !== originalKernel) observedRestart = true;
+        throwIfRestartCommandRejected();
         if (observedRestart && currentKernel.status === "idle") return;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (Date.now() < deadline);
     throw new Error(
       `Timed out waiting for the released Jupyter kernel to restart and return idle. ` +
-        `Observed statuses: ${JSON.stringify([...statuses])}`
+        `Command state: ${restartCommandState}. Observed statuses: ${JSON.stringify([...statuses])}`
     );
   } finally {
     statusListener.dispose();
