@@ -179,7 +179,7 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
   private canPrepare(notebook: vscode.NotebookDocument): boolean {
     return (
       vscode.workspace.isTrusted &&
-      notebook.notebookType === "jupyter-notebook" &&
+      (notebook.notebookType === "jupyter-notebook" || notebook.notebookType === "interactive") &&
       isSoleOpenNotebookDocument(notebook) &&
       vscode.window.visibleNotebookEditors.some((editor) => editor.notebook === notebook) &&
       vscode.extensions.getExtension(JUPYTER_EXTENSION_ID) !== undefined

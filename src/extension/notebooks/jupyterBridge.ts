@@ -698,7 +698,9 @@ function resolveActiveNotebookAtCommandReceipt(explicitUris: vscode.Uri[] = []):
 
   const originUri = originUris[0];
   if (!originUri) {
-    return { error: "Open a Jupyter notebook before launching a notebook variable in Open Wrangler." };
+    return {
+      error: "Open a Jupyter notebook or Python Interactive Window before launching a variable in Open Wrangler."
+    };
   }
 
   const uriKey = originUri.toString();
@@ -713,7 +715,7 @@ function resolveActiveNotebookAtCommandReceipt(explicitUris: vscode.Uri[] = []):
   const notebook = matches[0];
   if (
     !notebook ||
-    notebook.notebookType !== "jupyter-notebook" ||
+    !isSupportedInteractiveNotebook(notebook) ||
     (editorNotebook && editorNotebook !== notebook) ||
     (activeTab?.input instanceof vscode.TabInputNotebook && activeTab.input.notebookType !== notebook.notebookType)
   ) {
@@ -722,6 +724,10 @@ function resolveActiveNotebookAtCommandReceipt(explicitUris: vscode.Uri[] = []):
     };
   }
   return { notebook };
+}
+
+function isSupportedInteractiveNotebook(notebook: vscode.NotebookDocument): boolean {
+  return notebook.notebookType === "jupyter-notebook" || notebook.notebookType === "interactive";
 }
 
 function isExactOpenNotebook(notebook: vscode.NotebookDocument): boolean {

@@ -194,7 +194,8 @@
     "onView:openWrangler.cleaningSteps",
     "onView:openWrangler.codePreview",
     "onRenderer:openWrangler.renderer",
-    "onNotebook:jupyter-notebook"
+    "onNotebook:jupyter-notebook",
+    "onNotebook:interactive"
   ],
   "contributes": {
     "configurationDefaults": {
@@ -639,7 +640,7 @@
         },
         {
           "command": "openWrangler.openNotebookVariable",
-          "when": "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)",
+          "when": "(notebookType == 'jupyter-notebook' || notebookType == 'interactive') && isWorkspaceTrusted && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)",
           "group": "navigation@50"
         }
       ],
@@ -708,7 +709,7 @@
       "notebook/toolbar": [
         {
           "command": "openWrangler.openNotebookVariable",
-          "when": "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && config.notebook.globalToolbar == true && !openWrangler.forceNotebookEditorTitleAction",
+          "when": "(notebookType == 'jupyter-notebook' || notebookType == 'interactive') && isWorkspaceTrusted && config.notebook.globalToolbar == true && !openWrangler.forceNotebookEditorTitleAction",
           "group": "navigation@50"
         }
       ],

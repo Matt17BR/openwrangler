@@ -740,22 +740,28 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.createPanel).not.toHaveBeenCalled();
   });
 
-  it("opens the exact active notebook tab when toolbar focus clears the active notebook editor", async () => {
-    const original = notebook("file:///workspace/shared.ipynb");
-    notebookMocks.notebookDocuments.push(original);
-    notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
-    const { coordinator } = register();
+  it.each([
+    { notebookType: "jupyter-notebook", uri: "file:///workspace/shared.ipynb" },
+    { notebookType: "interactive", uri: "untitled:/Interactive-1.interactive" }
+  ])(
+    "opens the exact active $notebookType tab when toolbar focus clears the active notebook editor",
+    async ({ notebookType, uri }) => {
+      const original = notebook(uri, notebookType);
+      notebookMocks.notebookDocuments.push(original);
+      notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, notebookType);
+      const { coordinator } = register();
 
-    await command("openWrangler.openNotebookVariable")({
-      ui: true,
-      notebookEditor: { private: true },
-      source: "notebookToolbar"
-    });
+      await command("openWrangler.openNotebookVariable")({
+        ui: true,
+        notebookEditor: { private: true },
+        source: "notebookToolbar"
+      });
 
-    expect(notebookMocks.showQuickPick).toHaveBeenCalledOnce();
-    expect(notebookMocks.kernelOrigins).toEqual([{ uri: original.uri.toString(), document: original }]);
-    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
-  });
+      expect(notebookMocks.showQuickPick).toHaveBeenCalledOnce();
+      expect(notebookMocks.kernelOrigins).toEqual([{ uri: original.uri.toString(), document: original }]);
+      expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+    }
+  );
 
   it("rejects disagreeing public active-editor and active-tab notebook origins", async () => {
     const editorNotebook = notebook("file:///workspace/editor.ipynb");
