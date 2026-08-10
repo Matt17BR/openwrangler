@@ -14,6 +14,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Python Interactive windows now expose the same **Open in Open Wrangler** action as `.ipynb` notebooks. The action
+  lists dataframes from that exact live kernel, and Operations refreshes from the same window instead of asking the
+  user to return to the source `.py` cell.
 - Public README checks now retry when a registry page replaces an image while Playwright is inspecting it. Other
   rendering failures still stop immediately.
 

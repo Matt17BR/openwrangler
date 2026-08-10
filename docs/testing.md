@@ -571,7 +571,8 @@ The allow phase also starts with a private ordinary Python file and no Interacti
 **Open in Open Wrangler** editor action once, selects the pinned kernel if Jupyter asks, and checks that the file runs
 once and opens its native Polars dataframe with the expected values. The resulting cell must point back to that source
 file at line zero. The source file must stay byte-for-byte unchanged, and closing the panel must leave no Open Wrangler
-session behind.
+session behind. The same phase then keeps the exact Interactive window active, opens that dataframe again through its
+notebook action, and proves that no cell reran and no second Interactive window was created.
 
 The focused R 4.4/4.5 contract jobs and release contract gate install `readr` and `dplyr` alongside the other frame
 packages because the suite opens actual readr and grouped tibbles rather than hand-built stand-ins.
