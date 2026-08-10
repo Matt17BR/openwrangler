@@ -2165,6 +2165,7 @@ async function exerciseReleasedRJupyterExtension(
   let notebook: vscode.NotebookDocument | undefined;
   let remoteServerCollection: JupyterServerCollection | undefined;
   let acceptanceError: { readonly value: unknown } | undefined;
+  let failureCheckpoint: string | undefined;
   try {
     await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
     await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
@@ -2751,6 +2752,7 @@ async function exerciseReleasedRJupyterExtension(
     await waitForReleasedRRuntimeBindingCleanup(notebook, cleanupEditor, phase);
     recordReleasedRAcceptanceSection(phase, coverage, "restart", "complete");
   } catch (error) {
+    failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint);
     acceptanceError = { value: error };
   } finally {
     try {
@@ -2778,6 +2780,7 @@ async function exerciseReleasedRJupyterExtension(
     } catch (error) {
       acceptanceError ??= { value: error };
     }
+    if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint);
   }
   if (acceptanceError) throw acceptanceError.value;
   recordReleasedRAcceptanceSection(phase, coverage, "notebook", "complete");
