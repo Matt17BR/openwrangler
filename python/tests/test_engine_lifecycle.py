@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -7,6 +8,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any
 
 import pandas as pd
+import polars as pl
 import pytest
 
 import __main__
@@ -547,6 +549,53 @@ def test_missing_live_notebook_variable_explains_the_user_recovery() -> None:
                 "label": "open_wrangler_missing_frame",
                 "variableName": "open_wrangler_missing_frame",
             },
+            backend="pandas",
+        )
+
+
+@pytest.mark.parametrize(
+    ("frame", "backend", "expected"),
+    [
+        (pd.DataFrame({"value": [1, 2]}).head(1), "pandas", "1"),
+        (pl.DataFrame({"value": [1, 2]}).tail(1), "polars", "2"),
+    ],
+)
+def test_live_notebook_result_handle_opens_the_exact_weak_target(frame, backend, expected) -> None:
+    manager = SessionManager()
+    handle = notebook._register_live_result(frame)
+
+    opened = manager.open_session(
+        {"kind": "notebookVariable", "label": type(frame).__name__, "variableName": handle},
+        backend=backend,
+    )
+
+    assert opened["metadata"]["source"]["variableName"] == handle
+    assert opened["page"]["rows"][0]["values"][0]["display"] == expected
+    manager.close_session(opened["metadata"]["sessionId"], opened["metadata"]["revision"])
+
+
+def test_expired_live_notebook_result_handle_fails_without_snapshot_fallback() -> None:
+    manager = SessionManager()
+    frame = pd.DataFrame({"value": [1]}).tail(1)
+    handle = notebook._register_live_result(frame)
+    del frame
+    gc.collect()
+
+    with pytest.raises(EngineError, match="notebook result is no longer available.*Run the cell again"):
+        manager.open_session(
+            {"kind": "notebookVariable", "label": "DataFrame", "variableName": handle},
+            backend="pandas",
+        )
+
+
+def test_reserved_live_result_name_never_resolves_through_the_user_namespace(monkeypatch) -> None:
+    manager = SessionManager()
+    handle = "__openwrangler_live_result_00000000000000000000000000000000"
+    monkeypatch.setattr(__main__, handle, pd.DataFrame({"value": [1]}), raising=False)
+
+    with pytest.raises(EngineError, match="notebook result is no longer available"):
+        manager.open_session(
+            {"kind": "notebookVariable", "label": "DataFrame", "variableName": handle},
             backend="pandas",
         )
 
