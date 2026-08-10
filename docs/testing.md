@@ -584,11 +584,10 @@ library is deleted with the run.
 
 The active-terminal path has focused tests for selecting one exact official R terminal, discovering
 `data.frame`, tibble, and `data.table` objects, opening the selected object, request framing, cleanup, and
-invalidation when the user switches or closes the terminal. It is not yet recorded as packaged-editor evidence. That
-gate must run with the official R extension in isolated VS Code and Cursor profiles, use **Operations → Refresh R
-dataframes**, open and profile a real object, switch from Viewing to Editing, exercise generated code and export, and
-prove that terminal replacement leaves no active Open Wrangler bridge. Until that journey passes, release notes and
-the feature matrix must continue to say that packaged validation is pending.
+invalidation when the user switches or closes the terminal. Packaged acceptance uses the official R extension in
+isolated editor profiles and clicks **Operations → Show R dataframes…** as the first discovery action. It then opens
+and profiles a dataframe, switches from Viewing to Editing, exercises generated code and export, replaces the
+terminal, and checks that the previous bridge is gone.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed from commit
 `67422557e2377f5fe806e3b4892b261dd48d9d6a` on 2026-08-06. It covered local R 4.5.2 in VS Code and Cursor, plus the

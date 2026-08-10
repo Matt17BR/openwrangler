@@ -8,6 +8,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - R Markdown and Quarto now keep commas inside nested chunk options, skip valid `eval=FALSE` cells that refer to
   external chunk content, and explain when a document contains no R cells.
+- **Show R dataframes…** in Operations now reads the selected R terminal on the first click. Previously it opened an
+  empty picker until the separate refresh command had run.
 
 ## [1.99.2] - 2026-08-09
 
