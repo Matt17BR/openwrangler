@@ -24,6 +24,7 @@ const pythonMocks = vi.hoisted(() => ({
   showTextDocument: vi.fn(),
   activeTextEditor: undefined as TextEditor | undefined,
   activeNotebookEditor: undefined as NotebookEditor | undefined,
+  isTrusted: true,
   textDocuments: [] as TextDocument[],
   notebookDocuments: [] as NotebookDocument[],
   activeTextListeners: new Set<Listener<TextEditor | undefined>>(),
@@ -103,6 +104,9 @@ vi.mock("vscode", () => {
       showTextDocument: pythonMocks.showTextDocument
     },
     workspace: {
+      get isTrusted() {
+        return pythonMocks.isTrusted;
+      },
       get textDocuments() {
         return pythonMocks.textDocuments;
       },
@@ -164,6 +168,7 @@ describe("Python Interactive Window entry points", () => {
     pythonMocks.notebookDocuments.length = 0;
     pythonMocks.activeTextEditor = undefined;
     pythonMocks.activeNotebookEditor = undefined;
+    pythonMocks.isTrusted = true;
     pythonMocks.executeCommand.mockReset();
     pythonMocks.executeCommand.mockResolvedValue(undefined);
     pythonMocks.showInformationMessage.mockClear();
@@ -833,7 +838,7 @@ describe("Python Interactive Window entry points", () => {
       await second;
       expect(pythonMocks.executeCommand).toHaveBeenCalledTimes(1);
       expect(pythonMocks.showInformationMessage).toHaveBeenCalledWith(
-        "Open Wrangler is already running this Python cell."
+        "Open Wrangler is already running this Python file or cell."
       );
 
       await vi.advanceTimersByTimeAsync(10_000);
@@ -865,8 +870,146 @@ describe("Python Interactive Window entry points", () => {
     }
   });
 
-  it("explains how to mark a Python file that has no runnable cell", async () => {
+  it("runs an ordinary Python file and binds its exact resulting Interactive Window", async () => {
     const source = textDocument("file:///workspace/analysis.py", "frame = make_frame()\n");
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = textEditor(source, 0);
+    const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
+    pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+      if (id === "jupyter.runFileInteractive") {
+        interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 0, "run-file", true));
+        pythonMocks.notebookDocuments.push(interactive.document);
+      }
+      return undefined;
+    });
+    const frame = pandasFrame("frame");
+    pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
+
+    await command("openWrangler.runPythonCellAndOpenVariable")();
+
+    expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runFileInteractive", source.uri);
+    expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("jupyter.runcurrentcell");
+    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+  });
+
+  it("selects a kernel once and retries the same ordinary Python file", async () => {
+    vi.useFakeTimers();
+    try {
+      const source = textDocument("file:///workspace/analysis.py", "frame = make_frame()\n");
+      pythonMocks.textDocuments.push(source);
+      pythonMocks.activeTextEditor = textEditor(source, 0);
+      const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
+      const frame = polarsFrame("frame");
+      pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
+      let runCount = 0;
+      pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+        if (id !== "jupyter.runFileInteractive") return undefined;
+        runCount += 1;
+        if (runCount === 1) {
+          pythonMocks.notebookDocuments.push(interactive.document);
+          fire(pythonMocks.openNotebookListeners, interactive.document);
+        } else {
+          const cell = interactiveCell(interactive.document, source.uri.toString(), 0, "run-file", true);
+          interactive.cells.push(cell);
+          fire(pythonMocks.changeNotebookListeners, {
+            notebook: interactive.document,
+            cellChanges: [{ cell, executionSummary: cell.executionSummary }],
+            contentChanges: []
+          } as unknown as NotebookDocumentChangeEvent);
+        }
+        return undefined;
+      });
+
+      const opening = command("openWrangler.runPythonCellAndOpenVariable")();
+      await settle();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await opening;
+
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
+        "jupyter.runFileInteractive",
+        "notebook.selectKernel",
+        "jupyter.runFileInteractive"
+      ]);
+      expect(pythonMocks.executeCommand).toHaveBeenNthCalledWith(1, "jupyter.runFileInteractive", source.uri);
+      expect(pythonMocks.executeCommand).toHaveBeenNthCalledWith(3, "jupyter.runFileInteractive", source.uri);
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry an ordinary file when Jupyter leaves its dispatch indeterminate", async () => {
+    vi.useFakeTimers();
+    try {
+      const source = textDocument("file:///workspace/analysis.py", "frame = make_frame()\n");
+      pythonMocks.textDocuments.push(source);
+      pythonMocks.activeTextEditor = textEditor(source, 0);
+      const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
+      pythonMocks.executeCommand.mockImplementation((id: string) => {
+        if (id !== "jupyter.runFileInteractive") return Promise.resolve(undefined);
+        pythonMocks.notebookDocuments.push(interactive.document);
+        fire(pythonMocks.openNotebookListeners, interactive.document);
+        return new Promise(() => undefined);
+      });
+
+      const opening = command("openWrangler.runPythonCellAndOpenVariable")();
+      await settle();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await opening;
+
+      expect(pythonMocks.executeCommand.mock.calls).toEqual([["jupyter.runFileInteractive", source.uri]]);
+      expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("notebook.selectKernel", expect.anything());
+      expect(pythonMocks.openVariable).not.toHaveBeenCalled();
+      expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("didn't confirm"));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["# <codecell>", "# In[3]", "# In[ ]"])(
+    "treats %s as a Python cell marker instead of running the whole file",
+    async (marker) => {
+      const source = textDocument("file:///workspace/analysis.py", `${marker}\nframe = make_frame()\n`);
+      pythonMocks.textDocuments.push(source);
+      pythonMocks.activeTextEditor = textEditor(source, 1);
+      const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
+      pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+        if (id === "jupyter.runcurrentcell") {
+          interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 0, "run-cell", true));
+          pythonMocks.notebookDocuments.push(interactive.document);
+        }
+        return undefined;
+      });
+      const frame = pandasFrame("frame");
+      pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
+
+      await command("openWrangler.runPythonCellAndOpenVariable")();
+
+      expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.runcurrentcell");
+      expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("jupyter.runFileInteractive", expect.anything());
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+    }
+  );
+
+  it("never runs Python code in an untrusted workspace", async () => {
+    const source = textDocument("file:///workspace/analysis.py", "frame = make_frame()\n");
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = textEditor(source, 0);
+    pythonMocks.isTrusted = false;
+
+    await command("openWrangler.runPythonCellAndOpenVariable")();
+
+    expect(pythonMocks.executeCommand).not.toHaveBeenCalled();
+    expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Trust this workspace before Open Wrangler runs Python code."
+    );
+  });
+
+  it("does not run the whole file when it contains cells but the cursor is outside a runnable cell", async () => {
+    const source = textDocument("file:///workspace/analysis.py", "notes = 'before'\n# %%\nframe = make_frame()\n");
     pythonMocks.textDocuments.push(source);
     pythonMocks.activeTextEditor = textEditor(source, 0);
 
@@ -874,9 +1017,25 @@ describe("Python Interactive Window entry points", () => {
 
     expect(pythonMocks.executeCommand).not.toHaveBeenCalled();
     expect(pythonMocks.showInformationMessage).toHaveBeenCalledWith(
-      "Place the cursor in a Python code cell marked # %%, then try again."
+      "Place the cursor in a runnable Python cell, then try again."
     );
   });
+
+  it.each(["# %% [markdown]", "# <markdowncell>"])(
+    "does not run a markdown cell marked %s as a whole Python file",
+    async (marker) => {
+      const source = textDocument("file:///workspace/analysis.py", `${marker}\n# notes\n`);
+      pythonMocks.textDocuments.push(source);
+      pythonMocks.activeTextEditor = textEditor(source, 1);
+
+      await command("openWrangler.runPythonCellAndOpenVariable")();
+
+      expect(pythonMocks.executeCommand).not.toHaveBeenCalled();
+      expect(pythonMocks.showInformationMessage).toHaveBeenCalledWith(
+        "Place the cursor in a runnable Python cell, then try again."
+      );
+    }
+  );
 
   it("reruns the current cell in its associated window before offering live dataframes", async () => {
     const source = textDocument("file:///workspace/analysis.py", "# %%\nfirst = make_frame()\n");
