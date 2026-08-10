@@ -61,6 +61,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Sort-priority actions are now available from each Filters / Sorts row's context menu. The inline controls remain,
+  but a narrow VS Code or Cursor sidebar can no longer make reordering inaccessible.
 - Filtering from a column profile now saves that column selection before loading the filtered rows, so the Column
   panel no longer jumps back to the previously selected column.
 - Clicking a value or histogram bin in a column header now opens Column profiles with the active filter and its
