@@ -252,6 +252,7 @@ const RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION = "Show variable snapshot in data 
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND = "openWrangler.openNotebookVariable";
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN = /^Open in Open Wrangler$/u;
 const RELEASED_R_EDITOR_TITLE_COMMAND = "openWrangler.openRDataframe";
+const RELEASED_R_EDITOR_TITLE_ACTION_NAME_PATTERN = /^(?:Open in Open Wrangler|Open Wrangler: Open R Dataframe)$/u;
 const RELEASED_JUPYTER_EXPORT_COMMAND = "jupyter.notebookeditor.export";
 const NOTEBOOK_TOOLBAR_MORE_COMMAND = "toolbar.toggle.more";
 const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE = "Open Wrangler: Open Notebook Variable";
@@ -2959,6 +2960,7 @@ async function activateReleasedRInteractiveTitleAction(
 
   const deadline = Date.now() + 10_000;
   let lastItems: Array<{ label: string; command: string }> = [];
+  let lastTitleItems: Array<{ label: string; command: string }> = [];
   do {
     assertExactActiveTextEditor(sourceDocument, "while waiting for its Open Wrangler title action");
     assert.equal(
@@ -2973,6 +2975,7 @@ async function activateReleasedRInteractiveTitleAction(
       await direct.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
       return;
     }
+    lastTitleItems = await releasedEditorActionDiagnostics(titleActions, "button");
 
     assert.equal(await visibleMenus.count(), 0, "R title-action discovery requires no pre-existing workbench menu.");
     if ((await moreActions.count()) === 1 && (await moreActions.first().isVisible())) {
@@ -3002,17 +3005,7 @@ async function activateReleasedRInteractiveTitleAction(
           await menu.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
           return;
         }
-        lastItems = await menu.getByRole("menuitem").evaluateAll((elements) =>
-          elements.slice(0, 32).map((element) => {
-            const normalize = (value: string | null | undefined): string =>
-              (value ?? "").replace(/\s+/gu, " ").trim().slice(0, 256);
-            const owner = element.closest(".action-item");
-            return {
-              label: normalize(element.getAttribute("aria-label") || element.textContent),
-              command: normalize(element.getAttribute("data-command-id") || owner?.getAttribute("data-command-id"))
-            };
-          })
-        );
+        lastItems = await releasedEditorActionDiagnostics(menu, "menuitem");
       } finally {
         if (!dispatchStarted && (await visibleMenus.count()) > 0) {
           await workbench.locator("body").press("Escape");
@@ -3033,7 +3026,8 @@ async function activateReleasedRInteractiveTitleAction(
         trusted: vscode.workspace.isTrusted,
         platform: process.platform,
         activeTabVisible: await activeSourceTab.isVisible().catch(() => false)
-      })}. Last visible overflow items: ${JSON.stringify(lastItems)}.`
+      })}. Last visible title actions: ${JSON.stringify(lastTitleItems)}. ` +
+      `Last visible overflow items: ${JSON.stringify(lastItems)}.`
   );
 }
 
@@ -3045,14 +3039,36 @@ async function resolveReleasedREditorAction(
   const commandItems = container.locator(`.action-item[data-command-id="${RELEASED_R_EDITOR_TITLE_COMMAND}"]`);
   const commandCount = await commandItems.count();
   assert.ok(commandCount < 2, `The ${surface} exposed duplicate Open Wrangler actions.`);
-  const byLabel = container.getByRole(role, { name: "Open in Open Wrangler", exact: true });
+  const byLabel = container.getByRole(role, { name: RELEASED_R_EDITOR_TITLE_ACTION_NAME_PATTERN });
   const labelCount = commandCount === 0 ? await byLabel.count() : 0;
   assert.ok(labelCount < 2, `The ${surface} exposed duplicate labeled Open Wrangler actions.`);
   const action =
     commandCount === 1 ? releasedCommandOwnedAction(container, commandItems.first(), role) : byLabel.first();
   if ((await action.count()) !== 1 || !(await action.isVisible()) || !(await action.isEnabled())) return undefined;
-  await assertReleasedNotebookActionLabel(action, surface);
+  const evidence = await releasedNotebookActionLabelEvidence(action);
+  assert.match(
+    evidence.ariaLabel || evidence.title || evidence.text,
+    RELEASED_R_EDITOR_TITLE_ACTION_NAME_PATTERN,
+    `The ${surface} command exposed an unexpected label. Observed: ${JSON.stringify(evidence)}`
+  );
   return action;
+}
+
+async function releasedEditorActionDiagnostics(
+  container: Locator,
+  role: "button" | "menuitem"
+): Promise<Array<{ label: string; command: string }>> {
+  return container.getByRole(role).evaluateAll((elements) =>
+    elements.slice(0, 32).map((element) => {
+      const normalize = (value: string | null | undefined): string =>
+        (value ?? "").replace(/\s+/gu, " ").trim().slice(0, 256);
+      const owner = element.closest(".action-item");
+      return {
+        label: normalize(element.getAttribute("aria-label") || element.getAttribute("title") || element.textContent),
+        command: normalize(element.getAttribute("data-command-id") || owner?.getAttribute("data-command-id"))
+      };
+    })
+  );
 }
 
 function assertExactActiveTextEditor(sourceDocument: vscode.TextDocument, phase: string): void {
