@@ -11,7 +11,7 @@ import { RInteractiveSessionTransport } from "../extension/r/rInteractiveSession
 
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const rExecutable = process.env.R ?? "/usr/bin/R";
+const rExecutable = process.env.R ?? "R";
 
 describe.skipIf(!enabled)("official R extension interactive transport", () => {
   it("publishes one workspace scan to two transports without echoing Open Wrangler requests", async () => {

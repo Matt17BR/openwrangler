@@ -12,7 +12,7 @@ import type { RKernelPageWindow } from "../extension/r/rKernelProtocol";
 const enabled = process.env.OPEN_WRANGLER_R_CONTRACT_TESTS === "1";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const runtimeRoot = resolve(root, "r/openwrangler_runtime");
-const rscriptPath = process.env.RSCRIPT ?? "/usr/bin/Rscript";
+const rscriptPath = process.env.RSCRIPT ?? "Rscript";
 
 describe.skipIf(!enabled)("plain R process transport", () => {
   it("streams committed CSV and Parquet exports through bounded host chunks without changing the source frame", async () => {

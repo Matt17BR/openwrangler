@@ -4,7 +4,8 @@ import { delimiter, isAbsolute, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const rscript = resolveExecutable(process.env.RSCRIPT ?? "Rscript");
-const rEnvironment = { ...process.env, RSCRIPT: rscript };
+const r = resolveExecutable(process.env.R ?? "R");
+const rEnvironment = { ...process.env, R: r, RSCRIPT: rscript };
 
 function resolveExecutable(command) {
   const candidates = isAbsolute(command)
