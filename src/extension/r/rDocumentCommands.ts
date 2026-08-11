@@ -302,14 +302,8 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
   }
 
   if (usesR) {
-    // Capture only after actionable integration checks, then dispatch exclusively through that exact terminal.
+    // Reuse an exact known R session when possible. The transport starts and pins one when none exists.
     const rSession = providers.r.captureActiveSession();
-    if (!rSession) {
-      void vscode.window.showInformationMessage(
-        "Start or select the exact R terminal that owns this document before running its chunk in Open Wrangler."
-      );
-      return false;
-    }
     if (!isCurrentLiterateDocumentOrigin(origin)) {
       showStaleLiterateDocument();
       return false;

@@ -469,6 +469,25 @@ describe("R document command", () => {
     expect(mocks.transportOptions).toHaveLength(0);
   });
 
+  it("lets the R provider start a session for a Quarto chunk when none is attached", async () => {
+    const document = rDocument("/workspace/orders.qmd", "```{r}\norders <- data.frame(id = 1:3)\n```\n");
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = textEditor(document, 1);
+    mocks.getCommands.mockResolvedValue(["quarto.runCurrentCell", "r.runSelection"]);
+    const providers = literateProviders();
+    providers.r.runLiterateChunkAndOpen.mockResolvedValueOnce(true);
+    register(coordinatorMock(), providers.value);
+
+    await expect(cursorCommand()()).resolves.toBe(true);
+
+    expect(providers.r.runLiterateChunkAndOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ document, chunk: expect.objectContaining({ language: "r" }) }),
+      undefined,
+      "orders <- data.frame(id = 1:3)\n"
+    );
+    expect(mocks.showInformationMessage).not.toHaveBeenCalledWith(expect.stringContaining("Start or select"));
+  });
+
   it("runs only the cursor-owned R Markdown R chunk through the official R command", async () => {
     const document = rDocument(
       "/workspace/orders.Rmd",

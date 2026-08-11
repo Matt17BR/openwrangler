@@ -37,6 +37,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Quarto and R Markdown cells now reuse the R session Open Wrangler is already tracking. If there is no R session,
+  Open Wrangler starts one through the R extension instead of asking the user to do it first. Automatic dataframe
+  discovery waits until the cell has finished, so it cannot interrupt the picker.
 - A dataframe produced by the first Python notebook execution now gets an **Open in Open Wrangler** cell action when
   the automatic formatter was not ready yet. The action opens that exact executed result from the same notebook and
   kernel; it does not run the cell again. The action appears only after a type check that leaves notebook history
