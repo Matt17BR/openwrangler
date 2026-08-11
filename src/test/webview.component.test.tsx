@@ -1089,6 +1089,102 @@ describe("DataGrid", () => {
     expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:1" }));
   });
 
+  it("filters Boolean values from the compact header with native buttons", () => {
+    const booleanMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: 1 },
+      filteredShape: { rows: 4, columns: 1 },
+      schema: [{ id: "c:flag", name: "flag", position: 0, rawType: "Boolean", type: "boolean", nullable: false }]
+    };
+    const booleanPage: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 4,
+      columnIds: ["c:flag"],
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: [{ kind: "boolean", raw: true, display: "true", isNull: false, isNaN: false }]
+        }
+      ]
+    };
+    const onApplyProfileFilter = vi.fn();
+    const onViewStateChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={booleanMetadata}
+        page={booleanPage}
+        summaries={[
+          {
+            columnId: "c:flag",
+            column: "flag",
+            type: "boolean",
+            rawType: "Boolean",
+            totalCount: 4,
+            nullCount: 0,
+            nanCount: 0,
+            distinctCount: 2,
+            topValues: [],
+            visualization: { kind: "boolean", trueCount: 3, falseCount: 1 }
+          }
+        ]}
+        pageSize={1}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
+        profileValueMode="count"
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onApplyProfileFilter={onApplyProfileFilter}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+        onViewStateChange={onViewStateChange}
+      />
+    );
+    onViewStateChange.mockClear();
+
+    const distribution = screen.getByRole("group", {
+      name: "boolean distribution: True: 3 (75%), False: 1 (25%)."
+    });
+    const trueButton = within(distribution).getByRole("button", {
+      name: "Filter flag to True; True: 3 (75%)"
+    });
+    const falseButton = within(distribution).getByRole("button", {
+      name: "Filter flag to False; False: 1 (25%)"
+    });
+    trueButton.focus();
+    expect(trueButton).toHaveFocus();
+
+    fireEvent.click(trueButton);
+    expect(onApplyProfileFilter).toHaveBeenLastCalledWith({
+      column: "flag",
+      type: "boolean",
+      logic: "and",
+      valueFilter: {
+        kind: "values",
+        selectedValues: [true],
+        includeNulls: false,
+        includeNaN: false
+      },
+      predicates: []
+    });
+    expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:flag" }));
+
+    fireEvent.click(falseButton);
+    expect(onApplyProfileFilter).toHaveBeenLastCalledWith({
+      column: "flag",
+      type: "boolean",
+      logic: "and",
+      valueFilter: {
+        kind: "values",
+        selectedValues: [false],
+        includeNulls: false,
+        includeNaN: false
+      },
+      predicates: []
+    });
+  });
+
   it("bounds very long cell text before it reaches the DOM", () => {
     const longValue = "x".repeat(10_000);
     const longPage: GridPage = {
