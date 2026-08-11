@@ -44,6 +44,7 @@ const activeModel: FilterModel = {
     {
       column: "city",
       type: "string",
+      logic: "or",
       valueFilter: {
         kind: "values",
         selectedValues: [typedMilan, "Paris"],
@@ -55,6 +56,7 @@ const activeModel: FilterModel = {
     {
       column: "sales",
       type: "float",
+      logic: "and",
       valueFilter: {
         kind: "values",
         selectedValues: [],
@@ -89,8 +91,14 @@ describe("ActiveFilterBar", () => {
 
     const bar = screen.getByRole("region", { name: "Viewing filters" });
     expect(within(bar).getByText("2 filtered columns; match any")).toBeVisible();
-    expect(within(bar).getByRole("group", { name: "city filters" })).toHaveTextContent("string");
-    expect(within(bar).getByRole("group", { name: "sales filters" })).toHaveTextContent("float");
+    const cityFilters = within(bar).getByRole("group", {
+      name: "city filters, match any conditions within this column"
+    });
+    const salesFilters = within(bar).getByRole("group", {
+      name: "sales filters, match all conditions within this column"
+    });
+    expect(cityFilters).toHaveTextContent("stringMatch any");
+    expect(salesFilters).toHaveTextContent("floatMatch all");
     expect(within(bar).getByRole("button", { name: 'Remove equals "Milan" (string) filter from city' })).toBeVisible();
     expect(within(bar).getByRole("button", { name: "Remove is null filter from sales" })).toBeVisible();
     expect(within(bar).getByRole("button", { name: "Remove is NaN filter from sales" })).toBeVisible();

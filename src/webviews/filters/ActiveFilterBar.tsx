@@ -13,11 +13,20 @@ interface ActiveFilterBarProps {
   model: FilterModel;
   disabled?: boolean;
   canUndo: boolean;
+  retainVisible?: boolean;
   onApply(model: FilterModel): void;
   onUndo(): void;
 }
 
-export function ActiveFilterBar({ metadata, model, disabled = false, canUndo, onApply, onUndo }: ActiveFilterBarProps) {
+export function ActiveFilterBar({
+  metadata,
+  model,
+  disabled = false,
+  canUndo,
+  retainVisible = false,
+  onApply,
+  onUndo
+}: ActiveFilterBarProps) {
   const region = useRef<HTMLElement | null>(null);
   const nextFocusIndex = useRef<number | undefined>(undefined);
   const activeFilters = useMemo(() => model.filters.filter(isActiveColumnFilter), [model.filters]);
@@ -25,14 +34,22 @@ export function ActiveFilterBar({ metadata, model, disabled = false, canUndo, on
   useLayoutEffect(() => {
     const requestedIndex = nextFocusIndex.current;
     if (requestedIndex === undefined) return;
-    nextFocusIndex.current = undefined;
     const buttons = [...(region.current?.querySelectorAll<HTMLButtonElement>("[data-view-filter-rule]") ?? [])];
+    if (disabled) {
+      region.current?.focus();
+      return;
+    }
+    nextFocusIndex.current = undefined;
     const target = buttons[Math.min(requestedIndex, Math.max(0, buttons.length - 1))];
     if (target && !target.disabled) target.focus();
-    else region.current?.focus();
-  }, [activeFilters]);
+    else {
+      const undo = region.current?.querySelector<HTMLButtonElement>("[data-view-filter-undo]");
+      if (undo && !undo.disabled) undo.focus();
+      else region.current?.focus();
+    }
+  }, [activeFilters, canUndo, disabled]);
 
-  if (activeFilters.length === 0 && !canUndo) return null;
+  if (activeFilters.length === 0 && !canUndo && !retainVisible) return null;
 
   const applyRuleRemoval = (nextFilter: ColumnFilter, trigger: HTMLButtonElement) => {
     if (disabled) return;
@@ -70,7 +87,13 @@ export function ActiveFilterBar({ metadata, model, disabled = false, canUndo, on
           >
             Clear filters
           </button>
-          <button type="button" className="secondaryButton" disabled={disabled || !canUndo} onClick={onUndo}>
+          <button
+            type="button"
+            className="secondaryButton"
+            data-view-filter-undo
+            disabled={disabled || !canUndo}
+            onClick={onUndo}
+          >
             <span className="codicon codicon-discard" aria-hidden="true" /> Undo latest filter
           </button>
         </div>
@@ -79,11 +102,23 @@ export function ActiveFilterBar({ metadata, model, disabled = false, canUndo, on
         <div className="viewFilterRows" aria-label="Active viewing filter rules">
           {activeFilters.map((filter) => {
             const columnLabel = activeFilterColumnLabel(filter.column, metadata);
+            const conditionCount = activeFilterConditionCount(filter);
+            const rowLogic = filter.logic === "or" ? "any" : "all";
             return (
-              <div key={filter.column} className="viewFilterRow" role="group" aria-label={`${columnLabel} filters`}>
+              <div
+                key={filter.column}
+                className="viewFilterRow"
+                role="group"
+                aria-label={`${columnLabel} filters${
+                  conditionCount > 1 ? `, match ${rowLogic} conditions within this column` : ""
+                }`}
+              >
                 <span className="viewFilterColumn">
                   <strong>{columnLabel}</strong>
-                  <small title={`Semantic type: ${filter.type}`}>{filter.type}</small>
+                  <small className="viewFilterType" title={`Semantic type: ${filter.type}`}>
+                    {filter.type}
+                  </small>
+                  {conditionCount > 1 && <small className="viewFilterRowLogic">Match {rowLogic}</small>}
                 </span>
                 <div className="viewFilterRules">
                   {(filter.valueFilter?.selectedValues ?? []).map((value) => {
@@ -165,6 +200,15 @@ export function ActiveFilterBar({ metadata, model, disabled = false, canUndo, on
         </div>
       )}
     </section>
+  );
+}
+
+function activeFilterConditionCount(filter: ColumnFilter): number {
+  return (
+    (filter.valueFilter?.selectedValues.length ?? 0) +
+    (filter.valueFilter?.includeNulls ? 1 : 0) +
+    (filter.valueFilter?.includeNaN ? 1 : 0) +
+    filter.predicates.length
   );
 }
 

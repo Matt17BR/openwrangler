@@ -168,6 +168,77 @@ describe("App confirmed viewing-filter history", () => {
     await waitFor(() => expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument());
   });
 
+  it("carries a pending filter undo through a superseding sort request", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await applyCellFilter("Milan", "Keep only this value");
+    confirmPage(lastPageRequest());
+
+    const bar = await screen.findByRole("region", { name: "Viewing filters" });
+    webviewPostMessage.mockClear();
+    fireEvent.click(within(bar).getByRole("button", { name: "Undo latest filter" }));
+    const undo = lastPageRequest();
+
+    const salesHeader = document.querySelector<HTMLElement>('th[data-column="sales"]');
+    if (!salesHeader) throw new Error("Expected the sales header.");
+    fireEvent.click(within(salesHeader).getByLabelText("Column actions for sales"));
+    fireEvent.click(within(salesHeader).getByRole("button", { name: "Sort ascending" }));
+    const sortedUndo = lastPageRequest();
+
+    expect(sortedUndo.viewRequestId).not.toBe(undo.viewRequestId);
+    expect(sortedUndo.filterModel).toEqual({
+      filters: [],
+      sort: [{ column: "sales", direction: "asc", nulls: "last" }]
+    });
+    confirmPage(undo);
+    expect(screen.getByRole("region", { name: "Viewing filters" })).toBeInTheDocument();
+    confirmPage(sortedUndo);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument());
+    expect(document.querySelector<HTMLElement>('th[data-column="sales"]')).toHaveAccessibleName(
+      "sales, sorted ascending"
+    );
+  });
+
+  it("keeps a stable focus target while the final filter removal is confirmed or restored", async () => {
+    const restoredFilterModel: SessionMetadata["filterModel"] = {
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "equals", value: "Milan" }]
+        }
+      ],
+      sort: metadata.filterModel.sort
+    };
+    const restoredMetadata = { ...metadata, filterModel: restoredFilterModel } satisfies SessionMetadata;
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: restoredMetadata, page, summaries: [] });
+
+    const bar = await screen.findByRole("region", { name: "Viewing filters" });
+    let chip = within(bar).getByRole("button", { name: 'Remove equals "Milan" filter from city' });
+    chip.focus();
+    fireEvent.click(chip);
+    const failedRemoval = lastPageRequest();
+    expect(bar).toHaveFocus();
+    expect(within(bar).getByText("No active filters")).toBeVisible();
+
+    dispatchAppMessage({
+      kind: "error",
+      code: "filter_failed",
+      message: "The filter failed.",
+      recoverable: true,
+      sessionId: restoredMetadata.sessionId,
+      viewRequestId: failedRemoval.viewRequestId
+    });
+    chip = await within(bar).findByRole("button", { name: 'Remove equals "Milan" filter from city' });
+    expect(chip).toHaveFocus();
+
+    fireEvent.click(chip);
+    confirmPage(lastPageRequest(), restoredMetadata);
+    expect(await within(bar).findByText("No active filters")).toBeVisible();
+    expect(within(bar).getByRole("button", { name: "Undo latest filter" })).toHaveFocus();
+  });
+
   it("keeps cleaning Undo distinct and resets filter history after a confirmed mutation or session replacement", async () => {
     const step: TransformStep = {
       id: "rename-city",

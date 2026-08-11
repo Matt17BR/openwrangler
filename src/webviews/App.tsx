@@ -30,6 +30,7 @@ import {
 import {
   compactFilterModel,
   emptyFilterModel,
+  hasActiveFilters,
   prioritizeSortRule,
   replaceViewColumnFilter,
   viewSortModelSignature,
@@ -45,6 +46,7 @@ import {
   emptyConfirmedFilterHistory,
   latestConfirmedFilterUndo,
   recordConfirmedFilterTransition,
+  sameConfirmedFilters,
   type ConfirmedFilterHistory,
   type ConfirmedFilterState
 } from "./filters/filterHistory";
@@ -2090,6 +2092,13 @@ export function App() {
       return;
     }
     const nextModel = compactFilterModel(model);
+    const pendingPage = latestPageRequest.current;
+    let filterHistoryUndoTarget = options.filterHistoryUndoTarget;
+    if (filterHistoryUndoTarget && !sameConfirmedFilters(nextModel, filterHistoryUndoTarget)) return;
+    if (pendingPage?.filterHistoryUndoTarget) {
+      if (!sameConfirmedFilters(nextModel, pendingPage.filterHistoryUndoTarget)) return;
+      filterHistoryUndoTarget ??= pendingPage.filterHistoryUndoTarget;
+    }
     const capabilityMetadata = metadataRef.current;
     if (
       capabilityMetadata &&
@@ -2100,7 +2109,6 @@ export function App() {
     ) {
       return;
     }
-    const pendingPage = latestPageRequest.current;
     const sameDesiredModel = sameFilterModel(nextModel, filterModelRef.current);
     if (sameDesiredModel && pendingPage && sameFilterModel(nextModel, pendingPage.model)) {
       return;
@@ -2116,8 +2124,8 @@ export function App() {
         reason: failed.reason,
         ...(failed.filterHistoryUndoTarget
           ? { filterHistoryUndoTarget: failed.filterHistoryUndoTarget }
-          : options.filterHistoryUndoTarget
-            ? { filterHistoryUndoTarget: options.filterHistoryUndoTarget }
+          : filterHistoryUndoTarget
+            ? { filterHistoryUndoTarget }
             : {})
       });
       return;
@@ -2133,7 +2141,7 @@ export function App() {
 
     requestPage(0, nextModel, {
       changesView: true,
-      ...(options.filterHistoryUndoTarget ? { filterHistoryUndoTarget: options.filterHistoryUndoTarget } : {})
+      ...(filterHistoryUndoTarget ? { filterHistoryUndoTarget } : {})
     });
   };
 
@@ -2816,6 +2824,7 @@ export function App() {
                 model={filterModel}
                 disabled={loading || projectionLoading || mutationPending || importOptionsPending || inspectionMode}
                 canUndo={confirmedFilterHistory.entries.length > 0}
+                retainVisible={hasActiveFilters(metadata.filterModel)}
                 onApply={applyFilters}
                 onUndo={undoLatestFilter}
               />
