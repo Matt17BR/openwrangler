@@ -441,6 +441,13 @@ Use isolated `--user-data-dir` and `--extensions-dir` directories. Never install
 5. Export code to clipboard, script, and notebook; export data to CSV and Parquet. For scripts, select a new path through the real Save dialog, cancel a second dialog, and attempt exact, normalized, symlink, and hard-link source aliases. Verify sources and prior destinations are unchanged and no sibling temp remains.
 6. Open live Pandas and Polars notebook variables plus a viewing-only DuckDB relation; exercise inline and
    expanded output, then keep a filtered, ordered multi-sort DuckDB view open while restarting the kernel.
+   In a fresh profile, execute one supported Python dataframe cell before Open Wrangler's formatter is ready. Use
+   the cell's **Open in Open Wrangler** action once and verify that the exact live result opens without changing the
+   cell's execution order. Rebind its normal variable name before the panel finishes and confirm the executed object
+   still opens. Confirm that `display(frame)`, printed output, Styler, and unrelated HTML do not expose the action.
+   Keep another notebook visible during the click and confirm it is never used. Open a second split while lookup is
+   pending and confirm the launch stops. Select a replacement kernel with matching input and output history, then
+   restart the original kernel and reuse the old execution number; neither old action may open the unrelated result.
    Recreate the relation in the exact replacement process before recovery, prove the public session, schema,
    filter/sort model, widths, selection, and viewport survive while its private runtime identity changes, and
    require both the coordinator and replacement kernel manager to reach zero sessions after close. DuckDB must
