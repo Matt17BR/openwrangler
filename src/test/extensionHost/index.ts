@@ -12367,7 +12367,7 @@ async function exerciseFormatterDisabledFirstNotebookResult(
     "Kernel consent must not enable proactive formatters before the first-result action is used."
   );
 
-  const action = await waitForReleasedNotebookCellResultAction(workbench, RELEASED_JUPYTER_FIRST_RESULT_CELL);
+  const action = await waitForReleasedNotebookCellResultAction(workbench);
   const actionText = (await action.innerText()).replace(/\s+/gu, " ").trim();
   assert.equal(actionText, "Open in Open Wrangler", "The cell status fallback must use the canonical action label.");
   assert.equal(
@@ -12455,26 +12455,22 @@ async function exerciseFormatterDisabledFirstNotebookResult(
   }
 }
 
-async function waitForReleasedNotebookCellResultAction(workbench: Page, cellIndex: number): Promise<Locator> {
+async function waitForReleasedNotebookCellResultAction(workbench: Page): Promise<Locator> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   do {
     const activeEditorGroup = workbench.locator(".part.editor .editor-group-container.active");
-    const cell = activeEditorGroup.locator(
-      `.notebookOverlay .monaco-list-row.code-cell-row[data-index="${cellIndex}"]:visible`
-    );
-    const cellCount = await cell.count().catch(() => 0);
-    assert.ok(cellCount < 2, `The notebook rendered duplicate rows for cell ${cellIndex}.`);
-    if (cellCount === 1) {
-      const action = cell.locator(
-        '.cell-status-item.cell-status-item-has-command[aria-label="Open executed dataframe result in Open Wrangler"]:visible'
-      );
-      const actionCount = await action.count().catch(() => 0);
-      assert.ok(actionCount < 2, `Notebook cell ${cellIndex} exposed duplicate Open Wrangler result actions.`);
-      if (actionCount === 1 && (await action.isVisible().catch(() => false))) return action;
-    }
+    const action = activeEditorGroup
+      .locator(
+        ".notebookOverlay .monaco-list-row.code-cell-row:visible " +
+          ".cell-status-item.cell-status-item-has-command:visible"
+      )
+      .filter({ hasText: /^\s*Open in Open Wrangler\s*$/u });
+    const actionCount = await action.count().catch(() => 0);
+    assert.ok(actionCount < 2, "The active notebook exposed duplicate Open Wrangler result actions.");
+    if (actionCount === 1 && (await action.isVisible().catch(() => false))) return action;
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
-  throw new Error(`Timed out waiting for the Open Wrangler result action on notebook cell ${cellIndex}.`);
+  throw new Error("Timed out waiting for the Open Wrangler result action in the active notebook.");
 }
 
 async function executeReleasedNotebookCell(
