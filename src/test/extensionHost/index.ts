@@ -12082,11 +12082,20 @@ function assertExactOpenNotebookDocument(notebook: vscode.NotebookDocument, chec
 
 async function showExactReleasedNotebook(notebook: vscode.NotebookDocument): Promise<vscode.NotebookEditor> {
   assertExactOpenNotebookDocument(notebook, "before showing its exact editor");
+  const existingEditors = vscode.window.visibleNotebookEditors.filter((candidate) => candidate.notebook === notebook);
+  assert.ok(
+    existingEditors.length <= 1,
+    "A released-Jupyter notebook must not already be visible in multiple editor groups."
+  );
+  const existingEditor = existingEditors[0];
   const editor = await vscode.window.showNotebookDocument(notebook, {
-    viewColumn: vscode.ViewColumn.One,
+    viewColumn: existingEditor?.viewColumn ?? vscode.ViewColumn.One,
     preserveFocus: false,
     preview: false
   });
+  if (existingEditor) {
+    assert.equal(editor, existingEditor, "Showing a visible released-Jupyter notebook must reuse its exact editor.");
+  }
   assert.equal(editor.notebook, notebook, "Showing a released-Jupyter notebook must retain its exact editor.");
   assertExactOpenNotebookDocument(notebook, "after showing its exact editor");
   assertExactVisibleReleasedNotebookEditor(notebook, editor, "after showing its exact editor");
