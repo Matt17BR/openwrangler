@@ -57,6 +57,7 @@ import {
 } from "./packaged-editor-orchestration.mjs";
 import {
   acceptancePythonForPhase,
+  addJupyterAcceptancePythonKernel,
   appendJupyterAcceptanceRKernelBootstrapStage,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
@@ -440,6 +441,15 @@ try {
             );
             await probeJupyterAcceptanceRKernel(testPython, rAcceptanceEnvironment);
             if (process.platform === "linux" && process.arch === "x64") {
+              if (rJourneySelector !== "interactive-terminal") {
+                writeCorrelatedProgress(
+                  orchestrationProgressPath,
+                  orchestrationRunId,
+                  "setup",
+                  "setup:prepare-quarto-python-kernel"
+                );
+                addJupyterAcceptancePythonKernel(rAcceptanceEnvironment, testPython);
+              }
               writeCorrelatedProgress(
                 orchestrationProgressPath,
                 orchestrationRunId,
