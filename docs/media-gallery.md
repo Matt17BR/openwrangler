@@ -54,7 +54,7 @@ latest filter can be undone, or all filters can be cleared without changing the 
     <td width="50%"><a href="images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with priority, reorder, edit, and remove controls" src="images/readme/v1.2/gallery/sort-priority.png" width="448"></a></td>
   </tr>
   <tr>
-    <td>Counts / % is shared by header summaries and Column profiles. Focus a bin to see both values.</td>
+    <td>Counts / % is shared by header summaries and Column profiles. Focus a histogram bin to see its range, row count, and percentage.</td>
     <td>Reorder sort keys, change their direction and null placement, or remove them.</td>
   </tr>
 </table>
