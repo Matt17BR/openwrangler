@@ -63,9 +63,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   100,000-row sample. A non-empty search still uses exact counts within the existing native R search limit.
 - R dataframes now open when an atomic or classed column carries an ordinary aligned `names` attribute. Malformed
   names metadata and unrelated column attributes are still rejected.
-- Python Interactive windows now expose the same **Open in Open Wrangler** action as `.ipynb` notebooks. The action
-  lists dataframes from that exact live kernel, and Operations refreshes from the same window instead of asking the
-  user to return to the source `.py` cell.
+- Python Interactive windows now expose **Open in Open Wrangler** in their native toolbar, next to Jupyter Variables.
+  The action lists dataframes from that exact live kernel, and Operations refreshes from the same window instead of
+  asking the user to return to the source `.py` cell.
 - Public README checks now retry when a registry page replaces an image while Playwright is inspecting it. Other
   rendering failures still stop immediately.
 

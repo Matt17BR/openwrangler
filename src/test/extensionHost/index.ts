@@ -256,6 +256,7 @@ const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN = /^Open in Open Wra
 const RELEASED_R_EDITOR_TITLE_COMMAND = "openWrangler.openRDataframe";
 const RELEASED_R_EDITOR_TITLE_ACTION_NAME_PATTERN = /^(?:Open in Open Wrangler|Open Wrangler: Open R Dataframe)$/u;
 const RELEASED_JUPYTER_EXPORT_COMMAND = "jupyter.notebookeditor.export";
+const RELEASED_JUPYTER_INTERACTIVE_EXPORT_COMMAND = "jupyter.interactive.exportasnotebook";
 const NOTEBOOK_TOOLBAR_MORE_COMMAND = "toolbar.toggle.more";
 const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE = "Open Wrangler: Open Notebook Variable";
 const PACKAGED_FILE_ACTION_MEDIA_HEIGHT = 865;
@@ -809,8 +810,7 @@ export async function run(): Promise<void> {
     ),
     "R document sessions must expose generated-code insertion only when their exact source is active."
   );
-  const notebookVariableWhen =
-    "(notebookType == 'jupyter-notebook' || notebookType == 'interactive') && isWorkspaceTrusted";
+  const notebookVariableWhen = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
   const notebookVariableToolbarWhen =
     `${notebookVariableWhen} && config.notebook.globalToolbar == true && ` +
     "!openWrangler.forceNotebookEditorTitleAction";
@@ -831,6 +831,16 @@ export async function run(): Promise<void> {
       group: "navigation@50"
     });
   }
+  const interactiveEntries = contributions.menus?.["interactive/toolbar"]?.filter(
+    (item) => item.command === "openWrangler.openNotebookVariable"
+  );
+  assert.deepEqual(interactiveEntries, [
+    {
+      command: "openWrangler.openNotebookVariable",
+      when: "isWorkspaceTrusted",
+      group: "navigation@2"
+    }
+  ]);
   assert.deepEqual(
     contributions.keybindings?.map((binding) => ({
       command: binding.command,
@@ -13683,7 +13693,7 @@ async function activateReleasedNotebookVariableAction(
   notebook: vscode.NotebookDocument,
   afterActivation?: () => Promise<void>
 ): Promise<Locator> {
-  assertReleasedNotebookActionLabelOwnership();
+  assertReleasedNotebookActionLabelOwnership(notebook.notebookType);
   const cursorHost = process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor";
   const globalToolbar = vscode.workspace.getConfiguration("notebook").get<boolean>("globalToolbar");
   if (cursorHost) {
@@ -13707,7 +13717,7 @@ async function activateReleasedNotebookVariableAction(
     );
   }
   const prepared =
-    cursorHost || globalToolbar !== true
+    notebook.notebookType !== "interactive" && (cursorHost || globalToolbar !== true)
       ? await resolveReleasedNotebookEditorTitleAction(workbench)
       : await resolveReleasedNotebookToolbarAction(workbench);
   let dispatchStarted = false;
@@ -13744,20 +13754,21 @@ async function activateReleasedNotebookVariableAction(
   }
 }
 
-function assertReleasedNotebookActionLabelOwnership(): void {
+function assertReleasedNotebookActionLabelOwnership(notebookType: string): void {
+  const menuId = notebookType === "interactive" ? "interactive/toolbar" : "notebook/toolbar";
   const owners: Array<{ extensionId: string; command: string }> = [];
   for (const extension of vscode.extensions.all) {
     const contributions = (
       extension.packageJSON as {
         contributes?: {
           commands?: unknown;
-          menus?: { "notebook/toolbar"?: unknown };
+          menus?: Record<string, unknown>;
         };
       }
     ).contributes;
     const commands = contributions?.commands;
     if (!Array.isArray(commands)) continue;
-    const toolbarItems = contributions?.menus?.["notebook/toolbar"];
+    const toolbarItems = contributions?.menus?.[menuId];
     if (!Array.isArray(toolbarItems)) continue;
     const toolbarCommands = new Set(
       toolbarItems.flatMap((candidate) => {
@@ -14313,6 +14324,10 @@ async function releasedNotebookToolbarDiagnostics(
 ): Promise<unknown> {
   const registeredCommands = await vscode.commands.getCommands(true);
   const jupyter = vscode.extensions.getExtension("ms-toolsai.jupyter");
+  const jupyterExportCommand =
+    vscode.window.activeNotebookEditor?.notebook.notebookType === "interactive"
+      ? RELEASED_JUPYTER_INTERACTIVE_EXPORT_COMMAND
+      : RELEASED_JUPYTER_EXPORT_COMMAND;
   const frames = await Promise.all(
     releasedWorkbenchFrames(workbench)
       .slice(0, NOTEBOOK_RENDERER_TARGET_LIMIT)
@@ -14346,7 +14361,7 @@ async function releasedNotebookToolbarDiagnostics(
           editorTitleAction.total === 1
             ? await releasedNotebookActionLabelEvidence(editorTitleActionLocator)
             : undefined;
-        const jupyterExport = notebookToolbarCommandItems(toolbars, RELEASED_JUPYTER_EXPORT_COMMAND);
+        const jupyterExport = notebookToolbarCommandItems(toolbars, jupyterExportCommand);
         return {
           notebookEditors: await releasedLocatorState(notebookEditors),
           toolbars: await releasedLocatorState(toolbars),

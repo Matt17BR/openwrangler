@@ -405,8 +405,7 @@ describe("file launch contributions", () => {
 });
 
 describe("notebook launch contributions", () => {
-  const supportedNotebookContext =
-    "(notebookType == 'jupyter-notebook' || notebookType == 'interactive') && isWorkspaceTrusted";
+  const supportedNotebookContext = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
 
   it("keeps the notebook action discoverable without Jupyter-private context keys", () => {
     expect(manifest.activationEvents).toEqual(
@@ -447,7 +446,12 @@ describe("notebook launch contributions", () => {
       when: `${supportedNotebookContext} && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)`,
       group: "navigation@50"
     });
-    for (const menu of ["notebook/toolbar", "editor/title"]) {
+    expect(manifest.contributes?.menus?.["interactive/toolbar"]).toContainEqual({
+      command: "openWrangler.openNotebookVariable",
+      when: "isWorkspaceTrusted",
+      group: "navigation@2"
+    });
+    for (const menu of ["notebook/toolbar", "interactive/toolbar", "editor/title"]) {
       const entries = manifest.contributes?.menus?.[menu]?.filter(
         (candidate) => candidate.command === "openWrangler.openNotebookVariable"
       );
@@ -519,33 +523,50 @@ describe("notebook launch contributions", () => {
 
   it("selects exactly one notebook action surface for every supported toolbar state", () => {
     const actionSurfaces = (notebookType: string, globalToolbar: boolean | undefined, forceEditorTitle: boolean) => {
-      const supported = notebookType === "jupyter-notebook" || notebookType === "interactive";
+      const notebook = notebookType === "jupyter-notebook";
+      const interactive = notebookType === "interactive";
       return {
-        notebookToolbar: supported && globalToolbar === true && !forceEditorTitle,
-        editorTitle: supported && (globalToolbar !== true || forceEditorTitle)
+        notebookToolbar: notebook && globalToolbar === true && !forceEditorTitle,
+        interactiveToolbar: interactive,
+        editorTitle: notebook && (globalToolbar !== true || forceEditorTitle)
       };
     };
 
-    for (const notebookType of ["jupyter-notebook", "interactive"]) {
-      expect(actionSurfaces(notebookType, true, false)).toEqual({
-        notebookToolbar: true,
+    expect(actionSurfaces("jupyter-notebook", true, false)).toEqual({
+      notebookToolbar: true,
+      interactiveToolbar: false,
+      editorTitle: false
+    });
+    expect(actionSurfaces("jupyter-notebook", false, false)).toEqual({
+      notebookToolbar: false,
+      interactiveToolbar: false,
+      editorTitle: true
+    });
+    expect(actionSurfaces("jupyter-notebook", undefined, false)).toEqual({
+      notebookToolbar: false,
+      interactiveToolbar: false,
+      editorTitle: true
+    });
+    expect(actionSurfaces("jupyter-notebook", true, true)).toEqual({
+      notebookToolbar: false,
+      interactiveToolbar: false,
+      editorTitle: true
+    });
+    for (const globalToolbar of [true, false, undefined]) {
+      expect(actionSurfaces("interactive", globalToolbar, false)).toEqual({
+        notebookToolbar: false,
+        interactiveToolbar: true,
         editorTitle: false
       });
-      expect(actionSurfaces(notebookType, false, false)).toEqual({
+      expect(actionSurfaces("interactive", globalToolbar, true)).toEqual({
         notebookToolbar: false,
-        editorTitle: true
-      });
-      expect(actionSurfaces(notebookType, undefined, false)).toEqual({
-        notebookToolbar: false,
-        editorTitle: true
-      });
-      expect(actionSurfaces(notebookType, true, true)).toEqual({
-        notebookToolbar: false,
-        editorTitle: true
+        interactiveToolbar: true,
+        editorTitle: false
       });
     }
     expect(actionSurfaces("quarto-notebook", true, false)).toEqual({
       notebookToolbar: false,
+      interactiveToolbar: false,
       editorTitle: false
     });
   });
