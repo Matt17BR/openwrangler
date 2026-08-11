@@ -11,6 +11,7 @@ import type {
   FillMissingValuesTransformStep,
   FloorNumberTransformStep,
   GroupByTransformStep,
+  MinMaxScaleTransformStep,
   OpenSessionRequest,
   OpenWranglerRequest,
   RoundNumberTransformStep,
@@ -18,7 +19,8 @@ import type {
   SourceCapabilities,
   SplitTextTransformStep,
   StripTextTransformStep,
-  TextLengthTransformStep
+  TextLengthTransformStep,
+  TransformStep
 } from "../shared/protocol";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import type { AtomicFileTransaction } from "../extension/files/safeFileExport";
@@ -2464,6 +2466,7 @@ describe("canonical R kernel bridge", () => {
             "capitalizeText",
             "lowerText",
             "upperText",
+            "minMaxScale",
             "roundNumber",
             "floorNumber",
             "ceilNumber",
@@ -4773,6 +4776,228 @@ describe("canonical R kernel bridge", () => {
     }
   });
 
+  it("previews native R Min-max scale as nullable doubles in place or under stable appended identities", async () => {
+    const cases: ReadonlyArray<{
+      step: MinMaxScaleTransformStep;
+      source: RFramePageContract;
+      output: RFramePageContract;
+      diff: DataDiff;
+      outputId: string;
+      outputName: string;
+    }> = [
+      (() => {
+        const step: MinMaxScaleTransformStep = {
+          id: "r-scale-finite-in-place",
+          kind: "minMaxScale",
+          params: { column: { id: "r:c:1", name: "count" } }
+        };
+        const source = withColumnNullable(frameContract(), "r:c:1", false);
+        const after: RFrameCell = { kind: "number", raw: "0", display: "0", isNull: false, isNaN: false };
+        return {
+          step,
+          source,
+          output: castContract(source, "r:c:1", "double", "float", after, true),
+          diff: castDiff("r:c:1", "count", source.page.rows[0]?.values[1] as RFrameCell, after),
+          outputId: "r:c:1",
+          outputName: "count"
+        };
+      })(),
+      (() => {
+        const step: MinMaxScaleTransformStep = {
+          id: "r-scale-in-place",
+          kind: "minMaxScale",
+          params: { column: { id: "r:c:7", name: "infinite" } }
+        };
+        const source = withColumnNullable(frameContract(), "r:c:7", false);
+        const after = { kind: "null", raw: null, display: "NA", isNull: true, isNaN: false } as RFrameCell;
+        return {
+          step,
+          source,
+          output: castContract(source, "r:c:7", "double", "float", after, true),
+          diff: castDiff("r:c:7", "infinite", source.page.rows[0]?.values[7] as RFrameCell, after),
+          outputId: "r:c:7",
+          outputName: "infinite"
+        };
+      })(),
+      (() => {
+        const step: MinMaxScaleTransformStep = {
+          id: "r-scale-derived",
+          kind: "minMaxScale",
+          params: { column: { id: "r:c:1", name: "count" }, newColumn: "count_scaled" }
+        };
+        const source = dataTableContract(withColumnNullable(frameContract(), "r:c:1", false), ["r:c:1"]);
+        return {
+          step,
+          source,
+          output: minMaxScaleContract(source, "r:c:1", step.id, "count_scaled"),
+          diff: cloneDiff("count_scaled"),
+          outputId: `c:step:${step.id}:0`,
+          outputName: "count_scaled"
+        };
+      })()
+    ];
+
+    for (const testCase of cases) {
+      const transport = fakeTransport(testCase.source);
+      const bridge = createBridge(transport);
+      await bridge.request(openRequest("editing"));
+      transport.queuePreview({
+        sessionId,
+        revision: 1,
+        page: testCase.output,
+        diff: testCase.diff,
+        code: "open_wrangler_result <- orders"
+      });
+
+      const response = await bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: testCase.step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      });
+
+      expect(transport.previewStep).toHaveBeenCalledWith(
+        sessionId,
+        0,
+        testCase.step,
+        expect.any(Object),
+        expect.any(Array),
+        undefined,
+        expect.any(Object)
+      );
+      expect(response).toMatchObject({
+        kind: "stepPreview",
+        revision: 1,
+        metadata: {
+          shape: { columns: testCase.source.shape.columns + (testCase.step.params.newColumn === undefined ? 0 : 1) },
+          schema: expect.arrayContaining([
+            expect.objectContaining({
+              id: testCase.outputId,
+              name: testCase.outputName,
+              rawType: "double",
+              type: "float",
+              nullable: testCase.output.schema.find((column) => column.id === testCase.outputId)?.nullable
+            })
+          ]),
+          draftStep: testCase.step
+        },
+        diff: testCase.diff
+      });
+    }
+  });
+
+  it("rejects invalid native R Min-max scale inputs before transport", async () => {
+    const source = dataTableContract(frameContract(), ["r:c:0"]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const invalidSteps = [
+      {
+        id: "stale-scale",
+        kind: "minMaxScale",
+        params: { column: { id: "r:c:0", name: "stale" } }
+      },
+      {
+        id: "date-scale",
+        kind: "minMaxScale",
+        params: { column: { id: "r:c:2", name: "date" } }
+      },
+      {
+        id: "colliding-scale",
+        kind: "minMaxScale",
+        params: { column: { id: "r:c:0", name: "value" }, newColumn: "count" }
+      },
+      {
+        id: "private-scale",
+        kind: "minMaxScale",
+        params: {
+          column: { id: "r:c:0", name: "value" },
+          newColumn: "__OPEN_WRANGLER_INTERNAL_ROW_ID_forged"
+        }
+      },
+      {
+        id: "keyed-scale",
+        kind: "minMaxScale",
+        params: { column: { id: "r:c:0", name: "value" } }
+      }
+    ] satisfies MinMaxScaleTransformStep[];
+
+    for (const step of invalidSteps) {
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+    }
+    expect(transport.previewStep).not.toHaveBeenCalled();
+  });
+
+  it("keeps the remaining unsupported cleaning operations out of native R sessions", async () => {
+    const transport = fakeTransport(frameContract());
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    const column = { id: "r:c:0", name: "value" } as const;
+    const steps = [
+      { id: "r-formula", kind: "formula", params: { leftColumn: column, operator: "add", value: 1, newColumn: "sum" } },
+      { id: "r-one-hot", kind: "oneHotEncode", params: { columns: [column] } },
+      {
+        id: "r-multi-label",
+        kind: "multiLabelBinarize",
+        params: { column, delimiter: ",", dropOriginal: false }
+      },
+      {
+        id: "r-format-date",
+        kind: "formatDatetime",
+        params: { column: { id: "r:c:2", name: "date" }, format: "%Y-%m-%d" }
+      },
+      {
+        id: "r-by-example",
+        kind: "byExample",
+        params: {
+          sourceColumns: [column],
+          newColumn: "example",
+          examples: [
+            { inputs: [1], output: 1 },
+            { inputs: [2], output: 2 }
+          ]
+        }
+      },
+      { id: "r-custom", kind: "customCode", params: { code: "result <- df" } }
+    ] satisfies TransformStep[];
+
+    for (const step of steps) {
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({
+        kind: "error",
+        code: "unsupported_operation",
+        message: expect.stringContaining(step.kind)
+      });
+    }
+    expect(transport.previewStep).not.toHaveBeenCalled();
+  });
+
   it("rejects invalid native R numeric rounding inputs before transport", async () => {
     const source = dataTableContract(frameContract(), ["r:c:0"]);
     const transport = fakeTransport(source);
@@ -6600,6 +6825,42 @@ function cloneContract(
   };
 }
 
+function minMaxScaleContract(
+  source: RFramePageContract,
+  columnId: string,
+  stepId: string,
+  newColumn: string
+): RFramePageContract {
+  if (!source.schema.some((column) => column.id === columnId)) {
+    throw new Error(`Unknown fake R Min-max scale column ${columnId}.`);
+  }
+  return {
+    ...source,
+    shape: { ...source.shape, columns: source.schema.length + 1 },
+    frameSemantics: { ...source.frameSemantics, keyColumnIds: [...source.frameSemantics.keyColumnIds] },
+    schema: [
+      ...source.schema.map((column) => ({ ...column })),
+      {
+        id: `c:step:${stepId}:0`,
+        name: newColumn,
+        position: source.schema.length,
+        rawType: "double",
+        type: "float",
+        nullable: true,
+        semantics: { kind: "double", storageMode: "double", classes: ["numeric"] }
+      }
+    ],
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((value) => ({ ...value }))
+      }))
+    }
+  };
+}
+
 function textLengthContract(
   source: RFramePageContract,
   columnId: string,
@@ -7122,6 +7383,7 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "capitalizeText",
       "lowerText",
       "upperText",
+      "minMaxScale",
       "roundNumber",
       "floorNumber",
       "ceilNumber",
