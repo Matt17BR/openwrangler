@@ -11239,7 +11239,7 @@ async function exerciseReleasedPythonSourceCellDiscovery(
             const editors = vscode.window.visibleNotebookEditors.filter(
               (candidate) => candidate.notebook === interactiveDocument
             );
-            return editors.length === 1 && vscode.window.activeNotebookEditor === editors[0];
+            return editors.length === 1;
           },
           10_000,
           "the exact first-run Interactive editor before selecting its kernel"
@@ -11248,6 +11248,17 @@ async function exerciseReleasedPythonSourceCellDiscovery(
           (candidate) => candidate.notebook === interactiveDocument
         );
         assert.ok(interactiveEditor, "The first-run Interactive Window must expose one exact editor.");
+        if (vscode.window.activeNotebookEditor !== interactiveEditor) {
+          const groupCount = vscode.window.tabGroups.all.length;
+          for (let offset = 0; offset < groupCount; offset += 1) {
+            await withBoundedAcceptancePromise(
+              vscode.commands.executeCommand("workbench.action.focusNextGroup"),
+              10_000,
+              "the exact first-run Interactive editor to receive focus"
+            );
+            if (vscode.window.activeNotebookEditor === interactiveEditor) break;
+          }
+        }
         assertExactVisibleReleasedNotebookEditor(
           interactiveDocument,
           interactiveEditor,
