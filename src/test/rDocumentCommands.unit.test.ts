@@ -508,6 +508,28 @@ describe("R document command", () => {
     expect(mocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("document or cursor changed"));
   });
 
+  it("does not dispatch when Quarto reticulate ownership changes across command discovery", async () => {
+    const document = rDocument(
+      "/workspace/orders.qmd",
+      "---\nengine: knitr\n---\n```{python}\norders = make_frame()\n```\n"
+    );
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = textEditor(document, 4);
+    mocks.getCommands.mockImplementationOnce(async () => {
+      mocks.reticulateCells = false;
+      return ["quarto.runCurrentCell", "r.runSelection"];
+    });
+    const providers = literateProviders();
+    providers.r.captureActiveSession.mockReturnValue(providers.rSession);
+    register(coordinatorMock(), providers.value);
+
+    await expect(command()()).resolves.toBe(false);
+
+    expect(mocks.executeCommand).not.toHaveBeenCalled();
+    expect(providers.r.openLiterateSession).not.toHaveBeenCalled();
+    expect(mocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("reticulate-cell setting changed"));
+  });
+
   it("asks which live session to use when both Python and R are available", async () => {
     const document = rDocument("/workspace/orders.qmd", "# Orders\n\nChoose a live session.\n");
     mocks.textDocuments.push(document);
