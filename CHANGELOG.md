@@ -8,6 +8,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - R dataframes can now scale integer, double, and `integer64` columns to the 0–1 range, either in place or into a new
   column. Preview, apply, and generated R produce the same result. The step can also be inspected or undone.
+- True and False counts can now filter a Boolean column from either its grid-header profile or the Column profiles
+  panel. They use the same removable filter chips, undo history, and clear action as other view filters.
 - Active viewing filters now stay visible above the grid as typed, individually removable chips. **Clear filters**
   keeps the current sort order, while **Undo latest filter** restores only the most recent confirmed filter state and
   remains separate from cleaning-plan **Undo**. Failed, cancelled, superseded, recovered, and schema-mutating work
