@@ -414,16 +414,32 @@ function isDatasetStatsResponse(value: unknown): boolean {
 }
 
 function isValuesResponse(value: unknown): boolean {
-  const candidate = exactRecord(value, ["kind", "revision", "viewRequestId", "column", "values", "hasMore"]);
-  return (
-    candidate !== undefined &&
-    candidate.kind === "columnValues" &&
-    isNonNegativeInteger(candidate.revision) &&
-    isNonEmptyString(candidate.viewRequestId) &&
-    isString(candidate.column) &&
-    isArrayOf(candidate.values, isValueCount) &&
-    isBoolean(candidate.hasMore)
+  const candidate = exactRecord(
+    value,
+    ["kind", "revision", "viewRequestId", "column", "values", "hasMore"],
+    ["sampleSize"]
   );
+  if (
+    candidate === undefined ||
+    candidate.kind !== "columnValues" ||
+    !isNonNegativeInteger(candidate.revision) ||
+    !isNonEmptyString(candidate.viewRequestId) ||
+    !isString(candidate.column) ||
+    !isArrayOf(candidate.values, isValueCount) ||
+    !isBoolean(candidate.hasMore)
+  ) {
+    return false;
+  }
+  if (candidate.sampleSize === undefined) return true;
+  if (!isNonNegativeSafeInteger(candidate.sampleSize) || candidate.sampleSize === 0 || candidate.hasMore !== true) {
+    return false;
+  }
+  let countedRows = 0;
+  for (const valueCount of candidate.values as UnknownRecord[]) {
+    countedRows += valueCount.count as number;
+    if (countedRows > candidate.sampleSize) return false;
+  }
+  return true;
 }
 
 function isStepPreviewResponse(value: unknown): boolean {

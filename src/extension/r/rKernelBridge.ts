@@ -187,7 +187,7 @@ export interface RKernelBridgeTransport {
     search: string | undefined,
     limit: number,
     options?: RKernelRequestOptions
-  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>>;
+  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean; sampleSize?: number }>>;
   previewStep(
     sessionId: string,
     revision: number,
@@ -668,14 +668,15 @@ export class RKernelBridge implements OpenWranglerBridge {
       if (session.revision !== expectedRevision || session.schema !== expectedSchema) {
         return staleResponseError(request.sessionId, request.viewRequestId);
       }
-      assertColumnValuesContract(session, column, result, request.limit);
+      assertColumnValuesContract(session, column, result, request.limit, request.search);
       return {
         kind: "columnValues",
         revision: session.revision,
         viewRequestId: request.viewRequestId,
         column: result.column,
         values: result.values.map((entry) => ({ ...entry })),
-        hasMore: result.hasMore
+        hasMore: result.hasMore,
+        ...(result.sampleSize === undefined ? {} : { sampleSize: result.sampleSize })
       };
     } catch (error) {
       if (session.invalidated) return kernelChangedError(request.sessionId, request.viewRequestId);
@@ -1597,21 +1598,32 @@ function resolveViewQuery(filterModel: FilterModel, schema: readonly ColumnSchem
 function assertColumnValuesContract(
   session: RBridgeSession,
   requested: RKernelColumnReference,
-  result: Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>,
-  limit: number
+  result: Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean; sampleSize?: number }>,
+  limit: number,
+  search: string | undefined
 ): void {
   const schema = session.schema.find((column) => column.id === requested.id);
   if (!schema || schema.name !== requested.name || result.column !== requested.name || result.values.length > limit) {
     throw new Error("The R kernel returned values for the wrong column or request limit.");
   }
   const expectedType = requireRColumnType(schema.type);
+  if (
+    result.sampleSize !== undefined &&
+    (result.sampleSize !== R_FRAME_CONTRACT_LIMITS.profileSampleRows ||
+      result.sampleSize >= session.rows ||
+      (search !== undefined && search !== "") ||
+      !result.hasMore)
+  ) {
+    throw new Error("The R kernel returned an invalid column-value sample size.");
+  }
+  const countDomain = result.sampleSize ?? session.rows;
   let returnedCount = 0;
   for (const entry of result.values) {
     if (
       !Number.isSafeInteger(entry.count) ||
       entry.count < 1 ||
-      entry.count > session.rows ||
-      entry.count > session.rows - returnedCount ||
+      entry.count > countDomain ||
+      entry.count > countDomain - returnedCount ||
       entry.selectionValue === undefined ||
       entry.selectionValue.columnType !== expectedType
     ) {
