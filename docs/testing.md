@@ -852,8 +852,9 @@ For a focused local rerun, add `OPEN_WRANGLER_PACKAGED_R_JOURNEY=interactive-ter
 `OPEN_WRANGLER_PACKAGED_R_JOURNEY=literate-documents` to the `r-jupyter` command and keep
 `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=0`. The first selector checks active R terminal discovery, replacement, and
 cleanup. The second checks the packaged `.Rmd` and `.qmd` title actions, native Quarto preview, dataframe opening,
-editing, code insertion, the Python/Jupyter Quarto path, and cleanup. Both still verify the VSIX, editor, R packages, and pinned R and Quarto
-extensions. No other selector is accepted, and focused selectors cannot be combined with remote Jupyter.
+editing, code insertion, the Python/Jupyter Quarto path, and cleanup. Both still verify the VSIX, editor, R packages,
+and pinned R and Quarto extensions. No other selector is accepted, and focused selectors cannot be combined with
+remote Jupyter.
 
 On Linux, `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=1` adds a container-isolated remote-server phase. The default mode uses the Python fixture; `r-jupyter` uses the R fixture. The hosted workflow runs both remote journeys only in VS Code.
 

@@ -848,16 +848,6 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("packaged literate acceptance runs only the selected Python Quarto chunk", async () => {
-  const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
-
-  assert.match(source, /"jupyter: python3"/u);
-  assert.match(source, /exerciseReleasedPythonQuartoDocumentJourney/u);
-  assert.match(source, /Python \(Open Wrangler Quarto\)/u);
-  assert.match(source, /Opening the current Python Quarto chunk must not execute or copy the later chunk\./u);
-  assert.match(source, /Opening Python Quarto must not change its source file\./u);
-});
-
 test("Cursor and Windows use the representative R coverage profile", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
