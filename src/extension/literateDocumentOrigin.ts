@@ -54,10 +54,14 @@ export function captureLiterateDocumentOrigin(expectedUri?: vscode.Uri): Literat
 }
 
 export function isCurrentLiterateDocumentOrigin(origin: LiterateDocumentOrigin): boolean {
+  return vscode.window.activeTextEditor === origin.editor && isUnchangedLiterateDocumentOrigin(origin);
+}
+
+/** Revalidates a captured origin while an official picker temporarily owns editor focus. */
+export function isUnchangedLiterateDocumentOrigin(origin: LiterateDocumentOrigin): boolean {
   const document = origin.document;
   const editor = origin.editor;
   return (
-    vscode.window.activeTextEditor === editor &&
     editor.document === document &&
     !document.isClosed &&
     document.version === origin.version &&
