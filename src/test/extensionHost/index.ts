@@ -6592,6 +6592,7 @@ async function exerciseReleasedREditingJourney(
   app = await releasedRSessionApp(workbench, testing, sessionId, "the filtered R notebook export view");
   exportDrawer = app.getByRole("complementary", { name: "Column profiles and filters", exact: true });
   await exportDrawer.getByRole("button", { name: "Close panel" }).click();
+  await exportDrawer.waitFor({ state: "hidden", timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
   await applyReleasedRQuickSort(workbench, testing, "group", "ascending", ["group"]);
   await applyReleasedRQuickSort(workbench, testing, "score", "descending", ["score", "group"]);
   const exportView = testing.activeSession();
@@ -9593,8 +9594,10 @@ async function applyReleasedRQuickSort(
     `selecting the R ${column} column before sorting`
   );
   const menu = await waitForReleasedRColumnMenu(workbench, sessionId, column);
-  await menu.summary.click();
-  await menu.menu.getByRole("button", { name: `Sort ${direction}`, exact: true }).click();
+  await menu.summary.click({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+  const sort = menu.menu.getByRole("button", { name: `Sort ${direction}`, exact: true });
+  await sort.waitFor({ state: "visible", timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+  await sort.click({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
   await waitFor(
     () =>
       testing
@@ -9621,7 +9624,8 @@ async function waitForReleasedRColumnMenu(
   column: string
 ): Promise<ReleasedRColumnMenu> {
   const browser = workbench.context().browser();
-  const trialTimeoutMs = 250;
+  const trialTimeoutMs = 2_000;
+  let lastRetryableError: string | undefined;
   const prepared = await acquirePreparedAcceptanceAction({
     timeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS,
     intervalMs: 50,
@@ -9635,13 +9639,6 @@ async function waitForReleasedRColumnMenu(
           const menu = app.locator(`th[data-column=${JSON.stringify(column)}] details.columnMenu`).first();
           const summary = menu.getByLabel(`Column actions for ${column}`, { exact: true });
           if ((await summary.count()) !== 1 || !(await summary.isVisible())) continue;
-          try {
-            await summary.scrollIntoViewIfNeeded({ timeout: trialTimeoutMs });
-            await summary.click({ trial: true, timeout: trialTimeoutMs });
-          } catch (error) {
-            if (isReleasedRColumnMenuPreparationError(error)) continue;
-            throw error;
-          }
           return { menu, summary };
         } catch (error) {
           ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
@@ -9654,11 +9651,28 @@ async function waitForReleasedRColumnMenu(
       await summary.click({ trial: true, timeout: trialTimeoutMs });
     },
     dispose: async () => undefined,
-    isRetryablePreparationError: isReleasedRColumnMenuPreparationError,
+    isRetryablePreparationError: (error) => {
+      const retryable = isReleasedRColumnMenuPreparationError(error);
+      if (retryable) lastRetryableError = releasedRColumnMenuPreparationDiagnostic(error);
+      return retryable;
+    },
     wait: (durationMs) => workbench.waitForTimeout(durationMs)
   });
-  assert.ok(prepared, `The R ${column} menu must become pointer-ready in the exact session renderer.`);
+  assert.ok(
+    prepared,
+    `The R ${column} menu must become pointer-ready in the exact session renderer. ` +
+      `Last retryable cause: ${lastRetryableError ?? "none observed"}.`
+  );
   return prepared;
+}
+
+function releasedRColumnMenuPreparationDiagnostic(error: unknown): string {
+  const name =
+    typeof error === "object" && error !== null && "name" in error && typeof error.name === "string"
+      ? error.name
+      : "Error";
+  const message = (error instanceof Error ? error.message : String(error)).split(/\r?\n/u, 1)[0];
+  return `${name}: ${message.replace(/\s+/gu, " ").trim().slice(0, 240) || "no message"}`;
 }
 
 function isReleasedRColumnMenuPreparationError(error: unknown): boolean {
