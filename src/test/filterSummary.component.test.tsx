@@ -1229,13 +1229,17 @@ describe("SummaryPanel", () => {
       metadataValue: largeMetadata,
       summaries: [sampledNumeric],
       selectedColumnId: "c:1",
+      profileValueMode: "percent",
+      onProfileValueModeChange: vi.fn(),
       onApplyFilterModel: vi.fn()
     });
 
     expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
     expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
-    expect(screen.getByText("Percent uses 100,000 sampled non-missing rows.")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "%" }));
+    const numericPercent = screen.getByRole("button", { name: "%" });
+    expect(numericPercent).toHaveAttribute("title", "Distributions use 100,000 sampled non-missing rows.");
+    expect(screen.queryByText("Distributions use 100,000 sampled non-missing rows.")).not.toBeInTheDocument();
+    expect(numericPercent).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /1-2: 60% \(60,000 rows\)/u })).toBeVisible();
     numeric.unmount();
 
@@ -1262,12 +1266,20 @@ describe("SummaryPanel", () => {
         sampled: true
       }
     };
-    renderSummary({ metadataValue: largeMetadata, summaries: [sampledCategorical], selectedColumnId: "c:0" });
+    renderSummary({
+      metadataValue: largeMetadata,
+      summaries: [sampledCategorical],
+      selectedColumnId: "c:0",
+      profileValueMode: "percent",
+      onProfileValueModeChange: vi.fn()
+    });
 
     expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
     expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
-    expect(screen.getByText("Percent uses 100,000 sampled non-missing rows.")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "%" }));
+    const categoricalPercent = screen.getByRole("button", { name: "%" });
+    expect(categoricalPercent).toHaveAttribute("title", "Distributions use 100,000 sampled non-missing rows.");
+    expect(screen.queryByText("Distributions use 100,000 sampled non-missing rows.")).not.toBeInTheDocument();
+    expect(categoricalPercent).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("Berlin").closest(".barRow")).toHaveTextContent("60%");
   });
 
