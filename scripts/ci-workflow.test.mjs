@@ -57,9 +57,11 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
 const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
 const CANONICAL_CI_IF =
-  "${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}";
+  "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}";
+const CONTRACT_CI_IF =
+  "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
 const FULL_CI_IF =
-  "${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
+  "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
 const MATRIX_CONTEXT_IF = "${{ !cancelled() }}";
 const NON_MATRIX_CONTEXT_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}";
@@ -560,7 +562,7 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
   );
 });
 
-test("PR CI starts one bounded static fast-feedback lane and preserves every static gate", () => {
+test("PR CI gates expensive work behind bounded preflight lanes without removing checks", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
   const fastFeedback = workflow?.jobs?.["fast-feedback"];
@@ -613,11 +615,9 @@ test("PR CI starts one bounded static fast-feedback lane and preserves every sta
       `${duplicate} belongs to the stronger coverage lane and must not be repeated by contract-tests.`
     );
   }
-  assert.equal(
-    workflow?.jobs?.["canonical-vsix"]?.needs,
-    "classify",
-    "Canonical packaging must remain parallel with fast feedback after bounded classification."
-  );
+  assert.deepEqual(workflow?.jobs?.["canonical-vsix"]?.needs, ["classify", "fast-feedback"]);
+  assert.deepEqual(workflow?.jobs?.["contract-tests"]?.needs, ["classify", "fast-feedback"]);
+  assert.equal(workflow?.jobs?.["contract-tests"]?.if, CONTRACT_CI_IF);
 });
 
 test("benchmark-only PRs run one focused harness lane without launching the benchmark", () => {
@@ -626,12 +626,12 @@ test("benchmark-only PRs run one focused harness lane without launching the benc
   const job = workflow?.jobs?.[BENCHMARK_HARNESS_CI_JOBS[0]];
 
   assert.equal(job?.name, "Benchmark harness");
-  assert.equal(job?.needs, "classify");
+  assert.deepEqual(job?.needs, ["classify", "fast-feedback"]);
   assert.equal(job?.["runs-on"], "ubuntu-latest");
   assert.equal(job?.["timeout-minutes"], 15);
   assert.equal(
     normalizedCommand(job?.if),
-    "${{ !cancelled() && github.event_name == 'pull_request' && needs.classify.result == 'success' && needs.classify.outputs.benchmark_harness_only == 'true' && needs.classify.outputs.draft_pull_request == 'false' }}"
+    "${{ !cancelled() && github.event_name == 'pull_request' && needs.classify.result == 'success' && needs.fast-feedback.result == 'success' && needs.classify.outputs.benchmark_harness_only == 'true' && needs.classify.outputs.draft_pull_request == 'false' }}"
   );
 
   const commands = (job?.steps ?? [])
@@ -670,7 +670,7 @@ test("authoritative CI work is independently attributable before the required ag
 
   const visual = workflow?.jobs?.["visual-accessibility"];
   assert.equal(visual?.name, "Visual and accessibility");
-  assert.equal(visual?.needs, "classify");
+  assert.deepEqual(visual?.needs, ["classify", "fast-feedback", "contract-tests"]);
   assert.equal(visual?.if, FULL_CI_IF);
   assert.equal(
     visual?.steps?.some(
@@ -701,7 +701,7 @@ test("authoritative CI work is independently attributable before the required ag
   );
 
   const linuxPackaged = workflow?.jobs?.["linux-packaged-editor"];
-  assert.deepEqual(linuxPackaged?.needs, ["classify", "canonical-vsix"]);
+  assert.deepEqual(linuxPackaged?.needs, ["classify", "fast-feedback", "contract-tests", "canonical-vsix"]);
   assert.equal(linuxPackaged?.if, FULL_CI_IF);
   assert.match(
     linuxPackaged?.steps?.find((step) => step?.name === "Require the canonical PR artifact")?.if ?? "",
@@ -762,7 +762,13 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
     const job = ci?.jobs?.[jobId];
     const needs = Array.isArray(job?.needs) ? job.needs : [job?.needs];
     assert.equal(needs.includes("classify"), true, `${jobId} must consume the exact classifier result.`);
-    assert.equal(job?.if, FULL_CI_IF, `${jobId} must use one fail-closed job-level fast-path condition.`);
+    assert.equal(needs.includes("fast-feedback"), true, `${jobId} must wait for static preflight.`);
+    if (jobId === "contract-tests") {
+      assert.equal(job?.if, CONTRACT_CI_IF, `${jobId} must start after static preflight.`);
+    } else {
+      assert.equal(needs.includes("contract-tests"), true, `${jobId} must wait for contract preflight.`);
+      assert.equal(job?.if, FULL_CI_IF, `${jobId} must start only after both preflight lanes pass.`);
+    }
     assert.equal(
       (job?.steps ?? []).some((step) => String(step?.if ?? "").includes("documentation_only")),
       false,
@@ -779,7 +785,7 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
 
   const lockValidation = ci?.jobs?.[DEPENDENCY_LOCK_CI_JOBS[0]];
   assert.equal(lockValidation?.name, "Dependency lock validation");
-  assert.equal(lockValidation?.needs, "classify");
+  assert.deepEqual(lockValidation?.needs, ["classify", "fast-feedback"]);
   assert.match(lockValidation?.if ?? "", /dependency_lock_only == 'true'/u);
   assert.match(lockValidation?.if ?? "", /draft_pull_request == 'false'/u);
   assert.deepEqual(
@@ -1254,10 +1260,12 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
   const job = workflow?.jobs?.["remote-workspace"];
-  assert.deepEqual(job?.needs, ["classify", "canonical-vsix"]);
+  assert.deepEqual(job?.needs, ["classify", "fast-feedback", "contract-tests", "canonical-vsix"]);
   assert.equal(job?.["runs-on"], "ubuntu-24.04");
   assert.equal(job?.["timeout-minutes"], 90);
   assert.match(job?.if ?? "", /!cancelled\(\)/u);
+  assert.match(job?.if ?? "", /needs\.fast-feedback\.result == 'success'/u);
+  assert.match(job?.if ?? "", /needs\.contract-tests\.result == 'success'/u);
   assert.match(job?.if ?? "", /needs\.classify\.outputs\.full_matrix_required == 'true'/u);
   assert.match(job?.if ?? "", /github\.event_name == 'pull_request'/u);
   assert.match(job?.if ?? "", /contains\(github\.event\.pull_request\.labels\.\*\.name, 'acceptance:remote-ssh'\)/u);
@@ -1474,7 +1482,7 @@ test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
   const job = workflow?.jobs?.["native-r-contract"];
 
   assert.equal(job?.name, "Native R contract (R ${{ matrix.r }})");
-  assert.equal(job?.needs, "classify");
+  assert.deepEqual(job?.needs, ["classify", "fast-feedback", "contract-tests"]);
   assert.equal(job?.if, FULL_CI_IF);
   assert.equal(job?.["runs-on"], "ubuntu-latest");
   assert.equal(job?.["timeout-minutes"], 15);

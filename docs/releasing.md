@@ -165,6 +165,8 @@ changes targeting `main` run source, runtime, UI, accessibility, packaging, Linu
 extension-host, platform, and security checks. The slower native editor, Jupyter, Remote SSH, and
 installed-performance checks run against the exact release candidate before publication. Pushes to `main` repeat
 fast feedback only; publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
+Ready pull requests run `Fast feedback` and `Contract tests` before starting the heavier UI, engine, package, and
+editor jobs. An early preflight failure stops those jobs without removing any check from a green pull request.
 
 Do not turn a release pull request into one oversized squash commit. Keep each independently reviewable product,
 runtime, test, media, and documentation slice in its own commit. If a pull request contains several such commits,

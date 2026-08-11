@@ -72,12 +72,13 @@ jobs:
 
   benchmark-harness:
     name: Benchmark harness
-    needs: classify
+    needs: [classify, fast-feedback]
     if: >-
       ${{
         !cancelled() &&
         github.event_name == 'pull_request' &&
         needs.classify.result == 'success' &&
+        needs.fast-feedback.result == 'success' &&
         needs.classify.outputs.benchmark_harness_only == 'true' &&
         needs.classify.outputs.draft_pull_request == 'false'
       }}
@@ -110,8 +111,8 @@ jobs:
         run: npm run build:test-extension
 
   canonical-vsix:
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}
+    needs: [classify, fast-feedback]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -161,8 +162,8 @@ jobs:
 
   contract-tests:
     name: Contract tests
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    needs: [classify, fast-feedback]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -192,8 +193,8 @@ jobs:
 
   visual-accessibility:
     name: Visual and accessibility
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    needs: [classify, fast-feedback, contract-tests]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -222,8 +223,8 @@ jobs:
 
   production-audits:
     name: Production dependency audits
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    needs: [classify, fast-feedback, contract-tests]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -244,12 +245,13 @@ jobs:
 
   dependency-lock-validation:
     name: Dependency lock validation
-    needs: classify
+    needs: [classify, fast-feedback]
     if: >-
       ${{
         !cancelled() &&
         github.event_name == 'pull_request' &&
         needs.classify.result == 'success' &&
+        needs.fast-feedback.result == 'success' &&
         needs.classify.outputs.dependency_lock_only == 'true' &&
         needs.classify.outputs.draft_pull_request == 'false'
       }}
@@ -271,8 +273,8 @@ jobs:
 
   linux-packaged-editor:
     name: Packaged VS Code (Linux)
-    needs: [classify, canonical-vsix]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    needs: [classify, fast-feedback, contract-tests, canonical-vsix]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -328,8 +330,8 @@ jobs:
           include-hidden-files: false
 
   coverage:
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    needs: [classify, fast-feedback, contract-tests]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -370,8 +372,8 @@ jobs:
             tmp/coverage/python.xml
 
   python-matrix:
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    needs: [classify, fast-feedback, contract-tests]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -401,8 +403,8 @@ jobs:
 
   native-r-contract:
     name: Native R contract (R ${{ matrix.r }})
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    needs: [classify, fast-feedback, contract-tests]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -427,8 +429,8 @@ jobs:
       - run: npm run test:r-contract
 
   extension-host:
-    needs: classify
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
+    needs: [classify, fast-feedback, contract-tests]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -452,10 +454,12 @@ jobs:
 
   remote-workspace:
     name: Remote SSH acceptance
-    needs: [classify, canonical-vsix]
+    needs: [classify, fast-feedback, contract-tests, canonical-vsix]
     if: >-
       ${{
         !cancelled() &&
+        needs.fast-feedback.result == 'success' &&
+        needs.contract-tests.result == 'success' &&
         needs.classify.outputs.full_matrix_required == 'true' &&
         github.event_name == 'pull_request' &&
         contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
