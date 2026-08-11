@@ -208,11 +208,15 @@ describe("active R session commands", () => {
     mocks.textDocuments.push(source);
     mocks.activeEditor = editor;
     const origin = literateOrigin(editor);
-    const { provider, coordinator } = registerWith([transport]);
+    const { provider, coordinator, factory } = registerWith([transport]);
+    const session = literateRProvider(provider).captureActiveSession();
+    expect(session).toBeDefined();
+    if (!session) throw new Error("Expected the active R terminal to be captured.");
 
-    await expect(literateRProvider(provider).openLiterateSession(origin, true)).resolves.toBe(true);
+    await expect(literateRProvider(provider).openLiterateSession(origin, session, true)).resolves.toBe(true);
 
     expect(transport.discoverVariables).toHaveBeenCalledOnce();
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active" });
     expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), {
       kind: "textDocument",
       document: source,
@@ -242,8 +246,11 @@ describe("active R session commands", () => {
     mocks.activeEditor = editor;
     const origin = literateOrigin(editor);
     const { provider, coordinator } = registerWith([transport]);
+    const session = literateRProvider(provider).captureActiveSession();
+    expect(session).toBeDefined();
+    if (!session) throw new Error("Expected the active R terminal to be captured.");
 
-    await expect(literateRProvider(provider).openLiterateSession(origin)).resolves.toBe(true);
+    await expect(literateRProvider(provider).openLiterateSession(origin, session)).resolves.toBe(true);
 
     expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything());
     expect(mocks.panelCreate).toHaveBeenCalledWith(
@@ -269,12 +276,67 @@ describe("active R session commands", () => {
       return discovery(tibble);
     });
     const { provider, coordinator } = registerWith([transport]);
+    const session = literateRProvider(provider).captureActiveSession();
+    expect(session).toBeDefined();
+    if (!session) throw new Error("Expected the active R terminal to be captured.");
 
-    await expect(literateRProvider(provider).openLiterateSession(origin, true)).resolves.toBe(false);
+    await expect(literateRProvider(provider).openLiterateSession(origin, session, true)).resolves.toBe(false);
 
     expect(transport.dispose).toHaveBeenCalledOnce();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(mocks.panelCreate).not.toHaveBeenCalled();
+  });
+
+  it("disposes discovery when another R terminal becomes active", async () => {
+    const original = rTerminal("R");
+    const replacement = rTerminal("R Interactive");
+    setActiveTerminal(original);
+    const transport = transportMock();
+    transport.discoverVariables.mockImplementationOnce(async () => {
+      emitActiveTerminal(replacement);
+      return discovery(tibble);
+    });
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, coordinator } = registerWith([transport]);
+    const session = literateRProvider(provider).captureActiveSession();
+    if (!session) throw new Error("Expected the original R terminal to be captured.");
+
+    await expect(literateRProvider(provider).openLiterateSession(origin, session, true)).resolves.toBe(false);
+
+    expect(transport.dispose).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(mocks.panelCreate).not.toHaveBeenCalled();
+  });
+
+  it("does not reconnect after prior-transport cleanup changes the pinned R terminal", async () => {
+    const original = rTerminal("R");
+    const replacement = rTerminal("R Interactive");
+    setActiveTerminal(original);
+    const previous = transportMock();
+    previous.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    const next = transportMock();
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, factory, coordinator } = registerWith([previous, next]);
+    await expect(provider.refreshFromCommand()).resolves.toBe(true);
+    const session = literateRProvider(provider).captureActiveSession();
+    if (!session) throw new Error("Expected the original R terminal to be captured.");
+    previous.dispose.mockImplementationOnce(async () => {
+      emitActiveTerminal(replacement);
+    });
+
+    await expect(literateRProvider(provider).openLiterateSession(origin, session, true)).resolves.toBe(false);
+
+    expect(factory.create).toHaveBeenCalledTimes(1);
+    expect(next.discoverVariables).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
   });
 
   it("uses the active R session from the stable editor action", async () => {
@@ -676,6 +738,7 @@ function literateOrigin(editor: TextEditor, kind: "quarto" | "rmarkdown" = "quar
     version: editor.document.version,
     uri: editor.document.uri.toString(),
     kind,
+    pythonExecutionOwner: kind === "rmarkdown" ? "r" : "unknown",
     viewColumn: 1,
     selections: Object.freeze([
       Object.freeze({

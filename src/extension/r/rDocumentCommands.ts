@@ -246,66 +246,120 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
     return await openExistingLiterateSessionOrExplain(origin, providers);
   }
 
-  if (chunk.language === "python") {
-    return await providers.python.runLiterateChunkAndOpen(origin);
+  const pythonOwner = chunk.language === "python" ? origin.pythonExecutionOwner : undefined;
+  if (pythonOwner === "unknown") {
+    void vscode.window.showInformationMessage(
+      "Open Wrangler could not prove whether this Python chunk belongs to knitr/reticulate or Jupyter. Set Quarto front matter to `engine: knitr` or `jupyter: python3`, then try again."
+    );
+    return false;
+  }
+  if (pythonOwner === "r" && !reticulateCellsEnabled(origin)) {
+    void vscode.window.showInformationMessage(
+      "This Python chunk belongs to knitr, but Quarto reticulate cells are disabled. Enable `quarto.cells.useReticulate`, then try again."
+    );
+    return false;
+  }
+
+  const usesR = chunk.language === "r" || pythonOwner === "r";
+  // Capture the exact R terminal before command discovery or extension activation can yield.
+  const rSession = usesR ? providers.r.captureActiveSession() : undefined;
+  if (usesR && !rSession) {
+    void vscode.window.showInformationMessage(
+      "Start or select the exact R terminal that owns this document before running its chunk in Open Wrangler."
+    );
+    return false;
   }
 
   const command = origin.kind === "quarto" ? "quarto.runCurrentCell" : "r.runSelection";
-  let available: readonly string[];
+  const requiredCommands =
+    origin.kind === "quarto"
+      ? usesR
+        ? (["quarto.runCurrentCell", "r.runSelection"] as const)
+        : (["quarto.runCurrentCell", "jupyter.execSelectionInteractive"] as const)
+      : (["r.runSelection"] as const);
+  let available: readonly string[] | undefined;
   try {
     available = await vscode.commands.getCommands(true);
   } catch {
-    available = [];
+    available = undefined;
   }
   if (!isCurrentLiterateDocumentOrigin(origin)) {
     showStaleLiterateDocument();
     return false;
   }
-  if (!available.includes(command)) {
-    if (providers.r.hasActiveSession()) return await providers.r.openLiterateSession(origin);
+  if (!available) {
     void vscode.window.showInformationMessage(
-      origin.kind === "quarto"
-        ? "Install or enable the Quarto and R extensions, then run this R chunk again."
-        : "Install or enable the R extension, then run this R chunk again."
+      "Open Wrangler could not verify the commands needed to run this chunk. Check the extension host, then try again."
     );
     return false;
+  }
+  const missing = requiredCommands.filter((candidate) => !available.includes(candidate));
+  if (missing.length > 0) {
+    void vscode.window.showInformationMessage(missingExtensionGuidance(missing));
+    return false;
+  }
+
+  if (!usesR) {
+    return await providers.python.runLiterateChunkAndOpen(origin);
   }
 
   try {
     if (origin.kind === "quarto") {
       await vscode.commands.executeCommand(command, Math.max(1, chunk.openingLine + 1));
     } else {
-      await vscode.commands.executeCommand(command, chunk.code);
+      await vscode.commands.executeCommand(
+        command,
+        chunk.language === "python" ? reticulateSelection(chunk.code) : chunk.code
+      );
     }
   } catch (error) {
     if (!isCurrentLiterateDocumentOrigin(origin)) {
       showStaleLiterateDocument();
       return false;
     }
-    void vscode.window.showInformationMessage(`Could not run the current R chunk: ${errorMessage(error)}`);
+    void vscode.window.showInformationMessage(`Could not run the current code chunk: ${errorMessage(error)}`);
     return false;
   }
   if (!isCurrentLiterateDocumentOrigin(origin)) {
     showStaleLiterateDocument();
     return false;
   }
-  if (!providers.r.hasActiveSession()) {
-    void vscode.window.showInformationMessage(
-      "The R chunk did not produce an active R session. Check the R output, then try again."
-    );
-    return false;
-  }
-  return await providers.r.openLiterateSession(origin, true);
+  if (!rSession) return false;
+  return await providers.r.openLiterateSession(origin, rSession, true);
 }
 
 async function openExistingLiterateSessionOrExplain(
   origin: LiterateDocumentOrigin,
   providers: LiterateDocumentVariableProviders
 ): Promise<boolean> {
-  if (providers.python.hasAssociatedLiterateSession(origin)) {
+  const hasPython = providers.python.hasAssociatedLiterateSession(origin);
+  const rSession = providers.r.captureActiveSession();
+  if (hasPython && rSession) {
+    const python = Object.freeze({
+      label: "Python Interactive Window",
+      description: "Open the session associated with this document",
+      owner: "python" as const
+    });
+    const r = Object.freeze({
+      label: "R session",
+      description: `Open the selected ${rSession.terminal.name} terminal`,
+      owner: "r" as const
+    });
+    const items = Object.freeze([python, r]);
+    const selected = await vscode.window.showQuickPick(items, {
+      title: "Open Wrangler: Choose the document session",
+      placeHolder: "Both Python and R sessions are available",
+      ignoreFocusOut: true
+    });
+    if (!isCurrentLiterateDocumentOrigin(origin) || !selected || !items.includes(selected)) return false;
+    return selected.owner === "python"
+      ? await providers.python.openAssociatedLiterateSession(origin)
+      : await providers.r.openLiterateSession(origin, rSession);
+  }
+  if (hasPython) {
     return await providers.python.openAssociatedLiterateSession(origin);
   }
-  if (providers.r.hasActiveSession()) return await providers.r.openLiterateSession(origin);
+  if (rSession) return await providers.r.openLiterateSession(origin, rSession);
   const fenceHint =
     origin.chunk?.language && !origin.chunk.supportedFence
       ? " Use a backtick fence in R Markdown."
@@ -316,6 +370,25 @@ async function openExistingLiterateSessionOrExplain(
     `Place the cursor in an enabled R or Python code chunk, or select its live session, then try again.${fenceHint}`
   );
   return false;
+}
+
+function reticulateCellsEnabled(origin: LiterateDocumentOrigin): boolean {
+  if (origin.kind === "rmarkdown") return true;
+  return vscode.workspace.getConfiguration("quarto", origin.document.uri).get<boolean>("cells.useReticulate", true);
+}
+
+function reticulateSelection(code: string): string {
+  return `reticulate::repl_python(quiet = TRUE, input = ${JSON.stringify(code)})`;
+}
+
+function missingExtensionGuidance(missing: readonly string[]): string {
+  const extensions: string[] = [];
+  if (missing.includes("quarto.runCurrentCell")) extensions.push("Quarto");
+  if (missing.includes("jupyter.execSelectionInteractive")) extensions.push("Jupyter");
+  if (missing.includes("r.runSelection")) extensions.push("R");
+  const names =
+    extensions.length === 1 ? extensions[0]! : `${extensions.slice(0, -1).join(", ")} and ${extensions.at(-1)!}`;
+  return `Install or enable the ${names} extension${extensions.length === 1 ? "" : "s"}, then run this chunk again.`;
 }
 
 function showStaleLiterateDocument(): void {

@@ -716,6 +716,7 @@ function pythonOriginFromLiterateDocument(
   if (!isCurrentLiterateDocumentOrigin(origin)) return undefined;
   const chunk = origin.chunk;
   if (requireChunk && chunk?.language !== "python") return undefined;
+  if (requireChunk && origin.pythonExecutionOwner !== "jupyter") return undefined;
   const startLine = chunk?.openingLine ?? origin.selections[0]?.active.line;
   if (startLine === undefined) return undefined;
   const command = origin.kind === "quarto" ? "quarto.runCurrentCell" : "jupyter.execSelectionInteractive";

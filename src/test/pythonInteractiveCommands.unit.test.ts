@@ -266,7 +266,7 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
   });
 
-  it("runs an R Markdown Python chunk through Jupyter without running the document", async () => {
+  it("refuses to fabricate an Interactive Window cell for an R-owned Python chunk", async () => {
     const source = textDocument(
       "file:///workspace/analysis.Rmd",
       "```{python load-orders}\n#| echo: false\nframe = make_frame()\n```\n"
@@ -275,31 +275,28 @@ describe("Python Interactive Window entry points", () => {
     pythonMocks.textDocuments.push(source);
     pythonMocks.activeTextEditor = editor;
     const code = "#| echo: false\nframe = make_frame()\n";
-    const origin = literateOrigin(editor, "rmarkdown", {
-      language: "python",
-      executableSyntax: true,
-      supportedFence: true,
-      enabled: true,
-      fenceCharacter: "`",
-      openingLine: 0,
-      codeStartLine: 1,
-      codeEndLine: 2,
-      closingLine: 3,
-      code
-    });
-    const interactive = notebook("untitled:/Interactive-rmd.interactive", "interactive", []);
-    pythonMocks.executeCommand.mockImplementation(async (id: string) => {
-      if (id !== "jupyter.execSelectionInteractive") return undefined;
-      interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 2, "rmd-run", true));
-      pythonMocks.notebookDocuments.push(interactive.document);
-      return undefined;
-    });
-    pythonMocks.discover.mockResolvedValue({ variables: [pandasFrame("frame")], truncated: false });
+    const origin = literateOrigin(
+      editor,
+      "rmarkdown",
+      {
+        language: "python",
+        executableSyntax: true,
+        supportedFence: true,
+        enabled: true,
+        fenceCharacter: "`",
+        openingLine: 0,
+        codeStartLine: 1,
+        codeEndLine: 2,
+        closingLine: 3,
+        code
+      },
+      "r"
+    );
 
-    await expect(literateProvider(provider).runLiterateChunkAndOpen(origin)).resolves.toBe(true);
+    await expect(literateProvider(provider).runLiterateChunkAndOpen(origin)).resolves.toBe(false);
 
-    expect(pythonMocks.executeCommand).toHaveBeenCalledWith("jupyter.execSelectionInteractive", code);
-    expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("jupyter.runFileInteractive", expect.anything());
+    expect(pythonMocks.executeCommand).not.toHaveBeenCalled();
+    expect(pythonMocks.discover).not.toHaveBeenCalled();
   });
 
   it("drops a Quarto result when the exact cursor changes during command activation", async () => {
@@ -1531,7 +1528,8 @@ function literateProvider(value: NotebookLiveVariableProvider): LiteratePythonVa
 function literateOrigin(
   editor: TextEditor,
   kind: LiterateDocumentKind,
-  chunk: LiterateCodeChunk
+  chunk: LiterateCodeChunk,
+  pythonExecutionOwner: LiterateDocumentOrigin["pythonExecutionOwner"] = "jupyter"
 ): LiterateDocumentOrigin {
   const document = editor.document;
   return Object.freeze({
@@ -1540,6 +1538,7 @@ function literateOrigin(
     version: document.version,
     uri: document.uri.toString(),
     kind,
+    pythonExecutionOwner,
     viewColumn: editor.viewColumn ?? vscode.ViewColumn.Active,
     selections: Object.freeze(
       editor.selections.map((selected) =>

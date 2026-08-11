@@ -3,7 +3,9 @@ import {
   findLiterateCodeChunkAtLine,
   literateDocumentKind,
   type LiterateCodeChunk,
-  type LiterateDocumentKind
+  type LiterateDocumentKind,
+  literatePythonExecutionOwner,
+  type LiteratePythonExecutionOwner
 } from "./literateDocumentChunks";
 
 interface PositionSnapshot {
@@ -25,6 +27,7 @@ export interface LiterateDocumentOrigin {
   readonly viewColumn: vscode.ViewColumn;
   readonly selections: readonly SelectionSnapshot[];
   readonly chunk?: LiterateCodeChunk;
+  readonly pythonExecutionOwner: LiteratePythonExecutionOwner;
 }
 
 /** Captures the exact active source editor before any command activation can await. */
@@ -40,7 +43,9 @@ export function captureLiterateDocumentOrigin(expectedUri?: vscode.Uri): Literat
   const selections = Object.freeze(editor.selections.map(freezeSelection));
   const active = selections[0]?.active;
   if (!active) return undefined;
-  const chunk = findLiterateCodeChunkAtLine(document.uri.fsPath, document.getText(), active.line);
+  const source = document.getText();
+  const chunk = findLiterateCodeChunkAtLine(document.uri.fsPath, source, active.line);
+  const pythonExecutionOwner = literatePythonExecutionOwner(document.uri.fsPath, source);
   return Object.freeze({
     editor,
     document,
@@ -49,6 +54,7 @@ export function captureLiterateDocumentOrigin(expectedUri?: vscode.Uri): Literat
     kind,
     viewColumn: editor.viewColumn ?? vscode.ViewColumn.Active,
     selections,
+    pythonExecutionOwner,
     ...(chunk ? { chunk } : {})
   });
 }
