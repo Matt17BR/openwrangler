@@ -2903,6 +2903,14 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
   recordAcceptanceProgress("jupyter-r:interactive:start");
   assert.equal(vscode.workspace.isTrusted, true, "Inspecting the active R session requires a trusted workspace.");
   assert.equal(testing.diagnostics().sessionCount, 0, "The active R journey must start without another session.");
+  const existingRTerminals = vscode.window.terminals.filter(isReleasedOfficialRTerminal);
+  assert.equal(
+    existingRTerminals.length,
+    0,
+    `The active R journey must start without an earlier official R terminal; found ${
+      existingRTerminals.map((terminal) => terminal.name).join(", ") || "none"
+    }.`
+  );
   await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "before starting the first active R terminal");
   const commands = new Set(await vscode.commands.getCommands(true));
   assert.ok(commands.has("r.createRTerm"), "The pinned official R extension must expose r.createRTerm.");
@@ -3268,19 +3276,22 @@ async function createReleasedOfficialRTerminal(description: string): Promise<vsc
   );
   await waitFor(
     () =>
-      vscode.window.terminals.filter(
-        (terminal) => !before.has(terminal) && (terminal.name === "R" || terminal.name === "R Interactive")
-      ).length === 1,
+      vscode.window.terminals.filter((terminal) => !before.has(terminal) && isReleasedOfficialRTerminal(terminal))
+        .length === 1,
     30_000,
     `${description} to create one identifiable official R terminal`
   );
   const terminal = vscode.window.terminals.find(
-    (candidate) => !before.has(candidate) && (candidate.name === "R" || candidate.name === "R Interactive")
+    (candidate) => !before.has(candidate) && isReleasedOfficialRTerminal(candidate)
   );
   assert.ok(terminal, `${description} must create one official R terminal.`);
   terminal.show(false);
   await waitFor(() => vscode.window.activeTerminal === terminal, 10_000, `${description} to become active`);
   return terminal;
+}
+
+function isReleasedOfficialRTerminal(terminal: vscode.Terminal): boolean {
+  return terminal.name === "R" || terminal.name === "R Interactive";
 }
 
 async function seedReleasedRInteractiveFrames(
@@ -3786,6 +3797,13 @@ async function exerciseReleasedRLiterateDocumentJourneys(
   const openSessionIds = new Set<string>();
   const liveProcessIds = new Set<number>();
   const openedDocuments = new Map<string, vscode.TextDocument>();
+  const initialOfficialRTerminals = new Set(vscode.window.terminals.filter(isReleasedOfficialRTerminal));
+  assert.equal(
+    initialOfficialRTerminals.size,
+    0,
+    "The literate R journey must start without an official R terminal from an earlier acceptance section."
+  );
+  const ownedOfficialRTerminals = new Set<vscode.Terminal>();
   let acceptanceError: { value: unknown } | undefined;
 
   try {
@@ -3794,6 +3812,8 @@ async function exerciseReleasedRLiterateDocumentJourneys(
       await filesConfiguration.update("autoSave", "off", vscode.ConfigurationTarget.Workspace);
     }
     for (const fixture of fixtures) {
+      const officialRTerminalsBeforeFixture = new Set(vscode.window.terminals.filter(isReleasedOfficialRTerminal));
+      let ownedFixtureTerminal: vscode.Terminal | undefined;
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:open`);
       const document = await vscode.workspace.openTextDocument(fixture.sourceUri);
       if (nativeREditorTooling) {
@@ -3829,6 +3849,21 @@ async function exerciseReleasedRLiterateDocumentJourneys(
         }
       } else {
         await invokeReleasedRDocumentVariable(workbench, fixture.sourceUri, fixture.variableName, false);
+      }
+      if (fixture.kind === "quarto") {
+        await waitFor(
+          () =>
+            vscode.window.terminals.filter(
+              (terminal) => isReleasedOfficialRTerminal(terminal) && !officialRTerminalsBeforeFixture.has(terminal)
+            ).length === 1,
+          10_000,
+          "the Quarto title action to create one exact official R terminal"
+        );
+        ownedFixtureTerminal = vscode.window.terminals.find(
+          (terminal) => isReleasedOfficialRTerminal(terminal) && !officialRTerminalsBeforeFixture.has(terminal)
+        );
+        assert.ok(ownedFixtureTerminal, "The Quarto title action must create one identifiable official R terminal.");
+        ownedOfficialRTerminals.add(ownedFixtureTerminal);
       }
       const opened = await waitForReleasedRDocumentSession(
         workbench,
@@ -3949,6 +3984,16 @@ async function exerciseReleasedRLiterateDocumentJourneys(
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:close`);
       await disposePackagedSessionPanel(testing, opened.sessionId, `the ${fixture.kind} document session`);
       openSessionIds.delete(opened.sessionId);
+      if (ownedFixtureTerminal) {
+        const terminal = ownedFixtureTerminal;
+        terminal.dispose();
+        await waitFor(
+          () => !vscode.window.terminals.includes(terminal),
+          10_000,
+          "the Quarto acceptance R terminal to close"
+        );
+        ownedOfficialRTerminals.delete(terminal);
+      }
       if (processId !== undefined) {
         await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, `the ${fixture.kind} R process to stop`);
         liveProcessIds.delete(processId);
@@ -3986,6 +4031,24 @@ async function exerciseReleasedRLiterateDocumentJourneys(
     for (const processId of liveProcessIds) {
       try {
         await waitFor(() => !acceptanceProcessIsAlive(processId), 10_000, "the failed literate R process to stop");
+      } catch (error) {
+        acceptanceError ??= { value: error };
+      }
+    }
+    const remainingOwnedTerminals = new Set([
+      ...ownedOfficialRTerminals,
+      ...vscode.window.terminals.filter(
+        (terminal) => isReleasedOfficialRTerminal(terminal) && !initialOfficialRTerminals.has(terminal)
+      )
+    ]);
+    for (const terminal of remainingOwnedTerminals) {
+      try {
+        if (vscode.window.terminals.includes(terminal)) terminal.dispose();
+        await waitFor(
+          () => !vscode.window.terminals.includes(terminal),
+          10_000,
+          "the failed literate R acceptance terminal to close"
+        );
       } catch (error) {
         acceptanceError ??= { value: error };
       }
