@@ -70,6 +70,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   and duplicate-row sample sizes are labeled explicitly.
 - The Filters view now opens on multi-million-row R dataframes with a labeled 100,000-row initial sample. Searching
   scans the R column in chunks and returns exact matching counts instead of stopping at the old one-million-row limit.
+  Broad searches that exceed the bounded distinct-match state ask for a narrower term instead of exhausting R memory.
 - R dataframes now open when an atomic or classed column carries an ordinary aligned `names` attribute. Malformed
   names metadata and unrelated column attributes are still rejected.
 - Python Interactive windows now expose **Open in Open Wrangler** in their native toolbar, next to Jupyter Variables.
