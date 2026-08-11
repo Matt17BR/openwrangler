@@ -378,6 +378,11 @@ def link_live_result(value: Any, shell: Any | None = None) -> dict[str, str | in
 
 def _register_live_result(value: Any) -> str:
     """Return an opaque handle without extending the displayed value's lifetime."""
+    # IPython's Out history keeps executed results alive. Reopening the same
+    # result must reuse its handle instead of adding one key per panel open.
+    for existing_handle, existing_value in list(_LIVE_RESULTS.items()):
+        if existing_value is value:
+            return existing_handle
     handle = f"{_LIVE_RESULT_HANDLE_PREFIX}{secrets.token_hex(16)}"
     try:
         _LIVE_RESULTS[handle] = value

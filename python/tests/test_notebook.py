@@ -469,13 +469,29 @@ def test_link_live_result_returns_a_native_live_source_without_serializing(value
 def test_link_live_result_handle_survives_rebinding_the_canonical_name():
     original = pd.DataFrame({"value": [1]})
     replacement = pd.DataFrame({"value": [2]})
-    shell = type("FakeShell", (), {"user_ns": {"frame": original}})()
+    namespace = {"frame": original}
+    shell = type("FakeShell", (), {"user_ns": namespace})()
 
     linked = notebook.link_live_result(original, shell)
-    shell.user_ns["frame"] = replacement
+    namespace["frame"] = replacement
 
     assert linked["label"] == "frame"
-    assert notebook.resolve_live_result(linked["variableName"]) is original
+    handle = linked["variableName"]
+    assert isinstance(handle, str)
+    assert notebook.resolve_live_result(handle) is original
+
+
+def test_link_live_result_reuses_one_handle_for_repeated_opens():
+    frame = pd.DataFrame({"value": [1]})
+    shell = type("FakeShell", (), {"user_ns": {"Out": {7: frame}}})()
+
+    first = notebook.link_live_result(frame, shell)
+    second = notebook.link_live_result(frame, shell)
+
+    assert second["variableName"] == first["variableName"]
+    handle = first["variableName"]
+    assert isinstance(handle, str)
+    assert notebook.resolve_live_result(handle) is frame
 
 
 def test_link_live_result_keeps_an_unassigned_cell_result_alive_only_through_its_opaque_handle():
