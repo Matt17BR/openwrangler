@@ -726,11 +726,22 @@ textarea {
   border-radius: 4px;
 }
 
-.activeRules {
+.activeRules,
+.activeValueGroup {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+}
+
+.activeRules {
   margin-top: 8px;
+}
+
+.activeValueLogic {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .rulePill {

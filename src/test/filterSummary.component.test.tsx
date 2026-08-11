@@ -624,6 +624,14 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("region", { name: "city filters" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "sales filters" })).toBeInTheDocument();
     expect(screen.getByText("2 filtered columns")).toBeInTheDocument();
+    const cityFilters = screen.getByRole("region", { name: "city filters" });
+    expect(within(cityFilters).getByText("Match all groups")).toBeVisible();
+    const cityValues = within(cityFilters).getByRole("group", { name: "city: match any selected value" });
+    expect(cityValues).toHaveTextContent('Any valueequals "Berlin"equals "Milan"');
+    expect(within(cityValues).queryByRole("button", { name: 'Remove contains "i" filter from city' })).toBeNull();
+    expect(within(cityFilters).getByRole("button", { name: 'Remove contains "i" filter from city' })).toBeVisible();
+    const salesFilters = screen.getByRole("region", { name: "sales filters" });
+    expect(within(salesFilters).getByText("Match any groups")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: 'Remove equals "Berlin" filter from city' }));
     const afterValueRemoval = onApply.mock.calls.at(-1)?.[0] as FilterModel;

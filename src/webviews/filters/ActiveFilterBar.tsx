@@ -6,7 +6,14 @@ import {
   type ColumnFilter,
   type FilterModel
 } from "../../shared/filterModel";
-import { activeFilterColumnLabel, filterValueLabel, predicateLabel, selectionValueKey } from "./filterPresentation";
+import {
+  activeFilterColumnLabel,
+  activeFilterConditionCount,
+  activeFilterValueChoiceCount,
+  filterValueLabel,
+  predicateLabel,
+  selectionValueKey
+} from "./filterPresentation";
 
 interface ActiveFilterBarProps {
   metadata: SessionMetadata;
@@ -29,24 +36,45 @@ export function ActiveFilterBar({
 }: ActiveFilterBarProps) {
   const region = useRef<HTMLElement | null>(null);
   const nextFocusIndex = useRef<number | undefined>(undefined);
+  const historyFocusRequested = useRef(false);
   const activeFilters = useMemo(() => model.filters.filter(isActiveColumnFilter), [model.filters]);
 
   useLayoutEffect(() => {
     const requestedIndex = nextFocusIndex.current;
-    if (requestedIndex === undefined) return;
+    const historyRequested = historyFocusRequested.current;
+    if (requestedIndex === undefined && !historyRequested) return;
     const buttons = [...(region.current?.querySelectorAll<HTMLButtonElement>("[data-view-filter-rule]") ?? [])];
     if (disabled) {
       region.current?.focus();
       return;
     }
-    nextFocusIndex.current = undefined;
-    const target = buttons[Math.min(requestedIndex, Math.max(0, buttons.length - 1))];
-    if (target && !target.disabled) target.focus();
-    else {
+    if (requestedIndex !== undefined) {
+      nextFocusIndex.current = undefined;
+      const target = buttons[Math.min(requestedIndex, Math.max(0, buttons.length - 1))];
+      if (target && !target.disabled) {
+        target.focus();
+        return;
+      }
       const undo = region.current?.querySelector<HTMLButtonElement>("[data-view-filter-undo]");
-      if (undo && !undo.disabled) undo.focus();
-      else region.current?.focus();
+      if (undo && !undo.disabled) {
+        undo.focus();
+        return;
+      }
     }
+    if (historyRequested) {
+      historyFocusRequested.current = false;
+      const undo = region.current?.querySelector<HTMLButtonElement>("[data-view-filter-undo]");
+      if (undo && !undo.disabled) {
+        undo.focus();
+        return;
+      }
+      const clear = region.current?.querySelector<HTMLButtonElement>("[data-view-filter-clear]");
+      if (clear && !clear.disabled) {
+        clear.focus();
+        return;
+      }
+    }
+    focusGridFallback();
   }, [activeFilters, canUndo, disabled]);
 
   if (activeFilters.length === 0 && !canUndo && !retainVisible) return null;
@@ -82,8 +110,12 @@ export function ActiveFilterBar({
           <button
             type="button"
             className="compactTextButton"
+            data-view-filter-clear
             disabled={disabled || activeFilters.length === 0}
-            onClick={() => onApply({ ...model, filters: [] })}
+            onClick={() => {
+              historyFocusRequested.current = true;
+              onApply({ ...model, filters: [] });
+            }}
           >
             Clear filters
           </button>
@@ -92,7 +124,10 @@ export function ActiveFilterBar({
             className="secondaryButton"
             data-view-filter-undo
             disabled={disabled || !canUndo}
-            onClick={onUndo}
+            onClick={() => {
+              historyFocusRequested.current = true;
+              onUndo();
+            }}
           >
             <span className="codicon codicon-discard" aria-hidden="true" /> Undo latest filter
           </button>
@@ -104,7 +139,7 @@ export function ActiveFilterBar({
             const columnLabel = activeFilterColumnLabel(filter.column, metadata);
             const conditionCount = activeFilterConditionCount(filter);
             const rowLogic = filter.logic === "or" ? "any" : "all";
-            const valueChoiceCount = activeValueChoiceCount(filter);
+            const valueChoiceCount = activeFilterValueChoiceCount(filter);
             return (
               <div
                 key={filter.column}
@@ -217,16 +252,10 @@ export function ActiveFilterBar({
   );
 }
 
-function activeFilterConditionCount(filter: ColumnFilter): number {
-  return (activeValueChoiceCount(filter) > 0 ? 1 : 0) + filter.predicates.length;
-}
-
-function activeValueChoiceCount(filter: ColumnFilter): number {
-  return (
-    (filter.valueFilter?.selectedValues.length ?? 0) +
-    (filter.valueFilter?.includeNulls ? 1 : 0) +
-    (filter.valueFilter?.includeNaN ? 1 : 0)
-  );
+function focusGridFallback(): void {
+  document
+    .querySelector<HTMLElement>('[data-testid="data-grid-scroller"] [data-grid-row][tabindex="0"], main.app')
+    ?.focus({ preventScroll: true });
 }
 
 function FilterChip({

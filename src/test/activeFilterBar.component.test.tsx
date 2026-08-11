@@ -169,4 +169,65 @@ describe("ActiveFilterBar", () => {
     );
     expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument();
   });
+
+  it("restores focus after confirmed or failed clear and undo requests", () => {
+    const onApply = vi.fn();
+    const onUndo = vi.fn();
+    const View = ({
+      model,
+      canUndo,
+      disabled = false,
+      retainVisible = false
+    }: {
+      model: FilterModel;
+      canUndo: boolean;
+      disabled?: boolean;
+      retainVisible?: boolean;
+    }) => (
+      <>
+        <ActiveFilterBar
+          metadata={metadata}
+          model={model}
+          canUndo={canUndo}
+          disabled={disabled}
+          retainVisible={retainVisible}
+          onApply={onApply}
+          onUndo={onUndo}
+        />
+        <div data-testid="data-grid-scroller">
+          <button type="button" data-grid-row tabIndex={0}>
+            Grid row
+          </button>
+        </div>
+      </>
+    );
+    const emptyModel = { ...activeModel, filters: [] } satisfies FilterModel;
+    const rendered = render(<View model={activeModel} canUndo={false} />);
+
+    const clear = screen.getByRole("button", { name: "Clear filters" });
+    clear.focus();
+    fireEvent.click(clear);
+    rendered.rerender(<View model={emptyModel} canUndo={false} disabled={true} retainVisible={true} />);
+    expect(screen.getByRole("region", { name: "Viewing filters" })).toHaveFocus();
+    rendered.rerender(<View model={emptyModel} canUndo={true} retainVisible={true} />);
+    expect(screen.getByRole("button", { name: "Undo latest filter" })).toHaveFocus();
+
+    rendered.rerender(<View model={activeModel} canUndo={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    rendered.rerender(<View model={emptyModel} canUndo={false} disabled={true} retainVisible={true} />);
+    rendered.rerender(<View model={activeModel} canUndo={false} />);
+    expect(screen.getByRole("button", { name: "Clear filters" })).toHaveFocus();
+
+    rendered.rerender(<View model={activeModel} canUndo={true} />);
+    fireEvent.click(screen.getByRole("button", { name: "Undo latest filter" }));
+    rendered.rerender(<View model={emptyModel} canUndo={true} disabled={true} retainVisible={true} />);
+    rendered.rerender(<View model={activeModel} canUndo={true} />);
+    expect(screen.getByRole("button", { name: "Undo latest filter" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo latest filter" }));
+    rendered.rerender(<View model={emptyModel} canUndo={true} disabled={true} retainVisible={true} />);
+    rendered.rerender(<View model={emptyModel} canUndo={false} />);
+    expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Grid row" })).toHaveFocus();
+  });
 });
