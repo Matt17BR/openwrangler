@@ -91,10 +91,10 @@ statistics in bounded chunks, keeps those results exact, and takes a determinist
 non-missing values only for expensive histograms and categorical distributions. Omitted exact statistics display as
 `n/a`, sampled charts carry an explicit marker, and percentages use the sample population. Dataset missing counts stay
 exact; duplicate-row detection publishes the sample size when its deterministic sample is bounded below the visible
-row count. Samples use stable per-stratum offsets instead of the fixed stride that can lock onto one phase of periodic
-data. Opening Filters discovers values from at most 100,000 sampled rows and publishes that sample size. A non-empty
-value search is a separate exact scan with the existing 1,000,000-row/5,000,000-cell bound. These memory bounds do not
-imply that IRkernel can interrupt work already dispatched to the user's kernel.
+row count. Sampling uses a private fixed seed, restores the user's R random state, and avoids fixed intervals that can
+lock onto periodic data. Opening Filters discovers values from at most 100,000 sampled rows and publishes that sample
+size. A non-empty value search is a separate exact scan with the existing 1,000,000-row/5,000,000-cell bound. These
+memory bounds do not imply that IRkernel can interrupt work already dispatched to the user's kernel.
 
 Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
 Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,

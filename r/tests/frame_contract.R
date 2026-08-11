@@ -3176,27 +3176,84 @@ assert_identical(
   "large dataset duplicate sample ignored its cell budget"
 )
 
-periodic_row_count <- 199999L
-periodic_frame <- data.frame(
-  category = rep(c("alpha", "beta"), length.out = periodic_row_count),
-  stringsAsFactors = FALSE
+periodic_row_count <- 150001L
+periodic_periods <- c(2L, 3L, 5L, 7L)
+periodic_frame <- structure(
+  setNames(
+    lapply(periodic_periods, function(period) rep(sprintf("value_%d", seq_len(period)), length.out = periodic_row_count)),
+    sprintf("period_%d", periodic_periods)
+  ),
+  class = "data.frame",
+  row.names = c(NA_integer_, -periodic_row_count)
 )
 periodic_capture <- openwrangler_r_frame_contract$capture_live_frame(function() periodic_frame)
-periodic_summary <- openwrangler_r_frame_contract$materialize_summaries(
+invisible(local({
+  sampler <- get(
+    "deterministic_sample_positions",
+    envir = environment(openwrangler_r_frame_contract$materialize_summaries),
+    inherits = FALSE
+  )
+  previous_rng_kind <- RNGkind()
+  had_random_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (had_random_seed) previous_random_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  on.exit({
+    suppressWarnings(do.call(RNGkind, as.list(previous_rng_kind)))
+    if (had_random_seed) {
+      assign(".Random.seed", previous_random_seed, envir = .GlobalEnv)
+    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+      rm(".Random.seed", envir = .GlobalEnv)
+    }
+  })
+
+  suppressWarnings(RNGkind(kind = "L'Ecuyer-CMRG", normal.kind = "Box-Muller", sample.kind = "Rounding"))
+  set.seed(937L)
+  expected_rng_kind <- RNGkind()
+  expected_random_seed <- .Random.seed
+  maximum_positions <- sampler(.Machine$integer.max, openwrangler_r_frame_contract$limits$profileSampleRows)
+  repeated_positions <- sampler(.Machine$integer.max, openwrangler_r_frame_contract$limits$profileSampleRows)
+  assert_identical(RNGkind(), expected_rng_kind, "profile sampling changed a non-default R RNG kind")
+  assert_identical(.Random.seed, expected_random_seed, "profile sampling changed a non-default R random seed")
+  assert_identical(repeated_positions, maximum_positions, "profile sampling was not deterministic at the R row limit")
+  assert_identical(
+    length(maximum_positions),
+    openwrangler_r_frame_contract$limits$profileSampleRows,
+    "profile sampling changed size at the R row limit"
+  )
+  assert_true(
+    all(diff(maximum_positions) > 0) && maximum_positions[[1L]] >= 1 &&
+      maximum_positions[[length(maximum_positions)]] <= .Machine$integer.max,
+    "profile sampling returned duplicate or out-of-range positions at the R row limit"
+  )
+
+  rm(".Random.seed", envir = .GlobalEnv)
+  invisible(sampler(.Machine$integer.max, openwrangler_r_frame_contract$limits$profileSampleRows))
+  assert_true(
+    !exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE),
+    "profile sampling created a user-visible R random seed"
+  )
+}))
+set.seed(937L)
+expected_random_value <- stats::runif(1L)
+set.seed(937L)
+periodic_summaries <- openwrangler_r_frame_contract$materialize_summaries(
   periodic_capture,
-  list(profile_reference(periodic_capture, 1L))
-)[[1L]]
-periodic_categories <- periodic_summary$visualization$categories
-assert_identical(
-  vapply(periodic_categories, `[[`, character(1L), "value"),
-  c("alpha", "beta"),
-  "deterministic profile sampling aliased an alternating column"
+  lapply(seq_along(periodic_periods), function(position) profile_reference(periodic_capture, position))
 )
-assert_identical(
-  vapply(periodic_categories, `[[`, integer(1L), "count"),
-  c(50000L, 50000L),
-  "deterministic profile sampling skewed an alternating column"
-)
+assert_identical(stats::runif(1L), expected_random_value, "profile sampling changed the user's R random state")
+for (index in seq_along(periodic_periods)) {
+  period <- periodic_periods[[index]]
+  counts <- vapply(periodic_summaries[[index]]$visualization$categories, `[[`, integer(1L), "count")
+  expected_count <- openwrangler_r_frame_contract$limits$profileSampleRows / period
+  assert_identical(
+    sum(counts),
+    openwrangler_r_frame_contract$limits$profileSampleRows,
+    sprintf("the period-%d profile sample changed size", period)
+  )
+  assert_true(
+    length(counts) == period && max(abs(counts - expected_count)) <= ceiling(expected_count * 0.03),
+    sprintf("deterministic profile sampling aliased a period-%d column", period)
+  )
+}
 periodic_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(periodic_capture)$stats
 assert_identical(
   periodic_stats$duplicateRowsSampleSize,
@@ -3205,8 +3262,8 @@ assert_identical(
 )
 assert_identical(
   periodic_stats$duplicateRows,
-  openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows - 2L,
-  "deterministic duplicate sampling aliased an alternating column"
+  as.integer(openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows - prod(periodic_periods)),
+  "deterministic duplicate sampling aliased short-period columns"
 )
 
 former_row_limit <- 1000000L + 1L

@@ -1554,14 +1554,27 @@ openwrangler_r_frame_contract <- local({
     if (total <= 0 || maximum <= 0) return(integer())
     count <- as.integer(min(as.double(total), as.double(maximum)))
     if (count == total) return(seq_len(count))
-    strata <- as.double(seq_len(count))
-    starts <- floor((strata - 1) * as.double(total) / count) + 1
-    ends <- floor(strata * as.double(total) / count)
-    # A stable multiplicative hash varies the offset inside each stratum. The
-    # 100,000-row sample bounds keep this integer arithmetic exact in doubles.
-    hashes <- (strata * 2654435761) %% 4294967291
-    offsets <- floor((hashes / 4294967291) * (ends - starts + 1))
-    as.integer(starts + offsets)
+
+    had_random_seed <- base::exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    if (had_random_seed) previous_random_seed <- base::get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    previous_rng_kind <- base::RNGkind()
+    on.exit({
+      base::suppressWarnings(base::do.call(base::RNGkind, base::as.list(previous_rng_kind)))
+      if (had_random_seed) {
+        base::assign(".Random.seed", previous_random_seed, envir = .GlobalEnv)
+      } else if (base::exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+        base::rm(".Random.seed", envir = .GlobalEnv)
+      }
+    }, add = TRUE)
+
+    base::RNGkind(kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
+    base::set.seed(104729L)
+    base::sort(base::sample.int(
+      as.double(total),
+      count,
+      replace = FALSE,
+      useHash = count <= total / 2 && total > 1000000
+    ))
   }
 
   profile_chunk_source_positions <- function(row_positions, start, count) {
