@@ -231,6 +231,29 @@ describe("active R session commands", () => {
     );
   });
 
+  it("keeps an existing R-session fallback terminal-owned outside a freshly run chunk", async () => {
+    setActiveTerminal(rTerminal("R"));
+    const transport = transportMock();
+    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, coordinator } = registerWith([transport]);
+
+    await expect(literateRProvider(provider).openLiterateSession(origin)).resolves.toBe(true);
+
+    expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything());
+    expect(mocks.panelCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { kind: "rInteractiveVariable", label: "orders", variableName: "orders" },
+      "r"
+    );
+  });
+
   it("disposes R discovery when the exact literate cursor changes across its await", async () => {
     setActiveTerminal(rTerminal("R"));
     const transport = transportMock();

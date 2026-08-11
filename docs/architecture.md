@@ -55,9 +55,10 @@ The Operations view can then refresh and open supported dataframes from that ter
 invalidates the list and bridge; discovery, requests, cleanup, and reopening never retarget another terminal. The
 integration does not read vscode-R extension storage or private process details. These variables follow the notebook
 start-mode setting, so they open in Viewing mode by default and can be reopened in Editing mode without changing the
-live R object. A session opened directly from Operations has no notebook or text-document origin, so its generated R
-can be copied or saved but not inserted. A cursor-owned literate R chunk retains its exact source-document origin and
-may insert generated code only while that same document object and version remain valid.
+live R object. A session opened directly from Operations, or reused while the literate cursor is outside an executable
+chunk, has no notebook or text-document origin, so its generated R can be copied or saved but not inserted. Only a
+successfully run cursor-owned literate R chunk retains its exact source-document origin and may insert generated code
+while that same document object and version remain valid.
 
 The notebook launch command uses the same **Open in Open Wrangler** primary and compact title. VS Code can render the compact title in its global notebook toolbar while Cursor renders the primary title for its pinned editor action; keeping the accessible names identical prevents host-specific command drift without adding aliases or editor-specific activation logic.
 
