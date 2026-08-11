@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants, type BigIntStats } from "node:fs";
+import { constants as fsConstants, watch, type BigIntStats, type FSWatcher } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -52,6 +52,8 @@ export interface RInteractiveSessionTransportOptions {
   readonly createId?: () => string;
   /** Test seam; production sends through the exact terminal created by the official R extension. */
   readonly runSelection?: (code: string) => Promise<unknown>;
+  /** Test seam for exercising the production process handshake against a real child R process. */
+  readonly testProcessId?: number;
   /** Test seam for deterministic cleanup-failure coverage. */
   readonly removeFile?: (filePath: string) => Promise<void>;
   /** Test seam for bounded disposal coverage. */
@@ -66,6 +68,10 @@ interface InteractiveMailbox {
   readonly root: string;
   readonly requests: string;
   readonly responses: string;
+  readonly notificationPath: string;
+  readonly notificationSentinelPath: string;
+  readonly attachmentPath: string;
+  readonly notificationWatcher: FSWatcher;
   readonly identity: BigIntStats;
 }
 
@@ -86,8 +92,11 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private readonly runtimeRoot: string;
   private readonly runtimeBundleId: string;
   private readonly ownerToken: string;
+  private readonly notificationRequestId: string;
+  private readonly attachmentNonce: string;
   private readonly createId: () => string;
-  private readonly prepareSelectionTarget: () => Promise<void>;
+  private readonly prepareSelectionTarget: () => Promise<number | undefined>;
+  private readonly verifySelectionTarget: (expectedProcessId: number | undefined) => Promise<void>;
   private readonly dispatchSelection: (code: string) => unknown;
   private readonly terminalCloseSubscription: vscode.Disposable | undefined;
   private readonly temporaryParent: string;
@@ -95,7 +104,9 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private readonly disposalSettlementMs: number;
   private readonly terminalMode: "active" | "activeOrCreate";
   private readonly invalidatedEmitter = new vscode.EventEmitter<void>();
+  private readonly variablesChangedEmitter = new vscode.EventEmitter<RProcessVariableDiscovery>();
   readonly onDidInvalidateKernel = this.invalidatedEmitter.event;
+  readonly onDidChangeVariables = this.variablesChangedEmitter.event;
 
   private mailboxPromise: Promise<InteractiveMailbox> | undefined;
   private mailbox: InteractiveMailbox | undefined;
@@ -107,6 +118,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private runtimeLoaded = false;
   private terminalClaimed = false;
   private dispatcherLoaded = false;
+  private attachmentVerified = false;
   private boundTerminal: vscode.Terminal | undefined;
   private readonly terminalAmbiguousAtCreation: boolean;
   private terminalUnavailable = false;
@@ -117,12 +129,16 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private hostCleanup: Promise<void> | undefined;
   private readonly artifactCleanupFailures: unknown[] = [];
   private invalidationPublished = false;
+  private notificationReadTimer: NodeJS.Timeout | undefined;
+  private notificationReadTail: Promise<void> = Promise.resolve();
 
   constructor(context: vscode.ExtensionContext, options: RInteractiveSessionTransportOptions = {}) {
     this.runtimeRoot = path.join(context.extensionPath, "r");
     this.runtimeBundleId = rInteractiveRuntimeBundleId(this.runtimeRoot);
     this.ownerToken = `interactive-${randomUUID()}`;
     this.createId = options.createId ?? randomUUID;
+    this.notificationRequestId = this.createId();
+    this.attachmentNonce = this.createId();
     this.temporaryParent = options.temporaryParent ?? tmpdir();
     this.removeFile = options.removeFile ?? unlink;
     this.disposalSettlementMs = options.disposalSettlementMs ?? DISPOSAL_SETTLEMENT_MS;
@@ -136,14 +152,29 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     }
     if (options.runSelection) {
       this.terminalAmbiguousAtCreation = false;
-      this.prepareSelectionTarget = () => Promise.resolve();
+      if (
+        options.testProcessId !== undefined &&
+        (!Number.isSafeInteger(options.testProcessId) || options.testProcessId < 1)
+      ) {
+        throw new TypeError("The test R process identity must be a positive integer.");
+      }
+      this.prepareSelectionTarget = () => Promise.resolve(options.testProcessId);
+      this.verifySelectionTarget = async (expectedProcessId) => {
+        if (expectedProcessId !== options.testProcessId) {
+          throw new Error("The selected R terminal process changed during attachment.");
+        }
+      };
       this.dispatchSelection = options.runSelection;
       this.terminalCloseSubscription = undefined;
     } else {
+      if (options.testProcessId !== undefined) {
+        throw new TypeError("The test R process identity is available only with the injected selection seam.");
+      }
       const captured = captureRSelectionTarget(this.terminalMode, options.terminal);
       this.boundTerminal = captured.terminal;
       this.terminalAmbiguousAtCreation = captured.ambiguous;
       this.prepareSelectionTarget = () => this.ensureBoundTerminal();
+      this.verifySelectionTarget = (expectedProcessId) => this.verifyBoundTerminal(expectedProcessId);
       this.dispatchSelection = (code) => this.sendSelectionToBoundTerminal(code);
       this.terminalCloseSubscription = vscode.window.onDidCloseTerminal((terminal) => {
         if (terminal !== this.boundTerminal) return;
@@ -550,7 +581,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
         await writeFile(requestPath, payload, { encoding: "utf8", flag: "wx", mode: 0o600 });
         requestCreated = true;
         await chmod(requestPath, 0o600);
-        await this.prepareSelectionTarget();
+        const expectedProcessId = await this.prepareSelectionTarget();
         if (state.abandonBeforeDispatch) throw new KernelRequestCancelledError();
         if (!allowStopping) this.assertActive();
         if (!allowStopping && !vscode.workspace.isTrusted) {
@@ -562,13 +593,18 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
           bundleId: this.runtimeBundleId,
           requestPath,
           responsePath,
+          notificationPath: mailbox.notificationPath,
+          notificationSentinelPath: mailbox.notificationSentinelPath,
+          notificationRequestId: this.notificationRequestId,
+          attachmentPath: mailbox.attachmentPath,
+          attachmentNonce: this.attachmentNonce,
+          expectedProcessId: expectedProcessId ?? 1,
           bootstrapDispatcher: !this.dispatcherLoaded
         });
+        const bootstrapping = !this.dispatcherLoaded;
         state.dispatched = true;
         const dispatch = this.dispatchSelection(code);
         await dispatch;
-        this.dispatcherLoaded = true;
-        this.terminalClaimed = true;
         const response = await waitForResponse(
           responsePath,
           maximumResponseBytes,
@@ -585,7 +621,15 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
           this.removeFile,
           (error) => this.recordArtifactCleanupFailure(responsePath, "response", error)
         );
-        return decode(response);
+        const decoded = decode(response);
+        if (bootstrapping && expectedProcessId !== undefined) {
+          await this.verifySelectionTarget(expectedProcessId);
+          await this.verifyAttachment(mailbox, expectedProcessId);
+        }
+        this.dispatcherLoaded = true;
+        this.terminalClaimed = true;
+        this.attachmentVerified = true;
+        return decoded;
       } finally {
         if (requestCreated) await this.cleanupArtifact(requestPath, "request");
       }
@@ -679,18 +723,47 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
 
   private async createMailbox(): Promise<InteractiveMailbox> {
     const root = await mkdtemp(path.join(this.temporaryParent, "openwrangler-r-live-"));
+    let notificationWatcher: FSWatcher | undefined;
     try {
       await chmod(root, 0o700);
       const requests = path.join(root, "requests");
       const responses = path.join(root, "responses");
+      const notificationPath = path.join(root, "workspace.discovery.json");
+      const notificationSentinelPath = path.join(root, "workspace.alive");
+      const attachmentPath = path.join(root, "attachment.json");
       await mkdir(requests, { mode: 0o700 });
       await mkdir(responses, { mode: 0o700 });
+      await writeFile(notificationPath, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
+      await writeFile(notificationSentinelPath, "openwrangler\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+      await writeFile(attachmentPath, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
+      await chmod(notificationPath, 0o600);
+      await chmod(notificationSentinelPath, 0o600);
+      await chmod(attachmentPath, 0o600);
       const identity = validatePrivateDirectory(await lstat(root, { bigint: true }), "interactive R mailbox");
-      const mailbox = Object.freeze({ root, requests, responses, identity });
+      const notificationName = path.basename(notificationPath);
+      const watcher = watch(root, { persistent: false }, (_eventType, filename) => {
+        const changedName = Buffer.isBuffer(filename) ? filename.toString("utf8") : filename;
+        if ((changedName === null || changedName === notificationName) && !this.stopping && !this.disposed) {
+          this.scheduleNotificationRead();
+        }
+      });
+      notificationWatcher = watcher;
+      watcher.on("error", () => watcher.close());
+      const mailbox = Object.freeze({
+        root,
+        requests,
+        responses,
+        notificationPath,
+        notificationSentinelPath,
+        attachmentPath,
+        notificationWatcher,
+        identity
+      });
       this.mailbox = mailbox;
       if (this.disposed) throw new Error("The interactive R transport was disposed during mailbox creation.");
       return mailbox;
     } catch (error) {
+      notificationWatcher?.close();
       await rm(root, { recursive: true, force: true });
       throw error;
     }
@@ -779,11 +852,62 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     if (!this.mailbox && this.mailboxPromise) await settle(this.mailboxPromise);
     const mailbox = this.mailbox;
     if (!mailbox) return;
+    mailbox.notificationWatcher.close();
+    if (this.notificationReadTimer) clearTimeout(this.notificationReadTimer);
+    this.notificationReadTimer = undefined;
+    await this.notificationReadTail;
     const current = validatePrivateDirectory(await lstat(mailbox.root, { bigint: true }), "interactive R mailbox");
     if (!sameDirectoryIdentity(mailbox.identity, current)) {
       throw new Error("Open Wrangler refused to remove a replaced interactive R mailbox.");
     }
     await rm(mailbox.root, { recursive: true, force: false });
+  }
+
+  private scheduleNotificationRead(): void {
+    if (this.stopping || this.disposed) return;
+    if (this.notificationReadTimer) clearTimeout(this.notificationReadTimer);
+    this.notificationReadTimer = setTimeout(() => {
+      this.notificationReadTimer = undefined;
+      const mailbox = this.mailbox;
+      if (!mailbox || this.stopping || this.disposed) return;
+      const read = this.notificationReadTail.then(() => this.readNotification(mailbox));
+      this.notificationReadTail = settle(read);
+    }, RESPONSE_POLL_MS);
+    this.notificationReadTimer.unref();
+  }
+
+  private async readNotification(mailbox: InteractiveMailbox): Promise<void> {
+    let payload: string | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        payload = await tryReadPrivateArtifact(mailbox.notificationPath, MAX_DISCOVERY_BYTES);
+        if (payload !== undefined) break;
+      } catch {
+        // A notification is replaced with unlink/rename, so a bounded retry also
+        // covers the short interval in which the destination is absent.
+      }
+      if (attempt === 2) return;
+      await delay(RESPONSE_POLL_MS);
+    }
+    if (
+      payload === undefined ||
+      !this.attachmentVerified ||
+      this.mailbox !== mailbox ||
+      this.stopping ||
+      this.disposed
+    ) {
+      return;
+    }
+    let discovery: RProcessVariableDiscovery;
+    try {
+      discovery = decodeDiscoveryResponse(payload, this.notificationRequestId);
+    } catch {
+      this.publishInvalidation();
+      return;
+    }
+    if (this.mailbox === mailbox && !this.stopping && !this.disposed) {
+      this.variablesChangedEmitter.fire(discovery);
+    }
   }
 
   private deferCleanup(work: Promise<void>): void {
@@ -808,6 +932,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       failures.push(error);
     } finally {
       this.invalidatedEmitter.dispose();
+      this.variablesChangedEmitter.dispose();
       this.terminalCloseSubscription?.dispose();
     }
     if (failures.length === 1) throw failures[0];
@@ -873,7 +998,13 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     this.invalidatedEmitter.fire();
   }
 
-  private async ensureBoundTerminal(): Promise<void> {
+  private async verifyAttachment(mailbox: InteractiveMailbox, expectedProcessId: number): Promise<void> {
+    const payload = await tryReadPrivateArtifact(mailbox.attachmentPath, MAX_DISCOVERY_BYTES);
+    if (payload === undefined) throw new Error("Open Wrangler did not receive an R terminal attachment receipt.");
+    decodeAttachmentResponse(payload, this.attachmentNonce, this.runtimeBundleId, expectedProcessId);
+  }
+
+  private async ensureBoundTerminal(): Promise<number> {
     const extension = vscode.extensions.getExtension("REditorSupport.r");
     if (!extension) throw new Error("Install or enable the R extension to open a live R dataframe.");
     await extension.activate();
@@ -882,7 +1013,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
         this.publishInvalidation(true);
         throw new Error("The active R terminal changed. Reopen the dataframe from its original R session.");
       }
-      return;
+      return await terminalProcessId(this.boundTerminal);
     }
     if (this.terminalAmbiguousAtCreation) {
       throw new Error("Select the R terminal that owns the dataframe, then try Open in Open Wrangler again.");
@@ -899,6 +1030,18 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       throw new Error("Open Wrangler could not identify the R terminal it started.");
     }
     this.boundTerminal = created[0];
+    return await terminalProcessId(this.boundTerminal);
+  }
+
+  private async verifyBoundTerminal(expectedProcessId: number | undefined): Promise<void> {
+    if (!expectedProcessId || !this.boundTerminal) {
+      throw new Error("Open Wrangler could not verify the selected R terminal process.");
+    }
+    const currentProcessId = await terminalProcessId(this.boundTerminal);
+    if (currentProcessId !== expectedProcessId) {
+      this.publishInvalidation(true);
+      throw new Error("The selected R terminal process changed during attachment.");
+    }
   }
 
   private sendSelectionToBoundTerminal(code: string): void {
@@ -935,6 +1078,14 @@ function captureRSelectionTarget(
 
 function isOfficialRTerminal(terminal: vscode.Terminal): boolean {
   return terminal.name === "R" || terminal.name === "R Interactive";
+}
+
+async function terminalProcessId(terminal: vscode.Terminal): Promise<number> {
+  const processId = await terminal.processId;
+  if (!Number.isSafeInteger(processId) || (processId ?? 0) < 1) {
+    throw new Error("Open Wrangler could not verify the selected R terminal process.");
+  }
+  return processId!;
 }
 
 async function waitForResponse(
@@ -1006,6 +1157,40 @@ async function tryReadResponse(
   return bytes.toString("utf8");
 }
 
+async function tryReadPrivateArtifact(filePath: string, maximumBytes: number): Promise<string | undefined> {
+  let handle;
+  try {
+    handle = await open(filePath, PRIVATE_READ_FLAGS);
+  } catch (error) {
+    if (isMissingFile(error)) return undefined;
+    throw error;
+  }
+  try {
+    const opened = validatePrivateFile(await handle.stat({ bigint: true }), BigInt(maximumBytes));
+    const namedBefore = validatePrivateFile(await lstat(filePath, { bigint: true }), BigInt(maximumBytes));
+    if (!sameIdentity(opened, namedBefore)) {
+      throw new Error("Open Wrangler rejected a changing R discovery notification.");
+    }
+    const bytes = Buffer.alloc(Number(opened.size));
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+      if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0) {
+        throw new Error("Open Wrangler received a truncated R discovery notification.");
+      }
+      offset += bytesRead;
+    }
+    const completed = validatePrivateFile(await handle.stat({ bigint: true }), BigInt(maximumBytes));
+    const namedAfter = validatePrivateFile(await lstat(filePath, { bigint: true }), BigInt(maximumBytes));
+    if (!sameIdentity(opened, completed) || !sameIdentity(opened, namedAfter)) {
+      throw new Error("Open Wrangler rejected a changing R discovery notification.");
+    }
+    return bytes.toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 function decodeDiscoveryResponse(payload: string, requestId: string): RProcessVariableDiscovery {
   let value: unknown;
   try {
@@ -1045,6 +1230,30 @@ function decodeDiscoveryResponse(payload: string, requestId: string): RProcessVa
   });
   variables.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
   return Object.freeze({ variables: Object.freeze(variables), truncated: value.truncated });
+}
+
+function decodeAttachmentResponse(
+  payload: string,
+  expectedNonce: string,
+  expectedBundleId: string,
+  expectedProcessId: number
+): void {
+  let value: unknown;
+  try {
+    value = JSON.parse(payload) as unknown;
+  } catch {
+    throw new Error("Open Wrangler received malformed R terminal attachment data.");
+  }
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 4 ||
+    value.protocolVersion !== INTERACTIVE_PROTOCOL_VERSION ||
+    value.nonce !== expectedNonce ||
+    value.bundleId !== expectedBundleId ||
+    value.processId !== expectedProcessId
+  ) {
+    throw new Error("Open Wrangler could not verify the selected R terminal process.");
+  }
 }
 
 function decodeTeardownResponse(payload: string, requestId: string): void {

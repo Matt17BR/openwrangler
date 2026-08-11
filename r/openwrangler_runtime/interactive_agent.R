@@ -16,6 +16,9 @@ openwrangler_r_interactive_agent <- local({
   identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
   command_binding_pattern <- "^\\.openwrangler_r_request_[a-f0-9]{16}$"
   transport_contexts <- new.env(parent = emptyenv())
+  workspace_callback_name <- "openwrangler.workspace.872e5b61"
+  workspace_callback_running <- FALSE
+  suppress_next_workspace_callback <- FALSE
 
   bounded_message <- function(error, fallback) {
     value <- conditionMessage(error)
@@ -114,6 +117,32 @@ openwrangler_r_interactive_agent <- local({
     invisible(NULL)
   }
 
+  atomic_replace <- function(target_path, payload) {
+    bytes <- charToRaw(enc2utf8(payload))
+    if (length(bytes) > maximum_discovery_bytes) {
+      stop("Open Wrangler rejected an oversized interactive R discovery notification.", call. = FALSE)
+    }
+    temporary <- paste0(target_path, ".tmp")
+    connection <- NULL
+    published <- FALSE
+    on.exit({
+      if (!is.null(connection)) try(close(connection), silent = TRUE)
+      if (!published && file.exists(temporary)) try(unlink(temporary, force = TRUE), silent = TRUE)
+    }, add = TRUE)
+    if (file.exists(temporary)) unlink(temporary, force = TRUE)
+    connection <- file(temporary, open = "wb")
+    writeBin(bytes, connection, useBytes = TRUE)
+    flush(connection)
+    close(connection)
+    connection <- NULL
+    if (file.exists(target_path)) unlink(target_path, force = TRUE)
+    if (!file.rename(temporary, target_path)) {
+      stop("Open Wrangler could not publish its interactive R discovery notification.", call. = FALSE)
+    }
+    published <- TRUE
+    invisible(NULL)
+  }
+
   encode_json <- function(value) {
     as.character(jsonlite::toJSON(
       value,
@@ -162,7 +191,17 @@ openwrangler_r_interactive_agent <- local({
     ))
   }
 
-  discover_variables <- function(request_id) {
+  attachment_response <- function(nonce, bundle_id, process_id) {
+    sprintf(
+      '{"protocolVersion":%d,"nonce":"%s","bundleId":"%s","processId":%d}',
+      protocol_version,
+      nonce,
+      bundle_id,
+      process_id
+    )
+  }
+
+  discover_variable_snapshot <- function() {
     if (!requireNamespace("rlang", quietly = TRUE)) {
       stop("Open Wrangler requires the rlang package in the active R session.", call. = FALSE)
     }
@@ -197,13 +236,18 @@ openwrangler_r_interactive_agent <- local({
         break
       }
       candidate <- c(variables, list(list(name = utf8_name, dataframeFlavor = flavor)))
-      if (nchar(discovery_response(request_id, FALSE, candidate), type = "bytes") > maximum_discovery_bytes) {
+      if (nchar(discovery_response("00000000-0000-4000-8000-000000000000", FALSE, candidate), type = "bytes") > maximum_discovery_bytes) {
         truncated <- TRUE
         break
       }
       variables <- candidate
     }
-    discovery_response(request_id, truncated, variables)
+    list(truncated = truncated, variables = variables)
+  }
+
+  discover_variables <- function(request_id) {
+    snapshot <- discover_variable_snapshot()
+    discovery_response(request_id, snapshot$truncated, snapshot$variables)
   }
 
   evaluate_and_discover_variables <- function(request_id, code) {
@@ -262,7 +306,7 @@ openwrangler_r_interactive_agent <- local({
     existing
   }
 
-  teardown_runtime <- function(request_id, owner_token, bundle_id) {
+  release_runtime_owner <- function(owner_token, bundle_id) {
     if (exists(runtime_binding, envir = .GlobalEnv, inherits = FALSE)) {
       runtime <- get(runtime_binding, envir = .GlobalEnv, inherits = FALSE)
       if (
@@ -285,6 +329,11 @@ openwrangler_r_interactive_agent <- local({
         }
       }
     }
+    invisible(NULL)
+  }
+
+  teardown_runtime <- function(request_id, owner_token, bundle_id) {
+    release_runtime_owner(owner_token, bundle_id)
     encode_json(list(protocolVersion = protocol_version, requestId = request_id, status = "closed"))
   }
 
@@ -326,7 +375,7 @@ openwrangler_r_interactive_agent <- local({
     invisible(NULL)
   }
 
-  release_transport_context <- function(owner_token, bundle_id) {
+  release_transport_context <- function(owner_token, bundle_id, remove_dispatcher = TRUE) {
     if (!exists(owner_token, envir = transport_contexts, inherits = FALSE)) return(invisible(NULL))
     context <- get(owner_token, envir = transport_contexts, inherits = FALSE)
     if (!is.environment(context) || !identical(context$bundleId, bundle_id)) return(invisible(NULL))
@@ -338,6 +387,14 @@ openwrangler_r_interactive_agent <- local({
     }
     remove(list = owner_token, envir = transport_contexts, inherits = FALSE)
     if (
+      length(ls(envir = transport_contexts, all.names = TRUE)) == 0L &&
+        !identical(workspace_callback_running, TRUE) &&
+        workspace_callback_name %in% getTaskCallbackNames()
+    ) {
+      try(removeTaskCallback(workspace_callback_name), silent = TRUE)
+    }
+    if (
+      identical(remove_dispatcher, TRUE) &&
       length(ls(envir = transport_contexts, all.names = TRUE)) == 0L &&
         !exists(terminal_binding, envir = .GlobalEnv, inherits = FALSE) &&
         exists(dispatcher_binding, envir = .GlobalEnv, inherits = FALSE)
@@ -354,12 +411,105 @@ openwrangler_r_interactive_agent <- local({
     invisible(NULL)
   }
 
+  context_is_live <- function(context) {
+    if (
+      !is.environment(context) ||
+        !is.character(context$bundleId) ||
+        length(context$bundleId) != 1L ||
+        !is.character(context$sentinelPath) ||
+        length(context$sentinelPath) != 1L ||
+        !file.exists(context$sentinelPath) ||
+        !is.character(context$commandBinding) ||
+        length(context$commandBinding) != 1L ||
+        !exists(context$commandBinding, envir = .GlobalEnv, inherits = FALSE)
+    ) return(FALSE)
+    command <- get(context$commandBinding, envir = .GlobalEnv, inherits = FALSE)
+    if (!identical(command, context$command)) return(FALSE)
+    if (!exists(dispatcher_binding, envir = .GlobalEnv, inherits = FALSE)) return(FALSE)
+    dispatcher <- get(dispatcher_binding, envir = .GlobalEnv, inherits = FALSE)
+    is.environment(dispatcher) &&
+      identical(dispatcher$bundle_id, context$bundleId) &&
+      identical(dispatcher$openwrangler_r_interactive_agent, openwrangler_r_interactive_agent)
+  }
+
+  sweep_stale_contexts <- function() {
+    owners <- ls(envir = transport_contexts, all.names = TRUE, sorted = FALSE)
+    for (owner in owners) {
+      context <- get(owner, envir = transport_contexts, inherits = FALSE)
+      if (context_is_live(context)) next
+      bundle_id <- if (
+        is.environment(context) &&
+          is.character(context$bundleId) &&
+          length(context$bundleId) == 1L
+      ) context$bundleId else NULL
+      if (is.null(bundle_id)) {
+        remove(list = owner, envir = transport_contexts, inherits = FALSE)
+        next
+      }
+      try(release_runtime_owner(owner, bundle_id), silent = TRUE)
+      release_terminal(owner)
+      release_transport_context(owner, bundle_id, remove_dispatcher = FALSE)
+    }
+    invisible(NULL)
+  }
+
+  begin_dispatch_cycle <- function() {
+    suppress_next_workspace_callback <<- TRUE
+    invisible(NULL)
+  }
+
+  workspace_callback <- function(...) {
+    workspace_callback_running <<- TRUE
+    on.exit(workspace_callback_running <<- FALSE, add = TRUE)
+    sweep_stale_contexts()
+    owners <- ls(envir = transport_contexts, all.names = TRUE, sorted = FALSE)
+    if (length(owners) == 0L) {
+      suppress_next_workspace_callback <<- FALSE
+      return(FALSE)
+    }
+    if (identical(suppress_next_workspace_callback, TRUE)) {
+      suppress_next_workspace_callback <<- FALSE
+      return(TRUE)
+    }
+    snapshot <- tryCatch(discover_variable_snapshot(), error = function(error) error)
+    for (owner in owners) {
+      context <- get(owner, envir = transport_contexts, inherits = FALSE)
+      if (!is.environment(context) || !file.exists(context$sentinelPath)) next
+      tryCatch({
+        response <- if (inherits(snapshot, "error")) {
+          error_response(context$notificationRequestId, snapshot)
+        } else {
+          discovery_response(
+            context$notificationRequestId,
+            snapshot$truncated,
+            snapshot$variables
+          )
+        }
+        atomic_replace(context$notificationPath, response)
+      }, error = function(error) NULL)
+    }
+    length(ls(envir = transport_contexts, all.names = TRUE, sorted = FALSE)) > 0L
+  }
+
+  ensure_workspace_callback <- function() {
+    if (!(workspace_callback_name %in% getTaskCallbackNames())) {
+      addTaskCallback(workspace_callback, name = workspace_callback_name)
+    }
+    invisible(NULL)
+  }
+
   register_transport <- function(
     owner_token,
     runtime_root,
     bundle_id,
     request_directory,
     response_directory,
+    notification_path,
+    sentinel_path,
+    notification_request_id,
+    attachment_path,
+    attachment_nonce,
+    expected_process_id,
     command_binding
   ) {
     if (!grepl("^[A-Za-z0-9._:-]{1,128}$", owner_token, perl = TRUE)) {
@@ -374,6 +524,28 @@ openwrangler_r_interactive_agent <- local({
     runtime_root <- validate_path(runtime_root, "runtime root", TRUE)
     request_directory <- validate_path(request_directory, "request directory", TRUE)
     response_directory <- validate_path(response_directory, "response directory", TRUE)
+    notification_path <- validate_path(notification_path, "notification path", TRUE)
+    sentinel_path <- validate_path(sentinel_path, "notification sentinel", TRUE)
+    notification_request_id <- validate_identifier(notification_request_id, "notification identity")
+    attachment_path <- validate_path(attachment_path, "attachment path", TRUE)
+    attachment_nonce <- validate_identifier(attachment_nonce, "attachment nonce")
+    if (
+      !is.numeric(expected_process_id) ||
+        length(expected_process_id) != 1L ||
+        is.na(expected_process_id) ||
+        expected_process_id < 1 ||
+        expected_process_id != as.integer(expected_process_id) ||
+        expected_process_id != Sys.getpid()
+    ) {
+      stop("Open Wrangler could not verify the selected R terminal process.", call. = FALSE)
+    }
+    if (
+      !identical(dirname(notification_path), dirname(sentinel_path)) ||
+        !identical(dirname(notification_path), dirname(attachment_path))
+    ) {
+      stop("Open Wrangler received mismatched notification paths.", call. = FALSE)
+    }
+    sweep_stale_contexts()
     if (exists(owner_token, envir = transport_contexts, inherits = FALSE)) {
       existing <- get(owner_token, envir = transport_contexts, inherits = FALSE)
       if (
@@ -382,6 +554,12 @@ openwrangler_r_interactive_agent <- local({
           !identical(existing$bundleId, bundle_id) ||
           !identical(existing$requestDirectory, request_directory) ||
           !identical(existing$responseDirectory, response_directory) ||
+          !identical(existing$notificationPath, notification_path) ||
+          !identical(existing$sentinelPath, sentinel_path) ||
+          !identical(existing$notificationRequestId, notification_request_id) ||
+          !identical(existing$attachmentPath, attachment_path) ||
+          !identical(existing$attachmentNonce, attachment_nonce) ||
+          !identical(existing$processId, as.integer(expected_process_id)) ||
           !identical(existing$commandBinding, command_binding)
       ) {
         stop("Restart R before reconnecting this Open Wrangler transport.", call. = FALSE)
@@ -393,12 +571,23 @@ openwrangler_r_interactive_agent <- local({
     context$bundleId <- bundle_id
     context$requestDirectory <- request_directory
     context$responseDirectory <- response_directory
+    context$notificationPath <- notification_path
+    context$sentinelPath <- sentinel_path
+    context$notificationRequestId <- notification_request_id
+    context$attachmentPath <- attachment_path
+    context$attachmentNonce <- attachment_nonce
+    context$processId <- as.integer(expected_process_id)
     context$commandBinding <- command_binding
     context$hasDispatched <- FALSE
     bound_owner <- owner_token
     context$command <- function(request_id) dispatch_registered(bound_owner, request_id)
     assign(command_binding, context$command, envir = .GlobalEnv)
     assign(owner_token, context, envir = transport_contexts)
+    atomic_replace(
+      attachment_path,
+      attachment_response(attachment_nonce, bundle_id, as.integer(expected_process_id))
+    )
+    ensure_workspace_callback()
     invisible(NULL)
   }
 
@@ -484,6 +673,7 @@ openwrangler_r_interactive_agent <- local({
   }
 
   list(
+    begin_dispatch_cycle = begin_dispatch_cycle,
     dispatch = dispatch,
     dispatch_registered = dispatch_registered,
     register_transport = register_transport,
