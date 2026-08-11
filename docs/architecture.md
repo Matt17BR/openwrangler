@@ -25,6 +25,9 @@ Supported file resources share one `openWrangler.openFile` command across the Ex
 
 Operations may use vscode-R's workspace metadata as a read-only hint for one exact active `Terminal`. This path is
 available only when the terminal creation options contain vscode-R's exact profile, initializer, and watcher paths.
+For an existing session, Open Wrangler can read the workspace tree already exported by vscode-R's loaded module when
+its status names the same process ID. It does not load or activate that module. During terminal startup it checks both
+that tree and vscode-R's attach files, so an unready source does not hold up the other one.
 The watcher attach record must match `Terminal.processId` before and after setup. Its request, workspace, and marker
 files are size-bounded, opened without following links, checked for owner and identity changes, and read as marker →
 JSON → marker. The provider watches that session's `workspace.lock` and `workspace.json`; it never writes to vscode-R's
