@@ -527,16 +527,57 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
   const receipt = verifier.indexOf("testing.panelSynchronizationReceipt(sessionId)");
   const currentTarget = verifier.indexOf("findCurrentOpenWranglerGridTarget(", receipt);
   const gridBound = verifier.indexOf('recordAcceptanceProgress("excel-dependency-install:grid-bound")', currentTarget);
+  const clickCell = verifier.indexOf("await firstCell.click(", gridBound);
+  const safeClickPosition = verifier.indexOf("position: { x: 8, y: 8 }", clickCell);
+  const documentFocus = verifier.indexOf("documentFocused: element.ownerDocument.hasFocus()", safeClickPosition);
+  const cellFocus = verifier.indexOf("cellFocused: element.ownerDocument.activeElement === element", documentFocus);
+  const postClickRetirementGuard = verifier.indexOf(
+    "isRetiredRendererTarget(workbench, target.page, target.frame)",
+    cellFocus
+  );
+  const postClickReceiptGuard = verifier.indexOf(
+    "sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))",
+    postClickRetirementGuard
+  );
+  const focusAssertion = verifier.indexOf("assert.deepEqual(", postClickReceiptGuard);
+  const exactFocusState = verifier.indexOf(
+    "{ connected: true, documentFocused: true, cellFocused: true }",
+    focusAssertion
+  );
+  const gridFocused = verifier.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:grid-focused")',
+    exactFocusState
+  );
+  const arrowRight = verifier.indexOf('await firstCell.press("ArrowRight"', gridFocused);
+  const arrowSent = verifier.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:grid-arrow-sent")',
+    arrowRight
+  );
   const gridKeyboard = verifier.indexOf(
     'recordAcceptanceProgress("excel-dependency-install:grid-keyboard")',
-    gridBound
+    arrowSent
   );
   assert.ok(
-    receipt >= 0 && currentTarget > receipt && gridBound > currentTarget && gridKeyboard > gridBound,
-    "Recovered XLSX verification must follow the acknowledged receipt through grid binding and keyboard use."
+    receipt >= 0 &&
+      currentTarget > receipt &&
+      gridBound > currentTarget &&
+      clickCell > gridBound &&
+      safeClickPosition > clickCell &&
+      documentFocus > safeClickPosition &&
+      cellFocus > documentFocus &&
+      postClickRetirementGuard > cellFocus &&
+      postClickReceiptGuard > postClickRetirementGuard &&
+      focusAssertion > postClickReceiptGuard &&
+      exactFocusState > focusAssertion &&
+      gridFocused > exactFocusState &&
+      arrowRight > gridFocused &&
+      arrowSent > arrowRight &&
+      gridKeyboard > arrowSent,
+    "Recovered XLSX verification must activate the current renderer before sending a real keyboard action."
   );
   assert.match(verifier, /sameRendererSynchronizationReceipt/u);
   assert.match(verifier, /ignoreRetiredRendererProbeFailure/u);
+  assert.doesNotMatch(verifier, /bringToFront\(|firstCell\.focus\(/u);
   assert.doesNotMatch(
     verifier,
     /synchronizedSessionApp|requireFreshExactSessionPanelHydration|testing\.synchronizePanel|ensurePanelSynchronized/u
