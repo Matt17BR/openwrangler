@@ -938,7 +938,7 @@ textarea {
   white-space: nowrap;
 }
 
-.viewFilterColumn > small {
+.viewFilterType {
   background: var(--vscode-badge-background);
   border-radius: 999px;
   color: var(--vscode-badge-foreground);
@@ -947,6 +947,13 @@ textarea {
   letter-spacing: 0.02em;
   padding: 1px 5px;
   text-transform: uppercase;
+}
+
+.viewFilterRowLogic {
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .viewFilterRules {
