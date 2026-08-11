@@ -1653,6 +1653,28 @@ th:hover .columnResizeHandle,
   gap: 7px;
 }
 
+.booleanMiniChart.interactive .miniChartLegend {
+  gap: 4px;
+}
+
+.booleanMiniValue {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: inherit;
+  flex: 1 1 0;
+  font: inherit;
+  min-width: 0;
+  padding: 2px 3px;
+  text-align: left;
+}
+
+.booleanMiniValue:hover,
+.booleanMiniValue:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
+}
+
 .stackedMiniChart {
   background: var(--vscode-editorWidget-background);
   border-radius: 999px;
@@ -2068,6 +2090,24 @@ th.rowHeader {
 .profileDistributionRow:focus-visible {
   background: var(--vscode-list-hoverBackground);
   border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
+}
+
+.profileStatFilter {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--vscode-textLink-foreground);
+  font: inherit;
+  min-width: 42px;
+  padding: 1px 4px;
+  text-align: right;
+}
+
+.profileStatFilter:hover,
+.profileStatFilter:focus-visible {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-panel-border));
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
 }
 
 .summaryPlaceholder {
