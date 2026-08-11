@@ -1180,24 +1180,23 @@ async function selectKernelAndRestorePythonOrigin(
   let notebookEditor = visibleMatches[0];
   if (!notebookEditor) {
     reportStage("opening-interactive-editor");
-    const shown = await settleBeforeDeadline(
-      () =>
-        vscode.window.showNotebookDocument(notebook, {
-          viewColumn: origin.viewColumn,
-          preserveFocus: false,
-          preview: false
-        }),
-      operationDeadline
+    const appeared = await waitForExactVisibleNotebookEditor(
+      notebook,
+      origin,
+      observer,
+      Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS)
     );
-    if (shown.kind === "timedOut") {
+    if (appeared.kind === "timedOut") {
       void vscode.window.showWarningMessage("Jupyter did not finish opening the Interactive Window in time.");
       return false;
     }
-    if (shown.kind === "rejected") {
-      void vscode.window.showWarningMessage("Jupyter could not select a kernel for the Interactive Window.");
+    if (appeared.kind === "stale") {
+      void vscode.window.showWarningMessage(
+        "The Python file or Interactive Window changed while its kernel was being selected. Try again."
+      );
       return false;
     }
-    notebookEditor = shown.value;
+    notebookEditor = appeared.editor;
   }
   if (
     notebookEditor.notebook !== notebook ||
@@ -1271,6 +1270,69 @@ function isExactVisibleNotebookEditor(editor: vscode.NotebookEditor, notebook: v
   const uri = notebook.uri.toString();
   const matches = vscode.window.visibleNotebookEditors.filter((candidate) => candidate.notebook.uri.toString() === uri);
   return matches.length === 1 && matches[0] === editor && editor.notebook === notebook;
+}
+
+function waitForExactVisibleNotebookEditor(
+  notebook: vscode.NotebookDocument,
+  origin: PythonCellOrigin,
+  observer: PythonCellDispatchObserver,
+  deadline: number
+): Promise<
+  | { readonly kind: "found"; readonly editor: vscode.NotebookEditor }
+  | { readonly kind: "stale" }
+  | { readonly kind: "timedOut" }
+> {
+  const current = ():
+    | { readonly kind: "found"; readonly editor: vscode.NotebookEditor }
+    | { readonly kind: "missing" }
+    | { readonly kind: "stale" } => {
+    if (
+      !isUnchangedPythonOrigin(origin) ||
+      !isSoleOpenNotebookDocument(notebook) ||
+      !isPinnedKernelRecoveryTarget(observer, notebook)
+    ) {
+      return { kind: "stale" };
+    }
+    const uri = notebook.uri.toString();
+    const matches = vscode.window.visibleNotebookEditors.filter(
+      (candidate) => candidate.notebook.uri.toString() === uri
+    );
+    if (matches.length > 1 || (matches[0] && matches[0].notebook !== notebook)) return { kind: "stale" };
+    return matches[0] ? { kind: "found", editor: matches[0] } : { kind: "missing" };
+  };
+
+  const immediate = current();
+  if (immediate.kind !== "missing") return Promise.resolve(immediate);
+  if (Date.now() >= deadline) return Promise.resolve({ kind: "timedOut" });
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (
+      result:
+        | { readonly kind: "found"; readonly editor: vscode.NotebookEditor }
+        | { readonly kind: "stale" }
+        | { readonly kind: "timedOut" }
+    ): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      subscription.dispose();
+      resolve(result);
+    };
+    const check = (): void => {
+      const result = current();
+      if (result.kind !== "missing") finish(result);
+    };
+    const subscription = vscode.window.onDidChangeVisibleNotebookEditors(check);
+    const timer = setTimeout(
+      () => {
+        const result = current();
+        finish(result.kind === "missing" ? { kind: "timedOut" } : result);
+      },
+      Math.max(0, deadline - Date.now())
+    );
+    check();
+  });
 }
 
 function isUnchangedPythonOrigin(origin: PythonCellOrigin): boolean {

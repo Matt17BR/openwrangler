@@ -32,6 +32,7 @@ const pythonMocks = vi.hoisted(() => ({
   notebookDocuments: [] as NotebookDocument[],
   activeTextListeners: new Set<Listener<TextEditor | undefined>>(),
   activeNotebookListeners: new Set<Listener<NotebookEditor | undefined>>(),
+  visibleNotebookListeners: new Set<Listener<readonly NotebookEditor[]>>(),
   openNotebookListeners: new Set<Listener<NotebookDocument>>(),
   closeNotebookListeners: new Set<Listener<NotebookDocument>>(),
   changeNotebookListeners: new Set<Listener<NotebookDocumentChangeEvent>>(),
@@ -105,6 +106,7 @@ vi.mock("vscode", () => {
       },
       onDidChangeActiveTextEditor: subscribe(pythonMocks.activeTextListeners),
       onDidChangeActiveNotebookEditor: subscribe(pythonMocks.activeNotebookListeners),
+      onDidChangeVisibleNotebookEditors: subscribe(pythonMocks.visibleNotebookListeners),
       showInformationMessage: pythonMocks.showInformationMessage,
       showWarningMessage: pythonMocks.showWarningMessage,
       showQuickPick: pythonMocks.showQuickPick,
@@ -167,6 +169,7 @@ describe("Python Interactive Window entry points", () => {
     for (const listenerSet of [
       pythonMocks.activeTextListeners,
       pythonMocks.activeNotebookListeners,
+      pythonMocks.visibleNotebookListeners,
       pythonMocks.openNotebookListeners,
       pythonMocks.closeNotebookListeners,
       pythonMocks.changeNotebookListeners
@@ -837,6 +840,7 @@ describe("Python Interactive Window entry points", () => {
           runCount += 1;
           if (runCount === 1) {
             pythonMocks.notebookDocuments.push(interactive.document);
+            publishVisibleNotebookEditor(interactive.document);
             fire(pythonMocks.openNotebookListeners, interactive.document);
           } else {
             expect(pythonMocks.activeTextEditor?.document).toBe(source);
@@ -873,11 +877,7 @@ describe("Python Interactive Window entry points", () => {
         "notebook.selectKernel",
         "jupyter.runcurrentcell"
       ]);
-      expect(pythonMocks.showNotebookDocument).toHaveBeenCalledWith(interactive.document, {
-        viewColumn: vscode.ViewColumn.One,
-        preserveFocus: false,
-        preview: false
-      });
+      expect(pythonMocks.showNotebookDocument).not.toHaveBeenCalled();
       expect(restoredEditor.selection.anchor.line).toBe(1);
       expect(restoredEditor.selection.active.line).toBe(1);
       expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
@@ -908,8 +908,9 @@ describe("Python Interactive Window entry points", () => {
       const firstDispatch = new Promise<undefined>((resolve) => {
         finishFirstDispatch = () => resolve(undefined);
       });
-      pythonMocks.executeCommand.mockImplementation((id: string) => {
+      pythonMocks.executeCommand.mockImplementation((id: string, argument?: { notebookEditor?: NotebookEditor }) => {
         if (id === "notebook.selectKernel") {
+          expect(argument?.notebookEditor).toBe(interactiveEditor);
           Object.defineProperty(interactive.document, "metadata", {
             value: { kernelspec: { language: "python" } },
             writable: true
@@ -921,10 +922,13 @@ describe("Python Interactive Window entry points", () => {
         runCount += 1;
         if (runCount === 1) {
           pythonMocks.activeTextEditor = undefined;
-          pythonMocks.activeNotebookEditor = interactiveEditor;
-          pythonMocks.visibleNotebookEditors.push(interactiveEditor);
           pythonMocks.notebookDocuments.push(interactive.document);
           fire(pythonMocks.openNotebookListeners, interactive.document);
+          setTimeout(() => {
+            pythonMocks.activeNotebookEditor = interactiveEditor;
+            pythonMocks.visibleNotebookEditors.push(interactiveEditor);
+            fire(pythonMocks.visibleNotebookListeners, pythonMocks.visibleNotebookEditors);
+          }, 250);
           return firstDispatch;
         }
         expect(pythonMocks.activeTextEditor?.document).toBe(source);
@@ -948,6 +952,12 @@ describe("Python Interactive Window entry points", () => {
       const listenerCounts = notebookListenerCounts();
 
       const opening = command("openWrangler.runPythonCellAndOpenVariable")();
+      await settle();
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual(["jupyter.runcurrentcell"]);
+      expect(pythonMocks.showNotebookDocument).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(249);
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual(["jupyter.runcurrentcell"]);
+      await vi.advanceTimersByTimeAsync(1);
       await settle();
       expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
         "jupyter.runcurrentcell",
@@ -1004,6 +1014,7 @@ describe("Python Interactive Window entry points", () => {
           runCount += 1;
           if (runCount === 1) {
             pythonMocks.notebookDocuments.push(interactive.document);
+            publishVisibleNotebookEditor(interactive.document);
             fire(pythonMocks.openNotebookListeners, interactive.document);
           } else {
             const cell = interactiveCell(interactive.document, source.uri.toString(), 0, "run-1", true);
@@ -1167,45 +1178,35 @@ describe("Python Interactive Window entry points", () => {
       pythonMocks.textDocuments.push(source);
       pythonMocks.activeTextEditor = textEditor(source, 1);
       const first = notebook("untitled:/Interactive-1.interactive", "interactive", []);
-      const replacement = notebook("untitled:/Interactive-2.interactive", "interactive", []);
-      let finishKernelSelection!: () => void;
+      const replacement = notebook("untitled:/Interactive-1.interactive", "interactive", []);
       pythonMocks.executeCommand.mockImplementation((id: string) => {
         if (id === "jupyter.runcurrentcell") {
           pythonMocks.notebookDocuments.push(first.document);
           fire(pythonMocks.openNotebookListeners, first.document);
-        }
-        if (id === "notebook.selectKernel") {
-          return new Promise<undefined>((resolve) => {
-            finishKernelSelection = () => resolve(undefined);
-          });
+          return new Promise(() => undefined);
         }
         return Promise.resolve(undefined);
       });
+      const listenerCounts = notebookListenerCounts();
 
       const opening = command("openWrangler.runPythonCellAndOpenVariable")();
       await settle();
-      await vi.advanceTimersByTimeAsync(10_000);
-      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
-        "jupyter.runcurrentcell",
-        "notebook.selectKernel"
-      ]);
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual(["jupyter.runcurrentcell"]);
       Object.defineProperty(first.document, "isClosed", { value: true });
       pythonMocks.notebookDocuments.splice(0, 1, replacement.document);
       fire(pythonMocks.closeNotebookListeners, first.document);
       fire(pythonMocks.openNotebookListeners, replacement.document);
-      finishKernelSelection();
-      await settle();
+      publishVisibleNotebookEditor(replacement.document);
       await opening;
 
-      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
-        "jupyter.runcurrentcell",
-        "notebook.selectKernel"
-      ]);
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual(["jupyter.runcurrentcell"]);
+      expect(pythonMocks.showNotebookDocument).not.toHaveBeenCalled();
       expect(pythonMocks.openVariable).not.toHaveBeenCalled();
       expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(
-        expect.stringContaining("changed during kernel selection")
+        expect.stringContaining("changed while its kernel was being selected")
       );
       expect(vi.getTimerCount()).toBe(0);
+      expect(notebookListenerCounts()).toEqual(listenerCounts);
     } finally {
       vi.useRealTimers();
     }
@@ -1223,6 +1224,7 @@ describe("Python Interactive Window entry points", () => {
       pythonMocks.executeCommand.mockImplementation((id: string) => {
         if (id === "jupyter.runcurrentcell") {
           pythonMocks.notebookDocuments.push(first.document);
+          publishVisibleNotebookEditor(first.document);
           fire(pythonMocks.openNotebookListeners, first.document);
         }
         if (id === "notebook.selectKernel") {
@@ -1294,6 +1296,7 @@ describe("Python Interactive Window entry points", () => {
       pythonMocks.executeCommand.mockImplementation((id: string) => {
         if (id === "jupyter.runcurrentcell") {
           pythonMocks.notebookDocuments.push(interactive.document);
+          publishVisibleNotebookEditor(interactive.document);
           fire(pythonMocks.openNotebookListeners, interactive.document);
           return new Promise(() => undefined);
         }
@@ -1344,7 +1347,7 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
   });
 
-  it("selects a kernel but does not retry an indeterminate Jupyter dispatch that never settles", async () => {
+  it("stops when Jupyter never publishes the exact Interactive Window editor", async () => {
     vi.useFakeTimers();
     try {
       const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
@@ -1366,12 +1369,12 @@ describe("Python Interactive Window entry points", () => {
       await vi.advanceTimersByTimeAsync(10_001);
       await opening;
 
-      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
-        "jupyter.runcurrentcell",
-        "notebook.selectKernel"
-      ]);
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual(["jupyter.runcurrentcell"]);
+      expect(pythonMocks.showNotebookDocument).not.toHaveBeenCalled();
       expect(pythonMocks.openVariable).not.toHaveBeenCalled();
-      expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("didn't confirm"));
+      expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(
+        "Jupyter did not finish opening the Interactive Window in time."
+      );
       expect(vi.getTimerCount()).toBe(0);
       expect(notebookListenerCounts()).toEqual(listenerCounts);
     } finally {
@@ -1392,6 +1395,7 @@ describe("Python Interactive Window entry points", () => {
         runCount += 1;
         if (runCount === 1) {
           pythonMocks.notebookDocuments.push(interactive.document);
+          publishVisibleNotebookEditor(interactive.document);
           fire(pythonMocks.openNotebookListeners, interactive.document);
           return Promise.resolve(undefined);
         }
@@ -1436,6 +1440,7 @@ describe("Python Interactive Window entry points", () => {
       pythonMocks.executeCommand.mockImplementation((id: string) => {
         if (id === "jupyter.runcurrentcell") {
           pythonMocks.notebookDocuments.push(interactive.document);
+          publishVisibleNotebookEditor(interactive.document);
           fire(pythonMocks.openNotebookListeners, interactive.document);
           return Promise.resolve(undefined);
         }
@@ -1455,7 +1460,7 @@ describe("Python Interactive Window entry points", () => {
         invocation: 1,
         stage: "selecting-kernel",
         lastActiveStage: "selecting-kernel",
-        stages: ["dispatching-cell", "waiting-for-cell-publication", "opening-interactive-editor", "selecting-kernel"]
+        stages: ["dispatching-cell", "waiting-for-cell-publication", "selecting-kernel"]
       });
       await vi.advanceTimersByTimeAsync(109_999);
       expect(pythonMocks.showWarningMessage).not.toHaveBeenCalledWith("Kernel selection did not finish in time.");
@@ -1472,13 +1477,7 @@ describe("Python Interactive Window entry points", () => {
         invocation: 1,
         stage: "failed",
         lastActiveStage: "selecting-kernel",
-        stages: [
-          "dispatching-cell",
-          "waiting-for-cell-publication",
-          "opening-interactive-editor",
-          "selecting-kernel",
-          "failed"
-        ]
+        stages: ["dispatching-cell", "waiting-for-cell-publication", "selecting-kernel", "failed"]
       });
       expect(vi.getTimerCount()).toBe(0);
       expect(notebookListenerCounts()).toEqual(listenerCounts);
@@ -1663,6 +1662,7 @@ describe("Python Interactive Window entry points", () => {
         runCount += 1;
         if (runCount === 1) {
           pythonMocks.notebookDocuments.push(interactive.document);
+          publishVisibleNotebookEditor(interactive.document);
           fire(pythonMocks.openNotebookListeners, interactive.document);
         } else {
           const cell = interactiveCell(interactive.document, source.uri.toString(), 0, "run-file", true);
@@ -1705,6 +1705,7 @@ describe("Python Interactive Window entry points", () => {
       pythonMocks.executeCommand.mockImplementation((id: string) => {
         if (id !== "jupyter.runFileInteractive") return Promise.resolve(undefined);
         pythonMocks.notebookDocuments.push(interactive.document);
+        publishVisibleNotebookEditor(interactive.document);
         fire(pythonMocks.openNotebookListeners, interactive.document);
         return new Promise(() => undefined);
       });
@@ -2175,8 +2176,23 @@ function fire<T>(listeners: Set<Listener<T>>, value: T): void {
   for (const listener of listeners) listener(value);
 }
 
-function notebookListenerCounts(): { readonly open: number; readonly change: number; readonly close: number } {
+function publishVisibleNotebookEditor(notebookDocument: NotebookDocument): NotebookEditor {
+  const editor = { notebook: notebookDocument } as NotebookEditor;
+  pythonMocks.activeNotebookEditor = editor;
+  pythonMocks.activeTextEditor = undefined;
+  pythonMocks.visibleNotebookEditors.push(editor);
+  fire(pythonMocks.visibleNotebookListeners, pythonMocks.visibleNotebookEditors);
+  return editor;
+}
+
+function notebookListenerCounts(): {
+  readonly visible: number;
+  readonly open: number;
+  readonly change: number;
+  readonly close: number;
+} {
   return {
+    visible: pythonMocks.visibleNotebookListeners.size,
     open: pythonMocks.openNotebookListeners.size,
     change: pythonMocks.changeNotebookListeners.size,
     close: pythonMocks.closeNotebookListeners.size
