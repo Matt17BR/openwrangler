@@ -253,7 +253,7 @@ function compactHistogramBinLabel(
   valueMode: "count" | "percent"
 ): string {
   const count = `${bin.count.toLocaleString()} ${bin.count === 1 ? "row" : "rows"}`;
-  const value = valueMode === "count" ? count : formatDistributionPercent(bin.count, denominator);
+  const value = valueMode === "count" ? count : formatProfilePercent(bin.count, denominator);
   return `${formatHistogramValue(bin.min)}-${formatHistogramValue(bin.max)}: ${value}`;
 }
 
