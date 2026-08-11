@@ -20,7 +20,7 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 9 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 10 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -265,6 +265,15 @@ export interface RKernelCeilNumberStep {
   }>;
 }
 
+export interface RKernelMinMaxScaleStep {
+  readonly id: string;
+  readonly kind: "minMaxScale";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    readonly newColumn?: string;
+  }>;
+}
+
 export interface RKernelDropColumnsStep {
   readonly id: string;
   readonly kind: "dropColumns";
@@ -355,6 +364,7 @@ export type RKernelTransformStep =
   | RKernelSplitTextStep
   | RKernelFindReplaceStep
   | RKernelFillMissingValuesStep
+  | RKernelMinMaxScaleStep
   | RKernelRoundNumberStep
   | RKernelFloorNumberStep
   | RKernelCeilNumberStep
@@ -1199,12 +1209,17 @@ function validateTransformStep(value: unknown): void {
     validateFillMissingReplacement(params.replacement, column.id);
     return;
   }
-  if (step.kind === "roundNumber" || step.kind === "floorNumber" || step.kind === "ceilNumber") {
+  if (
+    step.kind === "minMaxScale" ||
+    step.kind === "roundNumber" ||
+    step.kind === "floorNumber" ||
+    step.kind === "ceilNumber"
+  ) {
     const params = exactRecord(
       step.params,
       ["column"],
       step.kind === "roundNumber" ? ["decimals", "newColumn"] : ["newColumn"],
-      "R kernel numeric-rounding parameters"
+      step.kind === "minMaxScale" ? "R kernel min-max-scale parameters" : "R kernel numeric-rounding parameters"
     );
     validateColumnReference(params.column, "request.payload.step.params.column");
     if (params.decimals !== undefined) {

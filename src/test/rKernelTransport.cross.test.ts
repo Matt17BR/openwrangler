@@ -625,6 +625,106 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
+  it("round-trips native R Min-max scale through preview, apply, and generated code", () => {
+    const editingSessionId = "18000000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "18000000-0000-4000-8000-000000000002",
+      preview: "18000000-0000-4000-8000-000000000003",
+      apply: "18000000-0000-4000-8000-000000000004",
+      close: "18000000-0000-4000-8000-000000000005"
+    } as const;
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const preview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.preview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: "scale-derived",
+          kind: "minMaxScale",
+          params: { column: { id: "r:c:0", name: "value" }, newColumn: "scaled" }
+        },
+        page: pageWindow()
+      }
+    });
+    const apply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.apply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+
+    const result = runR(`
+frame <- data.frame(value = bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994", NA)), check.names = FALSE)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${preview.code}
+${apply.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
+    if (opened.kind !== "page") throw new Error("Expected an opened native R Min-max scale session.");
+    const previewed = decodeRKernelResponseJson(marked(result.stdout, preview.marker), ids.preview, {
+      inputSchema: opened.page.schema
+    });
+    expect(previewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      diff: { addedColumns: ["scaled"], changedCells: 0, cells: [] }
+    });
+    if (previewed.kind !== "stepPreview") throw new Error("Expected a native R Min-max scale preview.");
+    expect(previewed.page.schema.at(-1)).toMatchObject({
+      id: "c:step:scale-derived:0",
+      name: "scaled",
+      rawType: "double",
+      type: "float",
+      nullable: true
+    });
+    expect(previewed.page.page.rows.map((row) => row.values.at(-1))).toMatchObject([
+      { kind: "number", raw: "0", isNull: false },
+      { kind: "number", raw: "0.5", isNull: false },
+      { kind: "number", raw: "1", isNull: false },
+      { kind: "null", isNull: true }
+    ]);
+
+    const applied = decodeRKernelResponseJson(marked(result.stdout, apply.marker), ids.apply);
+    expect(applied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (applied.kind !== "planUpdated") throw new Error("Expected an applied native R Min-max scale step.");
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toMatchObject({
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+    expect(applied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+
+    const generated = runR(`
+frame <- data.frame(value = bit64::as.integer64(c("9007199254740992", "9007199254740993", "9007199254740994", NA)), check.names = FALSE)
+frame_before <- serialize(frame, NULL, version = 3L)
+${applied.code}
+stopifnot(identical(open_wrangler_result$scaled, c(0, 0.5, 1, NA_real_)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
   it("runs a native R Drop Columns then Rename Column plan with stable identities", () => {
     const editingSessionId = "20000000-0000-4000-8000-000000000001";
     const ids = {

@@ -861,7 +861,7 @@ function interactiveResponse(request: { requestId: string; kind: string }): stri
   }
   if (request.kind === "closeSession") {
     const sessionId = (request as { payload?: { sessionId?: string } }).payload?.sessionId;
-    return JSON.stringify({ transportVersion: 9, requestId: request.requestId, kind: "closed", sessionId });
+    return JSON.stringify({ transportVersion: 10, requestId: request.requestId, kind: "closed", sessionId });
   }
   return JSON.stringify({
     protocolVersion: 1,
@@ -878,7 +878,7 @@ function pageWindow() {
 
 function openResponse(requestId: string, sessionId: string, includeFormats = true): string {
   return JSON.stringify({
-    transportVersion: 9,
+    transportVersion: 10,
     requestId,
     kind: "page",
     sessionId,

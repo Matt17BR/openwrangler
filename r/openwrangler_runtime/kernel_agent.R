@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 9L
+  transport_version <- 10L
   maximum_identifier_bytes <- 128L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
@@ -1026,7 +1026,7 @@ openwrangler_r_kernel_agent <- local({
         }
       ))
     }
-    if (kind %in% c("roundNumber", "floorNumber", "ceilNumber")) {
+    if (kind %in% c("minMaxScale", "roundNumber", "floorNumber", "ceilNumber")) {
       optional_fields <- if (identical(kind, "roundNumber")) {
         c("decimals", "newColumn")
       } else {
@@ -1214,6 +1214,7 @@ openwrangler_r_kernel_agent <- local({
       "stripText",
       "splitText",
       "findReplace",
+      "minMaxScale",
       "roundNumber",
       "floorNumber",
       "ceilNumber",
@@ -1978,11 +1979,17 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
-    if (step$kind %in% c("roundNumber", "floorNumber", "ceilNumber")) {
+    if (step$kind %in% c("minMaxScale", "roundNumber", "floorNumber", "ceilNumber")) {
       bound <- bind_numeric_transform_step(capture, step)
       new_name <- if (isTRUE(bound$inPlace)) NULL else bound$newName
       result <- switch(
         step$kind,
+        minMaxScale = frame_contract$min_max_scale_column_at(
+          source,
+          bound$position,
+          bound$oldName,
+          new_name
+        ),
         roundNumber = frame_contract$round_number_column_at(
           source,
           bound$position,
@@ -2021,7 +2028,8 @@ openwrangler_r_kernel_agent <- local({
           nullability_source = capture,
           source_positions = source_positions,
           output_ids = output_ids,
-          numeric_transform_positions = transform_position
+          numeric_transform_positions = if (identical(step$kind, "minMaxScale")) NULL else transform_position,
+          min_max_scale_positions = if (identical(step$kind, "minMaxScale")) transform_position else NULL
         ),
         bound = bound
       ))
@@ -2531,6 +2539,56 @@ openwrangler_r_kernel_agent <- local({
       "    .ow_result_values <- .ow_values",
       "    .ow_result_values[.ow_present] <- .ow_rounded",
       "    .ow_result_values",
+      "  }"
+    )
+  }
+
+  min_max_scale_code_helper_lines <- function() {
+    c(
+      "  .ow_min_max_scale <- function(.ow_values) {",
+      "    if (inherits(.ow_values, \"integer64\")) {",
+      "      if (!requireNamespace(\"bit64\", quietly = TRUE)) stop(\"bit64 is required to scale an integer64 column\", call. = FALSE)",
+      "      .ow_present <- !is.na(.ow_values)",
+      "      .ow_scaled <- rep.int(NA_real_, length(.ow_values))",
+      "      if (!any(.ow_present)) return(.ow_scaled)",
+      "      .ow_present_values <- .ow_values[.ow_present]",
+      "      .ow_minimum <- min(.ow_present_values)",
+      "      .ow_maximum <- max(.ow_present_values)",
+      "      if (isTRUE(.ow_minimum == .ow_maximum)) {",
+      "        .ow_scaled[.ow_present] <- 0",
+      "        return(.ow_scaled)",
+      "      }",
+      "      .ow_limb_base_double <- 4294967296",
+      "      .ow_limb_base <- bit64::as.integer64(\"4294967296\")",
+      "      .ow_quotients <- .ow_present_values %/% .ow_limb_base",
+      "      .ow_remainders <- .ow_present_values %% .ow_limb_base",
+      "      .ow_minimum_quotient <- .ow_minimum %/% .ow_limb_base",
+      "      .ow_minimum_remainder <- .ow_minimum %% .ow_limb_base",
+      "      .ow_maximum_quotient <- .ow_maximum %/% .ow_limb_base",
+      "      .ow_maximum_remainder <- .ow_maximum %% .ow_limb_base",
+      "      .ow_deltas <- (as.double(.ow_quotients) - as.double(.ow_minimum_quotient)) * .ow_limb_base_double + (as.double(.ow_remainders) - as.double(.ow_minimum_remainder))",
+      "      .ow_span <- (as.double(.ow_maximum_quotient) - as.double(.ow_minimum_quotient)) * .ow_limb_base_double + (as.double(.ow_maximum_remainder) - as.double(.ow_minimum_remainder))",
+      "      if (!is.finite(.ow_span) || .ow_span <= 0) stop(\"Open Wrangler integer64 min-max scaling produced an invalid range\", call. = FALSE)",
+      "      .ow_present_scaled <- pmin(1, pmax(0, .ow_deltas / .ow_span))",
+      "      .ow_present_scaled[.ow_present_values == .ow_minimum] <- 0",
+      "      .ow_present_scaled[.ow_present_values == .ow_maximum] <- 1",
+      "      .ow_scaled[.ow_present] <- .ow_present_scaled",
+      "      return(.ow_scaled)",
+      "    }",
+      "    .ow_numeric_input <- suppressWarnings(as.double(.ow_values))",
+      "    .ow_numeric_finite <- is.finite(.ow_numeric_input)",
+      "    .ow_scaled <- rep.int(NA_real_, length(.ow_numeric_input))",
+      "    if (!any(.ow_numeric_finite)) return(.ow_scaled)",
+      "    .ow_numeric_present <- .ow_numeric_input[.ow_numeric_finite]",
+      "    .ow_numeric_minimum <- min(.ow_numeric_present)",
+      "    .ow_numeric_maximum <- max(.ow_numeric_present)",
+      "    if (.ow_numeric_maximum == .ow_numeric_minimum) {",
+      "      .ow_scaled[.ow_numeric_finite] <- 0",
+      "    } else {",
+      "      .ow_scaled[.ow_numeric_finite] <- (.ow_numeric_present - .ow_numeric_minimum) / (.ow_numeric_maximum - .ow_numeric_minimum)",
+      "    }",
+      "    .ow_scaled[!is.finite(.ow_scaled)] <- NA_real_",
+      "    .ow_scaled",
       "  }"
     )
   }
@@ -3277,6 +3335,9 @@ openwrangler_r_kernel_agent <- local({
     ))) {
       lines <- c(lines, round_integer64_code_helper_lines())
     }
+    if (any(vapply(bound_plan, function(step) identical(step$kind, "minMaxScale"), logical(1L)))) {
+      lines <- c(lines, min_max_scale_code_helper_lines())
+    }
     for (step in bound_plan) {
       if (identical(step$kind, "sortRows")) {
         lines <- c(lines, row_step_code_lines(step))
@@ -3630,9 +3691,10 @@ openwrangler_r_kernel_agent <- local({
             "  }"
           )
         }
-      } else if (step$kind %in% c("roundNumber", "floorNumber", "ceilNumber")) {
+      } else if (step$kind %in% c("minMaxScale", "roundNumber", "floorNumber", "ceilNumber")) {
         operation_name <- switch(
           step$kind,
+          minMaxScale = "Min-max scale",
           roundNumber = "Round",
           floorNumber = "Floor",
           ceilNumber = "Ceiling"
@@ -3646,7 +3708,9 @@ openwrangler_r_kernel_agent <- local({
           "  .ow_numeric_source <- .ow_result[[.ow_numeric_position]]",
           row_type_guard(".ow_numeric_source", list(semanticsKind = step$semanticKind))
         )
-        numeric_expression <- if (identical(step$semanticKind, "integer64")) {
+        numeric_expression <- if (identical(step$kind, "minMaxScale")) {
+          NULL
+        } else if (identical(step$semanticKind, "integer64")) {
           if (identical(step$kind, "roundNumber")) {
             sprintf(".ow_round_integer64(.ow_numeric_source, %.0f)", step$decimals)
           } else {
@@ -3659,7 +3723,11 @@ openwrangler_r_kernel_agent <- local({
         } else {
           "base::ceiling(.ow_numeric_source)"
         }
-        lines <- c(lines, sprintf("  .ow_numeric_values <- %s", numeric_expression))
+        lines <- if (identical(step$kind, "minMaxScale")) {
+          c(lines, "  .ow_numeric_values <- .ow_min_max_scale(.ow_numeric_source)")
+        } else {
+          c(lines, sprintf("  .ow_numeric_values <- %s", numeric_expression))
+        }
         if (isTRUE(step$inPlace)) {
           lines <- c(
             lines,
@@ -3891,6 +3959,7 @@ openwrangler_r_kernel_agent <- local({
             "stripText",
             "splitText",
             "findReplace",
+            "minMaxScale",
             "roundNumber",
             "floorNumber",
             "ceilNumber"
@@ -3960,6 +4029,7 @@ openwrangler_r_kernel_agent <- local({
         "stripText",
         "splitText",
         "findReplace",
+        "minMaxScale",
         "roundNumber",
         "floorNumber",
         "ceilNumber",
@@ -4081,6 +4151,7 @@ openwrangler_r_kernel_agent <- local({
       "strip_text_column_at",
       "split_text_column_at",
       "find_replace_column_at",
+      "min_max_scale_column_at",
       "round_number_column_at",
       "floor_number_column_at",
       "ceil_number_column_at",
