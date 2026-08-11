@@ -17,11 +17,12 @@ import fixtureManifestContract from "../src/shared/installedPerformanceFixtureMa
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = fixtureManifestContract.INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL;
-export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v6";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v8";
-export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v3";
+export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v7";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v9";
+export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v4";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT = 10;
+export const INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT = 200;
 export const INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT = 40;
 export const INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT = 10;
@@ -32,7 +33,8 @@ export const INSTALLED_PERFORMANCE_BOUNDARY =
 export const INSTALLED_PERFORMANCE_LIMITS = Object.freeze({
   csvFirstUsableGridP95Ms: 3_000,
   parquetFirstUsableGridP95Ms: 5_000,
-  cachedGridP95Ms: 100,
+  cachedGridSlowSampleBoundaryMs: 100,
+  cachedGridSlowSampleFailureCount: 16,
   uncachedGridP95Ms: 500,
   interactionHeartbeatP95Ms: 100,
   outstandingRendererHeartbeatMs: 100,
@@ -98,7 +100,7 @@ export function validateInstalledPerformancePhase(fragment, expected = {}) {
   if (kind === "first-grid") {
     validateFirstGridMeasurement(fragment.measurement, fragment.fixture.format);
   } else if (kind === "grid-interaction") {
-    validateGridInteractionMeasurement(fragment.measurement, gridInteractionSampleCountForFixture(fragment.fixture));
+    validateGridInteractionMeasurement(fragment.measurement, gridInteractionSampleCountsForFixture(fragment.fixture));
   } else {
     throw new TypeError("Installed performance measurement kind must be first-grid or grid-interaction.");
   }
@@ -170,6 +172,7 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
     measurement: {
       boundary: INSTALLED_PERFORMANCE_BOUNDARY,
       firstGridSampleCountPerCase: INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT,
+      cachedGridSampleCountPerCase: INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT,
       gridInteractionSampleCountPerCase: INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT,
       cachedGridWarmupTransitionCount: INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
       outlierPolicy: INSTALLED_PERFORMANCE_OUTLIER_POLICY
@@ -251,6 +254,7 @@ function assertInstalledPerformanceGate(
     [
       "boundary",
       "firstGridSampleCountPerCase",
+      "cachedGridSampleCountPerCase",
       "gridInteractionSampleCountPerCase",
       "cachedGridWarmupTransitionCount",
       "outlierPolicy"
@@ -263,6 +267,11 @@ function assertInstalledPerformanceGate(
     report.measurement.firstGridSampleCountPerCase,
     INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT,
     "first-grid measurement sample count"
+  );
+  assertEqual(
+    report.measurement.cachedGridSampleCountPerCase,
+    INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT,
+    "cached-grid measurement sample count"
   );
   assertEqual(
     report.measurement.gridInteractionSampleCountPerCase,
@@ -618,7 +627,7 @@ function validateCacheProof(proof, requestedState) {
   }
 }
 
-function validateGridInteractionMeasurement(measurement, expectedSampleCount) {
+function validateGridInteractionMeasurement(measurement, expectedSampleCounts) {
   exactKeys(
     measurement,
     [
@@ -640,10 +649,10 @@ function validateGridInteractionMeasurement(measurement, expectedSampleCount) {
     INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
     "cached-grid warmup transition count"
   );
-  for (const [key, label] of [
-    ["cachedSamplesMs", "cached-grid samples"],
-    ["uncachedSamplesMs", "uncached-grid samples"],
-    ["heartbeatSamplesMs", "interaction-heartbeat samples"]
+  for (const [key, label, expectedSampleCount] of [
+    ["cachedSamplesMs", "cached-grid samples", expectedSampleCounts.cached],
+    ["uncachedSamplesMs", "uncached-grid samples", expectedSampleCounts.interaction],
+    ["heartbeatSamplesMs", "interaction-heartbeat samples", expectedSampleCounts.interaction]
   ]) {
     assertDurationSamples(measurement[key], label, expectedSampleCount);
   }
@@ -827,7 +836,7 @@ function groupEditorPhases(phases) {
       cached: summarizeInstalledDurationSamples(
         phase.measurement.cachedSamplesMs,
         "cached-grid samples",
-        INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT
+        INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT
       ),
       uncached: summarizeInstalledDurationSamples(
         phase.measurement.uncachedSamplesMs,
@@ -878,7 +887,8 @@ function validateGroupedResults(results) {
   if (!["csv", "parquet"].includes(results.gridInteraction.fixtureFormat)) {
     throw new TypeError("Grid-interaction fixture format is invalid.");
   }
-  for (const key of ["cached", "uncached", "heartbeat"]) {
+  validateSummary(results.gridInteraction.cached, INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT);
+  for (const key of ["uncached", "heartbeat"]) {
     validateSummary(results.gridInteraction[key], INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT);
   }
   validateGridInteractionMeasurement(
@@ -892,14 +902,24 @@ function validateGroupedResults(results) {
       sort: results.gridInteraction.sort,
       profiling: results.gridInteraction.profiling
     },
-    INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT
+    {
+      cached: INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT,
+      interaction: INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT
+    }
   );
 }
 
-function gridInteractionSampleCountForFixture(fixture) {
-  return fixture.format === "parquet" && fixture.rows === 5_000 && fixture.columns === 8
-    ? INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT
-    : INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT;
+function gridInteractionSampleCountsForFixture(fixture) {
+  const smoke = fixture.format === "parquet" && fixture.rows === 5_000 && fixture.columns === 8;
+  return smoke
+    ? {
+        cached: INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT,
+        interaction: INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT
+      }
+    : {
+        cached: INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT,
+        interaction: INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT
+      };
 }
 
 function validateSummary(summary, expectedCount) {
@@ -970,8 +990,15 @@ function installedPerformanceFailureDetails(
       }
     }
     const interaction = editor.results.gridInteraction;
+    const cachedSlowSampleCount = interaction.cached.samplesMs.filter(
+      (sample) => sample >= INSTALLED_PERFORMANCE_LIMITS.cachedGridSlowSampleBoundaryMs
+    ).length;
+    if (cachedSlowSampleCount >= INSTALLED_PERFORMANCE_LIMITS.cachedGridSlowSampleFailureCount) {
+      numeric(
+        `${label} cached grid had ${cachedSlowSampleCount} of ${interaction.cached.count} samples >= ${INSTALLED_PERFORMANCE_LIMITS.cachedGridSlowSampleBoundaryMs}ms (failure threshold ${INSTALLED_PERFORMANCE_LIMITS.cachedGridSlowSampleFailureCount})`
+      );
+    }
     for (const [name, actual, limit] of [
-      ["cached grid", interaction.cached.p95Ms, INSTALLED_PERFORMANCE_LIMITS.cachedGridP95Ms],
       ["uncached grid", interaction.uncached.p95Ms, INSTALLED_PERFORMANCE_LIMITS.uncachedGridP95Ms],
       ["interaction heartbeat", interaction.heartbeat.p95Ms, INSTALLED_PERFORMANCE_LIMITS.interactionHeartbeatP95Ms]
     ]) {

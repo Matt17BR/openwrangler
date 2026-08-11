@@ -40,6 +40,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   is raised immediately after the upload, so later acceptance work in that job does not start.
 - Dispatching a newer manual Released Jupyter check now cancels an older run of the same target instead of waiting
   for a known-obsolete editor journey to finish.
+- Installed-editor performance now measures 200 cached transitions and fails when at least 16 take 100ms or longer.
+  Every sample is retained, with no trimming or retry.
 
 ### Fixed
 

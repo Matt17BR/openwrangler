@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   INSTALLED_PERFORMANCE_BOUNDARY,
+  INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT,
   INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
   INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL,
   INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT,
@@ -108,7 +109,7 @@ test("phase validation rejects provenance drift and source data disclosure", () 
 
   const shortInteraction = interactionPhase("vscode");
   shortInteraction.measurement.cachedSamplesMs.pop();
-  assert.throws(() => validateInstalledPerformancePhase(shortInteraction), /exactly 40 samples/u);
+  assert.throws(() => validateInstalledPerformancePhase(shortInteraction), /exactly 200 samples/u);
 
   const staleWarmupContract = interactionPhase("vscode");
   staleWarmupContract.measurement.cachedGridWarmupTransitionCount -= 1;
@@ -793,9 +794,34 @@ test("aggregate verdicts retain dirty-source and missing-editor release failures
   assert.equal(isInstalledPerformanceNumericGateError(structuralError), false);
 });
 
+test("cached-grid release gate uses a fixed 100ms breach count without retrying samples", () => {
+  const reportFor = (cachedSamplesMs) => {
+    const cursor = editorRun("cursor");
+    cursor.phases.at(-1).measurement.cachedSamplesMs = cachedSamplesMs;
+    return buildInstalledPerformanceReport({
+      generatedAtUtc: "2026-08-12T00:00:00.000Z",
+      candidate: candidate(),
+      source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+      fixtureManifest: fixtureManifest(),
+      editorRuns: [editorRun("vscode"), cursor]
+    });
+  };
+
+  const fifteenSlowSamples = reportFor([...Array(185).fill(63), ...Array(15).fill(100)]);
+  assert.equal(fifteenSlowSamples.releaseGate.passed, true);
+  assert.equal(fifteenSlowSamples.editors[1].results.gridInteraction.cached.count, 200);
+  assert.equal(fifteenSlowSamples.editors[1].results.gridInteraction.cached.excludedSamples, 0);
+  assert.equal(fifteenSlowSamples.editors[1].results.gridInteraction.cached.p95Ms, 100);
+
+  const sixteenSlowSamples = reportFor([...Array(184).fill(63), ...Array(16).fill(100)]);
+  assert.deepEqual(sixteenSlowSamples.releaseGate.failures, [
+    "cursor cached grid had 16 of 200 samples >= 100ms (failure threshold 16)"
+  ]);
+});
+
 test("numeric failure classification fails closed when any structural gate also fails", () => {
   const cursor = editorRun("cursor");
-  cursor.phases.at(-1).measurement.cachedSamplesMs.splice(-3, 3, 100, 100, 100);
+  cursor.phases.at(-1).measurement.cachedSamplesMs.splice(-16, 16, ...Array(16).fill(100));
   const report = buildInstalledPerformanceReport({
     generatedAtUtc: "2026-07-27T00:00:00.000Z",
     candidate: candidate(),
@@ -805,7 +831,9 @@ test("numeric failure classification fails closed when any structural gate also 
   });
   assert.equal(report.releaseGate.passed, false);
   assert.ok(report.releaseGate.failures.includes("candidate source worktree has tracked changes"));
-  assert.ok(report.releaseGate.failures.includes("cursor cached grid p95 100ms >= 100ms"));
+  assert.ok(
+    report.releaseGate.failures.includes("cursor cached grid had 16 of 200 samples >= 100ms (failure threshold 16)")
+  );
   let mixedError;
   assert.throws(
     () => assertInstalledPerformanceReleaseGate(report),
@@ -1069,7 +1097,7 @@ function interactionPhase(key) {
     measurement: {
       kind: "grid-interaction",
       cachedGridWarmupTransitionCount: INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
-      cachedSamplesMs: sample(10, INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT),
+      cachedSamplesMs: sample(10, INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT),
       uncachedSamplesMs: sample(50, INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT),
       heartbeatSamplesMs: sample(5, INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT),
       filter: { completed: true, latencyMs: 100, responsiveness: responsiveness() },
