@@ -225,12 +225,7 @@ function SelectedColumnSummary({
         </div>
       )}
 
-      <DistributionValueToggle
-        mode={profileValueMode}
-        denominator={summary ? profileDistributionDenominator(summary) : undefined}
-        sampled={summary?.visualization?.sampled === true}
-        onChange={onProfileValueModeChange}
-      />
+      <DistributionValueToggle mode={profileValueMode} onChange={onProfileValueModeChange} />
 
       {!summary ? (
         <p className="summaryPlaceholder" role="status" aria-live="polite">
@@ -495,29 +490,14 @@ function boundedExactExtremumText(value: string): string {
 
 function DistributionValueToggle({
   mode,
-  denominator,
-  sampled,
   onChange
 }: {
   mode: ProfileValueMode;
-  denominator: number | undefined;
-  sampled: boolean;
   onChange?: (mode: ProfileValueMode) => void;
 }) {
-  const denominatorDescription =
-    denominator === undefined
-      ? "Distributions use non-missing visible rows."
-      : sampled
-        ? `Distributions use ${denominator.toLocaleString()} sampled non-missing ${denominator === 1 ? "row" : "rows"}.`
-        : `Distributions use ${denominator.toLocaleString()} non-missing visible ${denominator === 1 ? "row" : "rows"}.`;
   return (
     <div className="distributionValueControls">
-      <ProfileValueToggle
-        mode={mode}
-        onChange={onChange}
-        ariaLabel="Distribution values"
-        percentDescription={denominatorDescription}
-      />
+      <ProfileValueToggle mode={mode} onChange={onChange} ariaLabel="Distribution values" />
     </div>
   );
 }

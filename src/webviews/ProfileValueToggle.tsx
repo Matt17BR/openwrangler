@@ -6,7 +6,6 @@ interface ProfileValueToggleProps {
   ariaLabel: string;
   countAriaLabel?: string;
   percentAriaLabel?: string;
-  percentDescription?: string;
   compact?: boolean;
   disabled?: boolean;
 }
@@ -17,7 +16,6 @@ export function ProfileValueToggle({
   ariaLabel,
   countAriaLabel = "Counts",
   percentAriaLabel = "%",
-  percentDescription,
   compact = false,
   disabled = false
 }: ProfileValueToggleProps) {
@@ -40,8 +38,6 @@ export function ProfileValueToggle({
       <button
         type="button"
         aria-label={percentAriaLabel}
-        aria-description={percentDescription}
-        title={percentDescription}
         aria-pressed={mode === "percent"}
         disabled={controlsDisabled}
         onClick={() => onChange?.("percent")}

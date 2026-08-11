@@ -1245,8 +1245,8 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
     expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
     const numericPercent = screen.getByRole("button", { name: "%" });
-    expect(numericPercent).toHaveAttribute("title", "Distributions use 100,000 sampled non-missing rows.");
-    expect(screen.queryByText("Distributions use 100,000 sampled non-missing rows.")).not.toBeInTheDocument();
+    expect(numericPercent).not.toHaveAttribute("title");
+    expect(numericPercent).not.toHaveAttribute("aria-description");
     expect(numericPercent).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /1-2: 60% \(60,000 rows\)/u })).toBeVisible();
     numeric.unmount();
@@ -1285,8 +1285,8 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
     expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
     const categoricalPercent = screen.getByRole("button", { name: "%" });
-    expect(categoricalPercent).toHaveAttribute("title", "Distributions use 100,000 sampled non-missing rows.");
-    expect(screen.queryByText("Distributions use 100,000 sampled non-missing rows.")).not.toBeInTheDocument();
+    expect(categoricalPercent).not.toHaveAttribute("title");
+    expect(categoricalPercent).not.toHaveAttribute("aria-description");
     expect(categoricalPercent).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("Berlin").closest(".barRow")).toHaveTextContent("60%");
   });
@@ -1534,9 +1534,9 @@ describe("SummaryPanel", () => {
     };
     render(<Harness />);
 
-    expect(screen.queryByText(/Percent uses/iu)).not.toBeInTheDocument();
     const percentButton = screen.getByRole("button", { name: "%" });
-    expect(percentButton).toHaveAttribute("title", "Distributions use 4 non-missing visible rows.");
+    expect(percentButton).not.toHaveAttribute("title");
+    expect(percentButton).not.toHaveAttribute("aria-description");
     expect(screen.getByText("Null").nextElementSibling).toHaveTextContent("0");
     expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("3");
     expect(screen.getByText("Empty").nextElementSibling).toHaveTextContent("1");
@@ -1606,10 +1606,7 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Profiling selected column...")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "%" }));
     expect(onProfileValueModeChange).toHaveBeenCalledWith("percent");
-    expect(screen.getByRole("button", { name: "%" })).toHaveAttribute(
-      "title",
-      "Distributions use non-missing visible rows."
-    );
+    expect(screen.getByRole("button", { name: "%" })).not.toHaveAttribute("title");
   });
 
   it("uses non-overlapping numeric bin filters and makes the final upper edge inclusive", () => {
