@@ -792,6 +792,12 @@ supply the same verified artifacts through `OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSI
 `OPEN_WRANGLER_R_EXTENSION_VSIX`, `OPEN_WRANGLER_QUARTO_EXTENSION_VSIX`, and
 `OPEN_WRANGLER_QUARTO_CLI_ARCHIVE`.
 
+A focused packaged Linux run at `a64ce66` passed the complete literate-document journey in VS Code 1.132.0. The
+Python Quarto check accepts Jupyter's marked one-cell Interactive scaffold, then requires exactly one executed cell
+associated with the source URI and the selected chunk. Jupyter may expose that cell with `languageId: quarto`; its
+source line and Python kernel ownership identify it. The later sentinel chunk must remain absent, and opening the
+result must reuse that exact session with one user-code dispatch rather than rerunning or retargeting it.
+
 `collapse` is not a runtime dependency. Packaged R/Jupyter acceptance installs collapse 2.1.7 in its private test
 library. It creates real `qDF()`, `qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms
 that grouped and indexed objects stay out of the picker. The R contract tests cover the same class boundary directly.
