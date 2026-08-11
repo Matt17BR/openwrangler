@@ -1147,7 +1147,11 @@ test("R view mutations reacquire the renderer before the next panel action", asy
     'selectOption({ label: "market" })'
   ]);
   assertOrder("applyReleasedRQuickSort", [
-    "await menu.menu.getByRole",
+    "const menu = await waitForReleasedRColumnMenu",
+    "await menu.summary.click",
+    "const sort = menu.menu.getByRole",
+    "await sort.waitFor",
+    "await sort.click",
     "await waitFor(",
     "const sortedApp = await releasedRSessionApp",
     "await closedMenu.evaluate"
