@@ -446,6 +446,74 @@ describe("executed notebook cell result action", () => {
     tracker.dispose();
   });
 
+  it("removes a superseded pending inspection while retaining the newer cell", async () => {
+    const document = notebook("file:///superseded-pending-inspection.ipynb");
+    const firstCell = codeCell(document, 1);
+    const newerCell = codeCell(document, 2);
+    setCells(document, [firstCell, newerCell]);
+    const firstObservation = deferred<ReturnType<typeof testBinding> | undefined>();
+    const newerObservation = deferred<ReturnType<typeof testBinding> | undefined>();
+    const firstBinding = testBinding();
+    const newerBinding = testBinding();
+    mocks.observe.mockReturnValueOnce(firstObservation.promise).mockReturnValueOnce(newerObservation.promise);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(firstCell) as never);
+    tracker.recordDocumentChange(executionEvent(firstCell) as never);
+    tracker.recordDocumentChange(executionStartedEvent(newerCell) as never);
+    firstObservation.resolve(firstBinding);
+    await settleInspection();
+
+    const internals = trackerInternals(tracker);
+    const state = internals.notebookStates.get(document);
+    expect(internals.pendingCells.has(firstCell)).toBe(false);
+    expect(state?.trackedCells.has(firstCell)).toBe(false);
+    expect(state?.trackedCells.has(newerCell)).toBe(true);
+    expect(firstBinding.isGenerationValid()).toBe(false);
+
+    tracker.dispose();
+    newerObservation.resolve(newerBinding);
+    await settleInspection();
+    expect(newerBinding.isGenerationValid()).toBe(false);
+  });
+
+  it("does not let a late superseded inspection delete its replacement", async () => {
+    const document = notebook("file:///replacement-pending-inspection.ipynb");
+    const cell = codeCell(document, 1);
+    setCells(document, [cell]);
+    const firstObservation = deferred<ReturnType<typeof testBinding> | undefined>();
+    const replacementObservation = deferred<ReturnType<typeof testBinding> | undefined>();
+    const firstBinding = testBinding();
+    const replacementBinding = testBinding();
+    mocks.observe.mockReturnValueOnce(firstObservation.promise).mockReturnValueOnce(replacementObservation.promise);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(cell, 1) as never);
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    Object.defineProperty(cell, "executionSummary", {
+      configurable: true,
+      value: { executionOrder: 2, success: true }
+    });
+    tracker.recordDocumentChange(executionStartedEvent(cell, 2) as never);
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    const internals = trackerInternals(tracker);
+    const replacement = internals.pendingCells.get(cell);
+    expect(replacement).toBeDefined();
+
+    firstObservation.resolve(firstBinding);
+    await settleInspection();
+
+    expect(firstBinding.isGenerationValid()).toBe(false);
+    expect(internals.pendingCells.get(cell)).toBe(replacement);
+
+    replacementObservation.resolve(replacementBinding);
+    await settleInspection();
+    expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+    tracker.dispose();
+  });
+
   it("recognizes an execute_result output when Jupyter leaves success unspecified", async () => {
     const document = notebook("file:///unspecified-success.ipynb");
     const cell = codeCell(document, 1);
@@ -823,6 +891,16 @@ describe("executed notebook cell result action", () => {
 
 function coordinator(): SessionCoordinator {
   return { createBridge: mocks.createBridge } as unknown as SessionCoordinator;
+}
+
+function trackerInternals(tracker: NotebookCellResultTracker): {
+  readonly pendingCells: WeakMap<NotebookCell, unknown>;
+  readonly notebookStates: WeakMap<NotebookDocument, { readonly trackedCells: Set<NotebookCell> }>;
+} {
+  return tracker as unknown as {
+    readonly pendingCells: WeakMap<NotebookCell, unknown>;
+    readonly notebookStates: WeakMap<NotebookDocument, { readonly trackedCells: Set<NotebookCell> }>;
+  };
 }
 
 function command(): CommandHandler {
