@@ -520,12 +520,12 @@ export async function run(): Promise<void> {
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
   const testSelector = process.env.OPEN_WRANGLER_TEST_SELECTOR;
   assert.ok(
-    testSelector === undefined || testSelector === "interactive-terminal",
-    'OPEN_WRANGLER_TEST_SELECTOR must be unset or "interactive-terminal".'
+    testSelector === undefined || testSelector === "interactive-terminal" || testSelector === "literate-documents",
+    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "interactive-terminal", or "literate-documents".'
   );
   assert.ok(
     testSelector === undefined || phase === "jupyter-r",
-    'OPEN_WRANGLER_TEST_SELECTOR="interactive-terminal" requires the jupyter-r phase.'
+    "An OPEN_WRANGLER_TEST_SELECTOR value requires the jupyter-r phase."
   );
   if (testPython && phase !== "python-environment" && phase !== "remote-workspace") {
     await vscode.workspace
@@ -916,6 +916,21 @@ export async function run(): Promise<void> {
     );
     await exerciseReleasedRInteractiveTerminalJourney(testing, await connectToEditorWorkbench());
     console.log("Open Wrangler active R terminal acceptance passed.");
+    return;
+  }
+  if (phase === "jupyter-r" && testSelector === "literate-documents") {
+    assert.equal(
+      await assertReleasedNativeREditorTooling(),
+      true,
+      "Focused literate R acceptance requires the pinned official R and Quarto editor tooling."
+    );
+    const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-literate-"));
+    try {
+      await exerciseReleasedRLiterateDocumentJourneys(testing, await connectToEditorWorkbench(), directory);
+    } finally {
+      cleanupAcceptanceTemporaryDirectory(directory);
+    }
+    console.log("Open Wrangler R Markdown and Quarto acceptance passed.");
     return;
   }
   if (isDataWranglerCoexistencePhase(phase)) {
