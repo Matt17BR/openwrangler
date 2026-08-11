@@ -1065,6 +1065,8 @@ test("keeps the same compact editor support tiers in every README channel", () =
     "https://github.com/Matt17BR/openwrangler/releases/latest"
   );
   assert.equal(stableLinks.get("GitHub prereleases"), "https://github.com/Matt17BR/openwrangler/releases");
+  assert.match(STABLE_README_RELEASE_SECTION, /choose the newest\s+stable version from \[Open VSX\]/u);
+  assert.doesNotMatch(STABLE_README_RELEASE_SECTION, /Marketplace\]\([^)]+\) or\s+\[Open VSX\]/u);
 });
 
 test("points preview installs at the published prerelease channels", () => {

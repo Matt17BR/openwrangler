@@ -41,8 +41,8 @@ export also needs \`nanoparquet\` 0.5.1 or newer there; CSV export does not. R n
 but direct R-document execution is currently limited to macOS and Linux.`;
 const README_TRUST_REQUIREMENT =
   "Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.";
-const README_INSTALL_TRACKS = `- **Latest stable:** choose **Install** on the [Visual Studio Marketplace](${MARKETPLACE_URL}) or
-  [Open VSX](${OPEN_VSX_URL}), or download the [latest stable GitHub Release](${LATEST_STABLE_RELEASE_URL}).
+const README_INSTALL_TRACKS = `- **Latest stable:** choose **Install** on the [Visual Studio Marketplace](${MARKETPLACE_URL}), choose the newest
+  stable version from [Open VSX](${OPEN_VSX_URL})'s version list, or download the [latest stable GitHub Release](${LATEST_STABLE_RELEASE_URL}).
 - **Latest preview:** choose **Install Pre-Release Version** on the editor listing. Other Open VSX clients may label
   this differently; select the newest \`1.99.x\` version. The same VSIX is available from [GitHub prereleases](${RELEASES_URL}).
 - **Current \`main\`:** build the latest source below. It may be ahead of the published preview.`;

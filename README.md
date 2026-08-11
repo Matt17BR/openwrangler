@@ -33,8 +33,8 @@ _The workbench shows the dataframe, column profiles, filters, and cleaning steps
 | Other VS Code desktop forks | Experimental   |
 | Browser-hosted `vscode.dev` | Unsupported    |
 
-- **Latest stable:** choose **Install** on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler) or
-  [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler), or download the [latest stable GitHub Release](https://github.com/Matt17BR/openwrangler/releases/latest).
+- **Latest stable:** choose **Install** on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler), choose the newest
+  stable version from [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler)'s version list, or download the [latest stable GitHub Release](https://github.com/Matt17BR/openwrangler/releases/latest).
 - **Latest preview:** choose **Install Pre-Release Version** on the editor listing. Other Open VSX clients may label
   this differently; select the newest `1.99.x` version. The same VSIX is available from [GitHub prereleases](https://github.com/Matt17BR/openwrangler/releases).
 - **Current `main`:** build the latest source below. It may be ahead of the published preview.
