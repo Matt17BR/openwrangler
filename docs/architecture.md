@@ -32,7 +32,8 @@ The watcher attach record must match `Terminal.processId` before and after setup
 files are size-bounded, opened without following links, checked for owner and identity changes, and read as marker →
 JSON → marker. The provider watches that session's `workspace.lock` and `workspace.json`; it never writes to vscode-R's
 files or sends terminal text. Missing, malformed, stale, foreign, or replaced metadata leaves the explicit Refresh
-action available.
+action available. A foreign or overwritten record must stay unchanged through a 500 ms startup grace before the
+automatic path gives up; it never restores the old minute-long wait.
 
 Opening a watcher-listed dataframe or choosing Refresh rechecks the exact terminal and process before creating the
 native transport. That explicit action installs Open Wrangler's bundled dispatcher and one R task callback. After a

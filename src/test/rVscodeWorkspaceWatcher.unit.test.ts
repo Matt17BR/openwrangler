@@ -231,7 +231,7 @@ describe("vscode-R workspace metadata adapter", () => {
   it("reconsiders vscode-R's exported workspace while attach metadata is pending", async () => {
     const fixture = await createFixture(822);
     roots.push(fixture.root);
-    await rm(fixture.requestPath);
+    await writeFile(fixture.requestPath, JSON.stringify({ command: "help", pid: 822 }));
     const terminal = officialTerminal(fixture, 822);
     mocks.terminals = [terminal];
     const workspace = {
@@ -272,7 +272,7 @@ describe("vscode-R workspace metadata adapter", () => {
     watcher.dispose();
   });
 
-  it("falls back immediately when vscode-R has overwritten the current session's attach record", async () => {
+  it("falls back promptly when vscode-R has overwritten the current session's attach record", async () => {
     const fixture = await createFixture(820);
     roots.push(fixture.root);
     await writeFile(fixture.requestPath, JSON.stringify({ command: "help", pid: 820 }));
@@ -306,7 +306,7 @@ describe("vscode-R workspace metadata adapter", () => {
         () => "resolved",
         (error: unknown) => (error instanceof Error ? error.message : "rejected")
       ),
-      new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 250))
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 1_000))
     ]);
 
     expect(outcome).toBe("vscode-R no longer exposes the attach record for this active session.");
@@ -329,7 +329,7 @@ describe("vscode-R workspace metadata adapter", () => {
         () => "resolved",
         (error: unknown) => (error instanceof Error ? error.message : "rejected")
       ),
-      new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 250))
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 1_000))
     ]);
     expect(outcome).toBe("The selected terminal does not match the current vscode-R session record.");
     expect(wrongPid.sendText).not.toHaveBeenCalled();
