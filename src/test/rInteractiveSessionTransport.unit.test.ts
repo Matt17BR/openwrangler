@@ -84,6 +84,56 @@ describe("interactive R session transport", () => {
     }
   });
 
+  it("evaluates a chunk and discovers its frames in one correlated terminal request", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-evaluate-unit-"));
+    const requests: Array<{ requestId: string; kind: string; code?: string }> = [];
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      runSelection: async (dispatchCode) => {
+        const { requestPath, responsePath } = mailboxPaths(dispatchCode);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as {
+          requestId: string;
+          kind: string;
+          code?: string;
+        };
+        requests.push(request);
+        await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
+      }
+    });
+    try {
+      await expect(transport.evaluateAndDiscoverVariables("orders <- data.frame(id = 1:3)\n")).resolves.toEqual({
+        variables: [],
+        truncated: false
+      });
+      expect(requests[0]).toMatchObject({
+        kind: "evaluateAndDiscoverInteractiveVariables",
+        code: "orders <- data.frame(id = 1:3)\n"
+      });
+      expect(requests.filter((request) => request.kind === "discoverInteractiveVariables")).toEqual([]);
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an oversized chunk before dispatching into R", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-evaluate-size-unit-"));
+    const runSelection = vi.fn();
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      runSelection
+    });
+    try {
+      await expect(transport.evaluateAndDiscoverVariables("x".repeat(1_024 * 1_024 + 1))).rejects.toThrow("1 MiB");
+      expect(runSelection).not.toHaveBeenCalled();
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it("detaches after dispatch and waits for the original R response", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-detach-unit-"));
     const token = new vscode.CancellationTokenSource();
@@ -157,7 +207,8 @@ describe("interactive R session transport", () => {
       }
     } as unknown as vscode.Extension<unknown>);
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
-      temporaryParent
+      temporaryParent,
+      terminal
     });
     try {
       const pending = transport.discoverVariables({ cancellation: token.token });
@@ -223,7 +274,8 @@ describe("interactive R session transport", () => {
     const extensionSpy = vi.spyOn(vscode.extensions, "getExtension").mockReturnValue(extension);
     const commandSpy = vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
-      temporaryParent
+      temporaryParent,
+      terminal: firstTerminal
     });
     let invalidations = 0;
     const invalidation = transport.onDidInvalidateKernel(() => {

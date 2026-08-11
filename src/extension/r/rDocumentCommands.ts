@@ -20,6 +20,7 @@ import type { LiteratePythonVariableProvider } from "../notebooks/pythonInteract
 import type { LiterateRVariableProvider } from "./rInteractiveCommands";
 
 export const OPEN_R_DOCUMENT_COMMAND = "openWrangler.runRDocument";
+export const OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND = "openWrangler.internal.openLiterateDataframe";
 
 export interface LiterateDocumentVariableProviders {
   readonly python: LiteratePythonVariableProvider;
@@ -45,10 +46,6 @@ export function registerRDocumentCommands(
       if (!vscode.workspace.isTrusted) {
         void vscode.window.showWarningMessage("Trust this workspace before running an R document in Open Wrangler.");
         return false;
-      }
-      if (!(resource instanceof vscode.Uri) && literateProviders) {
-        const routed = await routeActiveLiterateDocument(literateProviders);
-        if (routed !== undefined) return routed;
       }
       if (!supportsRDocumentExecution()) {
         void vscode.window.showWarningMessage(
@@ -215,6 +212,14 @@ export function registerRDocumentCommands(
         );
         return false;
       }
+    }),
+    vscode.commands.registerCommand(OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND, async () => {
+      if (!vscode.workspace.isTrusted) {
+        void vscode.window.showWarningMessage("Trust this workspace before running a code chunk in Open Wrangler.");
+        return false;
+      }
+      if (!literateProviders) return false;
+      return (await routeActiveLiterateDocument(literateProviders)) ?? false;
     })
   );
 }
@@ -271,13 +276,24 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
     return false;
   }
 
-  const command = origin.kind === "quarto" ? "quarto.runCurrentCell" : "r.runSelection";
+  if (usesR) {
+    if (!isCurrentLiterateDocumentOrigin(origin)) {
+      showStaleLiterateDocument();
+      return false;
+    }
+    if (reticulateSetting !== undefined && reticulateCellsEnabled(origin) !== reticulateSetting) {
+      showChangedReticulateSetting();
+      return false;
+    }
+    if (!rSession) return false;
+    const code = chunk.language === "python" ? reticulateSelection(chunk.code) : chunk.code;
+    return await providers.r.runLiterateChunkAndOpen(origin, rSession, code);
+  }
+
   const requiredCommands =
     origin.kind === "quarto"
-      ? usesR
-        ? (["quarto.runCurrentCell", "r.runSelection"] as const)
-        : (["quarto.runCurrentCell", "jupyter.execSelectionInteractive"] as const)
-      : (["r.runSelection"] as const);
+      ? (["quarto.runCurrentCell", "jupyter.execSelectionInteractive"] as const)
+      : (["jupyter.execSelectionInteractive"] as const);
   let available: readonly string[] | undefined;
   try {
     available = await vscode.commands.getCommands(true);
@@ -304,37 +320,7 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
     return false;
   }
 
-  if (!usesR) {
-    return await providers.python.runLiterateChunkAndOpen(origin);
-  }
-
-  try {
-    if (origin.kind === "quarto") {
-      await vscode.commands.executeCommand(command, Math.max(1, chunk.openingLine + 1));
-    } else {
-      await vscode.commands.executeCommand(
-        command,
-        chunk.language === "python" ? reticulateSelection(chunk.code) : chunk.code
-      );
-    }
-  } catch (error) {
-    if (!isCurrentLiterateDocumentOrigin(origin)) {
-      showStaleLiterateDocument();
-      return false;
-    }
-    void vscode.window.showInformationMessage(`Could not run the current code chunk: ${errorMessage(error)}`);
-    return false;
-  }
-  if (!isCurrentLiterateDocumentOrigin(origin)) {
-    showStaleLiterateDocument();
-    return false;
-  }
-  if (reticulateSetting !== undefined && reticulateCellsEnabled(origin) !== reticulateSetting) {
-    showChangedReticulateSetting();
-    return false;
-  }
-  if (!rSession) return false;
-  return await providers.r.openLiterateSession(origin, rSession, true);
+  return await providers.python.runLiterateChunkAndOpen(origin);
 }
 
 async function openExistingLiterateSessionOrExplain(

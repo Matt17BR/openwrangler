@@ -142,6 +142,7 @@ import {
   REFRESH_R_INTERACTIVE_VARIABLES_COMMAND,
   registerRInteractiveCommands
 } from "../extension/r/rInteractiveCommands";
+import { OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND } from "../extension/r/rDocumentCommands";
 
 const tibble = { name: "orders", backend: "r" as const, dataframeFlavor: "r.tibble" as const };
 
@@ -198,10 +199,10 @@ describe("active R session commands", () => {
     expect(transport.dispose).not.toHaveBeenCalled();
   });
 
-  it("opens a fresh R chunk session against the exact literate document origin", async () => {
+  it("evaluates and discovers an R chunk against the exact captured terminal", async () => {
     setActiveTerminal(rTerminal("R"));
     const transport = transportMock();
-    transport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    transport.evaluateAndDiscoverVariables.mockResolvedValueOnce(discovery(tibble));
     mocks.showQuickPick.mockImplementation(async (items) => items[0]);
     const source = literateDocument("/workspace/orders.qmd");
     const editor = textEditor(source, 2);
@@ -213,10 +214,19 @@ describe("active R session commands", () => {
     expect(session).toBeDefined();
     if (!session) throw new Error("Expected the active R terminal to be captured.");
 
-    await expect(literateRProvider(provider).openLiterateSession(origin, session, true)).resolves.toBe(true);
+    await expect(
+      literateRProvider(provider).runLiterateChunkAndOpen(origin, session, "orders <- data.frame(id = 1:3)\n")
+    ).resolves.toBe(true);
 
-    expect(transport.discoverVariables).toHaveBeenCalledOnce();
-    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active" });
+    expect(transport.discoverVariables).not.toHaveBeenCalled();
+    expect(transport.evaluateAndDiscoverVariables).toHaveBeenCalledWith(
+      "orders <- data.frame(id = 1:3)\n",
+      expect.objectContaining({ timeoutMs: 45_000 })
+    );
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), {
+      terminalMode: "active",
+      terminal: session.terminal
+    });
     expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), {
       kind: "textDocument",
       document: source,
@@ -269,7 +279,7 @@ describe("active R session commands", () => {
     mocks.textDocuments.push(source);
     mocks.activeEditor = editor;
     const origin = literateOrigin(editor, "rmarkdown");
-    transport.discoverVariables.mockImplementationOnce(async () => {
+    transport.evaluateAndDiscoverVariables.mockImplementationOnce(async () => {
       const moved = selection(3);
       editor.selection = moved;
       editor.selections = [moved];
@@ -280,7 +290,9 @@ describe("active R session commands", () => {
     expect(session).toBeDefined();
     if (!session) throw new Error("Expected the active R terminal to be captured.");
 
-    await expect(literateRProvider(provider).openLiterateSession(origin, session, true)).resolves.toBe(false);
+    await expect(
+      literateRProvider(provider).runLiterateChunkAndOpen(origin, session, "orders <- data.frame(id = 1:3)\n")
+    ).resolves.toBe(false);
 
     expect(transport.dispose).toHaveBeenCalledOnce();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
@@ -292,7 +304,7 @@ describe("active R session commands", () => {
     const replacement = rTerminal("R Interactive");
     setActiveTerminal(original);
     const transport = transportMock();
-    transport.discoverVariables.mockImplementationOnce(async () => {
+    transport.evaluateAndDiscoverVariables.mockImplementationOnce(async () => {
       emitActiveTerminal(replacement);
       return discovery(tibble);
     });
@@ -305,7 +317,9 @@ describe("active R session commands", () => {
     const session = literateRProvider(provider).captureActiveSession();
     if (!session) throw new Error("Expected the original R terminal to be captured.");
 
-    await expect(literateRProvider(provider).openLiterateSession(origin, session, true)).resolves.toBe(false);
+    await expect(
+      literateRProvider(provider).runLiterateChunkAndOpen(origin, session, "orders <- data.frame(id = 1:3)\n")
+    ).resolves.toBe(false);
 
     expect(transport.dispose).toHaveBeenCalledOnce();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
@@ -332,7 +346,9 @@ describe("active R session commands", () => {
       emitActiveTerminal(replacement);
     });
 
-    await expect(literateRProvider(provider).openLiterateSession(origin, session, true)).resolves.toBe(false);
+    await expect(
+      literateRProvider(provider).runLiterateChunkAndOpen(origin, session, "orders <- data.frame(id = 1:3)\n")
+    ).resolves.toBe(false);
 
     expect(factory.create).toHaveBeenCalledTimes(1);
     expect(next.discoverVariables).not.toHaveBeenCalled();
@@ -362,7 +378,7 @@ describe("active R session commands", () => {
 
     await expect(command(OPEN_R_DATAFRAME_COMMAND)()).resolves.toBe(true);
 
-    expect(mocks.executeCommand).toHaveBeenCalledWith("openWrangler.runRDocument");
+    expect(mocks.executeCommand).toHaveBeenCalledWith(OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND);
     expect(mocks.showQuickPick).not.toHaveBeenCalled();
     expect(mocks.panelCreate).not.toHaveBeenCalled();
   });
@@ -391,7 +407,7 @@ describe("active R session commands", () => {
     await expect(command(OPEN_R_DATAFRAME_COMMAND)()).resolves.toBe(true);
 
     expect(factory.create).toHaveBeenCalledOnce();
-    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active" });
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active", terminal });
     expect(transport.discoverVariables).toHaveBeenCalledOnce();
     expect(mocks.bridgeArguments[0]?.[1]).toBe(transport);
     expect(mocks.bridgeArguments[0]?.[4]).toEqual(tibble);
@@ -484,7 +500,7 @@ describe("active R session commands", () => {
     const { provider, factory } = registerWith([transport]);
 
     await expect(command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)()).resolves.toBe(true);
-    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active" });
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active", terminal });
     expect(provider.snapshot()).toMatchObject({
       state: "ready",
       terminalLabel: "R",
@@ -519,7 +535,7 @@ describe("active R session commands", () => {
     const { provider, factory } = registerWith([transport]);
 
     const refresh = command(REFRESH_R_INTERACTIVE_VARIABLES_COMMAND)();
-    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active" });
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active", terminal: first });
     expect(provider.snapshot()).toMatchObject({ state: "loading", terminalLabel: "R" });
 
     emitActiveTerminal(second);
@@ -757,6 +773,7 @@ function transportMock() {
   const invalidationListeners = new Set<() => unknown>();
   return {
     discoverVariables: vi.fn(),
+    evaluateAndDiscoverVariables: vi.fn(),
     dispose: vi.fn(async () => undefined),
     onDidInvalidateKernel: (listener: () => unknown) => {
       invalidationListeners.add(listener);

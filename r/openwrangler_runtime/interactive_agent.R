@@ -5,6 +5,7 @@ openwrangler_r_interactive_agent <- local({
   maximum_response_bytes <- 17L * 1024L * 1024L
   maximum_error_bytes <- 4096L
   maximum_discovery_bytes <- 64L * 1024L
+  maximum_evaluation_code_bytes <- 1024L * 1024L
   maximum_scanned_bindings <- 4096L
   maximum_variables <- 256L
   maximum_name_bytes <- 1024L
@@ -203,6 +204,28 @@ openwrangler_r_interactive_agent <- local({
       variables <- candidate
     }
     discovery_response(request_id, truncated, variables)
+  }
+
+  evaluate_and_discover_variables <- function(request_id, code) {
+    if (
+      !is.character(code) ||
+        length(code) != 1L ||
+        is.na(code) ||
+        !nzchar(code) ||
+        Encoding(code) == "bytes"
+    ) {
+      stop("Open Wrangler received an invalid R code chunk.", call. = FALSE)
+    }
+    utf8_code <- iconv(code, from = "", to = "UTF-8", sub = NA_character_)
+    if (
+      is.na(utf8_code) ||
+        nchar(utf8_code, type = "bytes") > maximum_evaluation_code_bytes
+    ) {
+      stop("Open Wrangler rejected the R code chunk.", call. = FALSE)
+    }
+    expressions <- parse(text = utf8_code, keep.source = FALSE)
+    for (expression in expressions) eval(expression, envir = .GlobalEnv)
+    discover_variables(request_id)
   }
 
   ensure_runtime <- function(runtime_root, owner_token, bundle_id) {
@@ -438,6 +461,8 @@ openwrangler_r_interactive_agent <- local({
       claim_terminal(owner_token, allow_terminal_claim)
       if (identical(request$value$kind, "discoverInteractiveVariables")) {
         discover_variables(request_id)
+      } else if (identical(request$value$kind, "evaluateAndDiscoverInteractiveVariables")) {
+        evaluate_and_discover_variables(request_id, request$value$code)
       } else if (identical(request$value$kind, "teardownInteractiveRuntime")) {
         tryCatch(
           teardown_runtime(request_id, owner_token, bundle_id),

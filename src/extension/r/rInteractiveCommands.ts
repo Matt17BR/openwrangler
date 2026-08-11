@@ -6,7 +6,7 @@ import { DetachedBridgeRequestError } from "../dataBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { RInteractiveSessionTransport } from "./rInteractiveSessionTransport";
-import { OPEN_R_DOCUMENT_COMMAND } from "./rDocumentCommands";
+import { OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND, OPEN_R_DOCUMENT_COMMAND } from "./rDocumentCommands";
 import { RKernelBridge, type RKernelBridgeTransport } from "./rKernelBridge";
 import type { RProcessVariableDescriptor, RProcessVariableDiscovery } from "./rProcessTransport";
 import {
@@ -66,10 +66,11 @@ export interface RLiveVariableProvider extends vscode.Disposable {
 
 export interface LiterateRVariableProvider {
   captureActiveSession(): LiterateRSessionIdentity | undefined;
-  openLiterateSession(
+  openLiterateSession(origin: LiterateDocumentOrigin, session: LiterateRSessionIdentity): Promise<boolean>;
+  runLiterateChunkAndOpen(
     origin: LiterateDocumentOrigin,
     session: LiterateRSessionIdentity,
-    fresh?: boolean
+    code: string
   ): Promise<boolean>;
 }
 
@@ -83,18 +84,27 @@ export interface RInteractiveCommandTransport extends RKernelBridgeTransport {
     readonly cancellation?: vscode.CancellationToken;
     readonly timeoutMs?: number;
   }): Promise<RProcessVariableDiscovery>;
+  evaluateAndDiscoverVariables(
+    code: string,
+    options?: {
+      readonly cancellation?: vscode.CancellationToken;
+      readonly timeoutMs?: number;
+    }
+  ): Promise<RProcessVariableDiscovery>;
 }
 
 export interface RInteractiveTransportFactory {
   create(
     context: vscode.ExtensionContext,
-    options?: Readonly<{ terminalMode?: "active" | "activeOrCreate" }>
+    options?: Readonly<{ terminalMode?: "active" | "activeOrCreate"; terminal?: vscode.Terminal }>
   ): RInteractiveCommandTransport;
 }
 
 const defaultTransportFactory: RInteractiveTransportFactory = Object.freeze({
-  create: (context: vscode.ExtensionContext, options?: Readonly<{ terminalMode?: "active" | "activeOrCreate" }>) =>
-    new RInteractiveSessionTransport(context, options)
+  create: (
+    context: vscode.ExtensionContext,
+    options?: Readonly<{ terminalMode?: "active" | "activeOrCreate"; terminal?: vscode.Terminal }>
+  ) => new RInteractiveSessionTransport(context, options)
 });
 
 interface CachedRVariable {
@@ -113,7 +123,7 @@ export function registerRInteractiveCommands(
     provider,
     vscode.commands.registerCommand(OPEN_R_DATAFRAME_COMMAND, (resource?: unknown) =>
       isLiterateDocumentResource(resource)
-        ? vscode.commands.executeCommand<boolean>(OPEN_R_DOCUMENT_COMMAND)
+        ? vscode.commands.executeCommand<boolean>(OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND)
         : isOfficialRTerminal(vscode.window.activeTerminal)
           ? provider.chooseAndOpen()
           : vscode.commands.executeCommand<boolean>(OPEN_R_DOCUMENT_COMMAND, resource)
@@ -217,28 +227,35 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     return isExactActiveRTerminal(terminal) ? Object.freeze({ terminal }) : undefined;
   }
 
-  openLiterateSession(
+  openLiterateSession(origin: LiterateDocumentOrigin, session: LiterateRSessionIdentity): Promise<boolean> {
+    if (!isCurrentLiterateDocumentOrigin(origin) || !isCurrentLiterateRSession(session)) {
+      return Promise.resolve(false);
+    }
+    return this.chooseAndOpen(origin, session);
+  }
+
+  runLiterateChunkAndOpen(
     origin: LiterateDocumentOrigin,
     session: LiterateRSessionIdentity,
-    fresh = false
+    code: string
   ): Promise<boolean> {
     if (!isCurrentLiterateDocumentOrigin(origin) || !isCurrentLiterateRSession(session)) {
       return Promise.resolve(false);
     }
-    return this.chooseAndOpen(origin, fresh, session);
+    return this.chooseAndOpen(origin, session, code);
   }
 
   async chooseAndOpen(
     origin?: LiterateDocumentOrigin,
-    fresh = false,
-    expectedSession?: LiterateRSessionIdentity
+    expectedSession?: LiterateRSessionIdentity,
+    evaluationCode?: string
   ): Promise<boolean> {
     if (!requireTrustedRSession()) return false;
     if (this.disposed) return false;
     if (origin && !isCurrentLiterateDocumentOrigin(origin)) return false;
     if (expectedSession && !isCurrentLiterateRSession(expectedSession)) return false;
-    const documentOrigin = fresh ? origin : undefined;
-    const cached = fresh ? undefined : this.cachedPickerState();
+    const documentOrigin = evaluationCode === undefined ? undefined : origin;
+    const cached = evaluationCode === undefined ? this.cachedPickerState() : undefined;
     if (cached && (!expectedSession || cached.terminal === expectedSession.terminal)) {
       return this.chooseCachedAndOpen(cached, origin, expectedSession);
     }
@@ -258,7 +275,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     try {
       if (expectedSession && !isCurrentLiterateRSession(expectedSession)) return false;
       transport = this.transportFactory.create(this.context, {
-        terminalMode: expectedSession ? "active" : "activeOrCreate"
+        terminalMode: expectedSession ? "active" : "activeOrCreate",
+        ...(expectedSession ? { terminal: expectedSession.terminal } : {})
       });
       this.managedTransports.add(transport);
     } catch (error) {
@@ -268,7 +286,13 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
 
     let discovery: RProcessVariableDiscovery;
     try {
-      discovery = await discoverWithProgress(transport);
+      discovery = await discoverWithProgress(
+        transport,
+        evaluationCode === undefined
+          ? "Finding dataframes in the active R session"
+          : "Running chunk and finding dataframes",
+        evaluationCode
+      );
     } catch (error) {
       const cleanupError = await this.disposeManagedTransport(transport);
       if (!this.isCurrentLiterateRequest(generation, origin, expectedSession)) return false;
@@ -472,7 +496,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       if (vscode.window.activeTerminal !== terminal) return undefined;
       try {
         // Construction captures this exact active Terminal before withProgress can yield control.
-        transport = this.transportFactory.create(this.context, { terminalMode: "active" });
+        transport = this.transportFactory.create(this.context, { terminalMode: "active", terminal });
         this.managedTransports.add(transport);
       } catch (error) {
         this.replaceSnapshot({
@@ -685,15 +709,20 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
 
 async function discoverWithProgress(
   transport: RInteractiveCommandTransport,
-  title = "Finding dataframes in the active R session"
+  title = "Finding dataframes in the active R session",
+  evaluationCode?: string
 ): Promise<RProcessVariableDiscovery> {
   return vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title, cancellable: true },
-    (_progress, cancellation) =>
-      transport.discoverVariables({
+    (_progress, cancellation) => {
+      const options = {
         cancellation,
         timeoutMs: getSetting<number>("sessionOpenTimeoutMs", 60_000)
-      })
+      };
+      return evaluationCode === undefined
+        ? transport.discoverVariables(options)
+        : transport.evaluateAndDiscoverVariables(evaluationCode, options);
+    }
   );
 }
 
