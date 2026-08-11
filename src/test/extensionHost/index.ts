@@ -279,6 +279,8 @@ const RELEASED_JUPYTER_PYSPARK_REBIND_RESULT = "__OW_RELEASED_PYSPARK_REBIND__";
 const RELEASED_JUPYTER_PYSPARK_SCHEMA_REBIND_RESULT = "__OW_RELEASED_PYSPARK_SCHEMA_REBIND__";
 const RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT = "__OW_RELEASED_PYSPARK_CLOSE__";
 const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)";
+const RELEASED_QUARTO_PYTHON_KERNEL_LABEL = "Python (Open Wrangler Quarto)";
+const RELEASED_QUARTO_PYTHON_KERNEL_NAME = "python3";
 const RELEASED_JUPYTER_R_KERNEL_LABEL = "R (Open Wrangler)";
 const RELEASED_JUPYTER_R_KERNEL_NAME = "openwrangler-r-acceptance";
 const RELEASED_JUPYTER_R_KERNEL_RESULT = "__OW_RELEASED_R_KERNEL__";
@@ -1300,6 +1302,13 @@ interface ReleasedRLiterateDocumentFixture {
   readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
 }
 
+interface ReleasedPythonQuartoDocumentFixture {
+  readonly sourceUri: vscode.Uri;
+  readonly variableName: string;
+  readonly sentinelName: string;
+  readonly immutableFiles: ReadonlyArray<Readonly<{ path: string; bytes: Buffer }>>;
+}
+
 function isDataWranglerCoexistencePhase(phase: string): phase is DataWranglerCoexistencePhase {
   return (
     phase === "jupyter-coexist-open-select" ||
@@ -2046,6 +2055,52 @@ function writeReleasedRLiterateDocumentFixture(
       { path: sourcePath, bytes: sourceBytes },
       { path: csvPath, bytes: csvBytes }
     ]
+  };
+}
+
+function writeReleasedPythonQuartoDocumentFixture(directory: string): ReleasedPythonQuartoDocumentFixture {
+  const fixtureDirectory = path.join(directory, "python-quarto");
+  mkdirSync(fixtureDirectory, { recursive: true });
+  const sourcePath = path.join(fixtureDirectory, "regional-orders-python.qmd");
+  const variableName = "python_quarto_orders";
+  const sentinelName = "python_quarto_sentinel_not_run";
+  const sourceBytes = Buffer.from(
+    [
+      "---",
+      "title: Regional orders in Python",
+      "format: html",
+      "jupyter: python3",
+      "---",
+      "",
+      "# Regional orders",
+      "",
+      "Run the current Python chunk and inspect its dataframe.",
+      "",
+      "```{python}",
+      "import pandas as pd",
+      `${variableName} = pd.DataFrame({`,
+      '    "order_id": [2500001, 2500002, 2500003],',
+      '    "market": ["DACH", "Nordics", "France"],',
+      '    "revenue": [620.5, 699.69, 778.88],',
+      "})",
+      variableName,
+      "```",
+      "",
+      "## Later work",
+      "",
+      "```{python}",
+      `${sentinelName} = pd.DataFrame({"unexpected": [1]})`,
+      "```",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  writeFileSync(sourcePath, sourceBytes);
+  return {
+    sourceUri: vscode.Uri.file(sourcePath),
+    variableName,
+    sentinelName,
+    immutableFiles: [{ path: sourcePath, bytes: sourceBytes }]
   };
 }
 
@@ -3910,6 +3965,11 @@ async function exerciseReleasedRLiterateDocumentJourneys(
       openedDocuments.delete(fixture.sourceUri.toString());
       recordAcceptanceProgress(`jupyter-r:document:${fixture.kind}:complete`);
     }
+    await exerciseReleasedPythonQuartoDocumentJourney(
+      testing,
+      workbench,
+      writeReleasedPythonQuartoDocumentFixture(directory)
+    );
   } catch (error) {
     acceptanceError = { value: error };
   } finally {
@@ -3974,6 +4034,243 @@ async function exerciseReleasedRLiterateDocumentJourneys(
     }
   }
   if (acceptanceError) throw acceptanceError.value;
+}
+
+async function exerciseReleasedPythonQuartoDocumentJourney(
+  testing: TestApi,
+  workbench: Page,
+  fixture: ReleasedPythonQuartoDocumentFixture
+): Promise<void> {
+  const checkpoint = "jupyter-r:document:python-quarto";
+  const target: ReleasedJupyterKernelTarget = {
+    label: RELEASED_QUARTO_PYTHON_KERNEL_LABEL,
+    name: RELEASED_QUARTO_PYTHON_KERNEL_NAME,
+    routeLabels: ["Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."]
+  };
+  const existingInteractive = new Set(
+    vscode.workspace.notebookDocuments
+      .filter((candidate) => !candidate.isClosed && candidate.notebookType === "interactive")
+      .map((candidate) => candidate.uri.toString())
+  );
+  assert.equal(existingInteractive.size, 0, "The Python Quarto journey must start without an Interactive Window.");
+  assert.equal(testing.diagnostics().sessionCount, 0, "The Python Quarto journey must start without a session.");
+
+  let interactive: vscode.NotebookDocument | undefined;
+  let sourceDocument: vscode.TextDocument | undefined;
+  try {
+    recordAcceptanceProgress(`${checkpoint}:source`);
+    sourceDocument = await vscode.workspace.openTextDocument(fixture.sourceUri);
+    assert.equal(sourceDocument.languageId, "quarto", "The official Quarto extension must own the Python fixture.");
+    const sourceText = sourceDocument.getText();
+    const sourceVersion = sourceDocument.version;
+    const sourceEditor = await vscode.window.showTextDocument(sourceDocument, {
+      preview: false,
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false
+    });
+    const dataframeLine = sourceText.split("\n").findIndex((line) => line.includes(`${fixture.variableName} =`));
+    assert.ok(dataframeLine >= 0, "The Python Quarto fixture must contain its dataframe construction line.");
+    sourceEditor.selection = new vscode.Selection(dataframeLine, 0, dataframeLine, 0);
+    await waitFor(
+      () => vscode.window.activeTextEditor?.document === sourceDocument,
+      10_000,
+      "the exact Python Quarto source before its editor action"
+    );
+
+    recordAcceptanceProgress(`${checkpoint}:title-action`);
+    await workbench.bringToFront();
+    await activateReleasedRInteractiveTitleAction(workbench, sourceDocument);
+
+    const deadline = Date.now() + RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS;
+    const traversed = new Set<string>();
+    let filterForTarget = false;
+    let targetSelected = false;
+    let consentAccepted = false;
+    do {
+      const candidates = vscode.workspace.notebookDocuments.filter(
+        (candidate) =>
+          !candidate.isClosed &&
+          candidate.notebookType === "interactive" &&
+          !existingInteractive.has(candidate.uri.toString())
+      );
+      assert.ok(candidates.length <= 1, "The Python Quarto action must create at most one Interactive Window.");
+      if (candidates[0]) {
+        if (interactive) {
+          assert.equal(candidates[0], interactive, "The Python Quarto action replaced its Interactive Window.");
+        } else {
+          interactive = candidates[0];
+          recordAcceptanceProgress(`${checkpoint}:interactive-window`);
+        }
+      }
+
+      const active = testing.activeSession();
+      if (
+        interactive &&
+        active?.metadata.source.kind === "notebookVariable" &&
+        active.metadata.source.variableName === fixture.variableName &&
+        active.metadata.backend === "pandas"
+      ) {
+        break;
+      }
+
+      if (!consentAccepted && (await visibleReleasedJupyterConsentCount(workbench)) === 1) {
+        const consent = await waitForReleasedJupyterConsent(workbench, testing);
+        recordAcceptanceProgress(`${checkpoint}:consent`);
+        await consent.allow.click();
+        await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+        consentAccepted = true;
+        continue;
+      }
+
+      const picker = await visibleReleasedJupyterQuickInput(workbench);
+      if (!picker) {
+        await workbench.waitForTimeout(100);
+        continue;
+      }
+      const kernel = await releasedJupyterQuickPickRow(picker, target.label);
+      if (kernel) {
+        if (!targetSelected) {
+          recordAcceptanceProgress(`${checkpoint}:kernel-picker-target`);
+          await kernel.click();
+          targetSelected = true;
+        }
+        await workbench.waitForTimeout(100);
+        continue;
+      }
+      if (filterForTarget && !(await releasedJupyterRouteLabel(picker, target.routeLabels))) {
+        const input = picker.locator(".quick-input-box input:visible").first();
+        if ((await input.count()) > 0) {
+          await input.fill(target.label);
+          filterForTarget = false;
+          await workbench.waitForTimeout(100);
+          continue;
+        }
+      }
+      let advanced = false;
+      for (const label of ["Select Another Kernel...", ...target.routeLabels]) {
+        if (traversed.has(label)) continue;
+        const row = await releasedJupyterQuickPickRow(picker, label);
+        if (!row) continue;
+        traversed.add(label);
+        recordAcceptanceProgress(`${checkpoint}:kernel-picker-route`);
+        await row.click();
+        filterForTarget = target.routeLabels.includes(label);
+        advanced = true;
+        break;
+      }
+      await workbench.waitForTimeout(advanced ? 100 : 50);
+    } while (Date.now() < deadline);
+
+    assert.ok(interactive, "The Python Quarto action must create one exact Interactive Window.");
+    const active = testing.activeSession();
+    if (
+      !active ||
+      active.metadata.source.kind !== "notebookVariable" ||
+      active.metadata.source.variableName !== fixture.variableName ||
+      active.metadata.backend !== "pandas"
+    ) {
+      throw new Error(
+        "The Python Quarto action did not open its Pandas dataframe. " +
+          `Coordinator: ${JSON.stringify(testing.diagnostics())}. ` +
+          `Quick Input: ${JSON.stringify(await releasedJupyterQuickInputDiagnostics(workbench))}. ` +
+          `Interactive Window: ${releasedPythonEntrypointDiagnostics(interactive, sourceDocument)}.`
+      );
+    }
+    assertExactOpenNotebookDocument(interactive, "after the Python Quarto action opened its dataframe");
+    assert.equal(active.metadata.mode, "editing");
+    assert.deepEqual(active.metadata.shape, { rows: 3, columns: 3 });
+    assert.deepEqual(
+      active.metadata.schema.map((column) => column.name),
+      ["order_id", "market", "revenue"]
+    );
+    assert.equal(active.metadata.source.uri, interactive.uri.toString());
+    const associatedCells = interactive.getCells().filter((cell) => {
+      const metadata = cell.metadata as { interactive?: { uristring?: unknown } };
+      return metadata.interactive?.uristring === fixture.sourceUri.toString();
+    });
+    assert.equal(associatedCells.length, 1, "The Python Quarto action must execute one source-associated chunk.");
+    const executedCell = associatedCells[0]!;
+    assert.equal(executedCell.executionSummary?.success, true, "The Python Quarto chunk must finish successfully.");
+    assert.ok(
+      Number(executedCell.executionSummary?.executionOrder) > 0,
+      "The Python Quarto chunk must publish one positive execution order."
+    );
+    assert.match(executedCell.document.getText(), new RegExp(`\\b${fixture.variableName}\\b`, "u"));
+    assert.doesNotMatch(executedCell.document.getText(), new RegExp(`\\b${fixture.sentinelName}\\b`, "u"));
+    assert.equal(
+      interactive.getCells().some((cell) => cell.document.getText().includes(fixture.sentinelName)),
+      false,
+      "Opening the current Python Quarto chunk must not execute or copy the later chunk."
+    );
+    await assertReleasedSessionPage(testing, active, "2500001", "released-jupyter-python-quarto-page");
+    assert.equal(sourceDocument.version, sourceVersion, "Opening Python Quarto must not edit its source document.");
+    assert.equal(sourceDocument.isDirty, false, "Opening Python Quarto must leave its source clean.");
+    assert.equal(sourceDocument.getText(), sourceText);
+    assertExactBytes(
+      readFileSync(fixture.sourceUri.fsPath),
+      fixture.immutableFiles[0]!.bytes,
+      "Opening Python Quarto must not change its source file."
+    );
+
+    recordAcceptanceProgress(`${checkpoint}:close-session`);
+    await disposePackagedSessionPanel(testing, active.sessionId, "the Python Quarto Pandas session");
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    await showExactReleasedNotebook(interactive);
+    const sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
+    const operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+    const liveFrame = operations.getByRole("treeitem", { name: new RegExp(`^${fixture.variableName}\\b`, "u") });
+    await liveFrame.waitFor({ state: "visible", timeout: 90_000 });
+    assert.match((await liveFrame.innerText()).replace(/\s+/gu, " "), /Pandas · DataFrame/u);
+    assert.equal(
+      await operations.getByRole("treeitem", { name: new RegExp(`^${fixture.sentinelName}\\b`, "u") }).count(),
+      0,
+      "Operations must not list a dataframe from the later Python Quarto chunk."
+    );
+
+    recordAcceptanceProgress(`${checkpoint}:cleanup`);
+    await closeExactReleasedPythonInteractiveWindow(interactive);
+    const sourceTab = textDocumentTab(fixture.sourceUri);
+    assert.ok(sourceTab, "The Python Quarto journey must retain its exact source tab.");
+    assert.equal(await vscode.window.tabGroups.close(sourceTab, true), true);
+    await waitFor(
+      () => textDocumentTab(fixture.sourceUri) === undefined,
+      10_000,
+      "the Python Quarto source tab to close"
+    );
+    recordAcceptanceProgress(`${checkpoint}:complete`);
+  } finally {
+    const active = testing.activeSession();
+    if (
+      active?.metadata.source.kind === "notebookVariable" &&
+      active.metadata.source.variableName === fixture.variableName
+    ) {
+      try {
+        await disposePackagedSessionPanel(testing, active.sessionId, "the failed Python Quarto session");
+      } catch {
+        // Preserve the original acceptance failure.
+      }
+    }
+    if (interactive && !interactive.isClosed) {
+      try {
+        await closeExactReleasedPythonInteractiveWindow(interactive);
+      } catch {
+        // Preserve the original acceptance failure.
+      }
+    }
+    const sourceTab = textDocumentTab(fixture.sourceUri);
+    if (sourceTab) {
+      try {
+        await vscode.window.tabGroups.close(sourceTab, true);
+      } catch {
+        // Preserve the original acceptance failure.
+      }
+    }
+    assertExactBytes(
+      readFileSync(fixture.sourceUri.fsPath),
+      fixture.immutableFiles[0]!.bytes,
+      "Python Quarto cleanup must preserve its source file."
+    );
+  }
 }
 
 async function assertReleasedNativeREditorTooling(): Promise<boolean> {
