@@ -72,7 +72,7 @@ The 1.99 preview has these R and literate-document entry points:
 | Workflow                               | How it opens dataframes                                                                 | Available in                                                      |
 | -------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | IRkernel notebook                      | From Operations, the notebook toolbar, or Jupyter Variables                             | VS Code on Linux, macOS, and Windows; Cursor on Linux             |
-| Selected VS Code R terminal            | Choose **Operations → Show R dataframes…**; Open Wrangler starts R when needed          | VS Code and Cursor on Linux                                       |
+| Selected VS Code R terminal            | Select the terminal; Operations reads vscode-R's dataframe list and keeps it up to date | VS Code and Cursor on Linux                                       |
 | `.Rmd` or `.qmd` cursor chunk          | Put the cursor in an enabled R or Python chunk, then choose **Open in Open Wrangler**   | Desktop hosts with the corresponding official editor integrations |
 | Explicit `.R`, `.Rmd`, or `.qmd` R run | Choose **Run R Document in Open Wrangler…** to start an Open Wrangler-managed R process | VS Code and Cursor on Linux; VS Code on macOS                     |
 
@@ -235,8 +235,10 @@ The entry point determines which process owns the session:
 - In an IRkernel notebook, open a loaded dataframe from Operations, the notebook toolbar, or Jupyter Variables.
   Operations refreshes after a cell finishes. The dataframe opens in Viewing mode; use **Switch to Editing** when you
   want to build a cleaning plan. Generated R can be inserted into that exact notebook.
-- For an interactive session from the official R extension, select its terminal and choose **Operations → Show R
-  dataframes…**. If no R terminal is running, **Start R and show dataframes…** opens one first. The list and every
+- For an interactive session from the official R extension, select its terminal. Operations reads the dataframe
+  names already maintained by vscode-R; it does not run anything in R just to fill the sidebar. If that metadata is
+  unavailable, use **Refresh R dataframes**. Opening a dataframe or refreshing explicitly connects Open Wrangler to
+  that exact R process. **Start R and show dataframes…** opens a session when none is running. The list and every
   opened dataframe stay tied to that terminal. These dataframes open in Viewing mode and can switch to Editing.
   The **Open in Open Wrangler** title action uses this session while it is active. Generated R can be copied or saved,
   but it cannot be inserted because the terminal has no source document.

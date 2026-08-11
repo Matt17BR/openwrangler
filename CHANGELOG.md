@@ -20,6 +20,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   the same checks as before.
 - Preview and stable candidates now run Python and R Jupyter acceptance in separate fail-fast jobs. Both jobs verify
   the same candidate VSIX, and a failure identifies the affected runtime without waiting for the other editor command.
+- Operations now reads the dataframe list maintained by vscode-R without sending an automatic terminal command.
+  Opening a listed dataframe or choosing Refresh makes the explicit native connection.
 - Column profiles now use one Counts/% setting in both the grid headers and the profile panel. The grid footer exposes
   the switch before a profile is opened, and **More values…** opens the longer value list when a compact profile omits
   categories.

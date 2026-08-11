@@ -23,6 +23,21 @@ The source dataframe is immutable from Open Wrangler's perspective. A session st
 
 Supported file resources share one `openWrangler.openFile` command across the Explorer menu, editor-tab menu, editor-title toolbar, and Command Palette. The handler prefers the URI supplied by the invoking menu and otherwise resolves the active text, third-party custom, or modified diff tab before falling back to the file picker. Direct targets and native-picker results both pass the same URI-scheme, enabled-format, regular-file, and existence validation before automatic import detection or runtime creation; Quick Input is reserved for the explicit **Change Import Options** recovery path. Explicit **Reopen Editor With** selection applies the same resource safety checks but deliberately remains available for a format omitted from the launch-command and picker enabled-format list. The standalone runtime resolver consumes the exact persisted source URI, preserving a `vscode-remote` scheme and authority for resource-scoped Python settings and Python-extension environment selection; only absent or malformed URI metadata falls back to a concrete file path. The title and tab-menu contributions are hidden inside Open Wrangler itself and on unsupported virtual resources. Cursor intentionally hides third-party editor-title actions unless pinned, so the manifest declaratively contributes `openWrangler.openFile` to Cursor's `cursor.general.pinnedTitleActions` default. This changes no stored setting, preserves an explicit setting override, and avoids command aliases, built-in-prefix impersonation, or activation-time editor mutation; VS Code renders the same standard `navigation` contribution directly. Cursor 3.11's normal icon-visibility toggle cannot outrank this pinned default, so a user who wants the icon hidden must explicitly configure the pinned-title-action list without this command.
 
+Operations may use vscode-R's workspace metadata as a read-only hint for one exact active `Terminal`. This path is
+available only when the terminal creation options contain vscode-R's exact profile, initializer, and watcher paths.
+The watcher attach record must match `Terminal.processId` before and after setup. Its request, workspace, and marker
+files are size-bounded, opened without following links, checked for owner and identity changes, and read as marker →
+JSON → marker. The provider watches that session's `workspace.lock` and `workspace.json`; it never writes to vscode-R's
+files or sends terminal text. Missing, malformed, stale, foreign, or replaced metadata leaves the explicit Refresh
+action available.
+
+Opening a watcher-listed dataframe or choosing Refresh rechecks the exact terminal and process before creating the
+native transport. That explicit action installs Open Wrangler's bundled dispatcher and one R task callback. After a
+top-level R command, the callback writes the full bounded dataframe list to each attached private mailbox. The host
+debounces those notifications and publishes the latest decoded list without another R command. Dispatcher requests
+suppress their own callback notification. The provider never polls, runs a source document automatically, or moves to
+a different terminal.
+
 R source tabs use `openWrangler.openRDataframe` for their stable title action. A plain `.R` editor opens from the
 selected official R terminal when one is active and otherwise delegates to `openWrangler.runRDocument` on macOS and
 Linux extension hosts. An `.Rmd` or `.qmd` editor instead captures the exact active `TextEditor`, `TextDocument`,

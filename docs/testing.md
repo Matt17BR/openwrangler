@@ -624,14 +624,20 @@ through the visible **Switch to Editing** action, then continues through the cle
 They also check that header profiles start off; the journey does not turn them on. The temporary R
 library is deleted with the run.
 
-The active-terminal path has focused tests for selecting one exact official R terminal, discovering
-`data.frame`, tibble, and `data.table` objects, opening the selected object, request framing, cleanup, and
-invalidation when the user switches or closes the terminal. Packaged acceptance uses the official R extension in
-isolated editor profiles and clicks **Operations → Show R dataframes…** as the first discovery action. It then opens
-and profiles a dataframe, switches from Viewing to Editing, exercises generated code and export, replaces the
-terminal, and checks that the previous bridge is gone. Command-routing tests also require the stable R title action
-to use that selected terminal, and the packaged document journey checks the document fallback when no official R
-terminal is active.
+The active-terminal tests first exercise the read-only vscode-R metadata adapter. A renamed shell is rejected, an
+extension-created terminal is matched to its attach PID, and PID, path, link, malformed JSON, and marker changes fail
+closed. Disabled vscode-R workspace watching uses the explicit fallback instead of reporting an empty session.
+Automatic listing sends no terminal text. A listed frame is connected only after its explicit
+Open action rechecks the exact process. The explicit Refresh command is the fallback when watcher metadata is absent.
+
+Native transport tests cover `data.frame`, tibble, and `data.table` discovery, request framing, cleanup, and terminal
+invalidation. One R task callback writes bounded dataframe descriptors to every attached private mailbox. The real-R
+contract attaches two transports to one process, checks that user expressions update both, and checks that Open
+Wrangler requests do not trigger another update. It also verifies `.Last.value`, notification replacement retries,
+and stale callback removal. Packaged acceptance waits for vscode-R metadata to populate Operations with no Open
+Wrangler mailbox, then opens a frame and requires exactly one explicit native bootstrap.
+Command-routing tests also require the stable R title action to use that selected terminal, and the packaged document
+journey checks the document fallback when no official R terminal is active.
 
 [Run 31062443212](https://github.com/Matt17BR/openwrangler/actions/runs/31062443212) passed from commit
 `67422557e2377f5fe806e3b4892b261dd48d9d6a` on 2026-08-06. It covered local R 4.5.2 in VS Code and Cursor, plus the
