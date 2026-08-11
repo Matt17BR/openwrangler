@@ -156,7 +156,11 @@ type PythonExecutedCellResult =
 
 type PythonCellAttemptResult =
   | { readonly kind: "published"; readonly notebook: vscode.NotebookDocument; readonly cell: vscode.NotebookCell }
-  | { readonly kind: "needsKernel"; readonly notebook: vscode.NotebookDocument }
+  | {
+      readonly kind: "needsKernel";
+      readonly notebook: vscode.NotebookDocument;
+      readonly retryAllowed: boolean;
+    }
   | { readonly kind: "dispatchRejected" }
   | { readonly kind: "dispatchTimedOut" }
   | { readonly kind: "missing" }
@@ -341,18 +345,23 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
         "dispatching-cell"
       );
       if (attempt.kind === "needsKernel") {
+        const kernelAttempt = attempt;
         const restored = await selectKernelAndRestorePythonOrigin(
           attempt.notebook,
           origin,
           operationDeadline,
+          observer,
           (stage) => this.setDiagnosticStage(stage)
         );
         if (!restored) return false;
 
         this.setDiagnosticStage("waiting-for-cell-publication");
+        const postKernelPublicationWindow = kernelAttempt.retryAllowed
+          ? PYTHON_CELL_POST_KERNEL_PUBLICATION_GRACE_MS
+          : PYTHON_CELL_PUBLICATION_TIMEOUT_MS;
         const afterSelection = await waitForPublishedCellAfterDispatch(
           observer,
-          Math.min(operationDeadline, Date.now() + PYTHON_CELL_POST_KERNEL_PUBLICATION_GRACE_MS),
+          Math.min(operationDeadline, Date.now() + postKernelPublicationWindow),
           false
         );
         if (afterSelection.kind === "published") {
@@ -361,6 +370,8 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
           attempt = afterSelection;
         } else if (afterSelection.kind === "stale" || !isExactPythonOrigin(origin)) {
           attempt = { kind: "stale" };
+        } else if (!kernelAttempt.retryAllowed) {
+          attempt = { kind: "dispatchTimedOut" };
         } else {
           const blankWindow = observer.blankWindow();
           if (blankWindow.kind !== "found" || blankWindow.notebook !== attempt.notebook) {
@@ -1031,9 +1042,14 @@ async function selectKernelAndRestorePythonOrigin(
   notebook: vscode.NotebookDocument,
   origin: PythonCellOrigin,
   operationDeadline: number,
+  observer: PythonCellDispatchObserver,
   reportStage: (stage: PythonInteractiveDiagnosticStage) => void
 ): Promise<boolean> {
-  if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+  if (
+    !isUnchangedPythonOrigin(origin) ||
+    !isSoleOpenNotebookDocument(notebook) ||
+    !isPinnedKernelRecoveryTarget(observer, notebook)
+  ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed while its kernel was being selected. Try again."
     );
@@ -1074,7 +1090,8 @@ async function selectKernelAndRestorePythonOrigin(
     notebookEditor.notebook !== notebook ||
     !isExactVisibleNotebookEditor(notebookEditor, notebook) ||
     !isSoleOpenNotebookDocument(notebook) ||
-    !isUnchangedPythonOrigin(origin)
+    !isUnchangedPythonOrigin(origin) ||
+    !isPinnedKernelRecoveryTarget(observer, notebook)
   ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed while its kernel was being selected. Try again."
@@ -1097,7 +1114,8 @@ async function selectKernelAndRestorePythonOrigin(
   if (
     !isUnchangedPythonOrigin(origin) ||
     !isSoleOpenNotebookDocument(notebook) ||
-    !isExactVisibleNotebookEditor(notebookEditor, notebook)
+    !isExactVisibleNotebookEditor(notebookEditor, notebook) ||
+    !isPinnedKernelRecoveryTarget(observer, notebook)
   ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed during kernel selection. Try again."
@@ -1251,6 +1269,19 @@ class PythonCellDispatchObserver implements vscode.Disposable {
   }
 }
 
+function isPinnedKernelRecoveryTarget(
+  observer: PythonCellDispatchObserver,
+  notebook: vscode.NotebookDocument
+): boolean {
+  const snapshot = observer.snapshot();
+  const blankWindow = observer.blankWindow();
+  if (blankWindow.kind === "ambiguous") return false;
+  if (snapshot.kind === "found") {
+    return snapshot.notebook === notebook && blankWindow.kind === "missing";
+  }
+  return snapshot.kind === "missing" && blankWindow.kind === "found" && blankWindow.notebook === notebook;
+}
+
 async function runPythonCellAttempt(
   origin: PythonCellOrigin,
   observer: PythonCellDispatchObserver,
@@ -1273,6 +1304,27 @@ async function runPythonCellAttempt(
       const snapshot = observer.snapshot();
       if (snapshot.kind === "found") return { kind: "published", notebook: snapshot.notebook, cell: snapshot.cell };
       if (snapshot.kind !== "missing") return snapshot;
+
+      const blankWindow = observer.blankWindow();
+      if (blankWindow.kind === "ambiguous") return blankWindow;
+      if (allowKernelRecovery && blankWindow.kind === "found") {
+        for (let turn = 0; turn < 3 && dispatch.outcome() === undefined; turn += 1) {
+          await Promise.resolve();
+        }
+        const afterBlank = observer.snapshot();
+        if (afterBlank.kind === "found") {
+          return { kind: "published", notebook: afterBlank.notebook, cell: afterBlank.cell };
+        }
+        if (afterBlank.kind !== "missing") return afterBlank;
+        const confirmedBlank = observer.blankWindow();
+        if (confirmedBlank.kind === "ambiguous") return confirmedBlank;
+        if (confirmedBlank.kind !== "found" || confirmedBlank.notebook !== blankWindow.notebook) continue;
+        const dispatchOutcome = dispatch.outcome();
+        if (dispatchOutcome?.kind === "rejected") return { kind: "dispatchRejected" };
+        if (dispatchOutcome === undefined) {
+          return { kind: "needsKernel", notebook: confirmedBlank.notebook, retryAllowed: false };
+        }
+      }
 
       const remaining = dispatchDeadline - Date.now();
       reportStage("waiting-for-cell-publication");
@@ -1307,14 +1359,17 @@ function boundedPythonCellDispatch(
   deadline: number
 ): {
   readonly promise: Promise<PythonCellDispatchOutcome>;
+  outcome(): PythonCellDispatchOutcome | undefined;
   dispose(): void;
 } {
   let cancel = (): void => undefined;
+  let outcome: PythonCellDispatchOutcome | undefined;
   const promise = new Promise<PythonCellDispatchOutcome>((resolve) => {
     let settled = false;
     const finish = (result: PythonCellDispatchOutcome): void => {
       if (settled) return;
       settled = true;
+      outcome = result;
       clearTimeout(timer);
       resolve(result);
     };
@@ -1332,7 +1387,7 @@ function boundedPythonCellDispatch(
     );
     cancel = () => finish({ kind: "cancelled" });
   });
-  return { promise, dispose: () => cancel() };
+  return { promise, outcome: () => outcome, dispose: () => cancel() };
 }
 
 async function waitForPublishedCellAfterDispatch(
@@ -1370,7 +1425,9 @@ async function waitForPublishedCellAfterDispatch(
       const finalBlank = observer.blankWindow();
       if (finalBlank.kind === "ambiguous") return finalBlank;
       if (finalBlank.kind !== "found" || finalBlank.notebook !== pinnedBlankWindow) return { kind: "missing" };
-      return allowKernelRecovery ? { kind: "needsKernel", notebook: pinnedBlankWindow } : { kind: "missing" };
+      return allowKernelRecovery
+        ? { kind: "needsKernel", notebook: pinnedBlankWindow, retryAllowed: true }
+        : { kind: "missing" };
     }
     return { kind: "missing" };
   }
