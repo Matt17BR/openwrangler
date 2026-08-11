@@ -280,6 +280,27 @@ describe("executed notebook cell result action", () => {
     tracker.dispose();
   });
 
+  it("recognizes an execute_result output when Jupyter leaves success unspecified", async () => {
+    const document = notebook("file:///unspecified-success.ipynb");
+    const cell = codeCell(document, 1);
+    Object.defineProperty(cell, "executionSummary", {
+      configurable: true,
+      value: { executionOrder: 1, success: undefined }
+    });
+    setCells(document, [cell]);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(cell, 1) as never);
+    await settleInspection();
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    await settleInspection();
+
+    expect(mocks.inspect).toHaveBeenCalledWith(document, 1, "a".repeat(64), mocks.bindings[0]);
+    expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+    tracker.dispose();
+  });
+
   it("retains an in-flight kernel observation when a fast first result completes", async () => {
     const document = notebook("file:///fast-first-result.ipynb");
     const cell = codeCell(document, 1);
@@ -300,6 +321,36 @@ describe("executed notebook cell result action", () => {
     await settleInspection();
 
     expect(mocks.inspect).toHaveBeenCalledWith(document, 1, "a".repeat(64), binding);
+    expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+    tracker.dispose();
+  });
+
+  it("treats repeated completion events for the same execution as one result", async () => {
+    const document = notebook("file:///repeated-completion.ipynb");
+    const cell = codeCell(document, 1);
+    setCells(document, [cell]);
+    const observation = deferred<ReturnType<typeof testBinding> | undefined>();
+    const binding = testBinding();
+    mocks.bindings.push(binding);
+    mocks.observe.mockReturnValueOnce(observation.promise);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(cell) as never);
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    observation.resolve(binding);
+    await settleInspection();
+
+    expect(mocks.observe).toHaveBeenCalledOnce();
+    expect(mocks.inspect).toHaveBeenCalledOnce();
+    expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    await settleInspection();
+
+    expect(mocks.observe).toHaveBeenCalledOnce();
+    expect(mocks.inspect).toHaveBeenCalledOnce();
     expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
     tracker.dispose();
   });
