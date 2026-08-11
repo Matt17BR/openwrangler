@@ -273,12 +273,9 @@ Every draft shows the changed data and generated R before it is applied. Applied
 undone. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
 lists the operation parameters; the workbench shows only the operations supported by the active dataframe.
 
-Large R views keep row counts, missing counts, inexpensive numeric/text statistics, and date ranges exact. Histograms
-and categorical distributions use a bounded sample when needed and say so; their percentages use that sample, while
-an exact distinct count that was not calculated appears as `n/a`. Dataset missing counts remain exact, and a sampled
-duplicate-row count shows its sample size. Filters opens large R views with a labeled sample of up to 100,000 rows.
-Typing a value search scans the column in chunks and returns exact matching counts, including on larger frames. Search
-state is bounded to 10,000 distinct matches and 16 MiB of key text; broader matches ask for a narrower term.
+Large R frames are profiled in chunks. Row and missing-value counts, common numeric and text statistics, and date ranges
+stay exact. Histograms and categories may use a clearly labeled sample; searches still scan the full column. Very broad
+searches ask for a more specific term.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
