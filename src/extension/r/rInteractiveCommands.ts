@@ -169,6 +169,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   private automaticDiscoveryStarted = false;
   private automaticAttachmentTimer: ReturnType<typeof setTimeout> | undefined;
   private automaticAttachmentRunning = false;
+  private automaticAttachmentTask: Promise<void> | undefined;
   private automaticAttachmentQueuedTerminal: vscode.Terminal | undefined;
   private generation = 0;
   private disposed = false;
@@ -210,6 +211,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     if (this.shutdownPromise) return this.shutdownPromise;
     this.disposed = true;
     this.generation += 1;
+    const automaticAttachmentTask = this.automaticAttachmentTask;
     this.cancelAutomaticAttachment();
     this.releaseWorkspaceWatcher();
     this.releaseOwnedTransport();
@@ -218,7 +220,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     this.changeEmitter.dispose();
     const transports = [...this.managedTransports];
     this.managedTransports.clear();
-    this.shutdownPromise = disposeTransports(transports);
+    this.shutdownPromise = settleShutdown(automaticAttachmentTask, disposeTransports(transports));
     return this.shutdownPromise;
   }
 
@@ -814,8 +816,26 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     this.cancelAutomaticAttachmentTimer();
     this.automaticAttachmentTimer = setTimeout(() => {
       this.automaticAttachmentTimer = undefined;
-      void this.runAutomaticAttachment(terminal);
+      this.startAutomaticAttachment(terminal);
     }, AUTOMATIC_ATTACHMENT_DEBOUNCE_MS);
+  }
+
+  private startAutomaticAttachment(terminal: vscode.Terminal): void {
+    const task = this.runAutomaticAttachment(terminal).catch(() => {
+      if (
+        !this.disposed &&
+        isExactActiveRTerminal(terminal) &&
+        !this.ownedTransport &&
+        (!this.workspaceWatcher || this.workspaceWatcherTerminal === terminal)
+      ) {
+        this.releaseWorkspaceWatcher();
+        this.replaceSnapshot(watcherFallbackSnapshot(terminal));
+      }
+    });
+    this.automaticAttachmentTask = task;
+    void task.finally(() => {
+      if (this.automaticAttachmentTask === task) this.automaticAttachmentTask = undefined;
+    });
   }
 
   private async runAutomaticAttachment(terminal: vscode.Terminal): Promise<void> {
@@ -966,6 +986,16 @@ async function discoverWithProgress(
         : transport.evaluateAndDiscoverVariables(evaluationCode, options);
     }
   );
+}
+
+async function settleShutdown(
+  automaticAttachmentTask: Promise<void> | undefined,
+  transportDisposal: Promise<void>
+): Promise<void> {
+  const results = await Promise.allSettled([automaticAttachmentTask, transportDisposal]);
+  const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "Open Wrangler could not stop its R session provider.");
 }
 
 function rInteractiveQuickPickItem(variable: RProcessVariableDescriptor): RInteractiveQuickPickItem {
