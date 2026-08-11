@@ -305,7 +305,7 @@ function SelectedColumnSummary({
             summary={summary}
             mode={profileValueMode}
             denominator={distributionDenominator}
-            onShowMoreValues={onShowMoreValues ? () => onShowMoreValues(schema.name) : undefined}
+            onShowMoreValues={canFilter && onShowMoreValues ? () => onShowMoreValues(schema.name) : undefined}
             onSelectValue={
               canFilter
                 ? (item) => applyProfileFilter(viewValueSelectionFilter(schema, item.selectionValue ?? item.value))
