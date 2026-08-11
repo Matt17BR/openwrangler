@@ -12302,11 +12302,11 @@ async function exerciseFormatterDisabledFirstNotebookResult(
     "The first-result fallback must run before proactive notebook formatters are enabled."
   );
   const cell = notebook.cellAt(RELEASED_JUPYTER_FIRST_RESULT_CELL);
-  const initialExecutionSummary = cell.executionSummary;
+  const initialExecutionOrder = cell.executionSummary?.executionOrder;
   assert.equal(
-    initialExecutionSummary,
+    initialExecutionOrder,
     undefined,
-    "The first-result fixture cell must not have run before acceptance."
+    "The first-result fixture cell must not have an execution order before acceptance."
   );
   assert.equal(cell.outputs.length, 0, "The first-result fixture cell must begin without saved output.");
   const kernel = await jupyterApi.kernels.getKernel(notebook.uri);
