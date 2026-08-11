@@ -32182,8 +32182,35 @@ async function verifyRecoveredExcelGrid(
       }
       recordAcceptanceProgress("excel-dependency-install:grid-bound");
 
-      await firstCell.focus({ timeout: operationTimeout() });
+      await firstCell.click({
+        position: { x: 8, y: 8 },
+        timeout: operationTimeout()
+      });
+      const focusState = await withAcceptanceOperationDeadline(
+        firstCell.evaluate((element) => ({
+          connected: element.isConnected,
+          documentFocused: element.ownerDocument.hasFocus(),
+          cellFocused: element.ownerDocument.activeElement === element
+        })),
+        operationTimeout(),
+        "the recovered XLSX grid focus"
+      );
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      if (
+        isRetiredRendererTarget(workbench, target.page, target.frame) ||
+        !sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))
+      ) {
+        continue;
+      }
+      assert.deepEqual(
+        focusState,
+        { connected: true, documentFocused: true, cellFocused: true },
+        "The recovered XLSX cell must own focus in the current renderer before keyboard navigation."
+      );
+      recordAcceptanceProgress("excel-dependency-install:grid-focused");
+
       await firstCell.press("ArrowRight", { timeout: operationTimeout() });
+      recordAcceptanceProgress("excel-dependency-install:grid-arrow-sent");
       await app
         .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
         .waitFor({ state: "visible", timeout: operationTimeout() });
