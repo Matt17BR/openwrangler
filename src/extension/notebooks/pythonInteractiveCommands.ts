@@ -1015,8 +1015,7 @@ function newlyOpenedBlankInteractiveWindow(
       !before.has(notebook) &&
       !notebook.isClosed &&
       notebook.notebookType === "interactive" &&
-      isSupportedPythonNotebook(notebook) &&
-      isEmptyInteractiveWindow(notebook, expectedSourceUri) &&
+      isRecoverablePythonInteractiveWindow(notebook, expectedSourceUri) &&
       isSoleOpenNotebookDocument(notebook)
   );
   if (candidates.length === 0) return { kind: "missing" };
@@ -1024,18 +1023,25 @@ function newlyOpenedBlankInteractiveWindow(
   return { kind: "found", notebook: candidates[0]! };
 }
 
-function isEmptyInteractiveWindow(notebook: vscode.NotebookDocument, expectedSourceUri: string): boolean {
+function isRecoverablePythonInteractiveWindow(notebook: vscode.NotebookDocument, expectedSourceUri: string): boolean {
   const cells = notebook.getCells();
-  if (cells.length === 0) return true;
+  if (cells.length === 0) return isSupportedPythonNotebook(notebook);
   if (cells.length !== 1) return false;
   const [cell] = cells;
-  return (
-    cell?.kind === vscode.NotebookCellKind.Markup &&
-    cell.document.languageId.trim().toLowerCase() === "markdown" &&
-    isRecord(cell.metadata) &&
-    cell.executionSummary === undefined &&
-    interactiveCellIdentity(cell, expectedSourceUri) === undefined
-  );
+  if (
+    cell?.kind !== vscode.NotebookCellKind.Markup ||
+    cell.document.languageId.trim().toLowerCase() !== "markdown" ||
+    !isRecord(cell.metadata) ||
+    interactiveCellIdentity(cell, expectedSourceUri) !== undefined
+  ) {
+    return false;
+  }
+
+  // Jupyter adds this marked system cell before a kernel is selected. Its
+  // temporary language and execution summary do not represent user code.
+  if (cell.metadata.isInteractiveWindowMessageCell === true) return true;
+
+  return isSupportedPythonNotebook(notebook) && cell.executionSummary === undefined;
 }
 
 async function selectKernelAndRestorePythonOrigin(
