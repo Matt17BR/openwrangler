@@ -9543,6 +9543,7 @@ async function exerciseReleasedJupyterExtension(
       );
     }
 
+    await showExactReleasedNotebook(notebook);
     assertExactVisibleReleasedNotebookEditor(
       notebook,
       variableNotebookEditor,
