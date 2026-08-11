@@ -7,8 +7,30 @@ type Listener<T> = (value: T) => unknown;
 
 const mocks = vi.hoisted(() => ({
   terminals: [] as unknown[],
-  extension: undefined as Readonly<{ extensionPath: string; isActive: boolean; exports: unknown }> | undefined
+  extension: undefined as
+    | Readonly<{ extensionPath: string; isActive: boolean; packageJSON: Record<string, unknown>; exports: unknown }>
+    | undefined,
+  extensionModuleExports: undefined as unknown
 }));
+
+vi.mock("node:module", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:module")>();
+  const createRequire = (filename: string) => {
+    const root = filename.slice(0, filename.lastIndexOf("/"));
+    const resolved = `${root}/dist/extension.js`;
+    const loader = (() => {
+      throw new Error("The test adapter must not load vscode-R.");
+    }) as unknown as { resolve: () => string; cache: Record<string, { exports: unknown }> };
+    loader.resolve = () => resolved;
+    loader.cache = { [resolved]: { exports: mocks.extensionModuleExports } };
+    return loader;
+  };
+  return {
+    ...actual,
+    default: { ...((actual as unknown as { default?: object }).default ?? {}), createRequire },
+    createRequire
+  };
+});
 
 vi.mock("vscode", () => {
   class EventEmitter<T> {
@@ -54,6 +76,7 @@ describe("vscode-R workspace metadata adapter", () => {
   beforeEach(() => {
     mocks.terminals = [];
     mocks.extension = undefined;
+    mocks.extensionModuleExports = undefined;
   });
 
   afterEach(async () => {
@@ -127,10 +150,12 @@ describe("vscode-R workspace metadata adapter", () => {
     mocks.extension = {
       extensionPath: fixture.extensionPath,
       isActive: true,
-      exports: {
-        rWorkspace: workspace,
-        sessionStatusBarItem: { tooltip: "R version 4.5.2\nProcess ID: 819\nCommand: R" }
-      }
+      packageJSON: { main: "./dist/extension" },
+      exports: { helpPanel: undefined }
+    };
+    mocks.extensionModuleExports = {
+      rWorkspace: workspace,
+      sessionStatusBarItem: { tooltip: "R version 4.5.2\nProcess ID: 819\nCommand: R" }
     };
     const watcher = createRVscodeWorkspaceWatcher(terminal as never, {
       extensionPath: fixture.extensionPath,
@@ -163,6 +188,90 @@ describe("vscode-R workspace metadata adapter", () => {
     watcher.dispose();
   });
 
+  it("uses authenticated workspace files while vscode-R's exported workspace is not ready", async () => {
+    const fixture = await createFixture(821);
+    roots.push(fixture.root);
+    await publishWorkspace(fixture, 2, {
+      file_orders: { class: ["data.frame"], type: "list", dim: [4, 2] }
+    });
+    const terminal = officialTerminal(fixture, 821);
+    mocks.terminals = [terminal];
+    mocks.extension = {
+      extensionPath: fixture.extensionPath,
+      isActive: true,
+      packageJSON: { main: "./dist/extension" },
+      exports: { helpPanel: undefined }
+    };
+    mocks.extensionModuleExports = {
+      rWorkspace: {
+        data: undefined,
+        onDidChangeTreeData: () => ({ dispose: () => undefined })
+      },
+      sessionStatusBarItem: { tooltip: "R version 4.5.2\nProcess ID: 821\nCommand: R" }
+    };
+    const watcher = createRVscodeWorkspaceWatcher(terminal as never, {
+      extensionPath: fixture.extensionPath,
+      retryMs: 5,
+      attachTimeoutMs: 10_000
+    })!;
+
+    const outcome = await Promise.race([
+      watcher.readInitial(),
+      new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 250))
+    ]);
+
+    expect(outcome).toEqual({
+      variables: [{ name: "file_orders", backend: "r", dataframeFlavor: "r.data.frame" }],
+      truncated: false
+    });
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    watcher.dispose();
+  });
+
+  it("reconsiders vscode-R's exported workspace while attach metadata is pending", async () => {
+    const fixture = await createFixture(822);
+    roots.push(fixture.root);
+    await rm(fixture.requestPath);
+    const terminal = officialTerminal(fixture, 822);
+    mocks.terminals = [terminal];
+    const workspace = {
+      data: undefined as unknown,
+      onDidChangeTreeData: () => ({ dispose: () => undefined })
+    };
+    const extension = {
+      extensionPath: fixture.extensionPath,
+      isActive: false,
+      packageJSON: { main: "./dist/extension" },
+      exports: { helpPanel: undefined }
+    };
+    mocks.extension = extension;
+    mocks.extensionModuleExports = {
+      rWorkspace: workspace,
+      sessionStatusBarItem: { tooltip: "R version 4.5.2\nProcess ID: 822\nCommand: R" }
+    };
+    const watcher = createRVscodeWorkspaceWatcher(terminal as never, {
+      extensionPath: fixture.extensionPath,
+      retryMs: 5,
+      attachTimeoutMs: 1_000
+    })!;
+
+    const initial = watcher.readInitial();
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    extension.isActive = true;
+    workspace.data = {
+      globalenv: {
+        api_orders: { class: ["tbl_df", "tbl", "data.frame"], type: "list", dim: [7, 3] }
+      }
+    };
+
+    await expect(initial).resolves.toEqual({
+      variables: [{ name: "api_orders", backend: "r", dataframeFlavor: "r.tibble" }],
+      truncated: false
+    });
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    watcher.dispose();
+  });
+
   it("falls back immediately when vscode-R has overwritten the current session's attach record", async () => {
     const fixture = await createFixture(820);
     roots.push(fixture.root);
@@ -172,17 +281,19 @@ describe("vscode-R workspace metadata adapter", () => {
     mocks.extension = {
       extensionPath: fixture.extensionPath,
       isActive: true,
-      exports: {
-        rWorkspace: {
-          data: {
-            globalenv: {
-              foreign_orders: { class: ["data.frame"], type: "list", dim: [1, 1] }
-            }
-          },
-          onDidChangeTreeData: () => ({ dispose: () => undefined })
+      packageJSON: { main: "./dist/extension" },
+      exports: { helpPanel: undefined }
+    };
+    mocks.extensionModuleExports = {
+      rWorkspace: {
+        data: {
+          globalenv: {
+            foreign_orders: { class: ["data.frame"], type: "list", dim: [1, 1] }
+          }
         },
-        sessionStatusBarItem: { tooltip: "R version 4.5.2\nProcess ID: 999\nCommand: R" }
-      }
+        onDidChangeTreeData: () => ({ dispose: () => undefined })
+      },
+      sessionStatusBarItem: { tooltip: "R version 4.5.2\nProcess ID: 999\nCommand: R" }
     };
     const watcher = createRVscodeWorkspaceWatcher(terminal as never, {
       extensionPath: fixture.extensionPath,
@@ -211,9 +322,16 @@ describe("vscode-R workspace metadata adapter", () => {
     const watcher = createRVscodeWorkspaceWatcher(wrongPid as never, {
       extensionPath: fixture.extensionPath,
       retryMs: 5,
-      attachTimeoutMs: 150
+      attachTimeoutMs: 10_000
     });
-    await expect(watcher!.readInitial()).rejects.toThrow("does not match the current vscode-R session record");
+    const outcome = await Promise.race([
+      watcher!.readInitial().then(
+        () => "resolved",
+        (error: unknown) => (error instanceof Error ? error.message : "rejected")
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 250))
+    ]);
+    expect(outcome).toBe("The selected terminal does not match the current vscode-R session record.");
     expect(wrongPid.sendText).not.toHaveBeenCalled();
 
     const wrongProfile = officialTerminal(fixture, 803, {

@@ -625,11 +625,11 @@ They also check that header profiles start off; the journey does not turn them o
 library is deleted with the run.
 
 The active-terminal tests first exercise the read-only vscode-R metadata adapter. A renamed shell is rejected. An
-existing session uses vscode-R's exported workspace only when its status PID matches the exact terminal; startup can
-fall back to the matching attach record and workspace files. PID, path, link, malformed JSON, and marker changes fail
-closed. An overwritten same-process attach record falls back immediately. Disabled vscode-R workspace watching uses
-the explicit fallback instead of reporting an empty session. Automatic listing sends no terminal text. A listed frame
-is connected only after its explicit
+existing session uses the exact-PID workspace tree from vscode-R's already-loaded module without invoking its loader.
+During startup, the adapter checks both that tree and the matching attach files until one is ready. PID, path, link,
+malformed JSON, and marker changes fail closed. An overwritten or foreign attach record falls back immediately.
+Disabled vscode-R workspace watching uses the explicit fallback instead of reporting an empty session. Automatic
+listing sends no terminal text. A listed frame is connected only after its explicit
 Open action rechecks the exact process. The explicit Refresh command is the fallback when watcher metadata is absent.
 
 Native transport tests cover `data.frame`, tibble, and `data.table` discovery, request framing, cleanup, and terminal
