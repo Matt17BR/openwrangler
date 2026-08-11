@@ -305,7 +305,9 @@ describe("Python Interactive Window entry points", () => {
     const interactive = notebook("untitled:/Interactive-quarto.interactive", "interactive", []);
     pythonMocks.executeCommand.mockImplementation(async (id: string) => {
       if (id !== "jupyter.execSelectionInteractive") return undefined;
-      interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 4, "quarto-run", true));
+      interactive.cells.push(
+        interactiveCell(interactive.document, source.uri.toString(), 4, "quarto-run", true, "quarto")
+      );
       pythonMocks.notebookDocuments.push(interactive.document);
       return undefined;
     });
@@ -320,6 +322,74 @@ describe("Python Interactive Window entry points", () => {
     );
     expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+  });
+
+  it("reopens the document's Python session from Quarto prose without accepting its R chunk", async () => {
+    const source = textDocument(
+      "file:///workspace/analysis.qmd",
+      "---\njupyter: python3\n---\n```{python}\nframe = make_frame()\n```\n\nChoose the existing dataframe.\n\n```{r}\nr_frame <- data.frame(id = 1:3)\n```\n",
+      "quarto"
+    );
+    const editor = textEditor(source, 7);
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = editor;
+    const origin = literateOrigin(editor, "quarto", undefined, "jupyter");
+    const exact = notebook("untitled:/Interactive-quarto-exact.interactive", "interactive", []);
+    exact.cells.push(interactiveCell(exact.document, source.uri.toString(), 4, "exact", true, "quarto"));
+    const rChunk = notebook("untitled:/Interactive-quarto-r-chunk.interactive", "interactive", []);
+    rChunk.cells.push(interactiveCell(rChunk.document, source.uri.toString(), 10, "r-chunk", true, "quarto"));
+    const rKernel = notebook("untitled:/Interactive-quarto-r.interactive", "interactive", [], "r");
+    rKernel.cells.push(interactiveCell(rKernel.document, source.uri.toString(), 4, "r-kernel", true, "quarto"));
+    pythonMocks.notebookDocuments.push(exact.document, rChunk.document, rKernel.document);
+    const frame = pandasFrame("frame");
+    pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
+
+    expect(literateProvider(provider).hasAssociatedLiterateSession(origin)).toBe(true);
+    await expect(literateProvider(provider).openAssociatedLiterateSession(origin)).resolves.toBe(true);
+
+    expect(pythonMocks.discover).toHaveBeenCalledTimes(1);
+    expect(pythonMocks.discover).toHaveBeenCalledWith(exact.document);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, exact.document, frame);
+    expect(pythonMocks.showInformationMessage).not.toHaveBeenCalledWith(
+      expect.stringContaining("More than one Python Interactive Window")
+    );
+  });
+
+  it("does not treat a Quarto R chunk as a Python Interactive Window association", async () => {
+    const source = textDocument(
+      "file:///workspace/mixed.qmd",
+      "```{r}\nframe <- data.frame(id = 1:3)\n```\n",
+      "quarto"
+    );
+    const editor = textEditor(source, 1);
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = editor;
+    const origin = literateOrigin(
+      editor,
+      "quarto",
+      {
+        language: "r",
+        executableSyntax: true,
+        supportedFence: true,
+        enabled: true,
+        fenceCharacter: "`",
+        openingLine: 0,
+        codeStartLine: 1,
+        codeEndLine: 1,
+        closingLine: 2,
+        code: "frame <- data.frame(id = 1:3)\n"
+      },
+      "r"
+    );
+    const interactive = notebook("untitled:/Interactive-quarto-r-chunk.interactive", "interactive", []);
+    interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 1, "r-chunk", true, "quarto"));
+    pythonMocks.notebookDocuments.push(interactive.document);
+
+    expect(literateProvider(provider).hasAssociatedLiterateSession(origin)).toBe(false);
+    await expect(literateProvider(provider).openAssociatedLiterateSession(origin)).resolves.toBe(false);
+
+    expect(pythonMocks.discover).not.toHaveBeenCalled();
+    expect(pythonMocks.openVariable).not.toHaveBeenCalled();
   });
 
   it("refuses to fabricate an Interactive Window cell for an R-owned Python chunk", async () => {
@@ -1982,7 +2052,7 @@ function diagnosticProvider(value: NotebookLiveVariableProvider): PythonInteract
 function literateOrigin(
   editor: TextEditor,
   kind: LiterateDocumentKind,
-  chunk: LiterateCodeChunk,
+  chunk: LiterateCodeChunk | undefined,
   pythonExecutionOwner: LiterateDocumentOrigin["pythonExecutionOwner"] = "jupyter"
 ): LiterateDocumentOrigin {
   const document = editor.document;
@@ -2002,7 +2072,7 @@ function literateOrigin(
         })
       )
     ),
-    chunk: Object.freeze(chunk)
+    ...(chunk ? { chunk: Object.freeze(chunk) } : {})
   });
 }
 
@@ -2032,6 +2102,7 @@ function textDocument(uri: string, text: string, languageId = "python"): TextDoc
     version: 1,
     isClosed: false,
     lineCount: lines.length,
+    getText: () => text,
     lineAt: (line: number) => ({ text: lines[line] ?? "" })
   } as unknown as TextDocument & { isClosed: boolean };
 }
@@ -2080,7 +2151,8 @@ function interactiveCell(
   sourceUri: string,
   lineIndex: number,
   id: string | undefined,
-  success: boolean
+  success: boolean,
+  languageId = "python"
 ) {
   const metadata = {
     interactive: { uristring: sourceUri, lineIndex, originalSource: "" },
@@ -2090,7 +2162,7 @@ function interactiveCell(
     index: notebookDocument.cellCount,
     notebook: notebookDocument,
     kind: vscode.NotebookCellKind.Code,
-    document: { languageId: "python" },
+    document: { languageId },
     metadata,
     executionSummary: { success, timing: { startTime: 1, endTime: 2 } }
   } as unknown as vscode.NotebookCell;

@@ -26,6 +26,7 @@ import {
   isUnchangedLiterateDocumentOrigin,
   type LiterateDocumentOrigin
 } from "../literateDocumentOrigin";
+import { findLiterateCodeChunkAtLine } from "../literateDocumentChunks";
 
 const PYTHON_CELL_MARKER = /^\s*#\s*(?:%%|<codecell>|In\[\d*?\]|In\[ \])/u;
 const MARKDOWN_CELL_MARKER = /^\s*#\s*(?:%%\s*\[markdown\]|<markdowncell>)/iu;
@@ -287,12 +288,12 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
   }
 
   hasAssociatedLiterateSession(origin: LiterateDocumentOrigin): boolean {
-    return isCurrentLiterateDocumentOrigin(origin) && associatedNotebooks(origin.uri).length > 0;
+    return isCurrentLiterateDocumentOrigin(origin) && associatedLiterateNotebooks(origin).length > 0;
   }
 
   async openAssociatedLiterateSession(origin: LiterateDocumentOrigin): Promise<boolean> {
     if (!isCurrentLiterateDocumentOrigin(origin)) return false;
-    const associated = associatedNotebooks(origin.uri);
+    const associated = associatedLiterateNotebooks(origin);
     if (associated.length === 0) return false;
     if (associated.length !== 1) {
       void vscode.window.showInformationMessage(
@@ -322,7 +323,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       return false;
     }
 
-    const existingCells = allAssociatedCells(origin.sourceUri).flatMap(({ cells }) => cells);
+    const existingCells = allExactSourceCells(origin.sourceUri).flatMap(({ cells }) => cells);
     const beforeCells: PreviousInteractiveCells = {
       cells: new Set(existingCells.map(({ cell }) => cell)),
       ids: new Set(existingCells.flatMap(({ id }) => (id === undefined ? [] : [id])))
@@ -912,17 +913,23 @@ function rDataframeFlavorLabel(flavor: RNotebookVariableDescriptor["dataframeFla
 }
 
 function notebookLanguageHint(notebook: vscode.NotebookDocument): string | undefined {
+  const metadataLanguage = notebookMetadataLanguageHint(notebook);
+  if (metadataLanguage) return metadataLanguage;
+  for (const cell of notebook.getCells()) {
+    if (cell.kind !== vscode.NotebookCellKind.Code) continue;
+    const languageId = cell.document.languageId.trim().toLowerCase();
+    if (languageId) return languageId;
+  }
+  return undefined;
+}
+
+function notebookMetadataLanguageHint(notebook: vscode.NotebookDocument): string | undefined {
   const metadata = notebook.metadata;
   for (const candidate of [
     nestedString(metadata, "kernelspec", "language"),
     nestedString(metadata, "language_info", "name")
   ]) {
     if (candidate) return candidate.trim().toLowerCase();
-  }
-  for (const cell of notebook.getCells()) {
-    if (cell.kind !== vscode.NotebookCellKind.Code) continue;
-    const languageId = cell.document.languageId.trim().toLowerCase();
-    if (languageId) return languageId;
   }
   return undefined;
 }
@@ -937,10 +944,38 @@ function associatedNotebooks(sourceUri: string): AssociatedNotebook[] {
   return allAssociatedCells(sourceUri).filter(({ cells }) => cells.length > 0);
 }
 
+function associatedLiterateNotebooks(origin: LiterateDocumentOrigin): AssociatedNotebook[] {
+  if (origin.pythonExecutionOwner !== "jupyter") return [];
+  let source: string;
+  try {
+    source = origin.document.getText();
+  } catch {
+    return [];
+  }
+  return allExactSourceCells(origin.uri).flatMap(({ notebook, cells }) => {
+    if (!isSupportedLiteratePythonNotebook(notebook)) return [];
+    const matches = cells.filter((identity) => isDocumentLiteratePythonCell(identity, origin, source));
+    return matches.length > 0 ? [{ notebook, cells: matches }] : [];
+  });
+}
+
 function allAssociatedCells(sourceUri: string): AssociatedNotebook[] {
+  return allExactSourceCells(sourceUri).filter(({ notebook }) => isSupportedPythonNotebook(notebook));
+}
+
+function allExecutionAssociatedCells(origin: PythonCellOrigin): AssociatedNotebook[] {
+  if (!origin.literateOrigin) return allAssociatedCells(origin.sourceUri);
+  return allExactSourceCells(origin.sourceUri).flatMap(({ notebook, cells }) => {
+    if (!isSupportedLiteratePythonNotebook(notebook)) return [];
+    const matches = cells.filter((identity) => isExactLiteratePythonCell(identity, origin));
+    return matches.length > 0 ? [{ notebook, cells: matches }] : [];
+  });
+}
+
+function allExactSourceCells(sourceUri: string): AssociatedNotebook[] {
   const matches: AssociatedNotebook[] = [];
   for (const notebook of vscode.workspace.notebookDocuments) {
-    if (!isSupportedPythonNotebook(notebook) || !isSoleOpenNotebookDocument(notebook)) continue;
+    if (!isSupportedLiveNotebook(notebook) || !isSoleOpenNotebookDocument(notebook)) continue;
     const cells = notebook.getCells().flatMap((cell): InteractiveCellIdentity[] => {
       const identity = interactiveCellIdentity(cell, sourceUri);
       return identity ? [identity] : [];
@@ -948,6 +983,48 @@ function allAssociatedCells(sourceUri: string): AssociatedNotebook[] {
     if (cells.length > 0) matches.push({ notebook, cells });
   }
   return matches;
+}
+
+function isExactLiteratePythonCell(identity: InteractiveCellIdentity, origin: PythonCellOrigin): boolean {
+  const literate = origin.literateOrigin;
+  const languageId = identity.cell.document.languageId.trim().toLowerCase();
+  return (
+    literate?.chunk?.language === "python" &&
+    literate.pythonExecutionOwner === "jupyter" &&
+    identity.cell.kind === vscode.NotebookCellKind.Code &&
+    (languageId === "python" || (literate.kind === "quarto" && languageId === "quarto")) &&
+    identity.lineIndex !== undefined &&
+    identity.lineIndex >= origin.startLine &&
+    identity.lineIndex <= origin.endLine
+  );
+}
+
+function isDocumentLiteratePythonCell(
+  identity: InteractiveCellIdentity,
+  origin: LiterateDocumentOrigin,
+  source: string
+): boolean {
+  const lineIndex = identity.lineIndex;
+  const languageId = identity.cell.document.languageId.trim().toLowerCase();
+  if (
+    lineIndex === undefined ||
+    identity.cell.kind !== vscode.NotebookCellKind.Code ||
+    (languageId !== "python" && (origin.kind !== "quarto" || languageId !== "quarto"))
+  ) {
+    return false;
+  }
+  try {
+    const chunk = findLiterateCodeChunkAtLine(origin.document.uri.fsPath, source, lineIndex);
+    return chunk?.language === "python" && chunk.executableSyntax && chunk.supportedFence && chunk.enabled;
+  } catch {
+    return false;
+  }
+}
+
+function isSupportedLiteratePythonNotebook(notebook: vscode.NotebookDocument): boolean {
+  if (notebook.notebookType !== "interactive" && notebook.notebookType !== "jupyter-notebook") return false;
+  const kernelLanguage = notebookMetadataLanguageHint(notebook);
+  return kernelLanguage === undefined || kernelLanguage === "python";
 }
 
 function interactiveCellIdentity(
@@ -987,7 +1064,7 @@ function newlyExecutedCell(
   | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument; readonly cell: vscode.NotebookCell }
   | { readonly kind: "missing" }
   | { readonly kind: "ambiguous" } {
-  const candidates = allAssociatedCells(origin.sourceUri).flatMap(({ notebook, cells }) =>
+  const candidates = allExecutionAssociatedCells(origin).flatMap(({ notebook, cells }) =>
     cells.flatMap(({ cell, id, lineIndex }) =>
       lineIndex !== undefined &&
       lineIndex >= origin.startLine &&
