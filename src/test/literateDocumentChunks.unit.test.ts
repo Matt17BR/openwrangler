@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { findLiterateCodeChunkAtLine, literateDocumentKind } from "../extension/literateDocumentChunks";
+import {
+  findLiterateCodeChunkAtLine,
+  literateDocumentKind,
+  literatePythonExecutionOwner
+} from "../extension/literateDocumentChunks";
 
 describe("literate document code chunks", () => {
   it("locates the mixed Quarto chunk that owns the cursor", () => {
@@ -151,5 +155,71 @@ describe("literate document code chunks", () => {
     expect(() => findLiterateCodeChunkAtLine("/workspace/orders.qmd", "```{python}\nvalue = 1\n", 1)).toThrow(
       /not closed/u
     );
+  });
+
+  it("assigns real-shaped Quarto Python cells to the document executor", () => {
+    const implicitKnitr = [
+      "---",
+      "title: Mixed analysis",
+      "format: html",
+      "---",
+      "",
+      "```{r}",
+      "library(reticulate)",
+      "```",
+      "",
+      "```{python}",
+      "orders = make_frame()",
+      "```",
+      ""
+    ].join("\n");
+    const explicitJupyter = [
+      "---",
+      "title: Python analysis",
+      "jupyter: python3",
+      "---",
+      "",
+      "```{python}",
+      "orders = make_frame()",
+      "```",
+      ""
+    ].join("\n");
+
+    expect(literatePythonExecutionOwner("/workspace/orders.qmd", implicitKnitr)).toBe("r");
+    expect(literatePythonExecutionOwner("/workspace/orders.qmd", explicitJupyter)).toBe("jupyter");
+    expect(literatePythonExecutionOwner("/workspace/orders.Rmd", explicitJupyter)).toBe("r");
+  });
+
+  it("fails closed for conflicting or unsupported Quarto executor metadata", () => {
+    expect(
+      literatePythonExecutionOwner(
+        "/workspace/orders.qmd",
+        "---\nengine: knitr\njupyter: python3\n---\n```{python}\nvalue = 1\n```\n"
+      )
+    ).toBe("unknown");
+    expect(
+      literatePythonExecutionOwner("/workspace/orders.qmd", "---\nengine: julia\n---\n```{python}\nvalue = 1\n```\n")
+    ).toBe("unknown");
+  });
+
+  it("does not infer knitr from R-looking fences hidden in YAML or comments", () => {
+    const source = [
+      "---",
+      "payload: |",
+      "  ```{r}",
+      "  hidden <- TRUE",
+      "  ```",
+      "---",
+      "<!--",
+      "```{r}",
+      "also_hidden <- TRUE",
+      "```",
+      "-->",
+      "```{python}",
+      "value = 1",
+      "```",
+      ""
+    ].join("\n");
+    expect(literatePythonExecutionOwner("/workspace/orders.qmd", source)).toBe("jupyter");
   });
 });
