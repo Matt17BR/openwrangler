@@ -4327,13 +4327,7 @@ async function invokeReleasedRDocumentTitleAction(
       "the exact R document editor to become active before its cursor-owned action"
     );
     await workbench.bringToFront();
-    const activeGroup = workbench.locator(".part.editor .editor-group-container.active:visible").first();
-    const action = activeGroup.getByRole("button", { name: "Open in Open Wrangler", exact: true }).first();
-    if ((await action.count()) > 0 && (await action.isVisible())) {
-      await action.click();
-    } else {
-      void vscode.commands.executeCommand("openWrangler.openRDataframe");
-    }
+    await activateReleasedRInteractiveTitleAction(workbench, document);
     const title = "Open Wrangler: Choose a dataframe from the active R session";
     const picker = workbench.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
     await picker.waitFor({ state: "visible", timeout: 30_000 });
