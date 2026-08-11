@@ -250,7 +250,7 @@ openwrangler_r_interactive_agent <- local({
     discovery_response(request_id, snapshot$truncated, snapshot$variables)
   }
 
-  evaluate_and_discover_variables <- function(request_id, code) {
+  evaluate_and_discover_variables <- function(request_id, code, working_directory = NULL) {
     if (
       !is.character(code) ||
         length(code) != 1L ||
@@ -266,6 +266,23 @@ openwrangler_r_interactive_agent <- local({
         nchar(utf8_code, type = "bytes") > maximum_evaluation_code_bytes
     ) {
       stop("Open Wrangler rejected the R code chunk.", call. = FALSE)
+    }
+    if (!is.null(working_directory)) {
+      is_absolute <- if (identical(.Platform$OS.type, "windows")) {
+        grepl("^(?:[A-Za-z]:[/\\\\]|[/\\\\]{2})", working_directory, perl = TRUE)
+      } else {
+        startsWith(working_directory, "/")
+      }
+      if (!is_absolute) {
+        stop("Open Wrangler received an invalid R chunk working directory.", call. = FALSE)
+      }
+      working_directory <- validate_path(working_directory, "R chunk working directory", TRUE)
+      if (!dir.exists(working_directory)) {
+        stop("Open Wrangler received an invalid R chunk working directory.", call. = FALSE)
+      }
+      previous_directory <- getwd()
+      on.exit(setwd(previous_directory), add = TRUE)
+      setwd(working_directory)
     }
     expressions <- parse(text = utf8_code, keep.source = FALSE)
     for (expression in expressions) eval(expression, envir = .GlobalEnv)
@@ -651,7 +668,7 @@ openwrangler_r_interactive_agent <- local({
       if (identical(request$value$kind, "discoverInteractiveVariables")) {
         discover_variables(request_id)
       } else if (identical(request$value$kind, "evaluateAndDiscoverInteractiveVariables")) {
-        evaluate_and_discover_variables(request_id, request$value$code)
+        evaluate_and_discover_variables(request_id, request$value$code, request$value$workingDirectory)
       } else if (identical(request$value$kind, "teardownInteractiveRuntime")) {
         tryCatch(
           teardown_runtime(request_id, owner_token, bundle_id),

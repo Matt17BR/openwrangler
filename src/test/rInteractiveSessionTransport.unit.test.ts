@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
+import { KernelRequestCancelledError } from "../extension/notebooks/kernelLifecycle";
 import { R_KERNEL_MAX_REQUEST_BYTES } from "../extension/r/rKernelProtocol";
 import { RInteractiveSessionTransport } from "../extension/r/rInteractiveSessionTransport";
 
@@ -184,7 +185,7 @@ describe("interactive R session transport", () => {
 
   it("evaluates a chunk and discovers its frames in one correlated terminal request", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-evaluate-unit-"));
-    const requests: Array<{ requestId: string; kind: string; code?: string }> = [];
+    const requests: Array<{ requestId: string; kind: string; code?: string; workingDirectory?: string }> = [];
     const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
       temporaryParent,
       runSelection: async (dispatchCode) => {
@@ -193,19 +194,22 @@ describe("interactive R session transport", () => {
           requestId: string;
           kind: string;
           code?: string;
+          workingDirectory?: string;
         };
         requests.push(request);
         await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
       }
     });
     try {
-      await expect(transport.evaluateAndDiscoverVariables("orders <- data.frame(id = 1:3)\n")).resolves.toEqual({
-        variables: [],
-        truncated: false
-      });
+      await expect(
+        transport.evaluateAndDiscoverVariables("orders <- data.frame(id = 1:3)\n", {
+          workingDirectory: temporaryParent
+        })
+      ).resolves.toEqual({ variables: [], truncated: false });
       expect(requests[0]).toMatchObject({
         kind: "evaluateAndDiscoverInteractiveVariables",
-        code: "orders <- data.frame(id = 1:3)\n"
+        code: "orders <- data.frame(id = 1:3)\n",
+        workingDirectory: temporaryParent
       });
       expect(requests.filter((request) => request.kind === "discoverInteractiveVariables")).toEqual([]);
     } finally {
@@ -226,6 +230,74 @@ describe("interactive R session transport", () => {
       await expect(transport.evaluateAndDiscoverVariables("x".repeat(1_024 * 1_024 + 1))).rejects.toThrow("1 MiB");
       expect(runSelection).not.toHaveBeenCalled();
     } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["relative/path", "/tmp/line\nbreak", `/${"x".repeat(32 * 1_024)}`])(
+    "rejects an invalid chunk working directory before dispatching into R",
+    async (workingDirectory) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-working-directory-unit-"));
+      const runSelection = vi.fn();
+      const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+        temporaryParent,
+        runSelection
+      });
+      try {
+        await expect(
+          transport.evaluateAndDiscoverVariables("orders <- data.frame(id = 1:3)\n", { workingDirectory })
+        ).rejects.toThrow("absolute path of at most 32 KiB");
+        expect(runSelection).not.toHaveBeenCalled();
+      } finally {
+        await transport.dispose();
+        expect(await readdir(temporaryParent)).toEqual([]);
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("does not dispatch a queued chunk after its document request becomes stale", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-stale-chunk-unit-"));
+    let releaseFirst!: () => void;
+    let markFirstDispatched!: () => void;
+    const firstDispatched = new Promise<void>((resolveDispatched) => {
+      markFirstDispatched = resolveDispatched;
+    });
+    const firstBlocked = new Promise<void>((resolveBlocked) => {
+      releaseFirst = resolveBlocked;
+    });
+    const dispatchedKinds: string[] = [];
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      runSelection: async (dispatchCode) => {
+        const { requestPath, responsePath } = mailboxPaths(dispatchCode);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+        dispatchedKinds.push(request.kind);
+        if (request.kind === "discoverInteractiveVariables") {
+          markFirstDispatched();
+          await firstBlocked;
+        }
+        await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
+      }
+    });
+    try {
+      const first = transport.discoverVariables();
+      await firstDispatched;
+      let requestCurrent = true;
+      const queued = transport.evaluateAndDiscoverVariables("orders <- data.frame(id = 1:3)\n", {
+        workingDirectory: temporaryParent,
+        isRequestCurrent: () => requestCurrent
+      });
+      requestCurrent = false;
+      releaseFirst();
+
+      await expect(first).resolves.toMatchObject({ truncated: false });
+      await expect(queued).rejects.toBeInstanceOf(KernelRequestCancelledError);
+      expect(dispatchedKinds).toEqual(["discoverInteractiveVariables"]);
+    } finally {
+      releaseFirst();
       await transport.dispose();
       expect(await readdir(temporaryParent)).toEqual([]);
       await rm(temporaryParent, { recursive: true, force: true });

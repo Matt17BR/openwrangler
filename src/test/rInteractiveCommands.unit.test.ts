@@ -233,7 +233,7 @@ describe("active R session commands", () => {
     expect(transport.discoverVariables).not.toHaveBeenCalled();
     expect(transport.evaluateAndDiscoverVariables).toHaveBeenCalledWith(
       "orders <- data.frame(id = 1:3)\n",
-      expect.objectContaining({ timeoutMs: 45_000 })
+      expect.objectContaining({ timeoutMs: 45_000, workingDirectory: "/workspace" })
     );
     expect(factory.create).toHaveBeenCalledWith(expect.anything(), {
       terminalMode: "active",
@@ -255,6 +255,47 @@ describe("active R session commands", () => {
       },
       "r"
     );
+  });
+
+  it("does not run a literate R chunk after its captured document becomes stale", async () => {
+    setActiveTerminal(rTerminal("R"));
+    const transport = transportMock();
+    let runProgress: (() => Promise<unknown>) | undefined;
+    mocks.withProgress.mockImplementationOnce(
+      (_options: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) =>
+        new Promise((resolve, reject) => {
+          runProgress = () =>
+            Promise.resolve()
+              .then(() => task(undefined, cancellationToken()))
+              .then(resolve, reject);
+        })
+    );
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider } = registerWith([transport]);
+    const session = literateRProvider(provider).captureActiveSession();
+    expect(session).toBeDefined();
+    if (!session) throw new Error("Expected the active R terminal to be captured.");
+
+    const opening = literateRProvider(provider).runLiterateChunkAndOpen(
+      origin,
+      session,
+      "orders <- data.frame(id = 1:3)\n"
+    );
+    (source as { version: number }).version = 2;
+    try {
+      await runProgress?.();
+    } catch {
+      // The outer command owns this stale-request rejection.
+    }
+
+    await expect(opening).resolves.toBe(false);
+    expect(transport.evaluateAndDiscoverVariables).not.toHaveBeenCalled();
+    expect(transport.dispose).toHaveBeenCalledOnce();
+    await provider.shutdown();
   });
 
   it("starts a pinned R session when a literate chunk has no attached session", async () => {

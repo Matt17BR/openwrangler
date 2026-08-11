@@ -80,7 +80,9 @@ Indented cells, raw-string chunk options, and R-looking fences inside an opaque 
 The active-R path is separate from explicit document execution. It activates the official R extension, captures one exact `R`
 or `R Interactive` terminal, and uses VS Code's public terminal API to load the bundled dispatcher into that session.
 For a cursor-owned chunk, that dispatcher evaluates the bounded UTF-8 source and discovers dataframes before writing
-one correlated response; discovery cannot overtake or detach from the evaluation that produced those variables.
+one correlated response; discovery cannot overtake or detach from the evaluation that produced those variables. The
+chunk runs with the source document's directory as its working directory, then restores the terminal's previous
+working directory even when parsing or evaluation fails.
 The Operations view can then refresh and open supported dataframes from that terminal. A terminal switch or close
 invalidates the list and bridge; discovery, requests, cleanup, and reopening never retarget another terminal. The
 integration does not read vscode-R extension storage or private process details. These variables follow the notebook

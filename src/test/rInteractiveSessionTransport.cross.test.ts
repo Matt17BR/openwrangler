@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,6 +140,56 @@ describe.skipIf(!enabled)("official R extension interactive transport", () => {
       await transport.dispose();
       await stopInteractiveR(interactive);
       expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("evaluates a literate chunk from its document directory and restores the terminal directory", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-interactive-working-directory-test-"));
+    const documentDirectory = resolve(temporaryParent, "document");
+    const resultPath = resolve(temporaryParent, "working-directory-restored.txt");
+    await mkdir(documentDirectory);
+    await writeFile(resolve(documentDirectory, "orders.csv"), "id,label\n1,alpha\n2,beta\n", "utf8");
+    const interactive = startInteractiveR();
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      testProcessId: interactive.pid!,
+      runSelection: async (code) => writeR(interactive, code)
+    });
+    try {
+      await writeR(interactive, "original_directory <- getwd()");
+      const discovery = await transport.evaluateAndDiscoverVariables(
+        'relative_orders <- utils::read.csv("orders.csv", check.names = FALSE, stringsAsFactors = FALSE)',
+        { workingDirectory: documentDirectory, timeoutMs: 10_000 }
+      );
+      expect(discovery.variables).toContainEqual({
+        name: "relative_orders",
+        backend: "r",
+        dataframeFlavor: "r.data.frame"
+      });
+      await writeR(
+        interactive,
+        `writeLines(as.character(identical(getwd(), original_directory)), ${JSON.stringify(resultPath)})`
+      );
+      await waitForFileText(resultPath, "TRUE");
+      await unlink(resultPath);
+
+      await expect(
+        transport.evaluateAndDiscoverVariables('stop("expected chunk failure")', {
+          workingDirectory: documentDirectory,
+          timeoutMs: 10_000
+        })
+      ).rejects.toThrow("expected chunk failure");
+      await writeR(
+        interactive,
+        `writeLines(as.character(identical(getwd(), original_directory)), ${JSON.stringify(resultPath)})`
+      );
+      await waitForFileText(resultPath, "TRUE");
+      await unlink(resultPath);
+    } finally {
+      await transport.dispose();
+      await stopInteractiveR(interactive);
+      expect(await readdir(temporaryParent)).toEqual(["document"]);
       await rm(temporaryParent, { recursive: true, force: true });
     }
   }, 30_000);

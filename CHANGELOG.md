@@ -37,6 +37,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- R chunks launched from Quarto or R Markdown now resolve relative paths from the document folder and restore the
+  active R terminal's previous working directory afterward, including when the chunk fails.
 - Quarto and R Markdown cells now reuse the R session Open Wrangler is already tracking. If there is no R session,
   Open Wrangler starts one through the R extension instead of asking the user to do it first. Automatic dataframe
   discovery waits until the cell has finished, so it cannot interrupt the picker.
