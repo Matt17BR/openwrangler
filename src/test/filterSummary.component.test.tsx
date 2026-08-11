@@ -1417,6 +1417,7 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Berlin")).toBeInTheDocument();
     expect(screen.getByText("Empty string")).toBeInTheDocument();
     expect(screen.getByText("Other")).toBeInTheDocument();
+    expect(screen.getByText("Other").closest("button")).toBeNull();
     expect(screen.getByRole("meter", { name: "Berlin: 2 rows, 50%" })).toHaveValue(2);
   });
 
@@ -1719,7 +1720,7 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Empty").nextElementSibling).toHaveTextContent("1");
   });
 
-  it("renders explicit datetime bounds and boolean counts from existing profile metadata", () => {
+  it("filters Boolean values from Column profiles and exposes the active filter clear action", () => {
     const familyMetadata: SessionMetadata = {
       ...metadata,
       shape: { rows: 4, columns: 2 },
@@ -1755,15 +1756,87 @@ describe("SummaryPanel", () => {
         visualization: { kind: "datetime", min: "2024-01-01", max: "2024-04-01" }
       }
     ];
-    const { rerender } = renderSummary({
-      metadataValue: familyMetadata,
-      summaries: familySummaries,
-      selectedColumnId: "c:flag"
-    });
-    expect(screen.getByText("True").nextElementSibling).toHaveTextContent("3");
-    expect(screen.getByText("False").nextElementSibling).toHaveTextContent("1");
+    const onApply = vi.fn();
+    const Harness = () => {
+      const [model, setModel] = useState<FilterModel>({
+        filters: [],
+        sort: [{ column: "when", direction: "asc", nulls: "last" }]
+      });
+      return (
+        <SummaryPanel
+          metadata={familyMetadata}
+          summaries={familySummaries}
+          schemaById={new Map(familyMetadata.schema.map((column) => [column.id, column]))}
+          selectedColumnId="c:flag"
+          activeView="column"
+          filterModel={model}
+          onSelectView={() => undefined}
+          onApplyFilterModel={(next) => {
+            onApply(next);
+            setModel(next);
+          }}
+        />
+      );
+    };
+    render(<Harness />);
 
-    rerender(
+    const trueButton = screen.getByRole("button", { name: "Filter to True; True: 3 (75%)" });
+    const falseButton = screen.getByRole("button", { name: "Filter to False; False: 1 (25%)" });
+    expect(trueButton).toHaveTextContent("3");
+    expect(falseButton).toHaveTextContent("1");
+    falseButton.focus();
+    expect(falseButton).toHaveFocus();
+
+    fireEvent.click(falseButton);
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [
+        {
+          column: "flag",
+          type: "boolean",
+          logic: "and",
+          valueFilter: {
+            kind: "values",
+            selectedValues: [false],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: []
+        }
+      ],
+      sort: [{ column: "when", direction: "asc", nulls: "last" }]
+    });
+    expect(screen.getByText("Filter: false")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear filter for flag" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [],
+      sort: [{ column: "when", direction: "asc", nulls: "last" }]
+    });
+  });
+
+  it("renders explicit datetime bounds from existing profile metadata", () => {
+    const familyMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: 1 },
+      filteredShape: { rows: 4, columns: 1 },
+      schema: [{ id: "c:when", name: "when", position: 0, rawType: "Datetime", type: "datetime", nullable: true }]
+    };
+    const familySummaries: ColumnSummary[] = [
+      {
+        columnId: "c:when",
+        column: "when",
+        type: "datetime",
+        rawType: "Datetime",
+        totalCount: 4,
+        nullCount: 1,
+        nanCount: 0,
+        distinctCount: 3,
+        topValues: [],
+        visualization: { kind: "datetime", min: "2024-01-01", max: "2024-04-01" }
+      }
+    ];
+
+    render(
       <SummaryPanel
         metadata={familyMetadata}
         summaries={familySummaries}
