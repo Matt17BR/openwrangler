@@ -11002,7 +11002,9 @@ async function exerciseReleasedPythonFileEntrypoint(
     recordAcceptanceProgress(`${checkpoint}:interactive-toolbar-close`);
     await disposePackagedSessionPanel(testing, reopened.sessionId, "the Python Interactive toolbar Polars session");
     assert.equal(testing.diagnostics().sessionCount, 0);
-    await showExactReleasedNotebook(interactive);
+    if (!vscode.window.visibleNotebookEditors.some((candidate) => candidate.notebook === interactive)) {
+      await showExactReleasedNotebook(interactive);
+    }
     await closeExactReleasedPythonInteractiveWindow(interactive);
     const sourceTab = textDocumentTab(source);
     assert.ok(sourceTab, "The Python-file journey must retain its exact source tab.");
@@ -11465,7 +11467,9 @@ async function exerciseReleasedPythonSourceCellDiscovery(
     recordAcceptanceProgress(`${checkpoint}:close`);
     await disposePackagedSessionPanel(testing, opened.sessionId, "the ordinary Python source-cell Pandas session");
     assert.equal(testing.diagnostics().sessionCount, 0);
-    await showExactReleasedNotebook(interactive);
+    if (!vscode.window.visibleNotebookEditors.some((candidate) => candidate.notebook === interactive)) {
+      await showExactReleasedNotebook(interactive);
+    }
     await closeExactReleasedPythonInteractiveWindow(interactive);
     const sourceTab = textDocumentTab(source);
     assert.ok(sourceTab, "The ordinary Python-cell journey must retain its exact source tab.");
