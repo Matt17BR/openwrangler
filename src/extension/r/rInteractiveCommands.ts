@@ -401,9 +401,9 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   }
 
   private cachedPickerState(): CachedRInteractivePickerState | undefined {
-    const terminal = vscode.window.activeTerminal;
     const transport = this.ownedTransport;
     const watcher = this.workspaceWatcher;
+    const terminal = this.ownedTerminal ?? this.workspaceWatcherTerminal;
     if (
       this.currentSnapshot.state !== "ready" ||
       !terminal ||
@@ -489,7 +489,6 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       (state.watcher
         ? this.workspaceWatcher === state.watcher && this.workspaceWatcherTerminal === state.terminal
         : this.ownedTransport === state.transport && this.ownedTerminal === state.terminal) &&
-      vscode.window.activeTerminal === state.terminal &&
       vscode.window.terminals.includes(state.terminal) &&
       isOfficialRTerminal(state.terminal)
     );

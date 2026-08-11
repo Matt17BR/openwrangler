@@ -746,7 +746,8 @@ describe("active R session commands", () => {
     setActiveTerminal(terminal);
     const watcher = watcherMock(terminal);
     watcher.readInitial.mockResolvedValue(discovery(tibble));
-    const { provider, factory } = registerWith([], [watcher]);
+    const transport = transportMock();
+    const { provider, factory } = registerWith([transport], [watcher]);
     provider.startAutomaticDiscovery();
     await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
 
@@ -768,6 +769,14 @@ describe("active R session commands", () => {
     );
     expect(factory.create).not.toHaveBeenCalled();
     expect(terminal.sendText).not.toHaveBeenCalled();
+
+    const snapshot = provider.snapshot();
+    if (snapshot.state !== "ready") throw new Error("Expected watcher dataframes.");
+    await expect(command(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND)(snapshot.variables[0]!.handle)).resolves.toBe(
+      true
+    );
+    expect(watcher.verifyCurrent).toHaveBeenCalledOnce();
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active", terminal });
     await provider.shutdown();
   });
 
