@@ -191,7 +191,9 @@ interface PendingCellInspection {
 
 interface PendingKernelObservation {
   readonly notebook: vscode.NotebookDocument;
+  readonly sourceFingerprint: string;
   readonly completion: Promise<ObservedNotebookCellResultKernel | undefined>;
+  executionOrder?: number;
   claimed: boolean;
   retirement?: NodeJS.Timeout;
 }
@@ -237,8 +239,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
       const reportedSummary = change.executionSummary;
       const summary = reportedSummary ?? (change.outputs !== undefined ? change.cell.executionSummary : undefined);
       if (reportedSummary !== undefined && reportedSummary.success === undefined) {
-        changed = this.forgetCell(state, change.cell) || changed;
-        this.observeCellKernel(state, change.cell, event.notebook);
+        changed = this.observeCellKernel(state, change.cell, event.notebook, reportedSummary.executionOrder) || changed;
       } else if (summary?.success === true && isPositiveExecutionOrder(summary.executionOrder)) {
         const executionOrder = summary.executionOrder;
         if (reportedSummary !== undefined) {
@@ -252,17 +253,23 @@ export class NotebookCellResultTracker implements vscode.Disposable {
           hasExecuteResultOutput(change.cell) &&
           !hasOpenWranglerOutput(change.cell)
         ) {
-          const observation = this.takeKernelObservation(change.cell);
+          const sourceFingerprint = fingerprintNotebookCellSource(change.cell.document.getText());
+          const observation = this.takeKernelObservation(
+            change.cell,
+            event.notebook,
+            executionOrder,
+            sourceFingerprint
+          );
           changed = this.forgetCell(state, change.cell) || changed;
           if (!observation) continue;
           this.inspectCellResult(state, change.cell, {
             notebook: event.notebook,
             executionOrder,
-            sourceFingerprint: fingerprintNotebookCellSource(change.cell.document.getText()),
+            sourceFingerprint,
             observation
           });
         } else if (change.cell.outputs.length > 0) {
-          const observation = this.takeKernelObservation(change.cell);
+          const observation = this.claimKernelObservation(change.cell);
           changed = this.forgetCell(state, change.cell) || changed;
           this.disposeObservation(observation);
         } else if (reportedSummary !== undefined) {
@@ -423,10 +430,33 @@ export class NotebookCellResultTracker implements vscode.Disposable {
   private observeCellKernel(
     state: NotebookExecutionState,
     cell: vscode.NotebookCell,
-    notebook: vscode.NotebookDocument
-  ): void {
+    notebook: vscode.NotebookDocument,
+    reportedExecutionOrder: number | undefined
+  ): boolean {
+    const sourceFingerprint = fingerprintNotebookCellSource(cell.document.getText());
+    const executionOrder = isPositiveExecutionOrder(reportedExecutionOrder) ? reportedExecutionOrder : undefined;
+    const existing = this.kernelObservations.get(cell);
+    if (
+      existing &&
+      existing.notebook === notebook &&
+      existing.sourceFingerprint === sourceFingerprint &&
+      (existing.executionOrder === undefined ||
+        executionOrder === undefined ||
+        existing.executionOrder === executionOrder)
+    ) {
+      existing.executionOrder ??= executionOrder;
+      return false;
+    }
+
+    const changed = this.forgetCell(state, cell);
     const completion = observeExecutedNotebookCellResultKernel(notebook).catch(() => undefined);
-    const pending: PendingKernelObservation = { notebook, completion, claimed: false };
+    const pending: PendingKernelObservation = {
+      notebook,
+      sourceFingerprint,
+      completion,
+      executionOrder,
+      claimed: false
+    };
     state.trackedCells.add(cell);
     this.kernelObservations.set(cell, pending);
     void completion.then((binding) => {
@@ -442,16 +472,35 @@ export class NotebookCellResultTracker implements vscode.Disposable {
         return;
       }
     });
+    return changed;
   }
 
-  private takeKernelObservation(cell: vscode.NotebookCell): PendingKernelObservation | undefined {
+  private takeKernelObservation(
+    cell: vscode.NotebookCell,
+    notebook: vscode.NotebookDocument,
+    executionOrder: number,
+    sourceFingerprint: string
+  ): PendingKernelObservation | undefined {
+    const pending = this.claimKernelObservation(cell);
+    if (
+      pending &&
+      (pending.notebook !== notebook ||
+        pending.sourceFingerprint !== sourceFingerprint ||
+        (pending.executionOrder !== undefined && pending.executionOrder !== executionOrder))
+    ) {
+      this.disposeObservation(pending);
+      return undefined;
+    }
+    return pending;
+  }
+
+  private claimKernelObservation(cell: vscode.NotebookCell): PendingKernelObservation | undefined {
     const pending = this.kernelObservations.get(cell);
     this.kernelObservations.delete(cell);
-    if (pending) {
-      pending.claimed = true;
-      if (pending.retirement) clearTimeout(pending.retirement);
-      pending.retirement = undefined;
-    }
+    if (!pending) return undefined;
+    pending.claimed = true;
+    if (pending.retirement) clearTimeout(pending.retirement);
+    pending.retirement = undefined;
     return pending;
   }
 
