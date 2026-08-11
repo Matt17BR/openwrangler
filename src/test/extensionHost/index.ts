@@ -270,6 +270,7 @@ const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
 const RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT = "__OW_RELEASED_DUCKDB_ALIVE__";
 const RELEASED_JUPYTER_SESSION_COUNT_RESULT = "__OW_RELEASED_SESSION_COUNT__";
+const RELEASED_JUPYTER_FIRST_RESULT_CELL = 8;
 const RELEASED_JUPYTER_PYSPARK_SETUP_RESULT = "__OW_RELEASED_PYSPARK_SETUP__";
 const RELEASED_JUPYTER_PYSPARK_REBIND_RESULT = "__OW_RELEASED_PYSPARK_REBIND__";
 const RELEASED_JUPYTER_PYSPARK_SCHEMA_REBIND_RESULT = "__OW_RELEASED_PYSPARK_SCHEMA_REBIND__";
@@ -9241,6 +9242,33 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(warmKernel.hostExtensionVisible, false);
     }
 
+    let initialKernelBeforeFormatter: Record<string, unknown> | undefined;
+    if (phase === "jupyter-allow") {
+      await executeReleasedNotebookCell(
+        notebook,
+        0,
+        setupMarker,
+        `${phase}:setup-cell-before-formatter`,
+        variableNotebookEditor
+      );
+      initialKernelBeforeFormatter = releasedNotebookSetupResult(notebook.cellAt(0));
+      assertReleasedJupyterKernelIdentity(initialKernelBeforeFormatter, kernelTarget, testPython);
+      assert.equal(
+        initialKernelBeforeFormatter.pid,
+        warmKernel.pid,
+        "The formatter-disabled setup must retain the exact warmed kernel."
+      );
+      assert.equal(initialKernelBeforeFormatter.setup, setupMarker);
+      assert.equal(initialKernelBeforeFormatter.duckdbConversionGuards, true);
+      await exerciseFormatterDisabledFirstNotebookResult(
+        workbench,
+        testing,
+        notebook,
+        variableNotebookEditor,
+        jupyterApi
+      );
+    }
+
     assert.equal(
       releasedJupyterSessionTabs().length,
       0,
@@ -9248,10 +9276,10 @@ async function exerciseReleasedJupyterExtension(
     );
     recordAcceptanceProgress(`${phase}:proactive-formatter`);
     await configuration.update("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Workspace);
-    const consent = await waitForReleasedJupyterConsent(workbench, testing);
-    assertExactOpenNotebookDocument(notebook, "while proactive formatter consent belongs to the fixture notebook");
 
     if (phase === "jupyter-deny") {
+      const consent = await waitForReleasedJupyterConsent(workbench, testing);
+      assertExactOpenNotebookDocument(notebook, "while proactive formatter consent belongs to the fixture notebook");
       recordAcceptanceProgress("jupyter-deny:consent");
       await consent.deny.click();
       await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
@@ -9288,22 +9316,34 @@ async function exerciseReleasedJupyterExtension(
       return;
     }
 
-    recordAcceptanceProgress(`${phase}:consent`);
-    await consent.allow.click();
-    await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    if (phase !== "jupyter-allow") {
+      const consent = await waitForReleasedJupyterConsent(workbench, testing);
+      assertExactOpenNotebookDocument(notebook, "while proactive formatter consent belongs to the fixture notebook");
+      recordAcceptanceProgress(`${phase}:consent`);
+      await consent.allow.click();
+      await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    } else {
+      assert.equal(
+        await visibleReleasedJupyterConsentCount(workbench),
+        0,
+        "The formatter-disabled result action must settle kernel consent before proactive preparation begins."
+      );
+    }
     assert.equal(
       releasedJupyterSessionTabs().length,
       0,
       "Allowing proactive formatter access must not create an Open Wrangler session panel."
     );
 
-    await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:setup-cell`, variableNotebookEditor);
+    if (initialKernelBeforeFormatter === undefined) {
+      await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:setup-cell`, variableNotebookEditor);
+    }
     assert.equal(
       jupyterExtension.isActive,
       true,
       "Executing the fixture must activate the released Jupyter extension."
     );
-    const initialKernel = releasedNotebookSetupResult(notebook.cellAt(0));
+    const initialKernel = initialKernelBeforeFormatter ?? releasedNotebookSetupResult(notebook.cellAt(0));
     assertReleasedJupyterKernelIdentity(initialKernel, kernelTarget, testPython);
     assert.equal(initialKernel.pid, warmKernel.pid, "The formatter must remain on the exact warmed kernel.");
     assert.equal(initialKernel.setup, setupMarker);
@@ -9330,7 +9370,7 @@ async function exerciseReleasedJupyterExtension(
     const pandasOutputMimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(
       pandasOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
-      "Proactive formatter installation must emit Open Wrangler MIME v2 before any Open Wrangler command. " +
+      "Proactive formatter installation must emit Open Wrangler MIME v2 on the first cell run after it is enabled. " +
         `Actual MIME types: ${JSON.stringify(pandasOutputMimes)}. ` +
         `Output: ${JSON.stringify(notebookCellOutputText(notebook.cellAt(1)).slice(0, 2_000))}.`
     );
@@ -11979,6 +12019,13 @@ function writeReleasedJupyterNotebook(
               "'count': len(__ow_kernel_agent._manager.sessions)" +
               "}, sort_keys=True))\n"
           ]
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: ["# Open the first plain Jupyter result without rerunning it\n", "orders_preview_df.tail(3)\n"]
         }
       ],
       metadata: {
@@ -12237,6 +12284,197 @@ async function releasedJupyterQuickInputDiagnostics(workbench: Page): Promise<st
     }
   }
   return diagnostics;
+}
+
+async function exerciseFormatterDisabledFirstNotebookResult(
+  workbench: Page,
+  testing: TestApi,
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  jupyterApi: Jupyter
+): Promise<void> {
+  const checkpoint = "jupyter-allow:first-result";
+  const removedRerunHint = "Run this cell again to open the current dataframe in Open Wrangler.";
+  const configuration = vscode.workspace.getConfiguration("openWrangler");
+  assert.equal(
+    configuration.get("notebookPreviewProvider"),
+    "disabled",
+    "The first-result fallback must run before proactive notebook formatters are enabled."
+  );
+  const cell = notebook.cellAt(RELEASED_JUPYTER_FIRST_RESULT_CELL);
+  const initialExecutionSummary = cell.executionSummary;
+  assert.equal(
+    initialExecutionSummary,
+    undefined,
+    "The first-result fixture cell must not have run before acceptance."
+  );
+  assert.equal(cell.outputs.length, 0, "The first-result fixture cell must begin without saved output.");
+  const kernel = await jupyterApi.kernels.getKernel(notebook.uri);
+  assert.ok(kernel, "The first-result fallback requires the exact selected notebook kernel.");
+
+  const range = new vscode.NotebookRange(RELEASED_JUPYTER_FIRST_RESULT_CELL, RELEASED_JUPYTER_FIRST_RESULT_CELL + 1);
+  notebookEditor.selection = range;
+  notebookEditor.selections = [range];
+  notebookEditor.revealRange(range, vscode.NotebookEditorRevealType.InCenter);
+  await waitFor(
+    () =>
+      notebookEditor.visibleRanges.some(
+        (visible) =>
+          visible.start <= RELEASED_JUPYTER_FIRST_RESULT_CELL && visible.end > RELEASED_JUPYTER_FIRST_RESULT_CELL
+      ),
+    WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+    "the formatter-disabled Pandas result cell to become visible before its first execution"
+  );
+  recordAcceptanceProgress(`${checkpoint}:execute`);
+  await executeReleasedNotebookCell(
+    notebook,
+    RELEASED_JUPYTER_FIRST_RESULT_CELL,
+    undefined,
+    checkpoint,
+    notebookEditor
+  );
+  const executionOrder = cell.executionSummary?.executionOrder;
+  assert.ok(
+    Number.isSafeInteger(executionOrder) && Number(executionOrder) > 0,
+    "The formatter-disabled Pandas result must publish one positive execution order."
+  );
+  const outputMimes = cell.outputs.flatMap((output) => output.items.map((item) => item.mime));
+  assert.equal(
+    outputMimes.includes(OPEN_WRANGLER_MIME_V2),
+    false,
+    "The formatter-disabled first result must not contain Open Wrangler MIME."
+  );
+  assert.ok(
+    cell.outputs.some((output) => output.metadata?.outputType === "execute_result"),
+    "The first-result fallback must be exercised by a real Jupyter execute_result."
+  );
+  const outputText = notebookCellOutputText(cell);
+  assert.equal(
+    outputText.includes(removedRerunHint),
+    false,
+    "The formatter-disabled cell output must not restore the removed rerun instruction."
+  );
+  assert.equal(testing.diagnostics().sessionCount, 0, "Executing the first result must not open a session by itself.");
+
+  const consent = await waitForReleasedJupyterConsent(workbench, testing);
+  assertExactOpenNotebookDocument(notebook, "while first-result kernel consent belongs to the fixture notebook");
+  recordAcceptanceProgress(`${checkpoint}:consent`);
+  await consent.allow.click();
+  await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(
+    configuration.get("notebookPreviewProvider"),
+    "disabled",
+    "Kernel consent must not enable proactive formatters before the first-result action is used."
+  );
+
+  const action = await waitForReleasedNotebookCellResultAction(workbench, RELEASED_JUPYTER_FIRST_RESULT_CELL);
+  const actionText = (await action.innerText()).replace(/\s+/gu, " ").trim();
+  assert.equal(actionText, "Open in Open Wrangler", "The cell status fallback must use the canonical action label.");
+  assert.equal(
+    await workbench.getByText(removedRerunHint, { exact: true }).count(),
+    0,
+    "The notebook workbench must not display the removed rerun instruction."
+  );
+
+  const beforeClickOutput = notebookCellOutputText(cell);
+  const receipt = async (): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> => {
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.backend === "pandas" &&
+          active.metadata.source.kind === "notebookVariable" &&
+          active.metadata.source.label === "DataFrame" &&
+          active.metadata.source.uri === notebook.uri.toString() &&
+          active.metadata.shape.rows === 3 &&
+          active.metadata.shape.columns === 12
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the formatter-disabled first Pandas result to open from its cell status action",
+      () => JSON.stringify(testing.diagnostics())
+    );
+    const active = testing.activeSession();
+    assert.ok(active, "The formatter-disabled cell status action must publish an active session.");
+    return active;
+  };
+  recordAcceptanceProgress(`${checkpoint}:action-ready`);
+  const session = await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+    description: "the formatter-disabled first-result cell status action",
+    activate: () => action.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    receipt,
+    authoritativeReceiptAfterActivationFailure: receipt
+  });
+  recordAcceptanceProgress(`${checkpoint}:session-open`);
+  try {
+    assert.match(
+      session.metadata.source.variableName ?? "",
+      /^__openwrangler_live_result_[0-9a-f]{32}$/u,
+      "The first-result action must bind the exact live Out value through an opaque handle."
+    );
+    assert.deepEqual(session.metadata.shape, { rows: 3, columns: 12 });
+    assert.deepEqual(session.metadata.filteredShape, { rows: 3, columns: 12 });
+    const page = await testing.request({
+      kind: "getPage",
+      columnOffset: 0,
+      columnLimit: 12,
+      viewRequestId: "released-jupyter-first-result-page",
+      sessionId: session.sessionId,
+      revision: session.metadata.revision,
+      offset: 0,
+      limit: 3,
+      filterModel: session.metadata.filterModel
+    });
+    assert.equal(page.kind, "page");
+    if (page.kind !== "page") throw new Error("The formatter-disabled first-result page did not resolve.");
+    assert.equal(page.page.totalRows, 3);
+    assert.equal(page.page.rows[0]?.values[0]?.display, "2499998");
+    assert.equal(page.page.rows[2]?.values[0]?.display, "2500000");
+    assert.equal(
+      await jupyterApi.kernels.getKernel(notebook.uri),
+      kernel,
+      "Opening the first result must retain the exact kernel that produced it."
+    );
+    assert.equal(
+      cell.executionSummary?.executionOrder,
+      executionOrder,
+      "Opening the first result must not rerun its notebook cell."
+    );
+    assert.equal(
+      notebookCellOutputText(cell),
+      beforeClickOutput,
+      "Opening the first result must not replace or rerender its original output."
+    );
+    assert.equal(
+      cell.outputs.flatMap((output) => output.items.map((item) => item.mime)).includes(OPEN_WRANGLER_MIME_V2),
+      false,
+      "Opening the first result must not rewrite it as Open Wrangler MIME."
+    );
+  } finally {
+    await disposePackagedSessionPanel(testing, session.sessionId, "the formatter-disabled first-result session");
+  }
+}
+
+async function waitForReleasedNotebookCellResultAction(workbench: Page, cellIndex: number): Promise<Locator> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  do {
+    const activeEditorGroup = workbench.locator(".part.editor .editor-group-container.active");
+    const cell = activeEditorGroup.locator(
+      `.notebookOverlay .monaco-list-row.code-cell-row[data-index="${cellIndex}"]:visible`
+    );
+    const cellCount = await cell.count().catch(() => 0);
+    assert.ok(cellCount < 2, `The notebook rendered duplicate rows for cell ${cellIndex}.`);
+    if (cellCount === 1) {
+      const action = cell.locator(
+        '.cell-status-item.cell-status-item-has-command[aria-label="Open executed dataframe result in Open Wrangler"]:visible'
+      );
+      const actionCount = await action.count().catch(() => 0);
+      assert.ok(actionCount < 2, `Notebook cell ${cellIndex} exposed duplicate Open Wrangler result actions.`);
+      if (actionCount === 1 && (await action.isVisible().catch(() => false))) return action;
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error(`Timed out waiting for the Open Wrangler result action on notebook cell ${cellIndex}.`);
 }
 
 async function executeReleasedNotebookCell(
