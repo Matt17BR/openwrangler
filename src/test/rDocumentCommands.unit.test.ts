@@ -469,6 +469,44 @@ describe("R document command", () => {
     expect(mocks.transportOptions).toHaveLength(0);
   });
 
+  it("does not send an R chunk from a Jupyter Quarto document to an R terminal", async () => {
+    const document = rDocument(
+      "/workspace/orders.qmd",
+      "---\njupyter: python3\n---\n```{r}\norders <- data.frame(id = 1:3)\n```\n"
+    );
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = textEditor(document, 4);
+    mocks.getCommands.mockResolvedValue(["quarto.runCurrentCell", "r.runSelection"]);
+    const providers = literateProviders();
+    register(coordinatorMock(), providers.value);
+
+    await expect(cursorCommand()()).resolves.toBe(false);
+
+    expect(mocks.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining("uses Jupyter"));
+    expect(providers.r.captureActiveSession).not.toHaveBeenCalled();
+    expect(providers.r.runLiterateChunkAndOpen).not.toHaveBeenCalled();
+    expect(providers.python.runLiterateChunkAndOpen).not.toHaveBeenCalled();
+  });
+
+  it("does not run an R chunk when Quarto execution is disabled", async () => {
+    const document = rDocument(
+      "/workspace/orders.qmd",
+      "---\nengine: markdown\n---\n```{r}\norders <- data.frame(id = 1:3)\n```\n"
+    );
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = textEditor(document, 4);
+    mocks.getCommands.mockResolvedValue(["quarto.runCurrentCell", "r.runSelection"]);
+    const providers = literateProviders();
+    register(coordinatorMock(), providers.value);
+
+    await expect(cursorCommand()()).resolves.toBe(false);
+
+    expect(mocks.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining("could not prove"));
+    expect(providers.r.captureActiveSession).not.toHaveBeenCalled();
+    expect(providers.r.runLiterateChunkAndOpen).not.toHaveBeenCalled();
+    expect(providers.python.runLiterateChunkAndOpen).not.toHaveBeenCalled();
+  });
+
   it("lets the R provider start a session for a Quarto chunk when none is attached", async () => {
     const document = rDocument("/workspace/orders.qmd", "```{r}\norders <- data.frame(id = 1:3)\n```\n");
     mocks.textDocuments.push(document);

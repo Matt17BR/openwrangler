@@ -251,6 +251,15 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
     return await openExistingLiterateSessionOrExplain(origin, providers);
   }
 
+  if (chunk.language === "r" && origin.kind === "quarto" && origin.pythonExecutionOwner !== "r") {
+    void vscode.window.showInformationMessage(
+      origin.pythonExecutionOwner === "jupyter"
+        ? "This Quarto document uses Jupyter, so Open Wrangler cannot run its R chunk through an R terminal. Use an IRkernel notebook or change the document engine to knitr."
+        : "Open Wrangler could not prove that this R chunk belongs to a Knitr Quarto document. Set `engine: knitr`, then try again."
+    );
+    return false;
+  }
+
   const pythonOwner = chunk.language === "python" ? origin.pythonExecutionOwner : undefined;
   if (pythonOwner === "unknown") {
     void vscode.window.showInformationMessage(
