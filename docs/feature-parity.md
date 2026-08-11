@@ -113,10 +113,12 @@ Wrangler-managed R document; an active terminal has no source document to edit.
 A trusted local `.R`, `.Rmd`, or `.qmd` document on macOS or Linux can also run in an Open Wrangler-owned R process,
 after which the user chooses one of the dataframes it created. That explicit R-document action uses supported
 top-level `{r}` cells rather than a document render. The primary editor-title action on `.Rmd` and `.qmd` instead
-detects the exact cursor-owned fence and runs only its R or Python chunk through the official R, Quarto, or Jupyter
-integration. It preserves the exact editor, document, version, URI, and cursor through every await and opens only the
-resulting live session. Common chunk labels and `#|` options are accepted; Quarto supports backtick and tilde fences,
-while R Markdown uses backticks. On macOS and Linux, the tab menu keeps the explicit all-R document command. Pages, compound filters, ordered sorts,
+detects the exact cursor-owned fence and runs only its chunk through the official R, Quarto, or Jupyter integration.
+Python routing follows the document executor: R Markdown and knitr/reticulate Quarto stay in a pinned exact R
+terminal, while Jupyter Quarto uses the exact resulting Interactive Window. Conflicting or unsupported executor
+metadata fails closed, required public commands are preflighted, and both the source origin and any R terminal are
+revalidated through every await. Common chunk labels and `#|` options are accepted; Quarto supports backtick and tilde
+fences, while R Markdown uses backticks. On macOS and Linux, the tab menu keeps the explicit all-R document command. Pages, compound filters, ordered sorts,
 value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Editing mode
 currently supports twenty-one cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
@@ -206,8 +208,9 @@ without changing a decoy editor or either source file on disk.
 The same VS Code acceptance phase includes realistic `.Rmd` and `.qmd` fixtures with first-line YAML, ignored prose, a
 relative CSV read, native editing, and a generated fenced R cell. Its Quarto title-action journey pins the cursor in
 the exact R chunk and executes only that cell through the official Quarto and R extensions; R Markdown retains the
-explicit owned-process journey. Focused mixed-language routing tests cover Python and R chunks, labels, `#|` options,
-Quarto tilde fences, R Markdown backtick fences, exact cursor staleness, and associated live-session reuse. The
+explicit owned-process journey. Focused mixed-language routing tests cover explicit Jupyter and implicit/explicit
+knitr ownership, reticulate R Markdown Python, labels, `#|` options, Quarto tilde fences, R Markdown backtick fences,
+command preflight, exact cursor/terminal staleness, and explicit choice when both associated sessions exist. The
 explicit R-document parser fixture also includes a non-R cell and a disabled R cell and continues to cover nested presentation options and disabled external chunk references,
 while malformed or enabled code-replacement options fail before R starts. Python-only documents do not start R; the
 explicit R-document command explains that no R code chunk was found. The installed VS Code run locally on Linux covers
@@ -237,7 +240,7 @@ substitute a smaller R smoke test.
 | Base `data.frame`, tibble, and `data.table`   | 1.99 preview                    | Partial | Native discovery, paging, queries, and profile tests                                                                            | Preview release |
 | Exact IRkernel session transport              | 1.99 preview                    | Done    | Linux local VS Code/Cursor and remote VS Code; macOS/Windows VS Code gate                                                       | Preview release |
 | Exact active R-terminal transport             | 1.99 preview                    | Partial | Public VS Code terminal API, Operations refresh/list, native request and cleanup tests; packaged VS Code/Cursor journey pending | Preview release |
-| Cursor-owned `.Rmd` and `.qmd` R/Python chunk | 1.99 preview                    | Partial | Mixed-fence parser and exact-origin routing tests; packaged Quarto/R title-action run                                           | Preview release |
+| Cursor-owned `.Rmd` and `.qmd` R/Python chunk | 1.99 preview                    | Partial | Executor-aware mixed-fence, exact-origin/terminal tests; packaged Quarto/R title-action run                                     | Preview release |
 | Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                         | Preview release |
 | Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser and real-R contracts; local Linux/macOS VS Code installed run                                                            | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                           | Preview release |

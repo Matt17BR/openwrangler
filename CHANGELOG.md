@@ -24,10 +24,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   **Open in Open Wrangler** button. Clicking it opens that exact result from the same kernel instead of showing a
   rerun instruction. Old saved outputs without a live link stay readable inline but do not show a button that cannot
   work.
-- **Open in Open Wrangler** now routes `.qmd` and `.Rmd` editors by the fenced chunk at the exact cursor instead of
-  assuming the document is R. Enabled R chunks use the official R/Quarto session, and Python chunks use the exact
-  Jupyter Interactive Window. The primary action runs only that chunk, accepts common labels and `#|` options, and
-  fails safely if the document, editor, version, or cursor changes while an integration is activating.
+- **Open in Open Wrangler** now routes `.qmd` and `.Rmd` editors by both the exact cursor-owned fence and the document
+  executor. R Markdown and knitr/reticulate Quarto Python chunks stay in a pinned exact R terminal; only Jupyter-owned
+  Quarto Python chunks use an Interactive Window. The action preflights the required public commands, fails closed for
+  ambiguous executor metadata or terminal replacement, and asks explicitly when both existing R and Python sessions
+  are available. It still runs only that chunk and preserves labels, `#|` options, and exact editor/cursor provenance.
 - Python Interactive windows now expose the same **Open in Open Wrangler** action as `.ipynb` notebooks. The action
   lists dataframes from that exact live kernel, and Operations refreshes from the same window instead of asking the
   user to return to the source `.py` cell.

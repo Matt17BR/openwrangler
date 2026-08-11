@@ -28,13 +28,16 @@ selected official R terminal when one is active and otherwise delegates to `open
 Linux extension hosts. An `.Rmd` or `.qmd` editor instead captures the exact active `TextEditor`, `TextDocument`,
 version, URI, view column, and every selection before command activation can await. A bounded Markdown fence parser
 identifies the one chunk that owns the primary cursor, including ordinary labels and `#|` options. Quarto accepts
-backtick and tilde fences; R Markdown accepts backtick fences. An enabled Python chunk runs through
-`quarto.runCurrentCell` or `jupyter.execSelectionInteractive` and stays pinned to the exact new Interactive Window
-cell associated with the source URI. An enabled R chunk runs through `quarto.runCurrentCell` or `r.runSelection` and
-opens from the exact active official R terminal. Every activation, execution, discovery, picker, and focus-restoration
-await revalidates the captured editor object, document object, version, URI uniqueness, and all cursor selections.
-The primary literate action never renders or executes the complete document. Outside a supported chunk it can reuse
-one exact associated Python Interactive Window or the active R session; otherwise it gives one actionable message.
+backtick and tilde fences; R Markdown accepts backtick fences. Python ownership follows the document executor rather
+than the fence label alone: R Markdown and knitr/reticulate Quarto cells stay in the exact selected R terminal, while
+Jupyter Quarto cells stay pinned to the exact new Interactive Window cell associated with the source URI. Explicit
+`engine`, `knitr`, and `jupyter` metadata and Quarto's R-cell inference are recognized; conflicting or unsupported
+metadata fails closed. An enabled R chunk runs through `quarto.runCurrentCell` or `r.runSelection` in that same pinned
+terminal. Required Quarto, Jupyter, and R commands are checked before dispatch. Every activation, execution,
+discovery, picker, and focus-restoration await revalidates the captured editor object, document object, version, URI
+uniqueness, cursor selections, and—on R paths—the exact terminal object. The primary literate action never renders or
+executes the complete document. Outside a supported chunk it can reuse one exact associated Python Interactive Window
+or the selected R session; when both exist it asks explicitly which one to open.
 
 The stable action remains visible on Windows because live R and Python sessions do not require Open Wrangler to own a
 local document process. On macOS and Linux the tab menu keeps the explicit R-document choices, and Explorer keeps the

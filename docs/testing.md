@@ -703,9 +703,12 @@ the dataframe, checks its full schema and page, applies Rename, inserts generate
 the source file on disk is unchanged.
 The Quarto title-action portion puts the cursor in the exact dataframe-producing chunk, invokes the stable editor
 action, and requires the official `quarto.runCurrentCell` and `r.runSelection` commands before opening the active R
-session. Focused TypeScript tests separately route Quarto and R Markdown R/Python chunks, backtick and supported tilde
-fences, chunk labels, `#|` options, disabled chunks, associated Python sessions, and editor/version/cursor changes
-across awaits. The primary action must never fall back to an all-document run.
+session. Focused TypeScript tests separately route explicit-Jupyter and implicit/explicit-knitr Quarto Python chunks,
+reticulate R Markdown Python chunks, and R chunks. They cover backtick and supported tilde fences, chunk labels, `#|`
+options, disabled chunks, required-command preflight, conflicting executor metadata, associated Python sessions,
+explicit R/Python session choice, and editor/version/cursor/exact-terminal changes across cleanup and discovery awaits.
+An R-owned Python path must not fabricate an Interactive Window cell, and the primary action must never fall back to
+an all-document run.
 The separate owned-process parser tests cover horizontal rules, display math, closed raw-TeX blocks, numeric labels,
 nested option calls, and disabled external chunk references. They reject R-looking fences inside opaque containers, indented or tilde R
 fences, enabled alternate engines or external references (including Quarto's hyphenated option keys), malformed options, cross-cell syntax joining, and R
