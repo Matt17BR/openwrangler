@@ -601,6 +601,7 @@ Generated-code insertion tests cover Python and R cells, the 10-second observati
 R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. It checks that the
 active notebook's base, tibble, data.table, `collapse::qDF()`, `qTBL()`, and `qDT()` variables appear in Operations,
 that unsupported grouped/indexed collapse objects do not, and that an Operations row opens through the exact kernel.
+The literate-document journey closes the exact R terminal it created before terminal-only checks begin.
 Every path uses R 4.5.2. Linux runs the local journey in VS Code and Cursor and the remote journey in VS Code. Preview and stable
 release candidates also run the complete local journey in VS Code on macOS and Windows. The cross-platform jobs reuse
 the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the complete Python suite or the
