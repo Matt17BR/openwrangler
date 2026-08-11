@@ -88,8 +88,7 @@ interface PythonCellOrigin {
   readonly command:
     | "jupyter.execSelectionInteractive"
     | "jupyter.runcurrentcell"
-    | "jupyter.runFileInteractive"
-    | "quarto.runCurrentCell";
+    | "jupyter.runFileInteractive";
   readonly commandArguments: readonly unknown[];
   readonly startLine: number;
   readonly endLine: number;
@@ -719,17 +718,14 @@ function pythonOriginFromLiterateDocument(
   if (requireChunk && origin.pythonExecutionOwner !== "jupyter") return undefined;
   const startLine = chunk?.openingLine ?? origin.selections[0]?.active.line;
   if (startLine === undefined) return undefined;
-  const command = origin.kind === "quarto" ? "quarto.runCurrentCell" : "jupyter.execSelectionInteractive";
-  const commandArguments =
-    origin.kind === "quarto" ? [Math.max(1, (chunk?.openingLine ?? startLine) + 1)] : [chunk?.code ?? ""];
   return Object.freeze({
     editor: origin.editor,
     document: origin.document,
     version: origin.version,
     sourceUri: origin.uri,
     executionKind: "chunk",
-    command,
-    commandArguments: Object.freeze(commandArguments),
+    command: "jupyter.execSelectionInteractive",
+    commandArguments: Object.freeze([chunk?.code ?? ""]),
     startLine,
     endLine: chunk?.closingLine ?? startLine,
     selection: origin.editor.selection,
