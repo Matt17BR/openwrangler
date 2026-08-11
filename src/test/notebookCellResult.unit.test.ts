@@ -304,6 +304,57 @@ describe("executed notebook cell result action", () => {
     tracker.dispose();
   });
 
+  it("keeps the consent-bound observation across repeated in-progress summaries", async () => {
+    const document = notebook("file:///repeated-progress.ipynb");
+    const cell = codeCell(document, 1);
+    setCells(document, [cell]);
+    const observation = deferred<ReturnType<typeof testBinding> | undefined>();
+    const binding = testBinding();
+    mocks.bindings.push(binding);
+    mocks.observe.mockReturnValueOnce(observation.promise).mockResolvedValueOnce(undefined);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(cell, undefined) as never);
+    tracker.recordDocumentChange(executionStartedEvent(cell, 1) as never);
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    observation.resolve(binding);
+    await settleInspection();
+
+    expect(mocks.observe).toHaveBeenCalledOnce();
+    expect(mocks.inspect).toHaveBeenCalledWith(document, 1, "a".repeat(64), binding);
+    expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+    tracker.dispose();
+  });
+
+  it("restarts the pending observation when the concrete execution order changes", async () => {
+    const document = notebook("file:///changed-execution.ipynb");
+    const cell = codeCell(document, 1);
+    setCells(document, [cell]);
+    const firstObservation = deferred<ReturnType<typeof testBinding> | undefined>();
+    const firstBinding = testBinding();
+    const secondBinding = testBinding();
+    mocks.observe.mockReturnValueOnce(firstObservation.promise).mockResolvedValueOnce(secondBinding);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(cell, 1) as never);
+    tracker.recordDocumentChange(executionStartedEvent(cell, 2) as never);
+    Object.defineProperty(cell, "executionSummary", {
+      configurable: true,
+      value: { executionOrder: 2, success: true }
+    });
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    firstObservation.resolve(firstBinding);
+    await settleInspection();
+
+    expect(mocks.observe).toHaveBeenCalledTimes(2);
+    expect(firstBinding.isGenerationValid()).toBe(false);
+    expect(mocks.inspect).toHaveBeenCalledWith(document, 2, "a".repeat(64), secondBinding);
+    expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+    tracker.dispose();
+  });
+
   it("retires a kernel observation when a successful cell produces no output", async () => {
     vi.useFakeTimers();
     try {
@@ -558,7 +609,7 @@ function executionEvent(cell: NotebookCell): unknown {
   };
 }
 
-function executionStartedEvent(cell: NotebookCell): unknown {
+function executionStartedEvent(cell: NotebookCell, executionOrder = cell.executionSummary?.executionOrder): unknown {
   return {
     notebook: cell.notebook,
     metadata: undefined,
@@ -570,7 +621,7 @@ function executionStartedEvent(cell: NotebookCell): unknown {
         metadata: undefined,
         outputs: undefined,
         executionSummary: {
-          executionOrder: cell.executionSummary?.executionOrder,
+          executionOrder,
           success: undefined
         }
       }
