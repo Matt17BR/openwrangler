@@ -258,7 +258,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
         ) {
           continue;
         }
-        if (reportedSummary !== undefined) {
+        if (reportedSummary !== undefined || completedExecuteResult) {
           if (executionOrder <= state.maxExecutionOrder) {
             changed = this.clearState(state, change.cell) || changed;
           }
