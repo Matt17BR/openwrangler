@@ -2815,18 +2815,23 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     sourceTerminal = await createReleasedOfficialRTerminal("the first active R session");
     await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "after starting the first active R terminal");
     await seedReleasedRInteractiveFrames(sourceTerminal, directory, 2_400_001, "first");
-    assert.equal(vscode.window.activeTerminal, sourceTerminal, "Refresh must target the exact active R terminal.");
+    assert.equal(vscode.window.activeTerminal, sourceTerminal, "Discovery must stay on the exact active R terminal.");
     let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
     let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
-    const discovery = operations.getByRole("treeitem", { name: /^Show R dataframes\b/u });
-    await discovery.waitFor({ state: "visible", timeout: 10_000 });
-    await discovery.click();
-    await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "after refreshing the first active R terminal");
     await assertReleasedRInteractiveRows(operations);
-    await waitFor(
-      () => releasedRInteractiveMailboxRoots().length === initialMailboxes.length + 1,
-      10_000,
-      "the first active R bridge to own one private mailbox"
+    assert.deepEqual(
+      releasedRInteractiveMailboxRoots(),
+      initialMailboxes,
+      "Automatic vscode-R workspace discovery must not bootstrap the native terminal bridge."
+    );
+    sourceTerminal.sendText("callback_orders <- data.frame(id = 1:3)", true);
+    await operations
+      .getByRole("treeitem", { name: /^callback_orders\b/u })
+      .waitFor({ state: "visible", timeout: 30_000 });
+    assert.deepEqual(
+      releasedRInteractiveMailboxRoots(),
+      initialMailboxes,
+      "A later user expression must still update Operations without an Open Wrangler terminal bootstrap."
     );
 
     recordAcceptanceProgress("jupyter-r:interactive:first-terminal-close");
@@ -2847,11 +2852,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     await operations
       .getByRole("treeitem", { name: /^Start R and show dataframes\b/u })
       .waitFor({ state: "visible", timeout: 10_000 });
-    await waitFor(
-      () => isDeepStrictEqual(releasedRInteractiveMailboxRoots(), initialMailboxes),
-      10_000,
-      "the invalidated cached R bridge to remove its mailbox"
-    );
+    assert.deepEqual(releasedRInteractiveMailboxRoots(), initialMailboxes);
     if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
     sourceTerminal = undefined;
 
@@ -2859,20 +2860,18 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     replacementTerminal = await createReleasedOfficialRTerminal("the replacement active R session");
     await seedReleasedRInteractiveFrames(replacementTerminal, directory, 3_400_001, "replacement");
     assert.equal(vscode.window.activeTerminal, replacementTerminal, "The replacement R terminal must be active.");
-    assert.equal(
-      await withBoundedAcceptancePromise(
-        vscode.commands.executeCommand<boolean>("openWrangler.refreshRInteractiveVariables"),
-        90_000,
-        "refreshing synthetic dataframes from the replacement R terminal"
-      ),
-      true
-    );
 
     sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
     operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
     await assertReleasedRInteractiveRows(operations);
+    assert.deepEqual(releasedRInteractiveMailboxRoots(), initialMailboxes);
     recordAcceptanceProgress("jupyter-r:interactive:open-base-frame");
     await invokeReleasedRInteractiveTitleAction(workbench, directory, "base_orders");
+    await waitFor(
+      () => releasedRInteractiveMailboxRoots().length === initialMailboxes.length + 1,
+      10_000,
+      "the explicitly opened R dataframe to bootstrap one private mailbox"
+    );
     await waitFor(
       () => {
         const active = testing.activeSession();
@@ -3215,7 +3214,7 @@ async function assertReleasedRInteractiveRows(operations: Locator): Promise<void
     ["table_orders", "data.table"]
   ] as const) {
     const row = operations.getByRole("treeitem", { name: new RegExp(`^${name}\\b`, "u") }).first();
-    await row.waitFor({ state: "visible", timeout: 10_000 });
+    await row.waitFor({ state: "visible", timeout: 30_000 });
     assert.match((await row.innerText()).replace(/\s+/gu, " "), new RegExp(`^${name}.*R · ${flavor}`, "u"));
   }
 }
