@@ -12472,6 +12472,7 @@ async function exerciseFormatterDisabledFirstNotebookResult(
     );
   } finally {
     await disposePackagedSessionPanel(testing, session.sessionId, "the formatter-disabled first-result session");
+    recordAcceptanceProgress(`${checkpoint}:session-closed`);
   }
 }
 
@@ -26414,6 +26415,7 @@ async function exercisePackagedLinkedRendererLiveOpen(
 }
 
 async function disposePackagedSessionPanel(testing: TestApi, sessionId: string, description: string): Promise<void> {
+  const openTabCount = releasedJupyterSessionTabs().length;
   const response = await testing.disposePanelForSession(sessionId);
   assert.equal(response?.kind, "sessionClosed", `${description} panel must close authoritatively.`);
   if (response?.kind === "sessionClosed") assert.equal(response.sessionId, sessionId);
@@ -26422,6 +26424,13 @@ async function disposePackagedSessionPanel(testing: TestApi, sessionId: string, 
     10_000,
     `${description} to leave the coordinator`
   );
+  if (openTabCount > 0) {
+    await waitFor(
+      () => releasedJupyterSessionTabs().length < openTabCount,
+      10_000,
+      `${description} editor tab to close`
+    );
+  }
 }
 
 async function exercisePackagedSameGroupRendererSwitch(
