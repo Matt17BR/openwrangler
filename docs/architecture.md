@@ -15,7 +15,7 @@ Open Wrangler has three cooperating parts:
 Python and R sessions use the same coordinator, grid, filters, sorts, profiles, draft review, and cleaning history.
 R currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, ordered Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate.
+Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate.
 The [native R decision](decisions/0001-native-r-runtime.md) explains its IRkernel ownership model and keeps runtime
 language, dataframe flavor, and generated-code dialect separate.
 
@@ -193,7 +193,7 @@ last, or no row from each repeated group. All four row operations retain the ori
 tracking the active row count separately. The two drop operations preserve source order and compatible `data.table`
 keys. Filtering does the same; an explicit sort keeps stable ties and clears key metadata because its new order no
 longer promises that key. Rename, Drop, Select, Clone, Fill Missing Values, Convert type, Text Length, Lowercase,
-Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, and Ceiling resolve every
+Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor, and Ceiling resolve every
 `{id, name}` reference to one exact position, so duplicate and non-syntactic names remain unambiguous. Drop Columns
 refuses to remove the final visible column. Select Columns keeps the chosen order. Both operations keep stable IDs for
 retained columns. Clone Column appends a copy with the stable ID `c:step:<step-id>:0`, allowing later steps to target
@@ -225,6 +225,9 @@ Convert type replaces one column while retaining its name, position, and stable 
 double, logical, Date, or UTC POSIXct output, and factors convert through their labels. An `integer64` source stays
 `integer64` when the target is integer. A supported value that cannot be parsed becomes `NA`; conversions that would
 lose units or `integer64` precision fail. Active data-table key columns must be cloned before conversion.
+Min-max scale accepts integer, double, and `integer64` columns and returns doubles from 0 to 1. A constant finite
+range becomes zero. Missing values and non-finite doubles produce missing output. Wide `integer64` values are scaled
+without first converting the source column to doubles. A keyed `data.table` column must use a new output column.
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles. `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and `-Inf`,
 and Round follows R's ties-to-even rule. An in-place change to an active `data.table` key is rejected; writing to a
@@ -238,11 +241,11 @@ the input identity domain, so page diffs cannot mistake an aggregate row for a s
 sum outside that native type's range fails before publication instead of being converted to text or another engine.
 Integer64 mean and median use exact decimal addition before their final double result, including cancellation and
 same-sign boundary pairs. First and last use source order.
-A live session reports nullability conservatively; isolating it for editing or changing the schema keeps retained
-nullability metadata unless Fill Missing Values has removed every missing value. Preview, apply, discard, latest-step replacement,
-undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
-response before publishing the candidate state. Generated code repeats the positional and stale-name checks for all
-twenty-one operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
+A live session reports nullability conservatively. Schema changes retain existing nullability metadata. Fill Missing
+Values can mark its output non-nullable; Min-max scale always marks its double output nullable. Preview, apply,
+discard, latest-step replacement, undo, and applied-step inspection use increasing session revisions. Each mutation builds and encodes its complete
+response before publishing the candidate state. Generated code repeats the positional and stale-name checks for the
+supported operations, returns a new R object, and can be copied or saved as a `.R` script. Row-operation code is emitted
 for the chosen rules instead of embedding a generic interpreter in every preview.
 
 `RKernelSessionTransport` keeps the exact `NotebookDocument`, Jupyter API object, and IRkernel instance used by each
@@ -293,7 +296,7 @@ the `Rscript` used for an Open Wrangler-managed document. Notebook, active-termi
 native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate. Other operations are not
+Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate. Other operations are not
 supported in R yet.
 Generated R can be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session.
 Notebook insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the
@@ -305,14 +308,14 @@ and the profile drawer still loads the selected column or dataset on request. Th
 checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
-frame, and final session cleanup. The packaged VS Code and Cursor runs cover all twenty-one operations, including the
-visible forms for Find and replace, Uppercase, Round, Floor, Ceiling, and Group and aggregate. The
+frame, and final session cleanup. The packaged VS Code journey covers the full R catalog, including the visible forms
+for Find and replace, Uppercase, Min-max scale, Round, Floor, Ceiling, and Group and aggregate. Cursor runs the
+representative editing profile. The
 base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
 applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,
 and undo. The run checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed
 data tables additionally cover editable open plus Rename and Drop preview/discard. The direct R suites cover all
-twenty-one operations, plus class and key behavior for tibbles and data tables. The packaged run opens the Round,
-Floor, Ceiling, and Group and aggregate forms and checks their derived values before applying or discarding the draft.
+supported operations, plus class and key behavior for tibbles and data tables.
 An applied-step
 inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
 retained input and output schemas and calculates the public diff only after all three responses agree.

@@ -107,7 +107,7 @@ memory bounds do not imply that IRkernel can interrupt work already dispatched t
 
 Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
 Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Round, Floor, and Ceiling. The first draft takes an isolated original: base data
+Capitalize, Strip text, Split text, Min-max scale, Round, Floor, and Ceiling. The first draft takes an isolated original: base data
 frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps committed and draft results separate,
 resolves every target by stable ID and captured name, and advances the session revision for preview, apply, discard,
 latest-step replacement, and undo. Applied-step inspection replays only the selected plan prefix. The kernel returns
@@ -156,6 +156,11 @@ double, logical, Date, and UTC POSIXct output. An `integer64` source stays `inte
 Factors convert through their labels, failed parses become `NA`, and conversions that would lose units or `integer64`
 precision are rejected. A keyed `data.table` column must be cloned before it can be converted. Generated R applies the
 same checks and conversion rules.
+
+Min-max scale accepts integer, double, and `integer64` columns and returns doubles from 0 to 1. A constant finite
+range becomes zero. Missing and non-finite input values become missing output. The `integer64` calculation keeps its
+offsets exact until its final conversion to double, avoiding the precision loss caused by converting the source values
+first. A keyed `data.table` column can only use a new output column.
 
 Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` columns. Ordinary integer and double
 outputs are R doubles, while `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and
@@ -206,14 +211,14 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
   Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
-  Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate with generated R code. Generated R can be
+  Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate with generated R code. Generated R can be
   inserted into the originating IRkernel notebook or R document. R notebook, active-terminal, and local R document
   sessions opened in Editing mode can export their committed result as CSV or, when `nanoparquet` 0.5.1 or newer is
   installed, Parquet. Active-terminal export is not a release claim until its packaged-editor journey passes. The
   Parquet writer runs in the same R process and does not convert through Python, Arrow, or another dataframe. A
   document process exposes only its private artifact to the host;
   IRkernel returns offset-addressed canonical-base64 chunks from an artifact owned by that exact kernel. Both routes end in the
-  extension-host atomic save path. Operations outside the current 21-operation set are not supported yet.
+  extension-host atomic save path. Other cleaning operations are not supported in R yet.
 - Group sums keep ordinary R integer or `bit64::integer64` output. Base R and `bit64` do not have an exact 38-digit
   integer type, so the runtime rejects an out-of-range sum before publishing a result instead of stringifying it or
   routing it through another engine. Integer64 mean and median perform exact decimal addition before their final
