@@ -6,6 +6,11 @@ import { DetachedBridgeRequestError } from "../dataBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel, restoreEditorGroupAfterQuickPick } from "../webviewPanel";
 import { RInteractiveSessionTransport } from "./rInteractiveSessionTransport";
+import {
+  defaultRVscodeWorkspaceWatcherFactory,
+  type RVscodeWorkspaceWatcher,
+  type RVscodeWorkspaceWatcherFactory
+} from "./rVscodeWorkspaceWatcher";
 import { OPEN_LITERATE_DOCUMENT_CURSOR_COMMAND, OPEN_R_DOCUMENT_COMMAND } from "./rDocumentCommands";
 import { RKernelBridge, type RKernelBridgeTransport } from "./rKernelBridge";
 import type { RProcessVariableDescriptor, RProcessVariableDiscovery } from "./rProcessTransport";
@@ -28,13 +33,18 @@ interface CachedRInteractiveQuickPickItem extends RInteractiveQuickPickItem {
   readonly handle: string;
 }
 
-interface CachedRInteractivePickerState {
+interface CachedRInteractivePickerStateBase {
   readonly generation: number;
   readonly terminal: vscode.Terminal;
-  readonly transport: RInteractiveCommandTransport;
   readonly items: readonly CachedRInteractiveQuickPickItem[];
   readonly truncated: boolean;
 }
+
+type CachedRInteractivePickerState = CachedRInteractivePickerStateBase &
+  (
+    | { readonly transport: RInteractiveCommandTransport; readonly watcher?: undefined }
+    | { readonly watcher: RVscodeWorkspaceWatcher; readonly transport?: undefined }
+  );
 
 export interface RLiveVariableItem {
   readonly handle: string;
@@ -60,6 +70,7 @@ export type RLiveVariableSnapshot =
 export interface RLiveVariableProvider extends vscode.Disposable {
   readonly onDidChangeVariables: vscode.Event<void>;
   snapshot(): RLiveVariableSnapshot;
+  startAutomaticDiscovery(): void;
   refreshFromCommand(): Promise<boolean>;
   shutdown(): Promise<void>;
 }
@@ -80,6 +91,7 @@ export interface LiterateRSessionIdentity {
 }
 
 export interface RInteractiveCommandTransport extends RKernelBridgeTransport {
+  readonly onDidChangeVariables: vscode.Event<RProcessVariableDiscovery>;
   discoverVariables(options?: {
     readonly cancellation?: vscode.CancellationToken;
     readonly timeoutMs?: number;
@@ -107,6 +119,8 @@ const defaultTransportFactory: RInteractiveTransportFactory = Object.freeze({
   ) => new RInteractiveSessionTransport(context, options)
 });
 
+const AUTOMATIC_ATTACHMENT_DEBOUNCE_MS = 300;
+
 interface CachedRVariable {
   readonly variable: RProcessVariableDescriptor;
   readonly item: RLiveVariableItem;
@@ -116,9 +130,10 @@ interface CachedRVariable {
 export function registerRInteractiveCommands(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
-  transportFactory: RInteractiveTransportFactory = defaultTransportFactory
+  transportFactory: RInteractiveTransportFactory = defaultTransportFactory,
+  watcherFactory: RVscodeWorkspaceWatcherFactory = defaultRVscodeWorkspaceWatcherFactory
 ): RLiveVariableProvider & LiterateRVariableProvider {
-  const provider = new RInteractiveVariableCoordinator(context, coordinator, transportFactory);
+  const provider = new RInteractiveVariableCoordinator(context, coordinator, transportFactory, watcherFactory);
   context.subscriptions.push(
     provider,
     vscode.commands.registerCommand(OPEN_R_DATAFRAME_COMMAND, (resource?: unknown) =>
@@ -146,6 +161,15 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   private ownedTransport: RInteractiveCommandTransport | undefined;
   private ownedTerminal: vscode.Terminal | undefined;
   private transportInvalidationSubscription: vscode.Disposable | undefined;
+  private transportVariableChangeSubscription: vscode.Disposable | undefined;
+  private workspaceWatcher: RVscodeWorkspaceWatcher | undefined;
+  private workspaceWatcherTerminal: vscode.Terminal | undefined;
+  private workspaceWatcherInvalidationSubscription: vscode.Disposable | undefined;
+  private workspaceWatcherChangeSubscription: vscode.Disposable | undefined;
+  private automaticDiscoveryStarted = false;
+  private automaticAttachmentTimer: ReturnType<typeof setTimeout> | undefined;
+  private automaticAttachmentRunning = false;
+  private automaticAttachmentQueuedTerminal: vscode.Terminal | undefined;
   private generation = 0;
   private disposed = false;
   private shutdownPromise: Promise<void> | undefined;
@@ -155,12 +179,14 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly coordinator: SessionCoordinator,
-    private readonly transportFactory: RInteractiveTransportFactory
+    private readonly transportFactory: RInteractiveTransportFactory,
+    private readonly watcherFactory: RVscodeWorkspaceWatcherFactory
   ) {
     this.currentSnapshot = idleSnapshot(vscode.window.activeTerminal);
     this.subscriptions = [
       vscode.window.onDidChangeActiveTerminal((terminal) => this.onActiveTerminalChanged(terminal)),
-      vscode.window.onDidCloseTerminal((terminal) => this.onTerminalClosed(terminal))
+      vscode.window.onDidCloseTerminal((terminal) => this.onTerminalClosed(terminal)),
+      vscode.workspace.onDidGrantWorkspaceTrust(() => this.scheduleAutomaticAttachment(vscode.window.activeTerminal))
     ];
   }
 
@@ -174,10 +200,18 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     });
   }
 
+  startAutomaticDiscovery(): void {
+    if (this.disposed || this.automaticDiscoveryStarted) return;
+    this.automaticDiscoveryStarted = true;
+    this.scheduleAutomaticAttachment(vscode.window.activeTerminal);
+  }
+
   shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.disposed = true;
     this.generation += 1;
+    this.cancelAutomaticAttachment();
+    this.releaseWorkspaceWatcher();
     this.releaseOwnedTransport();
     this.variablesByHandle.clear();
     for (const subscription of this.subscriptions.splice(0)) subscription.dispose();
@@ -202,6 +236,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       return false;
     }
 
+    this.cancelAutomaticAttachment();
+    this.releaseWorkspaceWatcher();
     const prepared = this.prepareRefresh(terminal);
     if (!prepared) return false;
 
@@ -260,6 +296,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       return this.chooseCachedAndOpen(cached, origin, expectedSession);
     }
 
+    this.releaseWorkspaceWatcher();
     const generation = ++this.generation;
     const previous = this.releaseOwnedTransport();
     if (previous) {
@@ -358,17 +395,19 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       return false;
     }
     if (!this.managedTransports.delete(transport)) return false;
-    return this.openWithTransport(transport, picked.variable, documentOrigin);
+    const opened = await this.openWithTransport(transport, picked.variable, documentOrigin);
+    if (opened) this.scheduleAutomaticAttachment(vscode.window.activeTerminal);
+    return opened;
   }
 
   private cachedPickerState(): CachedRInteractivePickerState | undefined {
     const terminal = vscode.window.activeTerminal;
     const transport = this.ownedTransport;
+    const watcher = this.workspaceWatcher;
     if (
       this.currentSnapshot.state !== "ready" ||
-      !transport ||
       !terminal ||
-      terminal !== this.ownedTerminal ||
+      !((transport && terminal === this.ownedTerminal) || (watcher && terminal === this.workspaceWatcherTerminal)) ||
       !vscode.window.terminals.includes(terminal) ||
       !isOfficialRTerminal(terminal)
     ) {
@@ -382,9 +421,9 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     return Object.freeze({
       generation: this.generation,
       terminal,
-      transport,
       items: Object.freeze(items as CachedRInteractiveQuickPickItem[]),
-      truncated: this.currentSnapshot.message.startsWith("Showing the first")
+      truncated: this.currentSnapshot.message.startsWith("Showing the first"),
+      ...(transport ? { transport } : { watcher: watcher! })
     });
   }
 
@@ -429,6 +468,9 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
       return false;
     }
+    if (state.watcher) {
+      return this.openWatcherVariable(state, cached.variable);
+    }
     const transferred = this.releaseOwnedTransport();
     if (transferred !== state.transport || !this.managedTransports.delete(state.transport)) {
       void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
@@ -436,18 +478,54 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     }
     this.generation += 1;
     this.replaceSnapshot(idleSnapshot(state.terminal));
-    return this.openWithTransport(state.transport, cached.variable);
+    const opened = await this.openWithTransport(state.transport, cached.variable);
+    if (opened) this.scheduleAutomaticAttachment(vscode.window.activeTerminal);
+    return opened;
   }
 
   private isCurrentCachedPicker(state: CachedRInteractivePickerState): boolean {
     return (
       this.isCurrent(state.generation) &&
-      this.ownedTransport === state.transport &&
-      this.ownedTerminal === state.terminal &&
+      (state.watcher
+        ? this.workspaceWatcher === state.watcher && this.workspaceWatcherTerminal === state.terminal
+        : this.ownedTransport === state.transport && this.ownedTerminal === state.terminal) &&
       vscode.window.activeTerminal === state.terminal &&
       vscode.window.terminals.includes(state.terminal) &&
       isOfficialRTerminal(state.terminal)
     );
+  }
+
+  private async openWatcherVariable(
+    state: CachedRInteractivePickerState & { readonly watcher: RVscodeWorkspaceWatcher },
+    selected: RProcessVariableDescriptor
+  ): Promise<boolean> {
+    try {
+      await state.watcher.verifyCurrent();
+    } catch {
+      if (this.isCurrentCachedPicker(state)) {
+        this.invalidateCurrentSession("The R session changed. Use Refresh R dataframes and try again.");
+      }
+      return false;
+    }
+    if (!this.isCurrentCachedPicker(state)) {
+      void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
+      return false;
+    }
+    let transport: RInteractiveCommandTransport;
+    try {
+      transport = this.transportFactory.create(this.context, { terminalMode: "active", terminal: state.terminal });
+      this.managedTransports.add(transport);
+    } catch (error) {
+      void vscode.window.showErrorMessage(`Could not connect to the active R session: ${errorMessage(error)}`);
+      return false;
+    }
+    if (!this.isCurrentCachedPicker(state)) {
+      const cleanupError = await this.disposeManagedTransport(transport);
+      if (cleanupError) showCleanupError(cleanupError);
+      return false;
+    }
+    if (!this.managedTransports.delete(transport)) return false;
+    return this.openWithTransport(transport, selected);
   }
 
   async openCachedVariable(handle: unknown): Promise<boolean> {
@@ -455,17 +533,31 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     if (!requireTrustedRSession()) return false;
     const cached = this.variablesByHandle.get(handle);
     const transport = this.ownedTransport;
-    const terminal = this.ownedTerminal;
+    const watcher = this.workspaceWatcher;
+    const terminal = this.ownedTerminal ?? this.workspaceWatcherTerminal;
     if (
       !cached ||
-      !transport ||
       !terminal ||
+      !(transport || watcher) ||
       !vscode.window.terminals.includes(terminal) ||
       !isOfficialRTerminal(terminal)
     ) {
       void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
       return false;
     }
+
+    if (watcher) {
+      const state = this.cachedPickerState();
+      if (!state || state.watcher !== watcher) {
+        void vscode.window.showInformationMessage("That R dataframe list is stale. Refresh it and try again.");
+        return false;
+      }
+      return this.openWatcherVariable(
+        state as CachedRInteractivePickerState & { watcher: RVscodeWorkspaceWatcher },
+        cached.variable
+      );
+    }
+    if (!transport) return false;
 
     const transferred = this.releaseOwnedTransport();
     if (transferred !== transport) {
@@ -478,10 +570,15 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     }
     this.generation += 1;
     this.replaceSnapshot(idleSnapshot(terminal));
-    return this.openWithTransport(transport, cached.variable);
+    const opened = await this.openWithTransport(transport, cached.variable);
+    if (opened) this.scheduleAutomaticAttachment(vscode.window.activeTerminal);
+    return opened;
   }
 
-  private prepareRefresh(terminal: vscode.Terminal):
+  private prepareRefresh(
+    terminal: vscode.Terminal,
+    preserveReadySnapshot = false
+  ):
     | Readonly<{
         generation: number;
         transport: RInteractiveCommandTransport;
@@ -512,16 +609,27 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       this.ownedTerminal = terminal;
       this.transportInvalidationSubscription = transport.onDidInvalidateKernel(() => {
         if (this.ownedTransport === transport)
-          this.invalidateOwnedTransport("The R session changed. Wait for its prompt before reading it again.");
+          this.invalidateCurrentSession("The R session changed. Wait for its prompt before reading it again.");
+      });
+      this.transportVariableChangeSubscription = transport.onDidChangeVariables((discovery) => {
+        if (
+          this.ownedTransport === transport &&
+          this.ownedTerminal === terminal &&
+          vscode.window.terminals.includes(terminal)
+        ) {
+          this.publishDiscovery(terminal, discovery);
+        }
       });
       if (previous) previousCleanup = this.disposeManagedTransport(previous);
     }
-    this.replaceSnapshot({
-      state: "loading",
-      terminalLabel: terminal.name,
-      message: "Finding dataframes…",
-      variables: []
-    });
+    if (!preserveReadySnapshot || this.currentSnapshot.state !== "ready") {
+      this.replaceSnapshot({
+        state: "loading",
+        terminalLabel: terminal.name,
+        message: "Finding dataframes…",
+        variables: []
+      });
+    }
     return Object.freeze({ generation, transport, previousCleanup });
   }
 
@@ -632,27 +740,29 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   }
 
   private onActiveTerminalChanged(terminal: vscode.Terminal | undefined): void {
-    if (!this.ownedTerminal) {
-      if (isOfficialRTerminal(terminal) && this.currentSnapshot.state === "idle") {
-        // VS Code and vscode-R expose no public signal that an R prompt is idle.
-        // Publish the explicit action instead of sending code into a running or partly typed prompt.
+    const currentTerminal = this.ownedTerminal ?? this.workspaceWatcherTerminal;
+    if (!currentTerminal) {
+      if (isOfficialRTerminal(terminal)) {
         this.replaceSnapshot(idleSnapshot(terminal));
+        this.scheduleAutomaticAttachment(terminal);
       }
       return;
     }
-    if (terminal && isOfficialRTerminal(terminal) && terminal !== this.ownedTerminal) {
-      this.invalidateOwnedTransport("A different R terminal is active. Wait for its prompt before reading it.");
+    if (terminal && isOfficialRTerminal(terminal) && terminal !== currentTerminal) {
+      this.invalidateCurrentSession("A different R terminal is active. Wait for its prompt before reading it.");
+      this.scheduleAutomaticAttachment(terminal);
     }
   }
 
   private onTerminalClosed(terminal: vscode.Terminal): void {
-    if (terminal === this.ownedTerminal) {
-      this.invalidateOwnedTransport("The R terminal closed. Start or select another R session.");
+    if (terminal === this.ownedTerminal || terminal === this.workspaceWatcherTerminal) {
+      this.invalidateCurrentSession("The R terminal closed. Start or select another R session.");
     }
   }
 
-  private invalidateOwnedTransport(message: string): void {
+  private invalidateCurrentSession(message: string): void {
     this.generation += 1;
+    this.releaseWorkspaceWatcher();
     const transport = this.releaseOwnedTransport();
     this.replaceSnapshot({ state: "idle", terminalLabel: "R session", message, variables: [] });
     if (transport) void this.disposeManagedTransport(transport).then((error) => error && showCleanupError(error));
@@ -664,8 +774,131 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     this.ownedTerminal = undefined;
     this.transportInvalidationSubscription?.dispose();
     this.transportInvalidationSubscription = undefined;
+    this.transportVariableChangeSubscription?.dispose();
+    this.transportVariableChangeSubscription = undefined;
     this.variablesByHandle.clear();
     return transport;
+  }
+
+  private releaseWorkspaceWatcher(): RVscodeWorkspaceWatcher | undefined {
+    const watcher = this.workspaceWatcher;
+    this.workspaceWatcher = undefined;
+    this.workspaceWatcherTerminal = undefined;
+    this.workspaceWatcherInvalidationSubscription?.dispose();
+    this.workspaceWatcherInvalidationSubscription = undefined;
+    this.workspaceWatcherChangeSubscription?.dispose();
+    this.workspaceWatcherChangeSubscription = undefined;
+    watcher?.dispose();
+    this.variablesByHandle.clear();
+    return watcher;
+  }
+
+  private scheduleAutomaticAttachment(terminal: vscode.Terminal | undefined): void {
+    if (
+      !this.automaticDiscoveryStarted ||
+      this.disposed ||
+      !vscode.workspace.isTrusted ||
+      !isExactActiveRTerminal(terminal)
+    ) {
+      return;
+    }
+    if (
+      (this.ownedTransport && this.ownedTerminal === terminal) ||
+      (this.workspaceWatcher && this.workspaceWatcherTerminal === terminal)
+    ) {
+      return;
+    }
+    if (this.automaticAttachmentRunning) {
+      this.automaticAttachmentQueuedTerminal = terminal;
+      return;
+    }
+    this.cancelAutomaticAttachmentTimer();
+    this.automaticAttachmentTimer = setTimeout(() => {
+      this.automaticAttachmentTimer = undefined;
+      void this.runAutomaticAttachment(terminal);
+    }, AUTOMATIC_ATTACHMENT_DEBOUNCE_MS);
+  }
+
+  private async runAutomaticAttachment(terminal: vscode.Terminal): Promise<void> {
+    if (
+      this.automaticAttachmentRunning ||
+      this.disposed ||
+      !vscode.workspace.isTrusted ||
+      !isExactActiveRTerminal(terminal)
+    ) {
+      if (this.automaticAttachmentRunning && isExactActiveRTerminal(terminal)) {
+        this.automaticAttachmentQueuedTerminal = terminal;
+      }
+      return;
+    }
+    this.automaticAttachmentRunning = true;
+    try {
+      if (
+        (this.ownedTransport && this.ownedTerminal === terminal) ||
+        (this.workspaceWatcher && this.workspaceWatcherTerminal === terminal)
+      ) {
+        return;
+      }
+      const generation = ++this.generation;
+      this.releaseWorkspaceWatcher();
+      const watcher = this.watcherFactory.create(this.context, terminal);
+      if (!watcher) {
+        if (this.isCurrent(generation) && isExactActiveRTerminal(terminal)) {
+          this.replaceSnapshot(watcherFallbackSnapshot(terminal));
+        }
+        return;
+      }
+      this.workspaceWatcher = watcher;
+      this.workspaceWatcherTerminal = terminal;
+      this.workspaceWatcherInvalidationSubscription = watcher.onDidInvalidate(() => {
+        if (this.workspaceWatcher === watcher) {
+          this.invalidateCurrentSession("Automatic R discovery stopped. Use Refresh R dataframes to reconnect.");
+        }
+      });
+      this.workspaceWatcherChangeSubscription = watcher.onDidChangeVariables((discovery) => {
+        if (
+          this.workspaceWatcher === watcher &&
+          this.workspaceWatcherTerminal === terminal &&
+          vscode.window.terminals.includes(terminal) &&
+          isOfficialRTerminal(terminal)
+        ) {
+          this.publishDiscovery(terminal, discovery);
+        }
+      });
+      if (this.currentSnapshot.state !== "ready") {
+        this.replaceSnapshot({
+          state: "loading",
+          terminalLabel: terminal.name,
+          message: "Finding dataframes…",
+          variables: []
+        });
+      }
+      try {
+        const discovery = await watcher.readInitial();
+        if (!this.isCurrentWatcher(terminal, watcher, generation)) return;
+        this.publishDiscovery(terminal, discovery);
+      } catch {
+        if (this.isCurrentWatcher(terminal, watcher, generation)) {
+          this.releaseWorkspaceWatcher();
+          this.replaceSnapshot(watcherFallbackSnapshot(terminal));
+        }
+      }
+    } finally {
+      this.automaticAttachmentRunning = false;
+      const queued = this.automaticAttachmentQueuedTerminal;
+      this.automaticAttachmentQueuedTerminal = undefined;
+      if (queued) this.scheduleAutomaticAttachment(queued);
+    }
+  }
+
+  private cancelAutomaticAttachmentTimer(): void {
+    if (this.automaticAttachmentTimer !== undefined) clearTimeout(this.automaticAttachmentTimer);
+    this.automaticAttachmentTimer = undefined;
+  }
+
+  private cancelAutomaticAttachment(): void {
+    this.cancelAutomaticAttachmentTimer();
+    this.automaticAttachmentQueuedTerminal = undefined;
   }
 
   private replaceSnapshot(snapshot: RLiveVariableSnapshot): void {
@@ -697,6 +930,16 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     generation: number
   ): boolean {
     return this.isCurrent(generation) && this.ownedTransport === transport && this.ownedTerminal === terminal;
+  }
+
+  private isCurrentWatcher(terminal: vscode.Terminal, watcher: RVscodeWorkspaceWatcher, generation: number): boolean {
+    return (
+      this.isCurrent(generation) &&
+      this.workspaceWatcher === watcher &&
+      this.workspaceWatcherTerminal === terminal &&
+      vscode.window.terminals.includes(terminal) &&
+      isOfficialRTerminal(terminal)
+    );
   }
 
   private async disposeManagedTransport(transport: RInteractiveCommandTransport): Promise<unknown | undefined> {
@@ -751,8 +994,17 @@ function idleSnapshot(terminal: vscode.Terminal | undefined): RLiveVariableSnaps
     state: "idle",
     terminalLabel: isOfficialRTerminal(terminal) ? terminal.name : "R session",
     message: isOfficialRTerminal(terminal)
-      ? "Reads the selected R session. Wait for the R prompt first."
+      ? "Dataframes appear here after the R prompt returns."
       : "Select the R terminal that owns the dataframe first.",
+    variables: []
+  };
+}
+
+function watcherFallbackSnapshot(terminal: vscode.Terminal): RLiveVariableSnapshot {
+  return {
+    state: "idle",
+    terminalLabel: terminal.name,
+    message: "Choose Refresh R dataframes.",
     variables: []
   };
 }

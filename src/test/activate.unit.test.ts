@@ -28,6 +28,7 @@ const lifecycle = vi.hoisted(() => ({
   rVariables: {
     onDidChangeVariables: () => ({ dispose: vi.fn() }),
     snapshot: () => undefined,
+    startAutomaticDiscovery: vi.fn(),
     shutdown: vi.fn(),
     dispose: vi.fn()
   }
@@ -89,6 +90,7 @@ describe("extension deactivation", () => {
     lifecycle.pickleWorkers.run.mockReset();
     lifecycle.pickleWorkers.shutdown.mockReset().mockResolvedValue(undefined);
     lifecycle.rVariables.shutdown.mockReset().mockResolvedValue(undefined);
+    lifecycle.rVariables.startAutomaticDiscovery.mockReset();
     lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReset();
     lifecycle.coordinatedBridge.request.mockReset();
     lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
@@ -132,6 +134,7 @@ describe("extension deactivation", () => {
       lifecycle.pythonVariables,
       lifecycle.rVariables
     );
+    expect(lifecycle.rVariables.startAutomaticDiscovery).toHaveBeenCalledOnce();
   });
 
   it("waits for active pickle workers before starting coordinator or bridge shutdown", async () => {

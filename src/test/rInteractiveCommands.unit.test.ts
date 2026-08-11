@@ -8,6 +8,7 @@ import type {
   RInteractiveTransportFactory,
   RLiveVariableProvider
 } from "../extension/r/rInteractiveCommands";
+import type { RVscodeWorkspaceWatcher, RVscodeWorkspaceWatcherFactory } from "../extension/r/rVscodeWorkspaceWatcher";
 
 type CommandHandler = (...args: unknown[]) => Promise<unknown>;
 type Listener<T> = (value: T) => unknown;
@@ -19,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   activeTerminal: undefined as { name: string; sendText: ReturnType<typeof vi.fn> } | undefined,
   activeTerminalListeners: new Set<Listener<unknown>>(),
   closeTerminalListeners: new Set<Listener<unknown>>(),
+  trustListeners: new Set<Listener<void>>(),
   showQuickPick: vi.fn<(items: readonly unknown[]) => Promise<unknown>>(),
   showInformationMessage: vi.fn(),
   showWarningMessage: vi.fn(),
@@ -66,9 +68,14 @@ vi.mock("vscode", () => {
       this.listeners.clear();
     }
   }
+  class CancellationTokenSource {
+    readonly token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) };
+    dispose(): void {}
+  }
   return {
     Uri,
     EventEmitter,
+    CancellationTokenSource,
     ProgressLocation: { Notification: 15 },
     commands: {
       registerCommand: (id: string, handler: CommandHandler) => {
@@ -83,6 +90,10 @@ vi.mock("vscode", () => {
       },
       get textDocuments() {
         return mocks.textDocuments;
+      },
+      onDidGrantWorkspaceTrust: (listener: Listener<void>) => {
+        mocks.trustListeners.add(listener);
+        return { dispose: () => mocks.trustListeners.delete(listener) };
       }
     },
     window: {
@@ -156,6 +167,7 @@ describe("active R session commands", () => {
     mocks.textDocuments.length = 0;
     mocks.activeTerminalListeners.clear();
     mocks.closeTerminalListeners.clear();
+    mocks.trustListeners.clear();
     mocks.showQuickPick.mockReset();
     mocks.showInformationMessage.mockReset();
     mocks.showWarningMessage.mockReset();
@@ -607,19 +619,266 @@ describe("active R session commands", () => {
     expect(mocks.showInformationMessage).toHaveBeenCalledOnce();
   });
 
-  it("makes the active R session discoverable without sending code automatically", () => {
+  it("does not inspect an R session before automatic discovery starts", () => {
     const terminal = rTerminal("R");
-    const { provider, factory } = registerWith([]);
+    const { provider, factory, watcherFactory } = registerWith([]);
 
     emitActiveTerminal(terminal);
 
     expect(factory.create).not.toHaveBeenCalled();
+    expect(watcherFactory.create).not.toHaveBeenCalled();
     expect(terminal.sendText).not.toHaveBeenCalled();
     expect(provider.snapshot()).toMatchObject({
       state: "idle",
       terminalLabel: "R",
-      message: "Reads the selected R session. Wait for the R prompt first."
+      message: "Dataframes appear here after the R prompt returns."
     });
+  });
+
+  it("reads vscode-R workspace metadata automatically without dispatching terminal text", async () => {
+    const terminal = rTerminal("R Interactive");
+    setActiveTerminal(terminal);
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockResolvedValue(discovery(tibble));
+    const { provider, factory, watcherFactory } = registerWith([], [watcher]);
+
+    provider.startAutomaticDiscovery();
+
+    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    expect(watcherFactory.create).toHaveBeenCalledWith(expect.anything(), terminal);
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    expect(provider.snapshot()).toMatchObject({
+      state: "ready",
+      terminalLabel: "R Interactive",
+      variables: [{ label: "orders", description: "R · tibble" }]
+    });
+    expect(mocks.withProgress).not.toHaveBeenCalled();
+    await provider.shutdown();
+  });
+
+  it("sends nothing while vscode-R metadata is partial and bootstraps only after an explicit open", async () => {
+    const terminal = rTerminal("R Interactive");
+    setActiveTerminal(terminal);
+    const pendingMetadata = deferred<ReturnType<typeof discovery>>();
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockReturnValue(pendingMetadata.promise);
+    const transport = transportMock();
+    const { provider, factory } = registerWith([transport], [watcher]);
+
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    await delay(350);
+
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+
+    pendingMetadata.resolve(discovery(tibble));
+    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+    const snapshot = provider.snapshot();
+    if (snapshot.state !== "ready") throw new Error("Expected watcher dataframes.");
+
+    await expect(command(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND)(snapshot.variables[0]!.handle)).resolves.toBe(
+      true
+    );
+
+    expect(watcher.verifyCurrent).toHaveBeenCalledOnce();
+    expect(factory.create).toHaveBeenCalledOnce();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    await provider.shutdown();
+  });
+
+  it("finishes automatic discovery after focus moves from the pinned R terminal to a shell", async () => {
+    const terminal = rTerminal("R Interactive");
+    setActiveTerminal(terminal);
+    const pendingMetadata = deferred<ReturnType<typeof discovery>>();
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockReturnValue(pendingMetadata.promise);
+    const { provider, factory } = registerWith([], [watcher]);
+
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    emitActiveTerminal({ name: "bash", sendText: vi.fn() });
+    pendingMetadata.resolve(discovery(tibble));
+
+    await vi.waitFor(() =>
+      expect(provider.snapshot()).toMatchObject({
+        state: "ready",
+        terminalLabel: "R Interactive",
+        variables: [{ label: "orders" }]
+      })
+    );
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    await provider.shutdown();
+  });
+
+  it("publishes callback discoveries without redispatching into the terminal", async () => {
+    const terminal = rTerminal("R");
+    setActiveTerminal(terminal);
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockResolvedValue(discovery(tibble));
+    const { provider, factory } = registerWith([], [watcher]);
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
+
+    watcher.emitVariableChange(
+      discovery({
+        name: "table_orders",
+        backend: "r",
+        dataframeFlavor: "r.data.table"
+      })
+    );
+
+    await vi.waitFor(() =>
+      expect(provider.snapshot()).toMatchObject({
+        state: "ready",
+        variables: [{ label: "table_orders", description: "R · data.table" }]
+      })
+    );
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    await provider.shutdown();
+  });
+
+  it("keeps watcher updates current while a shell has focus", async () => {
+    const terminal = rTerminal("R");
+    setActiveTerminal(terminal);
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockResolvedValue(discovery(tibble));
+    const { provider, factory } = registerWith([], [watcher]);
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
+
+    emitActiveTerminal({ name: "bash", sendText: vi.fn() });
+    watcher.emitVariableChange(
+      discovery({
+        name: "background_orders",
+        backend: "r",
+        dataframeFlavor: "r.data.table"
+      })
+    );
+
+    await vi.waitFor(() =>
+      expect(provider.snapshot()).toMatchObject({
+        state: "ready",
+        terminalLabel: "R",
+        variables: [{ label: "background_orders", description: "R · data.table" }]
+      })
+    );
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    await provider.shutdown();
+  });
+
+  it("waits for workspace trust before automatic R discovery", async () => {
+    const terminal = rTerminal("R");
+    setActiveTerminal(terminal);
+    mocks.trusted = false;
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockResolvedValue(discovery(tibble));
+    const { provider, factory, watcherFactory } = registerWith([], [watcher]);
+    provider.startAutomaticDiscovery();
+
+    await delay(400);
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(watcherFactory.create).not.toHaveBeenCalled();
+
+    mocks.trusted = true;
+    for (const listener of mocks.trustListeners) listener();
+    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    await provider.shutdown();
+  });
+
+  it("shows the explicit refresh fallback for a renamed shell without sending text", async () => {
+    const terminal = rTerminal("R");
+    setActiveTerminal(terminal);
+    const { provider, factory } = registerWith([]);
+
+    provider.startAutomaticDiscovery();
+
+    await vi.waitFor(() =>
+      expect(provider.snapshot()).toMatchObject({
+        state: "idle",
+        message: "Choose Refresh R dataframes."
+      })
+    );
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    await provider.shutdown();
+  });
+
+  it("cancels pending metadata discovery when the provider shuts down", async () => {
+    const terminal = rTerminal("R Interactive");
+    setActiveTerminal(terminal);
+    const pendingMetadata = deferred<ReturnType<typeof discovery>>();
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockReturnValue(pendingMetadata.promise);
+    const { provider, factory } = registerWith([], [watcher]);
+
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    await provider.shutdown();
+
+    expect(watcher.dispose).toHaveBeenCalledOnce();
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+
+    pendingMetadata.resolve(discovery(tibble));
+    await delay(0);
+    expect(provider.snapshot().state).toBe("loading");
+  });
+
+  it("cancels pending metadata discovery when the exact R terminal closes", async () => {
+    const terminal = rTerminal("R Interactive");
+    setActiveTerminal(terminal);
+    const pendingMetadata = deferred<ReturnType<typeof discovery>>();
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockReturnValue(pendingMetadata.promise);
+    const { provider, factory } = registerWith([], [watcher]);
+
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    emitClosedTerminal(terminal);
+
+    expect(watcher.dispose).toHaveBeenCalledOnce();
+    expect(provider.snapshot()).toMatchObject({
+      state: "idle",
+      message: "The R terminal closed. Start or select another R session."
+    });
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(terminal.sendText).not.toHaveBeenCalled();
+
+    pendingMetadata.resolve(discovery(tibble));
+    await delay(0);
+    expect(provider.snapshot().state).toBe("idle");
+    await provider.shutdown();
+  });
+
+  it("bootstraps native R only after a watcher-listed dataframe is explicitly opened", async () => {
+    const terminal = rTerminal("R Interactive");
+    setActiveTerminal(terminal);
+    const watcher = watcherMock(terminal);
+    watcher.readInitial.mockResolvedValue(discovery(tibble));
+    const transport = transportMock();
+    const { provider, factory } = registerWith([transport], [watcher]);
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+    const snapshot = provider.snapshot();
+    if (snapshot.state !== "ready") throw new Error("Expected watcher dataframes.");
+
+    await expect(command(OPEN_CACHED_R_INTERACTIVE_VARIABLE_COMMAND)(snapshot.variables[0]!.handle)).resolves.toBe(
+      true
+    );
+
+    expect(watcher.verifyCurrent).toHaveBeenCalledOnce();
+    expect(factory.create).toHaveBeenCalledOnce();
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "active", terminal });
+    expect(transport.discoverVariables).not.toHaveBeenCalled();
+    expect(mocks.bridgeArguments[0]?.[1]).toBe(transport);
+    expect(mocks.bridgeArguments[0]?.[4]).toEqual(tibble);
+    expect(terminal.sendText).not.toHaveBeenCalled();
+    await provider.shutdown();
   });
 
   it("keeps a refreshed list when focus moves to a shell and clears it for another R terminal", async () => {
@@ -690,9 +949,13 @@ describe("active R session commands", () => {
   });
 });
 
-function registerWith(transports: ReturnType<typeof transportMock>[]): {
+function registerWith(
+  transports: ReturnType<typeof transportMock>[],
+  watchers: ReturnType<typeof watcherMock>[] = []
+): {
   readonly provider: RLiveVariableProvider;
   readonly factory: { create: ReturnType<typeof vi.fn> };
+  readonly watcherFactory: { create: ReturnType<typeof vi.fn> };
   readonly coordinator: ReturnType<typeof coordinatorMock>;
 } {
   const context = { extensionPath: "/extension", subscriptions: [] } as unknown as ExtensionContext;
@@ -704,12 +967,16 @@ function registerWith(transports: ReturnType<typeof transportMock>[]): {
       return transport as unknown as RInteractiveCommandTransport;
     })
   };
+  const watcherFactory = {
+    create: vi.fn(() => watchers.shift() as RVscodeWorkspaceWatcher | undefined)
+  };
   const provider = registerRInteractiveCommands(
     context,
     coordinator as unknown as SessionCoordinator,
-    factory as unknown as RInteractiveTransportFactory
+    factory as unknown as RInteractiveTransportFactory,
+    watcherFactory as unknown as RVscodeWorkspaceWatcherFactory
   );
-  return { provider, factory, coordinator };
+  return { provider, factory, watcherFactory, coordinator };
 }
 
 function command(id: string): CommandHandler {
@@ -771,6 +1038,7 @@ function coordinatorMock() {
 
 function transportMock() {
   const invalidationListeners = new Set<() => unknown>();
+  const variableChangeListeners = new Set<(value: ReturnType<typeof discovery>) => unknown>();
   return {
     discoverVariables: vi.fn(),
     evaluateAndDiscoverVariables: vi.fn(),
@@ -778,6 +1046,38 @@ function transportMock() {
     onDidInvalidateKernel: (listener: () => unknown) => {
       invalidationListeners.add(listener);
       return { dispose: () => invalidationListeners.delete(listener) };
+    },
+    onDidChangeVariables: (listener: (value: ReturnType<typeof discovery>) => unknown) => {
+      variableChangeListeners.add(listener);
+      return { dispose: () => variableChangeListeners.delete(listener) };
+    },
+    emitVariableChange: (nextDiscovery: ReturnType<typeof discovery>) => {
+      for (const listener of variableChangeListeners) listener(nextDiscovery);
+    }
+  };
+}
+
+function watcherMock(terminal: ReturnType<typeof rTerminal>) {
+  const invalidationListeners = new Set<() => unknown>();
+  const variableChangeListeners = new Set<(value: ReturnType<typeof discovery>) => unknown>();
+  return {
+    terminal,
+    readInitial: vi.fn(),
+    verifyCurrent: vi.fn(async () => undefined),
+    dispose: vi.fn(),
+    onDidInvalidate: (listener: () => unknown) => {
+      invalidationListeners.add(listener);
+      return { dispose: () => invalidationListeners.delete(listener) };
+    },
+    onDidChangeVariables: (listener: (value: ReturnType<typeof discovery>) => unknown) => {
+      variableChangeListeners.add(listener);
+      return { dispose: () => variableChangeListeners.delete(listener) };
+    },
+    emitVariableChange: (nextDiscovery: ReturnType<typeof discovery>) => {
+      for (const listener of variableChangeListeners) listener(nextDiscovery);
+    },
+    emitInvalidation: () => {
+      for (const listener of invalidationListeners) listener();
     }
   };
 }
@@ -819,4 +1119,8 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
     resolve = innerResolve;
   });
   return { promise, resolve };
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
