@@ -12491,9 +12491,7 @@ async function waitForReleasedNotebookCellResultAction(
     assert.ok(overlayCount < 2, "The workbench exposed duplicate visible notebook overlays.");
     const row = overlays
       .first()
-      .locator(
-        `.cell-list-container .monaco-list-rows > .monaco-list-row.code-cell-row[data-index="${cellIndex}"]:visible`
-      );
+      .locator(`.cell-list-container .monaco-list-rows > [data-index="${cellIndex}"]:visible`);
     const rowCount = await row.count().catch(() => 0);
     assert.ok(rowCount < 2, "The active notebook exposed duplicate rows for the first-result cell.");
     const action = row.locator(
