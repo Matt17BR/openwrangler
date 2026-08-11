@@ -267,33 +267,14 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
   }
 
   const usesR = chunk.language === "r" || pythonOwner === "r";
-  // Capture the exact R terminal before command discovery or extension activation can yield.
-  const rSession = usesR ? providers.r.captureActiveSession() : undefined;
-  if (usesR && !rSession) {
-    void vscode.window.showInformationMessage(
-      "Start or select the exact R terminal that owns this document before running its chunk in Open Wrangler."
-    );
-    return false;
-  }
-
-  if (usesR) {
-    if (!isCurrentLiterateDocumentOrigin(origin)) {
-      showStaleLiterateDocument();
-      return false;
-    }
-    if (reticulateSetting !== undefined && reticulateCellsEnabled(origin) !== reticulateSetting) {
-      showChangedReticulateSetting();
-      return false;
-    }
-    if (!rSession) return false;
-    const code = chunk.language === "python" ? reticulateSelection(chunk.code) : chunk.code;
-    return await providers.r.runLiterateChunkAndOpen(origin, rSession, code);
-  }
-
   const requiredCommands =
     origin.kind === "quarto"
-      ? (["quarto.runCurrentCell", "jupyter.execSelectionInteractive"] as const)
-      : (["jupyter.execSelectionInteractive"] as const);
+      ? usesR
+        ? (["quarto.runCurrentCell", "r.runSelection"] as const)
+        : (["quarto.runCurrentCell", "jupyter.execSelectionInteractive"] as const)
+      : usesR
+        ? (["r.runSelection"] as const)
+        : (["jupyter.execSelectionInteractive"] as const);
   let available: readonly string[] | undefined;
   try {
     available = await vscode.commands.getCommands(true);
@@ -318,6 +299,27 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
   if (missing.length > 0) {
     void vscode.window.showInformationMessage(missingExtensionGuidance(missing));
     return false;
+  }
+
+  if (usesR) {
+    // Capture only after actionable integration checks, then dispatch exclusively through that exact terminal.
+    const rSession = providers.r.captureActiveSession();
+    if (!rSession) {
+      void vscode.window.showInformationMessage(
+        "Start or select the exact R terminal that owns this document before running its chunk in Open Wrangler."
+      );
+      return false;
+    }
+    if (!isCurrentLiterateDocumentOrigin(origin)) {
+      showStaleLiterateDocument();
+      return false;
+    }
+    if (reticulateSetting !== undefined && reticulateCellsEnabled(origin) !== reticulateSetting) {
+      showChangedReticulateSetting();
+      return false;
+    }
+    const code = chunk.language === "python" ? reticulateSelection(chunk.code) : chunk.code;
+    return await providers.r.runLiterateChunkAndOpen(origin, rSession, code);
   }
 
   return await providers.python.runLiterateChunkAndOpen(origin);
