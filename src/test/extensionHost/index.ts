@@ -4113,6 +4113,11 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
         break;
       }
 
+      const pythonFailure = await releasedPythonFailureNotification(workbench);
+      if (pythonFailure) {
+        throw new Error(`The Python Quarto action failed (${pythonFailure}).`);
+      }
+
       if (!consentAccepted && (await visibleReleasedJupyterConsentCount(workbench)) === 1) {
         const consent = await waitForReleasedJupyterConsent(workbench, testing);
         recordAcceptanceProgress(`${checkpoint}:consent`);
@@ -11465,6 +11470,22 @@ function completedReleasedPythonSourceCells(
   source: vscode.Uri
 ): vscode.NotebookCell[] {
   return releasedPythonSourceCells(interactive, source).filter((cell) => cell.executionSummary?.success === true);
+}
+
+async function releasedPythonFailureNotification(workbench: Page): Promise<string | undefined> {
+  const notices = await workbench
+    .locator(".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible")
+    .allInnerTexts();
+  const text = notices
+    .map((notice) => notice.replace(/\s+/gu, " ").trim().slice(0, 500))
+    .find((notice) => notice.includes("Source: Open Wrangler"));
+  if (!text) return undefined;
+  if (/kernel|restored|focused after kernel/iu.test(text)) return "kernel recovery / rejected";
+  if (/did not finish within|failed\. Fix the error/iu.test(text)) return "execution / failed";
+  if (/didn't confirm whether this Python/iu.test(text)) return "dispatch / unconfirmed";
+  if (/did not produce an Interactive Window execution/iu.test(text)) return "dispatch / missing execution";
+  if (/changed or closed|more than one matching cell/iu.test(text)) return "dispatch / stale or ambiguous";
+  return undefined;
 }
 
 function releasedPythonEntrypointDiagnostics(
