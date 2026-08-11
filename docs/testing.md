@@ -611,10 +611,10 @@ The allow phase also starts with a private cell-marked Python file and no Intera
 must point back to that source file at line zero. The source file must stay byte-for-byte unchanged, and closing the
 panel must leave no Open Wrangler session behind. The same phase then keeps the exact Interactive window active,
 checks that Operations lists the dataframe from that kernel, and opens it again through the native Interactive toolbar
-without rerunning a cell or creating another Interactive window.
+in VS Code or the editor-title action in Cursor without rerunning a cell or creating another Interactive window.
 It then opens a fresh Python file and uses Jupyter's ordinary **Run Cell** command. With that source editor still
-active, Operations must find the new Pandas dataframe automatically. Opening it from the Interactive toolbar must
-reuse the same kernel and completed cell; the later source cell must not run, and neither file may change.
+active, Operations must find the new Pandas dataframe automatically. Opening it from the Interactive action must reuse
+the same kernel and completed cell; the later source cell must not run, and neither file may change.
 
 The focused R 4.4/4.5 contract jobs and release contract gate install `readr` and `dplyr` alongside the other frame
 packages because the suite opens actual readr and grouped tibbles rather than hand-built stand-ins.
