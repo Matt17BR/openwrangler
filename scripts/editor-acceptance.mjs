@@ -727,6 +727,7 @@ const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
   "OPEN_WRANGLER_TEST_PROGRESS",
   "OPEN_WRANGLER_TEST_PYTHON",
   "OPEN_WRANGLER_TEST_RSCRIPT",
+  "OPEN_WRANGLER_TEST_SELECTOR",
   "OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR",
   "OPEN_WRANGLER_TEST_RUN_ID",
   "OPEN_WRANGLER_TEST_RESULT"
@@ -3140,6 +3141,7 @@ export async function runEditorAcceptancePhase(
     testModule,
     python,
     phase,
+    testSelector,
     resultPath,
     editorProductVersion,
     workspaceTrust = "trusted",
@@ -3169,6 +3171,12 @@ export async function runEditorAcceptancePhase(
   }
   if (typeof requiresWorkbenchCdp !== "boolean") {
     throw new Error("An editor acceptance phase requiresWorkbenchCdp value must be a boolean.");
+  }
+  if (testSelector !== undefined && testSelector !== "interactive-terminal") {
+    throw new Error('An editor acceptance test selector must be unset or "interactive-terminal".');
+  }
+  if (testSelector !== undefined && phase !== "jupyter-r") {
+    throw new Error('The "interactive-terminal" editor acceptance selector requires the "jupyter-r" phase.');
   }
   if (
     editorProductVersion !== undefined &&
@@ -3362,6 +3370,7 @@ export async function runEditorAcceptancePhase(
         OPEN_WRANGLER_COMPARISON_REQUEST_PATH: environment.OPEN_WRANGLER_COMPARISON_REQUEST_PATH,
         OPEN_WRANGLER_COMPARISON_RESULT_PATH: environment.OPEN_WRANGLER_COMPARISON_RESULT_PATH,
         OPEN_WRANGLER_TEST_PHASE: phase,
+        OPEN_WRANGLER_TEST_SELECTOR: testSelector,
         OPEN_WRANGLER_TEST_EDITOR: editor.key ?? editor.name.toLowerCase().replaceAll(" ", "-"),
         OPEN_WRANGLER_TEST_EDITOR_PRODUCT_VERSION: editorProductVersion,
         ...(cdpPort ? { OPEN_WRANGLER_EDITOR_CDP_PORT: String(cdpPort) } : {}),

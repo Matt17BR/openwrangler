@@ -698,6 +698,9 @@ test("released-Jupyter R setup preserves probe ownership uncertainty through its
 
 test("packaged-editor R acceptance wires the private R environment to local editors and one VS Code remote phase", async () => {
   const source = await readFile(new URL("./run-packaged-editor-tests.mjs", import.meta.url), "utf8");
+  assert.match(source, /const rJourneySelector = process\.env\.OPEN_WRANGLER_PACKAGED_R_JOURNEY/u);
+  assert.match(source, /rJourneySelector !== undefined && rJourneySelector !== "interactive-terminal"/u);
+  assert.match(source, /rJourneySelector !== undefined && remoteJupyterEnabled/u);
   const modeStart = source.indexOf('if (acceptanceMode === "r-jupyter")');
   const supportedEditors = source.indexOf("const supportedEditorKeys", modeStart);
   assert.ok(modeStart >= 0 && supportedEditors > modeStart);
@@ -739,6 +742,7 @@ test("packaged-editor R acceptance wires the private R environment to local edit
   assert.ok(phaseBranch >= 0 && otherJupyterBranch > phaseBranch);
   const rPhase = source.slice(phaseBranch, otherJupyterBranch);
   assert.match(rPhase, /phase: "jupyter-r"/u);
+  assert.match(rPhase, /testSelector: rJourneySelector/u);
   assert.match(rPhase, /editor: "jupyter-r-remote"/u);
   assert.match(rPhase, /fixtureKind: "r"/u);
   assert.match(rPhase, /if \(editorProcessTreeMayBeLive\(error\)\) throw error/u);

@@ -209,6 +209,7 @@ try {
             .map((value) => value.trim())
             .filter(Boolean);
           const acceptanceMode = process.env.OPEN_WRANGLER_PACKAGED_MODE ?? "full";
+          const rJourneySelector = process.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY;
           if (
             acceptanceMode !== "full" &&
             acceptanceMode !== "platform-smoke" &&
@@ -225,6 +226,19 @@ try {
           ) {
             throw new Error(
               `OPEN_WRANGLER_PACKAGED_MODE=${JSON.stringify(acceptanceMode)} requires exactly one supported editor in OPEN_WRANGLER_PACKAGED_EDITORS.`
+            );
+          }
+          if (rJourneySelector !== undefined && rJourneySelector !== "interactive-terminal") {
+            throw new Error('OPEN_WRANGLER_PACKAGED_R_JOURNEY must be unset or "interactive-terminal".');
+          }
+          if (rJourneySelector !== undefined && acceptanceMode !== "r-jupyter") {
+            throw new Error(
+              'OPEN_WRANGLER_PACKAGED_R_JOURNEY="interactive-terminal" requires OPEN_WRANGLER_PACKAGED_MODE="r-jupyter".'
+            );
+          }
+          if (rJourneySelector !== undefined && remoteJupyterEnabled) {
+            throw new Error(
+              'OPEN_WRANGLER_PACKAGED_R_JOURNEY="interactive-terminal" cannot be combined with remote Jupyter acceptance.'
             );
           }
           if (
@@ -1361,6 +1375,7 @@ try {
                       testModule,
                       python: acceptancePythonForPhase("jupyter-r", testPython, jupyterKernelPython),
                       phase: "jupyter-r",
+                      testSelector: rJourneySelector,
                       resultPath: resultPaths["jupyter-r"],
                       runId: runIds["jupyter-r"],
                       progressPath: progressPaths["jupyter-r"],

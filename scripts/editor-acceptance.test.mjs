@@ -508,6 +508,14 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
 
 test("native R tooling pins Quarto to an internal revealed preview", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const focusedRoute = source.slice(
+    source.indexOf('recordAcceptanceProgress("preflight:complete")'),
+    source.indexOf("if (isDataWranglerCoexistencePhase(phase))")
+  );
+  assert.match(focusedRoute, /phase === "jupyter-r" && testSelector === "interactive-terminal"/u);
+  assert.match(focusedRoute, /assert\.equal\(\s*await assertReleasedNativeREditorTooling\(\),\s*true,/u);
+  assert.match(focusedRoute, /await exerciseReleasedRInteractiveTerminalJourney\(/u);
+  assert.match(focusedRoute, /return;/u);
   const notebookJourney = source.slice(
     source.indexOf("async function exerciseReleasedRJupyterExtension("),
     source.indexOf("async function exerciseReleasedRInteractiveTerminalJourney(")
@@ -3345,6 +3353,7 @@ test("editor phases pass only runner-owned test values through the environment",
           OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: join(directory, "screenshots"),
           OPEN_WRANGLER_TEST_MODULE: "/attacker/module.cjs",
           OPEN_WRANGLER_TEST_PYTHON: "/attacker/python",
+          OPEN_WRANGLER_TEST_SELECTOR: "interactive-terminal",
           GITHUB_PAT: "github-secret",
           KUBECONFIG: "/attacker/kubeconfig",
           GIT_CONFIG_COUNT: "1",
@@ -3406,6 +3415,55 @@ test("editor phases pass only runner-owned test values through the environment",
       OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO: "2"
     });
     assert.match(launchedEnvironment.OPEN_WRANGLER_TEST_RUN_ID, /^[0-9a-f-]{36}$/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor phases validate and forward the focused R acceptance selector", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-selector-"));
+  const resultPath = join(directory, "result.json");
+  const input = {
+    editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+    workspace: directory,
+    userData: SYNTHETIC_EDITOR_USER_DATA,
+    extensions: join(directory, "extensions"),
+    developmentPaths: [],
+    testModule: join(directory, "acceptance.js"),
+    python: join(directory, "python"),
+    phase: "jupyter-r",
+    resultPath
+  };
+  const options = {
+    platform: "darwin",
+    environment: { PATH: "/safe/bin", HOME: "/private/home" }
+  };
+  try {
+    await assert.rejects(
+      runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
+      /test selector must be unset or "interactive-terminal"/u
+    );
+    await assert.rejects(
+      runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "interactive-terminal" }, options),
+      /requires the "jupyter-r" phase/u
+    );
+
+    let launchedEnvironment;
+    await runEditorAcceptancePhase(
+      { ...input, testSelector: "interactive-terminal" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "interactive-terminal");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
