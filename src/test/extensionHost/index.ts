@@ -11002,9 +11002,6 @@ async function exerciseReleasedPythonFileEntrypoint(
     recordAcceptanceProgress(`${checkpoint}:interactive-toolbar-close`);
     await disposePackagedSessionPanel(testing, reopened.sessionId, "the Python Interactive toolbar Polars session");
     assert.equal(testing.diagnostics().sessionCount, 0);
-    if (!vscode.window.visibleNotebookEditors.some((candidate) => candidate.notebook === interactive)) {
-      await showExactReleasedNotebook(interactive);
-    }
     await closeExactReleasedPythonInteractiveWindow(interactive);
     const sourceTab = textDocumentTab(source);
     assert.ok(sourceTab, "The Python-file journey must retain its exact source tab.");
@@ -11478,9 +11475,6 @@ async function exerciseReleasedPythonSourceCellDiscovery(
     recordAcceptanceProgress(`${checkpoint}:close`);
     await disposePackagedSessionPanel(testing, opened.sessionId, "the ordinary Python source-cell Pandas session");
     assert.equal(testing.diagnostics().sessionCount, 0);
-    if (!vscode.window.visibleNotebookEditors.some((candidate) => candidate.notebook === interactive)) {
-      await showExactReleasedNotebook(interactive);
-    }
     await closeExactReleasedPythonInteractiveWindow(interactive);
     const sourceTab = textDocumentTab(source);
     assert.ok(sourceTab, "The ordinary Python-cell journey must retain its exact source tab.");
@@ -11517,12 +11511,6 @@ async function exerciseReleasedPythonSourceCellDiscovery(
     }
     if (interactive && !interactive.isClosed) {
       try {
-        if (!vscode.window.visibleNotebookEditors.some((candidate) => candidate.notebook === interactive)) {
-          await vscode.window.showNotebookDocument(interactive, {
-            viewColumn: vscode.ViewColumn.One,
-            preserveFocus: false
-          });
-        }
         await closeExactReleasedPythonInteractiveWindow(interactive);
       } catch {
         // Preserve the original acceptance failure.
@@ -11550,6 +11538,16 @@ async function exerciseReleasedPythonSourceCellDiscovery(
 
 async function closeExactReleasedPythonInteractiveWindow(interactive: vscode.NotebookDocument): Promise<void> {
   assertExactOpenNotebookDocument(interactive, "before closing the Python entry-point Interactive Window");
+  if (!vscode.window.visibleNotebookEditors.some((candidate) => candidate.notebook === interactive)) {
+    await waitFor(
+      () =>
+        interactive.isClosed ||
+        vscode.window.visibleNotebookEditors.some((candidate) => candidate.notebook === interactive),
+      10_000,
+      "the existing Python entry-point Interactive Window editor to become visible for cleanup"
+    );
+  }
+  if (interactive.isClosed) return;
   const closeBudget = vscode.window.visibleNotebookEditors.filter(
     (candidate) => candidate.notebook === interactive
   ).length;
