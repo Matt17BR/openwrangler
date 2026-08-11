@@ -1313,12 +1313,64 @@ describe("SummaryPanel", () => {
           }
         }
       ],
-      onShowMoreValues: () => undefined
+      onShowMoreValues: () => undefined,
+      onApplyFilterModel: () => undefined
     });
 
     expect(screen.getByText("value-10")).toBeVisible();
     expect(screen.getByRole("meter", { name: "Other: 10 rows, 50%" })).toHaveValue(10);
     expect(screen.getByRole("button", { name: "More values…" })).toBeVisible();
+  });
+
+  it.each([
+    {
+      label: "duplicate display names",
+      metadataValue: {
+        ...metadata,
+        shape: { rows: 20, columns: 2 },
+        filteredShape: { rows: 20, columns: 2 },
+        schema: [
+          { id: "c:left", name: "city", position: 0, rawType: "String", type: "string" as const, nullable: false },
+          { id: "c:right", name: "city", position: 1, rawType: "String", type: "string" as const, nullable: false }
+        ]
+      },
+      selectedColumnId: "c:left"
+    },
+    {
+      label: "complex values",
+      metadataValue: {
+        ...metadata,
+        shape: { rows: 20, columns: 1 },
+        filteredShape: { rows: 20, columns: 1 },
+        schema: [
+          { id: "c:0", name: "city", position: 0, rawType: "List(String)", type: "list" as const, nullable: false }
+        ]
+      },
+      selectedColumnId: "c:0"
+    }
+  ])("does not offer the filter value browser for $label", ({ metadataValue, selectedColumnId }) => {
+    renderSummary({
+      metadataValue,
+      selectedColumnId,
+      summaries: [
+        {
+          ...categoricalSummary,
+          columnId: selectedColumnId,
+          totalCount: 20,
+          distinctCount: 20,
+          topValues: Array.from({ length: 10 }, (_, index) => ({ value: `value-${index + 1}`, count: 1 })),
+          visualization: {
+            kind: "categorical",
+            categories: Array.from({ length: 6 }, (_, index) => ({ value: `value-${index + 1}`, count: 1 })),
+            otherCount: 14
+          }
+        }
+      ],
+      onShowMoreValues: () => undefined,
+      onApplyFilterModel: () => undefined
+    });
+
+    expect(screen.queryByRole("button", { name: "More values…" })).not.toBeInTheDocument();
   });
 
   it("switches counts to percentages and filters a categorical value through the shared view model", () => {
