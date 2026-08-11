@@ -259,10 +259,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
           continue;
         }
         if (reportedSummary !== undefined || completedExecuteResult) {
-          if (executionOrder <= state.maxExecutionOrder) {
-            changed = this.clearState(state, change.cell) || changed;
-          }
-          state.maxExecutionOrder = executionOrder;
+          state.maxExecutionOrder = Math.max(state.maxExecutionOrder, executionOrder);
         }
         if (
           isExecutedPythonResult(change.cell) &&
@@ -483,11 +480,15 @@ export class NotebookCellResultTracker implements vscode.Disposable {
         executionOrder === undefined ||
         existing.executionOrder === executionOrder)
     ) {
+      const receivedConcreteOrder = existing.executionOrder === undefined && executionOrder !== undefined;
       existing.executionOrder ??= executionOrder;
-      return false;
+      return receivedConcreteOrder ? this.recordExecutionStart(state, cell, executionOrder) : false;
     }
 
-    const changed = this.forgetCell(state, cell);
+    let changed = this.forgetCell(state, cell);
+    if (executionOrder !== undefined) {
+      changed = this.recordExecutionStart(state, cell, executionOrder) || changed;
+    }
     const completion = observeExecutedNotebookCellResultKernel(notebook).catch(() => undefined);
     const pending: PendingKernelObservation = {
       notebook,
@@ -514,6 +515,20 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     return changed;
   }
 
+  private recordExecutionStart(
+    state: NotebookExecutionState,
+    cell: vscode.NotebookCell,
+    executionOrder: number
+  ): boolean {
+    if (executionOrder >= state.maxExecutionOrder) {
+      state.maxExecutionOrder = executionOrder;
+      return false;
+    }
+    const changed = this.clearState(state, cell);
+    state.maxExecutionOrder = executionOrder;
+    return changed;
+  }
+
   private takeKernelObservation(
     cell: vscode.NotebookCell,
     notebook: vscode.NotebookDocument,
@@ -521,12 +536,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     sourceFingerprint: string
   ): PendingKernelObservation | undefined {
     const pending = this.claimKernelObservation(cell);
-    if (
-      pending &&
-      (pending.notebook !== notebook ||
-        pending.sourceFingerprint !== sourceFingerprint ||
-        (pending.executionOrder !== undefined && pending.executionOrder !== executionOrder))
-    ) {
+    if (pending && !matchesKernelObservation(pending, notebook, executionOrder, sourceFingerprint)) {
       this.disposeObservation(pending);
       return undefined;
     }
@@ -582,6 +592,20 @@ function isExecutedPythonResult(cell: vscode.NotebookCell): boolean {
     executionOrder > 0 &&
     cell.executionSummary?.success !== false &&
     cell.outputs.length > 0
+  );
+}
+
+function matchesKernelObservation(
+  pending: PendingKernelObservation | undefined,
+  notebook: vscode.NotebookDocument,
+  executionOrder: number,
+  sourceFingerprint: string
+): pending is PendingKernelObservation {
+  return (
+    pending !== undefined &&
+    pending.notebook === notebook &&
+    pending.sourceFingerprint === sourceFingerprint &&
+    (pending.executionOrder === undefined || pending.executionOrder === executionOrder)
   );
 }
 

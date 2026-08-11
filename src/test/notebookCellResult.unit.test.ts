@@ -355,6 +355,29 @@ describe("executed notebook cell result action", () => {
     tracker.dispose();
   });
 
+  it("ignores a delayed older completion after publishing a newer result", async () => {
+    const document = notebook("file:///delayed-older-completion.ipynb");
+    const olderCell = codeCell(document, 1);
+    const currentCell = codeCell(document, 3);
+    setCells(document, [olderCell, currentCell]);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(currentCell) as never);
+    tracker.recordDocumentChange(executionEvent(currentCell) as never);
+    await settleInspection();
+    expect(notebookCellResultStatusItem(currentCell, tracker)).toBeDefined();
+
+    tracker.recordDocumentChange(executionEvent(olderCell) as never);
+    await settleInspection();
+
+    expect(mocks.observe).toHaveBeenCalledOnce();
+    expect(mocks.inspect).toHaveBeenCalledOnce();
+    expect(notebookCellResultStatusItem(currentCell, tracker)).toBeDefined();
+    expect(notebookCellResultStatusItem(olderCell, tracker)).toBeUndefined();
+    tracker.dispose();
+  });
+
   it("keeps the consent-bound observation across repeated in-progress summaries", async () => {
     const document = notebook("file:///repeated-progress.ipynb");
     const cell = codeCell(document, 1);
@@ -587,6 +610,7 @@ describe("executed notebook cell result action", () => {
     expect(notebookCellResultStatusItem(oldCell, tracker)).toBeDefined();
 
     tracker.recordDocumentChange(executionStartedEvent(newCell, 1) as never);
+    expect(notebookCellResultStatusItem(oldCell, tracker)).toBeUndefined();
     tracker.recordDocumentChange(outputOnlyEvent(newCell) as never);
     await settleInspection();
 
