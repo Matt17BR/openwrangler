@@ -26,10 +26,7 @@ export function registerNotebookCellResultAction(
   tracker.start();
   const provider: vscode.NotebookCellStatusBarItemProvider = {
     onDidChangeCellStatusBarItems: tracker.onDidChangeCellStatusBarItems,
-    provideCellStatusBarItems: async (cell) => {
-      if (!(await tracker.hasCurrentKernel(cell))) return undefined;
-      return notebookCellResultStatusItem(cell, tracker);
-    }
+    provideCellStatusBarItems: (cell) => notebookCellResultStatusItem(cell, tracker)
   };
   context.subscriptions.push(
     tracker,
