@@ -394,6 +394,7 @@ describe("R document command", () => {
     const editor = textEditor(document, 10);
     mocks.textDocuments.push(document);
     mocks.activeEditor = editor;
+    mocks.getCommands.mockResolvedValue(["quarto.runCurrentCell", "r.runSelection"]);
     const providers = literateProviders();
     providers.r.captureActiveSession.mockReturnValue(providers.rSession);
     providers.r.runLiterateChunkAndOpen.mockResolvedValueOnce(true);
@@ -418,6 +419,7 @@ describe("R document command", () => {
     const editor = textEditor(document, 5);
     mocks.textDocuments.push(document);
     mocks.activeEditor = editor;
+    mocks.getCommands.mockResolvedValue(["r.runSelection"]);
     const providers = literateProviders();
     providers.r.captureActiveSession.mockReturnValue(providers.rSession);
     providers.r.runLiterateChunkAndOpen.mockResolvedValueOnce(true);
@@ -450,6 +452,7 @@ describe("R document command", () => {
     const editor = textEditor(document, 6);
     mocks.textDocuments.push(document);
     mocks.activeEditor = editor;
+    mocks.getCommands.mockResolvedValue(["quarto.runCurrentCell", "r.runSelection"]);
     const providers = literateProviders();
     providers.r.captureActiveSession.mockReturnValue(providers.rSession);
     providers.r.runLiterateChunkAndOpen.mockResolvedValueOnce(true);
@@ -474,6 +477,7 @@ describe("R document command", () => {
     const editor = textEditor(document, 2);
     mocks.textDocuments.push(document);
     mocks.activeEditor = editor;
+    mocks.getCommands.mockResolvedValue(["r.runSelection"]);
     const providers = literateProviders();
     providers.r.captureActiveSession.mockReturnValue(providers.rSession);
     providers.r.runLiterateChunkAndOpen.mockResolvedValueOnce(true);
@@ -511,6 +515,7 @@ describe("R document command", () => {
     const editor = textEditor(document, 1);
     mocks.textDocuments.push(document);
     mocks.activeEditor = editor;
+    mocks.getCommands.mockResolvedValue(["quarto.runCurrentCell", "r.runSelection"]);
     const providers = literateProviders();
     providers.r.captureActiveSession.mockImplementationOnce(() => {
       const moved = selection(2);
@@ -534,6 +539,7 @@ describe("R document command", () => {
     );
     mocks.textDocuments.push(document);
     mocks.activeEditor = textEditor(document, 4);
+    mocks.getCommands.mockResolvedValue(["quarto.runCurrentCell", "r.runSelection"]);
     const providers = literateProviders();
     providers.r.captureActiveSession.mockImplementationOnce(() => {
       mocks.reticulateCells = false;
@@ -590,6 +596,25 @@ describe("R document command", () => {
     );
     expect(providers.python.runLiterateChunkAndOpen).not.toHaveBeenCalled();
     expect(mocks.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it("reports missing Quarto and R integrations before asking for a terminal", async () => {
+    const document = rDocument(
+      "/workspace/orders.qmd",
+      "---\nengine: knitr\n---\n```{r}\norders <- data.frame(id = 1:3)\n```\n"
+    );
+    mocks.textDocuments.push(document);
+    mocks.activeEditor = textEditor(document, 4);
+    const providers = literateProviders();
+    register(coordinatorMock(), providers.value);
+
+    await expect(cursorCommand()()).resolves.toBe(false);
+
+    expect(mocks.showInformationMessage).toHaveBeenCalledWith(
+      "Install or enable the Quarto and R extensions, then run this chunk again."
+    );
+    expect(providers.r.captureActiveSession).not.toHaveBeenCalled();
+    expect(providers.r.runLiterateChunkAndOpen).not.toHaveBeenCalled();
   });
 
   it("does not fall back to an all-document run when the literate origin is ambiguous", async () => {
