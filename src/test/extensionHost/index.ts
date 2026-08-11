@@ -10849,6 +10849,14 @@ async function exerciseReleasedPythonSourceCellDiscovery(
     assert.equal(runCellResult.kind, "fulfilled", "Jupyter's ordinary Run Cell command must complete.");
     const associatedCells = releasedPythonSourceCells(interactive, source);
     assert.equal(associatedCells.length, 1, "The ordinary Python source cell must be associated exactly once.");
+    const associatedMetadata = associatedCells[0]?.metadata as {
+      interactive?: { lineIndex?: unknown };
+    };
+    assert.equal(
+      associatedMetadata.interactive?.lineIndex,
+      0,
+      "The sole completed Interactive cell must belong to the first Python source cell."
+    );
     assert.equal(
       completedReleasedPythonSourceCells(interactive, source).length,
       1,
@@ -11151,7 +11159,7 @@ function releasedPythonSourceCells(interactive: vscode.NotebookDocument, source:
     const metadata = cell.metadata as {
       interactive?: { uristring?: unknown; lineIndex?: unknown };
     };
-    return metadata.interactive?.uristring === source.toString() && metadata.interactive.lineIndex === 0;
+    return metadata.interactive?.uristring === source.toString();
   });
 }
 
