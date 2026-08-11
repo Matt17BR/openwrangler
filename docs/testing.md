@@ -701,12 +701,15 @@ The R Markdown and Quarto fixtures each contain first-line YAML, prose, and top-
 read a relative CSV. The R Markdown parser fixture also contains a non-R cell and a disabled R cell. The journey opens
 the dataframe, checks its full schema and page, applies Rename, inserts generated R as a new fenced cell, and proves
 the source file on disk is unchanged.
-The Quarto title-action portion puts the cursor in the exact dataframe-producing chunk, invokes the stable editor
-action, and requires the official `quarto.runCurrentCell` and `r.runSelection` commands before opening the active R
-session. Focused TypeScript tests separately route explicit-Jupyter and implicit/explicit-knitr Quarto Python chunks,
+The Quarto title-action portion puts the cursor in the exact dataframe-producing chunk and invokes the stable editor
+action. It verifies the Quarto and R integrations before asking for a terminal, then evaluates and discovers through
+one correlated request bound to the exact active R terminal. Focused TypeScript tests separately route
+explicit-Jupyter and implicit/explicit-knitr Quarto Python chunks,
 reticulate R Markdown Python chunks, and R chunks. They cover backtick and supported tilde fences, chunk labels, `#|`
-options, disabled chunks, required-command preflight, conflicting executor metadata, associated Python sessions,
-explicit R/Python session choice, and editor/version/cursor/exact-terminal changes across cleanup and discovery awaits.
+options, disabled chunks, required-integration guidance before session acquisition, conflicting executor metadata,
+associated Python sessions, explicit R/Python session choice, and editor/version/cursor/exact-terminal changes across
+cleanup and discovery awaits. Executor tests also cover bounded YAML parsing, duplicate/alias/case-variant metadata,
+and faux fences inside display math, raw TeX, and raw HTML.
 An R-owned Python path must not fabricate an Interactive Window cell, and the primary action must never fall back to
 an all-document run.
 The separate owned-process parser tests cover horizontal rules, display math, closed raw-TeX blocks, numeric labels,
