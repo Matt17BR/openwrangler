@@ -62,9 +62,12 @@ kernel captured when the user starts it. Kernel lookup, dispatch, recovery, and 
 active editor, a matching URI, a replacement document, or another R session.
 
 Before a native connection exists, Operations can read the dataframe descriptors already produced by vscode-R. It
-accepts them only from an extension-created terminal whose watcher attach PID matches the exact captured terminal.
-The files are treated as untrusted hints: reads are bounded and no-follow, marker changes are retried, and any PID,
-path, owner, file identity, or terminal change invalidates the list. This automatic path never sends terminal text.
+prefers vscode-R's exported workspace tree when its session status names the exact captured terminal PID. During
+terminal startup, it can fall back to the matching attach record and workspace files. Those files are treated as
+untrusted hints: reads are bounded and no-follow, marker changes are retried, and any PID, path, owner, file identity,
+or terminal change invalidates the list. This automatic path never sends terminal text. Because vscode-R replaces its
+single request record after plots, help, and data views, a same-process non-attach record falls back immediately
+instead of leaving Operations on a minute-long loading state.
 
 Opening a listed item or choosing Refresh is the explicit connection point. Open Wrangler then sends its bundled
 dispatcher through VS Code's terminal API and uses private response files for bounded requests. The dispatcher
