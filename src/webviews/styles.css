@@ -2019,11 +2019,6 @@ th.rowHeader {
   margin-top: 10px;
 }
 
-.distributionValueControls > small {
-  color: var(--vscode-descriptionForeground);
-  font-size: 10px;
-}
-
 .segmentedControl {
   border: 1px solid var(--vscode-panel-border);
   border-radius: 3px;
