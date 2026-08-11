@@ -410,7 +410,11 @@ describe("notebook launch contributions", () => {
 
   it("keeps the notebook action discoverable without Jupyter-private context keys", () => {
     expect(manifest.activationEvents).toEqual(
-      expect.arrayContaining(["onNotebook:jupyter-notebook", "onNotebook:interactive"])
+      expect.arrayContaining([
+        "onNotebook:jupyter-notebook",
+        "onNotebook:interactive",
+        "onCommand:openWrangler.openNotebookCellResult"
+      ])
     );
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openNotebookVariable",
@@ -421,6 +425,15 @@ describe("notebook launch contributions", () => {
         light: "media/action-icon-light.svg",
         dark: "media/action-icon-dark.svg"
       }
+    });
+    expect(manifest.contributes?.commands).toContainEqual({
+      command: "openWrangler.openNotebookCellResult",
+      title: "Open Executed Dataframe Result in Open Wrangler",
+      category: "Open Wrangler"
+    });
+    expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
+      command: "openWrangler.openNotebookCellResult",
+      when: "false"
     });
     expect(manifest.contributes?.menus?.["notebook/toolbar"]).toContainEqual({
       command: "openWrangler.openNotebookVariable",
