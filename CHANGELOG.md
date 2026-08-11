@@ -26,9 +26,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   work.
 - **Open in Open Wrangler** now routes `.qmd` and `.Rmd` editors by both the exact cursor-owned fence and the document
   executor. R Markdown and knitr/reticulate Quarto Python chunks stay in a pinned exact R terminal; only Jupyter-owned
-  Quarto Python chunks use an Interactive Window. The action preflights the required public commands, fails closed for
-  ambiguous executor metadata or terminal replacement, and asks explicitly when both existing R and Python sessions
-  are available. It still runs only that chunk and preserves labels, `#|` options, and exact editor/cursor provenance.
+  Quarto Python chunks use an Interactive Window. Required integrations are checked before a terminal or kernel is
+  requested. R-backed chunks evaluate and discover dataframes in one request bound to the captured terminal, so a
+  detached multiline send cannot race discovery. Executor metadata now uses bounded YAML parsing and ignores faux
+  fences in display math, raw TeX, and raw HTML. The action fails closed for ambiguous metadata or terminal
+  replacement and asks explicitly when both existing R and Python sessions are available. The public **Run R
+  Document** command remains whole-document; the title action owns cursor-only execution.
 - Python Interactive windows now expose the same **Open in Open Wrangler** action as `.ipynb` notebooks. The action
   lists dataframes from that exact live kernel, and Operations refreshes from the same window instead of asking the
   user to return to the source `.py` cell.

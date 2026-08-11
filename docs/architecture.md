@@ -31,19 +31,25 @@ identifies the one chunk that owns the primary cursor, including ordinary labels
 backtick and tilde fences; R Markdown accepts backtick fences. Python ownership follows the document executor rather
 than the fence label alone: R Markdown and knitr/reticulate Quarto cells stay in the exact selected R terminal, while
 Jupyter Quarto cells stay pinned to the exact new Interactive Window cell associated with the source URI. Explicit
-`engine`, `knitr`, and `jupyter` metadata and Quarto's R-cell inference are recognized; conflicting or unsupported
-metadata fails closed. An enabled R chunk runs through `quarto.runCurrentCell` or `r.runSelection` in that same pinned
-terminal. Required Quarto, Jupyter, and R commands are checked before dispatch. Every activation, execution,
-discovery, picker, and focus-restoration await revalidates the captured editor object, document object, version, URI
-uniqueness, cursor selections, and—on R paths—the exact terminal object. The primary literate action never renders or
-executes the complete document. Outside a supported chunk it can reuse one exact associated Python Interactive Window
-or the selected R session; when both exist it asks explicitly which one to open.
+`engine`, `knitr`, and `jupyter` metadata and Quarto's R-cell inference are recognized; the bounded YAML parser rejects
+aliases, duplicate or case-variant ownership keys, and conflicting or unsupported metadata. Display math, raw TeX,
+raw HTML, and comments are opaque to chunk lookup. After resolving the chunk, Open Wrangler checks the required
+Quarto, Jupyter, and R integrations before asking for a terminal or kernel. An R-backed chunk is sent with discovery
+as one correlated request to the exact selected R terminal, so vscode-R cannot interleave another multiline command
+between evaluation and discovery. Jupyter-owned Python chunks run in the exact Interactive Window associated with the
+source document. Every activation, execution, discovery, picker, and focus-restoration await revalidates the captured
+editor object, document object, version, URI uniqueness, cursor selections, and—on R paths—the exact terminal object.
+The primary literate action never renders or executes the complete document. Outside a supported chunk it can reuse
+one exact associated Python Interactive Window or the selected R session; when both exist it asks explicitly which
+one to open.
 
 The stable action remains visible on Windows because live R and Python sessions do not require Open Wrangler to own a
 local document process. On macOS and Linux the tab menu keeps the explicit R-document choices, and Explorer keeps the
 document command. Cursor pins the stable action alongside the file and notebook actions. The explicit
-`openWrangler.runRDocument` command captures the exact open `TextDocument`, version, and in-memory text before R
-starts. It never substitutes a different active editor after an await. The document must remain the sole open object
+`openWrangler.runRDocument` is always the explicit whole-document command, including when its zero-argument form is
+invoked while the cursor is inside a chunk. The separate internal title-action route owns cursor execution. The public
+command captures the exact open `TextDocument`, version, and in-memory text before R starts. It never substitutes a
+different active editor after an await. The document must remain the sole open object
 for its URI through variable discovery and selection. Plain `.R` text is one source unit. R Markdown and Quarto use only top-level
 backtick-fenced `{r}` cells from a first-line-YAML document. Every cell is parsed separately before any cell runs,
 then the parsed cells share one private R environment in document order. This is an isolated lexical R-cell run, not
@@ -54,6 +60,8 @@ Indented cells, raw-string chunk options, and R-looking fences inside an opaque 
 
 The active-R path is separate from explicit document execution. It activates the official R extension, captures one exact `R`
 or `R Interactive` terminal, and uses VS Code's public terminal API to load the bundled dispatcher into that session.
+For a cursor-owned chunk, that dispatcher evaluates the bounded UTF-8 source and discovers dataframes before writing
+one correlated response; discovery cannot overtake or detach from the evaluation that produced those variables.
 The Operations view can then refresh and open supported dataframes from that terminal. A terminal switch or close
 invalidates the list and bridge; discovery, requests, cleanup, and reopening never retarget another terminal. The
 integration does not read vscode-R extension storage or private process details. These variables follow the notebook
