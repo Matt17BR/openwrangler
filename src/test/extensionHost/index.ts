@@ -514,6 +514,15 @@ export async function run(): Promise<void> {
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
   const testPython = process.env.OPEN_WRANGLER_TEST_PYTHON;
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
+  const testSelector = process.env.OPEN_WRANGLER_TEST_SELECTOR;
+  assert.ok(
+    testSelector === undefined || testSelector === "interactive-terminal",
+    'OPEN_WRANGLER_TEST_SELECTOR must be unset or "interactive-terminal".'
+  );
+  assert.ok(
+    testSelector === undefined || phase === "jupyter-r",
+    'OPEN_WRANGLER_TEST_SELECTOR="interactive-terminal" requires the jupyter-r phase.'
+  );
   if (testPython && phase !== "python-environment" && phase !== "remote-workspace") {
     await vscode.workspace
       .getConfiguration("openWrangler")
@@ -885,6 +894,17 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   recordAcceptanceProgress("preflight:complete");
+  if (phase === "jupyter-r" && testSelector === "interactive-terminal") {
+    assert.ok(testPython, "Focused active R acceptance requires the runner-selected host Python environment.");
+    assert.equal(
+      await assertReleasedNativeREditorTooling(),
+      true,
+      "Focused active R acceptance requires the pinned official R and Quarto editor tooling."
+    );
+    await exerciseReleasedRInteractiveTerminalJourney(testing, await connectToEditorWorkbench());
+    console.log("Open Wrangler active R terminal acceptance passed.");
+    return;
+  }
   if (isDataWranglerCoexistencePhase(phase)) {
     assert.ok(testPython, "Real Data Wrangler coexistence acceptance requires the private Jupyter environment.");
     recordAcceptanceProgress(`${phase}:start`);

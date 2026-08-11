@@ -821,6 +821,12 @@ OPEN_WRANGLER_TEST_RSCRIPT=/absolute/path/to/Rscript \
 npm run test:packaged-editors -- /absolute/path/to/openwrangler.vsix
 ```
 
+While debugging active-session discovery, add
+`OPEN_WRANGLER_PACKAGED_R_JOURNEY=interactive-terminal` to the local `r-jupyter` command and keep
+`OPEN_WRANGLER_REAL_REMOTE_JUPYTER=0`. The runner still verifies the VSIX, editor, R packages, and pinned official R
+and Quarto extensions, but it then runs only the active R terminal discovery, terminal replacement, and cleanup
+journey. The selector accepts no other value and cannot be combined with the remote-Jupyter phase.
+
 On Linux, `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=1` adds a container-isolated remote-server phase. The default mode uses the Python fixture; `r-jupyter` uses the R fixture. The hosted workflow runs both remote journeys only in VS Code.
 
 The Python fixture starts from a digest-pinned Python 3.12 image. Its complete hash-locked `requirements.txt` installs Jupyter Server 2.20.0, IPykernel 6.30.1, Pandas 2.3.3, Polars 1.35.2, and DuckDB 1.5.4 with their Python dependencies. It repeats the Pandas/Polars/DuckDB runtime-transfer, renderer, insertion, restart, replay, and cleanup checks.
