@@ -888,6 +888,101 @@ describe("Python Interactive Window entry points", () => {
     }
   });
 
+  it("retries a marked Python scaffold after its pending first dispatch finishes without a cell", async () => {
+    vi.useFakeTimers();
+    try {
+      const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
+      pythonMocks.textDocuments.push(source);
+      const sourceEditor = textEditor(source, 1);
+      pythonMocks.activeTextEditor = sourceEditor;
+
+      const interactive = notebook("untitled:/Interactive-pending.interactive", "interactive", []);
+      const systemCell = markupCell(interactive.document, { isInteractiveWindowMessageCell: true });
+      Object.defineProperty(systemCell, "executionSummary", { value: {}, writable: true });
+      interactive.cells.push(systemCell);
+      const interactiveEditor = { notebook: interactive.document } as NotebookEditor;
+      const frame = pandasFrame("frame");
+      pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
+      let runCount = 0;
+      let finishFirstDispatch!: () => void;
+      const firstDispatch = new Promise<undefined>((resolve) => {
+        finishFirstDispatch = () => resolve(undefined);
+      });
+      pythonMocks.executeCommand.mockImplementation((id: string) => {
+        if (id === "notebook.selectKernel") {
+          Object.defineProperty(interactive.document, "metadata", {
+            value: { kernelspec: { language: "python" } },
+            writable: true
+          });
+          finishFirstDispatch();
+          return Promise.resolve(undefined);
+        }
+        if (id !== "jupyter.runcurrentcell") return Promise.resolve(undefined);
+        runCount += 1;
+        if (runCount === 1) {
+          pythonMocks.activeTextEditor = undefined;
+          pythonMocks.activeNotebookEditor = interactiveEditor;
+          pythonMocks.visibleNotebookEditors.push(interactiveEditor);
+          pythonMocks.notebookDocuments.push(interactive.document);
+          fire(pythonMocks.openNotebookListeners, interactive.document);
+          return firstDispatch;
+        }
+        expect(pythonMocks.activeTextEditor?.document).toBe(source);
+        expect(pythonMocks.activeTextEditor?.selection.active.line).toBe(1);
+        const cell = interactiveCell(interactive.document, source.uri.toString(), 0, "run-1", true);
+        interactive.cells.push(cell);
+        fire(pythonMocks.changeNotebookListeners, {
+          notebook: interactive.document,
+          cellChanges: [{ cell, executionSummary: cell.executionSummary }],
+          contentChanges: []
+        } as unknown as NotebookDocumentChangeEvent);
+        return Promise.resolve(undefined);
+      });
+      pythonMocks.showTextDocument.mockImplementation(async (document: TextDocument) => {
+        expect(document).toBe(source);
+        const restored = textEditor(document, 99);
+        pythonMocks.activeTextEditor = restored;
+        pythonMocks.activeNotebookEditor = undefined;
+        return restored;
+      });
+      const listenerCounts = notebookListenerCounts();
+
+      const opening = command("openWrangler.runPythonCellAndOpenVariable")();
+      await settle();
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
+        "jupyter.runcurrentcell",
+        "notebook.selectKernel"
+      ]);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
+        "jupyter.runcurrentcell",
+        "notebook.selectKernel"
+      ]);
+      await vi.advanceTimersByTimeAsync(1);
+      await opening;
+
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
+        "jupyter.runcurrentcell",
+        "notebook.selectKernel",
+        "jupyter.runcurrentcell"
+      ]);
+      expect(
+        interactive.cells.filter(
+          (cell) =>
+            (cell.metadata as { interactive?: { uristring?: unknown } }).interactive?.uristring ===
+            source.uri.toString()
+        )
+      ).toHaveLength(1);
+      expect(pythonMocks.discover).toHaveBeenCalledOnce();
+      expect(pythonMocks.openVariable).toHaveBeenCalledOnce();
+      expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(notebookListenerCounts()).toEqual(listenerCounts);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("treats Quarto's unassociated markup scaffold as blank for kernel selection", async () => {
     vi.useFakeTimers();
     try {

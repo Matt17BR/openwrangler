@@ -160,7 +160,13 @@ type PythonCellAttemptResult =
   | {
       readonly kind: "needsKernel";
       readonly notebook: vscode.NotebookDocument;
-      readonly retryAllowed: boolean;
+      readonly retryAllowed: true;
+    }
+  | {
+      readonly kind: "needsKernel";
+      readonly notebook: vscode.NotebookDocument;
+      readonly retryAllowed: false;
+      readonly pendingDispatch: PythonCellDispatch;
     }
   | { readonly kind: "dispatchRejected" }
   | { readonly kind: "dispatchTimedOut" }
@@ -173,6 +179,12 @@ type PythonCellDispatchOutcome =
   | { readonly kind: "rejected" }
   | { readonly kind: "timedOut" }
   | { readonly kind: "cancelled" };
+
+interface PythonCellDispatch {
+  readonly promise: Promise<PythonCellDispatchOutcome>;
+  outcome(): PythonCellDispatchOutcome | undefined;
+  dispose(): void;
+}
 
 /**
  * Registers the Python-file/Interactive Window actions and keeps a small cache
@@ -347,46 +359,64 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       );
       if (attempt.kind === "needsKernel") {
         const kernelAttempt = attempt;
-        const restored = await selectKernelAndRestorePythonOrigin(
-          attempt.notebook,
-          origin,
-          operationDeadline,
-          observer,
-          (stage) => this.setDiagnosticStage(stage)
-        );
-        if (!restored) return false;
+        const pendingDispatch = kernelAttempt.retryAllowed ? undefined : kernelAttempt.pendingDispatch;
+        try {
+          const restored = await selectKernelAndRestorePythonOrigin(
+            attempt.notebook,
+            origin,
+            operationDeadline,
+            observer,
+            (stage) => this.setDiagnosticStage(stage)
+          );
+          if (!restored) return false;
 
-        this.setDiagnosticStage("waiting-for-cell-publication");
-        const postKernelPublicationWindow = kernelAttempt.retryAllowed
-          ? PYTHON_CELL_POST_KERNEL_PUBLICATION_GRACE_MS
-          : PYTHON_CELL_PUBLICATION_TIMEOUT_MS;
-        const afterSelection = await waitForPublishedCellAfterDispatch(
-          observer,
-          Math.min(operationDeadline, Date.now() + postKernelPublicationWindow),
-          false
-        );
-        if (afterSelection.kind === "published") {
-          attempt = afterSelection;
-        } else if (afterSelection.kind === "ambiguous") {
-          attempt = afterSelection;
-        } else if (afterSelection.kind === "stale" || !isExactPythonOrigin(origin)) {
-          attempt = { kind: "stale" };
-        } else if (!kernelAttempt.retryAllowed) {
-          attempt = { kind: "dispatchTimedOut" };
-        } else {
-          const blankWindow = observer.blankWindow();
-          if (blankWindow.kind !== "found" || blankWindow.notebook !== attempt.notebook) {
-            attempt = blankWindow.kind === "ambiguous" ? blankWindow : { kind: "missing" };
+          this.setDiagnosticStage("waiting-for-cell-publication");
+          const afterSelection = pendingDispatch
+            ? await waitForTransferredDispatchAfterKernel(
+                origin,
+                observer,
+                kernelAttempt.notebook,
+                pendingDispatch,
+                operationDeadline
+              )
+            : await waitForPublishedCellAfterDispatch(
+                observer,
+                Math.min(operationDeadline, Date.now() + PYTHON_CELL_POST_KERNEL_PUBLICATION_GRACE_MS),
+                false
+              );
+          if (afterSelection.kind === "published") {
+            attempt = afterSelection;
+          } else if (afterSelection.kind === "ambiguous") {
+            attempt = afterSelection;
+          } else if (afterSelection.kind === "stale" || !isExactPythonOrigin(origin)) {
+            attempt = { kind: "stale" };
           } else {
-            attempt = await runPythonCellAttempt(
-              origin,
-              observer,
-              operationDeadline,
-              false,
-              (stage) => this.setDiagnosticStage(stage),
-              "retrying-cell"
-            );
+            const retryAllowed =
+              kernelAttempt.retryAllowed ||
+              (origin.command === "jupyter.runcurrentcell" && pendingDispatch?.outcome()?.kind === "fulfilled");
+            if (!retryAllowed) {
+              attempt =
+                pendingDispatch?.outcome()?.kind === "rejected"
+                  ? { kind: "dispatchRejected" }
+                  : { kind: "dispatchTimedOut" };
+            } else {
+              const blankWindow = observer.blankWindow();
+              if (blankWindow.kind !== "found" || blankWindow.notebook !== attempt.notebook) {
+                attempt = blankWindow.kind === "ambiguous" ? blankWindow : { kind: "missing" };
+              } else {
+                attempt = await runPythonCellAttempt(
+                  origin,
+                  observer,
+                  operationDeadline,
+                  false,
+                  (stage) => this.setDiagnosticStage(stage),
+                  "retrying-cell"
+                );
+              }
+            }
           }
+        } finally {
+          pendingDispatch?.dispose();
         }
       }
     } finally {
@@ -1382,6 +1412,7 @@ async function runPythonCellAttempt(
   const dispatchDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
   reportStage(dispatchStage);
   const dispatch = boundedPythonCellDispatch(origin, dispatchDeadline);
+  let dispatchTransferred = false;
   try {
     while (true) {
       const snapshot = observer.snapshot();
@@ -1405,7 +1436,13 @@ async function runPythonCellAttempt(
         const dispatchOutcome = dispatch.outcome();
         if (dispatchOutcome?.kind === "rejected") return { kind: "dispatchRejected" };
         if (dispatchOutcome === undefined) {
-          return { kind: "needsKernel", notebook: confirmedBlank.notebook, retryAllowed: false };
+          dispatchTransferred = true;
+          return {
+            kind: "needsKernel",
+            notebook: confirmedBlank.notebook,
+            retryAllowed: false,
+            pendingDispatch: dispatch
+          };
         }
       }
 
@@ -1431,20 +1468,13 @@ async function runPythonCellAttempt(
       break;
     }
   } finally {
-    dispatch.dispose();
+    if (!dispatchTransferred) dispatch.dispose();
   }
 
   return await waitForPublishedCellAfterDispatch(observer, operationDeadline, allowKernelRecovery);
 }
 
-function boundedPythonCellDispatch(
-  origin: PythonCellOrigin,
-  deadline: number
-): {
-  readonly promise: Promise<PythonCellDispatchOutcome>;
-  outcome(): PythonCellDispatchOutcome | undefined;
-  dispose(): void;
-} {
+function boundedPythonCellDispatch(origin: PythonCellOrigin, deadline: number): PythonCellDispatch {
   let cancel = (): void => undefined;
   let outcome: PythonCellDispatchOutcome | undefined;
   const promise = new Promise<PythonCellDispatchOutcome>((resolve) => {
@@ -1471,6 +1501,60 @@ function boundedPythonCellDispatch(
     cancel = () => finish({ kind: "cancelled" });
   });
   return { promise, outcome: () => outcome, dispose: () => cancel() };
+}
+
+async function waitForTransferredDispatchAfterKernel(
+  origin: PythonCellOrigin,
+  observer: PythonCellDispatchObserver,
+  notebook: vscode.NotebookDocument,
+  dispatch: PythonCellDispatch,
+  operationDeadline: number
+): Promise<PythonCellAttemptResult> {
+  const dispatchDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
+  let publicationDeadline: number | undefined;
+  while (true) {
+    if (!isExactPythonOrigin(origin)) return { kind: "stale" };
+    const snapshot = observer.snapshot();
+    if (snapshot.kind === "found") {
+      return { kind: "published", notebook: snapshot.notebook, cell: snapshot.cell };
+    }
+    if (snapshot.kind !== "missing") return snapshot;
+
+    const blankWindow = observer.blankWindow();
+    if (blankWindow.kind === "ambiguous") return blankWindow;
+    if (blankWindow.kind !== "found" || blankWindow.notebook !== notebook) return { kind: "missing" };
+
+    const outcome = dispatch.outcome();
+    if (outcome?.kind === "rejected") return { kind: "dispatchRejected" };
+    if (outcome?.kind === "timedOut" || outcome?.kind === "cancelled") {
+      return { kind: "dispatchTimedOut" };
+    }
+    if (outcome?.kind === "fulfilled") {
+      publicationDeadline ??= Math.min(
+        operationDeadline,
+        Date.now() +
+          (origin.command === "jupyter.runcurrentcell"
+            ? PYTHON_CELL_POST_KERNEL_PUBLICATION_GRACE_MS
+            : PYTHON_CELL_PUBLICATION_TIMEOUT_MS)
+      );
+      const remaining = publicationDeadline - Date.now();
+      if (remaining <= 0) return { kind: "missing" };
+      const event = await observer.waitForChange(remaining);
+      if (event === "changed") continue;
+      if (event === "cancelled") return { kind: "dispatchTimedOut" };
+      continue;
+    }
+
+    const remaining = dispatchDeadline - Date.now();
+    if (remaining <= 0) return { kind: "dispatchTimedOut" };
+    const change = observer.cancelableWaitForChange(remaining);
+    const event = await Promise.race([
+      dispatch.promise.then((settled) => ({ kind: "dispatch" as const, settled })),
+      change.promise.then((settled) => ({ kind: "change" as const, settled }))
+    ]).finally(() => change.dispose());
+    if (event.kind === "dispatch" || event.settled === "changed") continue;
+    if (event.settled === "cancelled") return { kind: "dispatchTimedOut" };
+  }
 }
 
 async function waitForPublishedCellAfterDispatch(
