@@ -3132,7 +3132,7 @@ describe("OpenWranglerPanel retained view state", () => {
     ]);
   });
 
-  it("runs the confirmed dependency install from an initial error and reopens only after success", async () => {
+  it("automatically hydrates the live renderer after installing a missing dependency", async () => {
     const missing: OpenWranglerResponse = {
       kind: "error",
       code: "missing_dependencies",
@@ -3152,20 +3152,45 @@ describe("OpenWranglerPanel retained view state", () => {
       if (command === "openWrangler.installRuntimeDependencies") return true;
       return undefined;
     });
+    const synchronizePanel = vi.spyOn(OpenWranglerPanel, "synchronizePanelForSession");
+    const ensurePanelSynchronized = vi.spyOn(OpenWranglerPanel, "ensurePanelSynchronizedForSession");
     const harness = createPanelHarness({ request }, { delegateOpen: true });
     await harness.open();
+    await harness.receive({ kind: "ready" });
+    const missingSynchronization = await acknowledgeLatestRendererSynchronization(harness);
+    expect(missingSynchronization).toMatchObject({ sessionId: null, revision: null });
     harness.posted.length = 0;
     executeCommand.mockClear();
 
     await harness.receive({ kind: "installRuntimeDependencies" });
+    await vi.waitFor(() =>
+      expect(latestRendererSynchronization(harness.posted)).toMatchObject({
+        sessionId: openedResponse.metadata.sessionId,
+        revision: openedResponse.metadata.revision
+      })
+    );
+    const liveSynchronization = latestRendererSynchronization(harness.posted);
+    expect(liveSynchronization.syncId).not.toBe(missingSynchronization.syncId);
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: liveSynchronization.syncId,
+      sessionId: liveSynchronization.sessionId,
+      revision: liveSynchronization.revision
+    });
 
     expect(executeCommand).toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
     expect(request.mock.calls.map(([candidate]) => candidate.kind)).toEqual(["openSession", "openSession"]);
-    expect(harness.posted).toEqual([
-      { kind: "runtimeDependencyInstallState", busy: true },
-      openedResponse,
-      { kind: "runtimeDependencyInstallState", busy: false }
-    ]);
+    expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: true });
+    expect(harness.posted).toContainEqual(openedResponse);
+    expect(harness.posted).toContainEqual({ kind: "runtimeDependencyInstallState", busy: false });
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(openedResponse.metadata.sessionId)).toEqual({
+      syncId: liveSynchronization.syncId,
+      sessionId: openedResponse.metadata.sessionId,
+      revision: openedResponse.metadata.revision
+    });
+    expect(synchronizePanel).not.toHaveBeenCalled();
+    expect(ensurePanelSynchronized).not.toHaveBeenCalled();
   });
 
   it("accepts only an exact cleaned-data export intent from the webview", async () => {
