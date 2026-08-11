@@ -10729,13 +10729,34 @@ async function exerciseReleasedPythonFileEntrypoint(
     await action.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
     assert.equal(await action.count(), 1, "The Python editor must expose one Open in Open Wrangler title action.");
     assert.equal(await action.isEnabled(), true, "The trusted Python editor title action must be enabled.");
+    const initialPythonInvocation = testing.pythonInteractiveDiagnostics()?.invocation ?? 0;
     await action.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
 
     const deadline = Date.now() + RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS;
     const traversed = new Set<string>();
     let filterForTarget = false;
     let targetSelected = false;
+    let pickerSeen = false;
+    let observedPythonInvocation = initialPythonInvocation;
+    let lastPythonStage: PythonInteractiveDiagnostics["lastActiveStage"];
     do {
+      const pythonDiagnostics = testing.pythonInteractiveDiagnostics();
+      if (pythonDiagnostics?.invocation !== undefined && pythonDiagnostics.invocation > initialPythonInvocation) {
+        if (pythonDiagnostics.invocation !== observedPythonInvocation) {
+          observedPythonInvocation = pythonDiagnostics.invocation;
+          lastPythonStage = undefined;
+        }
+        if (pythonDiagnostics.lastActiveStage && pythonDiagnostics.lastActiveStage !== lastPythonStage) {
+          lastPythonStage = pythonDiagnostics.lastActiveStage;
+          recordAcceptanceProgress(`${checkpoint}:python-${pythonDiagnostics.lastActiveStage}`);
+        }
+        if (pythonDiagnostics.stage === "failed") {
+          throw new Error(
+            `The Python editor action failed after ${pythonDiagnostics.lastActiveStage ?? "an unknown stage"}. ` +
+              `Python Interactive: ${JSON.stringify(pythonDiagnostics)}.`
+          );
+        }
+      }
       const candidates = vscode.workspace.notebookDocuments.filter(
         (candidate) =>
           !candidate.isClosed &&
@@ -10762,10 +10783,17 @@ async function exerciseReleasedPythonFileEntrypoint(
         break;
       }
 
+      const pythonFailure = await releasedPythonFailureNotification(workbench);
+      if (pythonFailure) throw new Error(`The Python editor action failed (${pythonFailure}).`);
+
       const picker = await visibleReleasedJupyterQuickInput(workbench);
       if (!picker) {
         await workbench.waitForTimeout(100);
         continue;
+      }
+      if (!pickerSeen) {
+        pickerSeen = true;
+        recordAcceptanceProgress(`${checkpoint}:kernel-picker-visible`);
       }
       const target = await releasedJupyterQuickPickRow(picker, kernelTarget.label);
       if (target) {
@@ -10811,6 +10839,8 @@ async function exerciseReleasedPythonFileEntrypoint(
     ) {
       throw new Error(
         "The Python editor action did not open its native Polars dataframe. " +
+          `Kernel picker: ${pickerSeen ? (targetSelected ? "target-selected" : "visible") : "not-seen"}. ` +
+          `Python Interactive: ${JSON.stringify(testing.pythonInteractiveDiagnostics())}. ` +
           `Coordinator: ${JSON.stringify(testing.diagnostics())}. ` +
           `Quick Input: ${JSON.stringify(await releasedJupyterQuickInputDiagnostics(workbench))}. ` +
           `Interactive Window: ${releasedPythonEntrypointDiagnostics(interactive, sourceDocument)}.`
