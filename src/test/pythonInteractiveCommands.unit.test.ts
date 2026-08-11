@@ -1506,6 +1506,42 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.discover.mock.calls.length).toBeGreaterThan(initialCalls);
   });
 
+  it("associates a Python source with its first externally executed Interactive cell", async () => {
+    const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
+    pythonMocks.textDocuments.push(source);
+    pythonMocks.activeTextEditor = textEditor(source, 1);
+    fire(pythonMocks.activeTextListeners, pythonMocks.activeTextEditor);
+
+    const interactive = notebook("untitled:/Interactive-first-run.interactive", "interactive", []);
+    pythonMocks.notebookDocuments.push(interactive.document);
+    fire(pythonMocks.openNotebookListeners, interactive.document);
+    await settle();
+    expect(provider.snapshot()).toBeUndefined();
+
+    const frame = pandasFrame("frame");
+    pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
+    const executed = interactiveCell(interactive.document, source.uri.toString(), 0, "first-run", true);
+    interactive.cells.push(executed);
+    fire(pythonMocks.changeNotebookListeners, {
+      notebook: interactive.document,
+      contentChanges: [{ addedCells: [executed], removedCells: [] }],
+      cellChanges: [{ cell: executed, executionSummary: executed.executionSummary }]
+    } as unknown as NotebookDocumentChangeEvent);
+    await settle();
+
+    expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
+    const snapshot = provider.snapshot();
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        state: "ready",
+        variables: [expect.objectContaining({ label: "frame", description: "Pandas · DataFrame" })]
+      })
+    );
+
+    await command("openWrangler.openCachedNotebookVariable")(snapshot?.variables[0]?.handle);
+    expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
+  });
+
   it("shows a concise empty result", async () => {
     const source = textDocument("file:///workspace/analysis.py", "# %%\nvalue = 1\n");
     const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
