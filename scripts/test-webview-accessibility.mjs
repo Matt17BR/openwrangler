@@ -565,7 +565,11 @@ async function verifyInsightsDrawerWorkflow(browser) {
       .getByRole("img", { name: /numeric distribution/u })
       .first()
       .waitFor();
-    for (const name of [/boolean distribution/u, /categorical distribution/u, /datetime distribution/u]) {
+    await page
+      .getByRole("group", { name: /boolean distribution/u })
+      .first()
+      .waitFor();
+    for (const name of [/categorical distribution/u, /datetime distribution/u]) {
       const charts = page.getByRole("img", { name });
       await charts.first().waitFor();
     }
