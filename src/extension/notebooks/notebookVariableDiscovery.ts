@@ -389,6 +389,21 @@ __ow_json = __ow_builtins.__import__("json")
 __ow_sys = __ow_builtins.__import__("sys")
 __ow_missing = __ow_builtins.object()
 __ow_value = __ow_user_ns.get(${JSON.stringify(variableName)}, __ow_missing)
+if __ow_value is __ow_missing:
+    __ow_notebook_module = __ow_sys.modules.get("openwrangler_runtime.notebook")
+    __ow_notebook_dict = None if __ow_notebook_module is None else __ow_notebook_module.__dict__
+    if __ow_builtins.isinstance(__ow_notebook_dict, dict):
+        __ow_is_live_handle = __ow_notebook_dict.get("is_live_result_handle")
+        __ow_resolve_live_handle = __ow_notebook_dict.get("resolve_live_result")
+        if (
+            __ow_builtins.callable(__ow_is_live_handle)
+            and __ow_builtins.callable(__ow_resolve_live_handle)
+            and __ow_is_live_handle(${JSON.stringify(variableName)})
+        ):
+            try:
+                __ow_value = __ow_resolve_live_handle(${JSON.stringify(variableName)})
+            except Exception:
+                __ow_value = __ow_missing
 __ow_value_type = None if __ow_value is __ow_missing else __ow_builtins.type(__ow_value)
 __ow_is_pyspark = False
 if __ow_value is not __ow_missing:
