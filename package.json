@@ -647,7 +647,7 @@
         },
         {
           "command": "openWrangler.openNotebookVariable",
-          "when": "(notebookType == 'jupyter-notebook' || notebookType == 'interactive') && isWorkspaceTrusted && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)",
+          "when": "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)",
           "group": "navigation@50"
         }
       ],
@@ -720,8 +720,15 @@
       "notebook/toolbar": [
         {
           "command": "openWrangler.openNotebookVariable",
-          "when": "(notebookType == 'jupyter-notebook' || notebookType == 'interactive') && isWorkspaceTrusted && config.notebook.globalToolbar == true && !openWrangler.forceNotebookEditorTitleAction",
+          "when": "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && config.notebook.globalToolbar == true && !openWrangler.forceNotebookEditorTitleAction",
           "group": "navigation@50"
+        }
+      ],
+      "interactive/toolbar": [
+        {
+          "command": "openWrangler.openNotebookVariable",
+          "when": "isWorkspaceTrusted",
+          "group": "navigation@2"
         }
       ],
       "view/title": [

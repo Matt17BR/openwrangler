@@ -95,7 +95,7 @@ runnable cell under the cursor is not run as a whole. If Jupyter does not confir
 Wrangler tells the user to check the Interactive Window instead of running it again. Packaged released-Jupyter
 acceptance clicks the visible editor action against a private ordinary Python file and checks the native Polars
 session, known page values, unchanged source bytes, and complete session cleanup. It then opens the same live frame
-from the Interactive window's own action without rerunning a cell or creating another window.
+from the native Interactive toolbar without rerunning a cell or creating another window.
 
 ## Native R preview
 

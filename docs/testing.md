@@ -601,8 +601,8 @@ The allow phase also starts with a private cell-marked Python file and no Intera
 `# %%` cell under the cursor runs and opens its native Polars dataframe with the expected values. The resulting cell
 must point back to that source file at line zero. The source file must stay byte-for-byte unchanged, and closing the
 panel must leave no Open Wrangler session behind. The same phase then keeps the exact Interactive window active,
-checks that Operations lists the dataframe from that kernel, and opens it again through the Interactive window's own
-action without rerunning a cell or creating another Interactive window.
+checks that Operations lists the dataframe from that kernel, and opens it again through the native Interactive toolbar
+without rerunning a cell or creating another Interactive window.
 
 The focused R 4.4/4.5 contract jobs and release contract gate install `readr` and `dplyr` alongside the other frame
 packages because the suite opens actual readr and grouped tibbles rather than hand-built stand-ins.
