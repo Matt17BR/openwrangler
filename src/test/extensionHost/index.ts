@@ -11119,6 +11119,9 @@ async function exerciseReleasedPythonSourceCellDiscovery(
       10_000,
       "the exact Python source before its ordinary cell execution"
     );
+    const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+    assert.ok(jupyterExtension, "The ordinary Python-cell journey requires the released Jupyter extension.");
+    const jupyterApi = await jupyterExtension.activate();
 
     recordAcceptanceProgress(`${checkpoint}:run-cell`);
     type RunCellState =
@@ -11160,6 +11163,7 @@ async function exerciseReleasedPythonSourceCellDiscovery(
       if (interactive && completedReleasedPythonSourceCells(interactive, source).length === 1) break;
       const currentRunCellState = readRunCellState();
       if (currentRunCellState.kind === "rejected") throw currentRunCellState.error;
+      if (interactive && currentRunCellState.kind === "fulfilled") break;
 
       const picker = await visibleReleasedJupyterQuickInput(workbench);
       if (!picker) {
@@ -11201,6 +11205,11 @@ async function exerciseReleasedPythonSourceCellDiscovery(
     } while (Date.now() < deadline);
 
     assert.ok(interactive, "Running the ordinary Python source cell must create one exact Interactive Window.");
+    const interactiveDocument = interactive;
+    assertExactOpenNotebookDocument(
+      interactiveDocument,
+      "before resolving the ordinary Python source cell's first-run kernel"
+    );
     const runCellResult = await withBoundedAcceptancePromise(
       runCellCommand,
       10_000,
@@ -11208,7 +11217,87 @@ async function exerciseReleasedPythonSourceCellDiscovery(
     );
     if (runCellResult.kind === "rejected") throw runCellResult.error;
     assert.equal(runCellResult.kind, "fulfilled", "Jupyter's ordinary Run Cell command must complete.");
-    const associatedCells = releasedPythonSourceCells(interactive, source);
+    let associatedCells = releasedPythonSourceCells(interactive, source);
+    if (associatedCells.length === 0) {
+      const selectedKernel = await jupyterApi.kernels.getKernel(interactiveDocument.uri);
+      assertExactOpenNotebookDocument(
+        interactiveDocument,
+        "after resolving the ordinary Python source cell's initial kernel"
+      );
+      if (selectedKernel) {
+        await waitFor(
+          () => completedReleasedPythonSourceCells(interactiveDocument, source).length === 1,
+          30_000,
+          "the ordinary Python source cell to publish through its already selected kernel"
+        );
+        associatedCells = releasedPythonSourceCells(interactiveDocument, source);
+      } else {
+        await waitFor(
+          () => {
+            const editors = vscode.window.visibleNotebookEditors.filter(
+              (candidate) => candidate.notebook === interactiveDocument
+            );
+            return editors.length === 1 && vscode.window.activeNotebookEditor === editors[0];
+          },
+          10_000,
+          "the exact first-run Interactive editor before selecting its kernel"
+        );
+        const [interactiveEditor] = vscode.window.visibleNotebookEditors.filter(
+          (candidate) => candidate.notebook === interactiveDocument
+        );
+        assert.ok(interactiveEditor, "The first-run Interactive Window must expose one exact editor.");
+        assertExactVisibleReleasedNotebookEditor(
+          interactiveDocument,
+          interactiveEditor,
+          "before selecting its first-run kernel"
+        );
+        recordAcceptanceProgress(`${checkpoint}:select-kernel-after-first-run`);
+        await selectReleasedJupyterKernel(
+          workbench,
+          interactiveDocument,
+          interactiveEditor,
+          "jupyter-allow",
+          kernelTarget
+        );
+        assertExactOpenNotebookDocument(
+          interactiveDocument,
+          "after selecting the ordinary Python source cell's first-run kernel"
+        );
+      }
+    }
+    if (associatedCells.length === 0) {
+      const restoredEditor = await vscode.window.showTextDocument(sourceDocument, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.One,
+        preserveFocus: false
+      });
+      assert.equal(restoredEditor.document, sourceDocument);
+      restoredEditor.selection = new vscode.Selection(4, 0, 4, 0);
+      await waitFor(
+        () => vscode.window.activeTextEditor?.document === sourceDocument,
+        10_000,
+        "the exact Python source after its first-run kernel selection"
+      );
+      recordAcceptanceProgress(`${checkpoint}:run-cell-after-kernel`);
+      assertExactOpenNotebookDocument(interactiveDocument, "before retrying the ordinary Python source cell");
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand<void>("jupyter.runcurrentcell"),
+        30_000,
+        "the ordinary Python source cell to run after kernel selection"
+      );
+      assertExactOpenNotebookDocument(interactiveDocument, "after retrying the ordinary Python source cell");
+      await waitFor(
+        () => completedReleasedPythonSourceCells(interactiveDocument, source).length === 1,
+        30_000,
+        "the ordinary Python source cell to publish after kernel selection"
+      );
+      associatedCells = releasedPythonSourceCells(interactive, source);
+    }
+    assert.ok(
+      await jupyterApi.kernels.getKernel(interactiveDocument.uri),
+      "The ordinary Python source cell must start its exact selected kernel."
+    );
+    assertExactOpenNotebookDocument(interactiveDocument, "after starting the ordinary Python source cell's kernel");
     assert.equal(associatedCells.length, 1, "The ordinary Python source cell must be associated exactly once.");
     const associatedMetadata = associatedCells[0]?.metadata as {
       interactive?: { lineIndex?: unknown };
@@ -11277,9 +11366,6 @@ async function exerciseReleasedPythonSourceCellDiscovery(
 
     recordAcceptanceProgress(`${checkpoint}:interactive-toolbar`);
     const interactiveEditor = await showExactReleasedNotebook(interactive);
-    const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
-    assert.ok(jupyterExtension, "The ordinary Python-cell journey requires the released Jupyter extension.");
-    const jupyterApi = await jupyterExtension.activate();
     assertExactOpenNotebookDocument(interactive, "after acquiring Jupyter for the ordinary Python cell");
     const originalKernel = await jupyterApi.kernels.getKernel(interactive.uri);
     assertExactOpenNotebookDocument(interactive, "after acquiring the ordinary Python cell's kernel");
