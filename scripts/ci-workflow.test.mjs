@@ -549,11 +549,21 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     "use-public-rspm": true
   });
   const releasedJupyter = acceptance?.jobs?.jupyter;
-  assert.equal(releasedJupyter?.steps?.filter((step) => step?.run === "npm run test:r-contract").length, 1);
+  assert.deepEqual(releasedJupyter?.strategy, {
+    "fail-fast": true,
+    matrix: { phase: ["python", "r"] }
+  });
+  const rContract = releasedJupyter?.steps?.find((step) => step?.run === "npm run test:r-contract");
+  assert.equal(rContract?.if, "${{ matrix.phase == 'r' }}");
+  assert.equal(
+    releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor")?.if,
+    "${{ matrix.phase == 'python' }}"
+  );
   assert.equal(
     releasedJupyter?.steps?.some(
       (step) =>
         step?.id === "packaged_editor_r" &&
+        step?.if === "${{ matrix.phase == 'r' }}" &&
         step?.env?.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter" &&
         step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode,cursor" &&
         step?.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "1"

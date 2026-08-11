@@ -66,7 +66,8 @@ install their canonical VSIX in VS Code and Cursor and run the R notebook journe
 complete profile, with macOS also covering `.R`, `.Rmd`, and `.qmd`. Windows and Cursor run the representative notebook
 profile within the same hard deadline; Windows skips direct R documents. Direct R/runtime/webview suites retain the
 complete 21-operation and document matrix. The stable job verifies the artifact again immediately before that journey.
-Failed editor runs may upload only the usual sealed diagnostics.
+The candidate workflow runs Python and R Jupyter acceptance as separate fail-fast matrix jobs. Both jobs download and
+verify the same candidate VSIX. Failed editor runs may upload only the usual sealed diagnostics.
 
 The preview-only form of the same author is `node scripts/create-canonical-release-artifact.mjs <candidate> --out-dir <directory> --preview-release`. It binds a clean exact `EXPECTED_SHA`, the intended numeric `RELEASE_TAG`, preview source/package/runtime identity, the VSIX pre-release marker, and immutable candidate bytes, but deliberately does not invoke stable parity, changelog, or README readiness and does not require the intended tag to exist. It emits the same three filenames as stable with the distinct `openwrangler-canonical-preview-release-artifact-v1` provenance protocol and `preview: true`. Pre-tag acceptance uses `scripts/verify-preview-release-artifact.mjs`; public registry intake independently revalidates the same triple. Historical two-file previews are not canonical inputs and are rejected rather than receiving invented provenance.
 
@@ -175,7 +176,7 @@ version, changelog, release notes, and required release metadata.
 
 For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR artifact and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. A failed candidate is recorded and is not automatically retried.
 
-`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. A five-cell matrix runs macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH starts only after all five cells pass, and publication depends directly on the package, matrix, and Remote SSH results. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
+`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Five outer lanes run macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. The Jupyter lane expands into separate Python and R jobs. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH starts only after every lane passes, and publication depends directly on the package, matrix, and Remote SSH results. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
 
 The candidate matrix uses GitHub's fail-fast behavior. Once a cell reports failure, GitHub cancels the other running
 cells because that candidate cannot publish. A suspected failure is not enough: the command must finish and return
@@ -188,7 +189,7 @@ A `publish: false` run proves source binding, package integrity, and the complet
 The stable workflow is manual and defaults to validation-only. It accepts only the exact current protected `main`
 commit. Packaging may preflight an absent tag or one that already resolves to that commit; publication accepts only
 an absent or exact lightweight tag. One job builds the VSIX and uploads `openwrangler.vsix`, its lowercase SHA-256,
-and stable provenance JSON. The same shared five-cell matrix validates it before Remote SSH runs. The package,
+and stable provenance JSON. The same shared five-lane matrix validates it before Remote SSH runs. The package,
 matrix, and Remote SSH jobs must all pass before promotion.
 
 `publish: true` makes the final job eligible for the branch-and-tag-restricted `publishing` environment. That job

@@ -139,16 +139,19 @@ function inspectPackagedRunner(jobName, job, specification, problems) {
   const runner = runners[0];
   const runnerIndex = jobSteps.indexOf(runner);
   const verifier = jobSteps[runnerIndex - 1];
+  const conditionalKeys = specification.condition === undefined ? [] : ["if"];
   if (
     runners.length !== 1 ||
-    !exactKeys(runner, ["id", "name", "continue-on-error", "run", "env"]) ||
+    !exactKeys(runner, ["id", "name", "continue-on-error", "run", "env", ...conditionalKeys]) ||
     runner?.["continue-on-error"] !== true ||
     command(runner?.run) !== specification.run ||
+    runner?.if !== specification.condition ||
     !exactKeys(runner?.env, Object.keys(specification.env)) ||
     Object.entries(specification.env).some(([name, value]) => runner.env[name] !== value) ||
     verifier?.id !== specification.verifierId ||
-    !exactKeys(verifier, ["id", "name", "env", "run"]) ||
+    !exactKeys(verifier, ["id", "name", "env", "run", ...conditionalKeys]) ||
     command(verifier?.run) !== VERIFY ||
+    verifier?.if !== specification.condition ||
     !exactKeys(verifier?.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
     verifier.env.EXPECTED_SHA !== "${{ inputs.expected_sha }}" ||
     verifier.env.RELEASE_TAG !== "${{ inputs.release_tag }}"
@@ -361,7 +364,30 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   }
 
   const jupyterRuns = runs(workflow.jobs.jupyter);
+  const jupyterStrategy = workflow.jobs.jupyter?.strategy;
+  const jupyterSteps = steps(workflow.jobs.jupyter);
+  const setupJava = jupyterSteps.find((step) => step?.uses?.startsWith("actions/setup-java@"));
+  const setupR = jupyterSteps.find((step) => step?.uses?.startsWith("r-lib/actions/setup-r@"));
+  const rscript = jupyterSteps.find((step) => step?.id === "rscript");
+  const rContract = jupyterSteps.find((step) => command(step?.run) === "npm run test:r-contract");
+  const remoteLockCheck = jupyterSteps.find((step) => command(step?.run) === "npm run lock:remote-jupyter:check");
+  const remoteAudit = jupyterSteps.find((step) => command(step?.run) === "npm run audit:remote-jupyter");
   if (
+    workflow.jobs.jupyter?.name !==
+      "Released Jupyter acceptance (${{ matrix.phase == 'python' && 'Python' || 'R' }})" ||
+    !exactKeys(jupyterStrategy, ["fail-fast", "matrix"]) ||
+    jupyterStrategy?.["fail-fast"] !== true ||
+    !exactKeys(jupyterStrategy?.matrix, ["phase"]) ||
+    !Array.isArray(jupyterStrategy?.matrix?.phase) ||
+    jupyterStrategy.matrix.phase.length !== 2 ||
+    jupyterStrategy.matrix.phase[0] !== "python" ||
+    jupyterStrategy.matrix.phase[1] !== "r" ||
+    setupJava?.if !== "${{ matrix.phase == 'python' }}" ||
+    setupR?.if !== "${{ matrix.phase == 'r' }}" ||
+    rscript?.if !== "${{ matrix.phase == 'r' }}" ||
+    rContract?.if !== "${{ matrix.phase == 'r' }}" ||
+    remoteLockCheck?.if !== "${{ matrix.phase == 'python' }}" ||
+    remoteAudit?.if !== "${{ matrix.phase == 'python' }}" ||
     !includesAll(jupyterRuns, [
       "npm run test:r-contract",
       "npm run lock:remote-jupyter:check",
@@ -373,7 +399,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
         step?.env?.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION === "1" && step?.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "1"
     )
   ) {
-    problems.push("jupyter must retain Python/R local and remote-kernel acceptance in VS Code and Cursor.");
+    problems.push("jupyter must run separate fail-fast Python and R cells with full local and remote acceptance.");
   }
   inspectPackagedRunner(
     "jupyter",
@@ -381,6 +407,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     {
       id: "packaged_editor",
       verifierId: "canonical_jupyter",
+      condition: "${{ matrix.phase == 'python' }}",
       run: "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix",
       env: {
         OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
@@ -399,6 +426,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     {
       id: "packaged_editor_r",
       verifierId: "canonical_r_jupyter",
+      condition: "${{ matrix.phase == 'r' }}",
       run: "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}",
       env: {
         OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",

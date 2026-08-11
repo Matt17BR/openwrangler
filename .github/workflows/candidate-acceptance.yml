@@ -451,10 +451,14 @@ jobs:
 
   jupyter:
     if: ${{ inputs.lane == 'jupyter' }}
-    name: Released and remote Jupyter acceptance
+    name: Released Jupyter acceptance (${{ matrix.phase == 'python' && 'Python' || 'R' }})
     needs: contract
     runs-on: ${{ inputs.runner_os }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        phase: [python, r]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -470,15 +474,18 @@ jobs:
           python-version: ${{ inputs.python_version }}
           cache: pip
       - uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
+        if: ${{ matrix.phase == 'python' }}
         with:
           distribution: temurin
           java-version: "17"
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        if: ${{ matrix.phase == 'r' }}
         with:
           r-version: "4.5.2"
           use-public-rspm: true
       - id: rscript
         name: Locate hosted Rscript
+        if: ${{ matrix.phase == 'r' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -497,19 +504,24 @@ jobs:
           printf 'Hosted R: %s\n' "$r_version"
       - run: npm ci
       - name: Install R contract packages
+        if: ${{ matrix.phase == 'r' }}
         env:
           RSCRIPT: ${{ steps.rscript.outputs.executable }}
         run: >-
           "$RSCRIPT" --vanilla -e
           'install.packages(c("jsonlite", "tibble", "readr", "dplyr", "data.table", "bit64", "collapse", "nanoparquet"), repos = "https://cloud.r-project.org")'
       - run: npm run test:r-contract
+        if: ${{ matrix.phase == 'r' }}
         env:
           RSCRIPT: ${{ steps.rscript.outputs.executable }}
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
+        if: ${{ matrix.phase == 'python' }}
       - run: npm run lock:remote-jupyter:check
+        if: ${{ matrix.phase == 'python' }}
       - run: npm run audit:remote-jupyter
+        if: ${{ matrix.phase == 'python' }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ inputs.artifact_id }}
@@ -551,6 +563,7 @@ jobs:
           appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
       - id: canonical_jupyter
         name: Reverify the candidate for released Jupyter
+        if: ${{ matrix.phase == 'python' }}
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -558,6 +571,7 @@ jobs:
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
       - id: packaged_editor
         name: Test released Jupyter in the exact packaged VSIX
+        if: ${{ matrix.phase == 'python' }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
@@ -582,6 +596,7 @@ jobs:
         run: exit 1
       - id: canonical_r_jupyter
         name: Reverify the candidate for R Jupyter
+        if: ${{ matrix.phase == 'r' }}
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -589,6 +604,7 @@ jobs:
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
       - id: packaged_editor_r
         name: Test R Jupyter in the exact packaged VSIX
+        if: ${{ matrix.phase == 'r' }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}
         env:

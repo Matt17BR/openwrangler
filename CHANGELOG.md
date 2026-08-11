@@ -16,6 +16,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Ready pull requests now run source and contract preflight before starting the heavier UI, engine, package, and
   editor jobs. A preflight failure stops work that can no longer make the pull request pass; green pull requests run
   the same checks as before.
+- Preview and stable candidates now run Python and R Jupyter acceptance in separate fail-fast jobs. Both jobs verify
+  the same candidate VSIX, and a failure identifies the affected runtime without waiting for the other editor command.
 - Column profiles now use one Counts/% setting in both the grid headers and the profile panel. The grid footer exposes
   the switch before a profile is opened, and **More values…** opens the longer value list when a compact profile omits
   categories.
