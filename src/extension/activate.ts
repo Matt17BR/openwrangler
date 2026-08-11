@@ -3,6 +3,7 @@ import { registerFileCommands } from "./files/fileOpen";
 import { registerTrustedPickleConversion } from "./files/trustedPickleConversion";
 import { TrustedPickleWorkerLifecycle } from "./files/trustedPickleWorker";
 import { registerNotebookCommands } from "./notebooks/jupyterBridge";
+import { NotebookCellResultTracker, registerNotebookCellResultAction } from "./notebooks/notebookCellResult";
 import { registerNotebookRendererMessaging } from "./notebooks/rendererMessaging";
 import { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinator";
 import { registerPythonInteractiveCommands } from "./notebooks/pythonInteractiveCommands";
@@ -72,7 +73,14 @@ export function isCursorAppName(appName: string): boolean {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<OpenWranglerExtensionApi | undefined> {
-  await setNotebookEditorTitleActionContext(isCursorAppName(vscode.env.appName));
+  const notebookCellResults = new NotebookCellResultTracker();
+  notebookCellResults.start();
+  try {
+    await setNotebookEditorTitleActionContext(isCursorAppName(vscode.env.appName));
+  } catch (error) {
+    notebookCellResults.dispose();
+    throw error;
+  }
 
   const bridge = new PythonBridge(context);
   const coordinator = new SessionCoordinator(context.workspaceState, (message) => bridge.reportDiagnostic(message));
@@ -92,6 +100,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
   registerRuntimeCommands(context, bridge);
   registerRDocumentCommands(context, coordinator, { python: notebookVariables, r: rInteractive });
   registerNotebookCommands(context, coordinator);
+  registerNotebookCellResultAction(context, coordinator, notebookCellResults);
   registerNotebookRendererMessaging(context, coordinator);
   context.subscriptions.push(new NotebookPreviewCoordinator(context));
   rInteractive.startAutomaticDiscovery();
