@@ -298,6 +298,12 @@ describe("executed notebook cell result action", () => {
   });
 
   it("rechecks the selected kernel when it was not available at execution start", async () => {
+    const previous = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    const gatedTracker = new NotebookCellResultTracker();
+    expect(gatedTracker.diagnosticsForTesting()).toBeUndefined();
+    gatedTracker.dispose();
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
     const document = notebook("file:///late-selected-kernel.ipynb");
     const cell = codeCell(document, 1);
     setCells(document, [cell]);
@@ -307,15 +313,56 @@ describe("executed notebook cell result action", () => {
     const tracker = new NotebookCellResultTracker();
     tracker.start();
 
-    tracker.recordDocumentChange(executionStartedEvent(cell) as never);
-    await settleInspection();
-    tracker.recordDocumentChange(executionEvent(cell) as never);
-    await settleInspection();
+    try {
+      tracker.recordDocumentChange(executionStartedEvent(cell) as never);
+      await settleInspection();
+      tracker.recordDocumentChange(executionEvent(cell) as never);
+      await settleInspection();
 
-    expect(mocks.observe).toHaveBeenCalledTimes(2);
-    expect(mocks.inspect).toHaveBeenCalledWith(document, 1, "a".repeat(64), binding);
-    expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
-    tracker.dispose();
+      expect(mocks.observe).toHaveBeenCalledTimes(2);
+      expect(mocks.inspect).toHaveBeenCalledWith(document, 1, "a".repeat(64), binding);
+      expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+      const diagnostic = tracker.diagnosticsForTesting();
+      expect(Object.isFrozen(diagnostic)).toBe(true);
+      expect(diagnostic).toEqual({
+        stage: "eligible",
+        statusItem: "offered",
+        reason: undefined
+      });
+    } finally {
+      tracker.dispose();
+      if (previous === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+      else process.env.OPEN_WRANGLER_EXTENSION_TESTS = previous;
+    }
+  });
+
+  it("reports a bounded completion-kernel error without exposing its message", async () => {
+    const previous = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+    const document = notebook("file:///completion-kernel-error.ipynb");
+    const cell = codeCell(document, 1);
+    setCells(document, [cell]);
+    mocks.observe.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("private kernel failure details"));
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+    try {
+      tracker.recordDocumentChange(executionStartedEvent(cell) as never);
+      await settleInspection();
+      tracker.recordDocumentChange(executionEvent(cell) as never);
+      await settleInspection();
+
+      const diagnostic = tracker.diagnosticsForTesting();
+      expect(diagnostic).toMatchObject({
+        stage: "rejected",
+        statusItem: "not-requested",
+        reason: "completion-kernel-error"
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain("private kernel failure details");
+    } finally {
+      tracker.dispose();
+      if (previous === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+      else process.env.OPEN_WRANGLER_EXTENSION_TESTS = previous;
+    }
   });
 
   it("checks the selected kernel when the first observed event already contains the result", async () => {
