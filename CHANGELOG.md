@@ -68,8 +68,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Large R dataframes no longer lose column or dataset profiles at the former row and cell limits. Cheap statistics
   stay exact through bounded chunk scans; sampled distributions, unavailable distinct counts, percentage denominators,
   and duplicate-row sample sizes are labeled explicitly.
-- The Filters view now opens on multi-million-row R dataframes by showing values and counts from a labeled
-  100,000-row sample. A non-empty search still uses exact counts within the existing native R search limit.
+- The Filters view now opens on multi-million-row R dataframes with a labeled 100,000-row initial sample. Searching
+  scans the R column in chunks and returns exact matching counts instead of stopping at the old one-million-row limit.
 - R dataframes now open when an atomic or classed column carries an ordinary aligned `names` attribute. Malformed
   names metadata and unrelated column attributes are still rejected.
 - Python Interactive windows now expose **Open in Open Wrangler** in their native toolbar, next to Jupyter Variables.

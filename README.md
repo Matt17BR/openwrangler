@@ -277,7 +277,7 @@ Large R views keep row counts, missing counts, inexpensive numeric/text statisti
 and categorical distributions use a bounded sample when needed and say so; their percentages use that sample, while
 an exact distinct count that was not calculated appears as `n/a`. Dataset missing counts remain exact, and a sampled
 duplicate-row count shows its sample size. Filters opens large R views with a labeled sample of up to 100,000 rows.
-A non-empty value search is exact within its separate native R value-scan bound.
+Typing a value search scans the column in chunks and returns exact matching counts, including on larger frames.
 
 <a href="https://github.com/Matt17BR/openwrangler/blob/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
