@@ -21,7 +21,11 @@ import {
   type RNotebookVariableDiscovery
 } from "../r/rNotebookVariableDiscovery";
 import { restoreEditorGroupAfterQuickPick } from "../webviewPanel";
-import { isCurrentLiterateDocumentOrigin, type LiterateDocumentOrigin } from "../literateDocumentOrigin";
+import {
+  isCurrentLiterateDocumentOrigin,
+  isUnchangedLiterateDocumentOrigin,
+  type LiterateDocumentOrigin
+} from "../literateDocumentOrigin";
 
 const PYTHON_CELL_MARKER = /^\s*#\s*(?:%%|<codecell>|In\[\d*?\]|In\[ \])/u;
 const MARKDOWN_CELL_MARKER = /^\s*#\s*(?:%%\s*\[markdown\]|<markdowncell>)/iu;
@@ -940,7 +944,12 @@ async function selectKernelAndRestorePythonOrigin(
     return false;
   }
   const notebookEditor = shown.value;
-  if (notebookEditor.notebook !== notebook || !isSoleOpenNotebookDocument(notebook)) {
+  if (
+    notebookEditor.notebook !== notebook ||
+    !isSoleOpenNotebookDocument(notebook) ||
+    !isUnchangedPythonOrigin(origin) ||
+    (origin.literateOrigin !== undefined && vscode.window.activeNotebookEditor !== notebookEditor)
+  ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed while its kernel was being selected. Try again."
     );
@@ -958,7 +967,11 @@ async function selectKernelAndRestorePythonOrigin(
     void vscode.window.showWarningMessage("Jupyter could not select a kernel for the Interactive Window.");
     return false;
   }
-  if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+  if (
+    !isUnchangedPythonOrigin(origin) ||
+    !isSoleOpenNotebookDocument(notebook) ||
+    (origin.literateOrigin !== undefined && vscode.window.activeNotebookEditor !== notebookEditor)
+  ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed during kernel selection. Try again."
     );
@@ -997,6 +1010,10 @@ async function selectKernelAndRestorePythonOrigin(
     return false;
   }
   return true;
+}
+
+function isUnchangedPythonOrigin(origin: PythonCellOrigin): boolean {
+  return origin.literateOrigin ? isUnchangedLiterateDocumentOrigin(origin.literateOrigin) : isExactPythonOrigin(origin);
 }
 
 function settleBeforeDeadline<T>(
