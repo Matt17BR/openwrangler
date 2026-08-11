@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.3] - 2026-08-11
+
 ### Added
 
 - R dataframes can now scale integer, double, and `integer64` columns to the 0–1 range, either in place or into a new
