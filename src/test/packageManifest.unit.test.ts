@@ -406,6 +406,10 @@ describe("file launch contributions", () => {
 
 describe("notebook launch contributions", () => {
   const supportedNotebookContext = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
+  const editorTitleContext =
+    "isWorkspaceTrusted && ((notebookType == 'jupyter-notebook' && " +
+    "(config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)) || " +
+    "(activeEditor == workbench.editor.interactive && openWrangler.forceNotebookEditorTitleAction))";
 
   it("keeps the notebook action discoverable without Jupyter-private context keys", () => {
     expect(manifest.activationEvents).toEqual(
@@ -443,12 +447,12 @@ describe("notebook launch contributions", () => {
     });
     expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
       command: "openWrangler.openNotebookVariable",
-      when: `${supportedNotebookContext} && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)`,
+      when: editorTitleContext,
       group: "navigation@50"
     });
     expect(manifest.contributes?.menus?.["interactive/toolbar"]).toContainEqual({
       command: "openWrangler.openNotebookVariable",
-      when: "isWorkspaceTrusted",
+      when: "isWorkspaceTrusted && !openWrangler.forceNotebookEditorTitleAction",
       group: "navigation@2"
     });
     for (const menu of ["notebook/toolbar", "interactive/toolbar", "editor/title"]) {
@@ -527,8 +531,8 @@ describe("notebook launch contributions", () => {
       const interactive = notebookType === "interactive";
       return {
         notebookToolbar: notebook && globalToolbar === true && !forceEditorTitle,
-        interactiveToolbar: interactive,
-        editorTitle: notebook && (globalToolbar !== true || forceEditorTitle)
+        interactiveToolbar: interactive && !forceEditorTitle,
+        editorTitle: (notebook && (globalToolbar !== true || forceEditorTitle)) || (interactive && forceEditorTitle)
       };
     };
 
@@ -560,8 +564,8 @@ describe("notebook launch contributions", () => {
       });
       expect(actionSurfaces("interactive", globalToolbar, true)).toEqual({
         notebookToolbar: false,
-        interactiveToolbar: true,
-        editorTitle: false
+        interactiveToolbar: false,
+        editorTitle: true
       });
     }
     expect(actionSurfaces("quarto-notebook", true, false)).toEqual({
