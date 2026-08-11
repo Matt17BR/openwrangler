@@ -387,6 +387,25 @@ assert_identical(scale_values$kind, "columnValues", "the R agent refused large i
 assert_identical(scale_values$sampleSize, 100000L, "the R agent omitted the value-discovery sample size")
 assert_identical(scale_values$hasMore, TRUE, "the R agent claimed sampled values were exhaustive")
 assert_identical(scale_values$values[[1L]]$count, 100000L, "the R agent counted values outside its sample")
+scale_search <- dispatch(
+  "getColumnValues",
+  list(
+    sessionId = profile_scale_session_id,
+    column = list(id = "r:c:0", name = "value"),
+    view = empty_view(),
+    search = "false",
+    limit = 100L
+  )
+)
+assert_identical(scale_search$kind, "columnValues", "the R agent refused a large exact value search")
+assert_identical(scale_search$sampleSize, NULL, "the R agent labeled an exact value search as sampled")
+assert_identical(scale_search$hasMore, FALSE, "the R agent claimed a complete value search was truncated")
+assert_identical(scale_search$values[[1L]]$value, "FALSE", "the R agent changed a large value-search match")
+assert_identical(
+  scale_search$values[[1L]]$count,
+  1000001L,
+  "the R agent did not count every row in a large exact value search"
+)
 scale_closed <- dispatch("closeSession", list(sessionId = profile_scale_session_id))
 assert_identical(scale_closed$kind, "closed", "the R agent did not close the large profile session")
 
