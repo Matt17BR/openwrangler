@@ -710,7 +710,8 @@ kernel-agent test checks that replacement-diff truncation does not materialize t
 committed grouped result through native R Parquet. The packaged Group and aggregate journey selects a key, sums a
 numeric column, checks the two exact grouped totals and generated R, applies the draft, and undoes it back to the
 source schema. Min-max scale, Round, Floor, and Ceiling use their visible forms and check derived values from positive and negative
-fractional inputs.
+fractional inputs. The packaged sequence uses Column search to bring each result into the virtualized grid before checking it,
+including after undoing a step that added a far-right column.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact

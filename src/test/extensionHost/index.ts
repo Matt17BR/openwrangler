@@ -7644,6 +7644,19 @@ async function exerciseReleasedREditingJourney(
     assert.match(roundingPreview.code ?? "", /\bround\s*\(/u);
     await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Round preview must reach its renderer.");
     app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Round preview");
+    const roundingColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await roundingColumnSearch.fill(roundingColumn.name);
+    await app
+      .getByRole("option", { name: /^fractional_score,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await roundingColumnSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === roundingColumn.id,
+      10_000,
+      "revealing the R Round target after undoing Min-max scale"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Round result");
     const roundedCell = app.locator(`td[data-grid-row="0"][data-grid-column="${roundingColumn.position}"]`);
     await roundedCell.waitFor({ state: "visible", timeout: 10_000 });
     const roundedDisplay = Number((await roundedCell.innerText()).trim());

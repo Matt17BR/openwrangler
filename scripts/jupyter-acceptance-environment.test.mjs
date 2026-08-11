@@ -995,7 +995,7 @@ test("released R notebook fixtures use the owned Windows cleanup boundary", asyn
   assert.doesNotMatch(journey, /rmSync\(directory/u);
 });
 
-test("R editing acceptance reveals the capitalized column after temporary derived columns", async () => {
+test("R editing acceptance reveals virtualized columns after temporary derived columns", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const start = source.indexOf("async function exerciseReleasedREditingJourney(");
   const end = source.indexOf("\nasync function ", start + 1);
@@ -1016,6 +1016,15 @@ test("R editing acceptance reveals the capitalized column after temporary derive
   const ceilingSelection = journey.indexOf('"selecting the visible R Ceiling result"', floorValue);
   const ceilingRenderer = journey.indexOf('"the selected R Ceiling result"', ceilingSelection);
   const ceilingValue = journey.indexOf("the visible R Ceiling value in row ${row + 1}", ceilingRenderer);
+  const minMaxUndo = journey.indexOf('"undoing native R Min-max scale"');
+  const roundPreview = journey.indexOf('"The R Round preview must reach its renderer."', minMaxUndo);
+  const roundReveal = journey.indexOf("await roundingColumnSearch.fill(roundingColumn.name)", roundPreview);
+  const roundSelection = journey.indexOf(
+    "testing.activeSession()?.viewState.selectedColumnId === roundingColumn.id",
+    roundReveal
+  );
+  const roundRenderer = journey.indexOf('"the selected R Round result"', roundSelection);
+  const roundValue = journey.indexOf("const roundedCell = app.locator", roundRenderer);
 
   assert.ok(
     ceilingReveal >= 0 &&
@@ -1033,6 +1042,15 @@ test("R editing acceptance reveals the capitalized column after temporary derive
       ceilingRenderer > ceilingSelection &&
       ceilingValue > ceilingRenderer,
     "The R journey must reacquire Floor and Ceiling after Column Search before reading their cells."
+  );
+  assert.ok(
+    minMaxUndo >= 0 &&
+      roundPreview > minMaxUndo &&
+      roundReveal > roundPreview &&
+      roundSelection > roundReveal &&
+      roundRenderer > roundSelection &&
+      roundValue > roundRenderer,
+    "The R journey must reveal Round through Column Search after undoing the far-right Min-max result."
   );
 });
 
