@@ -40,6 +40,16 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
       workflow.jobs.jupyter.steps.find((step) => step.id === "canonical").env.EXPECTED_SHA = "${{ github.sha }}";
     },
     (workflow) => {
+      workflow.jobs.jupyter.strategy["fail-fast"] = false;
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.strategy.matrix.phase = ["python"];
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).if =
+        "${{ matrix.phase == 'python' }}";
+    },
+    (workflow) => {
       workflow.jobs.platform.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).uses =
         "r-lib/actions/setup-r@v2";
     },
