@@ -23,6 +23,7 @@ const lifecycle = vi.hoisted(() => ({
   pythonVariables: {
     onDidChangeVariables: () => ({ dispose: vi.fn() }),
     snapshot: () => undefined,
+    diagnosticsForTesting: vi.fn(),
     dispose: vi.fn()
   },
   rVariables: {
@@ -106,6 +107,7 @@ describe("extension deactivation", () => {
     lifecycle.notebookCellResults.start.mockReset();
     lifecycle.notebookCellResults.dispose.mockReset();
     lifecycle.notebookCellResults.diagnosticsForTesting.mockReset();
+    lifecycle.pythonVariables.diagnosticsForTesting.mockReset();
     lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReset();
     lifecycle.coordinatedBridge.request.mockReset();
     lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
@@ -257,6 +259,12 @@ describe("extension deactivation", () => {
       statusItem: "not-requested",
       reason: undefined
     } as never);
+    lifecycle.pythonVariables.diagnosticsForTesting.mockReturnValue({
+      invocation: 2,
+      stage: "selecting-kernel",
+      lastActiveStage: "selecting-kernel",
+      stages: ["dispatching-cell", "waiting-for-cell-publication", "selecting-kernel"]
+    });
 
     const api = await activate({
       subscriptions: [],
@@ -281,6 +289,13 @@ describe("extension deactivation", () => {
       reason: undefined
     });
     expect(lifecycle.notebookCellResults.diagnosticsForTesting).toHaveBeenCalledOnce();
+    expect(api?.testing?.pythonInteractiveDiagnostics()).toEqual({
+      invocation: 2,
+      stage: "selecting-kernel",
+      lastActiveStage: "selecting-kernel",
+      stages: ["dispatching-cell", "waiting-for-cell-publication", "selecting-kernel"]
+    });
+    expect(lifecycle.pythonVariables.diagnosticsForTesting).toHaveBeenCalledOnce();
   });
 
   it("exposes only a decline path for dependency revalidation through the environment-gated test API", async () => {

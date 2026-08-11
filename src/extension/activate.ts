@@ -10,7 +10,10 @@ import {
 } from "./notebooks/notebookCellResult";
 import { registerNotebookRendererMessaging } from "./notebooks/rendererMessaging";
 import { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinator";
-import { registerPythonInteractiveCommands } from "./notebooks/pythonInteractiveCommands";
+import {
+  registerPythonInteractiveCommands,
+  type PythonInteractiveDiagnostics
+} from "./notebooks/pythonInteractiveCommands";
 import { PythonBridge } from "./pythonBridge";
 import { registerRDocumentCommands } from "./r/rDocumentCommands";
 import { registerRInteractiveCommands, type RLiveVariableProvider } from "./r/rInteractiveCommands";
@@ -59,6 +62,7 @@ export interface OpenWranglerTestApi {
   notebookInsertionStatus(): NotebookInsertionDiagnosticStatus | undefined;
   viewSortDispatchStatus(): ViewSortDispatchStatus | undefined;
   notebookCellResultDiagnostics(): NotebookCellResultTrackerDiagnostics | undefined;
+  pythonInteractiveDiagnostics(): PythonInteractiveDiagnostics | undefined;
 }
 
 export interface OpenWranglerExtensionApi {
@@ -144,7 +148,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         exportCodeTo: (destination) => nativeViews.exportCodeTo(destination),
         notebookInsertionStatus: () => nativeViews.notebookInsertionStatus(),
         viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus(),
-        notebookCellResultDiagnostics: () => notebookCellResults.diagnosticsForTesting()
+        notebookCellResultDiagnostics: () => notebookCellResults.diagnosticsForTesting(),
+        pythonInteractiveDiagnostics: () => notebookVariables.diagnosticsForTesting()
       }
     };
   }
