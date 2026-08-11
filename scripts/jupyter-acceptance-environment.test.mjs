@@ -12,7 +12,7 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -410,14 +410,19 @@ test("Quarto Python acceptance adds one private kernelspec to the prepared R env
     });
     assert.equal(Object.isFrozen(added), true);
     assert.equal(statSync(added.ipythonDir).mode & 0o777, 0o700);
-    assert.equal(statSync(added.kernelSpecPath).mode & 0o777, 0o600);
-    assert.deepEqual(JSON.parse(await readFile(added.kernelSpecPath, "utf8")), {
-      argv: [python, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
-      display_name: "Python (Open Wrangler Quarto)",
-      language: "python",
-      metadata: { debugger: false },
-      env: { IPYTHONDIR: added.ipythonDir }
-    });
+    const kernelSpec = await open(added.kernelSpecPath, "r");
+    try {
+      assert.equal((await kernelSpec.stat()).mode & 0o777, 0o600);
+      assert.deepEqual(JSON.parse(await kernelSpec.readFile("utf8")), {
+        argv: [python, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+        display_name: "Python (Open Wrangler Quarto)",
+        language: "python",
+        metadata: { debugger: false },
+        env: { IPYTHONDIR: added.ipythonDir }
+      });
+    } finally {
+      await kernelSpec.close();
+    }
     assert.equal(existsSync(prepared.kernelSpecPath), true, "Adding Python must retain the exact R kernelspec.");
     assert.throws(
       () => addJupyterAcceptancePythonKernel(prepared, python),
