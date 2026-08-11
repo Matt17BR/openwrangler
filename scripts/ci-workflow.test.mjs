@@ -1572,8 +1572,8 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     options: ["linux-all", "macos-r", "windows-r"]
   });
   assert.deepEqual(workflow?.concurrency, {
-    group: "released-jupyter-${{ github.ref }}",
-    "cancel-in-progress": false
+    group: "released-jupyter-${{ github.ref }}-${{ inputs.target }}",
+    "cancel-in-progress": true
   });
   const job = workflow?.jobs?.vscode;
   assert.equal(job?.name, "Released Jupyter in VS Code and Cursor");

@@ -50,7 +50,10 @@ The Python and R Jupyter jobs start together and verify the same candidate VSIX.
 the affected runtime and GitHub cancels the other matrix cell once the failure is reported. Each native editor phase
 still has its own 300-second hard deadline and 180-second inactivity deadline.
 
-Cross-platform, CodeQL, and performance workflows also run on schedules so changes in external products are found between releases. Released Jupyter is run manually when that integration needs to be checked.
+Cross-platform, CodeQL, and performance workflows also run on schedules so changes in external products are found
+between releases. Released Jupyter is run manually when that integration needs to be checked. Dispatching the same
+Released Jupyter target again cancels its older diagnostic run; a macOS, Windows, or Linux target does not cancel
+either of the others. Release candidates are not replaced this way.
 
 ## Branches
 

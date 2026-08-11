@@ -783,8 +783,10 @@ accepted files are
 composed from the accepted full source. `npm run compose:readme-media` refreshes all three derived R crops after a
 new accepted capture.
 
-The manual **Released Jupyter acceptance** workflow has a `macos-r` lane for the packaged VS Code and local IRkernel
-notebook plus Open Wrangler's direct `.R`, `.Rmd`, and `.qmd` journeys. Use it while diagnosing macOS-only R failures;
+The manual **Released Jupyter acceptance** workflow cancels an older run of the same selected target when a newer
+diagnostic run is dispatched; its Linux, macOS, and Windows targets do not cancel one another. It has a `macos-r` lane
+for the packaged VS Code and local IRkernel notebook plus Open Wrangler's direct `.R`, `.Rmd`, and `.qmd` journeys.
+Use it while diagnosing macOS-only R failures;
 the default `linux-all` lane also installs the pinned R and Quarto editor tooling and keeps the broader VS Code, Cursor,
 Python, active R terminal, native Quarto preview, and remote-Jupyter coverage.
 
