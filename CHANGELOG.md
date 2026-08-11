@@ -28,6 +28,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   interrupt its cleanup.
 - Editor, performance, and webview failures now upload available diagnostics before failing their job. The failure
   is raised immediately after the upload, so later acceptance work in that job does not start.
+- Dispatching a newer manual Released Jupyter check now cancels an older run of the same target instead of waiting
+  for a known-obsolete editor journey to finish.
 
 ### Fixed
 

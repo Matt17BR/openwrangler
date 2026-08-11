@@ -17,8 +17,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: released-jupyter-${{ github.ref }}
-  cancel-in-progress: false
+  group: released-jupyter-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: true
 
 jobs:
   vscode:
