@@ -2867,7 +2867,7 @@ test("bounded JSON reads use the shared strict parser and reject nested or escap
   try {
     const source = join(directory, "phase.json");
     for (const contents of [
-      '{"protocol":"openwrangler-installed-performance-phase-v6","protocol":"drifted"}',
+      '{"protocol":"openwrangler-installed-performance-phase-v7","protocol":"drifted"}',
       '{"outer":{"phase":"expected","phase":"drifted"}}',
       '{"outer":{"phase":"expected","ph\\u0061se":"drifted"}}'
     ]) {
@@ -2883,7 +2883,7 @@ test("phase fragments must match the exact editor-host artifact receipt", async 
   const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-fragment-"));
   try {
     const source = join(directory, "phase.json");
-    const contents = Buffer.from('{"protocol":"openwrangler-installed-performance-phase-v6"}', "utf8");
+    const contents = Buffer.from('{"protocol":"openwrangler-installed-performance-phase-v7"}', "utf8");
     await writeFile(source, contents);
     const receipt = {
       protocol: EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL,
@@ -2892,7 +2892,7 @@ test("phase fragments must match the exact editor-host artifact receipt", async 
     };
 
     assert.deepEqual(readInstalledPerformanceFragment(source, 1024, receipt), {
-      protocol: "openwrangler-installed-performance-phase-v6"
+      protocol: "openwrangler-installed-performance-phase-v7"
     });
     assert.throws(
       () => readInstalledPerformanceFragment(source, 1024, { ...receipt, sha256: "0".repeat(64) }),
