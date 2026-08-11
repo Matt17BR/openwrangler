@@ -19,6 +19,11 @@ Ready code changes run:
 | Security         | production dependency audits and CodeQL                                                       |
 | Optional         | Remote SSH when the pull request has the `acceptance:remote-ssh` label                        |
 
+The heavier jobs start only after two short preflight jobs pass. `Fast feedback` checks the source and generated
+files, then `Contract tests` checks the Python, package, and workflow contracts. UI, coverage, engine, package, and
+editor jobs keep the same checks, but they are skipped when either preflight already makes the pull request
+unmergeable.
+
 Documentation-only changes run just the source checks. Changes limited to shipped documents such as the README also build the VSIX so the Marketplace package can be checked.
 
 The `validate` job reads the result of every required job. Missing, cancelled, failed, or unexpectedly skipped work keeps the pull request blocked. Cross-platform and CodeQL checks keep their stable names because the repository ruleset requires them directly.
