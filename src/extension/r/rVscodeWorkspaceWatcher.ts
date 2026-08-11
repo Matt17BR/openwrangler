@@ -14,6 +14,7 @@ const MAX_NAME_BYTES = 1_024;
 const DEFAULT_DEBOUNCE_MS = 40;
 const DEFAULT_RETRY_MS = 20;
 const DEFAULT_ATTACH_TIMEOUT_MS = 60_000;
+const SESSION_RECORD_STABILITY_MS = 500;
 const MIN_ATTACH_POLL_MS = 100;
 const READ_ATTEMPTS = 5;
 const READ_FLAGS =
@@ -129,6 +130,7 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
     this.expectedProcessId = expectedProcessId;
     const deadline = Date.now() + this.attachTimeoutMs;
     let lastError: unknown;
+    let unstableRecord: Readonly<{ firstSeenAt: number; identity: string; error: Error }> | undefined;
     while (true) {
       this.assertUsable();
       await this.assertProcess(expectedProcessId);
@@ -157,8 +159,15 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
         this.assertUsable();
         await this.assertProcess(expectedProcessId);
         if (error instanceof OverwrittenAttachRecordError || error instanceof ForeignAttachRecordError) {
-          this.dispose();
-          throw error;
+          if (unstableRecord?.identity !== error.recordIdentity) {
+            unstableRecord = Object.freeze({ firstSeenAt: Date.now(), identity: error.recordIdentity, error });
+          }
+          if (Date.now() - unstableRecord.firstSeenAt >= SESSION_RECORD_STABILITY_MS) {
+            this.dispose();
+            throw unstableRecord.error;
+          }
+        } else {
+          unstableRecord = undefined;
         }
       }
       if (session) {
@@ -185,7 +194,12 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
           ? lastError
           : new Error("Open Wrangler could not attach to the vscode-R session.");
       }
-      await this.waitForAttachRetry(Math.min(Math.max(this.retryMs, MIN_ATTACH_POLL_MS), remaining));
+      const recordStabilityRemaining = unstableRecord
+        ? Math.max(1, SESSION_RECORD_STABILITY_MS - (Date.now() - unstableRecord.firstSeenAt))
+        : remaining;
+      await this.waitForAttachRetry(
+        Math.min(Math.max(this.retryMs, MIN_ATTACH_POLL_MS), remaining, recordStabilityRemaining)
+      );
     }
   }
 
@@ -435,12 +449,12 @@ function decodeAttachRecord(payload: string, expectedProcessId: number): AttachR
   if (!isRecord(value)) throw new Error("The vscode-R session record is malformed.");
   if (value.command !== "attach") {
     if (value.pid === expectedProcessId) {
-      throw new OverwrittenAttachRecordError();
+      throw new OverwrittenAttachRecordError(recordIdentity(value));
     }
-    throw new ForeignAttachRecordError();
+    throw new ForeignAttachRecordError(recordIdentity(value));
   }
   if (!Number.isSafeInteger(value.pid)) throw new Error("The vscode-R session record is malformed.");
-  if (value.pid !== expectedProcessId) throw new ForeignAttachRecordError();
+  if (value.pid !== expectedProcessId) throw new ForeignAttachRecordError(recordIdentity(value));
   if (!isAbsolutePath(value.tempdir) || Buffer.byteLength(value.tempdir, "utf8") > 4_096) {
     throw new Error("The selected terminal does not match the current vscode-R session record.");
   }
@@ -549,15 +563,21 @@ class WorkspaceMetadataNotReadyError extends Error {
 }
 
 class OverwrittenAttachRecordError extends Error {
-  constructor() {
+  constructor(readonly recordIdentity: string) {
     super("vscode-R no longer exposes the attach record for this active session.");
   }
 }
 
 class ForeignAttachRecordError extends Error {
-  constructor() {
+  constructor(readonly recordIdentity: string) {
     super("The selected terminal does not match the current vscode-R session record.");
   }
+}
+
+function recordIdentity(value: Record<string, unknown>): string {
+  const command = typeof value.command === "string" ? value.command.slice(0, 64) : typeof value.command;
+  const processId = Number.isSafeInteger(value.pid) ? String(value.pid) : typeof value.pid;
+  return `${command}:${processId}`;
 }
 
 function dataframeFlavor(metadata: unknown): RDataframeFlavor | undefined {
