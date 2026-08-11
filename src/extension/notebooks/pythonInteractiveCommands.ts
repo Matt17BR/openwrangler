@@ -996,17 +996,13 @@ async function selectKernelAndRestorePythonOrigin(
     return false;
   }
   const restored = restoredResult.value;
-  if (
-    restored.document !== origin.document ||
-    (origin.literateOrigin !== undefined && restored !== origin.editor) ||
-    !isExactPythonOrigin(origin)
-  ) {
+  if (restored.document !== origin.document || !isUnchangedPythonOrigin(origin)) {
     void vscode.window.showWarningMessage("The Python file changed while its kernel was being selected. Try again.");
     return false;
   }
   restored.selection = origin.selection;
   restored.selections = [...origin.selections];
-  if (vscode.window.activeTextEditor !== restored) {
+  if (vscode.window.activeTextEditor !== restored || !isExactPythonOrigin(origin)) {
     void vscode.window.showWarningMessage("The Python file could not be focused after kernel selection. Try again.");
     return false;
   }
