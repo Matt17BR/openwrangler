@@ -14,6 +14,14 @@ npm test
 
 Set `OPEN_WRANGLER_PYTHON` when the development interpreter is not `.venv/bin/python`.
 
+To install the current checkout in VS Code or Cursor without running the release matrix:
+
+```bash
+npm run package:dev
+code --install-extension openwrangler-dev.vsix --force
+# or: cursor --install-extension openwrangler-dev.vsix --force
+```
+
 ## Writing for people
 
 Read [`docs/writing-style.md`](docs/writing-style.md) before editing the README, changelog, issues, pull request text,
@@ -24,6 +32,9 @@ editorial read; do not rely on an AI detector or a word list.
 ## Pull requests
 
 - Target `main` for all work. Use a short-lived branch and pull request for each change.
+- `main` is current development. Release preparation uses short-lived `release/*` branches before publication from
+  the exact merged commit. The protected `stable` branch starts with the verified 2.0 release and advances only to
+  releases published on all three registries.
 - Keep a pull request limited to one documented milestone or issue. Split unrelated work into separate pull requests.
 - Give each commit one reviewable purpose. Product code may travel with its directly related tests and required docs;
   keep unrelated product slices, test-harness changes, generated media, standalone docs/metadata, and release/version

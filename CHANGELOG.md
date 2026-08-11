@@ -13,6 +13,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- The README now separates the stable release, published previews, and current `main` source. `npm run package:dev`
+  builds `openwrangler-dev.vsix` from the current checkout without running the release test matrix.
 - Ready pull requests now run source and contract preflight before starting the heavier UI, engine, package, and
   editor jobs. A preflight failure stops work that can no longer make the pull request pass; green pull requests run
   the same checks as before.

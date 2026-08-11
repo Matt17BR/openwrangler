@@ -142,6 +142,7 @@
     "comparison:report": "node scripts/data-wrangler-comparison-study.mjs report",
     "benchmark:installed": "node scripts/run-installed-performance.mjs",
     "package": "npm run package:run --",
+    "package:dev": "npm run clean && npm run build && node scripts/package-current-channel.mjs --out openwrangler-dev.vsix",
     "package:run": "npm run clean && npm run build && npm run check && npm test && node scripts/package-current-channel.mjs",
     "package:prepared": "node scripts/package-current-channel.mjs",
     "release:readiness": "node scripts/release-readiness.mjs",

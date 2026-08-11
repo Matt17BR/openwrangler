@@ -956,7 +956,7 @@ test("requires one exact positive stable release and install section in both REA
     `# Open Wrangler\n\n<!--\n${STABLE_README_RELEASE_SECTION}\n-->\n`,
     `# Open Wrangler\n\n<div hidden>\n${STABLE_README_RELEASE_SECTION}\n</div>\n`,
     `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${STABLE_README_RELEASE_SECTION}\n`,
-    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION.replace("checksummed GitHub Release", "GitHub Release")}\n`
+    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION.replace("Latest stable:", "Stable:")}\n`
   ]) {
     const problems = inspectStableReleaseReadiness(ready({ readme }));
     assert.ok(problems.some((problem) => problem.startsWith("README.md must")));
@@ -1060,7 +1060,11 @@ test("keeps the same compact editor support tiers in every README channel", () =
     "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"
   );
   assert.equal(stableLinks.get("Open VSX"), "https://open-vsx.org/extension/Matt17BR/openwrangler");
-  assert.equal(stableLinks.get("checksummed GitHub Release"), "https://github.com/Matt17BR/openwrangler/releases");
+  assert.equal(
+    stableLinks.get("latest stable GitHub Release"),
+    "https://github.com/Matt17BR/openwrangler/releases/latest"
+  );
+  assert.equal(stableLinks.get("GitHub prereleases"), "https://github.com/Matt17BR/openwrangler/releases");
 });
 
 test("points preview installs at the published prerelease channels", () => {
@@ -1072,10 +1076,35 @@ test("points preview installs at the published prerelease channels", () => {
     "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"
   );
   assert.equal(previewLinks.get("Open VSX"), "https://open-vsx.org/extension/Matt17BR/openwrangler");
-  assert.equal(previewLinks.get("GitHub prerelease"), "https://github.com/Matt17BR/openwrangler/releases");
+  assert.equal(
+    previewLinks.get("latest stable GitHub Release"),
+    "https://github.com/Matt17BR/openwrangler/releases/latest"
+  );
+  assert.equal(previewLinks.get("GitHub prereleases"), "https://github.com/Matt17BR/openwrangler/releases");
   assert.match(PREVIEW_README_RELEASE_SECTION, /Install Pre-Release Version/u);
-  assert.match(PREVIEW_README_RELEASE_SECTION, /latest `1\.99\.x` version/u);
-  assert.doesNotMatch(PREVIEW_README_RELEASE_SECTION, /clone|npm install|npm run package|python3 -m venv/iu);
+  assert.match(PREVIEW_README_RELEASE_SECTION, /newest `1\.99\.x` version/u);
+  assert.doesNotMatch(PREVIEW_README_RELEASE_SECTION, /npm install|python3 -m venv/iu);
+});
+
+test("documents one bounded current-source build in every public README channel", () => {
+  for (const section of [PREVIEW_README_RELEASE_SECTION, STABLE_README_RELEASE_SECTION]) {
+    assert.match(section, /\*\*Latest stable:\*\*/u);
+    assert.match(section, /\*\*Latest preview:\*\*/u);
+    assert.match(section, /\*\*Current `main`:\*\*/u);
+    assert.match(section, /git clone https:\/\/github\.com\/Matt17BR\/openwrangler\.git/u);
+    assert.match(section, /npm ci\nnpm run package:dev/u);
+    assert.match(section, /code --install-extension openwrangler-dev\.vsix --force/u);
+    assert.match(section, /cursor --install-extension openwrangler-dev\.vsix --force/u);
+    assert.match(section, /may be ahead of the published preview/u);
+  }
+
+  const packageJson = parseStrictJson(readFileSync(new URL("../package.json", import.meta.url), "utf8"), {
+    maxBytes: 1024 * 1024
+  });
+  assert.equal(
+    packageJson?.scripts?.["package:dev"],
+    "npm run clean && npm run build && node scripts/package-current-channel.mjs --out openwrangler-dev.vsix"
+  );
 });
 
 test("uses linked live badges instead of a prose release status", () => {
