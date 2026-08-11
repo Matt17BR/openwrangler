@@ -1550,12 +1550,18 @@ openwrangler_r_frame_contract <- local({
     base::order(values, decreasing = decreasing, method = "radix", na.last = NA)
   }
 
-  evenly_spaced_positions <- function(total, maximum) {
+  deterministic_sample_positions <- function(total, maximum) {
     if (total <= 0 || maximum <= 0) return(integer())
     count <- as.integer(min(as.double(total), as.double(maximum)))
     if (count == total) return(seq_len(count))
-    if (count == 1L) return(1L)
-    as.integer(floor((seq_len(count) - 1) * (as.double(total) - 1) / (count - 1L)) + 1)
+    strata <- as.double(seq_len(count))
+    starts <- floor((strata - 1) * as.double(total) / count) + 1
+    ends <- floor(strata * as.double(total) / count)
+    # A stable multiplicative hash varies the offset inside each stratum. The
+    # 100,000-row sample bounds keep this integer arithmetic exact in doubles.
+    hashes <- (strata * 2654435761) %% 4294967291
+    offsets <- floor((hashes / 4294967291) * (ends - starts + 1))
+    as.integer(starts + offsets)
   }
 
   profile_chunk_source_positions <- function(row_positions, start, count) {
@@ -1721,7 +1727,7 @@ openwrangler_r_frame_contract <- local({
     }
     sample_sources <- integer(sample_size)
     if (sample_size != 0L) {
-      sample_ranks <- evenly_spaced_positions(present_count, sample_size)
+      sample_ranks <- deterministic_sample_positions(present_count, sample_size)
       sampled <- 0L
       seen_present <- 0
       start <- 1
@@ -5677,7 +5683,7 @@ openwrangler_r_frame_contract <- local({
         maximum_dataset_duplicate_sample_rows,
         floor(maximum_dataset_duplicate_sample_cells / column_count)
       )
-      logical_positions <- evenly_spaced_positions(row_count, duplicate_sample_size)
+      logical_positions <- deterministic_sample_positions(row_count, duplicate_sample_size)
       source_positions <- if (is.null(view$rows)) logical_positions else view$rows[logical_positions]
       sampled_frame <- if (identical(capture$descriptor$dataframeFlavor, "r.data.table")) {
         frame[source_positions]

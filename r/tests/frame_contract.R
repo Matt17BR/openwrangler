@@ -3176,6 +3176,39 @@ assert_identical(
   "large dataset duplicate sample ignored its cell budget"
 )
 
+periodic_row_count <- 199999L
+periodic_frame <- data.frame(
+  category = rep(c("alpha", "beta"), length.out = periodic_row_count),
+  stringsAsFactors = FALSE
+)
+periodic_capture <- openwrangler_r_frame_contract$capture_live_frame(function() periodic_frame)
+periodic_summary <- openwrangler_r_frame_contract$materialize_summaries(
+  periodic_capture,
+  list(profile_reference(periodic_capture, 1L))
+)[[1L]]
+periodic_categories <- periodic_summary$visualization$categories
+assert_identical(
+  vapply(periodic_categories, `[[`, character(1L), "value"),
+  c("alpha", "beta"),
+  "deterministic profile sampling aliased an alternating column"
+)
+assert_identical(
+  vapply(periodic_categories, `[[`, integer(1L), "count"),
+  c(50000L, 50000L),
+  "deterministic profile sampling skewed an alternating column"
+)
+periodic_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(periodic_capture)$stats
+assert_identical(
+  periodic_stats$duplicateRowsSampleSize,
+  openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows,
+  "periodic duplicate detection ignored its sample limit"
+)
+assert_identical(
+  periodic_stats$duplicateRows,
+  openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows - 2L,
+  "deterministic duplicate sampling aliased an alternating column"
+)
+
 former_row_limit <- 1000000L + 1L
 too_tall_frame <- structure(
   list(value = rep(FALSE, former_row_limit)),
