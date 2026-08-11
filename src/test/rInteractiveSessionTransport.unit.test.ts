@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { mkdtemp, open, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
@@ -60,6 +60,104 @@ describe("interactive R session transport", () => {
         "discoverInteractiveVariables",
         "teardownInteractiveRuntime"
       ]);
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("reads bounded dataframe descriptors published through its private mailbox", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-change-unit-"));
+    let notificationPath: string | undefined;
+    let notificationRequestId: string | undefined;
+    let firstDispatch = true;
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      runSelection: async (code) => {
+        notificationPath ??= mailboxNotificationPath(code);
+        notificationRequestId ??= mailboxNotificationRequestId(code);
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+        if (firstDispatch) {
+          firstDispatch = false;
+          await writeFile(notificationPath!, discoveryNotification(notificationRequestId!, "too_early"), {
+            encoding: "utf8"
+          });
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 60));
+        }
+        await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
+      }
+    });
+    const received: Array<{
+      variables: readonly { name: string; backend: "r"; dataframeFlavor: "r.data.frame" }[];
+      truncated: boolean;
+    }> = [];
+    let resolveChange!: (value: (typeof received)[number]) => void;
+    const changed = new Promise<{
+      variables: readonly { name: string; backend: "r"; dataframeFlavor: "r.data.frame" }[];
+      truncated: boolean;
+    }>((resolveChanged) => {
+      resolveChange = resolveChanged;
+    });
+    const subscription = transport.onDidChangeVariables((value) => {
+      received.push(value as (typeof received)[number]);
+      resolveChange(value as (typeof received)[number]);
+    });
+    try {
+      await transport.discoverVariables();
+      expect(received).toEqual([]);
+      expect(notificationPath).toBeDefined();
+      expect(notificationRequestId).toBeDefined();
+      await writeFile(notificationPath!, discoveryNotification(notificationRequestId!, "orders"), { encoding: "utf8" });
+      await expect(changed).resolves.toEqual({
+        variables: [{ name: "orders", backend: "r", dataframeFlavor: "r.data.frame" }],
+        truncated: false
+      });
+    } finally {
+      subscription.dispose();
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("retries the notification replacement window and coalesces rapid updates", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-replace-unit-"));
+    let notificationPath: string | undefined;
+    let notificationRequestId: string | undefined;
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      runSelection: async (code) => {
+        notificationPath ??= mailboxNotificationPath(code);
+        notificationRequestId ??= mailboxNotificationRequestId(code);
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+        await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
+      }
+    });
+    const received: string[] = [];
+    const subscription = transport.onDidChangeVariables((value) => {
+      const name = value.variables[0]?.name;
+      if (name) received.push(name);
+    });
+    try {
+      await transport.discoverVariables();
+      const target = notificationPath!;
+      const first = `${target}.first`;
+      await writeFile(first, discoveryNotification(notificationRequestId!, "first"), { encoding: "utf8" });
+      await unlink(target);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+      await rename(first, target);
+
+      const latest = `${target}.latest`;
+      await writeFile(latest, discoveryNotification(notificationRequestId!, "latest"), { encoding: "utf8" });
+      await unlink(target);
+      await rename(latest, target);
+
+      await vi.waitFor(() => expect(received.at(-1)).toBe("latest"));
+      expect(received).not.toContain("first");
+    } finally {
+      subscription.dispose();
+      await transport.dispose();
       expect(await readdir(temporaryParent)).toEqual([]);
       await rm(temporaryParent, { recursive: true, force: true });
     }
@@ -241,12 +339,21 @@ describe("interactive R session transport", () => {
       responseWrite = responseWrite.then(async () => {
         const { requestPath, responsePath } = mailboxPaths(code);
         const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+        await writeMockAttachment(code, 2_718);
         await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
       });
     });
     const secondSendText = vi.fn();
-    const firstTerminal = { name: "R Interactive", sendText: firstSendText } as unknown as vscode.Terminal;
-    const secondTerminal = { name: "R", sendText: secondSendText } as unknown as vscode.Terminal;
+    const firstTerminal = {
+      name: "R Interactive",
+      processId: Promise.resolve(2_718),
+      sendText: firstSendText
+    } as unknown as vscode.Terminal;
+    const secondTerminal = {
+      name: "R",
+      processId: Promise.resolve(3_141),
+      sendText: secondSendText
+    } as unknown as vscode.Terminal;
     const windowRecord = vscode.window as unknown as Record<string, unknown>;
     const terminalDescriptors = new Map(
       ["terminals", "activeTerminal", "onDidCloseTerminal"].map((key) => [
@@ -352,11 +459,20 @@ describe("interactive R session transport", () => {
       responseWrite = responseWrite.then(async () => {
         const { requestPath, responsePath } = mailboxPaths(code);
         const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
+        await writeMockAttachment(code, 3_141);
         await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
       });
     });
-    const firstTerminal = { name: "R", sendText: firstSendText } as unknown as vscode.Terminal;
-    const secondTerminal = { name: "R Interactive", sendText: secondSendText } as unknown as vscode.Terminal;
+    const firstTerminal = {
+      name: "R",
+      processId: Promise.resolve(2_718),
+      sendText: firstSendText
+    } as unknown as vscode.Terminal;
+    const secondTerminal = {
+      name: "R Interactive",
+      processId: Promise.resolve(3_141),
+      sendText: secondSendText
+    } as unknown as vscode.Terminal;
     const windowRecord = vscode.window as unknown as Record<string, unknown>;
     const terminalDescriptors = replaceWindowTerminals(windowRecord, [firstTerminal, secondTerminal], secondTerminal);
     const extensionSpy = vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
@@ -421,10 +537,15 @@ describe("interactive R session transport", () => {
         const { requestPath, responsePath } = mailboxPaths(code);
         const request = JSON.parse(await readFile(requestPath, "utf8")) as { requestId: string; kind: string };
         requestKinds.push(request.kind);
+        await writeMockAttachment(code, 2_718);
         await writeFile(responsePath, interactiveResponse(request), { flag: "wx", mode: 0o600 });
       });
     });
-    const createdTerminal = { name: "R Interactive", sendText } as unknown as vscode.Terminal;
+    const createdTerminal = {
+      name: "R Interactive",
+      processId: Promise.resolve(2_718),
+      sendText
+    } as unknown as vscode.Terminal;
     let terminals: readonly vscode.Terminal[] = [];
     let activeTerminal: vscode.Terminal | undefined;
     const windowRecord = vscode.window as unknown as Record<string, unknown>;
@@ -619,6 +740,47 @@ function mailboxPaths(code: string): { requestPath: string; responsePath: string
   const responsePath = JSON.parse(encodedResponse) as string;
   const requestPath = resolve(dirname(dirname(responsePath)), "requests", basename(responsePath));
   return { requestPath, responsePath };
+}
+
+function mailboxNotificationPath(code: string): string {
+  const encodedPath = /notification_path = ("(?:\\.|[^"\\])*")/u.exec(code)?.[1];
+  if (!encodedPath) throw new Error("The R dispatcher did not contain its workspace notification path.");
+  return JSON.parse(encodedPath) as string;
+}
+
+function mailboxNotificationRequestId(code: string): string {
+  const encoded = /notification_request_id = ("(?:\\.|[^"\\])*")/u.exec(code)?.[1];
+  if (!encoded) throw new Error("The R dispatcher did not contain its workspace notification identity.");
+  return JSON.parse(encoded) as string;
+}
+
+function discoveryNotification(requestId: string, variableName: string): string {
+  return JSON.stringify({
+    protocolVersion: 1,
+    requestId,
+    status: "ready",
+    truncated: false,
+    variables: [{ name: variableName, dataframeFlavor: "r.data.frame" }]
+  });
+}
+
+async function writeMockAttachment(code: string, processId: number): Promise<void> {
+  const encodedPath = /attachment_path = ("(?:\\.|[^"\\])*")/u.exec(code)?.[1];
+  if (!encodedPath) return;
+  const encodedNonce = /attachment_nonce = ("(?:\\.|[^"\\])*")/u.exec(code)?.[1];
+  const encodedBundleId = /bundle_id = ("[a-f0-9]{16}")/u.exec(code)?.[1];
+  if (!encodedNonce || !encodedBundleId)
+    throw new Error("The R dispatcher did not contain its attachment receipt fields.");
+  await writeFile(
+    JSON.parse(encodedPath) as string,
+    JSON.stringify({
+      protocolVersion: 1,
+      nonce: JSON.parse(encodedNonce) as string,
+      bundleId: JSON.parse(encodedBundleId) as string,
+      processId
+    }),
+    { encoding: "utf8" }
+  );
 }
 
 function interactiveResponse(request: { requestId: string; kind: string }): string {
