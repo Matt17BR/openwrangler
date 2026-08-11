@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
@@ -28,6 +28,29 @@ import {
 } from "./notebookVariableDiscovery";
 
 const NOTEBOOK_FORMATTER_REPORTING_TIMEOUT_MS = 30_000;
+const NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION = 1;
+const NOTEBOOK_CELL_RESULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
+const NOTEBOOK_CELL_RESULT_TEXT_LIMIT = 256;
+const NOTEBOOK_CELL_RESULT_PROBE_TIMEOUT_MS = 10_000;
+
+export interface CapturedNotebookCellResult {
+  readonly backend: "pandas" | "polars" | "duckdb" | "pyspark";
+  readonly label: string;
+  readonly variableName: string;
+}
+
+export interface ExecutedNotebookCellResultBinding extends vscode.Disposable {
+  readonly backend: CapturedNotebookCellResult["backend"];
+  readonly kernel: Kernel;
+  readonly onDidInvalidate: vscode.Event<void>;
+  isValid(): boolean;
+}
+
+export interface ObservedNotebookCellResultKernel extends vscode.Disposable {
+  readonly kernel: Kernel;
+  readonly onDidInvalidate: vscode.Event<void>;
+  isGenerationValid(): boolean;
+}
 
 export type NotebookFormatterPreparationSettlement =
   | { readonly kind: "prepared" }
@@ -110,6 +133,97 @@ export class KernelBridge implements OpenWranglerBridge {
       throw error;
     }
     this.assertNotebookProvenance();
+  }
+
+  async captureExecutedCellResult(
+    executionOrder: number,
+    sourceFingerprint: string,
+    binding: ExecutedNotebookCellResultBinding
+  ): Promise<CapturedNotebookCellResult> {
+    if (!Number.isSafeInteger(executionOrder) || executionOrder < 1) {
+      throw new Error("Open Wrangler received an invalid notebook execution order.");
+    }
+    if (!/^[a-f0-9]{64}$/.test(sourceFingerprint)) {
+      throw new Error("Open Wrangler received an invalid notebook cell source fingerprint.");
+    }
+    if (!binding.isValid()) {
+      throw new SelectedKernelChangedError(
+        "The notebook kernel changed after this cell result was produced. Run the cell again and try again."
+      );
+    }
+    this.idleRequested = false;
+    this.assertNotebookProvenance();
+    const marker = randomUUID().replaceAll("-", "");
+    const operation = this.lifecycle.run(
+      async (acquired) => {
+        this.assertExecutedCellResultKernel(acquired, binding);
+        const observation = this.observeKernelStatus(acquired);
+        try {
+          // The user explicitly invoked the action, so Jupyter has already
+          // granted this extension kernel access. Prepare future rich outputs
+          // while linking the result that was produced before preparation.
+          await this.ensureKernelAgent(acquired.kernel, this.registerNotebookFormatters);
+        } catch (error) {
+          this.invalidateLifecycle(observation);
+          throw error;
+        }
+      },
+      async (acquired) => {
+        this.assertExecutedCellResultKernel(acquired, binding);
+        const observation = this.requireKernelObservation(acquired);
+        try {
+          await this.assertKernelStillSelected(acquired, observation);
+          const tokenSource = new vscode.CancellationTokenSource();
+          let output: string;
+          try {
+            output = await kernelOutputsToText(
+              acquired.kernel.executeCode(
+                buildNotebookCellResultCode(marker, executionOrder, sourceFingerprint),
+                tokenSource.token
+              ),
+              NOTEBOOK_CELL_RESULT_OUTPUT_LIMIT_BYTES
+            );
+          } finally {
+            tokenSource.dispose();
+          }
+          this.requireKernelObservation(acquired);
+          await this.assertKernelStillSelected(acquired, observation);
+          const result = parseNotebookCellResult(output, marker);
+          if (result.backend !== binding.backend) {
+            throw new Error("This notebook result changed dataframe type after it was executed. Run the cell again.");
+          }
+          return result;
+        } catch (error) {
+          this.invalidateLifecycle(observation);
+          throw error;
+        }
+      },
+      {
+        retryAfterDispatch: false,
+        shouldRetry: (error, phase) => phase === "bootstrap" && !(error instanceof SelectedKernelChangedError),
+        beforeDispatch: (acquired) => {
+          this.assertNotebookProvenance();
+          this.assertExecutedCellResultKernel(acquired, binding);
+        }
+      }
+    );
+    try {
+      const result = await withKernelTimeout(operation, runtimeRequestTimeoutMs({ kind: "initialize" }), () => {
+        this.trackDetachedKernelOperation(operation);
+      });
+      this.assertNotebookProvenance();
+      return result;
+    } catch (error) {
+      if (error instanceof KernelRequestCancelledError) this.trackDetachedKernelOperation(operation);
+      throw error;
+    }
+  }
+
+  private assertExecutedCellResultKernel(acquired: AcquiredKernel, binding: ExecutedNotebookCellResultBinding): void {
+    if (binding.isValid() && acquired.kernel === binding.kernel) return;
+    throw new SelectedKernelChangedError(
+      "The notebook kernel changed after this cell result was produced. Run the cell again and try again."
+    );
   }
 
   private currentFormatterPreparation(): FormatterPreparation {
@@ -685,6 +799,194 @@ ${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_not
   }
 }
 
+class NotebookCellResultKernelBinding implements ExecutedNotebookCellResultBinding, ObservedNotebookCellResultKernel {
+  private readonly invalidatedEmitter = new vscode.EventEmitter<void>();
+  private readonly statusSubscription: vscode.Disposable;
+  private backendValue: CapturedNotebookCellResult["backend"] | undefined;
+  private valid = true;
+  private disposed = false;
+
+  readonly onDidInvalidate = this.invalidatedEmitter.event;
+
+  constructor(readonly kernel: Kernel) {
+    this.statusSubscription = kernel.onDidChangeStatus((status) => {
+      if (invalidatesKernelLifecycle(status)) this.invalidate();
+    });
+    if (invalidatesKernelLifecycle(kernel.status)) this.invalidate();
+  }
+
+  get backend(): CapturedNotebookCellResult["backend"] {
+    if (this.backendValue === undefined) {
+      throw new Error("Open Wrangler inspected an incomplete notebook result binding.");
+    }
+    return this.backendValue;
+  }
+
+  complete(backend: CapturedNotebookCellResult["backend"]): void {
+    if (!this.valid) throw new SelectedKernelChangedError();
+    this.backendValue = backend;
+  }
+
+  isValid(): boolean {
+    return this.valid && this.backendValue !== undefined;
+  }
+
+  isGenerationValid(): boolean {
+    return this.valid;
+  }
+
+  invalidate(): void {
+    if (!this.valid) return;
+    this.valid = false;
+    this.invalidatedEmitter.fire();
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.valid = false;
+    this.statusSubscription.dispose();
+    this.invalidatedEmitter.dispose();
+  }
+}
+
+export async function observeExecutedNotebookCellResultKernel(
+  notebook: vscode.NotebookDocument
+): Promise<ObservedNotebookCellResultKernel | undefined> {
+  if (!vscode.workspace.isTrusted || !isSoleOpenNotebookDocument(notebook)) return undefined;
+  const extension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+  if (!extension) return undefined;
+  let binding: NotebookCellResultKernelBinding | undefined;
+  let retained = false;
+  try {
+    const api = await extension.activate();
+    if (!vscode.workspace.isTrusted || !isSoleOpenNotebookDocument(notebook)) return undefined;
+    const kernel = await api.kernels.getKernel(notebook.uri);
+    if (
+      !kernel ||
+      kernel.language.toLowerCase() !== "python" ||
+      invalidatesKernelLifecycle(kernel.status) ||
+      !isSoleOpenNotebookDocument(notebook)
+    ) {
+      return undefined;
+    }
+    binding = new NotebookCellResultKernelBinding(kernel);
+    const selected = await api.kernels.getKernel(notebook.uri);
+    if (
+      !binding.isGenerationValid() ||
+      selected !== kernel ||
+      !vscode.workspace.isTrusted ||
+      !isSoleOpenNotebookDocument(notebook)
+    ) {
+      binding.dispose();
+      return undefined;
+    }
+    retained = true;
+    return binding;
+  } catch {
+    return undefined;
+  } finally {
+    if (!retained) binding?.dispose();
+  }
+}
+
+export async function inspectExecutedNotebookCellResult(
+  notebook: vscode.NotebookDocument,
+  executionOrder: number,
+  sourceFingerprint: string,
+  observed: ObservedNotebookCellResultKernel
+): Promise<ExecutedNotebookCellResultBinding | undefined> {
+  if (
+    !Number.isSafeInteger(executionOrder) ||
+    executionOrder < 1 ||
+    !/^[a-f0-9]{64}$/.test(sourceFingerprint) ||
+    !(observed instanceof NotebookCellResultKernelBinding) ||
+    !observed.isGenerationValid()
+  ) {
+    observed.dispose();
+    return undefined;
+  }
+  const tokenSource = new vscode.CancellationTokenSource();
+  let detached = false;
+  const operation = inspectExecutedNotebookCellResultOnKernel(
+    notebook,
+    executionOrder,
+    sourceFingerprint,
+    observed,
+    tokenSource.token
+  );
+  try {
+    return await withKernelTimeout(operation, NOTEBOOK_CELL_RESULT_PROBE_TIMEOUT_MS, () => {
+      detached = true;
+      tokenSource.cancel();
+      observed.dispose();
+    });
+  } finally {
+    tokenSource.dispose();
+    if (detached) {
+      void operation.then(
+        (binding) => binding?.dispose(),
+        () => undefined
+      );
+    }
+  }
+}
+
+export async function isExecutedNotebookCellResultKernelCurrent(
+  notebook: vscode.NotebookDocument,
+  binding: ExecutedNotebookCellResultBinding
+): Promise<boolean> {
+  if (!binding.isValid() || !vscode.workspace.isTrusted || !isSoleOpenNotebookDocument(notebook)) return false;
+  const extension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+  if (!extension) return false;
+  try {
+    const api = await extension.activate();
+    if (!binding.isValid() || !isSoleOpenNotebookDocument(notebook)) return false;
+    const selected = await api.kernels.getKernel(notebook.uri);
+    return binding.isValid() && isSoleOpenNotebookDocument(notebook) && selected === binding.kernel;
+  } catch {
+    return false;
+  }
+}
+
+async function inspectExecutedNotebookCellResultOnKernel(
+  notebook: vscode.NotebookDocument,
+  executionOrder: number,
+  sourceFingerprint: string,
+  binding: NotebookCellResultKernelBinding,
+  token: vscode.CancellationToken
+): Promise<ExecutedNotebookCellResultBinding | undefined> {
+  if (!binding.isGenerationValid() || !vscode.workspace.isTrusted || !isSoleOpenNotebookDocument(notebook)) {
+    binding.dispose();
+    return undefined;
+  }
+  try {
+    const extension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+    if (!extension) return undefined;
+    const api = await extension.activate();
+    if (!binding.isGenerationValid() || !vscode.workspace.isTrusted || !isSoleOpenNotebookDocument(notebook)) {
+      return undefined;
+    }
+    const selectedBeforeProbe = await api.kernels.getKernel(notebook.uri);
+    if (selectedBeforeProbe !== binding.kernel || !binding.isGenerationValid()) return undefined;
+    const marker = randomUUID().replaceAll("-", "");
+    const output = await kernelOutputsToText(
+      binding.kernel.executeCode(buildNotebookCellResultProbeCode(marker, executionOrder, sourceFingerprint), token),
+      NOTEBOOK_CELL_RESULT_OUTPUT_LIMIT_BYTES
+    );
+    if (!binding.isGenerationValid()) return undefined;
+    if (!vscode.workspace.isTrusted || !isSoleOpenNotebookDocument(notebook)) return undefined;
+    const selected = await api.kernels.getKernel(notebook.uri);
+    if (selected !== binding.kernel || !isSoleOpenNotebookDocument(notebook)) return undefined;
+    const backend = parseNotebookCellResultProbe(output, marker);
+    if (backend === undefined) return undefined;
+    binding.complete(backend);
+    return binding;
+  } finally {
+    if (!binding.isValid()) binding.dispose();
+  }
+}
+
 function cancelledSessionOpenResponse(): OpenWranglerResponse {
   return { kind: "cancelled", targetRequestId: "session-open" };
 }
@@ -914,6 +1216,226 @@ function parseMarkedJson(output: string, marker: string): string {
     throw new Error(`Open Wrangler could not parse the kernel response. Output: ${output.trim()}`);
   }
   return output.slice(startIndex + start.length, endIndex).trim();
+}
+
+export function fingerprintNotebookCellSource(source: string): string {
+  return createHash("sha256").update(source.replace(/\r\n?/g, "\n").replace(/\n+$/g, ""), "utf8").digest("hex");
+}
+
+export function buildNotebookCellResultProbeCode(
+  marker: string,
+  executionOrder: number,
+  sourceFingerprint: string
+): string {
+  if (!/^[a-f0-9]{32}$/.test(marker)) {
+    throw new Error("Notebook cell result marker must be 32 lowercase hexadecimal characters.");
+  }
+  if (!Number.isSafeInteger(executionOrder) || executionOrder < 1) {
+    throw new Error("Notebook cell result execution order must be a positive safe integer.");
+  }
+  if (!/^[a-f0-9]{64}$/.test(sourceFingerprint)) {
+    throw new Error("Notebook cell result source fingerprint must be 64 lowercase hexadecimal characters.");
+  }
+  const probe = `
+import hashlib as __ow_cell_probe_hashlib
+import json as __ow_cell_probe_json
+import sys as __ow_cell_probe_sys
+__ow_cell_probe_shell = __ow_get_ipython()
+__ow_cell_probe_namespace = getattr(__ow_cell_probe_shell, "user_ns", None)
+__ow_cell_probe_history = __ow_cell_probe_namespace.get("Out") if isinstance(__ow_cell_probe_namespace, dict) else None
+__ow_cell_probe_history_manager = getattr(__ow_cell_probe_shell, "history_manager", None)
+__ow_cell_probe_inputs = getattr(__ow_cell_probe_history_manager, "input_hist_raw", None)
+__ow_cell_probe_source = None
+if isinstance(__ow_cell_probe_inputs, list) and len(__ow_cell_probe_inputs) > ${executionOrder}:
+    __ow_cell_probe_source = __ow_cell_probe_inputs[${executionOrder}]
+__ow_cell_probe_source_hash = None
+if isinstance(__ow_cell_probe_source, str):
+    __ow_cell_probe_source = __ow_cell_probe_source.replace("\\r\\n", "\\n").replace("\\r", "\\n").rstrip("\\n")
+    __ow_cell_probe_source_hash = __ow_cell_probe_hashlib.sha256(__ow_cell_probe_source.encode("utf-8")).hexdigest()
+def __ow_cell_probe_isinstance(value, module_name, type_names):
+    module = __ow_cell_probe_sys.modules.get(module_name)
+    if module is None:
+        return False
+    candidate_types = tuple(
+        candidate_type
+        for candidate_type in (getattr(module, name, None) for name in type_names)
+        if isinstance(candidate_type, type)
+    )
+    return bool(candidate_types) and isinstance(value, candidate_types)
+if __ow_cell_probe_source_hash != "${sourceFingerprint}":
+    __ow_cell_probe_result = {"ok": False, "protocolVersion": ${NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION}, "reason": "stale"}
+elif not isinstance(__ow_cell_probe_history, dict) or ${executionOrder} not in __ow_cell_probe_history:
+    __ow_cell_probe_result = {"ok": False, "protocolVersion": ${NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION}, "reason": "missing"}
+else:
+    __ow_cell_probe_value = __ow_cell_probe_history[${executionOrder}]
+    __ow_cell_probe_backend = None
+    if __ow_cell_probe_isinstance(__ow_cell_probe_value, "pandas", ("DataFrame", "Series")):
+        __ow_cell_probe_backend = "pandas"
+    elif __ow_cell_probe_isinstance(__ow_cell_probe_value, "polars", ("DataFrame", "LazyFrame", "Series")):
+        __ow_cell_probe_backend = "polars"
+    elif __ow_cell_probe_isinstance(__ow_cell_probe_value, "duckdb", ("DuckDBPyRelation",)):
+        __ow_cell_probe_backend = "duckdb"
+    elif __ow_cell_probe_isinstance(__ow_cell_probe_value, "pyspark.sql", ("DataFrame",)):
+        __ow_cell_probe_backend = "pyspark"
+    __ow_cell_probe_result = {
+        "ok": __ow_cell_probe_backend is not None,
+        "protocolVersion": ${NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION},
+        "backend": __ow_cell_probe_backend,
+        "reason": None if __ow_cell_probe_backend is not None else "unsupported",
+    }
+print("__OPEN_WRANGLER_CELL_PROBE_START_${marker}__")
+print(__ow_cell_probe_json.dumps(__ow_cell_probe_result, ensure_ascii=True, allow_nan=False, separators=(",", ":"), sort_keys=True))
+print("__OPEN_WRANGLER_CELL_PROBE_END_${marker}__")
+`;
+  return `exec(${JSON.stringify(probe)}, {"__builtins__": __builtins__, "__ow_get_ipython": get_ipython})`;
+}
+
+export function parseNotebookCellResultProbe(
+  output: string,
+  marker: string
+): CapturedNotebookCellResult["backend"] | undefined {
+  const start = `__OPEN_WRANGLER_CELL_PROBE_START_${marker}__`;
+  const end = `__OPEN_WRANGLER_CELL_PROBE_END_${marker}__`;
+  const startIndex = output.indexOf(start);
+  const endIndex = output.indexOf(end);
+  if (startIndex < 0 || endIndex <= startIndex || output.indexOf(start, startIndex + start.length) >= 0) {
+    throw new Error("Open Wrangler could not inspect the executed notebook cell result.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.slice(startIndex + start.length, endIndex).trim());
+  } catch {
+    throw new Error("Open Wrangler received a malformed notebook result inspection.");
+  }
+  if (!isPlainRecord(parsed) || parsed.protocolVersion !== NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION) {
+    throw new Error("Open Wrangler received an incompatible notebook result inspection.");
+  }
+  if (parsed.ok === false) return undefined;
+  if (
+    parsed.ok !== true ||
+    (parsed.backend !== "pandas" &&
+      parsed.backend !== "polars" &&
+      parsed.backend !== "duckdb" &&
+      parsed.backend !== "pyspark")
+  ) {
+    throw new Error("Open Wrangler received a malformed notebook result inspection.");
+  }
+  return parsed.backend;
+}
+
+export function buildNotebookCellResultCode(marker: string, executionOrder: number, sourceFingerprint: string): string {
+  if (!/^[a-f0-9]{32}$/.test(marker)) {
+    throw new Error("Notebook cell result marker must be 32 lowercase hexadecimal characters.");
+  }
+  if (!Number.isSafeInteger(executionOrder) || executionOrder < 1) {
+    throw new Error("Notebook cell result execution order must be a positive safe integer.");
+  }
+  if (!/^[a-f0-9]{64}$/.test(sourceFingerprint)) {
+    throw new Error("Notebook cell result source fingerprint must be 64 lowercase hexadecimal characters.");
+  }
+  return `
+import hashlib as __ow_cell_hashlib
+import json as __ow_cell_json
+import openwrangler_runtime.notebook as __ow_cell_notebook
+__ow_cell_shell = get_ipython()
+__ow_cell_namespace = getattr(__ow_cell_shell, "user_ns", None)
+__ow_cell_history = __ow_cell_namespace.get("Out") if isinstance(__ow_cell_namespace, dict) else None
+__ow_cell_history_manager = getattr(__ow_cell_shell, "history_manager", None)
+__ow_cell_inputs = getattr(__ow_cell_history_manager, "input_hist_raw", None)
+__ow_cell_source = None
+if isinstance(__ow_cell_inputs, list) and len(__ow_cell_inputs) > ${executionOrder}:
+    __ow_cell_source = __ow_cell_inputs[${executionOrder}]
+__ow_cell_source_hash = None
+if isinstance(__ow_cell_source, str):
+    __ow_cell_source = __ow_cell_source.replace("\\r\\n", "\\n").replace("\\r", "\\n").rstrip("\\n")
+    __ow_cell_source_hash = __ow_cell_hashlib.sha256(__ow_cell_source.encode("utf-8")).hexdigest()
+if __ow_cell_source_hash != "${sourceFingerprint}":
+    __ow_cell_result = {
+        "ok": False,
+        "protocolVersion": ${NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION},
+        "reason": "stale",
+    }
+elif not isinstance(__ow_cell_history, dict) or ${executionOrder} not in __ow_cell_history:
+    __ow_cell_result = {
+        "ok": False,
+        "protocolVersion": ${NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION},
+        "reason": "missing",
+    }
+else:
+    try:
+        __ow_cell_link = __ow_cell_notebook.link_live_result(
+            __ow_cell_history[${executionOrder}],
+            __ow_cell_shell,
+        )
+        __ow_cell_result = {
+            "ok": True,
+            **__ow_cell_link,
+        }
+    except Exception:
+        __ow_cell_result = {
+            "ok": False,
+            "protocolVersion": ${NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION},
+            "reason": "unsupported",
+        }
+print("__OPEN_WRANGLER_CELL_RESULT_START_${marker}__")
+print(__ow_cell_json.dumps(__ow_cell_result, ensure_ascii=True, allow_nan=False, separators=(",", ":"), sort_keys=True))
+print("__OPEN_WRANGLER_CELL_RESULT_END_${marker}__")
+del __ow_cell_result
+`;
+}
+
+export function parseNotebookCellResult(output: string, marker: string): CapturedNotebookCellResult {
+  const start = `__OPEN_WRANGLER_CELL_RESULT_START_${marker}__`;
+  const end = `__OPEN_WRANGLER_CELL_RESULT_END_${marker}__`;
+  const startIndex = output.indexOf(start);
+  const endIndex = output.indexOf(end);
+  if (startIndex < 0 || endIndex <= startIndex || output.indexOf(start, startIndex + start.length) >= 0) {
+    throw new Error("Open Wrangler could not read the executed notebook cell result.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.slice(startIndex + start.length, endIndex).trim());
+  } catch {
+    throw new Error("Open Wrangler received a malformed executed notebook cell result.");
+  }
+  if (!isPlainRecord(parsed) || parsed.protocolVersion !== NOTEBOOK_CELL_RESULT_PROTOCOL_VERSION) {
+    throw new Error("Open Wrangler received an incompatible executed notebook cell result.");
+  }
+  if (parsed.ok === false) {
+    if (parsed.reason === "stale") {
+      throw new Error("This cell result does not belong to the currently selected kernel.");
+    }
+    if (parsed.reason === "missing") {
+      throw new Error("This cell's executed result is no longer available in the selected kernel.");
+    }
+    throw new Error("This cell did not return a supported Pandas, Polars, DuckDB, or PySpark dataframe.");
+  }
+  if (
+    parsed.ok !== true ||
+    (parsed.backend !== "pandas" &&
+      parsed.backend !== "polars" &&
+      parsed.backend !== "duckdb" &&
+      parsed.backend !== "pyspark") ||
+    !isBoundedText(parsed.label) ||
+    !isBoundedText(parsed.variableName) ||
+    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(parsed.variableName)
+  ) {
+    throw new Error("Open Wrangler received a malformed live notebook result link.");
+  }
+  return { backend: parsed.backend, label: parsed.label, variableName: parsed.variableName };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+function isBoundedText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= NOTEBOOK_CELL_RESULT_TEXT_LIMIT;
 }
 
 export function parseKernelResponse(output: string, marker: string, requestId: string): OpenWranglerResponse {
