@@ -24,6 +24,9 @@ files, then `Contract tests` checks the Python, package, and workflow contracts.
 editor jobs keep the same checks, but they are skipped when either preflight already makes the pull request
 unmergeable.
 
+The R 4.4 and 4.5 jobs run the same native contract. Their explicit package set is resolved into a lockfile and
+restored from a versioned cache, so an unchanged dependency set does not compile from scratch on every pull request.
+
 Documentation-only changes run just the source checks. Changes limited to shipped documents such as the README also build the VSIX so the Marketplace package can be checked.
 
 The `validate` job reads the result of every required job. Missing, cancelled, failed, or unexpectedly skipped work keeps the pull request blocked. Cross-platform and CodeQL checks keep their stable names because the repository ruleset requires them directly.
