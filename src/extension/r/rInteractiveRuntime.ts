@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
+import { R_KERNEL_TRANSPORT_VERSION } from "./rKernelProtocol";
 import { readRRuntimeFiles } from "./rKernelRuntimeBundle";
 
 const R_INTERACTIVE_DISPATCHER_BINDING = ".openwrangler_r_interactive_dispatcher_872e5b61";
@@ -131,7 +132,7 @@ function requestArtifactId(requestPath: string, responsePath: string): string {
 
 function wrapWithCorrelatedFailure(operation: string, requestId: string, responsePath: string): string {
   const payload = JSON.stringify({
-    transportVersion: 9,
+    transportVersion: R_KERNEL_TRANSPORT_VERSION,
     requestId,
     kind: "error",
     code: "runtime_error",

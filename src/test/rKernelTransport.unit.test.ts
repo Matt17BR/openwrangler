@@ -1717,8 +1717,18 @@ describe("native R kernel protocol", () => {
     expectRejected({ ...step, params: { ...step.params, extra: true } }, "invalid fields");
   });
 
-  it("strictly validates native R Round, Floor, and Ceiling payloads", () => {
+  it("strictly validates native R Min-max scale, Round, Floor, and Ceiling payloads", () => {
     const steps = [
+      {
+        id: "scale-in-place",
+        kind: "minMaxScale",
+        params: { column: { id: "r:c:0", name: "value" } }
+      },
+      {
+        id: "scale-derived",
+        kind: "minMaxScale",
+        params: { column: { id: "r:c:0", name: "value" }, newColumn: "scaled" }
+      },
       {
         id: "round-negative-digits",
         kind: "roundNumber",
@@ -1760,24 +1770,25 @@ describe("native R kernel protocol", () => {
         } as RKernelRequest)
       ).toThrow(message);
     };
+    expectRejected({ ...steps[0], params: { ...steps[0].params, decimals: 0 } }, "invalid fields");
     expectRejected(
-      { ...steps[0], params: { ...steps[0].params, decimals: 1.5 } },
+      { ...steps[2], params: { ...steps[2].params, decimals: 1.5 } },
       "request.payload.step.params.decimals"
     );
     expectRejected(
-      { ...steps[0], params: { ...steps[0].params, decimals: 2_147_483_648 } },
+      { ...steps[2], params: { ...steps[2].params, decimals: 2_147_483_648 } },
       "request.payload.step.params.decimals"
     );
     expectRejected(
-      { ...steps[0], params: { ...steps[0].params, decimals: -2_147_483_648 } },
+      { ...steps[2], params: { ...steps[2].params, decimals: -2_147_483_648 } },
       "request.payload.step.params.decimals"
     );
-    expectRejected({ ...steps[2], params: { ...steps[2].params, decimals: 0 } }, "invalid fields");
+    expectRejected({ ...steps[4], params: { ...steps[4].params, decimals: 0 } }, "invalid fields");
     expectRejected(
-      { ...steps[3], params: { ...steps[3].params, newColumn: "" } },
+      { ...steps[5], params: { ...steps[5].params, newColumn: "" } },
       "request.payload.step.params.newColumn"
     );
-    expectRejected({ ...steps[1], params: { ...steps[1].params, unexpected: true } }, "invalid fields");
+    expectRejected({ ...steps[3], params: { ...steps[3].params, unexpected: true } }, "invalid fields");
     const missingColumn = structuredClone(steps[1]) as unknown as { params: Record<string, unknown> };
     delete missingColumn.params.column;
     expectRejected(missingColumn, "invalid fields");
