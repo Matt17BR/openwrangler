@@ -36,6 +36,7 @@ import { buildRInteractiveDispatchCode, rInteractiveRuntimeBundleId } from "./rI
 const INTERACTIVE_PROTOCOL_VERSION = 1;
 const RESPONSE_POLL_MS = 20;
 const MAX_DISCOVERY_BYTES = 64 * 1_024;
+const MAX_EVALUATION_CODE_BYTES = 1_024 * 1_024;
 const MAX_DISCOVERY_VARIABLES = 256;
 const MAX_VARIABLE_NAME_BYTES = 1_024;
 const MAX_RETIRED_SESSION_IDS = 1_024;
@@ -57,6 +58,8 @@ export interface RInteractiveSessionTransportOptions {
   readonly disposalSettlementMs?: number;
   /** Bind only to the currently active official R terminal, or create one when none is available. */
   readonly terminalMode?: "active" | "activeOrCreate";
+  /** Exact official R terminal captured by the caller before any asynchronous work. */
+  readonly terminal?: vscode.Terminal;
 }
 
 interface InteractiveMailbox {
@@ -137,7 +140,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       this.dispatchSelection = options.runSelection;
       this.terminalCloseSubscription = undefined;
     } else {
-      const captured = captureRSelectionTarget(this.terminalMode);
+      const captured = captureRSelectionTarget(this.terminalMode, options.terminal);
       this.boundTerminal = captured.terminal;
       this.terminalAmbiguousAtCreation = captured.ambiguous;
       this.prepareSelectionTarget = () => this.ensureBoundTerminal();
@@ -156,6 +159,33 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
       protocolVersion: INTERACTIVE_PROTOCOL_VERSION,
       requestId,
       kind: "discoverInteractiveVariables"
+    });
+    const payload = JSON.stringify(request);
+    const scheduled = this.schedule(requestId, payload, MAX_DISCOVERY_BYTES, (response) =>
+      decodeDiscoveryResponse(response, requestId)
+    );
+    try {
+      return await this.waitForScheduled(scheduled, options);
+    } catch (error) {
+      if (isTerminalChangedError(error)) this.publishInvalidation();
+      throw error;
+    }
+  }
+
+  async evaluateAndDiscoverVariables(
+    code: string,
+    options: RKernelRequestOptions = {}
+  ): Promise<RProcessVariableDiscovery> {
+    this.assertActive();
+    if (typeof code !== "string" || code.length === 0 || Buffer.byteLength(code, "utf8") > MAX_EVALUATION_CODE_BYTES) {
+      throw new TypeError("The R code chunk must contain between 1 byte and 1 MiB of UTF-8 text.");
+    }
+    const requestId = this.createId();
+    const request = Object.freeze({
+      protocolVersion: INTERACTIVE_PROTOCOL_VERSION,
+      requestId,
+      kind: "evaluateAndDiscoverInteractiveVariables",
+      code
     });
     const payload = JSON.stringify(request);
     const scheduled = this.schedule(requestId, payload, MAX_DISCOVERY_BYTES, (response) =>
@@ -881,9 +911,16 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
 }
 
 function captureRSelectionTarget(
-  mode: "active" | "activeOrCreate"
+  mode: "active" | "activeOrCreate",
+  expectedTerminal?: vscode.Terminal
 ): Readonly<{ terminal?: vscode.Terminal; ambiguous: boolean }> {
   const candidates = vscode.window.terminals.filter(isOfficialRTerminal);
+  if (expectedTerminal) {
+    if (!candidates.includes(expectedTerminal)) {
+      throw new Error("The selected R terminal changed before Open Wrangler could connect to it.");
+    }
+    return Object.freeze({ terminal: expectedTerminal, ambiguous: false });
+  }
   const active = vscode.window.activeTerminal;
   if (active && candidates.includes(active)) return Object.freeze({ terminal: active, ambiguous: false });
   if (mode === "active") return Object.freeze({ ambiguous: false });
