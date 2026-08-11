@@ -1,5 +1,12 @@
 import * as path from "node:path";
 import { Buffer } from "node:buffer";
+import {
+  closesMarkdownOpaqueContainer,
+  containsRawHtmlStart,
+  markdownOpaqueContainerLabel,
+  openingMarkdownOpaqueContainer,
+  type MarkdownOpaqueContainer
+} from "../markdownOpaqueContainers";
 
 const MAX_DOCUMENT_BYTES = 64 * 1_024 * 1_024;
 const MAX_RUNNABLE_R_CHUNKS = 1_024;
@@ -28,11 +35,6 @@ interface Fence {
   readonly info: string;
   readonly openingLine: number;
   readonly body: number[];
-}
-
-interface OpaqueMarkdownContainer {
-  readonly kind: "display-math" | "raw-tex";
-  readonly closingMarker: string;
 }
 
 /** Returns the supported R document kind without consulting editor language IDs. */
@@ -77,7 +79,7 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
   let fence: Fence | undefined;
   let htmlCommentLine: number | undefined;
   let multilineCodeSpanTicks: number | undefined;
-  let opaqueContainer: OpaqueMarkdownContainer | undefined;
+  let opaqueContainer: MarkdownOpaqueContainer | undefined;
   let rChunkCount = 0;
   let runnableRChunkCount = 0;
   const executableUnits: string[] = [];
@@ -90,10 +92,10 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
         const nestedFence = openingFence(line);
         if (nestedFence && isRFenceInfo(nestedFence.info)) {
           throw new SyntaxError(
-            `Open Wrangler cannot safely distinguish an R cell inside ${opaqueContainerLabel(opaqueContainer)} near line ${index + 1}.`
+            `Open Wrangler cannot safely distinguish an R cell inside ${markdownOpaqueContainerLabel(opaqueContainer)} near line ${index + 1}.`
           );
         }
-        if (line.includes(opaqueContainer.closingMarker)) opaqueContainer = undefined;
+        if (closesMarkdownOpaqueContainer(opaqueContainer, line)) opaqueContainer = undefined;
         continue;
       }
       if (htmlCommentLine !== undefined) {
@@ -133,7 +135,7 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
         const visibleText =
           commentEnd < 0 ? line.slice(0, commentStart) : line.slice(0, commentStart) + line.slice(commentEnd + 3);
         rejectUnsupportedMarkdownContainer(visibleText, index + 1);
-        const openedContainer = openingOpaqueMarkdownContainer(visibleText);
+        const openedContainer = openingMarkdownOpaqueContainer(visibleText);
         if (openedContainer) opaqueContainer = openedContainer;
         if (commentEnd < 0) htmlCommentLine = index + 1;
         continue;
@@ -143,7 +145,7 @@ export function prepareRDocumentSource(filePath: string, source: string): Prepar
         if (containsExactBacktickRun(line, multilineCodeSpanTicks)) multilineCodeSpanTicks = undefined;
         continue;
       }
-      const openedContainer = openingOpaqueMarkdownContainer(line);
+      const openedContainer = openingMarkdownOpaqueContainer(line);
       if (openedContainer) {
         opaqueContainer = openedContainer;
         continue;
@@ -457,31 +459,9 @@ function longestBacktickRun(value: string): number {
 }
 
 function rejectUnsupportedMarkdownContainer(line: string, lineNumber: number): void {
-  const trimmed = stripLeadingMarkdownListMarker(line.trimStart());
-  if (/<[A-Za-z!/?]/u.test(trimmed)) {
+  if (containsRawHtmlStart(line)) {
     throw new SyntaxError(`Open Wrangler cannot safely distinguish R cells inside raw HTML near line ${lineNumber}.`);
   }
-}
-
-function openingOpaqueMarkdownContainer(line: string): OpaqueMarkdownContainer | undefined {
-  const trimmed = stripLeadingMarkdownListMarker(line.trimStart());
-  const displayDollar = trimmed.indexOf("$$");
-  if (displayDollar >= 0 && trimmed.indexOf("$$", displayDollar + 2) < 0) {
-    return { kind: "display-math", closingMarker: "$$" };
-  }
-  const displayBracket = trimmed.indexOf("\\[");
-  if (displayBracket >= 0 && trimmed.indexOf("\\]", displayBracket + 2) < 0) {
-    return { kind: "display-math", closingMarker: "\\]" };
-  }
-  const environment = /\\begin\{([A-Za-z][A-Za-z0-9*._-]*)\}/u.exec(trimmed);
-  if (!environment) return undefined;
-  const closingMarker = `\\end{${environment[1]!}}`;
-  if (trimmed.includes(closingMarker, environment.index + environment[0].length)) return undefined;
-  return { kind: "raw-tex", closingMarker };
-}
-
-function opaqueContainerLabel(container: OpaqueMarkdownContainer): string {
-  return container.kind === "display-math" ? "display math" : "raw TeX";
 }
 
 function unmatchedBacktickRun(line: string): number | undefined {
@@ -506,10 +486,6 @@ function leadingSpaces(value: string): number {
   let count = 0;
   while (value[count] === " ") count += 1;
   return count;
-}
-
-function stripLeadingMarkdownListMarker(value: string): string {
-  return value.replace(/^(?:[-+*]|\d{1,9}[.)])[\t ]+/u, "").trimStart();
 }
 
 function deindentFenceLine(line: string, indent: number): string {

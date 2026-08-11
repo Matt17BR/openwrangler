@@ -1,7 +1,29 @@
 import { Buffer } from "node:buffer";
 import * as path from "node:path";
+import {
+  COLLECTION_STYLE_BLOCK,
+  EVENT_ALIAS,
+  EVENT_MAPPING,
+  EVENT_POP,
+  EVENT_SCALAR,
+  EVENT_SEQUENCE,
+  FAILSAFE_SCHEMA,
+  SCALAR_STYLE_PLAIN,
+  getScalarValue,
+  load,
+  parseEvents,
+  type Event
+} from "js-yaml";
+import {
+  closesMarkdownOpaqueContainer,
+  openingMarkdownOpaqueContainer,
+  type MarkdownOpaqueContainer
+} from "./markdownOpaqueContainers";
 
 const MAX_LITERATE_DOCUMENT_BYTES = 64 * 1_024 * 1_024;
+const MAX_EXECUTOR_YAML_BYTES = 1_024 * 1_024;
+const MAX_EXECUTOR_YAML_DEPTH = 64;
+const MAX_EXECUTOR_YAML_EVENTS = 16_384;
 
 export type LiterateDocumentKind = "rmarkdown" | "quarto";
 export type LiterateChunkLanguage = "python" | "r";
@@ -33,6 +55,16 @@ interface OpenFence {
   readonly openingLine: number;
 }
 
+interface LiterateFrontMatter {
+  readonly lines: ReadonlySet<number>;
+  readonly yaml?: string;
+}
+
+interface YamlCollectionFrame {
+  readonly kind: "mapping" | "sequence";
+  expectingKey: boolean;
+}
+
 export function literateDocumentKind(filePath: string): LiterateDocumentKind | undefined {
   switch (path.extname(filePath).toLowerCase()) {
     case ".rmd":
@@ -59,20 +91,33 @@ export function findLiterateCodeChunkAtLine(
 
   const lines = splitSourceLines(source);
   if (line >= Math.max(1, lines.length)) return undefined;
-  const frontMatter = frontMatterLines(lines);
+  const frontMatter = analyzeLiterateFrontMatter(lines);
   let fence: OpenFence | undefined;
   let htmlComment = false;
+  let opaqueContainer: MarkdownOpaqueContainer | undefined;
 
   for (let index = 0; index < lines.length; index += 1) {
     const sourceLine = lines[index]!.text;
     if (!fence) {
-      if (frontMatter.has(index)) continue;
+      if (frontMatter.lines.has(index)) continue;
+      if (opaqueContainer) {
+        if (closesMarkdownOpaqueContainer(opaqueContainer, sourceLine)) opaqueContainer = undefined;
+        continue;
+      }
+      const openedContainer = openingMarkdownOpaqueContainer(sourceLine);
+      if (openedContainer?.kind === "raw-html") {
+        opaqueContainer = openedContainer;
+        continue;
+      }
       const commentState = htmlCommentState(sourceLine, htmlComment);
       htmlComment = commentState.open;
       if (commentState.opaque) continue;
       const opening = openingFence(sourceLine);
-      if (!opening) continue;
-      fence = { ...opening, openingLine: index };
+      if (opening) {
+        fence = { ...opening, openingLine: index };
+        continue;
+      }
+      opaqueContainer = openedContainer;
       continue;
     }
 
@@ -104,72 +149,152 @@ export function literatePythonExecutionOwner(filePath: string, source: string): 
   if (kind === "rmarkdown") return "r";
 
   const lines = splitSourceLines(source);
-  const frontMatter = frontMatterLines(lines);
-  const metadata = executorMetadata(lines, frontMatter);
+  const frontMatter = analyzeLiterateFrontMatter(lines);
+  const metadata = executorMetadata(frontMatter.yaml);
   if (metadata === "r" || metadata === "jupyter" || metadata === "unknown") return metadata;
-  return containsExecutableRChunk(lines, frontMatter) ? "r" : "jupyter";
+  return containsExecutableRChunk(lines, frontMatter.lines) ? "r" : "jupyter";
 }
 
 type ExecutorMetadata = LiteratePythonExecutionOwner | "implicit";
 
-function executorMetadata(lines: readonly SourceLine[], frontMatter: ReadonlySet<number>): ExecutorMetadata {
-  if (frontMatter.size === 0) return "implicit";
-  let engine: string | undefined;
-  let sawEngine = false;
-  let sawKnitr = false;
-  let sawJupyter = false;
-  for (let index = 1; index < lines.length && frontMatter.has(index); index += 1) {
-    const text = lines[index]!.text;
-    if (/^(?:---|\.\.\.)[\t ]*$/u.test(text)) break;
-    if (text.trim().length === 0 || /^\s*#/u.test(text)) continue;
-    if (/^[\t ]/u.test(text)) continue;
-    const match = /^([A-Za-z][A-Za-z0-9_-]*)\s*:(.*)$/u.exec(text);
-    if (!match) return "unknown";
-    const key = match[1]!.toLowerCase();
-    if (key !== "engine" && key !== "knitr" && key !== "jupyter") continue;
-    if (key === "engine") {
-      if (sawEngine) return "unknown";
-      sawEngine = true;
-      const scalar = plainYamlScalar(match[2]!);
-      if (!scalar) return "unknown";
-      engine = scalar.toLowerCase();
-    } else if (key === "knitr") {
-      if (sawKnitr) return "unknown";
-      sawKnitr = true;
-    } else {
-      if (sawJupyter) return "unknown";
-      sawJupyter = true;
+function executorMetadata(yaml: string | undefined): ExecutorMetadata {
+  if (yaml === undefined || yaml.trim().length === 0) return "implicit";
+  if (Buffer.byteLength(yaml, "utf8") > MAX_EXECUTOR_YAML_BYTES) return "unknown";
+  try {
+    const events = parseEvents(yaml, { maxDepth: MAX_EXECUTOR_YAML_DEPTH });
+    if (events.length > MAX_EXECUTOR_YAML_EVENTS || !hasSafePlainRootMapping(yaml, events)) return "unknown";
+    const parsed = load(yaml, {
+      schema: FAILSAFE_SCHEMA,
+      json: false,
+      maxAliases: 0,
+      maxDepth: MAX_EXECUTOR_YAML_DEPTH,
+      maxTotalMergeKeys: 0
+    });
+    if (parsed === undefined || parsed === null) return "implicit";
+    if (!isPlainStringRecord(parsed)) return "unknown";
+
+    const keys = Object.keys(parsed);
+    for (const key of keys) {
+      const normalized = key.toLowerCase();
+      if ((normalized === "engine" || normalized === "jupyter" || normalized === "knitr") && key !== normalized) {
+        return "unknown";
+      }
     }
-  }
-  if ((sawKnitr && sawJupyter) || (engine === "knitr" && sawJupyter) || (engine === "jupyter" && sawKnitr)) {
+    const sawEngine = Object.hasOwn(parsed, "engine");
+    const sawKnitr = Object.hasOwn(parsed, "knitr");
+    const sawJupyter = Object.hasOwn(parsed, "jupyter");
+    const engine = sawEngine ? parsed.engine : undefined;
+    if (sawEngine && typeof engine !== "string") return "unknown";
+    if ((sawKnitr && sawJupyter) || (engine === "knitr" && sawJupyter) || (engine === "jupyter" && sawKnitr)) {
+      return "unknown";
+    }
+    if (engine !== undefined && engine !== "knitr" && engine !== "jupyter") return "unknown";
+    if (engine === "knitr" || sawKnitr) return "r";
+    if (engine === "jupyter" || sawJupyter) return "jupyter";
+    return "implicit";
+  } catch {
     return "unknown";
   }
-  if (engine !== undefined && engine !== "knitr" && engine !== "jupyter") return "unknown";
-  if (engine === "knitr" || sawKnitr) return "r";
-  if (engine === "jupyter" || sawJupyter) return "jupyter";
-  return "implicit";
 }
 
-function plainYamlScalar(value: string): string | undefined {
-  const withoutComment = value.replace(/\s+#.*$/u, "").trim();
-  const quoted = /^(?:"([^"\\]*)"|'([^']*)')$/u.exec(withoutComment);
-  if (quoted) return quoted[1] ?? quoted[2];
-  return /^[A-Za-z][A-Za-z0-9_.+-]*$/u.test(withoutComment) ? withoutComment : undefined;
+function hasSafePlainRootMapping(yaml: string, events: readonly Event[]): boolean {
+  const stack: YamlCollectionFrame[] = [];
+  let sawRoot = false;
+  for (const event of events) {
+    if (hasYamlAnchorOrTag(event)) return false;
+    if (event.type === EVENT_ALIAS) return false;
+    if (event.type === EVENT_MAPPING || event.type === EVENT_SEQUENCE) {
+      if (stack.length === 0) {
+        if (sawRoot || event.type !== EVENT_MAPPING || event.style !== COLLECTION_STYLE_BLOCK) return false;
+        sawRoot = true;
+      } else if (!consumeYamlCollection(stack.at(-1)!)) {
+        return false;
+      }
+      stack.push({ kind: event.type === EVENT_MAPPING ? "mapping" : "sequence", expectingKey: true });
+      continue;
+    }
+    if (event.type === EVENT_SCALAR) {
+      if (stack.length === 0) {
+        if (sawRoot) continue;
+        return false;
+      }
+      const parent = stack.at(-1)!;
+      if (parent.kind === "mapping" && parent.expectingKey && stack.length === 1) {
+        const key = getScalarValue(yaml, event);
+        const normalized = key.toLowerCase();
+        const keyColumn = yamlColumn(yaml, event.valueStart) - (event.style === SCALAR_STYLE_PLAIN ? 0 : 1);
+        if (keyColumn !== 0) return false;
+        if ((normalized === "engine" || normalized === "jupyter" || normalized === "knitr") && key !== normalized) {
+          return false;
+        }
+        if (
+          (normalized === "engine" || normalized === "jupyter" || normalized === "knitr") &&
+          event.style !== SCALAR_STYLE_PLAIN
+        ) {
+          return false;
+        }
+      }
+      consumeYamlScalar(parent);
+      continue;
+    }
+    if (event.type === EVENT_POP && stack.length > 0) stack.pop();
+  }
+  return sawRoot && stack.length === 0;
+}
+
+function consumeYamlCollection(frame: YamlCollectionFrame): boolean {
+  if (frame.kind === "sequence") return true;
+  if (frame.expectingKey) return false;
+  frame.expectingKey = true;
+  return true;
+}
+
+function consumeYamlScalar(frame: YamlCollectionFrame): void {
+  if (frame.kind === "mapping") frame.expectingKey = !frame.expectingKey;
+}
+
+function hasYamlAnchorOrTag(event: Event): boolean {
+  if (!("anchorStart" in event)) return false;
+  return event.anchorEnd > event.anchorStart || ("tagStart" in event && event.tagEnd > event.tagStart);
+}
+
+function yamlColumn(yaml: string, offset: number): number {
+  const before = Math.max(0, offset - 1);
+  return offset - (Math.max(yaml.lastIndexOf("\n", before), yaml.lastIndexOf("\r", before)) + 1);
+}
+
+function isPlainStringRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function containsExecutableRChunk(lines: readonly SourceLine[], frontMatter: ReadonlySet<number>): boolean {
   let fence: OpenFence | undefined;
   let htmlComment = false;
+  let opaqueContainer: MarkdownOpaqueContainer | undefined;
   for (let index = 0; index < lines.length; index += 1) {
     const sourceLine = lines[index]!.text;
     if (!fence) {
       if (frontMatter.has(index)) continue;
+      if (opaqueContainer) {
+        if (closesMarkdownOpaqueContainer(opaqueContainer, sourceLine)) opaqueContainer = undefined;
+        continue;
+      }
+      const openedContainer = openingMarkdownOpaqueContainer(sourceLine);
+      if (openedContainer?.kind === "raw-html") {
+        opaqueContainer = openedContainer;
+        continue;
+      }
       const commentState = htmlCommentState(sourceLine, htmlComment);
       htmlComment = commentState.open;
       if (commentState.opaque) continue;
       const opening = openingFence(sourceLine);
-      if (!opening) continue;
-      fence = { ...opening, openingLine: index };
+      if (opening) {
+        fence = { ...opening, openingLine: index };
+        continue;
+      }
+      opaqueContainer = openedContainer;
       continue;
     }
     if (!isClosingFence(sourceLine, fence.character, fence.length)) continue;
@@ -243,13 +368,21 @@ function splitSourceLines(source: string): SourceLine[] {
   return lines;
 }
 
-function frontMatterLines(lines: readonly SourceLine[]): ReadonlySet<number> {
+function analyzeLiterateFrontMatter(lines: readonly SourceLine[]): LiterateFrontMatter {
   const ignored = new Set<number>();
-  if (lines[0]?.text.replace(/^\uFEFF/u, "").trimEnd() !== "---") return ignored;
+  if (lines[0]?.text.replace(/^\uFEFF/u, "").trimEnd() !== "---") return Object.freeze({ lines: ignored });
   ignored.add(0);
   for (let index = 1; index < lines.length; index += 1) {
     ignored.add(index);
-    if (/^(?:---|\.\.\.)[\t ]*$/u.test(lines[index]!.text)) return ignored;
+    if (/^(?:---|\.\.\.)[\t ]*$/u.test(lines[index]!.text)) {
+      return Object.freeze({
+        lines: ignored,
+        yaml: lines
+          .slice(1, index)
+          .map((line) => line.text + line.ending)
+          .join("")
+      });
+    }
   }
   throw new SyntaxError("The document YAML front matter is not closed.");
 }
