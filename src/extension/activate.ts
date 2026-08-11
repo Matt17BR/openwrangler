@@ -94,6 +94,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
   registerNotebookCommands(context, coordinator);
   registerNotebookRendererMessaging(context, coordinator);
   context.subscriptions.push(new NotebookPreviewCoordinator(context));
+  rInteractive.startAutomaticDiscovery();
 
   if (process.env.OPEN_WRANGLER_EXTENSION_TESTS === "1") {
     return {

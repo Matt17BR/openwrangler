@@ -289,6 +289,7 @@ describe("native operation commands", () => {
     };
     const terminalProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
+      startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
         terminalLabel: "R session",
@@ -317,6 +318,7 @@ describe("native operation commands", () => {
     const refreshTerminal = vi.fn(async () => true);
     const terminalProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
+      startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "ready",
         terminalLabel: "R",
@@ -343,6 +345,7 @@ describe("native operation commands", () => {
   it("shows dataframes discovered in the exact active R terminal", () => {
     const variableProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
+      startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "ready",
         terminalLabel: "R",
@@ -404,10 +407,11 @@ describe("native operation commands", () => {
   it("puts an explicit R discovery action first while the active terminal has not been read", () => {
     const variableProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
+      startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
         terminalLabel: "R",
-        message: "Reads the selected R session. Wait for the R prompt first.",
+        message: "Dataframes appear here after the R prompt returns.",
         variables: []
       }),
       refreshFromCommand: async () => true,
@@ -432,6 +436,7 @@ describe("native operation commands", () => {
   it("offers one action that starts R after the previous terminal closed", () => {
     const variableProvider: RLiveVariableProvider = {
       onDidChangeVariables: () => ({ dispose: () => undefined }),
+      startAutomaticDiscovery: () => undefined,
       snapshot: () => ({
         state: "idle",
         terminalLabel: "R session",
