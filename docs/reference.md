@@ -12,6 +12,7 @@
 | `openWrangler.changeImportOptions`            | Open Wrangler: Change Import Options                           |
 | `openWrangler.launchDataViewer`               | Open Wrangler: Launch Selected Notebook Variable               |
 | `openWrangler.openNotebookVariable`           | Open in Open Wrangler                                          |
+| `openWrangler.openNotebookCellResult`         | Open Executed Dataframe Result in Open Wrangler                |
 | `openWrangler.runPythonCellAndOpenVariable`   | Open in Open Wrangler                                          |
 | `openWrangler.refreshLiveDataframes`          | Open Wrangler: Refresh Live Dataframes                         |
 | `openWrangler.refreshNotebookVariables`       | Open Wrangler: Refresh Notebook Dataframes                     |

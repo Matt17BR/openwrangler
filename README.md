@@ -172,7 +172,8 @@ _This preview shows the changed values and generated Polars code. The two sorts 
 In trusted Python notebooks and Python Interactive windows, Open Wrangler previews Pandas, Polars, and DuckDB outputs
 and lists the live dataframes in Operations and the notebook toolbar. **Open in Open Wrangler** loads the current live
 dataframe from that same kernel. Unassigned results such as `orders.tail(20)` also get the button while the result is
-still available in the kernel.
+still available in the kernel. If the first result appears before Open Wrangler's formatter is ready, use **Open in
+Open Wrangler** below that cell. It opens the executed result without running the cell again.
 
 Python files have the same action in the editor toolbar and tab menu. For an ordinary `.py` file, Open Wrangler runs
 the file in Python Interactive and opens the live dataframe you choose. If the file uses `# %%` cells, it runs only

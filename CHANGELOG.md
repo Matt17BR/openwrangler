@@ -37,6 +37,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- A dataframe produced by the first Python notebook execution now gets an **Open in Open Wrangler** cell action when
+  the automatic formatter was not ready yet. The action opens that exact executed result from the same notebook and
+  kernel; it does not run the cell again. The action appears only after a type check that leaves notebook history
+  unchanged, disappears on kernel restart, and cannot retarget to a replacement kernel or new split.
 - Grid cells now expose **Keep only this value** and **Exclude this value** from a small hover action, right-click,
   or the keyboard context-menu shortcut. The filter uses the cell's typed value, so large integers, booleans, nulls,
   and NaN are not confused with similarly formatted text.
