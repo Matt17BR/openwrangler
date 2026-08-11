@@ -19,7 +19,14 @@ import {
   supportsTypedViewComparison,
   viewPredicateOperators
 } from "../../shared/filterModel";
-import { activeFilterColumnLabel, filterValueLabel, predicateLabel, selectionValueKey } from "./filterPresentation";
+import {
+  activeFilterColumnLabel,
+  activeFilterConditionCount,
+  activeFilterValueChoiceCount,
+  filterValueLabel,
+  predicateLabel,
+  selectionValueKey
+} from "./filterPresentation";
 
 interface FilterPanelProps {
   metadata: SessionMetadata | undefined;
@@ -743,12 +750,15 @@ function ActiveFilterOverview({
         <div className="activeFilterList">
           {filters.map((filter) => {
             const columnLabel = activeFilterColumnLabel(filter.column, metadata);
+            const conditionCount = activeFilterConditionCount(filter);
+            const valueChoiceCount = activeFilterValueChoiceCount(filter);
+            const rowLogic = filter.logic === "or" ? "any" : "all";
             return (
               <section key={filter.column} className="activeFilterGroup" aria-label={`${columnLabel} filters`}>
                 <header>
                   <span>
                     <strong>{columnLabel}</strong>
-                    <small>{filter.logic === "or" ? "Match any" : "Match all"}</small>
+                    {conditionCount > 1 && <small>Match {rowLogic} groups</small>}
                   </span>
                   <button
                     type="button"
@@ -761,33 +771,46 @@ function ActiveFilterOverview({
                   </button>
                 </header>
                 <div className="activeRules">
-                  {(filter.valueFilter?.selectedValues ?? []).map((value) => {
-                    const summary = `equals ${filterValueLabel(value)}`;
-                    return (
-                      <FilterRuleButton
-                        key={`value:${selectionValueKey(value)}`}
-                        columnLabel={columnLabel}
-                        summary={summary}
-                        disabled={disabled}
-                        onClick={() => onRemoveSelectedValue(filter, value)}
-                      />
-                    );
-                  })}
-                  {filter.valueFilter?.includeNulls && (
-                    <FilterRuleButton
-                      columnLabel={columnLabel}
-                      summary="is null"
-                      disabled={disabled}
-                      onClick={() => onRemoveValueFlag(filter, "includeNulls")}
-                    />
-                  )}
-                  {filter.valueFilter?.includeNaN && (
-                    <FilterRuleButton
-                      columnLabel={columnLabel}
-                      summary="is NaN"
-                      disabled={disabled}
-                      onClick={() => onRemoveValueFlag(filter, "includeNaN")}
-                    />
+                  {valueChoiceCount > 0 && (
+                    <div
+                      className="activeValueGroup"
+                      role="group"
+                      aria-label={`${columnLabel}: match any selected value`}
+                    >
+                      {valueChoiceCount > 1 && (
+                        <small className="activeValueLogic" title="Match any selected value, null, or NaN">
+                          Any value
+                        </small>
+                      )}
+                      {(filter.valueFilter?.selectedValues ?? []).map((value) => {
+                        const summary = `equals ${filterValueLabel(value)}`;
+                        return (
+                          <FilterRuleButton
+                            key={`value:${selectionValueKey(value)}`}
+                            columnLabel={columnLabel}
+                            summary={summary}
+                            disabled={disabled}
+                            onClick={() => onRemoveSelectedValue(filter, value)}
+                          />
+                        );
+                      })}
+                      {filter.valueFilter?.includeNulls && (
+                        <FilterRuleButton
+                          columnLabel={columnLabel}
+                          summary="is null"
+                          disabled={disabled}
+                          onClick={() => onRemoveValueFlag(filter, "includeNulls")}
+                        />
+                      )}
+                      {filter.valueFilter?.includeNaN && (
+                        <FilterRuleButton
+                          columnLabel={columnLabel}
+                          summary="is NaN"
+                          disabled={disabled}
+                          onClick={() => onRemoveValueFlag(filter, "includeNaN")}
+                        />
+                      )}
+                    </div>
                   )}
                   {filter.predicates.map((predicate, index) => (
                     <FilterRuleButton

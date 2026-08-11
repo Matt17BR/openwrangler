@@ -1,5 +1,13 @@
 import type { SessionMetadata, TypedSelectionToken } from "../../shared/protocol";
-import type { PredicateFilter, PredicateOperator } from "../../shared/filterModel";
+import type { ColumnFilter, PredicateFilter, PredicateOperator } from "../../shared/filterModel";
+
+export const activeFilterValueChoiceCount = (filter: ColumnFilter): number =>
+  (filter.valueFilter?.selectedValues.length ?? 0) +
+  (filter.valueFilter?.includeNulls ? 1 : 0) +
+  (filter.valueFilter?.includeNaN ? 1 : 0);
+
+export const activeFilterConditionCount = (filter: ColumnFilter): number =>
+  (activeFilterValueChoiceCount(filter) > 0 ? 1 : 0) + filter.predicates.length;
 
 export const activeFilterColumnLabel = (name: string, metadata: SessionMetadata): string => {
   const display = name === "" ? "(empty name)" : name;
