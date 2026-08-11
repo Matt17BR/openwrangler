@@ -44,8 +44,9 @@ encoding, quote style, and header automatically. **Import options** is an explic
 
 <a href="images/readme/v1.2/filter-result.png"><img alt="A Polars file session filtered to 14,287 Benelux rows with Filter and Clear in Column profiles and matching native sidebar state" src="images/readme/v1.2/filter-result.png" width="960"></a>
 
-The result count, Column-profile filter, Clear action, grid, and native Filters / Sorts view stay synchronized
-without changing the source.
+Click a column header to select it, or click a category or histogram bin in the header or Column profiles to filter.
+The grid, profiles, and Filters / Sorts view stay synchronized. Above the grid, each active rule can be removed, the
+latest filter can be undone, or all filters can be cleared without changing the source.
 
 <table>
   <tr>
@@ -53,10 +54,13 @@ without changing the source.
     <td width="50%"><a href="images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with priority, reorder, edit, and remove controls" src="images/readme/v1.2/gallery/sort-priority.png" width="448"></a></td>
   </tr>
   <tr>
-    <td>Focus the histogram to see a bin's interval, row count, and percentage.</td>
+    <td>Counts / % is shared by header summaries and Column profiles. Focus a bin to see both values.</td>
     <td>Reorder sort keys, change their direction and null placement, or remove them.</td>
   </tr>
 </table>
+
+When a categorical profile has more entries than fit in its summary, **More values…** opens the searchable value
+list without running the profile again.
 
 <a href="images/readme/v1.2/gallery/column-search-wide.png"><img alt="Searching to the final result in a 417-column synthetic dataframe" src="images/readme/v1.2/gallery/column-search-wide-detail.png" width="540"></a>
 
@@ -166,9 +170,13 @@ collapse frames. Open Wrangler opens them without converting them to Python.
 
 <a href="images/readme/v1.2/gallery/r-quarto-variable-picker.png"><img alt="A rendered Quarto table beside the source document and Open Wrangler dataframe picker" src="images/readme/v1.2/gallery/r-quarto-variable-picker-detail.png" width="960"></a>
 
-For a trusted `.R`, `.Rmd`, or `.qmd` file, **Run R Document in Open Wrangler…** runs the file or its top-level R
-cells in an Open Wrangler-managed R process. This scene pairs the official Quarto preview with the dataframe picker;
-Quarto rendering and Open Wrangler execution use separate R sessions. Unsaved editor changes are included.
+For `.Rmd` and `.qmd` files, put the cursor in an enabled R or Python chunk and choose **Open in Open Wrangler**.
+Open Wrangler runs only that chunk in its existing R or Python session, then lists the dataframes from that session.
+This scene pairs the official Quarto preview with the dataframe picker; rendering remains separate from execution.
+
+**Run R Document in Open Wrangler…** is the explicit all-R fallback for trusted `.R`, `.Rmd`, and `.qmd` files. It
+runs a plain R file or the document's top-level R chunks in a separate Open Wrangler process and includes unsaved
+changes. It does not replace the cursor-owned path for mixed R and Python documents.
 
 <a href="images/editor-acceptance/vscode-notebook-r-dark.png"><img alt="An R data frame in Open Wrangler with filters, ordered sorts, and a revenue profile" src="images/editor-acceptance/vscode-notebook-r-dark.png" width="960"></a>
 
