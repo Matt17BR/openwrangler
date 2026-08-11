@@ -37,6 +37,7 @@ const INTERACTIVE_PROTOCOL_VERSION = 1;
 const RESPONSE_POLL_MS = 20;
 const MAX_DISCOVERY_BYTES = 64 * 1_024;
 const MAX_EVALUATION_CODE_BYTES = 1_024 * 1_024;
+const MAX_WORKING_DIRECTORY_BYTES = 32 * 1_024;
 const MAX_DISCOVERY_VARIABLES = 256;
 const MAX_VARIABLE_NAME_BYTES = 1_024;
 const MAX_RETIRED_SESSION_IDS = 1_024;
@@ -81,6 +82,12 @@ interface ScheduledRequest<T> {
     dispatched: boolean;
     abandonBeforeDispatch: boolean;
   };
+}
+
+interface RInteractiveEvaluationOptions extends RKernelRequestOptions {
+  readonly workingDirectory?: string;
+  /** Revalidated synchronously at the final boundary before terminal dispatch. */
+  readonly isRequestCurrent?: () => boolean;
 }
 
 /**
@@ -205,22 +212,35 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
 
   async evaluateAndDiscoverVariables(
     code: string,
-    options: RKernelRequestOptions = {}
+    options: RInteractiveEvaluationOptions = {}
   ): Promise<RProcessVariableDiscovery> {
     this.assertActive();
     if (typeof code !== "string" || code.length === 0 || Buffer.byteLength(code, "utf8") > MAX_EVALUATION_CODE_BYTES) {
       throw new TypeError("The R code chunk must contain between 1 byte and 1 MiB of UTF-8 text.");
+    }
+    const { workingDirectory, isRequestCurrent } = options;
+    if (
+      workingDirectory !== undefined &&
+      (!isBoundedText(workingDirectory, MAX_WORKING_DIRECTORY_BYTES) || !path.isAbsolute(workingDirectory))
+    ) {
+      throw new TypeError("The R chunk working directory must be an absolute path of at most 32 KiB.");
     }
     const requestId = this.createId();
     const request = Object.freeze({
       protocolVersion: INTERACTIVE_PROTOCOL_VERSION,
       requestId,
       kind: "evaluateAndDiscoverInteractiveVariables",
-      code
+      code,
+      ...(workingDirectory ? { workingDirectory } : {})
     });
     const payload = JSON.stringify(request);
-    const scheduled = this.schedule(requestId, payload, MAX_DISCOVERY_BYTES, (response) =>
-      decodeDiscoveryResponse(response, requestId)
+    const scheduled = this.schedule(
+      requestId,
+      payload,
+      MAX_DISCOVERY_BYTES,
+      (response) => decodeDiscoveryResponse(response, requestId),
+      false,
+      isRequestCurrent
     );
     try {
       return await this.waitForScheduled(scheduled, options);
@@ -558,7 +578,8 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     payload: string,
     maximumResponseBytes: number,
     decode: (payload: string) => T,
-    allowStopping = false
+    allowStopping = false,
+    isRequestCurrent?: () => boolean
   ): ScheduledRequest<T> {
     if (!allowStopping) this.assertActive();
     if (Buffer.byteLength(payload, "utf8") > R_KERNEL_MAX_REQUEST_BYTES) {
@@ -587,6 +608,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
         if (!allowStopping && !vscode.workspace.isTrusted) {
           throw new Error("Trust this workspace before Open Wrangler accesses the active R session.");
         }
+        if (isRequestCurrent && !isRequestCurrent()) throw new KernelRequestCancelledError();
         const code = buildRInteractiveDispatchCode({
           runtimeRoot: this.runtimeRoot,
           ownerToken: this.ownerToken,

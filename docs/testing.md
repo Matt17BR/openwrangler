@@ -740,7 +740,9 @@ the dataframe, checks its full schema and page, applies Rename, inserts generate
 the source file on disk is unchanged.
 The Quarto title-action portion puts the cursor in the exact dataframe-producing chunk and invokes the stable editor
 action. It verifies the Quarto and R integrations before asking for a terminal, then evaluates and discovers through
-one correlated request bound to the exact active R terminal. Focused TypeScript tests separately route
+one correlated request bound to the exact active R terminal. The chunk reads its relative CSV from the Quarto
+document directory, and the journey verifies that the terminal returns to its original working directory after both
+successful and failed evaluation. Focused TypeScript tests separately route
 explicit-Jupyter and implicit/explicit-knitr Quarto Python chunks,
 reticulate R Markdown Python chunks, and R chunks. They cover backtick and supported tilde fences, chunk labels, `#|`
 options, disabled chunks, required-integration guidance before session acquisition, conflicting executor metadata,

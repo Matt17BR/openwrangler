@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
 import { getSetting } from "../configuration";
@@ -107,6 +108,8 @@ export interface RInteractiveCommandTransport extends RKernelBridgeTransport {
     options?: {
       readonly cancellation?: vscode.CancellationToken;
       readonly timeoutMs?: number;
+      readonly workingDirectory?: string;
+      readonly isRequestCurrent?: () => boolean;
     }
   ): Promise<RProcessVariableDiscovery>;
 }
@@ -380,7 +383,9 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
         evaluationCode === undefined
           ? "Finding dataframes in the active R session"
           : "Running chunk and finding dataframes",
-        evaluationCode
+        evaluationCode,
+        documentOrigin ? path.dirname(documentOrigin.document.uri.fsPath) : undefined,
+        () => this.isCurrentLiterateRequest(generation, origin, expectedSession)
       );
     } catch (error) {
       const cleanupError = await this.disposeManagedTransport(transport);
@@ -1047,18 +1052,27 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
 async function discoverWithProgress(
   transport: RInteractiveCommandTransport,
   title = "Finding dataframes in the active R session",
-  evaluationCode?: string
+  evaluationCode?: string,
+  workingDirectory?: string,
+  isRequestCurrent: () => boolean = () => true
 ): Promise<RProcessVariableDiscovery> {
   return vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title, cancellable: true },
     (_progress, cancellation) => {
+      if (!isRequestCurrent()) {
+        throw new Error("The R dataframe request became stale before it could run.");
+      }
       const options = {
         cancellation,
         timeoutMs: getSetting<number>("sessionOpenTimeoutMs", 60_000)
       };
       return evaluationCode === undefined
         ? transport.discoverVariables(options)
-        : transport.evaluateAndDiscoverVariables(evaluationCode, options);
+        : transport.evaluateAndDiscoverVariables(evaluationCode, {
+            ...options,
+            ...(workingDirectory ? { workingDirectory } : {}),
+            isRequestCurrent
+          });
     }
   );
 }
