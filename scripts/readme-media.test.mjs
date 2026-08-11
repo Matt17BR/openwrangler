@@ -514,8 +514,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /A dataframe workbench for VS Code, Cursor/u);
   assert.match(
     readme,
-    /sidebar keeps operations, dataset health, filters, sorts, and cleaning history beside the grid/u
+    /sidebar keeps operations, dataset health, filter and sort builders, and cleaning history beside the grid/u
   );
+  assert.match(readme, /Active\s+filter rules remain visible in a compact row above the data/u);
   assert.match(readme, /showing 14,287 Benelux rows/u);
   assert.match(readme, /automatic delimiter, encoding, quote, and header detection/u);
   assert.match(readme, /^## Open files$/mu);
