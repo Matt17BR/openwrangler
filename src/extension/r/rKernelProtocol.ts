@@ -1932,16 +1932,18 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
     boundedText(summary.columnId, `${label}.columnId`, R_FRAME_CONTRACT_LIMITS.columnIdBytes, false);
     boundedText(summary.column, `${label}.column`, maximumVariableNameBytes, true);
     boundedText(summary.rawType, `${label}.rawType`, maximumVariableNameBytes, false);
-    if (summary.totalCount > R_FRAME_CONTRACT_LIMITS.profileRows) {
-      fail(`${label} exceeds the row profiling limit.`);
-    }
     const present = summary.totalCount - summary.nullCount - summary.nanCount;
+    const visualization = summary.visualization;
+    const sampledDistribution = visualization?.sampled === true;
     if (
       present < 0 ||
-      summary.distinctCount === undefined ||
+      (sampledDistribution && present <= R_FRAME_CONTRACT_LIMITS.profileSampleRows) ||
       (summary.distinctCount !== undefined && summary.distinctCount > present) ||
       (summary.distinctCount !== undefined &&
-        summary.topValues.length !== Math.min(R_FRAME_CONTRACT_LIMITS.topValues, summary.distinctCount))
+        summary.topValues.length !== Math.min(R_FRAME_CONTRACT_LIMITS.topValues, summary.distinctCount)) ||
+      (summary.distinctCount === undefined &&
+        (present <= R_FRAME_CONTRACT_LIMITS.profileSampleRows ||
+          (!sampledDistribution && summary.topValues.length !== 0)))
     ) {
       fail(`${label} has inconsistent value counts.`);
     }
@@ -1958,7 +1960,6 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
       fail(`${label} has text statistics for the wrong column type.`);
     }
 
-    const visualization = summary.visualization;
     if (!visualization) {
       if (
         summary.type === "boolean" ||
@@ -1983,13 +1984,29 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
         previousMaximum = bin.max;
         binCount += bin.count;
       }
-      if (binCount > present) fail(`${label} has histogram counts outside the column.`);
+      if (
+        binCount > present ||
+        (sampledDistribution &&
+          (binCount === 0 ||
+            binCount > R_FRAME_CONTRACT_LIMITS.profileSampleRows ||
+            summary.distinctCount !== undefined ||
+            summary.topValues.length !== 0)) ||
+        (!sampledDistribution && summary.distinctCount === undefined)
+      ) {
+        fail(`${label} has histogram counts outside the column.`);
+      }
     } else if (visualization.kind === "boolean") {
-      if (summary.type !== "boolean" || visualization.trueCount + visualization.falseCount !== present) {
+      if (
+        summary.type !== "boolean" ||
+        visualization.sampled === true ||
+        visualization.trueCount + visualization.falseCount !== present
+      ) {
         fail(`${label} has inconsistent boolean counts.`);
       }
     } else if (visualization.kind === "categorical") {
       const categoryValues = new Set(visualization.categories.map((entry) => entry.value));
+      const categoryCount =
+        visualization.categories.reduce((count, entry) => count + entry.count, 0) + visualization.otherCount;
       if (
         summary.type !== "string" ||
         categoryValues.size !== visualization.categories.length ||
@@ -2000,12 +2017,14 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
             entry.count !== summary.topValues[categoryIndex]?.count ||
             entry.selectionValue !== undefined
         ) ||
-        visualization.categories.reduce((count, entry) => count + entry.count, 0) + visualization.otherCount !== present
+        (visualization.sampled === true
+          ? categoryCount !== R_FRAME_CONTRACT_LIMITS.profileSampleRows || summary.distinctCount !== undefined
+          : categoryCount !== present || summary.distinctCount === undefined)
       ) {
         fail(`${label} has inconsistent categorical counts.`);
       }
     } else {
-      if (summary.type !== "date" && summary.type !== "datetime") {
+      if ((summary.type !== "date" && summary.type !== "datetime") || visualization.sampled === true) {
         fail(`${label} has a datetime visualization for the wrong column type.`);
       }
       const hasMinimum = visualization.min !== undefined;
@@ -2022,9 +2041,11 @@ function validateRColumnSummaries(summaries: readonly ColumnSummary[]): void {
 }
 
 function validateRDatasetStats(stats: DatasetStats, totalRows: number): void {
+  const duplicateRowsDomain = stats.duplicateRowsSampleSize ?? totalRows;
   if (
     stats.missingRows > totalRows ||
-    stats.duplicateRows > Math.max(0, totalRows - 1) ||
+    duplicateRowsDomain > totalRows ||
+    stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1) ||
     stats.missingCells > totalRows * stats.missingValuesByColumn.length
   ) {
     fail("R kernel dataset statistics exceed the filtered row count.");

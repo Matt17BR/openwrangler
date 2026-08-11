@@ -558,6 +558,45 @@ describe("canonical R kernel bridge", () => {
     ).rejects.toThrow("active dataframe shape");
   });
 
+  it("accepts bounded sampled duplicate statistics and rejects a sample outside the active view", async () => {
+    const contract = frameContract({ totalRows: 3 });
+    const transport = fakeTransport(contract);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest());
+    const stats = datasetStatsFor(contract);
+    transport.getDatasetStats.mockResolvedValueOnce({
+      totalRows: 3,
+      stats: { ...stats, duplicateRows: 1, duplicateRowsSampleSize: 2 }
+    });
+
+    await expect(
+      bridge.request({
+        kind: "getDatasetStats",
+        sessionId,
+        revision: 0,
+        viewRequestId: "sampled-stats",
+        filterModel: { filters: [], sort: [] }
+      })
+    ).resolves.toMatchObject({
+      kind: "datasetStats",
+      stats: { duplicateRows: 1, duplicateRowsSampleSize: 2 }
+    });
+
+    transport.getDatasetStats.mockResolvedValueOnce({
+      totalRows: 3,
+      stats: { ...stats, duplicateRows: 1, duplicateRowsSampleSize: 4 }
+    });
+    await expect(
+      bridge.request({
+        kind: "getDatasetStats",
+        sessionId,
+        revision: 0,
+        viewRequestId: "oversized-sample",
+        filterModel: { filters: [], sort: [] }
+      })
+    ).rejects.toThrow("active dataframe shape");
+  });
+
   it("keeps mutations out of viewing sessions and unsupported exports out of IRkernel", async () => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);

@@ -255,6 +255,12 @@ column type supports it. Every draft shows the changed data and generated R befo
 be inspected, edited, or undone. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
 lists the operation parameters; the workbench shows only the operations supported by the active dataframe.
 
+Large R views keep row counts, missing counts, inexpensive numeric/text statistics, and date ranges exact. Histograms
+and categorical distributions use a bounded sample when needed and say so; their percentages use that sample, while
+an exact distinct count that was not calculated appears as `n/a`. Dataset missing counts remain exact, and a sampled
+duplicate-row count shows its sample size. The separate exhaustive value list used by the filter builder runs only
+when requested and has its own native R value-scan bound.
+
 <a href="https://github.com/Matt17BR/openwrangler/blob/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/notebook-r-editing.png"><img alt="An R Group and aggregate draft for regional orders with cleaning history, Apply and Discard controls, and generated R" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/notebook-r-editing.png" width="960"></a>
 
 The draft groups regional orders by market and channel and previews total revenue before the step is applied.

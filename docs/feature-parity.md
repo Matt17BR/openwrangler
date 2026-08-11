@@ -120,7 +120,10 @@ metadata fails closed, required integrations are preflighted before session acqu
 and any R terminal are revalidated through every await. R-backed evaluation and discovery share one correlated
 terminal request. Common chunk labels and `#|` options are accepted; Quarto supports backtick and tilde
 fences, while R Markdown uses backticks. On macOS and Linux, the tab menu keeps the explicit all-R document command. Pages, compound filters, ordered sorts,
-value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Editing mode
+value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Large profiles
+retain exact cheap statistics through bounded chunk scans, label sampled histograms and categories, show unavailable
+exact distinct counts as `n/a`, and use the sampled population for percentages. Dataset missing counts remain exact;
+sampled duplicate counts publish and display their sample size. Editing mode
 currently supports twenty-one cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
 Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate. They follow the
@@ -240,7 +243,7 @@ substitute a smaller R smoke test.
 | Native R compound viewing filters             | 1.99 preview                    | Partial | R contracts and packaged value/predicate path                                                                                   | Preview release |
 | Native R value search and selections          | 1.99 preview                    | Partial | Typed selection contracts and packaged value path                                                                               | Preview release |
 | Native R ordered viewing sorts                | 1.99 preview                    | Partial | Pure-R tests, local/remote packaged tests, and Cursor row-menu priority changes                                                 | Preview release |
-| Native R column and dataset profiles          | 1.99 preview                    | Partial | R 4.4/4.5 tests, packaged UI, and filtered contracts                                                                            | Preview release |
+| Native R column and dataset profiles          | 1.99 preview                    | Partial | R 4.4/4.5 tests, filtered contracts, large chunk/sample regressions, and sampled-label UI tests                                 | Preview release |
 | Base `data.frame`, tibble, and `data.table`   | 1.99 preview                    | Partial | Native discovery, paging, queries, and profile tests                                                                            | Preview release |
 | Exact IRkernel session transport              | 1.99 preview                    | Done    | Linux local VS Code/Cursor and remote VS Code; macOS/Windows VS Code gate                                                       | Preview release |
 | Exact active R-terminal transport             | 1.99 preview                    | Partial | Public VS Code terminal API, Operations refresh/list, native request and cleanup tests; packaged VS Code/Cursor journey pending | Preview release |

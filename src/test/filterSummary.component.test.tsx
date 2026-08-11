@@ -1168,6 +1168,78 @@ describe("SummaryPanel", () => {
     expect(screen.queryByRole("heading", { name: "Top values" })).not.toBeInTheDocument();
   });
 
+  it("uses sampled numeric and string denominators without displaying a fake distinct zero", () => {
+    const totalRows = 4_000_017;
+    const largeMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: totalRows, columns: 2 },
+      filteredShape: { rows: totalRows, columns: 2 }
+    };
+    const sampledNumeric: ColumnSummary = {
+      columnId: "c:1",
+      column: "sales",
+      type: "float",
+      rawType: "Float64",
+      totalCount: totalRows,
+      nullCount: 0,
+      nanCount: 0,
+      topValues: [],
+      numeric: { min: 1, max: 3, mean: 2 },
+      visualization: {
+        kind: "numeric",
+        bins: [
+          { min: 1, max: 2, count: 60_000 },
+          { min: 2, max: 3, count: 40_000 }
+        ],
+        sampled: true
+      }
+    };
+    const numeric = renderSummary({
+      metadataValue: largeMetadata,
+      summaries: [sampledNumeric],
+      selectedColumnId: "c:1",
+      onApplyFilterModel: vi.fn()
+    });
+
+    expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
+    expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
+    expect(screen.getByText("Percent uses 100,000 sampled non-missing rows.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "%" }));
+    expect(screen.getByRole("button", { name: /1-2: 60% \(60,000 rows\)/u })).toBeVisible();
+    numeric.unmount();
+
+    const sampledCategorical: ColumnSummary = {
+      columnId: "c:0",
+      column: "city",
+      type: "string",
+      rawType: "String",
+      totalCount: totalRows,
+      nullCount: 0,
+      nanCount: 0,
+      text: { emptyCount: 0, minLength: 5, maxLength: 6, meanLength: 5.5 },
+      topValues: [
+        { value: "Berlin", count: 60_000 },
+        { value: "Milan", count: 40_000 }
+      ],
+      visualization: {
+        kind: "categorical",
+        categories: [
+          { value: "Berlin", count: 60_000 },
+          { value: "Milan", count: 40_000 }
+        ],
+        otherCount: 0,
+        sampled: true
+      }
+    };
+    renderSummary({ metadataValue: largeMetadata, summaries: [sampledCategorical], selectedColumnId: "c:0" });
+
+    expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("n/a");
+    expect(screen.queryByText("Distinct 0")).not.toBeInTheDocument();
+    expect(screen.getByText("Percent uses 100,000 sampled non-missing rows.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "%" }));
+    expect(screen.getByText("Berlin").closest(".barRow")).toHaveTextContent("60%");
+  });
+
   it("shows full typed extrema in Column profiles with exact titles and accessible names", () => {
     const minimum = "-12345678901234567890.123456789012345678";
     const maximum = "98765432109876543210.987654321098765432";
@@ -1654,7 +1726,7 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Max").nextElementSibling).toHaveTextContent("2024-04-01");
   });
 
-  it("renders dataset shape and exact missing and duplicate statistics only in Dataset view", () => {
+  it("renders dataset shape and missing and duplicate statistics only in Dataset view", () => {
     renderSummary({ activeView: "dataset" });
 
     expect(screen.getByRole("tabpanel", { name: "Dataset" })).toBeInTheDocument();
@@ -1666,6 +1738,19 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Duplicate rows").nextElementSibling).toHaveTextContent("1");
     expect(screen.getByText("sales")).toBeInTheDocument();
     expect(screen.queryByText("Profiling selected column...")).not.toBeInTheDocument();
+  });
+
+  it("labels a sampled duplicate count with its sample size", () => {
+    renderSummary({
+      activeView: "dataset",
+      metadataValue: {
+        ...metadata,
+        stats: { ...metadata.stats!, duplicateRows: 3, duplicateRowsSampleSize: 25_000 }
+      }
+    });
+
+    expect(screen.getByText("Duplicate rows (sample of 25,000)").nextElementSibling).toHaveTextContent("3");
+    expect(screen.getByText("Missing cells").nextElementSibling).toHaveTextContent("1");
   });
 
   it("renders bounded loading and empty states without implying missing profile data is exact", () => {
@@ -1691,7 +1776,7 @@ describe("SummaryPanel", () => {
         onSelectView={() => undefined}
       />
     );
-    expect(screen.getByText("Profiling exact dataset statistics...")).toHaveAttribute("role", "status");
+    expect(screen.getByText("Profiling dataset statistics...")).toHaveAttribute("role", "status");
     expect(screen.queryByText("Exact statistics")).not.toBeInTheDocument();
 
     const zeroColumnMetadata: SessionMetadata = {

@@ -534,6 +534,7 @@
         "missingCells": { "type": "integer", "minimum": 0 },
         "missingRows": { "type": "integer", "minimum": 0 },
         "duplicateRows": { "type": "integer", "minimum": 0 },
+        "duplicateRowsSampleSize": { "type": "integer", "minimum": 1 },
         "missingValuesByColumn": {
           "type": "array",
           "items": {

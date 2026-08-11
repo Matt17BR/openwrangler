@@ -86,6 +86,15 @@ the current viewing filters, and the private dataset-statistics response binds i
 from the same request. Same-schema changes made in the notebook are therefore visible; structural changes ask the
 user to reopen the frame.
 
+Large profiles do not fail at an arbitrary dataframe row or cell count. The R contract scans cheap column and missing
+statistics in bounded chunks, keeps those results exact, and takes a deterministic sample of at most 100,000
+non-missing values only for expensive histograms and categorical distributions. Omitted exact statistics display as
+`n/a`, sampled charts carry an explicit marker, and percentages use the sample population. Dataset missing counts stay
+exact; duplicate-row detection publishes the sample size when its deterministic sample is bounded below the visible
+row count. The separate user-initiated filter-value enumeration remains an exact bounded scan and is not started by
+page or profile loading. These memory bounds do not imply that IRkernel can interrupt work already dispatched to the
+user's kernel.
+
 Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
 Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
 Capitalize, Strip text, Split text, Round, Floor, and Ceiling. The first draft takes an isolated original: base data

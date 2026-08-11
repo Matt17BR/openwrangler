@@ -398,13 +398,26 @@ openwrangler_r_kernel_agent <- local({
     stats <- exact_record(
       result$stats,
       c("missingCells", "missingRows", "duplicateRows", "missingValuesByColumn"),
-      "dataset statistics"
+      "dataset statistics",
+      optional_fields = "duplicateRowsSampleSize"
     )
     missing_rows <- result_whole_number(stats$missingRows, "dataset statistics missingRows", total_rows)
+    duplicate_rows_domain <- if ("duplicateRowsSampleSize" %in% names(stats)) {
+      result_whole_number(
+        stats$duplicateRowsSampleSize,
+        "dataset statistics duplicateRowsSampleSize",
+        total_rows
+      )
+    } else {
+      total_rows
+    }
+    if ("duplicateRowsSampleSize" %in% names(stats) && duplicate_rows_domain < 1) {
+      abort("runtime_error", "dataset statistics duplicateRowsSampleSize is outside its supported range")
+    }
     duplicate_rows <- result_whole_number(
       stats$duplicateRows,
       "dataset statistics duplicateRows",
-      max(0, total_rows - 1)
+      max(0, duplicate_rows_domain - 1)
     )
     entries <- stats$missingValuesByColumn
     if (!is.list(entries) || length(entries) > limits$columns) {

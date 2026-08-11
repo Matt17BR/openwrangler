@@ -2062,7 +2062,7 @@ function ColumnHeader({
               />
               <HeaderProfileValue
                 label="Distinct"
-                value={summary.distinctCount ?? 0}
+                value={summary.distinctCount}
                 denominator={summary.totalCount}
                 mode={profileValueMode}
               />
@@ -2094,10 +2094,17 @@ function HeaderProfileValue({
   mode
 }: {
   label: string;
-  value: number;
+  value: number | undefined;
   denominator: number;
   mode: ProfileValueMode;
 }) {
+  if (value === undefined) {
+    return (
+      <span title={`${label} is unavailable`} aria-label={`${label} is unavailable`}>
+        {label} n/a
+      </span>
+    );
+  }
   const description = describeProfileValue(label, value, denominator);
   return (
     <span title={description} aria-label={description}>

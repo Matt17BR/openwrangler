@@ -994,7 +994,13 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   }
   nodes.push(
     new ViewNode("Missing cells", stats ? stats.missingCells.toLocaleString() : "Profiling…", "question"),
-    new ViewNode("Duplicate rows", stats ? stats.duplicateRows.toLocaleString() : "Profiling…", "copy")
+    new ViewNode(
+      stats?.duplicateRowsSampleSize === undefined
+        ? "Duplicate rows"
+        : `Duplicate rows (sample of ${stats.duplicateRowsSampleSize.toLocaleString()})`,
+      stats ? stats.duplicateRows.toLocaleString() : "Profiling…",
+      "copy"
+    )
   );
   return nodes;
 }

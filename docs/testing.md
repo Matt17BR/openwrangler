@@ -57,9 +57,14 @@ matrix for release candidates or changes that cross all of its boundaries.
   `NaN` and infinity, exact integer64 extrema, factors, Unicode text lengths, logical counts, Date/POSIXct ranges,
   difftime statistics, numeric histograms, common-value limits, empty and all-missing columns, duplicate rows, and
   source immutability. They also check filtered profiles and dataset statistics, extreme finite histogram ranges, the
-  row and cell work limits, the 64-column request limit, and strict count relationships in R profile and
-  dataset-statistics messages. Dataset-statistics responses include the filtered row count from the correlated
-  request; the R encoder, TypeScript decoder, and bridge each reject impossible counts. The cross-language
+  64-column request limit, exact chunked cheap statistics above the former 1,000,000-row and 5,000,000-cell refusals,
+  deterministic 100,000-value histogram/category samples, omitted non-exact medians and distinct counts, exact
+  boolean counts, exact missing statistics, and duplicate samples bounded by both rows and cells. Protocol, bridge,
+  native-view, and React tests require explicit sample labels, `Distinct n/a`, sampled percentage denominators, and
+  strict count relationships. Dataset-statistics responses include the filtered row count and optional duplicate-row
+  sample size from the correlated request; the R encoder, TypeScript decoder, and bridge each reject impossible
+  counts. The explicit exhaustive filter-value endpoint retains its separate row/cell scan bound, names it as an R
+  value-scan diagnostic, and is not requested by ordinary large-profile rendering. The cross-language
   cases run only when
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix. It
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
@@ -70,7 +75,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   checks a pending draft and stale revision, full committed rows despite an active view, duplicate names and R types,
   repeated offset reads, explicit close, and session-close cleanup.
   The R tests check the fixed diagnostics for unsupported frames,
-  missing packages, oversized pages or profiles, and stale columns. Focused TypeScript tests cover the embedded
+  missing packages, oversized pages, over-wide profile requests, explicit value scans, and stale columns. Focused TypeScript tests cover the embedded
   remote-kernel bootstrap, response decoder, sole-open notebook checks, exact-kernel paging and profiling, restart
   handling, late close completion, repeated disposal, and delayed
   candidate cleanup without interrupting Jupyter. They also cancel and time out page requests, then prove that the next
@@ -95,6 +100,12 @@ matrix for release candidates or changes that cross all of its boundaries.
   and the private runtime binding must be gone after close. The exact hosted result is recorded below. CI does not
   install R in packaging, Python, browser, or ordinary editor jobs. The packaged R journey starts IRkernel through a
   small run-owned bootstrap that puts its private library first without depending on the runner's R startup files.
+
+  A local read-only scale acceptance on 2026-08-11 generated a 4,000,017-row × 8-column base frame entirely in memory,
+  profiled one numeric and one string column, and calculated dataset statistics in 25.414 seconds. Exact cheap and
+  missing statistics remained complete, both distributions contained their 100,000-value sample, and duplicate rows
+  carried a 100,000-row sample receipt. This generated-data result is evidence for the former refusal case, not a
+  performance threshold or substitute for the focused R 4.4/4.5 matrix.
 
   Linux and macOS VS Code run the complete installed R journey. Windows and Cursor use a named representative profile
   within the same 300-second phase limit: real IRkernel discovery, one page round trip, profiles, filtering, Clear all,

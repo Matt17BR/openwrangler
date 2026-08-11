@@ -1104,6 +1104,7 @@ export interface DatasetStats {
   missingCells: number;
   missingRows: number;
   duplicateRows: number;
+  duplicateRowsSampleSize?: number;
   missingValuesByColumn: {
     column: string;
     count: number;
