@@ -31,6 +31,7 @@ const PYTHON_CELL_MARKER = /^\s*#\s*(?:%%|<codecell>|In\[\d*?\]|In\[ \])/u;
 const MARKDOWN_CELL_MARKER = /^\s*#\s*(?:%%\s*\[markdown\]|<markdowncell>)/iu;
 const MAX_INTERACTIVE_CELL_METADATA_TEXT = 64 * 1024;
 const PYTHON_CELL_PUBLICATION_TIMEOUT_MS = 10_000;
+const PYTHON_CELL_POST_KERNEL_PUBLICATION_GRACE_MS = 1_000;
 const PYTHON_CELL_EXECUTION_TIMEOUT_MS = 120_000;
 
 export interface NotebookLiveVariableItem {
@@ -277,12 +278,16 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
         const restored = await selectKernelAndRestorePythonOrigin(attempt.notebook, origin, operationDeadline);
         if (!restored) return false;
 
-        const afterSelection = observer.snapshot();
-        if (afterSelection.kind === "found") {
-          attempt = { kind: "published", notebook: afterSelection.notebook, cell: afterSelection.cell };
+        const afterSelection = await waitForPublishedCellAfterDispatch(
+          observer,
+          Math.min(operationDeadline, Date.now() + PYTHON_CELL_POST_KERNEL_PUBLICATION_GRACE_MS),
+          false
+        );
+        if (afterSelection.kind === "published") {
+          attempt = afterSelection;
         } else if (afterSelection.kind === "ambiguous") {
           attempt = afterSelection;
-        } else if (!isExactPythonOrigin(origin)) {
+        } else if (afterSelection.kind === "stale" || !isExactPythonOrigin(origin)) {
           attempt = { kind: "stale" };
         } else {
           const blankWindow = observer.blankWindow();
@@ -574,7 +579,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
   }
 
   private async discoverChooseAndOpen(notebook: vscode.NotebookDocument, origin: PythonCellOrigin): Promise<boolean> {
-    if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+    if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
       void vscode.window.showWarningMessage(
         "The Python file or Interactive Window changed before Open Wrangler could inspect it. Try again."
       );
@@ -591,7 +596,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       );
       return false;
     }
-    if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+    if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
       void vscode.window.showWarningMessage(
         "The Python file or Interactive Window changed before Open Wrangler could open its dataframe. Try again."
       );
@@ -619,7 +624,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
         matchOnDetail: true,
         ignoreFocusOut: true
       });
-      if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+      if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
         void vscode.window.showWarningMessage(
           "The Python file or Interactive Window changed while the picker was open. Try again."
         );
@@ -627,7 +632,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       }
       if (!choice || !items.includes(choice)) return false;
       await restoreEditorGroupAfterQuickPick();
-      if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+      if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
         void vscode.window.showWarningMessage(
           "The Python file or Interactive Window changed while focus returned from the picker. Try again."
         );
@@ -916,7 +921,7 @@ async function selectKernelAndRestorePythonOrigin(
   origin: PythonCellOrigin,
   operationDeadline: number
 ): Promise<boolean> {
-  if (!isExactPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
+  if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed while its kernel was being selected. Try again."
     );
@@ -1070,7 +1075,7 @@ class PythonCellDispatchObserver implements vscode.Disposable {
     | { readonly kind: "missing" }
     | { readonly kind: "ambiguous" }
     | { readonly kind: "stale" } {
-    if (!isExactPythonOrigin(this.origin)) return { kind: "stale" };
+    if (!isUnchangedPythonOrigin(this.origin)) return { kind: "stale" };
     return newlyExecutedCell(this.origin, this.beforeCells);
   }
 
@@ -1127,6 +1132,7 @@ async function runPythonCellAttempt(
   const initial = observer.snapshot();
   if (initial.kind === "found") return { kind: "published", notebook: initial.notebook, cell: initial.cell };
   if (initial.kind !== "missing") return initial;
+  if (!isExactPythonOrigin(origin)) return { kind: "stale" };
 
   const dispatchDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
   const dispatch = boundedPythonCellDispatch(origin, dispatchDeadline);
@@ -1245,7 +1251,7 @@ function waitForPinnedCellCompletion(
   operationDeadline: number
 ): Promise<PythonExecutedCellResult> {
   const completedCandidate = (): PythonExecutedCellResult | undefined => {
-    if (!isExactPythonOrigin(origin)) return { kind: "stale" };
+    if (!isUnchangedPythonOrigin(origin)) return { kind: "stale" };
     const candidate = newlyExecutedCell(origin, before);
     if (candidate.kind !== "found") return candidate;
     if (candidate.notebook !== notebook || candidate.cell !== cell) return { kind: "ambiguous" };
@@ -1278,7 +1284,7 @@ function waitForPinnedCellCompletion(
     );
     const timeout = setTimeout(
       () => {
-        if (!isExactPythonOrigin(origin)) {
+        if (!isUnchangedPythonOrigin(origin)) {
           finish({ kind: "stale" });
           return;
         }
