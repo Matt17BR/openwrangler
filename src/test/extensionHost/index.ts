@@ -13805,15 +13805,23 @@ function assertReleasedNotebookActionLabelOwnership(notebookType: string): void 
 }
 
 function assertActiveNotebookTab(notebook: vscode.NotebookDocument, message: string): void {
-  assert.equal(vscode.window.activeNotebookEditor?.notebook, notebook, message);
+  const activeEditor = vscode.window.activeNotebookEditor;
+  const activeTabGroup = vscode.window.tabGroups.activeTabGroup;
+  const activeTab = activeTabGroup.activeTab;
+  assert.equal(activeEditor?.notebook, notebook, message);
   if (notebook.notebookType === "interactive") {
     assertExactOpenNotebookDocument(notebook, message);
     const matchingEditors = vscode.window.visibleNotebookEditors.filter((candidate) => candidate.notebook === notebook);
     assert.equal(matchingEditors.length, 1, message);
-    assert.equal(vscode.window.activeNotebookEditor, matchingEditors[0], message);
+    assert.equal(activeEditor, matchingEditors[0], message);
+    assert.equal(activeTabGroup.isActive, true, message);
+    assert.equal(activeTab?.isActive, true, message);
+    if (activeEditor?.viewColumn !== undefined) {
+      assert.equal(activeTabGroup.viewColumn, activeEditor.viewColumn, message);
+    }
     return;
   }
-  const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+  const input = activeTab?.input;
   assert.ok(input instanceof vscode.TabInputNotebook, message);
   assert.equal(input.uri.toString(), notebook.uri.toString(), message);
   assert.equal(input.notebookType, notebook.notebookType, message);

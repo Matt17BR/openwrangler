@@ -678,9 +678,17 @@ function resolveInteractiveNotebookAtCommandReceipt(args: unknown[]): NotebookRe
 }
 
 function resolveActiveNotebookAtCommandReceipt(explicitUris: vscode.Uri[] = []): NotebookResolution {
-  const editorNotebook = vscode.window.activeNotebookEditor?.notebook;
-  const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-  if (activeTab && !(activeTab.input instanceof vscode.TabInputNotebook)) {
+  const activeEditor = vscode.window.activeNotebookEditor;
+  const editorNotebook = activeEditor?.notebook;
+  const activeTabGroup = vscode.window.tabGroups.activeTabGroup;
+  const activeTab = activeTabGroup.activeTab;
+  const isActiveInteractiveTab =
+    activeEditor !== undefined &&
+    activeTab?.isActive === true &&
+    activeTabGroup.isActive &&
+    activeEditor.notebook.notebookType === "interactive" &&
+    (activeEditor.viewColumn === undefined || activeEditor.viewColumn === activeTabGroup.viewColumn);
+  if (activeTab && !(activeTab.input instanceof vscode.TabInputNotebook) && !isActiveInteractiveTab) {
     return {
       error: "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
     };
