@@ -550,9 +550,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /interactive session from the official R extension[\s\S]{0,140}\*\*Operations → Show R\s+dataframes…\*\*/u
+    /interactive session from the official R extension[\s\S]{0,180}Operations reads the dataframe\s+names already maintained by vscode-R/u
   );
-  assert.match(readme, /\*\*Start R and show dataframes…\*\* opens one first/u);
+  assert.match(readme, /it does not run anything in R just to fill the sidebar/u);
+  assert.match(readme, /\*\*Start R and show dataframes…\*\* opens a session when none is running/u);
   assert.match(readme, /The list and every\s+opened dataframe stay tied to that terminal/u);
   assert.match(readme, /\*\*Run R Document in Open Wrangler…\*\* runs a trusted `\.R` file/u);
   assert.match(readme, /supported\s+top-level R cells in an `\.Rmd` or `\.qmd` document/u);

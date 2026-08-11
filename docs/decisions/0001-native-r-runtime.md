@@ -61,11 +61,17 @@ IRkernel is the first supported R transport. A notebook launch must stay bound t
 kernel captured when the user starts it. Kernel lookup, dispatch, recovery, and cleanup may not retarget through the
 active editor, a matching URI, a replacement document, or another R session.
 
-The active-terminal transport connects to the exact official R terminal selected before discovery starts. Open
-Wrangler sends its bundled dispatcher through VS Code's public terminal API, uses private response files for bounded
-requests, and lists supported dataframes in the Operations view. Opening an item transfers that same transport to the
-workbench. Changing or closing the terminal invalidates the list and session; Open Wrangler never searches for a
-replacement terminal or reads vscode-R's private storage, sockets, or process state.
+Before a native connection exists, Operations can read the dataframe descriptors already produced by vscode-R. It
+accepts them only from an extension-created terminal whose watcher attach PID matches the exact captured terminal.
+The files are treated as untrusted hints: reads are bounded and no-follow, marker changes are retried, and any PID,
+path, owner, file identity, or terminal change invalidates the list. This automatic path never sends terminal text.
+
+Opening a listed item or choosing Refresh is the explicit connection point. Open Wrangler then sends its bundled
+dispatcher through VS Code's terminal API and uses private response files for bounded requests. The dispatcher
+registers one task callback for that transport. After a top-level R command, the callback updates the transport's
+private mailbox; the host debounces the notification without sending another R command. Open Wrangler's own requests
+suppress their callback signal. Changing or closing the terminal invalidates the list and session; Open Wrangler never
+searches for a replacement terminal.
 
 IRkernel and active-terminal variables open in Viewing mode by default and can switch to Editing without changing the
 live object. A document session follows the file start-mode setting, which defaults to Editing. Generated R can be
