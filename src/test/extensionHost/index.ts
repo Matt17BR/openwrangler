@@ -32024,26 +32024,25 @@ async function exercisePackagedExcelDependencyInstall(
     await waitFor(
       () => testing.panelHydrated(active.sessionId),
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the recovered XLSX panel to acknowledge its live snapshot"
+      "the recovered XLSX panel to acknowledge its live snapshot",
+      () =>
+        JSON.stringify({
+          activeSessionId: testing.activeSession()?.sessionId,
+          activeRevision: testing.activeSession()?.metadata.revision,
+          panelHydrated: testing.panelHydrated(active.sessionId),
+          panelSynchronizable: testing.panelSynchronizable(active.sessionId),
+          panelSynchronizationReceipt: testing.panelSynchronizationReceipt(active.sessionId),
+          activeTab: activeEditorTabDiagnostic()
+        })
     );
-    const recoveredApp = await synchronizedSessionApp(
+    recordAcceptanceProgress("excel-dependency-install:renderer-hydrated");
+    await verifyRecoveredExcelGrid(
       workbench,
       testing,
       active.sessionId,
-      "The recovered XLSX grid must bind the current acknowledged renderer."
+      active.metadata.revision,
+      active.metadata.source.label
     );
-    const grid = recoveredApp.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
-    await grid.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    assert.equal(await grid.getAttribute("aria-colcount"), "7");
-    assert.equal(await grid.getAttribute("aria-rowcount"), "65");
-    const firstCell = recoveredApp.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
-    await firstCell.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    assert.equal((await firstCell.innerText()).trim(), "OW-240001");
-    await firstCell.focus();
-    await firstCell.press("ArrowRight");
-    await recoveredApp
-      .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
-      .waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
 
     const page = await testing.request({
       kind: "getPage",
@@ -32067,6 +32066,7 @@ async function exercisePackagedExcelDependencyInstall(
       page.page.rows[0]?.values.map((cell) => cell.display),
       ["OW-240001", "DACH", "620.5", "True", "2026-01-01", "Active"]
     );
+    recordAcceptanceProgress("excel-dependency-install:runtime-page");
 
     const invocation = JSON.parse(readFileSync(dependency.invocation, "utf8")) as Record<string, unknown>;
     assert.deepEqual(invocation.args, ["install", "--no-input", "--no-user", "--", "openpyxl>=3.1.5"]);
@@ -32082,6 +32082,7 @@ async function exercisePackagedExcelDependencyInstall(
       workbookBytes,
       "Installing and reprobeing XLSX support must leave the source workbook byte-identical."
     );
+    recordAcceptanceProgress("excel-dependency-install:install-contract");
 
     recordAcceptanceProgress("excel-dependency-install:close");
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
@@ -32113,6 +32114,118 @@ async function exercisePackagedExcelDependencyInstall(
       }
     }
   }
+}
+
+async function verifyRecoveredExcelGrid(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  revision: number,
+  sourceLabel: string
+): Promise<void> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  const operationTimeout = (): number => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error("The recovered XLSX renderer verification reached its deadline.");
+    return Math.min(WORKBENCH_PLAYWRIGHT_TIMEOUT_MS, remainingMs);
+  };
+
+  do {
+    const active = testing.activeSession();
+    assert.equal(active?.sessionId, sessionId, "XLSX renderer recovery must retain the exact active session.");
+    assert.equal(active?.metadata.revision, revision, "XLSX renderer recovery must retain the confirmed revision.");
+
+    const receipt = testing.panelSynchronizationReceipt(sessionId);
+    if (!testing.panelHydrated(sessionId) || receipt?.sessionId !== sessionId || receipt.revision !== revision) {
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
+      continue;
+    }
+
+    const browser = workbench.context().browser();
+    const target = await findCurrentOpenWranglerGridTarget(workbench, browser, testing, sessionId, receipt, deadline);
+    if (!target) {
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
+      continue;
+    }
+
+    try {
+      const app = await exactSessionApp(target.frame, sessionId, receipt.syncId);
+      if (!app) {
+        if (!sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))) continue;
+        throw new Error("The acknowledged XLSX renderer no longer exposes its exact session application.");
+      }
+
+      const grid = app.getByRole("grid", { name: `Data grid for ${sourceLabel}` });
+      await grid.waitFor({ state: "visible", timeout: operationTimeout() });
+      const [columnCount, rowCount] = await withAcceptanceOperationDeadline(
+        Promise.all([grid.getAttribute("aria-colcount"), grid.getAttribute("aria-rowcount")]),
+        operationTimeout(),
+        "the recovered XLSX grid dimensions"
+      );
+      assert.equal(columnCount, "7");
+      assert.equal(rowCount, "65");
+      const firstCell = app.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
+      await firstCell.waitFor({ state: "visible", timeout: operationTimeout() });
+      const firstValue = await withAcceptanceOperationDeadline(
+        firstCell.innerText(),
+        operationTimeout(),
+        "the recovered XLSX first cell"
+      );
+      assert.equal(firstValue.trim(), "OW-240001");
+
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      if (
+        isRetiredRendererTarget(workbench, target.page, target.frame) ||
+        !sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))
+      ) {
+        continue;
+      }
+      recordAcceptanceProgress("excel-dependency-install:grid-bound");
+
+      await firstCell.focus({ timeout: operationTimeout() });
+      await firstCell.press("ArrowRight", { timeout: operationTimeout() });
+      await app
+        .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
+        .waitFor({ state: "visible", timeout: operationTimeout() });
+
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      if (
+        isRetiredRendererTarget(workbench, target.page, target.frame) ||
+        !sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))
+      ) {
+        continue;
+      }
+      const confirmedActive = testing.activeSession();
+      assert.equal(
+        confirmedActive?.sessionId,
+        sessionId,
+        "XLSX keyboard verification must retain the exact active session."
+      );
+      assert.equal(
+        confirmedActive?.metadata.revision,
+        revision,
+        "XLSX keyboard verification must retain the confirmed revision."
+      );
+      recordAcceptanceProgress("excel-dependency-install:grid-keyboard");
+      return;
+    } catch (error) {
+      if (!sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))) continue;
+      ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+    }
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    `The recovered XLSX grid did not remain available in one acknowledged renderer. State: ${JSON.stringify({
+      expectedSessionId: sessionId,
+      expectedRevision: revision,
+      activeSessionId: testing.activeSession()?.sessionId,
+      activeRevision: testing.activeSession()?.metadata.revision,
+      panelHydrated: testing.panelHydrated(sessionId),
+      panelSynchronizable: testing.panelSynchronizable(sessionId),
+      panelSynchronizationReceipt: testing.panelSynchronizationReceipt(sessionId),
+      activeTab: activeEditorTabDiagnostic()
+    })}`
+  );
 }
 
 function excelDependencyInstallDiagnostics(
