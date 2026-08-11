@@ -343,6 +343,39 @@ def _build_formatter_payload(value: Any, shell: Any) -> dict[str, Any]:
     )
 
 
+def link_live_result(value: Any, shell: Any | None = None) -> dict[str, str | int]:
+    """Link an already-executed IPython result without serializing or copying it."""
+    active_shell: Any = shell if shell is not None else get_ipython()
+    if active_shell is None:
+        raise EngineError("Open Wrangler could not access the active IPython session.")
+
+    registry = default_engine_registry()
+    try:
+        engine = registry.detect(value)
+    except UnsupportedDataFrameError as error:
+        raise EngineError(
+            "This cell result is not a supported Pandas, Polars, DuckDB, or PySpark dataframe."
+        ) from error
+    try:
+        if engine.name not in {"pandas", "polars", "duckdb", "pyspark"}:
+            raise EngineError(f"Open Wrangler cannot open {engine.name} notebook results.")
+        canonical_name = _unique_user_variable_name(value, active_shell)
+        variable_name = _register_live_result(value)
+        label = canonical_name if canonical_name is not None else type(value).__name__
+        _validate_text_limit(label, MAX_SAVED_LABEL_CHARACTERS, "Notebook result label")
+        return {
+            "protocolVersion": 1,
+            "backend": engine.name,
+            "label": label,
+            "variableName": variable_name,
+        }
+    finally:
+        try:
+            engine.close()
+        except Exception as error:
+            raise EngineError(f"Could not close the {engine.name} notebook result probe: {error}") from error
+
+
 def _register_live_result(value: Any) -> str:
     """Return an opaque handle without extending the displayed value's lifetime."""
     handle = f"{_LIVE_RESULT_HANDLE_PREFIX}{secrets.token_hex(16)}"
