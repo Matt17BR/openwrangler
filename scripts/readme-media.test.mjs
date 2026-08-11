@@ -737,7 +737,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     /The workbench places the grid, column summaries, detailed profiles, and editor controls together/u
   );
   assert.match(gallery, /Operations, dataset health, viewing state, and cleaning history appear beside the grid/u);
-  assert.match(gallery, /Focus the histogram to see a bin's interval, row count, and percentage\./u);
+  assert.match(gallery, /Focus a histogram bin to see its range, row count, and percentage\./u);
   assert.match(gallery, /Reorder sort keys, change their direction and null placement, or remove them\./u);
   assert.match(
     gallery,
@@ -757,10 +757,18 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     gallery,
     /Operations lists base `data\.frame`, tibble, and `data\.table` objects from the active IRkernel[\s\S]{0,180}without converting them to Python/u
   );
-  assert.match(gallery, /For a trusted `\.R`, `\.Rmd`, or `\.qmd` file, \*\*Run R Document in Open Wrangler…\*\*/u);
-  assert.match(gallery, /Open Wrangler-managed R process/u);
-  assert.match(gallery, /Quarto rendering and Open Wrangler execution use separate R sessions/u);
-  assert.match(gallery, /Unsaved editor changes are included\./u);
+  assert.match(
+    gallery,
+    /For `\.Rmd` and `\.qmd` files, put the cursor in an enabled R or Python chunk and choose \*\*Open in Open Wrangler\*\*/u
+  );
+  assert.match(gallery, /Open Wrangler runs only that chunk in its existing R or Python session/u);
+  assert.match(gallery, /rendering remains separate from execution/u);
+  assert.match(
+    gallery,
+    /\*\*Run R Document in Open Wrangler…\*\* is the explicit all-R fallback for trusted `\.R`, `\.Rmd`, and `\.qmd` files/u
+  );
+  assert.match(gallery, /separate Open Wrangler process and includes unsaved\s+changes/u);
+  assert.match(gallery, /It does not replace the cursor-owned path for mixed R and Python documents/u);
   assert.match(
     gallery,
     /pages through the R object and supports filters, ordered sorts, value search, and column and dataset\s+profiles/u
