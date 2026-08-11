@@ -357,6 +357,21 @@ describe("native R kernel protocol", () => {
       values: [{ value: "1", count: 1 }],
       hasMore: false
     });
+    const sampled = JSON.parse(encoded) as Record<string, unknown>;
+    sampled.hasMore = true;
+    sampled.sampleSize = R_FRAME_CONTRACT_LIMITS.profileSampleRows;
+    expect(decodeRKernelResponseJson(JSON.stringify(sampled), valuesRequestId)).toMatchObject({
+      kind: "columnValues",
+      sampleSize: R_FRAME_CONTRACT_LIMITS.profileSampleRows,
+      hasMore: true
+    });
+    sampled.hasMore = false;
+    expect(() => decodeRKernelResponseJson(JSON.stringify(sampled), valuesRequestId)).toThrow("response");
+    sampled.hasMore = true;
+    sampled.sampleSize = R_FRAME_CONTRACT_LIMITS.profileSampleRows - 1;
+    expect(() => decodeRKernelResponseJson(JSON.stringify(sampled), valuesRequestId)).toThrow("sampleSize");
+    sampled.sampleSize = R_FRAME_CONTRACT_LIMITS.profileSampleRows + 1;
+    expect(() => decodeRKernelResponseJson(JSON.stringify(sampled), valuesRequestId)).toThrow("sampleSize");
     expect(() =>
       decodeRKernelResponseJson(
         JSON.stringify({

@@ -287,7 +287,7 @@ export class RKernelSessionTransport {
     search: string | undefined,
     limit: number,
     options: RKernelRequestOptions = {}
-  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean }>> {
+  ): Promise<Readonly<{ column: string; values: readonly ValueCount[]; hasMore: boolean; sampleSize?: number }>> {
     const request = this.request("getColumnValues", {
       sessionId,
       column,
@@ -301,7 +301,12 @@ export class RKernelSessionTransport {
     if (response.kind !== "columnValues" || response.sessionId !== sessionId) {
       throw new Error("The R kernel returned mismatched column values.");
     }
-    return Object.freeze({ column: response.column, values: response.values, hasMore: response.hasMore });
+    return Object.freeze({
+      column: response.column,
+      values: response.values,
+      hasMore: response.hasMore,
+      ...(response.sampleSize === undefined ? {} : { sampleSize: response.sampleSize })
+    });
   }
 
   async exportData(

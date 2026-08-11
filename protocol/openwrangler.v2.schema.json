@@ -2093,7 +2093,8 @@
         "viewRequestId": { "type": "string", "minLength": 1 },
         "column": { "type": "string" },
         "values": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } },
-        "hasMore": { "type": "boolean" }
+        "hasMore": { "type": "boolean" },
+        "sampleSize": { "type": "integer", "minimum": 1 }
       }
     },
     "StepPreviewResponse": {

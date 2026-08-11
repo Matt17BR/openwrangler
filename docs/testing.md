@@ -58,14 +58,15 @@ matrix for release candidates or changes that cross all of its boundaries.
   difftime statistics, numeric histograms, common-value limits, empty and all-missing columns, duplicate rows, and
   source immutability. They also check filtered profiles and dataset statistics, extreme finite histogram ranges, the
   64-column request limit, exact chunked cheap statistics above the former 1,000,000-row and 5,000,000-cell refusals,
-  deterministic 100,000-value histogram/category samples, omitted non-exact medians and distinct counts, exact
+  deterministic stratified 100,000-value histogram/category samples, an alternating 199,999-row regression that
+  exercises both distribution and duplicate sampling, omitted non-exact medians and distinct counts, exact
   boolean counts, exact missing statistics, and duplicate samples bounded by both rows and cells. Protocol, bridge,
   native-view, and React tests require explicit sample labels, `Distinct n/a`, sampled percentage denominators, and
   strict count relationships. Dataset-statistics responses include the filtered row count and optional duplicate-row
   sample size from the correlated request; the R encoder, TypeScript decoder, and bridge each reject impossible
-  counts. The explicit exhaustive filter-value endpoint retains its separate row/cell scan bound, names it as an R
-  value-scan diagnostic, and is not requested by ordinary large-profile rendering. The cross-language
-  cases run only when
+  counts. Initial filter-value discovery covers a 4,000,001-row frame through a labeled 100,000-row sample. A
+  non-empty exact search retains its separate row/cell scan bound and names it as an R value-scan diagnostic. The
+  cross-language cases run only when
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix. It
   also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,

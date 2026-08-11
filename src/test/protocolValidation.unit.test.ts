@@ -993,6 +993,11 @@ describe("protocol-v2 response validation", () => {
     };
     const astralAtLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
     expect(isOpenWranglerResponse(response)).toBe(true);
+    expect(isOpenWranglerResponse({ ...response, hasMore: true, sampleSize: 4 })).toBe(true);
+    expect(isOpenWranglerResponse({ ...response, sampleSize: 4 })).toBe(false);
+    expect(isOpenWranglerResponse({ ...response, hasMore: true, sampleSize: 0 })).toBe(false);
+    expect(isOpenWranglerResponse({ ...response, hasMore: true, sampleSize: 3 })).toBe(false);
+    expect(isOpenWranglerResponse({ ...response, hasMore: true, sampleSize: Number.MAX_SAFE_INTEGER + 1 })).toBe(false);
     expect(
       isOpenWranglerResponse({
         ...response,

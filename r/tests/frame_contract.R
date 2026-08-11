@@ -3233,12 +3233,66 @@ assert_identical(
   openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows - 1L,
   "large duplicate sample count changed"
 )
+value_boundary_row_count <- openwrangler_r_frame_contract$limits$profileSampleRows
+value_boundary_frame <- data.frame(value = rep(TRUE, value_boundary_row_count))
+value_boundary_capture <- openwrangler_r_frame_contract$capture_live_frame(function() value_boundary_frame)
+value_boundary_discovery <- openwrangler_r_frame_contract$materialize_column_values(
+  value_boundary_capture,
+  profile_reference(value_boundary_capture, 1L)
+)
+assert_true(is.null(value_boundary_discovery$sampleSize), "the exact value-discovery boundary was sampled")
+assert_identical(value_boundary_discovery$hasMore, FALSE, "the exact value-discovery boundary claimed truncation")
+assert_identical(
+  value_boundary_discovery$values[[1L]]$count,
+  value_boundary_row_count,
+  "the exact value-discovery boundary changed its count"
+)
+too_tall_values <- openwrangler_r_frame_contract$materialize_column_values(
+  too_tall_capture,
+  profile_reference(too_tall_capture, 1L)
+)
+assert_identical(
+  too_tall_values$sampleSize,
+  openwrangler_r_frame_contract$limits$profileSampleRows,
+  "large initial value discovery did not publish its sample size"
+)
+assert_identical(too_tall_values$hasMore, TRUE, "large initial value discovery claimed to be exhaustive")
+assert_identical(too_tall_values$values[[1L]]$value, "FALSE", "large initial value discovery changed its value")
+assert_identical(
+  too_tall_values$values[[1L]]$count,
+  openwrangler_r_frame_contract$limits$profileSampleRows,
+  "large initial value discovery counted outside its sample"
+)
 assert_error(
   openwrangler_r_frame_contract$materialize_column_values(
     too_tall_capture,
-    profile_reference(too_tall_capture, 1L)
+    profile_reference(too_tall_capture, 1L),
+    search = "FALSE"
   ),
-  "native R value-scan limit"
+  "exact native R value-scan limit"
+)
+
+large_value_row_count <- 4000001L
+large_value_frame <- data.frame(value = rep(c(TRUE, FALSE), length.out = large_value_row_count))
+large_value_capture <- openwrangler_r_frame_contract$capture_live_frame(function() large_value_frame)
+large_value_discovery <- openwrangler_r_frame_contract$materialize_column_values(
+  large_value_capture,
+  profile_reference(large_value_capture, 1L)
+)
+assert_identical(
+  large_value_discovery$sampleSize,
+  openwrangler_r_frame_contract$limits$profileSampleRows,
+  "four-million-row value discovery exceeded its bounded sample"
+)
+assert_identical(
+  sort(vapply(large_value_discovery$values, `[[`, character(1L), "value")),
+  c("FALSE", "TRUE"),
+  "four-million-row value discovery aliased an alternating column"
+)
+assert_identical(
+  sum(vapply(large_value_discovery$values, `[[`, integer(1L), "count")),
+  openwrangler_r_frame_contract$limits$profileSampleRows,
+  "four-million-row value discovery counted outside its sample"
 )
 profile_metrics <- openwrangler_r_frame_contract$capture_metrics(base_capture)
 assert_identical(profile_metrics$profileColumns, 10, "projected profile work scanned the wrong number of columns")
@@ -3628,6 +3682,7 @@ assert_identical(
   "column-value search did not use portable ASCII folding"
 )
 assert_identical(searched_values$hasMore, FALSE, "column-value search reported a false truncation")
+assert_true(is.null(searched_values$sampleSize), "an exact column-value search was labeled sampled")
 
 combined_view <- view_query(
   filters = list(

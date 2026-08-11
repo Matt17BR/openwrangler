@@ -563,6 +563,7 @@ export type RKernelResponse =
       column: string;
       values: readonly ValueCount[];
       hasMore: boolean;
+      sampleSize?: number;
     }>
   | Readonly<{
       transportVersion: typeof R_KERNEL_TRANSPORT_VERSION;
@@ -768,23 +769,27 @@ export function decodeRKernelResponseJson(
     });
   }
   if (kind === "columnValues") {
-    const record = exactRecord(value, [
-      "transportVersion",
-      "requestId",
-      "kind",
-      "sessionId",
-      "column",
-      "values",
-      "hasMore"
-    ]);
+    const record = exactRecord(
+      value,
+      ["transportVersion", "requestId", "kind", "sessionId", "column", "values", "hasMore"],
+      ["sampleSize"]
+    );
     validateEnvelope(record, expected);
+    const sampleSize =
+      record.sampleSize === undefined
+        ? undefined
+        : boundedInteger(record.sampleSize, "response.sampleSize", R_FRAME_CONTRACT_LIMITS.profileSampleRows);
+    if (sampleSize !== undefined && sampleSize !== R_FRAME_CONTRACT_LIMITS.profileSampleRows) {
+      fail(`R kernel column-values sampleSize must be ${R_FRAME_CONTRACT_LIMITS.profileSampleRows}.`);
+    }
     const candidate: unknown = {
       kind: "columnValues",
       revision: 0,
       viewRequestId: "r-kernel-values",
       column: record.column,
       values: record.values,
-      hasMore: record.hasMore
+      hasMore: record.hasMore,
+      ...(sampleSize === undefined ? {} : { sampleSize })
     };
     if (!isOpenWranglerResponse(candidate) || candidate.kind !== "columnValues") {
       fail("R kernel column-values response is invalid.");
@@ -803,7 +808,8 @@ export function decodeRKernelResponseJson(
       sessionId: identifier(record.sessionId, "response.sessionId"),
       column: boundedText(record.column, "response.column", maximumVariableNameBytes, true),
       values: Object.freeze(candidate.values),
-      hasMore: candidate.hasMore
+      hasMore: candidate.hasMore,
+      ...(candidate.sampleSize === undefined ? {} : { sampleSize: candidate.sampleSize })
     });
   }
   if (kind === "stepPreview") {

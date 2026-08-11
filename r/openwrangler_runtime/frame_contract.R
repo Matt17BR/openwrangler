@@ -1251,7 +1251,7 @@ openwrangler_r_frame_contract <- local({
       abort(
         "profile-too-large",
         sprintf(
-          "%s exceeds the native R value-scan limit of %d rows and %.0f cells",
+          "%s exceeds the exact native R value-scan limit of %d rows and %.0f cells",
           label,
           maximum_column_value_rows,
           maximum_column_value_cells
@@ -5722,9 +5722,17 @@ openwrangler_r_frame_contract <- local({
     if (!is.null(search)) search <- bounded_utf8(search, "search", maximum_text_bytes)
     frame <- read_capture_frame(capture)
     view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
-    validate_column_value_work(view$totalRows, 1L, "The requested R column values")
     source_column <- frame[[resolved_column$position]]
-    column <- if (is.null(view$rows)) source_column else source_column[view$rows]
+    initial_discovery <- is.null(search) || identical(search, "")
+    sampled <- initial_discovery && view$totalRows > maximum_profile_sample_rows
+    if (sampled) {
+      logical_positions <- deterministic_sample_positions(view$totalRows, maximum_profile_sample_rows)
+      source_positions <- if (is.null(view$rows)) logical_positions else view$rows[logical_positions]
+      column <- source_column[source_positions]
+    } else {
+      validate_column_value_work(view$totalRows, 1L, "The requested R column-value search")
+      column <- if (is.null(view$rows)) source_column else source_column[view$rows]
+    }
     column_descriptor <- descriptor$schema[[resolved_column$position]]
     semantics <- column_descriptor$semantics
     validate_profile_column(column, semantics, "column values")
@@ -5732,8 +5740,17 @@ openwrangler_r_frame_contract <- local({
     present_indices <- which(!missing$null & !missing$nan)
     budget <- new_payload_budget(capture$metadataBytes)
     spend_payload_budget(budget, summary_fixed_bytes, "R column values")
+    finish <- function(values, has_more) {
+      result <- list(
+        column = column_descriptor$name,
+        values = values,
+        hasMore = isTRUE(has_more) || sampled
+      )
+      if (sampled) result$sampleSize <- length(column)
+      result
+    }
     if (length(present_indices) == 0L) {
-      return(list(column = column_descriptor$name, values = json_array(list()), hasMore = FALSE))
+      return(finish(json_array(list()), FALSE))
     }
     keys <- profile_value_keys(column, semantics, present_indices)
     if (!is.null(search) && !identical(search, "")) {
@@ -5745,7 +5762,7 @@ openwrangler_r_frame_contract <- local({
       keys <- keys[keep]
     }
     if (length(present_indices) == 0L) {
-      return(list(column = column_descriptor$name, values = json_array(list()), hasMore = FALSE))
+      return(finish(json_array(list()), FALSE))
     }
     first <- !duplicated(keys)
     unique_keys <- keys[first]
@@ -5777,11 +5794,7 @@ openwrangler_r_frame_contract <- local({
         )
       )
     })
-    list(
-      column = column_descriptor$name,
-      values = json_array(values),
-      hasMore = length(priority) > limit
-    )
+    finish(json_array(values), length(priority) > limit)
   }
 
   materialize_page <- function(

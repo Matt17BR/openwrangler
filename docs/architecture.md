@@ -124,23 +124,27 @@ pages. A profile request can include up to 64 columns. Profiles scan in 65,536-r
 numeric extrema/mean/deviation, logical counts, Unicode text lengths, and date/time bounds remain exact without
 materializing an all-column filtered frame. Median, distinct counts, histograms, and categorical distributions are
 exact while the non-missing column fits 100,000 rows. Above that bound, the expensive distribution uses a
-deterministic evenly spaced sample of at most 100,000 non-missing values. The response omits statistics it did not
-calculate exactly and marks a sampled histogram or category chart with `sampled`; the webview displays `n/a` for an
-omitted distinct count and uses the sampled population as the percentage denominator. The runtime returns at most ten
-common values and twenty numeric histogram bins per column.
+deterministic stratified sample of at most 100,000 non-missing values. A stable per-stratum offset avoids phase
+locking on periodic data. The response omits statistics it did not calculate exactly and marks a sampled histogram
+or category chart with `sampled`; the webview displays `n/a` for an omitted distinct count and uses the sampled
+population as the percentage denominator. The runtime returns at most ten common values and twenty numeric histogram
+bins per column.
 
 Dataset profiles scan exact missing-cell, missing-row, and per-column missing counts in the same bounded chunks.
 Duplicate detection is exact when the visible view fits 100,000 rows and 5,000,000 cells; otherwise it uses a
-deterministic row sample within both bounds and publishes `duplicateRowsSampleSize`. Shared protocol validation, the R
-transport decoder, the bridge, and both Summary views reject an impossible sample or count, and the UI labels the
-duplicate count with its sample size. The private response also carries the filtered row count from the same
-correlated request.
+deterministic stratified row sample within both bounds and publishes `duplicateRowsSampleSize`. Shared protocol
+validation, the R transport decoder, the bridge, and both Summary views reject an impossible sample or count, and the
+UI labels the duplicate count with its sample size. The private response also carries the filtered row count from the
+same correlated request.
 
-Column-value enumeration is a separate, explicit filter-value action rather than automatic profiling. It retains its
-exact 1,000,000-row/5,000,000-cell scan bound and reports that boundary as a native R value-scan limit. It returns
-bounded counts and typed selections; ASCII case folding is used for search, and signed zero has one selection token
-that matches both `-0` and `+0`. Profiling reads the live R object again and rejects a changed shape, schema, or column
-semantics. Viewing queries do not modify the source object.
+Opening Filters requests an initial value discovery. Views above 100,000 rows use the same deterministic stratified
+row sample instead of starting an exhaustive scan. `ValuesResponse.sampleSize` identifies sampled counts, `hasMore`
+stays true, and the webview labels the sample. A non-empty user search remains an explicit exact scan. It retains the
+1,000,000-row/5,000,000-cell bound and reports that boundary as an exact native R value-scan limit rather than
+allocating unbounded distinct-value state. Column-value responses contain bounded counts and typed selections; ASCII
+case folding is used for search, and signed zero has one selection token that matches both `-0` and `+0`. Profiling
+reads the live R object again and rejects a changed shape, schema, or column semantics. Viewing queries do not modify
+the source object.
 
 `src/extension/r/rFrameContract.ts` is the matching host decoder. It accepts only version 5, exact fields, canonical
 class/type combinations, unique stable column IDs, contiguous column positions, unique in-range source row IDs,

@@ -123,7 +123,9 @@ fences, while R Markdown uses backticks. On macOS and Linux, the tab menu keeps 
 value search, and column and dataset profiles run in R; the dataframe is not passed through Python. Large profiles
 retain exact cheap statistics through bounded chunk scans, label sampled histograms and categories, show unavailable
 exact distinct counts as `n/a`, and use the sampled population for percentages. Dataset missing counts remain exact;
-sampled duplicate counts publish and display their sample size. Editing mode
+sampled duplicate counts publish and display their sample size. The Filters view discovers initial values from a
+labeled, deterministic 100,000-row sample when an R view is larger, while a non-empty exact search retains its
+separate scan bound. Editing mode
 currently supports twenty-one cleaning operations: Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
 Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate. They follow the

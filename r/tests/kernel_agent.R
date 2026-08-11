@@ -86,7 +86,7 @@ source_environment$frame <- data.frame(
   score = c(1, NA, 2),
   stringsAsFactors = FALSE
 )
-source_environment$profile_scale <- data.frame(value = rep(FALSE, 100001L))
+source_environment$profile_scale <- data.frame(value = rep(FALSE, 1000001L))
 source_object <- source_environment$frame
 source_before <- unserialize(serialize(source_environment$frame, NULL, version = 3L))
 
@@ -357,7 +357,7 @@ scale_summary <- dispatch(
 )
 assert_identical(
   scale_summary$summaries[[1L]]$visualization$falseCount,
-  100001L,
+  1000001L,
   "the R agent sampled a cheap logical count"
 )
 scale_stats <- dispatch("getDatasetStats", list(sessionId = profile_scale_session_id, view = empty_view()))
@@ -367,6 +367,20 @@ assert_identical(
   "the R agent omitted the duplicate-row sample size"
 )
 assert_identical(scale_stats$stats$duplicateRows, 99999L, "the R agent changed sampled duplicate counts")
+scale_values <- dispatch(
+  "getColumnValues",
+  list(
+    sessionId = profile_scale_session_id,
+    column = list(id = "r:c:0", name = "value"),
+    view = empty_view(),
+    search = NULL,
+    limit = 100L
+  )
+)
+assert_identical(scale_values$kind, "columnValues", "the R agent refused large initial value discovery")
+assert_identical(scale_values$sampleSize, 100000L, "the R agent omitted the value-discovery sample size")
+assert_identical(scale_values$hasMore, TRUE, "the R agent claimed sampled values were exhaustive")
+assert_identical(scale_values$values[[1L]]$count, 100000L, "the R agent counted values outside its sample")
 scale_closed <- dispatch("closeSession", list(sessionId = profile_scale_session_id))
 assert_identical(scale_closed$kind, "closed", "the R agent did not close the large profile session")
 

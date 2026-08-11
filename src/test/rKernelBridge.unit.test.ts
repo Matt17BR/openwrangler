@@ -387,6 +387,14 @@ describe("canonical R kernel bridge", () => {
 
     transport.getColumnValues.mockResolvedValueOnce({
       column: "count",
+      values: [integerValue("1", 2)],
+      hasMore: true,
+      sampleSize: 2
+    });
+    await expect(bridge.request(valuesRequest("values-invalid-sample"))).rejects.toThrow("sample size");
+
+    transport.getColumnValues.mockResolvedValueOnce({
+      column: "count",
       values: [integerValue("1", 4)],
       hasMore: false
     });
@@ -398,6 +406,62 @@ describe("canonical R kernel bridge", () => {
       hasMore: false
     });
     await expect(bridge.request(valuesRequest("values-sum-too-large"))).rejects.toThrow("row counts");
+  });
+
+  it("accepts native R value samples only for initial discovery at the fixed sample size", async () => {
+    const sampleSize = R_FRAME_CONTRACT_LIMITS.profileSampleRows;
+    const transport = fakeTransport(frameContract({ totalRows: sampleSize + 1 }));
+    const bridge = createBridge(transport);
+    const sampledValue = {
+      value: "1",
+      count: sampleSize,
+      selectionValue: {
+        kind: "typedSelection" as const,
+        version: 1 as const,
+        columnType: "integer" as const,
+        cell: { kind: "integer" as const, raw: "1", display: "1", isNull: false, isNaN: false }
+      }
+    };
+    const valuesRequest = (viewRequestId: string, search?: string) => ({
+      kind: "getColumnValues" as const,
+      sessionId,
+      revision: 0,
+      viewRequestId,
+      column: "count",
+      ...(search === undefined ? {} : { search }),
+      limit: 1,
+      filterModel: { filters: [], sort: [] }
+    });
+    await bridge.request(openRequest());
+
+    transport.getColumnValues.mockResolvedValueOnce({
+      column: "count",
+      values: [sampledValue],
+      hasMore: true,
+      sampleSize
+    });
+    await expect(bridge.request(valuesRequest("values-sampled"))).resolves.toMatchObject({
+      kind: "columnValues",
+      values: [{ value: "1", count: sampleSize }],
+      hasMore: true,
+      sampleSize
+    });
+
+    transport.getColumnValues.mockResolvedValueOnce({
+      column: "count",
+      values: [sampledValue],
+      hasMore: true,
+      sampleSize
+    });
+    await expect(bridge.request(valuesRequest("values-sampled-search", "1"))).rejects.toThrow("sample size");
+
+    transport.getColumnValues.mockResolvedValueOnce({
+      column: "count",
+      values: [{ ...sampledValue, count: 1 }],
+      hasMore: true,
+      sampleSize: sampleSize - 1
+    });
+    await expect(bridge.request(valuesRequest("values-wrong-sample-size"))).rejects.toThrow("sample size");
   });
 
   it("maps projected native R profiles and dataset statistics to the current view", async () => {

@@ -4360,7 +4360,7 @@ openwrangler_r_kernel_agent <- local({
         if (limit < 1L) abort("invalid_request", "request.payload.limit must be positive")
         session <- get(session_id, envir = sessions, inherits = FALSE)
         result <- frame_contract$materialize_column_values(active_capture(session), column, view, search, limit)
-        return(list(
+        response <- list(
           transportVersion = transport_version,
           requestId = request_id,
           kind = "columnValues",
@@ -4368,7 +4368,9 @@ openwrangler_r_kernel_agent <- local({
           column = result$column,
           values = result$values,
           hasMore = result$hasMore
-        ))
+        )
+        if (!is.null(result$sampleSize)) response$sampleSize <- result$sampleSize
+        return(response)
       }
 
       if (identical(kind, "previewStep")) {

@@ -74,6 +74,37 @@ describe("FilterPanel", () => {
     expect(screen.getByText("Preparing filters...")).toBeInTheDocument();
   });
 
+  it("labels sampled value counts without claiming the discovery is exhaustive", () => {
+    const sampledValues = new Map<string, ValuesResponse>([
+      [
+        "city",
+        {
+          kind: "columnValues",
+          revision: 0,
+          viewRequestId: "sampled-values-city",
+          column: "city",
+          values: [{ value: "Berlin", count: 60_000 }],
+          hasMore: true,
+          sampleSize: 100_000
+        }
+      ]
+    ]);
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={sampledValues}
+        onApply={() => undefined}
+        onRequestValues={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Counts shown are from a 100,000-row sample. Exact search is subject to the engine's scan limit."
+    );
+    expect(screen.getByText("More values may be available.")).toBeVisible();
+  });
+
   it("keeps supported predicates while disabling value lists and unavailable sorting", () => {
     const onRequestValues = vi.fn();
     render(

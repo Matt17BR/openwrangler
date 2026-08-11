@@ -1225,6 +1225,7 @@ export interface ValuesResponse {
   column: string;
   values: ValueCount[];
   hasMore: boolean;
+  sampleSize?: number;
 }
 export interface StepPreviewResponse {
   kind: "stepPreview";
