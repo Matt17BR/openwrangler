@@ -229,7 +229,7 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.showQuickPick).not.toHaveBeenCalled();
   });
 
-  it("runs the exact cursor-owned Quarto Python chunk through Quarto", async () => {
+  it("runs the exact cursor-owned Quarto Python chunk through Jupyter", async () => {
     const source = textDocument(
       "file:///workspace/analysis.qmd",
       "# Analysis\n\n```{python}\n#| label: load-orders\nframe = make_frame()\n```\n"
@@ -251,7 +251,7 @@ describe("Python Interactive Window entry points", () => {
     });
     const interactive = notebook("untitled:/Interactive-quarto.interactive", "interactive", []);
     pythonMocks.executeCommand.mockImplementation(async (id: string) => {
-      if (id !== "quarto.runCurrentCell") return undefined;
+      if (id !== "jupyter.execSelectionInteractive") return undefined;
       interactive.cells.push(interactiveCell(interactive.document, source.uri.toString(), 4, "quarto-run", true));
       pythonMocks.notebookDocuments.push(interactive.document);
       return undefined;
@@ -261,7 +261,10 @@ describe("Python Interactive Window entry points", () => {
 
     await expect(literateProvider(provider).runLiterateChunkAndOpen(origin)).resolves.toBe(true);
 
-    expect(pythonMocks.executeCommand).toHaveBeenCalledWith("quarto.runCurrentCell", 3);
+    expect(pythonMocks.executeCommand).toHaveBeenCalledWith(
+      "jupyter.execSelectionInteractive",
+      "#| label: load-orders\nframe = make_frame()\n"
+    );
     expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
   });
@@ -318,7 +321,7 @@ describe("Python Interactive Window entry points", () => {
     });
     const interactive = notebook("untitled:/Interactive-stale.interactive", "interactive", []);
     pythonMocks.executeCommand.mockImplementation(async (id: string) => {
-      if (id !== "quarto.runCurrentCell") return undefined;
+      if (id !== "jupyter.execSelectionInteractive") return undefined;
       const moved = selection(2, 2);
       editor.selection = moved;
       editor.selections = [moved];
@@ -356,7 +359,7 @@ describe("Python Interactive Window entry points", () => {
       const interactive = notebook("untitled:/Interactive-quarto-kernel.interactive", "interactive", []);
       let runCount = 0;
       pythonMocks.executeCommand.mockImplementation(async (id: string) => {
-        if (id !== "quarto.runCurrentCell") return undefined;
+        if (id !== "jupyter.execSelectionInteractive") return undefined;
         runCount += 1;
         if (runCount === 1) {
           pythonMocks.notebookDocuments.push(interactive.document);
@@ -387,9 +390,9 @@ describe("Python Interactive Window entry points", () => {
       await expect(opening).resolves.toBe(true);
 
       expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
-        "quarto.runCurrentCell",
+        "jupyter.execSelectionInteractive",
         "notebook.selectKernel",
-        "quarto.runCurrentCell"
+        "jupyter.execSelectionInteractive"
       ]);
       expect(pythonMocks.showTextDocument).toHaveBeenCalledWith(source, {
         viewColumn: vscode.ViewColumn.One,
