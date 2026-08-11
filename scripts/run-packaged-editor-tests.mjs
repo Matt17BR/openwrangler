@@ -228,18 +228,20 @@ try {
               `OPEN_WRANGLER_PACKAGED_MODE=${JSON.stringify(acceptanceMode)} requires exactly one supported editor in OPEN_WRANGLER_PACKAGED_EDITORS.`
             );
           }
-          if (rJourneySelector !== undefined && rJourneySelector !== "interactive-terminal") {
-            throw new Error('OPEN_WRANGLER_PACKAGED_R_JOURNEY must be unset or "interactive-terminal".');
+          if (
+            rJourneySelector !== undefined &&
+            rJourneySelector !== "interactive-terminal" &&
+            rJourneySelector !== "literate-documents"
+          ) {
+            throw new Error(
+              'OPEN_WRANGLER_PACKAGED_R_JOURNEY must be unset, "interactive-terminal", or "literate-documents".'
+            );
           }
           if (rJourneySelector !== undefined && acceptanceMode !== "r-jupyter") {
-            throw new Error(
-              'OPEN_WRANGLER_PACKAGED_R_JOURNEY="interactive-terminal" requires OPEN_WRANGLER_PACKAGED_MODE="r-jupyter".'
-            );
+            throw new Error('OPEN_WRANGLER_PACKAGED_R_JOURNEY requires OPEN_WRANGLER_PACKAGED_MODE="r-jupyter".');
           }
           if (rJourneySelector !== undefined && remoteJupyterEnabled) {
-            throw new Error(
-              'OPEN_WRANGLER_PACKAGED_R_JOURNEY="interactive-terminal" cannot be combined with remote Jupyter acceptance.'
-            );
+            throw new Error("OPEN_WRANGLER_PACKAGED_R_JOURNEY cannot be combined with remote Jupyter acceptance.");
           }
           if (
             acceptanceMode === "data-wrangler-coexistence" &&

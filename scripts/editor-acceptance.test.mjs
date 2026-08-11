@@ -515,6 +515,8 @@ test("native R tooling pins Quarto to an internal revealed preview", async () =>
   assert.match(focusedRoute, /phase === "jupyter-r" && testSelector === "interactive-terminal"/u);
   assert.match(focusedRoute, /assert\.equal\(\s*await assertReleasedNativeREditorTooling\(\),\s*true,/u);
   assert.match(focusedRoute, /await exerciseReleasedRInteractiveTerminalJourney\(/u);
+  assert.match(focusedRoute, /testSelector === "literate-documents"/u);
+  assert.match(focusedRoute, /await exerciseReleasedRLiterateDocumentJourneys\(/u);
   assert.match(focusedRoute, /return;/u);
   const notebookJourney = source.slice(
     source.indexOf("async function exerciseReleasedRJupyterExtension("),
@@ -3441,7 +3443,7 @@ test("editor phases validate and forward the focused R acceptance selector", asy
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset or "interactive-terminal"/u
+      /test selector must be unset, "interactive-terminal", or "literate-documents"/u
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "interactive-terminal" }, options),
@@ -3464,6 +3466,22 @@ test("editor phases validate and forward the focused R acceptance selector", asy
       }
     );
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "interactive-terminal");
+
+    await runEditorAcceptancePhase(
+      { ...input, testSelector: "literate-documents" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "literate-documents");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
