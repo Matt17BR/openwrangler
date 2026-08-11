@@ -914,15 +914,13 @@ export async function inspectExecutedNotebookCellResult(
     sourceFingerprint,
     observed,
     tokenSource.token
-  );
+  ).finally(() => tokenSource.dispose());
   try {
     return await withKernelTimeout(operation, NOTEBOOK_CELL_RESULT_PROBE_TIMEOUT_MS, () => {
       detached = true;
-      tokenSource.cancel();
       observed.dispose();
     });
   } finally {
-    tokenSource.dispose();
     if (detached) {
       void operation.then(
         (binding) => binding?.dispose(),

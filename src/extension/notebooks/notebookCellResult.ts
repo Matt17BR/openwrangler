@@ -413,7 +413,9 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     let probeAttempted = false;
     state.trackedCells.add(cell);
     this.pendingCells.set(cell, pending);
-    void (pending.observation?.completion ?? Promise.resolve(undefined))
+    void (
+      pending.observation ? observeKernelWithinDeadline(pending.observation.completion) : Promise.resolve(undefined)
+    )
       .then(async (observed) => {
         if (!observed) {
           if (
@@ -696,14 +698,20 @@ async function observeCompletionKernel(
   notebook: vscode.NotebookDocument,
   onError: (category: "completion-kernel-timeout" | "completion-kernel-error") => void
 ): Promise<ObservedNotebookCellResultKernel | undefined> {
-  const operation = observeExecutedNotebookCellResultKernel(notebook);
+  return observeKernelWithinDeadline(observeExecutedNotebookCellResultKernel(notebook), onError);
+}
+
+async function observeKernelWithinDeadline(
+  operation: Promise<ObservedNotebookCellResultKernel | undefined>,
+  onError?: (category: "completion-kernel-timeout" | "completion-kernel-error") => void
+): Promise<ObservedNotebookCellResultKernel | undefined> {
   let detached = false;
   try {
     return await withKernelTimeout(operation, NOTEBOOK_RESULT_KERNEL_LOOKUP_TIMEOUT_MS, () => {
       detached = true;
     });
   } catch {
-    onError(detached ? "completion-kernel-timeout" : "completion-kernel-error");
+    onError?.(detached ? "completion-kernel-timeout" : "completion-kernel-error");
     return undefined;
   } finally {
     if (detached) {

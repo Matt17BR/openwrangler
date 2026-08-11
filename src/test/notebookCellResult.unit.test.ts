@@ -384,6 +384,41 @@ describe("executed notebook cell result action", () => {
     tracker.dispose();
   });
 
+  it("falls back after a hung execution-start lookup and disposes its late binding", async () => {
+    vi.useFakeTimers();
+    try {
+      const document = notebook("file:///hung-execution-start.ipynb");
+      const cell = codeCell(document, 1);
+      setCells(document, [cell]);
+      const initial = deferred<ReturnType<typeof testBinding> | undefined>();
+      const lateBinding = testBinding();
+      const fallbackBinding = testBinding();
+      mocks.observe.mockReturnValueOnce(initial.promise).mockResolvedValueOnce(fallbackBinding);
+      const tracker = new NotebookCellResultTracker();
+      tracker.start();
+
+      tracker.recordDocumentChange(executionStartedEvent(cell) as never);
+      tracker.recordDocumentChange(executionEvent(cell) as never);
+      await settleInspection();
+      expect(mocks.observe).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settleInspection();
+
+      expect(mocks.observe).toHaveBeenCalledTimes(2);
+      expect(mocks.inspect).toHaveBeenCalledWith(document, 1, "a".repeat(64), fallbackBinding);
+      expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+
+      initial.resolve(lateBinding);
+      await settleInspection();
+      expect(lateBinding.isGenerationValid()).toBe(false);
+      expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+      tracker.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("discards a completion-time kernel lookup after a newer execution starts", async () => {
     const document = notebook("file:///superseded-completion-lookup.ipynb");
     const firstCell = codeCell(document, 1);
@@ -823,7 +858,7 @@ async function recordExecutionAndWait(cell: NotebookCell): Promise<void> {
 }
 
 async function settleInspection(): Promise<void> {
-  for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+  for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
 }
 
 function executionEvent(cell: NotebookCell): unknown {

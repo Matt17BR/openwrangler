@@ -389,7 +389,7 @@ describe("executed notebook cell results", () => {
     expect(controller.statusListenerCount()).toBe(0);
   });
 
-  it("cancels and disposes a notebook result probe that exceeds its deadline", async () => {
+  it("detaches and disposes a notebook result probe without interrupting the kernel", async () => {
     vi.useFakeTimers();
     const release = deferred<void>();
     try {
@@ -409,8 +409,13 @@ describe("executed notebook cell results", () => {
       await vi.advanceTimersByTimeAsync(10_000);
 
       await timedOut;
-      expect(controller.executionTokens()[0]?.isCancellationRequested).toBe(true);
+      expect(controller.executionTokens()[0]?.isCancellationRequested).toBe(false);
       expect(observed.isGenerationValid()).toBe(false);
+      expect(controller.statusListenerCount()).toBe(0);
+
+      release.resolve();
+      for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+      expect(controller.executionTokens()[0]?.isCancellationRequested).toBe(false);
       expect(controller.statusListenerCount()).toBe(0);
     } finally {
       release.resolve();
