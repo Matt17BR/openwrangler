@@ -571,8 +571,10 @@ describe("Python Interactive Window entry points", () => {
         closingLine: 2,
         code: "frame = make_frame()\n"
       });
-      const interactive = notebook("untitled:/Interactive-quarto-pending.interactive", "interactive", []);
-      interactive.cells.push(markupCell(interactive.document));
+      const interactive = notebook("untitled:/Interactive-quarto-pending.interactive", "interactive", [], "r");
+      const systemCell = markupCell(interactive.document, { isInteractiveWindowMessageCell: true });
+      Object.defineProperty(systemCell, "executionSummary", { value: {}, writable: true });
+      interactive.cells.push(systemCell);
       const interactiveEditor = { notebook: interactive.document } as NotebookEditor;
       let runCount = 0;
       let resumeFirstDispatch!: () => void;
@@ -601,7 +603,13 @@ describe("Python Interactive Window entry points", () => {
           fire(pythonMocks.openNotebookListeners, interactive.document);
           return firstDispatch;
         }
-        if (id === "notebook.selectKernel") resumeFirstDispatch();
+        if (id === "notebook.selectKernel") {
+          Object.defineProperty(interactive.document, "metadata", {
+            value: { kernelspec: { language: "python" } },
+            writable: true
+          });
+          resumeFirstDispatch();
+        }
         return Promise.resolve(undefined);
       });
       pythonMocks.showTextDocument.mockImplementation(async (document: TextDocument) => {
@@ -903,7 +911,7 @@ describe("Python Interactive Window entry points", () => {
 
   it.each([
     ["more than Jupyter's single placeholder", "interactive", undefined, 2, false],
-    ["R notebook metadata", "interactive", "r", 1, false],
+    ["unmarked R metadata and an empty execution summary", "interactive", "r", 1, false],
     ["a regular Jupyter notebook", "jupyter-notebook", undefined, 1, false],
     ["an exact source association", "interactive", undefined, 1, true]
   ])(
@@ -916,12 +924,12 @@ describe("Python Interactive Window entry points", () => {
         pythonMocks.activeTextEditor = textEditor(source, 1);
         const interactive = notebook("untitled:/Interactive-1.interactive", notebookType, [], language);
         for (let index = 0; index < cellCount; index += 1) {
-          interactive.cells.push(
-            markupCell(
-              interactive.document,
-              associated ? { interactive: { uristring: source.uri.toString(), lineIndex: 0 } } : {}
-            )
+          const cell = markupCell(
+            interactive.document,
+            associated ? { interactive: { uristring: source.uri.toString(), lineIndex: 0 } } : {}
           );
+          if (language === "r") Object.defineProperty(cell, "executionSummary", { value: {}, writable: true });
+          interactive.cells.push(cell);
         }
         pythonMocks.executeCommand.mockImplementation(async (id: string) => {
           if (id === "jupyter.runcurrentcell") {
