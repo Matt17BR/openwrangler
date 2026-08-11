@@ -60,21 +60,23 @@ export function captureLiterateDocumentOrigin(expectedUri?: vscode.Uri): Literat
 }
 
 export function isCurrentLiterateDocumentOrigin(origin: LiterateDocumentOrigin): boolean {
-  return vscode.window.activeTextEditor === origin.editor && isUnchangedLiterateDocumentOrigin(origin);
+  const editor = vscode.window.activeTextEditor;
+  return (
+    editor?.document === origin.document &&
+    isUnchangedLiterateDocumentOrigin(origin) &&
+    sameSelections(editor.selections, origin.selections)
+  );
 }
 
-/** Revalidates a captured origin while an official picker temporarily owns editor focus. */
+/** Revalidates the exact source document while another editor or picker owns focus. */
 export function isUnchangedLiterateDocumentOrigin(origin: LiterateDocumentOrigin): boolean {
   const document = origin.document;
-  const editor = origin.editor;
   return (
-    editor.document === document &&
     !document.isClosed &&
     document.version === origin.version &&
     document.uri.toString() === origin.uri &&
     literateDocumentKind(document.uri.fsPath) === origin.kind &&
-    isSoleOpenTextDocument(document) &&
-    sameSelections(editor.selections, origin.selections)
+    isSoleOpenTextDocument(document)
   );
 }
 
