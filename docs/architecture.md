@@ -162,7 +162,9 @@ Opening Filters requests an initial value discovery. Views above 100,000 rows us
 row sample instead of starting an exhaustive scan. `ValuesResponse.sampleSize` identifies sampled counts, `hasMore`
 stays true, and the webview labels the sample. A non-empty user search scans exact values in 65,536-row chunks. Each
 chunk is discarded after its matching values have been counted; only counts and first source positions for distinct
-matches survive between chunks. Column-value responses still obey the requested result limit and 16 MiB payload cap.
+matches survive between chunks. The retained state is capped at 10,000 distinct matches and 16 MiB of key text; crossing
+either bound returns a recoverable diagnostic asking for a narrower search. This bound is independent of total rows, so
+low-cardinality searches remain exact on large frames. Column-value responses still obey the requested result limit and 16 MiB payload cap.
 ASCII case folding is used for search, and signed zero has one selection token that matches both `-0` and `+0`. Profiling
 reads the live R object again and rejects a changed shape, schema, or column semantics. Viewing queries do not modify
 the source object.

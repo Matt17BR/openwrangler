@@ -15,6 +15,8 @@ export const R_FRAME_CONTRACT_LIMITS = Object.freeze({
   profileChunkRows: 65_536,
   datasetDuplicateSampleRows: 100_000,
   datasetDuplicateSampleCells: 5_000_000,
+  columnValueDistinctMatches: 10_000,
+  columnValueDistinctKeyBytes: 16 * 1_024 * 1_024,
   topValues: 10,
   histogramBins: 20,
   factorLevels: 100_000,

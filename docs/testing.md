@@ -68,7 +68,9 @@ matrix for release candidates or changes that cross all of its boundaries.
   and optional duplicate-row sample size from the correlated request; the R encoder, TypeScript decoder, and bridge
   each reject impossible counts. Initial filter-value discovery covers a 4,000,001-row frame through a labeled
   100,000-row sample. Non-empty searches above the former 1,000,000-row limit scan in chunks and return exact matching
-  counts through both the frame contract and kernel agent. The cross-language cases run only when
+  counts through both the frame contract and kernel agent. A low-result-limit regression retains an exact winner at
+  the 10,000-distinct-match boundary and rejects the next distinct match before retained state can grow without bound.
+  The cross-language cases run only when
   `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix.
   It resolves the explicit package set into a lockfile, restores the matching R-version cache, and then runs the same
   contract in each matrix cell. The contract also runs the native kernel agent through open, filtered and sorted

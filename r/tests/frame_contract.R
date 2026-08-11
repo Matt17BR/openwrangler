@@ -3594,6 +3594,43 @@ assert_identical(
   "large exact value search did not count every matching row"
 )
 
+distinct_match_limit <- openwrangler_r_frame_contract$limits$columnValueDistinctMatches
+bounded_match_values <- c(
+  "match-most-common",
+  "match-most-common",
+  sprintf("match-%05d", seq_len(distinct_match_limit - 1L))
+)
+bounded_match_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(value = bounded_match_values))
+bounded_match_search <- openwrangler_r_frame_contract$materialize_column_values(
+  bounded_match_capture,
+  profile_reference(bounded_match_capture, 1L),
+  search = "match",
+  limit = 1L
+)
+assert_identical(
+  bounded_match_search$values[[1L]]$value,
+  "match-most-common",
+  "bounded high-cardinality search lost its exact top result"
+)
+assert_identical(
+  bounded_match_search$values[[1L]]$count,
+  2L,
+  "bounded high-cardinality search changed the exact top count"
+)
+assert_identical(bounded_match_search$hasMore, TRUE, "bounded high-cardinality search hid remaining matches")
+overflow_match_capture <- openwrangler_r_frame_contract$capture_frame(
+  data.frame(value = c(bounded_match_values, "match-overflow"))
+)
+assert_error(
+  openwrangler_r_frame_contract$materialize_column_values(
+    overflow_match_capture,
+    profile_reference(overflow_match_capture, 1L),
+    search = "match",
+    limit = 1L
+  ),
+  "distinct-match state limit"
+)
+
 large_value_row_count <- 4000001L
 large_value_frame <- data.frame(value = rep(c(TRUE, FALSE), length.out = large_value_row_count))
 large_value_capture <- openwrangler_r_frame_contract$capture_live_frame(function() large_value_frame)

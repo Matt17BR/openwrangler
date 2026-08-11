@@ -16,6 +16,8 @@ openwrangler_r_frame_contract <- local({
   maximum_profile_chunk_rows <- 65536L
   maximum_dataset_duplicate_sample_rows <- 100000L
   maximum_dataset_duplicate_sample_cells <- 5000000L
+  maximum_column_value_distinct_matches <- maximum_selected_values_per_filter
+  maximum_column_value_distinct_key_bytes <- 16L * 1024L * 1024L
   maximum_top_values <- 10L
   maximum_histogram_bins <- 20L
   maximum_cached_sort_columns <- 4L
@@ -1326,6 +1328,8 @@ openwrangler_r_frame_contract <- local({
     key_batches <- list()
     source_batches <- list()
     batch_count <- 0L
+    distinct_count <- 0L
+    distinct_key_bytes <- 0
     folded_search <- ascii_fold(search)
     start <- 1
     while (start <= row_count) {
@@ -1359,7 +1363,26 @@ openwrangler_r_frame_contract <- local({
                 envir = counts_by_key
               )
             } else {
+              next_key_bytes <- distinct_key_bytes + as.double(nchar(key, type = "bytes"))
+              if (
+                distinct_count >= maximum_column_value_distinct_matches ||
+                  next_key_bytes > maximum_column_value_distinct_key_bytes
+              ) {
+                abort(
+                  "profile-too-large",
+                  sprintf(
+                    paste0(
+                      "The requested R column-value search exceeds the distinct-match state limit of ",
+                      "%d values and %d UTF-8 key bytes; narrow the search and try again"
+                    ),
+                    maximum_column_value_distinct_matches,
+                    maximum_column_value_distinct_key_bytes
+                  )
+                )
+              }
               assign(environment_key, as.double(chunk_counts[[index]]), envir = counts_by_key)
+              distinct_count <- distinct_count + 1L
+              distinct_key_bytes <- next_key_bytes
               new_count <- new_count + 1L
               new_keys[[new_count]] <- key
               new_sources[[new_count]] <- first_sources[[index]]
@@ -6155,6 +6178,8 @@ openwrangler_r_frame_contract <- local({
       profileChunkRows = maximum_profile_chunk_rows,
       datasetDuplicateSampleRows = maximum_dataset_duplicate_sample_rows,
       datasetDuplicateSampleCells = maximum_dataset_duplicate_sample_cells,
+      columnValueDistinctMatches = maximum_column_value_distinct_matches,
+      columnValueDistinctKeyBytes = maximum_column_value_distinct_key_bytes,
       topValues = maximum_top_values,
       histogramBins = maximum_histogram_bins,
       cachedSortColumns = maximum_cached_sort_columns,

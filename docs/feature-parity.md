@@ -127,7 +127,8 @@ retain exact cheap statistics through bounded chunk scans, label sampled histogr
 exact distinct counts as `n/a`, and use the sampled population for percentages. Dataset missing counts remain exact;
 sampled duplicate counts publish and display their sample size. The Filters view discovers initial values from a
 labeled, deterministic 100,000-row sample when an R view is larger. A non-empty search scans the column in chunks and
-returns exact matching counts without a separate dataset-size limit. Editing mode supports Filter Rows, Sort Rows,
+returns exact matching counts without a separate dataset-size limit; searches exceeding 10,000 distinct matches or
+16 MiB of matching key text fail recoverably and ask for a narrower term. Editing mode supports Filter Rows, Sort Rows,
 Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
 Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate. They follow the
