@@ -43,6 +43,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Preview and stable candidate lanes now validate the requested runner label instead of GitHub's reserved host OS
+  variable, so all five acceptance lanes start with the intended configuration.
 - R chunks launched from Quarto or R Markdown now resolve relative paths from the document folder and restore the
   active R terminal's previous working directory afterward, including when the chunk fails.
 - Quarto and R Markdown cells now reuse the R session Open Wrangler is already tracking. If there is no R session,

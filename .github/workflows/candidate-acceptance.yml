@@ -42,7 +42,7 @@ jobs:
           LANE: ${{ inputs.lane }}
           PYTHON_VERSION: ${{ inputs.python_version }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-          RUNNER_OS: ${{ inputs.runner_os }}
+          CANDIDATE_RUNNER_OS: ${{ inputs.runner_os }}
         run: |
           set -euo pipefail
           case "$ARTIFACT_ID" in *[!0-9]*|"") exit 1 ;; esac
@@ -50,7 +50,7 @@ jobs:
           test "${#EXPECTED_SHA}" -eq 40
           test -n "$RELEASE_TAG"
           case "$CHANNEL" in preview|stable) ;; *) exit 1 ;; esac
-          case "$LANE:$RUNNER_OS:$PYTHON_VERSION" in
+          case "$LANE:$CANDIDATE_RUNNER_OS:$PYTHON_VERSION" in
             platform:macos-latest:3.12) ;;
             platform:windows-latest:3.14) ;;
             linux:ubuntu-24.04:3.12) ;;
