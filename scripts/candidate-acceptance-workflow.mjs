@@ -219,13 +219,26 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   }
 
   const contract = workflow.jobs.contract;
-  const contractRun = command(steps(contract)[0]?.run);
+  const contractStep = steps(contract)[0];
+  const contractRun = command(contractStep?.run);
   if (
     contract?.["runs-on"] !== "ubuntu-24.04" ||
     contract?.["timeout-minutes"] !== 5 ||
     steps(contract).length !== 1 ||
+    !exactKeys(contractStep, ["name", "env", "run"]) ||
+    !exactKeys(contractStep?.env, [
+      "ARTIFACT_ID",
+      "CHANNEL",
+      "EXPECTED_SHA",
+      "LANE",
+      "PYTHON_VERSION",
+      "RELEASE_TAG",
+      "CANDIDATE_RUNNER_OS"
+    ]) ||
+    contractStep.env.CANDIDATE_RUNNER_OS !== "${{ inputs.runner_os }}" ||
     !includesAll(contractRun, [
       'case "$CHANNEL" in preview|stable)',
+      'case "$LANE:$CANDIDATE_RUNNER_OS:$PYTHON_VERSION" in',
       "platform:macos-latest:3.12",
       "platform:windows-latest:3.14",
       "linux:ubuntu-24.04:3.12",

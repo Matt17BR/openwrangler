@@ -25,6 +25,12 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
       );
     },
     (workflow) => {
+      const step = workflow.jobs.contract.steps[0];
+      step.env.RUNNER_OS = step.env.CANDIDATE_RUNNER_OS;
+      delete step.env.CANDIDATE_RUNNER_OS;
+      step.run = step.run.replaceAll("CANDIDATE_RUNNER_OS", "RUNNER_OS");
+    },
+    (workflow) => {
       workflow.jobs.platform["timeout-minutes"] = 240;
     },
     (workflow) => {

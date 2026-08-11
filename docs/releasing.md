@@ -251,6 +251,9 @@ tag and GitHub Release together at the accepted `main` commit.
 
 Preview candidates run macOS/Python 3.12 and Windows/Python 3.14 native acceptance beside, not before, the complete Linux owner. Cross-platform jobs keep environment smoke, extension-host, packaged VS Code and Cursor platform coverage, plus one local R/IRkernel journey in packaged VS Code, without rerunning the complete Python or R contract suites. Linux owns source checks, script contracts, visual/accessibility, instrumented coverage, dependency audits, runtime benchmark, and full packaged VS Code/Cursor journeys exactly once. Installed performance, released/remote Jupyter, and Remote SSH remain independent parallel consumers of the same canonical triple.
 
+The shared candidate validator binds the requested runner label to its own input variable. Do not use a `RUNNER_*`
+name for that value: GitHub reserves those variables for host metadata and ignores attempts to override them.
+
 ## Registry publication
 
 Both registries are final release steps and may run only after the `Matt17BR` publisher or namespace is owned and
