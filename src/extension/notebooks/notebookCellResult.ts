@@ -238,10 +238,26 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     for (const change of event.cellChanges) {
       const reportedSummary = change.executionSummary;
       const summary = reportedSummary ?? (change.outputs !== undefined ? change.cell.executionSummary : undefined);
-      if (reportedSummary !== undefined && reportedSummary.success === undefined) {
+      const executionOrder = summary?.executionOrder;
+      const completedExecuteResult =
+        change.outputs !== undefined &&
+        summary?.success !== false &&
+        isPositiveExecutionOrder(executionOrder) &&
+        isExecutedPythonResult(change.cell) &&
+        hasExecuteResultOutput(change.cell) &&
+        !hasOpenWranglerOutput(change.cell);
+      if (reportedSummary !== undefined && reportedSummary.success === undefined && !completedExecuteResult) {
         changed = this.observeCellKernel(state, change.cell, event.notebook, reportedSummary.executionOrder) || changed;
-      } else if (summary?.success === true && isPositiveExecutionOrder(summary.executionOrder)) {
-        const executionOrder = summary.executionOrder;
+      } else if ((summary?.success === true || completedExecuteResult) && isPositiveExecutionOrder(executionOrder)) {
+        const sourceFingerprint = fingerprintNotebookCellSource(change.cell.document.getText());
+        if (
+          isExecutedPythonResult(change.cell) &&
+          hasExecuteResultOutput(change.cell) &&
+          !hasOpenWranglerOutput(change.cell) &&
+          this.matchesTrackedCompletion(change.cell, event.notebook, executionOrder, sourceFingerprint)
+        ) {
+          continue;
+        }
         if (reportedSummary !== undefined) {
           if (executionOrder <= state.maxExecutionOrder) {
             changed = this.clearState(state, change.cell) || changed;
@@ -253,7 +269,6 @@ export class NotebookCellResultTracker implements vscode.Disposable {
           hasExecuteResultOutput(change.cell) &&
           !hasOpenWranglerOutput(change.cell)
         ) {
-          const sourceFingerprint = fingerprintNotebookCellSource(change.cell.document.getText());
           const observation = this.takeKernelObservation(
             change.cell,
             event.notebook,
@@ -424,6 +439,30 @@ export class NotebookCellResultTracker implements vscode.Disposable {
       !hasOpenWranglerOutput(cell) &&
       cell.executionSummary?.executionOrder === pending.executionOrder &&
       fingerprintNotebookCellSource(cell.document.getText()) === pending.sourceFingerprint
+    );
+  }
+
+  private matchesTrackedCompletion(
+    cell: vscode.NotebookCell,
+    notebook: vscode.NotebookDocument,
+    executionOrder: number,
+    sourceFingerprint: string
+  ): boolean {
+    if (this.kernelObservations.has(cell)) return false;
+    const pending = this.pendingCells.get(cell);
+    if (
+      pending?.notebook === notebook &&
+      pending.executionOrder === executionOrder &&
+      pending.sourceFingerprint === sourceFingerprint
+    ) {
+      return true;
+    }
+    const eligibility = this.eligibleCells.get(cell);
+    return (
+      eligibility?.notebook === notebook &&
+      eligibility.executionOrder === executionOrder &&
+      eligibility.sourceFingerprint === sourceFingerprint &&
+      eligibility.binding.isValid()
     );
   }
 
