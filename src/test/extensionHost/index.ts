@@ -43,6 +43,7 @@ import {
 } from "../../extension/configuration";
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
+import type { NotebookCellResultTrackerDiagnostics } from "../../extension/notebooks/notebookCellResult";
 import { supportsRDocumentExecution } from "../../extension/r/rDocumentCommands";
 import { R_KERNEL_RUNTIME_BINDING } from "../../extension/r/rKernelRuntimeBundle";
 import type { SessionSchedulerState } from "../../extension/sessionCoordinator";
@@ -181,6 +182,7 @@ interface TestApi {
     | "priority-boundary"
     | "panel-unavailable"
     | undefined;
+  notebookCellResultDiagnostics(): NotebookCellResultTrackerDiagnostics | undefined;
 }
 
 interface ExtensionApi {
@@ -12379,7 +12381,7 @@ async function exerciseFormatterDisabledFirstNotebookResult(
     WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
     "the formatter-disabled Pandas result cell to become visible again after kernel consent"
   );
-  const action = await waitForReleasedNotebookCellResultAction(workbench);
+  const action = await waitForReleasedNotebookCellResultAction(workbench, testing);
   const actionText = (await action.innerText()).replace(/\s+/gu, " ").trim();
   assert.equal(actionText, "Open in Open Wrangler", "The cell status fallback must use the canonical action label.");
   assert.equal(
@@ -12467,7 +12469,7 @@ async function exerciseFormatterDisabledFirstNotebookResult(
   }
 }
 
-async function waitForReleasedNotebookCellResultAction(workbench: Page): Promise<Locator> {
+async function waitForReleasedNotebookCellResultAction(workbench: Page, testing: TestApi): Promise<Locator> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   do {
     const action = workbench
@@ -12500,7 +12502,10 @@ async function waitForReleasedNotebookCellResultAction(workbench: Page): Promise
     }
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
-  throw new Error("Timed out waiting for the Open Wrangler result action in the active notebook.");
+  throw new Error(
+    "Timed out waiting for the Open Wrangler result action in the active notebook. " +
+      `Tracker: ${JSON.stringify(testing.notebookCellResultDiagnostics() ?? { stage: "unavailable" })}.`
+  );
 }
 
 async function executeReleasedNotebookCell(

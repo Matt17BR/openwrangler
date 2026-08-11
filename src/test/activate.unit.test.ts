@@ -34,7 +34,8 @@ const lifecycle = vi.hoisted(() => ({
   },
   notebookCellResults: {
     start: vi.fn(),
-    dispose: vi.fn()
+    dispose: vi.fn(),
+    diagnosticsForTesting: vi.fn()
   }
 }));
 
@@ -104,6 +105,7 @@ describe("extension deactivation", () => {
     lifecycle.rVariables.startAutomaticDiscovery.mockReset();
     lifecycle.notebookCellResults.start.mockReset();
     lifecycle.notebookCellResults.dispose.mockReset();
+    lifecycle.notebookCellResults.diagnosticsForTesting.mockReset();
     lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReset();
     lifecycle.coordinatedBridge.request.mockReset();
     lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
@@ -240,7 +242,7 @@ describe("extension deactivation", () => {
     expect(lifecycle.coordinatedBridge.cancelViewRequests).toHaveBeenCalledWith("session-a", ["profile-a"]);
   });
 
-  it("exposes exact scheduler checkpoints only through the environment-gated test API", async () => {
+  it("exposes exact scheduler and notebook-result diagnostics only through the environment-gated test API", async () => {
     await deactivate();
     process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
     lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReturnValue({
@@ -250,6 +252,11 @@ describe("extension deactivation", () => {
       requestKind: "getSummary",
       viewRequestId: "profile-a"
     });
+    lifecycle.notebookCellResults.diagnosticsForTesting.mockReturnValue({
+      stage: "unseen",
+      statusItem: "not-requested",
+      reason: undefined
+    } as never);
 
     const api = await activate({
       subscriptions: [],
@@ -268,6 +275,12 @@ describe("extension deactivation", () => {
       "getSummary",
       "profile-a"
     );
+    expect(api?.testing?.notebookCellResultDiagnostics()).toEqual({
+      stage: "unseen",
+      statusItem: "not-requested",
+      reason: undefined
+    });
+    expect(lifecycle.notebookCellResults.diagnosticsForTesting).toHaveBeenCalledOnce();
   });
 
   it("exposes only a decline path for dependency revalidation through the environment-gated test API", async () => {

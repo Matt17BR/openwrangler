@@ -20,6 +20,18 @@ const OPEN_NOTEBOOK_CELL_RESULT_COMMAND = "openWrangler.openNotebookCellResult";
 const NOTEBOOK_RESULT_OUTPUT_GRACE_MS = 10_000;
 const NOTEBOOK_RESULT_KERNEL_LOOKUP_TIMEOUT_MS = 10_000;
 
+export interface NotebookCellResultTrackerDiagnostics {
+  readonly stage: "unseen" | "awaiting-result" | "completion-kernel" | "probe" | "eligible" | "rejected";
+  readonly statusItem: "not-requested" | "withheld" | "offered";
+  readonly reason:
+    | "kernel-unavailable"
+    | "completion-kernel-timeout"
+    | "completion-kernel-error"
+    | "probe-rejected"
+    | "probe-error"
+    | undefined;
+}
+
 export function registerNotebookCellResultAction(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
@@ -45,6 +57,7 @@ export function notebookCellResultStatusItem(
   tracker: NotebookCellResultTracker
 ): vscode.NotebookCellStatusBarItem | undefined {
   if (!vscode.workspace.isTrusted || tracker.current(cell) === undefined) {
+    tracker.recordStatusItemForTesting("withheld");
     return undefined;
   }
   const item = new vscode.NotebookCellStatusBarItem(
@@ -59,6 +72,7 @@ export function notebookCellResultStatusItem(
   item.tooltip = "Open this executed result if it is a supported live dataframe";
   item.accessibilityInformation = { label: "Open executed dataframe result in Open Wrangler" };
   item.priority = 120;
+  tracker.recordStatusItemForTesting("offered");
   return item;
 }
 
@@ -210,6 +224,15 @@ export class NotebookCellResultTracker implements vscode.Disposable {
   private readonly pendingCells = new WeakMap<vscode.NotebookCell, PendingCellInspection>();
   private readonly kernelObservations = new WeakMap<vscode.NotebookCell, PendingKernelObservation>();
   private readonly workspaceSubscriptions: vscode.Disposable[] = [];
+  private readonly diagnosticState: {
+    stage: NotebookCellResultTrackerDiagnostics["stage"];
+    statusItem: NotebookCellResultTrackerDiagnostics["statusItem"];
+    reason: NotebookCellResultTrackerDiagnostics["reason"];
+  } = {
+    stage: "unseen",
+    statusItem: "not-requested",
+    reason: undefined
+  };
   private started = false;
 
   readonly onDidChangeCellStatusBarItems = this.changed.event;
@@ -318,6 +341,15 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     return eligibility;
   }
 
+  diagnosticsForTesting(): NotebookCellResultTrackerDiagnostics | undefined {
+    if (process.env.OPEN_WRANGLER_EXTENSION_TESTS !== "1") return undefined;
+    return Object.freeze({ ...this.diagnosticState });
+  }
+
+  recordStatusItemForTesting(statusItem: "withheld" | "offered"): void {
+    if (process.env.OPEN_WRANGLER_EXTENSION_TESTS === "1") this.diagnosticState.statusItem = statusItem;
+  }
+
   async hasCurrentKernel(cell: vscode.NotebookCell, expected?: ExecutedCellEligibility): Promise<boolean> {
     const eligibility = this.current(cell);
     if (!eligibility || (expected && eligibility !== expected)) return false;
@@ -376,6 +408,9 @@ export class NotebookCellResultTracker implements vscode.Disposable {
     cell: vscode.NotebookCell,
     pending: PendingCellInspection
   ): void {
+    this.recordDiagnostic("awaiting-result");
+    let completionReason: NonNullable<NotebookCellResultTrackerDiagnostics["reason"]> | undefined;
+    let probeAttempted = false;
     state.trackedCells.add(cell);
     this.pendingCells.set(cell, pending);
     void (pending.observation?.completion ?? Promise.resolve(undefined))
@@ -388,9 +423,22 @@ export class NotebookCellResultTracker implements vscode.Disposable {
           ) {
             return undefined;
           }
-          observed = await observeCompletionKernel(pending.notebook);
+          this.recordDiagnostic("completion-kernel");
+          observed = await observeCompletionKernel(pending.notebook, (category) => {
+            completionReason = category;
+          });
         }
-        if (!observed) return undefined;
+        if (!observed) {
+          if (
+            !this.started ||
+            this.pendingCells.get(cell) !== pending ||
+            !this.matchesPendingCell(state, cell, pending)
+          ) {
+            return undefined;
+          }
+          this.recordDiagnostic("rejected", completionReason ?? "kernel-unavailable");
+          return undefined;
+        }
         pending.activeBinding = observed;
         if (
           !this.started ||
@@ -400,6 +448,8 @@ export class NotebookCellResultTracker implements vscode.Disposable {
           observed.dispose();
           return undefined;
         }
+        probeAttempted = true;
+        this.recordDiagnostic("probe");
         return inspectExecutedNotebookCellResult(
           pending.notebook,
           pending.executionOrder,
@@ -421,6 +471,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
           if (!binding?.isValid()) {
             binding?.dispose();
             state.trackedCells.delete(cell);
+            if (probeAttempted) this.recordDiagnostic("rejected", "probe-rejected");
             return;
           }
           const eligibility: ExecutedCellEligibility = { ...pending, binding };
@@ -431,17 +482,28 @@ export class NotebookCellResultTracker implements vscode.Disposable {
             eligibility.invalidationSubscription.dispose();
             binding.dispose();
             state.trackedCells.delete(cell);
+            this.recordDiagnostic("rejected", "probe-rejected");
             return;
           }
           this.eligibleCells.set(cell, eligibility);
+          this.recordDiagnostic("eligible");
           this.changed.fire();
         },
         () => {
           if (this.pendingCells.get(cell) !== pending) return;
           this.pendingCells.delete(cell);
           state.trackedCells.delete(cell);
+          this.recordDiagnostic("rejected", "probe-error");
         }
       );
+  }
+
+  private recordDiagnostic(
+    stage: NotebookCellResultTrackerDiagnostics["stage"],
+    reason?: NonNullable<NotebookCellResultTrackerDiagnostics["reason"]>
+  ): void {
+    this.diagnosticState.stage = stage;
+    this.diagnosticState.reason = reason;
   }
 
   private matchesPendingCell(
@@ -631,7 +693,8 @@ function matchesKernelObservation(
 }
 
 async function observeCompletionKernel(
-  notebook: vscode.NotebookDocument
+  notebook: vscode.NotebookDocument,
+  onError: (category: "completion-kernel-timeout" | "completion-kernel-error") => void
 ): Promise<ObservedNotebookCellResultKernel | undefined> {
   const operation = observeExecutedNotebookCellResultKernel(notebook);
   let detached = false;
@@ -640,6 +703,7 @@ async function observeCompletionKernel(
       detached = true;
     });
   } catch {
+    onError(detached ? "completion-kernel-timeout" : "completion-kernel-error");
     return undefined;
   } finally {
     if (detached) {

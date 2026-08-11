@@ -3,7 +3,11 @@ import { registerFileCommands } from "./files/fileOpen";
 import { registerTrustedPickleConversion } from "./files/trustedPickleConversion";
 import { TrustedPickleWorkerLifecycle } from "./files/trustedPickleWorker";
 import { registerNotebookCommands } from "./notebooks/jupyterBridge";
-import { NotebookCellResultTracker, registerNotebookCellResultAction } from "./notebooks/notebookCellResult";
+import {
+  NotebookCellResultTracker,
+  registerNotebookCellResultAction,
+  type NotebookCellResultTrackerDiagnostics
+} from "./notebooks/notebookCellResult";
 import { registerNotebookRendererMessaging } from "./notebooks/rendererMessaging";
 import { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinator";
 import { registerPythonInteractiveCommands } from "./notebooks/pythonInteractiveCommands";
@@ -54,6 +58,7 @@ export interface OpenWranglerTestApi {
   exportCodeTo(destination: vscode.Uri): Promise<void>;
   notebookInsertionStatus(): NotebookInsertionDiagnosticStatus | undefined;
   viewSortDispatchStatus(): ViewSortDispatchStatus | undefined;
+  notebookCellResultDiagnostics(): NotebookCellResultTrackerDiagnostics | undefined;
 }
 
 export interface OpenWranglerExtensionApi {
@@ -138,7 +143,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         setCodeForExport: (code) => nativeViews.setCodeForExport(code),
         exportCodeTo: (destination) => nativeViews.exportCodeTo(destination),
         notebookInsertionStatus: () => nativeViews.notebookInsertionStatus(),
-        viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus()
+        viewSortDispatchStatus: () => nativeViews.viewSortDispatchStatus(),
+        notebookCellResultDiagnostics: () => notebookCellResults.diagnosticsForTesting()
       }
     };
   }
