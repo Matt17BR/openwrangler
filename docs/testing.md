@@ -784,8 +784,10 @@ The packaged journey activates all three extensions, checks their exact versions
 that `.Rmd` and `.qmd` have the expected editor language modes. It asks the Quarto extension to render the real `.qmd`
 fixture and verifies the rendered table before invoking **Open in Open Wrangler** with the exact cursor in its R
 chunk. Open Wrangler asks Quarto to run only that chunk and presents dataframes from the official R session. The R
-Markdown fixture still exercises the explicit owned-process command. Screenshot mode also requires Quarto's internal
-preview to be visible. Offline runs may
+Markdown fixture still exercises the explicit owned-process command. A second `.qmd` declares `jupyter: python3`.
+The title action runs only the cursor-owned Python chunk through a private kernelspec, opens its live Pandas
+dataframe, leaves the later sentinel chunk untouched, and keeps the source bytes unchanged. Screenshot mode also
+requires Quarto's internal preview to be visible. Offline runs may
 supply the same verified artifacts through `OPEN_WRANGLER_R_SYNTAX_EXTENSION_VSIX`,
 `OPEN_WRANGLER_R_EXTENSION_VSIX`, `OPEN_WRANGLER_QUARTO_EXTENSION_VSIX`, and
 `OPEN_WRANGLER_QUARTO_CLI_ARCHIVE`.
@@ -850,7 +852,7 @@ For a focused local rerun, add `OPEN_WRANGLER_PACKAGED_R_JOURNEY=interactive-ter
 `OPEN_WRANGLER_PACKAGED_R_JOURNEY=literate-documents` to the `r-jupyter` command and keep
 `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=0`. The first selector checks active R terminal discovery, replacement, and
 cleanup. The second checks the packaged `.Rmd` and `.qmd` title actions, native Quarto preview, dataframe opening,
-editing, code insertion, and cleanup. Both still verify the VSIX, editor, R packages, and pinned R and Quarto
+editing, code insertion, the Python/Jupyter Quarto path, and cleanup. Both still verify the VSIX, editor, R packages, and pinned R and Quarto
 extensions. No other selector is accepted, and focused selectors cannot be combined with remote Jupyter.
 
 On Linux, `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=1` adds a container-isolated remote-server phase. The default mode uses the Python fixture; `r-jupyter` uses the R fixture. The hosted workflow runs both remote journeys only in VS Code.
