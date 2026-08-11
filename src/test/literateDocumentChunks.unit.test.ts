@@ -202,6 +202,31 @@ describe("literate document code chunks", () => {
     ).toBe("unknown");
   });
 
+  it("parses executor YAML without normalizing ambiguous metadata", () => {
+    const sources = [
+      "---\n  jupyter: python3\n---\n",
+      "---\nJupyter: python3\n---\n",
+      "---\nENGINE: knitr\n---\n",
+      "---\nengine: Jupyter\n---\n",
+      "---\njupyter: python3\njupyter: python-other\n---\n",
+      "---\ndefaults: &python\n  jupyter: python3\nselected: *python\n---\n",
+      "---\n{jupyter: python3}\n---\n",
+      "---\n- jupyter: python3\n---\n"
+    ];
+    for (const source of sources) {
+      expect(
+        literatePythonExecutionOwner("/workspace/orders.qmd", `${source}\n\`\`\`{python}\nvalue = 1\n\`\`\`\n`)
+      ).toBe("unknown");
+    }
+
+    expect(
+      literatePythonExecutionOwner(
+        "/workspace/orders.qmd",
+        '---\n"title": Orders\nformat:\n  html:\n    toc: true\njupyter: python3\n---\n```{python}\nvalue = 1\n```\n'
+      )
+    ).toBe("jupyter");
+  });
+
   it("does not infer knitr from R-looking fences hidden in YAML or comments", () => {
     const source = [
       "---",
@@ -221,5 +246,19 @@ describe("literate document code chunks", () => {
       ""
     ].join("\n");
     expect(literatePythonExecutionOwner("/workspace/orders.qmd", source)).toBe("jupyter");
+  });
+
+  it("keeps fences inside display math, raw TeX, and raw HTML opaque", () => {
+    for (const source of [
+      "$$\n```{r}\nhidden <- TRUE\n```\n$$\n",
+      "\\begin{verbatim}\n```{r}\nhidden <- TRUE\n```\n\\end{verbatim}\n",
+      '<script type="text/plain">\n```{r}\nhidden <- TRUE\n```\n</SCRIPT>\n',
+      "<script><!--\ncomment\n-->\n```{r}\nhidden <- TRUE\n```\n</script>\n"
+    ]) {
+      const document = `${source}\n\`\`\`{python}\nvisible = True\n\`\`\`\n`;
+      const hiddenLine = document.split("\n").findIndex((line) => line.includes("hidden"));
+      expect(findLiterateCodeChunkAtLine("/workspace/orders.qmd", document, hiddenLine)).toBeUndefined();
+      expect(literatePythonExecutionOwner("/workspace/orders.qmd", document)).toBe("jupyter");
+    }
   });
 });
