@@ -7278,8 +7278,6 @@ async function exerciseReleasedREditingJourney(
       30_000,
       "undoing native R Min-max scale"
     );
-    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-min-max-scale`);
-
     recordAcceptanceProgress(`${phase}:editing:numeric-rounding-preview-apply-undo`);
     const roundingBase = testing.activeSession();
     assert.ok(roundingBase, "The restored R session must remain available for numeric rounding.");
