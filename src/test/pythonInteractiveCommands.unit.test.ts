@@ -337,10 +337,14 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("changed"));
   });
 
-  it("restores the exact literate editor after selecting a kernel for a new Interactive Window", async () => {
+  it("restores a focused Quarto source after its blank Interactive Window takes focus", async () => {
     vi.useFakeTimers();
     try {
-      const source = textDocument("file:///workspace/analysis.qmd", "```{python}\nframe = make_frame()\n```\n");
+      const source = textDocument(
+        "file:///workspace/analysis.qmd",
+        "```{python}\nframe = make_frame()\n```\n",
+        "quarto"
+      );
       const editor = textEditor(source, 1);
       pythonMocks.textDocuments.push(source);
       pythonMocks.activeTextEditor = editor;
@@ -357,11 +361,14 @@ describe("Python Interactive Window entry points", () => {
         code: "frame = make_frame()\n"
       });
       const interactive = notebook("untitled:/Interactive-quarto-kernel.interactive", "interactive", []);
+      interactive.cells.push(markupCell(interactive.document));
       let runCount = 0;
       pythonMocks.executeCommand.mockImplementation(async (id: string) => {
         if (id !== "jupyter.execSelectionInteractive") return undefined;
         runCount += 1;
         if (runCount === 1) {
+          pythonMocks.activeTextEditor = undefined;
+          pythonMocks.activeNotebookEditor = { notebook: interactive.document } as NotebookEditor;
           pythonMocks.notebookDocuments.push(interactive.document);
           fire(pythonMocks.openNotebookListeners, interactive.document);
         } else {
@@ -386,7 +393,7 @@ describe("Python Interactive Window entry points", () => {
 
       const opening = literateProvider(provider).runLiterateChunkAndOpen(origin);
       await settle();
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(11_000);
       await expect(opening).resolves.toBe(true);
 
       expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
@@ -400,6 +407,75 @@ describe("Python Interactive Window entry points", () => {
         preview: false
       });
       expect(editor.selection.active.line).toBe(1);
+      expect(pythonMocks.openVariable).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not run a Quarto chunk twice when the first Jupyter dispatch resumes after kernel selection", async () => {
+    vi.useFakeTimers();
+    try {
+      const source = textDocument(
+        "file:///workspace/analysis.qmd",
+        "```{python}\nframe = make_frame()\n```\n",
+        "quarto"
+      );
+      const editor = textEditor(source, 1);
+      pythonMocks.textDocuments.push(source);
+      pythonMocks.activeTextEditor = editor;
+      const origin = literateOrigin(editor, "quarto", {
+        language: "python",
+        executableSyntax: true,
+        supportedFence: true,
+        enabled: true,
+        fenceCharacter: "`",
+        openingLine: 0,
+        codeStartLine: 1,
+        codeEndLine: 1,
+        closingLine: 2,
+        code: "frame = make_frame()\n"
+      });
+      const interactive = notebook("untitled:/Interactive-quarto-pending.interactive", "interactive", []);
+      interactive.cells.push(markupCell(interactive.document));
+      let runCount = 0;
+      pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+        if (id !== "jupyter.execSelectionInteractive") return undefined;
+        runCount += 1;
+        if (runCount === 1) {
+          pythonMocks.activeTextEditor = undefined;
+          pythonMocks.activeNotebookEditor = { notebook: interactive.document } as NotebookEditor;
+          pythonMocks.notebookDocuments.push(interactive.document);
+          fire(pythonMocks.openNotebookListeners, interactive.document);
+        }
+        return undefined;
+      });
+      pythonMocks.showTextDocument.mockImplementation(async (document: TextDocument) => {
+        expect(document).toBe(source);
+        pythonMocks.activeTextEditor = editor;
+        pythonMocks.activeNotebookEditor = undefined;
+        setTimeout(() => {
+          const cell = interactiveCell(interactive.document, source.uri.toString(), 1, "quarto-run", true);
+          interactive.cells.push(cell);
+          fire(pythonMocks.changeNotebookListeners, {
+            notebook: interactive.document,
+            cellChanges: [{ cell, executionSummary: cell.executionSummary }],
+            contentChanges: []
+          } as unknown as NotebookDocumentChangeEvent);
+        }, 25);
+        return editor;
+      });
+      pythonMocks.discover.mockResolvedValue({ variables: [pandasFrame("frame")], truncated: false });
+
+      const opening = literateProvider(provider).runLiterateChunkAndOpen(origin);
+      await settle();
+      await vi.advanceTimersByTimeAsync(10_025);
+      await expect(opening).resolves.toBe(true);
+
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
+        "jupyter.execSelectionInteractive",
+        "notebook.selectKernel"
+      ]);
       expect(pythonMocks.openVariable).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
@@ -562,7 +638,7 @@ describe("Python Interactive Window entry points", () => {
       const opening = command("openWrangler.runPythonCellAndOpenVariable")();
       await settle();
       expect(pythonMocks.executeCommand).not.toHaveBeenCalledWith("notebook.selectKernel", expect.anything());
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(11_000);
       await opening;
 
       expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
@@ -628,7 +704,7 @@ describe("Python Interactive Window entry points", () => {
 
       const opening = command("openWrangler.runPythonCellAndOpenVariable")();
       await settle();
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(11_000);
       await opening;
 
       expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
@@ -918,7 +994,7 @@ describe("Python Interactive Window entry points", () => {
 
       const opening = command("openWrangler.runPythonCellAndOpenVariable")();
       await settle();
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(11_000);
       await settle();
       await vi.advanceTimersByTimeAsync(10_000);
       await opening;
@@ -1115,7 +1191,7 @@ describe("Python Interactive Window entry points", () => {
 
       const opening = command("openWrangler.runPythonCellAndOpenVariable")();
       await settle();
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(11_000);
       await opening;
 
       expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
@@ -1619,11 +1695,11 @@ async function settle(): Promise<void> {
   await Promise.resolve();
 }
 
-function textDocument(uri: string, text: string): TextDocument & { isClosed: boolean } {
+function textDocument(uri: string, text: string, languageId = "python"): TextDocument & { isClosed: boolean } {
   const lines = text.split("\n");
   return {
     uri: vscode.Uri.parse(uri),
-    languageId: "python",
+    languageId,
     version: 1,
     isClosed: false,
     lineCount: lines.length,
