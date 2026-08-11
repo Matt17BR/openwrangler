@@ -12367,6 +12367,18 @@ async function exerciseFormatterDisabledFirstNotebookResult(
     "Kernel consent must not enable proactive formatters before the first-result action is used."
   );
 
+  notebookEditor.selection = range;
+  notebookEditor.selections = [range];
+  notebookEditor.revealRange(range, vscode.NotebookEditorRevealType.AtTop);
+  await waitFor(
+    () =>
+      notebookEditor.visibleRanges.some(
+        (visible) =>
+          visible.start <= RELEASED_JUPYTER_FIRST_RESULT_CELL && visible.end > RELEASED_JUPYTER_FIRST_RESULT_CELL
+      ),
+    WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+    "the formatter-disabled Pandas result cell to become visible again after kernel consent"
+  );
   const action = await waitForReleasedNotebookCellResultAction(workbench);
   const actionText = (await action.innerText()).replace(/\s+/gu, " ").trim();
   assert.equal(actionText, "Open in Open Wrangler", "The cell status fallback must use the canonical action label.");
@@ -12458,16 +12470,34 @@ async function exerciseFormatterDisabledFirstNotebookResult(
 async function waitForReleasedNotebookCellResultAction(workbench: Page): Promise<Locator> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   do {
-    const activeEditorGroup = workbench.locator(".part.editor .editor-group-container.active");
-    const action = activeEditorGroup
+    const action = workbench
       .locator(
-        ".notebookOverlay .monaco-list-row.code-cell-row:visible " +
-          ".cell-status-item.cell-status-item-has-command:visible"
+        ".part.editor .editor-group-container.active .notebookOverlay " +
+          ".cell-statusbar-container:visible .cell-status-item.cell-status-item-has-command:visible"
       )
       .filter({ hasText: /^\s*Open in Open Wrangler\s*$/u });
     const actionCount = await action.count().catch(() => 0);
     assert.ok(actionCount < 2, "The active notebook exposed duplicate Open Wrangler result actions.");
-    if (actionCount === 1 && (await action.isVisible().catch(() => false))) return action;
+    if (actionCount === 1 && (await action.isVisible().catch(() => false))) {
+      const [bounds, viewport] = await Promise.all([
+        action.boundingBox().catch(() => null),
+        workbench.evaluate(() => {
+          const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+          return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+        })
+      ]);
+      if (
+        bounds &&
+        bounds.width > 0 &&
+        bounds.height > 0 &&
+        bounds.x < viewport.width &&
+        bounds.x + bounds.width > 0 &&
+        bounds.y < viewport.height &&
+        bounds.y + bounds.height > 0
+      ) {
+        return action;
+      }
+    }
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
   throw new Error("Timed out waiting for the Open Wrangler result action in the active notebook.");
