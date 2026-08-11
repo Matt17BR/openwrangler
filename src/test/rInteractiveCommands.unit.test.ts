@@ -257,6 +257,245 @@ describe("active R session commands", () => {
     );
   });
 
+  it("starts a pinned R session when a literate chunk has no attached session", async () => {
+    const transport = transportMock();
+    transport.evaluateAndDiscoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, coordinator, factory } = registerWith([transport]);
+
+    await expect(
+      literateRProvider(provider).runLiterateChunkAndOpen(origin, undefined, "orders <- data.frame(id = 1:3)\n")
+    ).resolves.toBe(true);
+
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "activeOrCreate" });
+    expect(transport.evaluateAndDiscoverVariables).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).toHaveBeenCalledWith(expect.anything(), {
+      kind: "textDocument",
+      document: source,
+      version: 1
+    });
+  });
+
+  it("does not let automatic discovery interrupt a newly created literate R session", async () => {
+    const transport = transportMock();
+    const createdTerminal = rTerminal("R Interactive");
+    const watcher = watcherMock(createdTerminal);
+    watcher.readInitial.mockResolvedValue(discovery(tibble));
+    transport.evaluateAndDiscoverVariables.mockImplementationOnce(async () => {
+      emitActiveTerminal(createdTerminal);
+      await delay(350);
+      return discovery(tibble);
+    });
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, coordinator, factory, watcherFactory } = registerWith([transport], [watcher]);
+    provider.startAutomaticDiscovery();
+
+    await expect(
+      literateRProvider(provider).runLiterateChunkAndOpen(origin, undefined, "orders <- data.frame(id = 1:3)\n")
+    ).resolves.toBe(true);
+
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), { terminalMode: "activeOrCreate" });
+    expect(mocks.showQuickPick).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(watcherFactory.create).toHaveBeenCalledWith(expect.anything(), createdTerminal), {
+      timeout: 1_000
+    });
+    await provider.shutdown();
+  });
+
+  it("reuses its attached R terminal while Quarto Preview owns terminal focus", async () => {
+    const sourceTerminal = rTerminal("R");
+    const otherTerminal = rTerminal("R Interactive");
+    setActiveTerminal(sourceTerminal);
+    mocks.terminals.push(otherTerminal);
+    const initialWatcher = watcherMock(sourceTerminal);
+    initialWatcher.readInitial.mockResolvedValue(discovery(tibble));
+    const resumedWatcher = watcherMock(sourceTerminal);
+    resumedWatcher.readInitial.mockResolvedValue(discovery(tibble));
+    const transport = transportMock();
+    transport.evaluateAndDiscoverVariables.mockResolvedValueOnce(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, factory, watcherFactory } = registerWith([transport], [initialWatcher, resumedWatcher]);
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+
+    emitActiveTerminal({ name: "Quarto Preview", sendText: vi.fn() });
+    const session = literateRProvider(provider).captureActiveSession();
+    expect(session?.terminal).toBe(sourceTerminal);
+    await expect(
+      literateRProvider(provider).runLiterateChunkAndOpen(origin, session, "orders <- data.frame(id = 1:3)\n")
+    ).resolves.toBe(true);
+
+    expect(factory.create).toHaveBeenCalledWith(expect.anything(), {
+      terminalMode: "active",
+      terminal: sourceTerminal
+    });
+    expect(transport.evaluateAndDiscoverVariables).toHaveBeenCalledOnce();
+    expect(initialWatcher.dispose).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(watcherFactory.create).toHaveBeenCalledTimes(2), { timeout: 1_000 });
+    expect(literateRProvider(provider).captureActiveSession()?.terminal).toBe(sourceTerminal);
+    await vi.waitFor(() =>
+      expect(provider.snapshot()).toMatchObject({
+        state: "ready",
+        variables: [{ label: "orders", description: "R · tibble" }]
+      })
+    );
+    await provider.shutdown();
+  });
+
+  it("reattaches a still-loading workspace watcher after a literate command fails", async () => {
+    const sourceTerminal = rTerminal("R");
+    setActiveTerminal(sourceTerminal);
+    const initialRead = deferred<ReturnType<typeof discovery>>();
+    const initialWatcher = watcherMock(sourceTerminal);
+    initialWatcher.readInitial.mockReturnValue(initialRead.promise);
+    const resumedWatcher = watcherMock(sourceTerminal);
+    resumedWatcher.readInitial.mockResolvedValue(discovery(tibble));
+    const transport = transportMock();
+    transport.evaluateAndDiscoverVariables.mockRejectedValueOnce(new Error("chunk failed"));
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, watcherFactory } = registerWith([transport], [initialWatcher, resumedWatcher]);
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(initialWatcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
+
+    emitActiveTerminal({ name: "Quarto Preview", sendText: vi.fn() });
+    const session = literateRProvider(provider).captureActiveSession();
+    expect(session?.terminal).toBe(sourceTerminal);
+    await expect(
+      literateRProvider(provider).runLiterateChunkAndOpen(origin, session, "stop('chunk failed')\n")
+    ).resolves.toBe(false);
+
+    expect(initialWatcher.dispose).toHaveBeenCalledOnce();
+    initialRead.resolve(discovery(tibble));
+    await vi.waitFor(() => expect(watcherFactory.create).toHaveBeenCalledTimes(2), { timeout: 1_000 });
+    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+    expect(literateRProvider(provider).captureActiveSession()?.terminal).toBe(sourceTerminal);
+    await provider.shutdown();
+  });
+
+  it("reattaches a manually refreshed R session while Quarto Preview keeps focus", async () => {
+    const sourceTerminal = rTerminal("R");
+    const otherTerminal = rTerminal("R Interactive");
+    setActiveTerminal(sourceTerminal);
+    mocks.terminals.push(otherTerminal);
+    const refreshTransport = transportMock();
+    refreshTransport.discoverVariables.mockResolvedValueOnce(discovery(tibble));
+    const literateTransport = transportMock();
+    literateTransport.evaluateAndDiscoverVariables.mockResolvedValueOnce(discovery(tibble));
+    const resumedWatcher = watcherMock(sourceTerminal);
+    resumedWatcher.readInitial.mockResolvedValue(discovery(tibble));
+    mocks.showQuickPick.mockImplementation(async (items) => items[0]);
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, factory, watcherFactory } = registerWith([refreshTransport, literateTransport], [resumedWatcher]);
+    await expect(provider.refreshFromCommand()).resolves.toBe(true);
+    provider.startAutomaticDiscovery();
+
+    emitActiveTerminal({ name: "Quarto Preview", sendText: vi.fn() });
+    const session = literateRProvider(provider).captureActiveSession();
+    expect(session?.terminal).toBe(sourceTerminal);
+    await expect(
+      literateRProvider(provider).runLiterateChunkAndOpen(origin, session, "orders <- data.frame(id = 1:3)\n")
+    ).resolves.toBe(true);
+
+    expect(factory.create).toHaveBeenNthCalledWith(1, expect.anything(), {
+      terminalMode: "active",
+      terminal: sourceTerminal
+    });
+    expect(factory.create).toHaveBeenNthCalledWith(2, expect.anything(), {
+      terminalMode: "active",
+      terminal: sourceTerminal
+    });
+    expect(refreshTransport.dispose).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(watcherFactory.create).toHaveBeenCalledWith(expect.anything(), sourceTerminal), {
+      timeout: 1_000
+    });
+    expect(literateRProvider(provider).captureActiveSession()?.terminal).toBe(sourceTerminal);
+    await provider.shutdown();
+  });
+
+  it("follows a newly selected R terminal when a literate request becomes stale", async () => {
+    const firstTerminal = rTerminal("R");
+    const secondTerminal = rTerminal("R Interactive");
+    setActiveTerminal(firstTerminal);
+    mocks.terminals.push(secondTerminal);
+    const initialWatcher = watcherMock(firstTerminal);
+    initialWatcher.readInitial.mockResolvedValue(discovery(tibble));
+    const secondWatcher = watcherMock(secondTerminal);
+    secondWatcher.readInitial.mockResolvedValue(
+      discovery({ name: "new_orders", backend: "r", dataframeFlavor: "r.data.table" })
+    );
+    const pendingDiscovery = deferred<ReturnType<typeof discovery>>();
+    const transport = transportMock();
+    transport.evaluateAndDiscoverVariables.mockReturnValueOnce(pendingDiscovery.promise);
+    const source = literateDocument("/workspace/orders.qmd");
+    const editor = textEditor(source, 2);
+    mocks.textDocuments.push(source);
+    mocks.activeEditor = editor;
+    const origin = literateOrigin(editor);
+    const { provider, watcherFactory } = registerWith([transport], [initialWatcher, secondWatcher]);
+    provider.startAutomaticDiscovery();
+    await vi.waitFor(() => expect(provider.snapshot().state).toBe("ready"), { timeout: 1_000 });
+    const session = literateRProvider(provider).captureActiveSession();
+    expect(session?.terminal).toBe(firstTerminal);
+
+    const opening = literateRProvider(provider).runLiterateChunkAndOpen(
+      origin,
+      session,
+      "orders <- data.frame(id = 1:3)\n"
+    );
+    await vi.waitFor(() => expect(transport.evaluateAndDiscoverVariables).toHaveBeenCalledOnce());
+    emitActiveTerminal(secondTerminal);
+    pendingDiscovery.resolve(discovery(tibble));
+
+    await expect(opening).resolves.toBe(false);
+    await vi.waitFor(() => expect(watcherFactory.create).toHaveBeenLastCalledWith(expect.anything(), secondTerminal), {
+      timeout: 1_000
+    });
+    await vi.waitFor(() =>
+      expect(provider.snapshot()).toMatchObject({
+        state: "ready",
+        terminalLabel: "R Interactive",
+        variables: [{ label: "new_orders", description: "R · data.table" }]
+      })
+    );
+    await provider.shutdown();
+  });
+
+  it("does not guess between unattached R terminals after Quarto Preview takes focus", () => {
+    const first = rTerminal("R");
+    const second = rTerminal("R Interactive");
+    setActiveTerminal(first);
+    mocks.terminals.push(second);
+    const { provider } = registerWith([]);
+
+    emitActiveTerminal({ name: "Quarto Preview", sendText: vi.fn() });
+
+    expect(literateRProvider(provider).captureActiveSession()).toBeUndefined();
+  });
+
   it("keeps an existing R-session fallback terminal-owned outside a freshly run chunk", async () => {
     setActiveTerminal(rTerminal("R"));
     const transport = transportMock();

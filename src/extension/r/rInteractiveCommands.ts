@@ -80,7 +80,7 @@ export interface LiterateRVariableProvider {
   openLiterateSession(origin: LiterateDocumentOrigin, session: LiterateRSessionIdentity): Promise<boolean>;
   runLiterateChunkAndOpen(
     origin: LiterateDocumentOrigin,
-    session: LiterateRSessionIdentity,
+    session: LiterateRSessionIdentity | undefined,
     code: string
   ): Promise<boolean>;
 }
@@ -88,6 +88,12 @@ export interface LiterateRVariableProvider {
 /** Opaque identity for the exact public VS Code terminal captured before an await. */
 export interface LiterateRSessionIdentity {
   readonly terminal: vscode.Terminal;
+}
+
+interface AutomaticAttachmentRequest {
+  readonly terminal: vscode.Terminal;
+  readonly allowBackground: boolean;
+  readonly immediate: boolean;
 }
 
 export interface RInteractiveCommandTransport extends RKernelBridgeTransport {
@@ -170,7 +176,8 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   private automaticAttachmentTimer: ReturnType<typeof setTimeout> | undefined;
   private automaticAttachmentRunning = false;
   private automaticAttachmentTask: Promise<void> | undefined;
-  private automaticAttachmentQueuedTerminal: vscode.Terminal | undefined;
+  private automaticAttachmentQueuedRequest: AutomaticAttachmentRequest | undefined;
+  private activeCommandRequests = 0;
   private generation = 0;
   private disposed = false;
   private shutdownPromise: Promise<void> | undefined;
@@ -261,8 +268,18 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
   }
 
   captureActiveSession(): LiterateRSessionIdentity | undefined {
-    const terminal = vscode.window.activeTerminal;
-    return isExactActiveRTerminal(terminal) ? Object.freeze({ terminal }) : undefined;
+    const activeTerminal = vscode.window.activeTerminal;
+    if (isExactActiveRTerminal(activeTerminal)) return Object.freeze({ terminal: activeTerminal });
+    if (activeTerminal && isOfficialRTerminal(activeTerminal)) return undefined;
+
+    const candidates = new Set(
+      [
+        this.ownedTransport ? this.ownedTerminal : undefined,
+        this.workspaceWatcher ? this.workspaceWatcherTerminal : undefined
+      ].filter(isLiveOfficialRTerminal)
+    );
+    const terminal = candidates.size === 1 ? [...candidates][0] : undefined;
+    return terminal ? Object.freeze({ terminal }) : undefined;
   }
 
   openLiterateSession(origin: LiterateDocumentOrigin, session: LiterateRSessionIdentity): Promise<boolean> {
@@ -274,16 +291,49 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
 
   runLiterateChunkAndOpen(
     origin: LiterateDocumentOrigin,
-    session: LiterateRSessionIdentity,
+    session: LiterateRSessionIdentity | undefined,
     code: string
   ): Promise<boolean> {
-    if (!isCurrentLiterateDocumentOrigin(origin) || !isCurrentLiterateRSession(session)) {
+    if (!isCurrentLiterateDocumentOrigin(origin) || (session && !isCurrentLiterateRSession(session))) {
       return Promise.resolve(false);
     }
     return this.chooseAndOpen(origin, session, code);
   }
 
   async chooseAndOpen(
+    origin?: LiterateDocumentOrigin,
+    expectedSession?: LiterateRSessionIdentity,
+    evaluationCode?: string
+  ): Promise<boolean> {
+    this.activeCommandRequests += 1;
+    this.cancelAutomaticAttachmentTimer();
+    try {
+      return await this.chooseAndOpenRequest(origin, expectedSession, evaluationCode);
+    } finally {
+      this.activeCommandRequests -= 1;
+      if (this.activeCommandRequests === 0) {
+        const queued = this.automaticAttachmentQueuedRequest;
+        this.automaticAttachmentQueuedRequest = undefined;
+        const expectedLiterateRequest: AutomaticAttachmentRequest | undefined =
+          evaluationCode !== undefined && expectedSession
+            ? Object.freeze({ terminal: expectedSession.terminal, allowBackground: true, immediate: true })
+            : undefined;
+        if (expectedLiterateRequest && isEligibleAutomaticAttachment(expectedLiterateRequest)) {
+          this.scheduleAutomaticAttachment(expectedLiterateRequest.terminal, expectedLiterateRequest);
+        } else if (queued) {
+          this.scheduleAutomaticAttachment(queued.terminal, {
+            ...queued,
+            allowBackground: evaluationCode === undefined ? queued.allowBackground : true,
+            immediate: evaluationCode === undefined ? queued.immediate : true
+          });
+        } else {
+          this.scheduleAutomaticAttachment(vscode.window.activeTerminal);
+        }
+      }
+    }
+  }
+
+  private async chooseAndOpenRequest(
     origin?: LiterateDocumentOrigin,
     expectedSession?: LiterateRSessionIdentity,
     evaluationCode?: string
@@ -347,7 +397,6 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       if (cleanupError) showCleanupError(cleanupError);
       return false;
     }
-
     if (discovery.variables.length === 0) {
       const cleanupError = await this.disposeManagedTransport(transport);
       if (cleanupError) {
@@ -794,42 +843,61 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     return watcher;
   }
 
-  private scheduleAutomaticAttachment(terminal: vscode.Terminal | undefined): void {
+  private scheduleAutomaticAttachment(
+    terminal: vscode.Terminal | undefined,
+    options: Readonly<{ allowBackground?: boolean; immediate?: boolean }> = {}
+  ): void {
+    const request: AutomaticAttachmentRequest | undefined = terminal
+      ? Object.freeze({
+          terminal,
+          allowBackground: options.allowBackground === true,
+          immediate: options.immediate === true
+        })
+      : undefined;
     if (
       !this.automaticDiscoveryStarted ||
       this.disposed ||
       !vscode.workspace.isTrusted ||
-      !isExactActiveRTerminal(terminal)
+      !request ||
+      !isEligibleAutomaticAttachment(request)
     ) {
       return;
     }
+    if (this.activeCommandRequests > 0) {
+      this.automaticAttachmentQueuedRequest = request;
+      return;
+    }
     if (
-      (this.ownedTransport && this.ownedTerminal === terminal) ||
-      (this.workspaceWatcher && this.workspaceWatcherTerminal === terminal)
+      (this.ownedTransport && this.ownedTerminal === request.terminal) ||
+      (this.workspaceWatcher && this.workspaceWatcherTerminal === request.terminal)
     ) {
       return;
     }
     if (this.automaticAttachmentRunning) {
-      this.automaticAttachmentQueuedTerminal = terminal;
+      this.automaticAttachmentQueuedRequest = request;
       return;
     }
     this.cancelAutomaticAttachmentTimer();
+    if (request.immediate) {
+      this.startAutomaticAttachment(request);
+      return;
+    }
     this.automaticAttachmentTimer = setTimeout(() => {
       this.automaticAttachmentTimer = undefined;
-      this.startAutomaticAttachment(terminal);
+      this.startAutomaticAttachment(request);
     }, AUTOMATIC_ATTACHMENT_DEBOUNCE_MS);
   }
 
-  private startAutomaticAttachment(terminal: vscode.Terminal): void {
-    const task = this.runAutomaticAttachment(terminal).catch(() => {
+  private startAutomaticAttachment(request: AutomaticAttachmentRequest): void {
+    const task = this.runAutomaticAttachment(request).catch(() => {
       if (
         !this.disposed &&
-        isExactActiveRTerminal(terminal) &&
+        isEligibleAutomaticAttachment(request) &&
         !this.ownedTransport &&
-        (!this.workspaceWatcher || this.workspaceWatcherTerminal === terminal)
+        (!this.workspaceWatcher || this.workspaceWatcherTerminal === request.terminal)
       ) {
         this.releaseWorkspaceWatcher();
-        this.replaceSnapshot(watcherFallbackSnapshot(terminal));
+        this.replaceSnapshot(watcherFallbackSnapshot(request.terminal));
       }
     });
     this.automaticAttachmentTask = task;
@@ -838,15 +906,22 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     });
   }
 
-  private async runAutomaticAttachment(terminal: vscode.Terminal): Promise<void> {
+  private async runAutomaticAttachment(request: AutomaticAttachmentRequest): Promise<void> {
+    const { terminal } = request;
+    if (this.activeCommandRequests > 0) {
+      if (isEligibleAutomaticAttachment(request)) {
+        this.automaticAttachmentQueuedRequest = request;
+      }
+      return;
+    }
     if (
       this.automaticAttachmentRunning ||
       this.disposed ||
       !vscode.workspace.isTrusted ||
-      !isExactActiveRTerminal(terminal)
+      !isEligibleAutomaticAttachment(request)
     ) {
-      if (this.automaticAttachmentRunning && isExactActiveRTerminal(terminal)) {
-        this.automaticAttachmentQueuedTerminal = terminal;
+      if (this.automaticAttachmentRunning && isEligibleAutomaticAttachment(request)) {
+        this.automaticAttachmentQueuedRequest = request;
       }
       return;
     }
@@ -862,7 +937,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       this.releaseWorkspaceWatcher();
       const watcher = this.watcherFactory.create(this.context, terminal);
       if (!watcher) {
-        if (this.isCurrent(generation) && isExactActiveRTerminal(terminal)) {
+        if (this.isCurrent(generation) && isEligibleAutomaticAttachment(request)) {
           this.replaceSnapshot(watcherFallbackSnapshot(terminal));
         }
         return;
@@ -904,9 +979,9 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       }
     } finally {
       this.automaticAttachmentRunning = false;
-      const queued = this.automaticAttachmentQueuedTerminal;
-      this.automaticAttachmentQueuedTerminal = undefined;
-      if (queued) this.scheduleAutomaticAttachment(queued);
+      const queued = this.automaticAttachmentQueuedRequest;
+      this.automaticAttachmentQueuedRequest = undefined;
+      if (queued) this.scheduleAutomaticAttachment(queued.terminal, queued);
     }
   }
 
@@ -917,7 +992,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
 
   private cancelAutomaticAttachment(): void {
     this.cancelAutomaticAttachmentTimer();
-    this.automaticAttachmentQueuedTerminal = undefined;
+    this.automaticAttachmentQueuedRequest = undefined;
   }
 
   private replaceSnapshot(snapshot: RLiveVariableSnapshot): void {
@@ -1043,16 +1118,26 @@ function isOfficialRTerminal(terminal: vscode.Terminal | undefined): terminal is
 }
 
 function isExactActiveRTerminal(terminal: vscode.Terminal | undefined): terminal is vscode.Terminal {
-  return Boolean(
-    terminal &&
-    vscode.window.activeTerminal === terminal &&
-    vscode.window.terminals.includes(terminal) &&
-    isOfficialRTerminal(terminal)
+  return Boolean(terminal && vscode.window.activeTerminal === terminal && isLiveOfficialRTerminal(terminal));
+}
+
+function isLiveOfficialRTerminal(terminal: vscode.Terminal | undefined): terminal is vscode.Terminal {
+  return Boolean(terminal && vscode.window.terminals.includes(terminal) && isOfficialRTerminal(terminal));
+}
+
+function isEligibleAutomaticAttachment(request: AutomaticAttachmentRequest): boolean {
+  if (!isLiveOfficialRTerminal(request.terminal)) return false;
+  const activeTerminal = vscode.window.activeTerminal;
+  return (
+    activeTerminal === request.terminal ||
+    (request.allowBackground && (!activeTerminal || !isOfficialRTerminal(activeTerminal)))
   );
 }
 
 function isCurrentLiterateRSession(session: LiterateRSessionIdentity): boolean {
-  return isExactActiveRTerminal(session.terminal);
+  if (!isLiveOfficialRTerminal(session.terminal)) return false;
+  const activeTerminal = vscode.window.activeTerminal;
+  return !activeTerminal || !isOfficialRTerminal(activeTerminal) || activeTerminal === session.terminal;
 }
 
 function isLiterateDocumentResource(resource: unknown): boolean {
