@@ -297,6 +297,73 @@ describe("executed notebook cell result action", () => {
     tracker.dispose();
   });
 
+  it("rechecks the selected kernel when it was not available at execution start", async () => {
+    const document = notebook("file:///late-selected-kernel.ipynb");
+    const cell = codeCell(document, 1);
+    setCells(document, [cell]);
+    const binding = testBinding();
+    mocks.bindings.push(binding);
+    mocks.observe.mockResolvedValueOnce(undefined).mockResolvedValueOnce(binding);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(cell) as never);
+    await settleInspection();
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    await settleInspection();
+
+    expect(mocks.observe).toHaveBeenCalledTimes(2);
+    expect(mocks.inspect).toHaveBeenCalledWith(document, 1, "a".repeat(64), binding);
+    expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+    tracker.dispose();
+  });
+
+  it("checks the selected kernel when the first observed event already contains the result", async () => {
+    const document = notebook("file:///completion-only-first-result.ipynb");
+    const cell = codeCell(document, 1);
+    setCells(document, [cell]);
+    const binding = testBinding();
+    mocks.bindings.push(binding);
+    mocks.observe.mockResolvedValueOnce(binding);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionEvent(cell) as never);
+    await settleInspection();
+
+    expect(mocks.observe).toHaveBeenCalledOnce();
+    expect(mocks.inspect).toHaveBeenCalledWith(document, 1, "a".repeat(64), binding);
+    expect(notebookCellResultStatusItem(cell, tracker)).toBeDefined();
+    tracker.dispose();
+  });
+
+  it("discards a completion-time kernel lookup after a newer execution starts", async () => {
+    const document = notebook("file:///superseded-completion-lookup.ipynb");
+    const firstCell = codeCell(document, 1);
+    const newerCell = codeCell(document, 2);
+    setCells(document, [firstCell, newerCell]);
+    const lateObservation = deferred<ReturnType<typeof testBinding> | undefined>();
+    const lateBinding = testBinding();
+    mocks.observe.mockResolvedValueOnce(undefined).mockReturnValueOnce(lateObservation.promise);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(firstCell) as never);
+    await settleInspection();
+    tracker.recordDocumentChange(executionEvent(firstCell) as never);
+    await settleInspection();
+    expect(mocks.observe).toHaveBeenCalledTimes(2);
+
+    tracker.recordDocumentChange(executionStartedEvent(newerCell) as never);
+    lateObservation.resolve(lateBinding);
+    await settleInspection();
+
+    expect(mocks.inspect).not.toHaveBeenCalled();
+    expect(lateBinding.isGenerationValid()).toBe(false);
+    expect(notebookCellResultStatusItem(firstCell, tracker)).toBeUndefined();
+    tracker.dispose();
+  });
+
   it("recognizes an execute_result output when Jupyter leaves success unspecified", async () => {
     const document = notebook("file:///unspecified-success.ipynb");
     const cell = codeCell(document, 1);

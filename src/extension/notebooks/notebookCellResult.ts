@@ -13,10 +13,12 @@ import {
   observeExecutedNotebookCellResultKernel,
   shouldRegisterNotebookFormatters
 } from "./kernelBridge";
+import { withKernelTimeout } from "./kernelLifecycle";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 
 const OPEN_NOTEBOOK_CELL_RESULT_COMMAND = "openWrangler.openNotebookCellResult";
 const NOTEBOOK_RESULT_OUTPUT_GRACE_MS = 10_000;
+const NOTEBOOK_RESULT_KERNEL_LOOKUP_TIMEOUT_MS = 10_000;
 
 export function registerNotebookCellResultAction(
   context: vscode.ExtensionContext,
@@ -182,7 +184,7 @@ interface PendingCellInspection {
   readonly notebook: vscode.NotebookDocument;
   readonly executionOrder: number;
   readonly sourceFingerprint: string;
-  readonly observation: PendingKernelObservation;
+  readonly observation?: PendingKernelObservation;
   activeBinding?: ObservedNotebookCellResultKernel;
 }
 
@@ -270,7 +272,6 @@ export class NotebookCellResultTracker implements vscode.Disposable {
             sourceFingerprint
           );
           changed = this.forgetCell(state, change.cell) || changed;
-          if (!observation) continue;
           this.inspectCellResult(state, change.cell, {
             notebook: event.notebook,
             executionOrder,
@@ -377,11 +378,25 @@ export class NotebookCellResultTracker implements vscode.Disposable {
   ): void {
     state.trackedCells.add(cell);
     this.pendingCells.set(cell, pending);
-    void pending.observation.completion
+    void (pending.observation?.completion ?? Promise.resolve(undefined))
       .then(async (observed) => {
+        if (!observed) {
+          if (
+            !this.started ||
+            this.pendingCells.get(cell) !== pending ||
+            !this.matchesPendingCell(state, cell, pending)
+          ) {
+            return undefined;
+          }
+          observed = await observeCompletionKernel(pending.notebook);
+        }
         if (!observed) return undefined;
         pending.activeBinding = observed;
-        if (!this.started || this.pendingCells.get(cell) !== pending || !this.matchesPendingCell(cell, pending)) {
+        if (
+          !this.started ||
+          this.pendingCells.get(cell) !== pending ||
+          !this.matchesPendingCell(state, cell, pending)
+        ) {
           observed.dispose();
           return undefined;
         }
@@ -394,7 +409,11 @@ export class NotebookCellResultTracker implements vscode.Disposable {
       })
       .then(
         (binding) => {
-          if (!this.started || this.pendingCells.get(cell) !== pending || !this.matchesPendingCell(cell, pending)) {
+          if (
+            !this.started ||
+            this.pendingCells.get(cell) !== pending ||
+            !this.matchesPendingCell(state, cell, pending)
+          ) {
             binding?.dispose();
             return;
           }
@@ -425,8 +444,13 @@ export class NotebookCellResultTracker implements vscode.Disposable {
       );
   }
 
-  private matchesPendingCell(cell: vscode.NotebookCell, pending: PendingCellInspection): boolean {
+  private matchesPendingCell(
+    state: NotebookExecutionState,
+    cell: vscode.NotebookCell,
+    pending: PendingCellInspection
+  ): boolean {
     return (
+      state.maxExecutionOrder === pending.executionOrder &&
       cell.notebook === pending.notebook &&
       isExecutedPythonResult(cell) &&
       hasExecuteResultOutput(cell) &&
@@ -604,6 +628,27 @@ function matchesKernelObservation(
     pending.sourceFingerprint === sourceFingerprint &&
     (pending.executionOrder === undefined || pending.executionOrder === executionOrder)
   );
+}
+
+async function observeCompletionKernel(
+  notebook: vscode.NotebookDocument
+): Promise<ObservedNotebookCellResultKernel | undefined> {
+  const operation = observeExecutedNotebookCellResultKernel(notebook);
+  let detached = false;
+  try {
+    return await withKernelTimeout(operation, NOTEBOOK_RESULT_KERNEL_LOOKUP_TIMEOUT_MS, () => {
+      detached = true;
+    });
+  } catch {
+    return undefined;
+  } finally {
+    if (detached) {
+      void operation.then(
+        (binding) => binding?.dispose(),
+        () => undefined
+      );
+    }
+  }
 }
 
 function isSupportedNotebook(notebook: vscode.NotebookDocument): boolean {
