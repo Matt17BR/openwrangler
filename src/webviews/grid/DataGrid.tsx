@@ -2175,19 +2175,40 @@ function MiniChart({
     const total = Math.max(1, visualization.trueCount + visualization.falseCount);
     const trueDescription = describeProfileValue("True", visualization.trueCount, denominator);
     const falseDescription = describeProfileValue("False", visualization.falseCount, denominator);
+    const values = [
+      { label: "True", value: true, count: visualization.trueCount, description: trueDescription },
+      { label: "False", value: false, count: visualization.falseCount, description: falseDescription }
+    ] as const;
     return (
       <span
-        className="booleanMiniChart"
-        role="img"
+        className={`booleanMiniChart${onApplyFilter ? " interactive" : ""}`}
+        role={onApplyFilter ? "group" : "img"}
         aria-label={`${visualization.sampled ? "Sampled " : ""}boolean distribution: ${trueDescription}, ${falseDescription}.`}
       >
         <span className="miniChartLegend">
-          <span title={trueDescription}>
-            True {formatProfileValue(visualization.trueCount, denominator, valueMode)}
-          </span>
-          <span title={falseDescription}>
-            False {formatProfileValue(visualization.falseCount, denominator, valueMode)}
-          </span>
+          {values.map((item) => {
+            const contents = (
+              <>
+                {item.label} {formatProfileValue(item.count, denominator, valueMode)}
+              </>
+            );
+            return onApplyFilter ? (
+              <button
+                type="button"
+                className="booleanMiniValue"
+                key={item.label}
+                aria-label={`Filter ${column.name} to ${item.label}; ${item.description}`}
+                title={`Filter ${column.name} to ${item.label} · ${item.description}`}
+                onClick={() => onApplyFilter(viewValueSelectionFilter(column, item.value))}
+              >
+                {contents}
+              </button>
+            ) : (
+              <span key={item.label} title={item.description}>
+                {contents}
+              </span>
+            );
+          })}
         </span>
         <span className="stackedMiniChart" aria-hidden="true">
           <i style={{ width: `${(visualization.trueCount / total) * 100}%` }} />

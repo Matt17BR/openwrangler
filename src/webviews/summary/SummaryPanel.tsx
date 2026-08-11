@@ -279,7 +279,13 @@ function SelectedColumnSummary({
                 mode={profileValueMode}
               />
             )}
-            <TypeSpecificStats summary={summary} mode={profileValueMode} />
+            <TypeSpecificStats
+              summary={summary}
+              mode={profileValueMode}
+              onSelectBoolean={
+                canFilter ? (value) => applyProfileFilter(viewValueSelectionFilter(schema, value)) : undefined
+              }
+            />
           </dl>
 
           {numericVisualization && (
@@ -318,7 +324,15 @@ function SelectedColumnSummary({
   );
 }
 
-function TypeSpecificStats({ summary, mode }: { summary: ColumnSummary; mode: ProfileValueMode }) {
+function TypeSpecificStats({
+  summary,
+  mode,
+  onSelectBoolean
+}: {
+  summary: ColumnSummary;
+  mode: ProfileValueMode;
+  onSelectBoolean?: (value: boolean) => void;
+}) {
   const distributionDenominator = profileDistributionDenominator(summary);
   if (summary.text) {
     return (
@@ -385,6 +399,7 @@ function TypeSpecificStats({ summary, mode }: { summary: ColumnSummary; mode: Pr
           value={summary.visualization.trueCount}
           denominator={distributionDenominator}
           mode={mode}
+          onSelect={onSelectBoolean ? () => onSelectBoolean(true) : undefined}
         />
         <dt>False</dt>
         <ProfileCountValue
@@ -392,6 +407,7 @@ function TypeSpecificStats({ summary, mode }: { summary: ColumnSummary; mode: Pr
           value={summary.visualization.falseCount}
           denominator={distributionDenominator}
           mode={mode}
+          onSelect={onSelectBoolean ? () => onSelectBoolean(false) : undefined}
         />
       </>
     );
@@ -418,14 +434,31 @@ function ProfileCountValue({
   label,
   value,
   denominator,
-  mode
+  mode,
+  onSelect
 }: {
   label: string;
   value: number;
   denominator: number;
   mode: ProfileValueMode;
+  onSelect?: () => void;
 }) {
   const description = describeProfileValue(label, value, denominator);
+  if (onSelect) {
+    return (
+      <dd title={description}>
+        <button
+          type="button"
+          className="profileStatFilter"
+          aria-label={`Filter to ${label}; ${description}`}
+          title={`Filter to ${label} · ${description}`}
+          onClick={onSelect}
+        >
+          {formatProfileValue(value, denominator, mode)}
+        </button>
+      </dd>
+    );
+  }
   return (
     <dd title={description} aria-label={description}>
       {formatProfileValue(value, denominator, mode)}
