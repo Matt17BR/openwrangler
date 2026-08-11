@@ -4089,6 +4089,7 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
     let filterForTarget = false;
     let targetSelected = false;
     let consentAccepted = false;
+    let pickerStage: "not-seen" | "visible" | "route-found" | "target-found" = "not-seen";
     let observedPythonInvocation = initialPythonInvocation;
     let lastPythonStage: PythonInteractiveDiagnostics["lastActiveStage"];
     do {
@@ -4148,8 +4149,13 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
         await workbench.waitForTimeout(100);
         continue;
       }
+      if (pickerStage === "not-seen") {
+        pickerStage = "visible";
+        recordAcceptanceProgress(`${checkpoint}:kernel-picker-visible`);
+      }
       const kernel = await releasedJupyterQuickPickRow(picker, target.label);
       if (kernel) {
+        pickerStage = "target-found";
         if (!targetSelected) {
           recordAcceptanceProgress(`${checkpoint}:kernel-picker-target`);
           await kernel.click();
@@ -4172,6 +4178,7 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
         if (traversed.has(label)) continue;
         const row = await releasedJupyterQuickPickRow(picker, label);
         if (!row) continue;
+        if (pickerStage !== "target-found") pickerStage = "route-found";
         traversed.add(label);
         recordAcceptanceProgress(`${checkpoint}:kernel-picker-route`);
         await row.click();
@@ -4182,7 +4189,10 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
       await workbench.waitForTimeout(advanced ? 100 : 50);
     } while (Date.now() < deadline);
 
-    assert.ok(interactive, "The Python Quarto action must create one exact Interactive Window.");
+    assert.ok(
+      interactive,
+      `The Python Quarto action must create one exact Interactive Window (picker: ${pickerStage}).`
+    );
     const active = testing.activeSession();
     if (
       !active ||
@@ -4192,6 +4202,7 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
     ) {
       throw new Error(
         "The Python Quarto action did not open its Pandas dataframe. " +
+          `Kernel picker: ${pickerStage}. ` +
           `Python Interactive: ${JSON.stringify(testing.pythonInteractiveDiagnostics())}. ` +
           `Coordinator: ${JSON.stringify(testing.diagnostics())}. ` +
           `Quick Input: ${JSON.stringify(await releasedJupyterQuickInputDiagnostics(workbench))}. ` +
