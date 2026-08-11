@@ -197,6 +197,23 @@ describe("executed notebook cell result action", () => {
     expect(await trackedStatusItem(codeCell(document, 4, [output("DataFrame[id: bigint]")]))).toBeDefined();
   });
 
+  it("publishes an eligible status item without waiting for another kernel lookup", async () => {
+    const document = notebook("file:///synchronous-status-item.ipynb");
+    const cell = codeCell(document, 4);
+    setCells(document, [cell]);
+    const tracker = new NotebookCellResultTracker();
+    registerNotebookCellResultAction({ subscriptions: [] } as unknown as ExtensionContext, coordinator(), tracker);
+    await recordExecutionAndWait(cell);
+    mocks.kernelCurrent.mockImplementation(() => new Promise<boolean>(() => undefined));
+
+    const provided = mocks.providers[0]?.provider.provideCellStatusBarItems(cell, {} as never);
+
+    expect(provided).toMatchObject({ text: "$(open-preview) Open in Open Wrangler" });
+    expect(provided).not.toBeInstanceOf(Promise);
+    expect(mocks.kernelCurrent).not.toHaveBeenCalled();
+    tracker.dispose();
+  });
+
   it("opens the exact executed result without consulting another active notebook", async () => {
     const document = notebook("file:///origin.ipynb");
     const cell = codeCell(document, 8);
@@ -242,7 +259,7 @@ describe("executed notebook cell result action", () => {
 
     expect(mocks.notebookChanges).toHaveLength(1);
     expect(mocks.notebookCloses).toHaveLength(1);
-    await expect(mocks.providers[0]?.provider.provideCellStatusBarItems(cell, {} as never)).resolves.toBeDefined();
+    expect(mocks.providers[0]?.provider.provideCellStatusBarItems(cell, {} as never)).toBeDefined();
     await command()(cell);
     expect(mocks.capture).toHaveBeenCalledWith(1, "a".repeat(64), mocks.bindings[0]);
     expect(mocks.createPanel).toHaveBeenCalledOnce();
@@ -578,10 +595,10 @@ describe("executed notebook cell result action", () => {
     mocks.visibleEditors.push({ notebook: document } as NotebookEditor);
     registerNotebookCellResultAction({ subscriptions: [] } as unknown as ExtensionContext, coordinator());
     await recordExecutionAndWait(oldCell);
-    await expect(mocks.providers[0]?.provider.provideCellStatusBarItems(oldCell, {} as never)).resolves.toBeDefined();
+    expect(mocks.providers[0]?.provider.provideCellStatusBarItems(oldCell, {} as never)).toBeDefined();
 
     await recordExecutionAndWait(newCell);
-    await expect(mocks.providers[0]?.provider.provideCellStatusBarItems(newCell, {} as never)).resolves.toBeDefined();
+    expect(mocks.providers[0]?.provider.provideCellStatusBarItems(newCell, {} as never)).toBeDefined();
     await command()(oldCell);
 
     expect(mocks.capture).not.toHaveBeenCalled();
