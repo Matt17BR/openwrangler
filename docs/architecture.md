@@ -49,7 +49,10 @@ version, URI, view column, and every selection before command activation can awa
 identifies the one chunk that owns the primary cursor, including ordinary labels and `#|` options. Quarto accepts
 backtick and tilde fences; R Markdown accepts backtick fences. Python ownership follows the document executor rather
 than the fence label alone: R Markdown and knitr/reticulate Quarto cells stay in the exact selected R terminal, while
-Jupyter Quarto cells stay pinned to the exact new Interactive Window cell associated with the source URI. Explicit
+Jupyter Quarto cells stay pinned to the exact new Interactive Window cell whose source URI matches the captured
+document and whose source line maps to the captured Python chunk. Later reuse maps that source line against the
+current, unchanged document and a supported Python chunk. Both paths require Jupyter/Python kernel ownership; an
+Interactive cell may report `languageId: quarto`, so its language ID alone does not establish the engine. Explicit
 `engine`, `knitr`, and `jupyter` metadata and Quarto's R-cell inference are recognized; the bounded YAML parser rejects
 aliases, duplicate or case-variant ownership keys, and conflicting or unsupported metadata. Display math, raw TeX,
 raw HTML, and comments are opaque to chunk lookup. After resolving the chunk, Open Wrangler checks the required

@@ -102,18 +102,19 @@ non-missing values only for expensive histograms and categorical distributions. 
 exact; duplicate-row detection publishes the sample size when its deterministic sample is bounded below the visible
 row count. Sampling uses a private fixed seed, restores the user's R random state, and avoids fixed intervals that can
 lock onto periodic data. Opening Filters discovers values from at most 100,000 sampled rows and publishes that sample
-size. A non-empty value search is a separate exact scan with the existing 1,000,000-row/5,000,000-cell bound. These
-memory bounds do not imply that IRkernel can interrupt work already dispatched to the user's kernel.
+size. A non-empty value search scans the column exactly in bounded chunks, with no separate dataframe row or cell
+limit. It fails recoverably after 10,000 distinct matches or 16 MiB of matching key text and asks for a narrower
+term. These memory bounds do not imply that IRkernel can interrupt work already dispatched to the user's kernel.
 
 Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
 Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Min-max scale, Round, Floor, and Ceiling. The first draft takes an isolated original: base data
-frames and tibbles use R serialization, while data tables use `data.table::copy()`. The runtime keeps committed and draft results separate,
-resolves every target by stable ID and captured name, and advances the session revision for preview, apply, discard,
-latest-step replacement, and undo. Applied-step inspection replays only the selected plan prefix. The kernel returns
-its code, input page, and output page separately, so two large pages are never forced into one response. Page
-responses omit schemas; the host restores the exact schemas it retained for that plan step before publishing the
-inspection.
+Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate. The first draft takes
+an isolated original: base data frames and tibbles use R serialization, while data tables use `data.table::copy()`.
+The runtime keeps committed and draft results separate, resolves every target by stable ID and captured name, and
+advances the session revision for preview, apply, discard, latest-step replacement, and undo. Applied-step inspection
+replays only the selected plan prefix. The kernel returns its code, input page, and output page separately, so two
+large pages are never forced into one response. Page responses omit schemas; the host restores the exact schemas it
+retained for that plan step before publishing the inspection.
 
 Filter Rows and Sort Rows use the same typed rules as the read-only view, but become explicit cleaning steps only
 when the user creates a draft. Each source row has a private stable identity that survives filtering, sorting, plan

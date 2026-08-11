@@ -222,8 +222,9 @@ without changing a decoy editor or either source file on disk.
 The same VS Code acceptance phase includes realistic `.Rmd` and `.qmd` fixtures with first-line YAML, ignored prose, a
 relative CSV read, native editing, and a generated fenced R cell. Its Quarto title-action journey pins the cursor in
 the exact R chunk, verifies the Quarto and R integrations, and evaluates only that cell in the captured R terminal;
-R Markdown retains the
-explicit owned-process journey. Focused mixed-language routing tests cover explicit Jupyter and implicit/explicit
+R Markdown retains the explicit owned-process journey. A focused packaged Linux run at `a64ce66` also passes the
+Jupyter/Python Quarto title action in VS Code 1.132.0: it runs only the selected chunk, opens its live Pandas frame,
+and leaves the later Python chunk untouched. Focused mixed-language routing tests cover explicit Jupyter and implicit/explicit
 knitr ownership, reticulate R Markdown Python, labels, `#|` options, Quarto tilde fences, R Markdown backtick fences,
 integration preflight ordering, strict YAML ownership metadata, opaque-container fences, exact cursor/terminal
 staleness, and explicit choice when both associated sessions exist. The
@@ -255,7 +256,7 @@ substitute a smaller R smoke test.
 | Base `data.frame`, tibble, and `data.table`   | 1.99 preview                    | Partial | Native discovery, paging, queries, and profile tests                                                                                 | Preview release |
 | Exact IRkernel session transport              | 1.99 preview                    | Done    | Linux local VS Code/Cursor and remote VS Code; macOS/Windows VS Code gate                                                            | Preview release |
 | Exact active R-terminal transport             | 1.99 preview                    | Partial | Zero-command vscode-R hints, explicit PID-checked bootstrap, native callback and cleanup tests; packaged journey pending             | Preview release |
-| Cursor-owned `.Rmd` and `.qmd` R/Python chunk | 1.99 preview                    | Partial | Executor-aware mixed-fence, exact-origin/terminal tests; packaged Quarto/R title-action run                                          | Preview release |
+| Cursor-owned `.Rmd` and `.qmd` R/Python chunk | 1.99 preview                    | Partial | Executor-aware mixed-fence and exact-origin tests; packaged VS Code 1.132.0 R/Python Quarto title actions                            | Preview release |
 | Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                              | Preview release |
 | Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser and real-R contracts; local Linux/macOS VS Code installed run                                                                 | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                                | Preview release |
@@ -266,7 +267,7 @@ substitute a smaller R smoke test.
 | Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview                    | Partial | Exact-document tests and packaged VS Code run                                                                                        | Preview release |
 | Cleaned-data export                           | R notebook/document CSV/Parquet | Partial | Native writers, bounded transfer, atomic save, installed notebook/document run                                                       | Preview release |
 | Active R-terminal cleaned-data export         | 1.99 preview                    | Partial | Native writer and atomic-save tests; packaged VS Code/Cursor journey pending                                                         | Preview release |
-| Quarto and R Markdown lexical R-cell run      | 1.99 preview                    | Partial | Parser, owned process, and packaged VS Code run                                                                                      | Preview release |
+| Quarto and R Markdown lexical R-cell run      | 1.99 preview                    | Partial | Parser and owned process; packaged VS Code 1.132.0 R Markdown and R/Python Quarto journeys                                           | Preview release |
 
 ## DuckDB file-backed preview matrix
 
