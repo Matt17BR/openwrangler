@@ -532,7 +532,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Column search covers the full schema and includes data-type icons/u);
   assert.match(
     readme,
-    /Switch between counts and percentages from the grid or column panel\. Hover or focus a bin for both values/u
+    /Switch between counts and percentages from the grid or column panel\. Hover or focus a bin for both, or click a value or bin to filter\./u
   );
   assert.match(readme, /Add multiple sort keys, then reorder them or change direction and null placement/u);
   assert.match(readme, /Choose from 28 operations/u);
