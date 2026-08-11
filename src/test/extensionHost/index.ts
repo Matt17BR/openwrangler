@@ -12381,7 +12381,13 @@ async function exerciseFormatterDisabledFirstNotebookResult(
     WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
     "the formatter-disabled Pandas result cell to become visible again after kernel consent"
   );
-  const action = await waitForReleasedNotebookCellResultAction(workbench, testing);
+  const action = await waitForReleasedNotebookCellResultAction(
+    workbench,
+    testing,
+    notebook,
+    notebookEditor,
+    RELEASED_JUPYTER_FIRST_RESULT_CELL
+  );
   const actionText = (await action.innerText()).replace(/\s+/gu, " ").trim();
   assert.equal(actionText, "Open in Open Wrangler", "The cell status fallback must use the canonical action label.");
   assert.equal(
@@ -12469,15 +12475,29 @@ async function exerciseFormatterDisabledFirstNotebookResult(
   }
 }
 
-async function waitForReleasedNotebookCellResultAction(workbench: Page, testing: TestApi): Promise<Locator> {
+async function waitForReleasedNotebookCellResultAction(
+  workbench: Page,
+  testing: TestApi,
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  cellIndex: number
+): Promise<Locator> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   do {
-    const action = workbench
+    assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, "while locating its first-result action");
+    const overlays = workbench.locator(".notebookOverlay:visible");
+    const overlayCount = await overlays.count().catch(() => 0);
+    assert.ok(overlayCount < 2, "The workbench exposed duplicate visible notebook overlays.");
+    const row = overlays
+      .first()
       .locator(
-        ".part.editor .editor-group-container.active .notebookOverlay " +
-          ".cell-statusbar-container:visible .cell-status-item.cell-status-item-has-command:visible"
-      )
-      .filter({ hasText: /^\s*Open in Open Wrangler\s*$/u });
+        `.cell-list-container .monaco-list-rows > .monaco-list-row.code-cell-row[data-index="${cellIndex}"]:visible`
+      );
+    const rowCount = await row.count().catch(() => 0);
+    assert.ok(rowCount < 2, "The active notebook exposed duplicate rows for the first-result cell.");
+    const action = row.locator(
+      '.cell-statusbar-container:visible .cell-status-item.cell-status-item-has-command[aria-label="Open executed dataframe result in Open Wrangler"]:visible'
+    );
     const actionCount = await action.count().catch(() => 0);
     assert.ok(actionCount < 2, "The active notebook exposed duplicate Open Wrangler result actions.");
     if (actionCount === 1 && (await action.isVisible().catch(() => false))) {
