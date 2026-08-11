@@ -67,8 +67,10 @@ matrix for release candidates or changes that cross all of its boundaries.
   each reject impossible counts. Initial filter-value discovery covers a 4,000,001-row frame through a labeled
   100,000-row sample. A non-empty exact search retains its separate row/cell scan bound and names it as an R value-scan
   diagnostic. The cross-language cases run only when
-  `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix. It
-  also runs the native kernel agent through open, filtered and sorted pages, profiles, dataset statistics, column
+  `OPEN_WRANGLER_R_CONTRACT_TESTS=1`; the command sets it itself. CI owns this command in a focused R 4.4/4.5 matrix.
+  It resolves the explicit package set into a lockfile, restores the matching R-version cache, and then runs the same
+  contract in each matrix cell. The contract also runs the native kernel agent through open, filtered and sorted
+  pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
   Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor,
   Ceiling, and Group and aggregate lifecycles, variable replacement, native CSV export, malformed requests, and close
