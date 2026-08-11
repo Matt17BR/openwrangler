@@ -567,6 +567,34 @@ describe("executed notebook cell result action", () => {
     );
   });
 
+  it("tracks execution-order resets from output-only completion events", async () => {
+    const document = notebook("file:///output-only-reset.ipynb");
+    const oldCell = codeCell(document, 7);
+    const newCell = codeCell(document, 1);
+    for (const cell of [oldCell, newCell]) {
+      Object.defineProperty(cell, "executionSummary", {
+        configurable: true,
+        value: { executionOrder: cell.executionSummary?.executionOrder, success: undefined }
+      });
+    }
+    setCells(document, [oldCell, newCell]);
+    const tracker = new NotebookCellResultTracker();
+    tracker.start();
+
+    tracker.recordDocumentChange(executionStartedEvent(oldCell, 7) as never);
+    tracker.recordDocumentChange(outputOnlyEvent(oldCell) as never);
+    await settleInspection();
+    expect(notebookCellResultStatusItem(oldCell, tracker)).toBeDefined();
+
+    tracker.recordDocumentChange(executionStartedEvent(newCell, 1) as never);
+    tracker.recordDocumentChange(outputOnlyEvent(newCell) as never);
+    await settleInspection();
+
+    expect(notebookCellResultStatusItem(newCell, tracker)).toBeDefined();
+    expect(notebookCellResultStatusItem(oldCell, tracker)).toBeUndefined();
+    tracker.dispose();
+  });
+
   it("rejects an edited cell instead of using its old execution result", async () => {
     const document = notebook();
     const cell = codeCell(document, 2);
@@ -655,6 +683,23 @@ function executionEvent(cell: NotebookCell): unknown {
         metadata: undefined,
         outputs: cell.outputs,
         executionSummary: cell.executionSummary
+      }
+    ]
+  };
+}
+
+function outputOnlyEvent(cell: NotebookCell): unknown {
+  return {
+    notebook: cell.notebook,
+    metadata: undefined,
+    contentChanges: [],
+    cellChanges: [
+      {
+        cell,
+        document: undefined,
+        metadata: undefined,
+        outputs: cell.outputs,
+        executionSummary: undefined
       }
     ]
   };
