@@ -11,6 +11,9 @@ const notebookMocks = vi.hoisted(() => ({
   notebookDocuments: [] as NotebookDocument[],
   activeNotebookEditor: undefined as NotebookEditor | undefined,
   activeTabInput: undefined as unknown,
+  activeTabIsActive: true,
+  activeTabGroupIsActive: true,
+  activeTabGroupViewColumn: 1,
   activeEditorReads: 0,
   showWarningMessage: vi.fn(async () => undefined),
   showInformationMessage: vi.fn(async () => undefined),
@@ -170,8 +173,16 @@ vi.mock("vscode", () => {
       },
       tabGroups: {
         activeTabGroup: {
+          get isActive() {
+            return notebookMocks.activeTabGroupIsActive;
+          },
+          get viewColumn() {
+            return notebookMocks.activeTabGroupViewColumn;
+          },
           get activeTab() {
-            return notebookMocks.activeTabInput === undefined ? undefined : { input: notebookMocks.activeTabInput };
+            return notebookMocks.activeTabInput === undefined
+              ? undefined
+              : { input: notebookMocks.activeTabInput, isActive: notebookMocks.activeTabIsActive };
           }
         }
       },
@@ -248,6 +259,9 @@ describe("notebook command provenance", () => {
     notebookMocks.notebookDocuments.length = 0;
     notebookMocks.activeNotebookEditor = undefined;
     notebookMocks.activeTabInput = undefined;
+    notebookMocks.activeTabIsActive = true;
+    notebookMocks.activeTabGroupIsActive = true;
+    notebookMocks.activeTabGroupViewColumn = 1;
     notebookMocks.activeEditorReads = 0;
     notebookMocks.showWarningMessage.mockClear();
     notebookMocks.showInformationMessage.mockClear();
@@ -815,6 +829,36 @@ describe("notebook command provenance", () => {
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
     notebookMocks.activeTabInput = { uri: vscode.Uri.parse("file:///workspace/source.py") };
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    );
+  });
+
+  it("accepts the exact active Interactive editor behind its opaque composite tab", async () => {
+    const original = notebook("untitled:/Interactive-1.interactive", "interactive");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.activeTabInput = { interactive: true };
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showQuickPick).toHaveBeenCalledOnce();
+    expect(notebookMocks.kernelOrigins).toEqual([{ uri: original.uri.toString(), document: original }]);
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+  });
+
+  it("rejects an opaque Interactive tab outside the active editor group", async () => {
+    const original = notebook("untitled:/Interactive-1.interactive", "interactive");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original, 2);
+    notebookMocks.activeTabInput = { interactive: true };
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")();
@@ -1861,8 +1905,8 @@ function closeNotebook(document: NotebookDocument): void {
   Object.defineProperty(document, "isClosed", { configurable: true, value: true });
 }
 
-function editor(document: NotebookDocument): NotebookEditor {
-  return { notebook: document } as NotebookEditor;
+function editor(document: NotebookDocument, viewColumn = 1): NotebookEditor {
+  return { notebook: document, viewColumn } as NotebookEditor;
 }
 
 function serializedFileUri(path: string): Record<string, unknown> {
