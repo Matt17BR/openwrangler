@@ -4210,7 +4210,7 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
       );
     }
     assertExactOpenNotebookDocument(interactive, "after the Python Quarto action opened its dataframe");
-    assert.equal(active.metadata.mode, "editing");
+    assert.equal(active.metadata.mode, "viewing", "Live Quarto notebook variables must honor notebookStartMode.");
     assert.deepEqual(active.metadata.shape, { rows: 3, columns: 3 });
     assert.deepEqual(
       active.metadata.schema.map((column) => column.name),
