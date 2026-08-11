@@ -820,8 +820,9 @@ export async function run(): Promise<void> {
     `${notebookVariableWhen} && config.notebook.globalToolbar == true && ` +
     "!openWrangler.forceNotebookEditorTitleAction";
   const notebookVariableWhenCompact =
-    `${notebookVariableWhen} && ` +
-    "(config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)";
+    "isWorkspaceTrusted && ((notebookType == 'jupyter-notebook' && " +
+    "(config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)) || " +
+    "(activeEditor == workbench.editor.interactive && openWrangler.forceNotebookEditorTitleAction))";
   for (const [menu, when] of [
     ["editor/title", notebookVariableWhenCompact],
     ["notebook/toolbar", notebookVariableToolbarWhen]
@@ -842,7 +843,7 @@ export async function run(): Promise<void> {
   assert.deepEqual(interactiveEntries, [
     {
       command: "openWrangler.openNotebookVariable",
-      when: "isWorkspaceTrusted",
+      when: "isWorkspaceTrusted && !openWrangler.forceNotebookEditorTitleAction",
       group: "navigation@2"
     }
   ]);
@@ -14702,7 +14703,7 @@ async function activateReleasedNotebookVariableAction(
     );
   }
   const prepared =
-    notebook.notebookType !== "interactive" && (cursorHost || globalToolbar !== true)
+    cursorHost || (notebook.notebookType !== "interactive" && globalToolbar !== true)
       ? await resolveReleasedNotebookEditorTitleAction(workbench)
       : await resolveReleasedNotebookToolbarAction(workbench);
   let dispatchStarted = false;
