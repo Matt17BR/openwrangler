@@ -3580,13 +3580,18 @@ assert_identical(
   openwrangler_r_frame_contract$limits$profileSampleRows,
   "large initial value discovery counted outside its sample"
 )
-assert_error(
-  openwrangler_r_frame_contract$materialize_column_values(
-    too_tall_capture,
-    profile_reference(too_tall_capture, 1L),
-    search = "FALSE"
-  ),
-  "exact native R value-scan limit"
+too_tall_search <- openwrangler_r_frame_contract$materialize_column_values(
+  too_tall_capture,
+  profile_reference(too_tall_capture, 1L),
+  search = "false"
+)
+assert_true(is.null(too_tall_search$sampleSize), "an explicit large value search was labeled as sampled")
+assert_identical(too_tall_search$hasMore, FALSE, "a complete large value search claimed truncation")
+assert_identical(too_tall_search$values[[1L]]$value, "FALSE", "large exact value search changed its match")
+assert_identical(
+  too_tall_search$values[[1L]]$count,
+  former_row_limit,
+  "large exact value search did not count every matching row"
 )
 
 large_value_row_count <- 4000001L
