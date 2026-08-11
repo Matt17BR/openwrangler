@@ -154,6 +154,7 @@ import * as vscode from "vscode";
 import {
   registerPythonInteractiveCommands,
   type LiteratePythonVariableProvider,
+  type PythonInteractiveCommandProvider,
   type NotebookLiveVariableProvider
 } from "../extension/notebooks/pythonInteractiveCommands";
 
@@ -233,6 +234,52 @@ describe("Python Interactive Window entry points", () => {
     expect(pythonMocks.discover).toHaveBeenCalledWith(interactive.document);
     expect(pythonMocks.openVariable).toHaveBeenCalledWith(context, coordinator, interactive.document, frame);
     expect(pythonMocks.showQuickPick).not.toHaveBeenCalled();
+  });
+
+  it("starts a bounded diagnostic history for each test invocation", async () => {
+    const previousExtensionTests = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+    try {
+      const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
+      pythonMocks.textDocuments.push(source);
+      pythonMocks.activeTextEditor = textEditor(source, 1);
+      const interactive = notebook("untitled:/Interactive-diagnostics.interactive", "interactive", []);
+      let invocation = 0;
+      pythonMocks.executeCommand.mockImplementation(async (id: string) => {
+        if (id !== "jupyter.runcurrentcell") return undefined;
+        invocation += 1;
+        const cell = interactiveCell(interactive.document, source.uri.toString(), 0, `run-${invocation}`, true);
+        interactive.cells.push(cell);
+        if (!pythonMocks.notebookDocuments.includes(interactive.document)) {
+          pythonMocks.notebookDocuments.push(interactive.document);
+          fire(pythonMocks.openNotebookListeners, interactive.document);
+        }
+        fire(pythonMocks.changeNotebookListeners, {
+          notebook: interactive.document,
+          cellChanges: [{ cell, executionSummary: cell.executionSummary }],
+          contentChanges: []
+        } as unknown as NotebookDocumentChangeEvent);
+        return undefined;
+      });
+      pythonMocks.discover.mockResolvedValue({ variables: [pandasFrame("frame")], truncated: false });
+
+      await command("openWrangler.runPythonCellAndOpenVariable")();
+      expect(diagnosticProvider(provider).diagnosticsForTesting()).toMatchObject({
+        invocation: 1,
+        stage: "complete",
+        lastActiveStage: "opening-variable"
+      });
+
+      await command("openWrangler.runPythonCellAndOpenVariable")();
+      const diagnostics = diagnosticProvider(provider).diagnosticsForTesting();
+      expect(diagnostics).toMatchObject({ invocation: 2, stage: "complete", lastActiveStage: "opening-variable" });
+      expect(diagnostics?.stages[0]).toBe("dispatching-cell");
+      expect(diagnostics?.stages.at(-1)).toBe("complete");
+      expect(diagnostics?.stages.length).toBeLessThanOrEqual(16);
+    } finally {
+      if (previousExtensionTests === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+      else process.env.OPEN_WRANGLER_EXTENSION_TESTS = previousExtensionTests;
+    }
   });
 
   it("runs the exact cursor-owned Quarto Python chunk through Jupyter", async () => {
@@ -1101,6 +1148,8 @@ describe("Python Interactive Window entry points", () => {
   });
 
   it("bounds a stalled kernel picker without retrying the cell", async () => {
+    const previousExtensionTests = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
     vi.useFakeTimers();
     try {
       const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
@@ -1125,6 +1174,12 @@ describe("Python Interactive Window entry points", () => {
         "jupyter.runcurrentcell",
         "notebook.selectKernel"
       ]);
+      expect(diagnosticProvider(provider).diagnosticsForTesting()).toEqual({
+        invocation: 1,
+        stage: "selecting-kernel",
+        lastActiveStage: "selecting-kernel",
+        stages: ["dispatching-cell", "waiting-for-cell-publication", "opening-interactive-editor", "selecting-kernel"]
+      });
       await vi.advanceTimersByTimeAsync(109_999);
       expect(pythonMocks.showWarningMessage).not.toHaveBeenCalledWith("Kernel selection did not finish in time.");
       await vi.advanceTimersByTimeAsync(1);
@@ -1136,10 +1191,24 @@ describe("Python Interactive Window entry points", () => {
       ]);
       expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith("Kernel selection did not finish in time.");
       expect(pythonMocks.openVariable).not.toHaveBeenCalled();
+      expect(diagnosticProvider(provider).diagnosticsForTesting()).toEqual({
+        invocation: 1,
+        stage: "failed",
+        lastActiveStage: "selecting-kernel",
+        stages: [
+          "dispatching-cell",
+          "waiting-for-cell-publication",
+          "opening-interactive-editor",
+          "selecting-kernel",
+          "failed"
+        ]
+      });
       expect(vi.getTimerCount()).toBe(0);
       expect(notebookListenerCounts()).toEqual(listenerCounts);
     } finally {
       vi.useRealTimers();
+      if (previousExtensionTests === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+      else process.env.OPEN_WRANGLER_EXTENSION_TESTS = previousExtensionTests;
     }
   });
 
@@ -1789,6 +1858,10 @@ function command(id: string): CommandHandler {
 
 function literateProvider(value: NotebookLiveVariableProvider): LiteratePythonVariableProvider {
   return value as NotebookLiveVariableProvider & LiteratePythonVariableProvider;
+}
+
+function diagnosticProvider(value: NotebookLiveVariableProvider): PythonInteractiveCommandProvider {
+  return value as PythonInteractiveCommandProvider;
 }
 
 function literateOrigin(

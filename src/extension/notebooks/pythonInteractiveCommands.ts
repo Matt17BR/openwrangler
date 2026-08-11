@@ -33,6 +33,7 @@ const MAX_INTERACTIVE_CELL_METADATA_TEXT = 64 * 1024;
 const PYTHON_CELL_PUBLICATION_TIMEOUT_MS = 10_000;
 const PYTHON_CELL_POST_KERNEL_PUBLICATION_GRACE_MS = 1_000;
 const PYTHON_CELL_EXECUTION_TIMEOUT_MS = 120_000;
+const PYTHON_INTERACTIVE_DIAGNOSTIC_HISTORY_LIMIT = 16;
 
 export interface NotebookLiveVariableItem {
   readonly handle: string;
@@ -65,6 +66,36 @@ export interface LiteratePythonVariableProvider {
   runLiterateChunkAndOpen(origin: LiterateDocumentOrigin): Promise<boolean>;
   hasAssociatedLiterateSession(origin: LiterateDocumentOrigin): boolean;
   openAssociatedLiterateSession(origin: LiterateDocumentOrigin): Promise<boolean>;
+}
+
+export type PythonInteractiveDiagnosticStage =
+  | "idle"
+  | "dispatching-cell"
+  | "waiting-for-cell-publication"
+  | "opening-interactive-editor"
+  | "selecting-kernel"
+  | "restoring-source-editor"
+  | "retrying-cell"
+  | "waiting-for-cell-completion"
+  | "discovering-variables"
+  | "opening-variable"
+  | "complete"
+  | "failed";
+
+export type PythonInteractiveActiveDiagnosticStage = Exclude<
+  PythonInteractiveDiagnosticStage,
+  "idle" | "complete" | "failed"
+>;
+
+export interface PythonInteractiveDiagnostics {
+  readonly invocation: number;
+  readonly stage: PythonInteractiveDiagnosticStage;
+  readonly lastActiveStage?: PythonInteractiveActiveDiagnosticStage;
+  readonly stages: readonly PythonInteractiveDiagnosticStage[];
+}
+
+export interface PythonInteractiveCommandProvider extends NotebookLiveVariableProvider, LiteratePythonVariableProvider {
+  diagnosticsForTesting(): PythonInteractiveDiagnostics | undefined;
 }
 
 type CachedVariable =
@@ -146,7 +177,7 @@ type PythonCellDispatchOutcome =
 export function registerPythonInteractiveCommands(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator
-): NotebookLiveVariableProvider & LiteratePythonVariableProvider {
+): PythonInteractiveCommandProvider {
   const provider = new NotebookInteractiveCoordinator(context, coordinator);
   context.subscriptions.push(
     provider,
@@ -172,6 +203,10 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
   private refreshAgain = false;
   private runCellRunning = false;
   private disposed = false;
+  private diagnosticInvocation = 0;
+  private diagnosticStage: PythonInteractiveDiagnosticStage = "idle";
+  private diagnosticLastActiveStage: PythonInteractiveActiveDiagnosticStage | undefined;
+  private diagnosticStages: readonly PythonInteractiveDiagnosticStage[] = Object.freeze(["idle"]);
 
   readonly onDidChangeVariables = this.changeEmitter.event;
 
@@ -193,6 +228,16 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     return this.currentSnapshot;
   }
 
+  diagnosticsForTesting(): PythonInteractiveDiagnostics | undefined {
+    if (process.env.OPEN_WRANGLER_EXTENSION_TESTS !== "1") return undefined;
+    return Object.freeze({
+      invocation: this.diagnosticInvocation,
+      stage: this.diagnosticStage,
+      lastActiveStage: this.diagnosticLastActiveStage,
+      stages: this.diagnosticStages
+    });
+  }
+
   dispose(): void {
     this.disposed = true;
     this.activeTarget = undefined;
@@ -208,9 +253,12 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       return;
     }
     this.runCellRunning = true;
+    this.beginDiagnostics();
+    let succeeded = false;
     try {
-      await this.performRunCellAndOpenVariable(capturePythonCellOrigin());
+      succeeded = await this.performRunCellAndOpenVariable(capturePythonCellOrigin());
     } finally {
+      this.finishDiagnostics(succeeded);
       this.runCellRunning = false;
     }
   }
@@ -223,9 +271,13 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     const execution = pythonOriginFromLiterateDocument(origin);
     if (!execution) return false;
     this.runCellRunning = true;
+    this.beginDiagnostics();
+    let succeeded = false;
     try {
-      return await this.performRunCellAndOpenVariable(execution);
+      succeeded = await this.performRunCellAndOpenVariable(execution);
+      return succeeded;
     } finally {
+      this.finishDiagnostics(succeeded);
       this.runCellRunning = false;
     }
   }
@@ -246,7 +298,14 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     }
     const execution = pythonOriginFromLiterateDocument(origin, false);
     if (!execution) return false;
-    return await this.discoverChooseAndOpen(associated[0]!.notebook, execution);
+    this.beginDiagnostics("discovering-variables");
+    let succeeded = false;
+    try {
+      succeeded = await this.discoverChooseAndOpen(associated[0]!.notebook, execution);
+      return succeeded;
+    } finally {
+      this.finishDiagnostics(succeeded);
+    }
   }
 
   private async performRunCellAndOpenVariable(origin: PythonCellOrigin | undefined): Promise<boolean> {
@@ -273,11 +332,24 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     const observer = new PythonCellDispatchObserver(origin, beforeCells, beforeInteractiveWindows);
     let attempt: PythonCellAttemptResult;
     try {
-      attempt = await runPythonCellAttempt(origin, observer, operationDeadline, true);
+      attempt = await runPythonCellAttempt(
+        origin,
+        observer,
+        operationDeadline,
+        true,
+        (stage) => this.setDiagnosticStage(stage),
+        "dispatching-cell"
+      );
       if (attempt.kind === "needsKernel") {
-        const restored = await selectKernelAndRestorePythonOrigin(attempt.notebook, origin, operationDeadline);
+        const restored = await selectKernelAndRestorePythonOrigin(
+          attempt.notebook,
+          origin,
+          operationDeadline,
+          (stage) => this.setDiagnosticStage(stage)
+        );
         if (!restored) return false;
 
+        this.setDiagnosticStage("waiting-for-cell-publication");
         const afterSelection = await waitForPublishedCellAfterDispatch(
           observer,
           Math.min(operationDeadline, Date.now() + PYTHON_CELL_POST_KERNEL_PUBLICATION_GRACE_MS),
@@ -294,7 +366,14 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
           if (blankWindow.kind !== "found" || blankWindow.notebook !== attempt.notebook) {
             attempt = blankWindow.kind === "ambiguous" ? blankWindow : { kind: "missing" };
           } else {
-            attempt = await runPythonCellAttempt(origin, observer, operationDeadline, false);
+            attempt = await runPythonCellAttempt(
+              origin,
+              observer,
+              operationDeadline,
+              false,
+              (stage) => this.setDiagnosticStage(stage),
+              "retrying-cell"
+            );
           }
         }
       }
@@ -333,6 +412,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       return false;
     }
 
+    this.setDiagnosticStage("waiting-for-cell-completion");
     const executed = await waitForPinnedCellCompletion(
       origin,
       beforeCells,
@@ -587,6 +667,7 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     }
     let discovery: NotebookVariableDiscovery;
     try {
+      this.setDiagnosticStage("discovering-variables");
       discovery = await discoverNotebookVariables(notebook);
     } catch (error) {
       void vscode.window.showWarningMessage(
@@ -641,9 +722,37 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
       selected = choice.descriptor;
     }
     if (!selected) return false;
+    this.setDiagnosticStage("opening-variable");
     await openDiscoveredPythonNotebookVariable(this.context, this.coordinator, notebook, selected);
     return true;
   }
+
+  private beginDiagnostics(initialStage: PythonInteractiveDiagnosticStage = "dispatching-cell"): void {
+    if (process.env.OPEN_WRANGLER_EXTENSION_TESTS !== "1") return;
+    this.diagnosticInvocation += 1;
+    this.diagnosticStage = initialStage;
+    this.diagnosticLastActiveStage = activeDiagnosticStage(initialStage);
+    this.diagnosticStages = Object.freeze([initialStage]);
+  }
+
+  private finishDiagnostics(succeeded: boolean): void {
+    this.setDiagnosticStage(succeeded ? "complete" : "failed");
+  }
+
+  private setDiagnosticStage(stage: PythonInteractiveDiagnosticStage): void {
+    if (process.env.OPEN_WRANGLER_EXTENSION_TESTS !== "1" || this.diagnosticStage === stage) return;
+    this.diagnosticStage = stage;
+    this.diagnosticLastActiveStage = activeDiagnosticStage(stage) ?? this.diagnosticLastActiveStage;
+    this.diagnosticStages = Object.freeze(
+      [...this.diagnosticStages, stage].slice(-PYTHON_INTERACTIVE_DIAGNOSTIC_HISTORY_LIMIT)
+    );
+  }
+}
+
+function activeDiagnosticStage(
+  stage: PythonInteractiveDiagnosticStage
+): PythonInteractiveActiveDiagnosticStage | undefined {
+  return stage === "idle" || stage === "complete" || stage === "failed" ? undefined : stage;
 }
 
 function variablePickItem(descriptor: NotebookVariableDescriptor): VariablePickItem {
@@ -921,7 +1030,8 @@ function isEmptyInteractiveWindow(notebook: vscode.NotebookDocument, expectedSou
 async function selectKernelAndRestorePythonOrigin(
   notebook: vscode.NotebookDocument,
   origin: PythonCellOrigin,
-  operationDeadline: number
+  operationDeadline: number,
+  reportStage: (stage: PythonInteractiveDiagnosticStage) => void
 ): Promise<boolean> {
   if (!isUnchangedPythonOrigin(origin) || !isSoleOpenNotebookDocument(notebook)) {
     void vscode.window.showWarningMessage(
@@ -940,6 +1050,7 @@ async function selectKernelAndRestorePythonOrigin(
   }
   let notebookEditor = visibleMatches[0];
   if (!notebookEditor) {
+    reportStage("opening-interactive-editor");
     const shown = await settleBeforeDeadline(
       () =>
         vscode.window.showNotebookDocument(notebook, {
@@ -970,6 +1081,7 @@ async function selectKernelAndRestorePythonOrigin(
     );
     return false;
   }
+  reportStage("selecting-kernel");
   const selected = await settleBeforeDeadline(
     () => vscode.commands.executeCommand("notebook.selectKernel", { notebookEditor }),
     operationDeadline
@@ -992,6 +1104,7 @@ async function selectKernelAndRestorePythonOrigin(
     );
     return false;
   }
+  reportStage("restoring-source-editor");
   const restoredResult = await settleBeforeDeadline(
     () =>
       vscode.window.showTextDocument(origin.document, {
@@ -1142,7 +1255,9 @@ async function runPythonCellAttempt(
   origin: PythonCellOrigin,
   observer: PythonCellDispatchObserver,
   operationDeadline: number,
-  allowKernelRecovery: boolean
+  allowKernelRecovery: boolean,
+  reportStage: (stage: PythonInteractiveDiagnosticStage) => void,
+  dispatchStage: "dispatching-cell" | "retrying-cell"
 ): Promise<PythonCellAttemptResult> {
   if (Date.now() >= operationDeadline) return { kind: "dispatchTimedOut" };
   const initial = observer.snapshot();
@@ -1151,6 +1266,7 @@ async function runPythonCellAttempt(
   if (!isExactPythonOrigin(origin)) return { kind: "stale" };
 
   const dispatchDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
+  reportStage(dispatchStage);
   const dispatch = boundedPythonCellDispatch(origin, dispatchDeadline);
   try {
     while (true) {
@@ -1159,6 +1275,7 @@ async function runPythonCellAttempt(
       if (snapshot.kind !== "missing") return snapshot;
 
       const remaining = dispatchDeadline - Date.now();
+      reportStage("waiting-for-cell-publication");
       const change = observer.cancelableWaitForChange(remaining);
       const event = await Promise.race([
         dispatch.promise.then((outcome) => ({ kind: "dispatch" as const, outcome })),

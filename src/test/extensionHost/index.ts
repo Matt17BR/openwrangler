@@ -44,6 +44,7 @@ import {
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import type { NotebookCellResultTrackerDiagnostics } from "../../extension/notebooks/notebookCellResult";
+import type { PythonInteractiveDiagnostics } from "../../extension/notebooks/pythonInteractiveCommands";
 import { supportsRDocumentExecution } from "../../extension/r/rDocumentCommands";
 import { R_KERNEL_RUNTIME_BINDING } from "../../extension/r/rKernelRuntimeBundle";
 import type { SessionSchedulerState } from "../../extension/sessionCoordinator";
@@ -183,6 +184,7 @@ interface TestApi {
     | "panel-unavailable"
     | undefined;
   notebookCellResultDiagnostics(): NotebookCellResultTrackerDiagnostics | undefined;
+  pythonInteractiveDiagnostics(): PythonInteractiveDiagnostics | undefined;
 }
 
 interface ExtensionApi {
@@ -4077,6 +4079,7 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
       "the exact Python Quarto source before its editor action"
     );
 
+    const initialPythonInvocation = testing.pythonInteractiveDiagnostics()?.invocation ?? 0;
     recordAcceptanceProgress(`${checkpoint}:title-action`);
     await workbench.bringToFront();
     await activateReleasedRInteractiveTitleAction(workbench, sourceDocument);
@@ -4086,7 +4089,20 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
     let filterForTarget = false;
     let targetSelected = false;
     let consentAccepted = false;
+    let observedPythonInvocation = initialPythonInvocation;
+    let lastPythonStage: PythonInteractiveDiagnostics["lastActiveStage"];
     do {
+      const pythonDiagnostics = testing.pythonInteractiveDiagnostics();
+      if (pythonDiagnostics?.invocation !== undefined && pythonDiagnostics.invocation > initialPythonInvocation) {
+        if (pythonDiagnostics.invocation !== observedPythonInvocation) {
+          observedPythonInvocation = pythonDiagnostics.invocation;
+          lastPythonStage = undefined;
+        }
+        if (pythonDiagnostics.lastActiveStage && pythonDiagnostics.lastActiveStage !== lastPythonStage) {
+          lastPythonStage = pythonDiagnostics.lastActiveStage;
+          recordAcceptanceProgress(`${checkpoint}:python-${pythonDiagnostics.lastActiveStage}`);
+        }
+      }
       const candidates = vscode.workspace.notebookDocuments.filter(
         (candidate) =>
           !candidate.isClosed &&
@@ -4176,6 +4192,7 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
     ) {
       throw new Error(
         "The Python Quarto action did not open its Pandas dataframe. " +
+          `Python Interactive: ${JSON.stringify(testing.pythonInteractiveDiagnostics())}. ` +
           `Coordinator: ${JSON.stringify(testing.diagnostics())}. ` +
           `Quick Input: ${JSON.stringify(await releasedJupyterQuickInputDiagnostics(workbench))}. ` +
           `Interactive Window: ${releasedPythonEntrypointDiagnostics(interactive, sourceDocument)}.`
