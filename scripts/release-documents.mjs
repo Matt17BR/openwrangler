@@ -12,6 +12,7 @@ const FEATURE_PARITY_HEADING = "Feature parity matrix";
 const README_RELEASE_SECTION_START = "<!-- open-wrangler-release-status:start -->";
 const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
 const RELEASES_URL = "https://github.com/Matt17BR/openwrangler/releases";
+const LATEST_STABLE_RELEASE_URL = "https://github.com/Matt17BR/openwrangler/releases/latest";
 const MARKETPLACE_URL = "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler";
 const OPEN_VSX_URL = "https://open-vsx.org/extension/Matt17BR/openwrangler";
 const CI_URL = "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml";
@@ -40,6 +41,22 @@ export also needs \`nanoparquet\` 0.5.1 or newer there; CSV export does not. R n
 but direct R-document execution is currently limited to macOS and Linux.`;
 const README_TRUST_REQUIREMENT =
   "Opening data or using a notebook kernel requires a trusted workspace. Open Wrangler stays inactive in Restricted Mode.";
+const README_INSTALL_TRACKS = `- **Latest stable:** choose **Install** on the [Visual Studio Marketplace](${MARKETPLACE_URL}) or
+  [Open VSX](${OPEN_VSX_URL}), or download the [latest stable GitHub Release](${LATEST_STABLE_RELEASE_URL}).
+- **Latest preview:** choose **Install Pre-Release Version** on the editor listing. Other Open VSX clients may label
+  this differently; select the newest \`1.99.x\` version. The same VSIX is available from [GitHub prereleases](${RELEASES_URL}).
+- **Current \`main\`:** build the latest source below. It may be ahead of the published preview.`;
+const README_SOURCE_BUILD = `To build and install the current \`main\` branch:
+
+\`\`\`bash
+git clone https://github.com/Matt17BR/openwrangler.git
+cd openwrangler
+npm ci
+npm run package:dev
+\`\`\`
+
+Then run \`code --install-extension openwrangler-dev.vsix --force\` or
+\`cursor --install-extension openwrangler-dev.vsix --force\`.`;
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
@@ -58,14 +75,11 @@ ${README_BADGES}
 
 ${README_EDITOR_SUPPORT}
 
-- [Visual Studio Marketplace](${MARKETPLACE_URL})
-- [Open VSX](${OPEN_VSX_URL})
-- Manual or offline install from a [GitHub prerelease](${RELEASES_URL})
-
-In VS Code or Cursor, open the extension page and choose **Install Pre-Release Version**. Other Open VSX clients
-may label this action differently; select the latest \`1.99.x\` version listed there.
+${README_INSTALL_TRACKS}
 
 For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
+
+${README_SOURCE_BUILD}
 
 ${README_RUNTIME_REQUIREMENTS}
 
@@ -79,11 +93,11 @@ ${README_BADGES}
 
 ## Install
 
-- [Visual Studio Marketplace](${MARKETPLACE_URL})
-- [Open VSX](${OPEN_VSX_URL})
-- Manual or offline install from a [checksummed GitHub Release](${RELEASES_URL})
+${README_INSTALL_TRACKS}
 
 For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
+
+${README_SOURCE_BUILD}
 
 ${README_EDITOR_SUPPORT}
 

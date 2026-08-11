@@ -33,14 +33,25 @@ _The workbench shows the dataframe, column profiles, filters, and cleaning steps
 | Other VS Code desktop forks | Experimental   |
 | Browser-hosted `vscode.dev` | Unsupported    |
 
-- [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler)
-- [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler)
-- Manual or offline install from a [GitHub prerelease](https://github.com/Matt17BR/openwrangler/releases)
-
-In VS Code or Cursor, open the extension page and choose **Install Pre-Release Version**. Other Open VSX clients
-may label this action differently; select the latest `1.99.x` version listed there.
+- **Latest stable:** choose **Install** on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler) or
+  [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler), or download the [latest stable GitHub Release](https://github.com/Matt17BR/openwrangler/releases/latest).
+- **Latest preview:** choose **Install Pre-Release Version** on the editor listing. Other Open VSX clients may label
+  this differently; select the newest `1.99.x` version. The same VSIX is available from [GitHub prereleases](https://github.com/Matt17BR/openwrangler/releases).
+- **Current `main`:** build the latest source below. It may be ahead of the published preview.
 
 For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
+
+To build and install the current `main` branch:
+
+```bash
+git clone https://github.com/Matt17BR/openwrangler.git
+cd openwrangler
+npm ci
+npm run package:dev
+```
+
+Then run `code --install-extension openwrangler-dev.vsix --force` or
+`cursor --install-extension openwrangler-dev.vsix --force`.
 
 Open Wrangler requires VS Code 1.106 or newer. File sources and Python notebook dataframes use Python 3.10 through
 3.14 from your configured path, selected environment, or a supported system interpreter. If a required Python package
