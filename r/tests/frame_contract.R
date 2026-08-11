@@ -1418,6 +1418,266 @@ assert_identical(table_replaced$`clean key`, c("A", "b"), "derived findReplace c
 assert_identical(text_cleanup_table, text_cleanup_table_before, "text transforms mutated their source data.table")
 assert_identical(text_cleanup_frame, text_cleanup_before, "text transforms mutated their source data.frame")
 
+scale_frame <- data.frame(
+  value = c(-2, 0, 2, NA_real_, NaN, Inf, -Inf),
+  constant = c(5, NA_real_, 5, NaN, Inf, -Inf, 5),
+  no_finite = c(NA_real_, NaN, Inf, -Inf, NA_real_, NaN, Inf),
+  integer_value = c(-10L, 0L, 10L, NA_integer_, 5L, -5L, 2L),
+  wide = bit64::as.integer64(c("0", "5", "10", NA, "2", "8", "1")),
+  marker = letters[seq_len(7L)],
+  check.names = FALSE,
+  row.names = paste0("scale-", seq_len(7L))
+)
+scale_before <- unserialize(serialize(scale_frame, NULL, version = 3L))
+scale_capture <- openwrangler_r_frame_contract$capture_frame(scale_frame)
+scaled_copy <- openwrangler_r_frame_contract$min_max_scale_column_at(
+  scale_frame,
+  1L,
+  "value",
+  "scaled"
+)
+assert_identical(
+  scaled_copy$scaled,
+  c(0, 0.5, 1, NA_real_, NA_real_, NA_real_, NA_real_),
+  "Min-max scale changed finite or non-finite values"
+)
+assert_identical(typeof(scaled_copy$scaled), "double", "Min-max scale did not return doubles")
+assert_identical(row.names(scaled_copy), row.names(scale_frame), "Min-max scale changed explicit row names")
+scaled_copy_capture <- openwrangler_r_frame_contract$capture_frame(
+  scaled_copy,
+  nullability_source = scale_capture,
+  source_positions = c(seq_along(scale_frame), 1L),
+  output_ids = c(
+    vapply(scale_capture$descriptor$schema, `[[`, character(1L), "id"),
+    "c:step:scale-contract:0"
+  ),
+  min_max_scale_positions = 7L
+)
+assert_identical(
+  scaled_copy_capture$descriptor$schema[[7L]]$id,
+  "c:step:scale-contract:0",
+  "derived Min-max scale lost its stable identity"
+)
+assert_identical(
+  scaled_copy_capture$descriptor$schema[[7L]]$rawType,
+  "double",
+  "derived Min-max scale published the wrong type"
+)
+assert_identical(
+  scaled_copy_capture$descriptor$schema[[7L]]$nullable,
+  TRUE,
+  "derived Min-max scale hid newly introduced nulls"
+)
+
+constant_scaled <- withCallingHandlers(
+  openwrangler_r_frame_contract$min_max_scale_column_at(scale_frame, 2L, "constant"),
+  warning = function(warning) stop("Min-max scaling a constant column emitted a warning", call. = FALSE)
+)
+assert_identical(
+  constant_scaled$constant,
+  c(0, NA_real_, 0, NA_real_, NA_real_, NA_real_, 0),
+  "Min-max scale did not map a constant finite range to zero"
+)
+no_finite_scaled <- withCallingHandlers(
+  openwrangler_r_frame_contract$min_max_scale_column_at(scale_frame, 3L, "no_finite"),
+  warning = function(warning) stop("Min-max scaling an all-non-finite column emitted a warning", call. = FALSE)
+)
+assert_identical(
+  no_finite_scaled$no_finite,
+  rep.int(NA_real_, nrow(scale_frame)),
+  "Min-max scale did not return typed nulls for a column without finite values"
+)
+integer_scaled <- openwrangler_r_frame_contract$min_max_scale_column_at(
+  scale_frame,
+  4L,
+  "integer_value"
+)
+assert_identical(typeof(integer_scaled$integer_value), "double", "Min-max scale did not widen integer input")
+wide_scaled <- withCallingHandlers(
+  openwrangler_r_frame_contract$min_max_scale_column_at(scale_frame, 5L, "wide"),
+  warning = function(warning) stop("Min-max scaling integer64 emitted a warning", call. = FALSE)
+)
+assert_identical(
+  wide_scaled$wide,
+  c(0, 0.5, 1, NA_real_, 0.2, 0.8, 0.1),
+  "Min-max scale changed integer64 values"
+)
+assert_identical(typeof(wide_scaled$wide), "double", "Min-max scale did not widen integer64 input")
+wide_adjacent_cases <- list(
+  positive = bit64::as.integer64(c("9223372036854775805", "9223372036854775806", "9223372036854775807")),
+  negative = bit64::as.integer64(c("-9223372036854775807", "-9223372036854775806", "-9223372036854775805"))
+)
+for (case_name in names(wide_adjacent_cases)) {
+  adjacent_source <- data.frame(value = wide_adjacent_cases[[case_name]], check.names = FALSE)
+  adjacent_scaled <- openwrangler_r_frame_contract$min_max_scale_column_at(
+    adjacent_source,
+    1L,
+    "value"
+  )
+  assert_identical(
+    adjacent_scaled$value,
+    c(0, 0.5, 1),
+    sprintf("Min-max scale collapsed adjacent %s integer64 values", case_name)
+  )
+  assert_identical(
+    adjacent_source$value,
+    wide_adjacent_cases[[case_name]],
+    sprintf("Min-max scale mutated adjacent %s integer64 values", case_name)
+  )
+}
+signed_range_source <- data.frame(
+  value = bit64::as.integer64(c("-9223372036854775807", "0", "9223372036854775807", NA)),
+  check.names = FALSE
+)
+signed_range_scaled <- openwrangler_r_frame_contract$min_max_scale_column_at(
+  signed_range_source,
+  1L,
+  "value"
+)
+assert_identical(signed_range_scaled$value[[1L]], 0, "Min-max scale changed the integer64 lower endpoint")
+assert_true(
+  abs(signed_range_scaled$value[[2L]] - 0.5) <= .Machine$double.eps,
+  "Min-max scale lost the integer64 signed-range midpoint"
+)
+assert_identical(signed_range_scaled$value[[3L]], 1, "Min-max scale changed the integer64 upper endpoint")
+assert_true(is.na(signed_range_scaled$value[[4L]]), "Min-max scale changed an integer64 NA")
+signed_quartile_source <- data.frame(
+  value = bit64::as.integer64(c(
+    "-9223372036854775807",
+    "-4611686018427387904",
+    "0",
+    "4611686018427387904",
+    "9223372036854775807",
+    NA
+  )),
+  check.names = FALSE
+)
+signed_quartile_scaled <- openwrangler_r_frame_contract$min_max_scale_column_at(
+  signed_quartile_source,
+  1L,
+  "value"
+)
+assert_true(
+  isTRUE(all.equal(
+    signed_quartile_scaled$value,
+    c(0, 0.25, 0.5, 0.75, 1, NA_real_),
+    tolerance = .Machine$double.eps,
+    check.attributes = FALSE
+  )),
+  "Min-max scale lost integer64 full-span quartiles"
+)
+skewed_signed_source <- data.frame(
+  value = bit64::as.integer64(c("-1", "0", "9223372036854775807")),
+  check.names = FALSE
+)
+skewed_signed_scaled <- openwrangler_r_frame_contract$min_max_scale_column_at(
+  skewed_signed_source,
+  1L,
+  "value"
+)
+assert_identical(skewed_signed_scaled$value[[1L]], 0, "Min-max scale changed a skewed integer64 lower endpoint")
+assert_identical(skewed_signed_scaled$value[[2L]], 2^-63, "Min-max scale collapsed a skewed integer64 interior value")
+assert_identical(skewed_signed_scaled$value[[3L]], 1, "Min-max scale changed a skewed integer64 upper endpoint")
+monotonic_source <- data.frame(
+  value = bit64::as.integer64(c(
+    "0",
+    "8999999000001999999",
+    "8999999000002000000",
+    "9223372036854775807"
+  )),
+  check.names = FALSE
+)
+monotonic_scaled <- openwrangler_r_frame_contract$min_max_scale_column_at(
+  monotonic_source,
+  1L,
+  "value"
+)
+assert_true(
+  all(diff(monotonic_scaled$value) >= 0),
+  "Min-max scale reversed adjacent integer64 values across an internal limb boundary"
+)
+assert_identical(scale_frame, scale_before, "Min-max scale mutated its source data.frame")
+
+scale_flavors <- list(
+  tibble::as_tibble(data.frame(value = c(10, 20, 30), marker = c("a", "b", "c"))),
+  collapse::qDF(data.frame(value = c(10, 20, 30), marker = c("a", "b", "c"))),
+  collapse::qTBL(data.frame(value = c(10, 20, 30), marker = c("a", "b", "c"))),
+  collapse::qDT(data.frame(value = c(10, 20, 30), marker = c("a", "b", "c")))
+)
+for (scale_source in scale_flavors) {
+  scale_source_before <- if (inherits(scale_source, "data.table")) {
+    data.table::copy(scale_source)
+  } else {
+    unserialize(serialize(scale_source, NULL, version = 3L))
+  }
+  scale_result <- openwrangler_r_frame_contract$min_max_scale_column_at(
+    scale_source,
+    1L,
+    "value",
+    "scaled"
+  )
+  assert_identical(class(scale_result), class(scale_source), "Min-max scale changed R dataframe flavor")
+  assert_identical(scale_result$scaled, c(0, 0.5, 1), "Min-max scale changed a flavor-specific result")
+  assert_identical(scale_result$marker, scale_source$marker, "Min-max scale changed source row order")
+  assert_identical(scale_source, scale_source_before, "Min-max scale mutated a flavor-specific source")
+}
+
+finite_scale_source <- data.frame(value = c(10, 20, 30), check.names = FALSE)
+finite_scale_capture <- openwrangler_r_frame_contract$capture_frame(finite_scale_source)
+finite_scaled_copy <- openwrangler_r_frame_contract$min_max_scale_column_at(
+  finite_scale_source,
+  1L,
+  "value",
+  "scaled"
+)
+finite_scaled_capture <- openwrangler_r_frame_contract$capture_frame(
+  finite_scaled_copy,
+  nullability_source = finite_scale_capture,
+  source_positions = c(1L, 1L),
+  output_ids = c("r:c:0", "c:step:finite-scale-contract:0"),
+  min_max_scale_positions = 2L
+)
+assert_identical(
+  finite_scaled_capture$descriptor$schema[[2L]]$nullable,
+  TRUE,
+  "Min-max scale did not advertise possible nulls for finite source data"
+)
+
+scale_table <- data.table::data.table(primary_key = c(2, 1), marker = c("second", "first"))
+data.table::setkey(scale_table, primary_key)
+scale_table_before <- data.table::copy(scale_table)
+assert_error(
+  openwrangler_r_frame_contract$min_max_scale_column_at(scale_table, 1L, "primary_key"),
+  "choose a new output column"
+)
+scaled_table <- openwrangler_r_frame_contract$min_max_scale_column_at(
+  scale_table,
+  1L,
+  "primary_key",
+  "scaled key"
+)
+assert_identical(data.table::key(scaled_table), "primary_key", "derived Min-max scale lost a data.table key")
+assert_identical(scaled_table$marker, scale_table_before$marker, "derived Min-max scale changed keyed row order")
+assert_identical(scale_table, scale_table_before, "Min-max scale mutated its keyed data.table source")
+assert_error(
+  openwrangler_r_frame_contract$min_max_scale_column_at(
+    data.frame(text = c("1", "2"), check.names = FALSE),
+    1L,
+    "text"
+  ),
+  "requires a numeric R column"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    wide_scaled,
+    nullability_source = scale_capture,
+    source_positions = seq_along(scale_frame),
+    output_ids = vapply(scale_capture$descriptor$schema, `[[`, character(1L), "id"),
+    numeric_transform_positions = 5L
+  ),
+  "invalid numeric-transform output"
+)
+
 fill_frame <- data.frame(
   duplicate = c(1L, NA_integer_, 3L),
   duplicate = c(1, NaN, NA_real_),
