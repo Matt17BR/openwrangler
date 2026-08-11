@@ -55,6 +55,7 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
   "extension-host"
 ]);
 const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
+const SETUP_R_DEPENDENCIES_ACTION = "r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
 const CANONICAL_CI_IF =
   "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}";
@@ -1500,13 +1501,27 @@ test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
 
   const setup = job?.steps?.find((step) => step?.uses === SETUP_R_ACTION);
   assert.deepEqual(setup?.with, { "r-version": "${{ matrix.r }}", "use-public-rspm": true });
-  const install = job?.steps?.filter((step) => step?.name === "Install R contract packages");
-  assert.equal(install?.length, 1, "The focused R matrix must install its contract packages once.");
-  assert.match(
-    install?.[0]?.run ?? "",
-    /install\.packages\(c\("jsonlite", "tibble", "readr", "dplyr", "data\.table", "bit64", "collapse", "nanoparquet"\)/u,
-    "The focused R matrix must install every package exercised by the contract."
-  );
+  const dependencies = job?.steps?.filter((step) => step?.uses === SETUP_R_DEPENDENCIES_ACTION);
+  assert.equal(dependencies?.length, 1, "The focused R matrix must restore its contract packages once.");
+  assert.equal(dependencies[0]?.name, "Restore R contract packages");
+  assert.deepEqual(dependencies[0]?.with, {
+    packages: "",
+    "extra-packages": [
+      "any::jsonlite",
+      "any::tibble",
+      "any::readr",
+      "any::dplyr",
+      "any::data.table",
+      "any::bit64",
+      "any::collapse",
+      "any::nanoparquet"
+    ].join("\n"),
+    dependencies: '"hard"',
+    cache: true,
+    "cache-version": "native-r-contract-v1",
+    "install-pandoc": false,
+    "install-quarto": false
+  });
   assert.equal(
     job?.steps?.filter((step) => step?.run === "npm run test:r-contract").length,
     1,
@@ -1515,7 +1530,12 @@ test("native R contracts run only in the focused R 4.4 and 4.5 matrix", () => {
   for (const [jobId, candidate] of Object.entries(workflow?.jobs ?? {})) {
     if (jobId === "native-r-contract") continue;
     assert.equal(
-      candidate?.steps?.some((step) => step?.uses === SETUP_R_ACTION || step?.run === "npm run test:r-contract"),
+      candidate?.steps?.some(
+        (step) =>
+          step?.uses === SETUP_R_ACTION ||
+          step?.uses === SETUP_R_DEPENDENCIES_ACTION ||
+          step?.run === "npm run test:r-contract"
+      ),
       false,
       `${jobId} must not install or execute R contract tooling.`
     );
