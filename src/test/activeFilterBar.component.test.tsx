@@ -4,7 +4,7 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
 import type { SessionMetadata, TypedSelectionToken } from "../shared/protocol";
-import { ActiveFilterBar } from "../webviews/filters/ActiveFilterBar";
+import { ActiveFilterBar, type FilterBarRequestLifecycle } from "../webviews/filters/ActiveFilterBar";
 
 const metadata: SessionMetadata = {
   protocolVersion: 2,
@@ -69,19 +69,76 @@ const activeModel: FilterModel = {
   sort: [{ column: "sales", direction: "desc", nulls: "last" }]
 };
 
+interface FocusViewState {
+  model: FilterModel;
+  canUndo: boolean;
+  requestLifecycle?: FilterBarRequestLifecycle;
+  disabled?: boolean;
+  retainVisible?: boolean;
+}
+
+interface FocusViewProps extends FocusViewState {
+  onApply(model: FilterModel): string | undefined;
+  onUndo(): string | undefined;
+}
+
+function FocusView({
+  model,
+  canUndo,
+  requestLifecycle,
+  onApply,
+  onUndo,
+  disabled = false,
+  retainVisible = false
+}: FocusViewProps) {
+  return (
+    <>
+      <ActiveFilterBar
+        metadata={metadata}
+        model={model}
+        canUndo={canUndo}
+        disabled={disabled}
+        retainVisible={retainVisible}
+        requestLifecycle={requestLifecycle}
+        onApply={onApply}
+        onUndo={onUndo}
+      />
+      <div data-testid="data-grid-scroller">
+        <button type="button" data-grid-row tabIndex={0}>
+          Grid row
+        </button>
+      </div>
+    </>
+  );
+}
+
+function renderFocusSequence(initial: FocusViewState, requestIds = { apply: "clear-request", undo: "undo-request" }) {
+  const onApply = vi.fn(() => requestIds.apply);
+  const onUndo = vi.fn(() => requestIds.undo);
+  const view = (state: FocusViewState) => <FocusView {...state} onApply={onApply} onUndo={onUndo} />;
+  const rendered = render(view(initial));
+  return {
+    rerender: (next: FocusViewState) => rendered.rerender(view(next))
+  };
+}
+
 describe("ActiveFilterBar", () => {
   it("keeps every typed filter visible and removes rules individually without changing sorts", () => {
     const onApply = vi.fn();
     const Harness = () => {
       const [model, setModel] = useState(activeModel);
+      const [requestLifecycle, setRequestLifecycle] = useState<FilterBarRequestLifecycle>({});
       return (
         <ActiveFilterBar
           metadata={metadata}
           model={model}
           canUndo={false}
+          requestLifecycle={requestLifecycle}
           onApply={(next) => {
             onApply(next);
             setModel(next);
+            setRequestLifecycle({ settledRequestId: "rule-removal" });
+            return "rule-removal";
           }}
           onUndo={() => undefined}
         />
@@ -170,63 +227,141 @@ describe("ActiveFilterBar", () => {
     expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument();
   });
 
-  it("restores focus after confirmed or failed clear and undo requests", () => {
-    const onApply = vi.fn();
-    const onUndo = vi.fn();
-    const View = ({
-      model,
-      canUndo,
-      disabled = false,
-      retainVisible = false
-    }: {
-      model: FilterModel;
-      canUndo: boolean;
-      disabled?: boolean;
-      retainVisible?: boolean;
-    }) => (
-      <>
-        <ActiveFilterBar
-          metadata={metadata}
-          model={model}
-          canUndo={canUndo}
-          disabled={disabled}
-          retainVisible={retainVisible}
-          onApply={onApply}
-          onUndo={onUndo}
-        />
-        <div data-testid="data-grid-scroller">
-          <button type="button" data-grid-row tabIndex={0}>
-            Grid row
-          </button>
-        </div>
-      </>
-    );
+  it("restores focus when the initiating request moves from disabled to settled", () => {
     const emptyModel = { ...activeModel, filters: [] } satisfies FilterModel;
-    const rendered = render(<View model={activeModel} canUndo={false} />);
+    const sequence = renderFocusSequence({ model: activeModel, canUndo: false });
 
     const clear = screen.getByRole("button", { name: "Clear filters" });
     clear.focus();
     fireEvent.click(clear);
-    rendered.rerender(<View model={emptyModel} canUndo={false} disabled={true} retainVisible={true} />);
+    sequence.rerender({
+      model: emptyModel,
+      canUndo: false,
+      disabled: true,
+      retainVisible: true,
+      requestLifecycle: { pendingRequestId: "clear-request" }
+    });
     expect(screen.getByRole("region", { name: "Viewing filters" })).toHaveFocus();
-    rendered.rerender(<View model={emptyModel} canUndo={true} retainVisible={true} />);
+    sequence.rerender({
+      model: emptyModel,
+      canUndo: true,
+      retainVisible: true,
+      requestLifecycle: { settledRequestId: "clear-request" }
+    });
     expect(screen.getByRole("button", { name: "Undo latest filter" })).toHaveFocus();
+  });
 
-    rendered.rerender(<View model={activeModel} canUndo={false} />);
+  it("returns a failed clear to Clear even when filter undo was already available", () => {
+    const emptyModel = { ...activeModel, filters: [] } satisfies FilterModel;
+    const sequence = renderFocusSequence({ model: activeModel, canUndo: true });
+
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
-    rendered.rerender(<View model={emptyModel} canUndo={false} disabled={true} retainVisible={true} />);
-    rendered.rerender(<View model={activeModel} canUndo={false} />);
+    sequence.rerender({
+      model: emptyModel,
+      canUndo: true,
+      disabled: true,
+      retainVisible: true,
+      requestLifecycle: { pendingRequestId: "clear-request" }
+    });
+    sequence.rerender({
+      model: activeModel,
+      canUndo: true,
+      requestLifecycle: { settledRequestId: "clear-request" }
+    });
     expect(screen.getByRole("button", { name: "Clear filters" })).toHaveFocus();
+  });
 
-    rendered.rerender(<View model={activeModel} canUndo={true} />);
+  it("returns a failed filter undo to Undo", () => {
+    const emptyModel = { ...activeModel, filters: [] } satisfies FilterModel;
+    const sequence = renderFocusSequence({ model: activeModel, canUndo: true });
+
     fireEvent.click(screen.getByRole("button", { name: "Undo latest filter" }));
-    rendered.rerender(<View model={emptyModel} canUndo={true} disabled={true} retainVisible={true} />);
-    rendered.rerender(<View model={activeModel} canUndo={true} />);
+    sequence.rerender({
+      model: emptyModel,
+      canUndo: true,
+      disabled: true,
+      retainVisible: true,
+      requestLifecycle: { pendingRequestId: "undo-request" }
+    });
+    sequence.rerender({
+      model: activeModel,
+      canUndo: true,
+      requestLifecycle: { settledRequestId: "undo-request" }
+    });
     expect(screen.getByRole("button", { name: "Undo latest filter" })).toHaveFocus();
+  });
+
+  it("does not reclaim focus that moved deliberately while the request was pending", () => {
+    const emptyModel = { ...activeModel, filters: [] } satisfies FilterModel;
+    const sequence = renderFocusSequence({ model: activeModel, canUndo: true });
 
     fireEvent.click(screen.getByRole("button", { name: "Undo latest filter" }));
-    rendered.rerender(<View model={emptyModel} canUndo={true} disabled={true} retainVisible={true} />);
-    rendered.rerender(<View model={emptyModel} canUndo={false} />);
+    sequence.rerender({
+      model: emptyModel,
+      canUndo: true,
+      disabled: true,
+      retainVisible: true,
+      requestLifecycle: { pendingRequestId: "undo-request" }
+    });
+    const gridRow = screen.getByRole("button", { name: "Grid row" });
+    gridRow.focus();
+    sequence.rerender({
+      model: activeModel,
+      canUndo: true,
+      requestLifecycle: { settledRequestId: "undo-request" }
+    });
+    expect(gridRow).toHaveFocus();
+  });
+
+  it("drops stale focus restoration when a later page request supersedes the initiating request", () => {
+    const sequence = renderFocusSequence(
+      { model: activeModel, canUndo: true },
+      { apply: "rule-request", undo: "undo-request" }
+    );
+
+    const chip = screen.getByRole("button", { name: 'Remove equals "Milan" (string) filter from city' });
+    chip.focus();
+    fireEvent.click(chip);
+    sequence.rerender({
+      model: activeModel,
+      canUndo: true,
+      disabled: true,
+      requestLifecycle: { pendingRequestId: "rule-request" }
+    });
+    expect(screen.getByRole("region", { name: "Viewing filters" })).toHaveFocus();
+    const gridRow = screen.getByRole("button", { name: "Grid row" });
+    gridRow.focus();
+    sequence.rerender({
+      model: activeModel,
+      canUndo: true,
+      disabled: true,
+      requestLifecycle: { pendingRequestId: "superseding-request" }
+    });
+    sequence.rerender({
+      model: activeModel,
+      canUndo: true,
+      requestLifecycle: { settledRequestId: "superseding-request" }
+    });
+    expect(gridRow).toHaveFocus();
+  });
+
+  it("falls back to the grid after a correlated final filter undo", () => {
+    const emptyModel = { ...activeModel, filters: [] } satisfies FilterModel;
+    const sequence = renderFocusSequence({ model: activeModel, canUndo: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo latest filter" }));
+    sequence.rerender({
+      model: emptyModel,
+      canUndo: true,
+      disabled: true,
+      retainVisible: true,
+      requestLifecycle: { pendingRequestId: "undo-request" }
+    });
+    sequence.rerender({
+      model: emptyModel,
+      canUndo: false,
+      requestLifecycle: { settledRequestId: "undo-request" }
+    });
     expect(screen.queryByRole("region", { name: "Viewing filters" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Grid row" })).toHaveFocus();
   });

@@ -21,8 +21,22 @@ interface ActiveFilterBarProps {
   disabled?: boolean;
   canUndo: boolean;
   retainVisible?: boolean;
-  onApply(model: FilterModel): void;
-  onUndo(): void;
+  requestLifecycle?: FilterBarRequestLifecycle;
+  onApply(model: FilterModel): string | undefined;
+  onUndo(): string | undefined;
+}
+
+export interface FilterBarRequestLifecycle {
+  pendingRequestId?: string;
+  settledRequestId?: string;
+}
+
+type FilterFocusAction = { kind: "rule"; index: number } | { kind: "clear" } | { kind: "undo" };
+
+interface FilterFocusIntent {
+  requestId: string;
+  trigger: HTMLButtonElement;
+  action: FilterFocusAction;
 }
 
 export function ActiveFilterBar({
@@ -31,59 +45,61 @@ export function ActiveFilterBar({
   disabled = false,
   canUndo,
   retainVisible = false,
+  requestLifecycle,
   onApply,
   onUndo
 }: ActiveFilterBarProps) {
   const region = useRef<HTMLElement | null>(null);
-  const nextFocusIndex = useRef<number | undefined>(undefined);
-  const historyFocusRequested = useRef(false);
+  const focusIntent = useRef<FilterFocusIntent | undefined>(undefined);
   const activeFilters = useMemo(() => model.filters.filter(isActiveColumnFilter), [model.filters]);
+  const pendingRequestId = requestLifecycle?.pendingRequestId;
+  const settledRequestId = requestLifecycle?.settledRequestId;
 
   useLayoutEffect(() => {
-    const requestedIndex = nextFocusIndex.current;
-    const historyRequested = historyFocusRequested.current;
-    if (requestedIndex === undefined && !historyRequested) return;
-    const buttons = [...(region.current?.querySelectorAll<HTMLButtonElement>("[data-view-filter-rule]") ?? [])];
-    if (disabled) {
-      region.current?.focus();
+    const intent = focusIntent.current;
+    if (!intent) return;
+    if (pendingRequestId !== undefined && pendingRequestId !== intent.requestId) {
+      focusIntent.current = undefined;
       return;
     }
-    if (requestedIndex !== undefined) {
-      nextFocusIndex.current = undefined;
-      const target = buttons[Math.min(requestedIndex, Math.max(0, buttons.length - 1))];
-      if (target && !target.disabled) {
-        target.focus();
+    if (pendingRequestId === intent.requestId) {
+      if (!ownsPendingFocus(intent, region.current)) {
+        focusIntent.current = undefined;
         return;
       }
-      const undo = region.current?.querySelector<HTMLButtonElement>("[data-view-filter-undo]");
-      if (undo && !undo.disabled) {
-        undo.focus();
-        return;
-      }
+      if (disabled) region.current?.focus({ preventScroll: true });
+      return;
     }
-    if (historyRequested) {
-      historyFocusRequested.current = false;
-      const undo = region.current?.querySelector<HTMLButtonElement>("[data-view-filter-undo]");
-      if (undo && !undo.disabled) {
-        undo.focus();
-        return;
-      }
-      const clear = region.current?.querySelector<HTMLButtonElement>("[data-view-filter-clear]");
-      if (clear && !clear.disabled) {
-        clear.focus();
-        return;
-      }
+    if (settledRequestId !== intent.requestId) {
+      focusIntent.current = undefined;
+      return;
     }
-    focusGridFallback();
-  }, [activeFilters, canUndo, disabled]);
+    if (!ownsSettledFocus(region.current)) {
+      focusIntent.current = undefined;
+      return;
+    }
+    if (disabled) {
+      region.current?.focus({ preventScroll: true });
+      return;
+    }
+
+    focusIntent.current = undefined;
+    restoreFilterActionFocus(intent.action, region.current, activeFilters.length > 0);
+  }, [activeFilters, canUndo, disabled, pendingRequestId, settledRequestId]);
 
   if (activeFilters.length === 0 && !canUndo && !retainVisible) return null;
 
   const applyRuleRemoval = (nextFilter: ColumnFilter, trigger: HTMLButtonElement) => {
     if (disabled) return;
     const buttons = [...(region.current?.querySelectorAll<HTMLButtonElement>("[data-view-filter-rule]") ?? [])];
-    nextFocusIndex.current = Math.max(0, buttons.indexOf(trigger));
-    onApply(replaceViewColumnFilter(model, nextFilter));
+    const requestId = onApply(replaceViewColumnFilter(model, nextFilter));
+    if (requestId) {
+      focusIntent.current = {
+        requestId,
+        trigger,
+        action: { kind: "rule", index: Math.max(0, buttons.indexOf(trigger)) }
+      };
+    }
   };
 
   return (
@@ -112,9 +128,11 @@ export function ActiveFilterBar({
             className="compactTextButton"
             data-view-filter-clear
             disabled={disabled || activeFilters.length === 0}
-            onClick={() => {
-              historyFocusRequested.current = true;
-              onApply({ ...model, filters: [] });
+            onClick={(event) => {
+              const requestId = onApply({ ...model, filters: [] });
+              if (requestId) {
+                focusIntent.current = { requestId, trigger: event.currentTarget, action: { kind: "clear" } };
+              }
             }}
           >
             Clear filters
@@ -124,9 +142,11 @@ export function ActiveFilterBar({
             className="secondaryButton"
             data-view-filter-undo
             disabled={disabled || !canUndo}
-            onClick={() => {
-              historyFocusRequested.current = true;
-              onUndo();
+            onClick={(event) => {
+              const requestId = onUndo();
+              if (requestId) {
+                focusIntent.current = { requestId, trigger: event.currentTarget, action: { kind: "undo" } };
+              }
             }}
           >
             <span className="codicon codicon-discard" aria-hidden="true" /> Undo latest filter
@@ -250,6 +270,41 @@ export function ActiveFilterBar({
       )}
     </section>
   );
+}
+
+function ownsPendingFocus(intent: FilterFocusIntent, region: HTMLElement | null): boolean {
+  const activeElement = document.activeElement;
+  return activeElement === document.body || activeElement === region || activeElement === intent.trigger;
+}
+
+function ownsSettledFocus(region: HTMLElement | null): boolean {
+  const activeElement = document.activeElement;
+  return activeElement === document.body || activeElement === region;
+}
+
+function restoreFilterActionFocus(
+  action: FilterFocusAction,
+  region: HTMLElement | null,
+  hasActiveFilters: boolean
+): void {
+  const ruleButtons = [...(region?.querySelectorAll<HTMLButtonElement>("[data-view-filter-rule]") ?? [])];
+  const undo = region?.querySelector<HTMLButtonElement>("[data-view-filter-undo]");
+  const clear = region?.querySelector<HTMLButtonElement>("[data-view-filter-clear]");
+  if (action.kind === "rule") {
+    const target = ruleButtons[Math.min(action.index, Math.max(0, ruleButtons.length - 1))];
+    if (focusEnabled(target) || focusEnabled(undo) || focusEnabled(clear)) return;
+  } else if (action.kind === "clear") {
+    if ((hasActiveFilters && focusEnabled(clear)) || focusEnabled(undo) || focusEnabled(clear)) return;
+  } else if (focusEnabled(undo) || focusEnabled(clear)) {
+    return;
+  }
+  focusGridFallback();
+}
+
+function focusEnabled(target: HTMLButtonElement | null | undefined): boolean {
+  if (!target || target.disabled) return false;
+  target.focus({ preventScroll: true });
+  return true;
 }
 
 function focusGridFallback(): void {

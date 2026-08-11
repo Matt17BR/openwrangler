@@ -39,7 +39,7 @@ import {
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind, supportsOperation } from "../shared/operations";
-import { ActiveFilterBar } from "./filters/ActiveFilterBar";
+import { ActiveFilterBar, type FilterBarRequestLifecycle } from "./filters/ActiveFilterBar";
 import { FilterPanel } from "./filters/FilterPanel";
 import {
   confirmLatestFilterUndo,
@@ -89,6 +89,7 @@ export function App() {
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
   const [confirmedFilterHistory, setConfirmedFilterHistory] =
     useState<ConfirmedFilterHistory>(emptyConfirmedFilterHistory);
+  const [filterBarRequestLifecycle, setFilterBarRequestLifecycle] = useState<FilterBarRequestLifecycle>({});
   const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
   const [foregroundError, setForegroundError] = useState<string | undefined>();
   const [foregroundErrorCode, setForegroundErrorCode] = useState<string | undefined>();
@@ -973,6 +974,7 @@ export function App() {
     resetViewProfiling();
     storeMetadata(withoutDatasetStats(previous.metadata));
     foregroundRequest.current = "mutation";
+    setFilterBarRequestLifecycle({});
     setMutationPending(true);
     storeFailedPageRequest(undefined);
     setForegroundError(undefined);
@@ -1307,6 +1309,7 @@ export function App() {
           const pendingPage = latestPageRequest.current;
           if (pendingPage?.viewRequestId === response.viewRequestId) {
             latestPageRequest.current = undefined;
+            setFilterBarRequestLifecycle({ settledRequestId: response.viewRequestId });
             if (
               typeof foregroundRequest.current === "object" &&
               foregroundRequest.current.viewRequestId === response.viewRequestId
@@ -1402,6 +1405,7 @@ export function App() {
         const pendingPage = latestPageRequest.current;
         if (pendingPage?.viewRequestId === response.viewRequestId) {
           latestPageRequest.current = undefined;
+          setFilterBarRequestLifecycle({ settledRequestId: response.viewRequestId });
           if (
             typeof foregroundRequest.current === "object" &&
             foregroundRequest.current.viewRequestId === response.viewRequestId
@@ -1444,6 +1448,7 @@ export function App() {
           setOperationKind(undefined);
         }
         latestPageRequest.current = undefined;
+        setFilterBarRequestLifecycle({});
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
         setMutationPending(false);
@@ -1496,6 +1501,7 @@ export function App() {
         const pendingPage = latestPageRequest.current;
         if (!pendingPage || pendingPage.viewRequestId !== response.viewRequestId) return;
         latestPageRequest.current = undefined;
+        setFilterBarRequestLifecycle({ settledRequestId: response.viewRequestId });
         if (
           typeof foregroundRequest.current === "object" &&
           foregroundRequest.current.viewRequestId === response.viewRequestId
@@ -1568,6 +1574,7 @@ export function App() {
         acknowledgedRendererSynchronizationId.current = undefined;
         const previous = mutationSnapshot.current;
         latestPageRequest.current = undefined;
+        setFilterBarRequestLifecycle({});
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
         setMutationPending(false);
@@ -1974,6 +1981,7 @@ export function App() {
     };
     latestPageRequest.current = pendingPage;
     foregroundRequest.current = { kind: "page", viewRequestId };
+    setFilterBarRequestLifecycle({ pendingRequestId: viewRequestId });
     desiredColumnWindow.current = columnWindow;
     storeFailedPageRequest(undefined);
     setForegroundError(undefined);
@@ -2083,7 +2091,7 @@ export function App() {
     });
   };
 
-  const applyFilters = (model: FilterModel, options: ApplyFilterOptions = {}) => {
+  const applyFilters = (model: FilterModel, options: ApplyFilterOptions = {}): string | undefined => {
     if (
       importOptionsPendingRef.current ||
       foregroundRequest.current === "mutation" ||
@@ -2117,7 +2125,7 @@ export function App() {
     const currentMetadata = metadataRef.current;
     const failed = failedPageRequestRef.current;
     if (sameDesiredModel && failed && sameFilterModel(nextModel, failed.model)) {
-      requestPage(failed.offset, failed.model, {
+      return requestPage(failed.offset, failed.model, {
         changesView: failed.changesView,
         viewContextId: failed.viewContextId,
         columnWindow: failed.columnWindow,
@@ -2128,7 +2136,6 @@ export function App() {
             ? { filterHistoryUndoTarget }
             : {})
       });
-      return;
     }
     if (
       sameDesiredModel &&
@@ -2139,17 +2146,17 @@ export function App() {
       return;
     }
 
-    requestPage(0, nextModel, {
+    return requestPage(0, nextModel, {
       changesView: true,
       ...(filterHistoryUndoTarget ? { filterHistoryUndoTarget } : {})
     });
   };
 
-  const undoLatestFilter = () => {
+  const undoLatestFilter = (): string | undefined => {
     if (foregroundRequest.current || importOptionsPendingRef.current || stepInspectionTargetRef.current) return;
     const undo = latestConfirmedFilterUndo(confirmedFilterHistoryRef.current, filterModelRef.current);
     if (!undo) return;
-    applyFilters(undo.model, { filterHistoryUndoTarget: undo.target });
+    return applyFilters(undo.model, { filterHistoryUndoTarget: undo.target });
   };
 
   useEffect(() => {
@@ -2825,6 +2832,7 @@ export function App() {
                 disabled={loading || projectionLoading || mutationPending || importOptionsPending || inspectionMode}
                 canUndo={confirmedFilterHistory.entries.length > 0}
                 retainVisible={hasActiveFilters(metadata.filterModel)}
+                requestLifecycle={filterBarRequestLifecycle}
                 onApply={applyFilters}
                 onUndo={undoLatestFilter}
               />
