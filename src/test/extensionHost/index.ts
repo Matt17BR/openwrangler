@@ -308,6 +308,7 @@ const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
   "capitalizeText",
   "lowerText",
   "upperText",
+  "minMaxScale",
   "roundNumber",
   "floorNumber",
   "ceilNumber",
@@ -7182,6 +7183,103 @@ async function exerciseReleasedREditingJourney(
   });
 
   if (phase === "jupyter-r") {
+    recordAcceptanceProgress(`${phase}:editing:min-max-scale-preview-apply-undo`);
+    const minMaxBase = testing.activeSession();
+    assert.ok(minMaxBase, "The restored R session must remain available for Min-max scale.");
+    const scaleColumn = minMaxBase.metadata.schema.find((column) => column.name === "score");
+    assert.ok(scaleColumn, "The packaged R Min-max scale run requires the score column.");
+
+    const minMaxPicker = await openReleasedROperationPicker(testing, workbench, sessionId);
+    app = minMaxPicker.app;
+    const minMaxDialog = minMaxPicker.dialog;
+    await minMaxDialog.getByPlaceholder("Search operations").fill("min-max");
+    await minMaxDialog.getByRole("button", { name: /^Min-max scale\b/u }).click();
+    await minMaxDialog.getByLabel("Numeric column", { exact: true }).selectOption(scaleColumn.id);
+    await minMaxDialog.getByLabel("Output column (blank replaces in place)", { exact: true }).fill("score_scaled");
+    await minMaxDialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const draft = active?.metadata.draftStep;
+        return (
+          active?.sessionId === sessionId &&
+          draft?.kind === "minMaxScale" &&
+          draft.params.column.id === scaleColumn.id &&
+          draft.params.newColumn === "score_scaled" &&
+          active.metadata.schema.at(-1)?.name === "score_scaled"
+        );
+      },
+      30_000,
+      "previewing native R Min-max scale through its visible form"
+    );
+    const minMaxPreview = testing.activeSession();
+    assert.ok(minMaxPreview?.metadata.draftStep?.kind === "minMaxScale");
+    const minMaxOutput = minMaxPreview.metadata.schema.at(-1);
+    assert.ok(minMaxOutput, "The R Min-max scale preview must append one output column.");
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The R Min-max scale preview must reach its renderer."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Min-max scale preview");
+    const minMaxReview = app.getByRole("region", { name: "Draft review" });
+    await minMaxReview.getByText("Min-max scale", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    const minMaxColumnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await minMaxColumnSearch.fill("score_scaled");
+    await app
+      .getByRole("option", { name: /^score_scaled,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await minMaxColumnSearch.press("Enter");
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Min-max scale result");
+    await waitForLocatorText(
+      app.locator(`td[data-grid-row="0"][data-grid-column="${minMaxOutput.position}"]`),
+      (text) => text.trim() === "0",
+      10_000,
+      "the visible R Min-max scale minimum"
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the typed R Min-max scale preview");
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const applied = active?.metadata.steps[0];
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.steps.length === 1 &&
+          applied?.kind === "minMaxScale" &&
+          applied.id === minMaxPreview.metadata.draftStep?.id
+        );
+      },
+      30_000,
+      "applying native R Min-max scale"
+    );
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      "The applied R Min-max scale step must reach its renderer."
+    );
+    app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Min-max scale session");
+    await app.getByRole("button", { name: "Undo", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.steps.length === 0 &&
+          active.metadata.draftStep === undefined &&
+          !active.metadata.schema.some((column) => column.name === "score_scaled")
+        );
+      },
+      30_000,
+      "undoing native R Min-max scale"
+    );
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-min-max-scale`);
+
     recordAcceptanceProgress(`${phase}:editing:numeric-rounding-preview-apply-undo`);
     const roundingBase = testing.activeSession();
     assert.ok(roundingBase, "The restored R session must remain available for numeric rounding.");
