@@ -12,7 +12,7 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -429,6 +429,49 @@ test("Quarto Python acceptance adds one private kernelspec to the prepared R env
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  "Quarto Python acceptance preserves a virtual-environment interpreter symlink",
+  { skip: process.platform === "win32" },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-quarto-venv-"));
+    const resolvedPython = join(directory, "python-real");
+    const venvBin = join(directory, "venv", "bin");
+    const python = join(venvBin, "python");
+    const rscript = join(directory, "Rscript");
+    const rExecutable = join(directory, "R");
+    try {
+      mkdirSync(venvBin, { recursive: true, mode: 0o700 });
+      for (const executable of [resolvedPython, rscript, rExecutable]) {
+        await writeFile(executable, "fake executable\n");
+        await chmod(executable, 0o700);
+      }
+      await symlink(resolvedPython, python);
+      const prepared = await prepareJupyterAcceptanceREnvironment(join(directory, "r"), rscript, {
+        containedBy: directory,
+        environment: Object.freeze({ PATH: "/safe" }),
+        async runCommand() {
+          return { stdout: rExecutable, stderr: "" };
+        }
+      });
+
+      const added = addJupyterAcceptancePythonKernel(prepared, python);
+      const kernel = JSON.parse(await readFile(added.kernelSpecPath, "utf8"));
+      assert.equal(kernel.argv[0], python, "The kernelspec must invoke the virtual-environment entry point.");
+      assert.notEqual(kernel.argv[0], resolvedPython, "The kernelspec must not discard virtual-environment semantics.");
+
+      const invalidPython = join(venvBin, "python-directory");
+      await symlink(directory, invalidPython);
+      assert.throws(
+        () => addJupyterAcceptancePythonKernel(prepared, invalidPython),
+        /existing regular-file interpreter/u,
+        "The invocation path may be a symlink, but its resolved target must still be a regular file."
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+);
 
 test("released-Jupyter R readiness launches only the exact private kernelspec and fixed base-R marker", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-ready-"));

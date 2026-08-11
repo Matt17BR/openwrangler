@@ -1028,10 +1028,9 @@ export function addJupyterAcceptancePythonKernel(prepared, python) {
   const receipt = rAcceptanceBootstrapReceipt(prepared);
   assertEditorAcceptancePrivateRootReceipt(receipt.directoryReceipt);
 
-  let canonicalPython;
   try {
-    canonicalPython = realpathSync(python);
-    const pythonMetadata = lstatSync(canonicalPython, { bigint: true });
+    const resolvedPython = realpathSync(python);
+    const pythonMetadata = lstatSync(resolvedPython, { bigint: true });
     if (!pythonMetadata.isFile() || pythonMetadata.isSymbolicLink()) throw new Error("invalid interpreter");
   } catch {
     throw new Error("Quarto Python acceptance requires an existing regular-file interpreter.");
@@ -1067,7 +1066,7 @@ export function addJupyterAcceptancePythonKernel(prepared, python) {
     kernelSpecPath,
     `${JSON.stringify(
       {
-        argv: [canonicalPython, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+        argv: [python, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
         display_name: QUARTO_PYTHON_ACCEPTANCE_KERNEL_DISPLAY_NAME,
         language: "python",
         metadata: { debugger: false },
