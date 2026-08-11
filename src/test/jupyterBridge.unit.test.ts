@@ -1686,6 +1686,8 @@ describe("notebook command provenance", () => {
     expect(code).not.toContain(".collect(");
     expect(code).not.toContain("getattr(");
     expect(code).toContain("__ow_module.__dict__");
+    expect(code).toContain("openwrangler_runtime.notebook");
+    expect(code).toContain("resolve_live_result");
     expect(parsePySparkNotebookPreflightOutput(preflightText(marker, true, "4.2.0"), marker)).toEqual({
       isPySpark: true,
       version: "4.2.0"
