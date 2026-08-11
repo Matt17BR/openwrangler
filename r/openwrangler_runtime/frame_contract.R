@@ -269,6 +269,58 @@ openwrangler_r_frame_contract <- local({
     format(value, digits = 15L, trim = TRUE, scientific = FALSE, decimal.mark = ".")
   }
 
+  indexed_value_label <- function(label, index, count) {
+    if (count == 1L) label else sprintf("%s[%d]", label, index)
+  }
+
+  display_date_values <- function(values, label) {
+    displays <- tryCatch(
+      format(values, format = "%Y-%m-%d"),
+      error = function(error) NULL
+    )
+    invalid <- if (!is.character(displays) || length(displays) != length(values)) {
+      1L
+    } else {
+      which(is.na(displays) | !grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", displays))
+    }
+    if (length(invalid) != 0L) {
+      abort(
+        "unsupported-cell",
+        sprintf(
+          "%s is outside the supported ISO date range",
+          indexed_value_label(label, invalid[[1L]], length(values))
+        )
+      )
+    }
+    unname(displays)
+  }
+
+  display_datetime_values <- function(values, timezone, label) {
+    display_timezone <- timezone
+    if (is.null(display_timezone) || identical(display_timezone, "")) display_timezone <- "UTC"
+    displays <- tryCatch(
+      format(values, tz = display_timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE),
+      error = function(error) NULL
+    )
+    if (!is.character(displays) || length(displays) != length(values) || anyNA(displays)) {
+      invalid <- if (is.character(displays) && length(displays) == length(values) && anyNA(displays)) {
+        which(is.na(displays))[[1L]]
+      } else {
+        1L
+      }
+      abort(
+        "unsupported-cell",
+        sprintf(
+          "%s is outside the supported datetime range",
+          indexed_value_label(label, invalid, length(values))
+        )
+      )
+    }
+    vapply(seq_along(displays), function(index) {
+      bounded_utf8(displays[[index]], indexed_value_label(label, index, length(values)))
+    }, character(1L), USE.NAMES = FALSE)
+  }
+
   cell_missing <- function() {
     list(kind = "null", raw = NULL, display = "NA", isNull = TRUE, isNaN = FALSE)
   }
@@ -483,19 +535,13 @@ openwrangler_r_frame_contract <- local({
       return(ordinary_cell("string", text, text))
     }
     if (kind == "date") {
-      text <- format(value, format = "%Y-%m-%d")
-      if (!grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", text)) {
-        abort("unsupported-cell", sprintf("%s is outside the supported ISO date range", label))
-      }
+      text <- display_date_values(value, label)[[1L]]
       spend_json_string(budget, text, label, copies = 2L)
       return(ordinary_cell("date", text, text))
     }
     if (kind == "datetime") {
       exact <- exact_double(unclass(value))
-      display_timezone <- semantics$timezone
-      if (is.null(display_timezone) || identical(display_timezone, "")) display_timezone <- "UTC"
-      display <- format(value, tz = display_timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE)
-      display <- bounded_utf8(display, label)
+      display <- display_datetime_values(value, semantics$timezone, label)[[1L]]
       spend_json_string(budget, exact, label)
       spend_json_string(budget, display, label)
       return(ordinary_cell("datetime", exact, display))
@@ -1309,12 +1355,10 @@ openwrangler_r_frame_contract <- local({
       return(vapply(values, display_double, character(1L), USE.NAMES = FALSE))
     }
     if (kind == "date") {
-      return(format(values, format = "%Y-%m-%d"))
+      return(display_date_values(values, "column values"))
     }
     if (kind == "datetime") {
-      display_timezone <- semantics$timezone
-      if (is.null(display_timezone) || identical(display_timezone, "")) display_timezone <- "UTC"
-      return(format(values, tz = display_timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE))
+      return(display_datetime_values(values, semantics$timezone, "column values"))
     }
     if (kind == "difftime") {
       exact <- vapply(as.double(values, units = semantics$units), exact_double, character(1L), USE.NAMES = FALSE)

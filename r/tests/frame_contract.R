@@ -4951,6 +4951,30 @@ infinite_datetime <- data.frame(value = structure(Inf, class = c("POSIXct", "POS
 infinite_datetime_capture <- openwrangler_r_frame_contract$capture_frame(infinite_datetime)
 assert_error(openwrangler_r_frame_contract$materialize_page(infinite_datetime_capture), "unsupported-cell")
 
+out_of_range_date <- data.frame(value = structure(c(2932897, 0), class = "Date"))
+out_of_range_date_capture <- openwrangler_r_frame_contract$capture_frame(out_of_range_date)
+assert_error(
+  openwrangler_r_frame_contract$materialize_column_values(
+    out_of_range_date_capture,
+    profile_reference(out_of_range_date_capture, 1L),
+    search = "no-match"
+  ),
+  "supported ISO date range"
+)
+
+out_of_range_datetime <- data.frame(
+  value = structure(c(1e20, 0), class = c("POSIXct", "POSIXt"), tzone = "UTC")
+)
+out_of_range_datetime_capture <- openwrangler_r_frame_contract$capture_frame(out_of_range_datetime)
+assert_error(
+  openwrangler_r_frame_contract$materialize_column_values(
+    out_of_range_datetime_capture,
+    profile_reference(out_of_range_datetime_capture, 1L),
+    search = "no-match"
+  ),
+  "supported datetime range"
+)
+
 classed_nan_values <- list(
   structure(NaN, class = "Date"),
   structure(NaN, class = c("POSIXct", "POSIXt"), tzone = "UTC"),
