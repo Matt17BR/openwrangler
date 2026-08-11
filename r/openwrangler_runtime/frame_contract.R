@@ -1996,6 +1996,7 @@ openwrangler_r_frame_contract <- local({
     text_length_positions = NULL,
     text_transform_positions = NULL,
     numeric_transform_positions = NULL,
+    min_max_scale_positions = NULL,
     fill_missing_positions = NULL,
     fallback_fill_positions = NULL,
     cast_positions = NULL,
@@ -2014,6 +2015,7 @@ openwrangler_r_frame_contract <- local({
             !is.null(text_length_positions) ||
             !is.null(text_transform_positions) ||
             !is.null(numeric_transform_positions) ||
+            !is.null(min_max_scale_positions) ||
             !is.null(fill_missing_positions) ||
             !is.null(fallback_fill_positions) ||
             !is.null(cast_positions) ||
@@ -2033,6 +2035,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(numeric_transform_positions) && is.null(source_positions)) {
       abort("internal-error", "R numeric-transform outputs require explicit source mappings")
+    }
+    if (!is.null(min_max_scale_positions) && is.null(source_positions)) {
+      abort("internal-error", "R min-max scale outputs require explicit source mappings")
     }
     if (!is.null(fill_missing_positions) && is.null(source_positions)) {
       abort("internal-error", "R fill-missing outputs require explicit source mappings")
@@ -2176,6 +2181,22 @@ openwrangler_r_frame_contract <- local({
         }
         numeric_transform_positions <- as.integer(numeric_transform_positions)
       }
+      if (is.null(min_max_scale_positions)) {
+        min_max_scale_positions <- integer()
+      } else {
+        if (
+          !is.numeric(min_max_scale_positions) ||
+            anyNA(min_max_scale_positions) ||
+            any(!is.finite(min_max_scale_positions)) ||
+            any(min_max_scale_positions != floor(min_max_scale_positions)) ||
+            any(min_max_scale_positions < 1L) ||
+            any(min_max_scale_positions > length(output_schema)) ||
+            anyDuplicated(min_max_scale_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid min-max scale output positions")
+        }
+        min_max_scale_positions <- as.integer(min_max_scale_positions)
+      }
       if (is.null(cast_positions)) {
         cast_positions <- integer()
         cast_dtypes <- character()
@@ -2233,6 +2254,7 @@ openwrangler_r_frame_contract <- local({
         text_length_positions,
         text_transform_positions,
         numeric_transform_positions,
+        min_max_scale_positions,
         fill_missing_positions,
         fallback_fill_positions,
         cast_positions
@@ -2322,6 +2344,13 @@ openwrangler_r_frame_contract <- local({
           ) {
             abort("internal-error", "a derived R frame has an invalid numeric-transform output")
           }
+        } else if (index %in% min_max_scale_positions) {
+          if (
+            !source_column$semantics$kind %in% c("integer", "double", "integer64") ||
+              !identical(output_column$semantics$kind, "double")
+          ) {
+            abort("internal-error", "a derived R frame has an invalid min-max scale output")
+          }
         } else if (index %in% cast_positions) {
           cast_index <- match(index, cast_positions)
           dtype <- cast_dtypes[[cast_index]]
@@ -2393,6 +2422,8 @@ openwrangler_r_frame_contract <- local({
           isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
         } else if (index %in% numeric_transform_positions) {
           isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
+        } else if (index %in% min_max_scale_positions) {
+          TRUE
         } else {
           source_nullable[[index]]
         }
@@ -3114,6 +3145,63 @@ openwrangler_r_frame_contract <- local({
     result
   }
 
+  min_max_scale_values <- function(values) {
+    if (inherits(values, "integer64")) {
+      present <- !is.na(values)
+      scaled <- rep.int(NA_real_, length(values))
+      if (!any(present)) return(scaled)
+
+      present_values <- values[present]
+      minimum <- min(present_values)
+      maximum <- max(present_values)
+      if (isTRUE(minimum == maximum)) {
+        scaled[present] <- 0
+        return(scaled)
+      }
+
+      # A 2^32 limb keeps every quotient and remainder exactly representable
+      # as a double. The final addition is therefore the only rounding step.
+      limb_base_double <- 4294967296
+      limb_base <- bit64::as.integer64("4294967296")
+      quotients <- present_values %/% limb_base
+      remainders <- present_values %% limb_base
+      minimum_quotient <- minimum %/% limb_base
+      minimum_remainder <- minimum %% limb_base
+      maximum_quotient <- maximum %/% limb_base
+      maximum_remainder <- maximum %% limb_base
+      deltas <-
+        (as.double(quotients) - as.double(minimum_quotient)) * limb_base_double +
+        (as.double(remainders) - as.double(minimum_remainder))
+      span <-
+        (as.double(maximum_quotient) - as.double(minimum_quotient)) * limb_base_double +
+        (as.double(maximum_remainder) - as.double(minimum_remainder))
+      if (!is.finite(span) || span <= 0) {
+        abort("internal-error", "R integer64 min-max scaling produced an invalid range")
+      }
+      present_scaled <- pmin(1, pmax(0, deltas / span))
+      present_scaled[present_values == minimum] <- 0
+      present_scaled[present_values == maximum] <- 1
+      scaled[present] <- present_scaled
+      return(scaled)
+    }
+
+    numeric_values <- suppressWarnings(as.double(values))
+    finite <- is.finite(numeric_values)
+    scaled <- rep.int(NA_real_, length(numeric_values))
+    if (!any(finite)) return(scaled)
+
+    finite_values <- numeric_values[finite]
+    minimum <- min(finite_values)
+    maximum <- max(finite_values)
+    if (maximum == minimum) {
+      scaled[finite] <- 0
+    } else {
+      scaled[finite] <- (finite_values - minimum) / (maximum - minimum)
+    }
+    scaled[!is.finite(scaled)] <- NA_real_
+    scaled
+  }
+
   transform_numeric_column_at <- function(
     value,
     position,
@@ -3142,7 +3230,7 @@ openwrangler_r_frame_contract <- local({
     if (!source_column$semantics$kind %in% c("integer", "double", "integer64")) {
       abort("invalid-view-query", sprintf("%s requires a numeric R column", operation))
     }
-    if (!operation %in% c("roundNumber", "floorNumber", "ceilNumber")) {
+    if (!operation %in% c("minMaxScale", "roundNumber", "floorNumber", "ceilNumber")) {
       abort("internal-error", "the R numeric transform is unsupported")
     }
     digits <- signed_whole_number(digits, "digits", .Machine$integer.max)
@@ -3177,7 +3265,9 @@ openwrangler_r_frame_contract <- local({
 
     result <- isolated_snapshot(value, inspected$flavor)
     source_values <- result[[position]]
-    transformed <- if (identical(source_column$semantics$kind, "integer64")) {
+    transformed <- if (identical(operation, "minMaxScale")) {
+      min_max_scale_values(source_values)
+    } else if (identical(source_column$semantics$kind, "integer64")) {
       if (identical(operation, "roundNumber")) round_integer64_values(source_values, digits) else source_values
     } else {
       switch(
@@ -3205,6 +3295,10 @@ openwrangler_r_frame_contract <- local({
 
   round_number_column_at <- function(value, position, old_name, digits = 0, new_name = NULL) {
     transform_numeric_column_at(value, position, old_name, "roundNumber", digits, new_name)
+  }
+
+  min_max_scale_column_at <- function(value, position, old_name, new_name = NULL) {
+    transform_numeric_column_at(value, position, old_name, "minMaxScale", 0, new_name)
   }
 
   floor_number_column_at <- function(value, position, old_name, new_name = NULL) {
@@ -5927,6 +6021,7 @@ openwrangler_r_frame_contract <- local({
     split_text_column_at = split_text_column_at,
     find_replace_column = find_replace_column,
     find_replace_column_at = find_replace_column_at,
+    min_max_scale_column_at = min_max_scale_column_at,
     round_number_column_at = round_number_column_at,
     floor_number_column_at = floor_number_column_at,
     ceil_number_column_at = ceil_number_column_at,
