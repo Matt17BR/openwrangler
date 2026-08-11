@@ -119,7 +119,10 @@ matrix for release candidates or changes that cross all of its boundaries.
   compound-sort priority through the row context menu, Viewing-to-Editing replay, the Rename
   draft/apply/inspection/undo lifecycle, one native
   tibble operation, one keyed `data.table` operation, kernel restart, and the official R terminal and Operations
-  sidebar. Cursor also runs one plain `.R` document where the host supports it; Windows skips R documents. The initial
+  sidebar. On Linux x64, the installed-tooling terminal journey also runs a selected `.R` block through vscode-R's
+  `r.runSelection`, waits for its named-column base frame and tibble to appear in Operations without Refresh, and opens
+  and profiles the base frame. Cursor also runs one plain `.R` document where the host supports it; Windows skips R
+  documents. The initial
   picker still checks base, tibble, `data.table`, and supported `collapse` frames. Focused R runtime and webview tests
   cover the full R operation catalog and document matrix; the representative installed-editor passes check the integration
   seams without repeating that matrix. The profile does not raise either the 300-second hard deadline or the
