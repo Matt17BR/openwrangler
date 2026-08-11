@@ -253,7 +253,8 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
     );
     return false;
   }
-  if (pythonOwner === "r" && !reticulateCellsEnabled(origin)) {
+  const reticulateSetting = pythonOwner === "r" ? reticulateCellsEnabled(origin) : undefined;
+  if (reticulateSetting === false) {
     void vscode.window.showInformationMessage(
       "This Python chunk belongs to knitr, but Quarto reticulate cells are disabled. Enable `quarto.cells.useReticulate`, then try again."
     );
@@ -285,6 +286,10 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
   }
   if (!isCurrentLiterateDocumentOrigin(origin)) {
     showStaleLiterateDocument();
+    return false;
+  }
+  if (reticulateSetting !== undefined && reticulateCellsEnabled(origin) !== reticulateSetting) {
+    showChangedReticulateSetting();
     return false;
   }
   if (!available) {
@@ -322,6 +327,10 @@ async function routeActiveLiterateDocument(providers: LiterateDocumentVariablePr
   }
   if (!isCurrentLiterateDocumentOrigin(origin)) {
     showStaleLiterateDocument();
+    return false;
+  }
+  if (reticulateSetting !== undefined && reticulateCellsEnabled(origin) !== reticulateSetting) {
+    showChangedReticulateSetting();
     return false;
   }
   if (!rSession) return false;
@@ -374,7 +383,9 @@ async function openExistingLiterateSessionOrExplain(
 
 function reticulateCellsEnabled(origin: LiterateDocumentOrigin): boolean {
   if (origin.kind === "rmarkdown") return true;
-  return vscode.workspace.getConfiguration("quarto", origin.document.uri).get<boolean>("cells.useReticulate", true);
+  return (
+    vscode.workspace.getConfiguration("quarto", origin.document.uri).get<unknown>("cells.useReticulate", true) === true
+  );
 }
 
 function reticulateSelection(code: string): string {
@@ -394,6 +405,12 @@ function missingExtensionGuidance(missing: readonly string[]): string {
 function showStaleLiterateDocument(): void {
   void vscode.window.showWarningMessage(
     "The document or cursor changed while its code chunk was running. Return to the chunk and try again."
+  );
+}
+
+function showChangedReticulateSetting(): void {
+  void vscode.window.showWarningMessage(
+    "The Quarto reticulate-cell setting changed while this chunk was starting. Return to the chunk and try again."
   );
 }
 
