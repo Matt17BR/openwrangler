@@ -22346,7 +22346,7 @@ async function capturePackagedSidebarOverviewScene(
     await waitForLocatorText(
       profiles,
       (text) =>
-        !text.includes("Profiling exact dataset statistics") &&
+        !text.includes("Profiling dataset statistics") &&
         ["Missing cells", "Rows with missing values", "Duplicate rows"].every((label) => text.includes(label)),
       30_000,
       "the current sorted draft view to publish exact dataset statistics through Column profiles"

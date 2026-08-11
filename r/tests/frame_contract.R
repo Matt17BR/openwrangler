@@ -3111,11 +3111,14 @@ assert_error(
   ),
   "profile-too-large"
 )
-work_column_count <- 50L
-work_row_count <- floor(openwrangler_r_frame_contract$limits$profileCells / work_column_count) + 1L
-shared_work_column <- rep(1L, work_row_count)
+work_column_count <- 51L
+work_row_count <- openwrangler_r_frame_contract$limits$profileSampleRows + 17L
+shared_work_column <- rep(TRUE, work_row_count)
 bounded_work_frame <- structure(
-  setNames(rep(list(shared_work_column), work_column_count), sprintf("work_%d", seq_len(work_column_count))),
+  c(
+    list(number = as.double(seq_len(work_row_count)), category = rep(c("alpha", "beta"), length.out = work_row_count)),
+    setNames(rep(list(shared_work_column), work_column_count - 2L), sprintf("work_%d", seq_len(work_column_count - 2L)))
+  ),
   class = "data.frame",
   row.names = c(NA_integer_, -work_row_count)
 )
@@ -3124,26 +3127,85 @@ bounded_work_references <- lapply(
   seq_len(work_column_count),
   function(position) profile_reference(bounded_work_capture, position)
 )
-assert_error(
-  openwrangler_r_frame_contract$materialize_summaries(bounded_work_capture, bounded_work_references),
-  "profile-too-large"
+bounded_work_summaries <- openwrangler_r_frame_contract$materialize_summaries(
+  bounded_work_capture,
+  bounded_work_references
 )
-assert_error(
-  openwrangler_r_frame_contract$materialize_dataset_stats(bounded_work_capture),
-  "profile-too-large"
+assert_identical(length(bounded_work_summaries), work_column_count, "a profile above the former cell cap was refused")
+assert_identical(bounded_work_summaries[[1L]]$totalCount, as.double(work_row_count), "large profile row count changed")
+assert_identical(bounded_work_summaries[[1L]]$numeric$min, 1, "large numeric minimum was not exact")
+assert_identical(
+  bounded_work_summaries[[1L]]$numeric$max,
+  as.double(work_row_count),
+  "large numeric maximum was not exact"
 )
+assert_true(is.null(bounded_work_summaries[[1L]]$numeric$median), "a sampled profile mislabeled its median as exact")
+assert_true(is.null(bounded_work_summaries[[1L]]$distinctCount), "a sampled profile invented an exact distinct count")
+assert_identical(bounded_work_summaries[[1L]]$visualization$sampled, TRUE, "large histogram lacked a sample label")
+assert_identical(
+  sum(vapply(bounded_work_summaries[[1L]]$visualization$bins, `[[`, integer(1L), "count")),
+  openwrangler_r_frame_contract$limits$profileSampleRows,
+  "large histogram exceeded its sample"
+)
+assert_identical(bounded_work_summaries[[2L]]$text$minLength, 4L, "large exact text minimum changed")
+assert_identical(bounded_work_summaries[[2L]]$text$maxLength, 5L, "large exact text maximum changed")
+assert_identical(
+  bounded_work_summaries[[2L]]$visualization$sampled,
+  TRUE,
+  "large categorical distribution lacked a sample label"
+)
+assert_identical(
+  bounded_work_summaries[[3L]]$visualization$trueCount,
+  work_row_count,
+  "cheap large boolean counts were sampled"
+)
+assert_true(
+  is.null(bounded_work_summaries[[3L]]$visualization$sampled),
+  "an exact large boolean distribution was labeled sampled"
+)
+bounded_work_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(bounded_work_capture)$stats
+expected_duplicate_sample <- as.integer(floor(
+  openwrangler_r_frame_contract$limits$datasetDuplicateSampleCells / work_column_count
+))
+assert_identical(bounded_work_stats$missingCells, 0, "large dataset missing cells were not exact")
+assert_identical(bounded_work_stats$missingRows, 0L, "large dataset missing rows were not exact")
+assert_identical(bounded_work_stats$duplicateRows, 0L, "large sampled duplicate rows changed")
+assert_identical(
+  bounded_work_stats$duplicateRowsSampleSize,
+  expected_duplicate_sample,
+  "large dataset duplicate sample ignored its cell budget"
+)
+
+former_row_limit <- 1000000L + 1L
 too_tall_frame <- structure(
-  list(value = rep(FALSE, openwrangler_r_frame_contract$limits$profileRows + 1L)),
+  list(value = rep(FALSE, former_row_limit)),
   class = "data.frame",
-  row.names = c(NA_integer_, -(openwrangler_r_frame_contract$limits$profileRows + 1L))
+  row.names = c(NA_integer_, -former_row_limit)
 )
 too_tall_capture <- openwrangler_r_frame_contract$capture_live_frame(function() too_tall_frame)
+too_tall_summary <- openwrangler_r_frame_contract$materialize_summaries(
+  too_tall_capture,
+  list(profile_reference(too_tall_capture, 1L))
+)[[1L]]
+assert_identical(too_tall_summary$totalCount, as.double(former_row_limit), "the former R profile row cap remained")
+assert_identical(too_tall_summary$visualization$falseCount, former_row_limit, "large exact boolean count changed")
+too_tall_stats <- openwrangler_r_frame_contract$materialize_dataset_stats(too_tall_capture)$stats
+assert_identical(
+  too_tall_stats$duplicateRowsSampleSize,
+  openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows,
+  "large duplicate detection did not publish its row sample"
+)
+assert_identical(
+  too_tall_stats$duplicateRows,
+  openwrangler_r_frame_contract$limits$datasetDuplicateSampleRows - 1L,
+  "large duplicate sample count changed"
+)
 assert_error(
-  openwrangler_r_frame_contract$materialize_summaries(
+  openwrangler_r_frame_contract$materialize_column_values(
     too_tall_capture,
-    list(profile_reference(too_tall_capture, 1L))
+    profile_reference(too_tall_capture, 1L)
   ),
-  "profile-too-large"
+  "native R value-scan limit"
 )
 profile_metrics <- openwrangler_r_frame_contract$capture_metrics(base_capture)
 assert_identical(profile_metrics$profileColumns, 10, "projected profile work scanned the wrong number of columns")

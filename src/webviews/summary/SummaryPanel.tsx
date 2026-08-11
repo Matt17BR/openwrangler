@@ -616,7 +616,7 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
 
       {!stats ? (
         <p className="summaryPlaceholder" role="status" aria-live="polite">
-          Profiling exact dataset statistics...
+          Profiling dataset statistics...
         </p>
       ) : (
         <>
@@ -625,7 +625,11 @@ function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined })
             <dd>{stats.missingCells.toLocaleString()}</dd>
             <dt>Rows with missing values</dt>
             <dd>{stats.missingRows.toLocaleString()}</dd>
-            <dt>Duplicate rows</dt>
+            <dt>
+              {stats.duplicateRowsSampleSize === undefined
+                ? "Duplicate rows"
+                : `Duplicate rows (sample of ${stats.duplicateRowsSampleSize.toLocaleString()})`}
+            </dt>
             <dd>{stats.duplicateRows.toLocaleString()}</dd>
           </dl>
 

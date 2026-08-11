@@ -1031,6 +1031,23 @@ describe("native operation commands", () => {
     ]);
   });
 
+  it("labels sampled duplicate statistics in the native Summary view", () => {
+    const sampled = exportableSnapshot("sampled-summary", "sampled.csv", 0);
+    sampled.metadata.stats = {
+      missingCells: 0,
+      missingRows: 0,
+      duplicateRows: 4,
+      duplicateRowsSampleSize: 50_000,
+      missingValuesByColumn: [{ column: "value", count: 0 }]
+    };
+    register(sampled);
+
+    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toContainEqual([
+      "Duplicate rows (sample of 50,000)",
+      "4"
+    ]);
+  });
+
   it("ignores caller-provided export destinations and still opens the Save dialog", async () => {
     register(noDraftSnapshot());
 

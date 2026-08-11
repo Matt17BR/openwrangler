@@ -78,6 +78,7 @@ group_by_precision_session_id <- "63636363-6363-4363-8363-636363636363"
 group_by_export_id <- "64646464-6464-4464-8464-646464646464"
 group_by_tibble_session_id <- "65656565-6565-4565-8565-656565656565"
 group_by_table_session_id <- "67676767-6767-4767-8767-676767676767"
+profile_scale_session_id <- "68686868-6868-4868-8868-686868686868"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -85,6 +86,7 @@ source_environment$frame <- data.frame(
   score = c(1, NA, 2),
   stringsAsFactors = FALSE
 )
+source_environment$profile_scale <- data.frame(value = rep(FALSE, 100001L))
 source_object <- source_environment$frame
 source_before <- unserialize(serialize(source_environment$frame, NULL, version = 3L))
 
@@ -339,6 +341,34 @@ assert_identical(stats_response$totalRows, 3L, "the R agent omitted the dataset-
 assert_identical(stats_response$stats$missingCells, 1L, "the R agent changed missing-cell counts")
 assert_identical(stats_response$stats$missingRows, 1L, "the R agent changed missing-row counts")
 assert_identical(stats_response$stats$duplicateRows, 0L, "the R agent changed duplicate-row counts")
+
+scale_opened <- dispatch(
+  "openSession",
+  list(sessionId = profile_scale_session_id, variableName = "profile_scale", page = page_window(row_limit = 1L))
+)
+assert_identical(scale_opened$kind, "page", "the R agent refused a frame above the profile sample size")
+scale_summary <- dispatch(
+  "getSummary",
+  list(
+    sessionId = profile_scale_session_id,
+    columns = I(list(list(id = "r:c:0", name = "value"))),
+    view = empty_view()
+  )
+)
+assert_identical(
+  scale_summary$summaries[[1L]]$visualization$falseCount,
+  100001L,
+  "the R agent sampled a cheap logical count"
+)
+scale_stats <- dispatch("getDatasetStats", list(sessionId = profile_scale_session_id, view = empty_view()))
+assert_identical(
+  scale_stats$stats$duplicateRowsSampleSize,
+  100000L,
+  "the R agent omitted the duplicate-row sample size"
+)
+assert_identical(scale_stats$stats$duplicateRows, 99999L, "the R agent changed sampled duplicate counts")
+scale_closed <- dispatch("closeSession", list(sessionId = profile_scale_session_id))
+assert_identical(scale_closed$kind, "closed", "the R agent did not close the large profile session")
 
 stale_profile <- dispatch(
   "getSummary",

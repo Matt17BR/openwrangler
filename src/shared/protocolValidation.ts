@@ -1859,12 +1859,19 @@ function isCompatibleTypedSelectionCell(columnType: string, value: unknown): boo
 }
 
 function isDatasetStats(value: unknown): boolean {
-  const candidate = exactRecord(value, ["missingCells", "missingRows", "duplicateRows", "missingValuesByColumn"]);
+  const candidate = exactRecord(
+    value,
+    ["missingCells", "missingRows", "duplicateRows", "missingValuesByColumn"],
+    ["duplicateRowsSampleSize"]
+  );
+  if (candidate === undefined) return false;
+  const sampleSize = candidate.duplicateRowsSampleSize;
   return (
-    candidate !== undefined &&
     isNonNegativeInteger(candidate.missingCells) &&
     isNonNegativeInteger(candidate.missingRows) &&
     isNonNegativeInteger(candidate.duplicateRows) &&
+    (sampleSize === undefined ||
+      (isNonNegativeInteger(sampleSize) && sampleSize > 0 && candidate.duplicateRows < sampleSize)) &&
     isArrayOf(candidate.missingValuesByColumn, isMissingValueCount)
   );
 }

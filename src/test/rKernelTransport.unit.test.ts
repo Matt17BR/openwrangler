@@ -154,6 +154,44 @@ describe("native R kernel protocol", () => {
       kind: "summary",
       summaries: [{ columnId: longDerivedColumnId() }]
     });
+    const sampledSummary = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: summaryRequestId,
+      kind: "summary",
+      sessionId,
+      summaries: [
+        {
+          ...minimalSummary(),
+          totalCount: 1_500_001,
+          distinctCount: undefined,
+          topValues: [],
+          visualization: { kind: "numeric", bins: [{ min: 1, max: 1_500_001, count: 100_000 }], sampled: true }
+        }
+      ]
+    });
+    expect(decodeRKernelResponseJson(sampledSummary, summaryRequestId)).toMatchObject({
+      kind: "summary",
+      summaries: [{ totalCount: 1_500_001, visualization: { sampled: true } }]
+    });
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: summaryRequestId,
+          kind: "summary",
+          sessionId,
+          summaries: [
+            {
+              ...minimalSummary(),
+              distinctCount: undefined,
+              topValues: [],
+              visualization: { kind: "numeric", bins: [{ min: 1, max: 1, count: 1 }], sampled: true }
+            }
+          ]
+        }),
+        summaryRequestId
+      )
+    ).toThrow("inconsistent value counts");
 
     const stats = JSON.stringify({
       transportVersion: R_KERNEL_TRANSPORT_VERSION,
@@ -168,6 +206,19 @@ describe("native R kernel protocol", () => {
       sessionId,
       totalRows: 1,
       stats: { missingCells: 0, missingValuesByColumn: [{ column: "value", count: 0 }] }
+    });
+    const sampledStats = JSON.stringify({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: statsRequestId,
+      kind: "datasetStats",
+      sessionId,
+      totalRows: 1_500_001,
+      stats: { ...minimalDatasetStats(), duplicateRows: 4, duplicateRowsSampleSize: 100_000 }
+    });
+    expect(decodeRKernelResponseJson(sampledStats, statsRequestId)).toMatchObject({
+      kind: "datasetStats",
+      totalRows: 1_500_001,
+      stats: { duplicateRows: 4, duplicateRowsSampleSize: 100_000 }
     });
 
     expect(() =>
@@ -270,6 +321,19 @@ describe("native R kernel protocol", () => {
             duplicateRows: 0,
             missingValuesByColumn: [{ column: "value", count: 1 }]
           }
+        }),
+        statsRequestId
+      )
+    ).toThrow("filtered row count");
+    expect(() =>
+      decodeRKernelResponseJson(
+        JSON.stringify({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: statsRequestId,
+          kind: "datasetStats",
+          sessionId,
+          totalRows: 10,
+          stats: { ...minimalDatasetStats(), duplicateRows: 1, duplicateRowsSampleSize: 11 }
         }),
         statsRequestId
       )

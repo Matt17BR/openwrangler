@@ -908,6 +908,31 @@ describe("protocol-v2 response validation", () => {
     expect(isOpenWranglerResponse({ ...preview, remainingMissingCells: 0 })).toBe(false);
   });
 
+  it("accepts an explicit sample size only for a bounded sampled duplicate count", () => {
+    const response = responses.find((candidate) => candidate.kind === "datasetStats");
+    expect(response?.kind).toBe("datasetStats");
+    if (response?.kind !== "datasetStats") return;
+
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        stats: { ...response.stats, duplicateRows: 2, duplicateRowsSampleSize: 100 }
+      })
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        stats: { ...response.stats, duplicateRowsSampleSize: 0 }
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        stats: { ...response.stats, duplicateRows: 10, duplicateRowsSampleSize: 10 }
+      })
+    ).toBe(false);
+  });
+
   it("rejects incomplete and cross-variant response payloads", () => {
     expect(isOpenWranglerResponse({ kind: "summary", revision: 1, viewRequestId: "view-1" })).toBe(false);
     expect(isOpenWranglerResponse({ kind: "datasetStats", revision: 1, viewRequestId: "view-1", stats: {} })).toBe(

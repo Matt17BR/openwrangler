@@ -115,6 +115,71 @@ describe("App progressive profiling and view correlation", () => {
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
   });
 
+  it("renders sampled string and numeric headers without inventing a zero distinct count", () => {
+    const totalRows = 4_000_017;
+    const largeMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: totalRows, columns: 2 },
+      filteredShape: { rows: totalRows, columns: 2 }
+    };
+    const sampledSummaries: ColumnSummary[] = [
+      {
+        ...citySummary,
+        totalCount: totalRows,
+        distinctCount: undefined,
+        topValues: [
+          { value: "Berlin", count: 60_000 },
+          { value: "Milan", count: 40_000 }
+        ],
+        visualization: {
+          kind: "categorical",
+          categories: [
+            { value: "Berlin", count: 60_000 },
+            { value: "Milan", count: 40_000 }
+          ],
+          otherCount: 0,
+          sampled: true
+        }
+      },
+      {
+        columnId: "c:1",
+        column: "sales",
+        type: "float",
+        rawType: "Float64",
+        totalCount: totalRows,
+        nullCount: 0,
+        nanCount: 0,
+        topValues: [],
+        numeric: { min: 1, max: totalRows, mean: (totalRows + 1) / 2 },
+        visualization: {
+          kind: "numeric",
+          bins: [
+            { min: 1, max: totalRows / 2, count: 50_000 },
+            { min: totalRows / 2, max: totalRows, count: 50_000 }
+          ],
+          sampled: true
+        }
+      }
+    ];
+
+    render(<App />);
+    dispatch({
+      kind: "sessionOpened",
+      metadata: largeMetadata,
+      page: { ...page, totalRows },
+      summaries: sampledSummaries
+    });
+
+    expect(requestsOfKind("getColumnValues")).toHaveLength(0);
+    for (const column of ["city", "sales"]) {
+      const header = document.querySelector<HTMLElement>(`th[data-column="${column}"]`);
+      expect(header).not.toBeNull();
+      expect(within(header as HTMLElement).getByText("Distinct n/a")).toBeVisible();
+      expect(within(header as HTMLElement).getByText("Distribution sampled")).toBeVisible();
+      expect(within(header as HTMLElement).queryByText("Distinct 0%")).not.toBeInTheDocument();
+    }
+  });
+
   it("promotes a pending header profile when its column opens in the drawer", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -917,7 +982,7 @@ describe("App progressive profiling and view correlation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     selectInsightsView("Dataset");
-    expect(screen.getByText("Profiling exact dataset statistics...")).toBeInTheDocument();
+    expect(screen.getByText("Profiling dataset statistics...")).toBeInTheDocument();
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
     const oldStats = requestsOfKind("getDatasetStats")[0];
 
@@ -930,7 +995,7 @@ describe("App progressive profiling and view correlation", () => {
       viewRequestId: viewId(oldStats),
       stats: emptyStats()
     });
-    expect(screen.getByText("Profiling exact dataset statistics...")).toBeInTheDocument();
+    expect(screen.getByText("Profiling dataset statistics...")).toBeInTheDocument();
 
     const sortedFilter = sortedPage.filterModel as FilterModel;
     dispatch({

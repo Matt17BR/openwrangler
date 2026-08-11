@@ -32,6 +32,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   fences in display math, raw TeX, and raw HTML. The action fails closed for ambiguous metadata or terminal
   replacement and asks explicitly when both existing R and Python sessions are available. The public **Run R
   Document** command remains whole-document; the title action owns cursor-only execution.
+- Large R dataframes no longer lose column or dataset profiles at the former row and cell limits. Cheap statistics
+  stay exact through bounded chunk scans; sampled distributions, unavailable distinct counts, percentage denominators,
+  and duplicate-row sample sizes are labeled explicitly.
 - R dataframes now open when an atomic or classed column carries an ordinary aligned `names` attribute. Malformed
   names metadata and unrelated column attributes are still rejected.
 - Python Interactive windows now expose the same **Open in Open Wrangler** action as `.ipynb` notebooks. The action

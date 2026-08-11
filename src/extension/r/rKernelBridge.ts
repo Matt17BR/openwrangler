@@ -1852,11 +1852,13 @@ function assertDatasetStatsContract(
 ): void {
   const rows = result.totalRows;
   const columns = session.schema.length;
+  const duplicateRowsDomain = result.stats.duplicateRowsSampleSize ?? rows;
   if (
     rows > session.rows ||
     (view.filters.length === 0 && rows !== session.rows) ||
     result.stats.missingRows > rows ||
-    result.stats.duplicateRows > Math.max(0, rows - 1) ||
+    duplicateRowsDomain > rows ||
+    result.stats.duplicateRows > Math.max(0, duplicateRowsDomain - 1) ||
     result.stats.missingCells > rows * columns ||
     result.stats.missingValuesByColumn.length !== columns
   ) {
