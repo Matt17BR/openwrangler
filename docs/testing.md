@@ -596,12 +596,13 @@ Every path uses R 4.5.2. Linux runs the local journey in VS Code and Cursor and 
 release candidates also run the complete local journey in VS Code on macOS and Windows. The cross-platform jobs reuse
 the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the complete Python suite or the
 standalone R contract suite.
-The allow phase also starts with a private ordinary Python file and no Interactive Window. It clicks the visible
-**Open in Open Wrangler** editor action once, selects the pinned kernel if Jupyter asks, and checks that the file runs
-once and opens its native Polars dataframe with the expected values. The resulting cell must point back to that source
-file at line zero. The source file must stay byte-for-byte unchanged, and closing the panel must leave no Open Wrangler
-session behind. The same phase then keeps the exact Interactive window active, opens that dataframe again through its
-notebook action, and proves that no cell reran and no second Interactive window was created.
+The allow phase also starts with a private cell-marked Python file and no Interactive Window. It clicks the visible
+**Open in Open Wrangler** editor action once, selects the pinned kernel if Jupyter asks, and checks that only the
+`# %%` cell under the cursor runs and opens its native Polars dataframe with the expected values. The resulting cell
+must point back to that source file at line zero. The source file must stay byte-for-byte unchanged, and closing the
+panel must leave no Open Wrangler session behind. The same phase then keeps the exact Interactive window active,
+checks that Operations lists the dataframe from that kernel, and opens it again through the Interactive window's own
+action without rerunning a cell or creating another Interactive window.
 
 The focused R 4.4/4.5 contract jobs and release contract gate install `readr` and `dplyr` alongside the other frame
 packages because the suite opens actual readr and grouped tibbles rather than hand-built stand-ins.

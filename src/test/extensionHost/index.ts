@@ -10233,6 +10233,7 @@ async function exerciseReleasedPythonFileEntrypoint(
   const source = vscode.Uri.file(sourcePath);
   const sourceBytes = Buffer.from(
     [
+      "# %%",
       "import polars as pl",
       "",
       "python_entry_frame = pl.DataFrame({",
@@ -10240,6 +10241,9 @@ async function exerciseReleasedPythonFileEntrypoint(
       '    "segment": ["alpha", "beta", "gamma"],',
       '    "amount": [12.5, None, 41.25],',
       "})",
+      "",
+      "# %%",
+      'python_entry_not_run = pl.DataFrame({"unexpected": [1]})',
       ""
     ].join("\n"),
     "utf8"
@@ -10263,7 +10267,7 @@ async function exerciseReleasedPythonFileEntrypoint(
       viewColumn: vscode.ViewColumn.One,
       preserveFocus: false
     });
-    sourceEditor.selection = new vscode.Selection(3, 0, 3, 0);
+    sourceEditor.selection = new vscode.Selection(4, 0, 4, 0);
     await waitFor(
       () => vscode.window.activeTextEditor?.document === sourceDocument,
       10_000,
@@ -10389,7 +10393,7 @@ async function exerciseReleasedPythonFileEntrypoint(
     assert.equal(
       associatedCells.length,
       1,
-      "The live session must come from the exact ordinary Python file dispatched by the editor action."
+      "The live session must come from the exact Python cell dispatched by the editor action."
     );
     const page = await assertReleasedSessionPage(testing, active, "910001", "released-jupyter-python-file-polars-page");
     assert.deepEqual(
@@ -10420,6 +10424,28 @@ async function exerciseReleasedPythonFileEntrypoint(
       interactive,
       interactiveEditor,
       "before invoking its Open Wrangler toolbar action"
+    );
+
+    const sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
+    const operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
+    const liveFrame = operations.getByRole("treeitem", { name: /^python_entry_frame\b/u });
+    await liveFrame.waitFor({ state: "visible", timeout: 90_000 });
+    assert.match(
+      (await liveFrame.innerText()).replace(/\s+/gu, " "),
+      /python_entry_frame.*Polars · DataFrame/u,
+      "Operations must expose the dataframe from the exact active Python Interactive kernel."
+    );
+    assert.equal(
+      await operations.getByRole("treeitem", { name: /^python_entry_not_run\b/u }).count(),
+      0,
+      "Opening the first Python cell must not execute a later cell in the source file."
+    );
+
+    await showExactReleasedNotebook(interactive);
+    assertExactVisibleReleasedNotebookEditor(
+      interactive,
+      interactiveEditor,
+      "after checking its Operations dataframe list"
     );
 
     const originalInteractiveDocuments = vscode.workspace.notebookDocuments.filter(
