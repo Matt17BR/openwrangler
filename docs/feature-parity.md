@@ -126,8 +126,9 @@ value search, and column and dataset profiles run in R; the dataframe is not pas
 retain exact cheap statistics through bounded chunk scans, label sampled histograms and categories, show unavailable
 exact distinct counts as `n/a`, and use the sampled population for percentages. Dataset missing counts remain exact;
 sampled duplicate counts publish and display their sample size. The Filters view discovers initial values from a
-labeled, deterministic 100,000-row sample when an R view is larger, while a non-empty exact search retains its
-separate scan bound. Editing mode supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values,
+labeled, deterministic 100,000-row sample when an R view is larger. A non-empty search scans the column in chunks and
+returns exact matching counts without a separate dataset-size limit. Editing mode supports Filter Rows, Sort Rows,
+Drop Missing Rows, Fill Missing Values,
 Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
 Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate. They follow the
 same draft, code preview, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. A
