@@ -63,6 +63,7 @@ export function isCurrentLiterateDocumentOrigin(origin: LiterateDocumentOrigin):
   const editor = vscode.window.activeTextEditor;
   return (
     editor?.document === origin.document &&
+    (editor.viewColumn ?? vscode.ViewColumn.Active) === origin.viewColumn &&
     isUnchangedLiterateDocumentOrigin(origin) &&
     sameSelections(editor.selections, origin.selections)
   );

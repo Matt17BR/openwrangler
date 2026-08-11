@@ -715,13 +715,15 @@ function pythonOriginFromLiterateDocument(
   requireChunk = true
 ): PythonCellOrigin | undefined {
   if (!isCurrentLiterateDocumentOrigin(origin)) return undefined;
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document !== origin.document) return undefined;
   const chunk = origin.chunk;
   if (requireChunk && chunk?.language !== "python") return undefined;
   if (requireChunk && origin.pythonExecutionOwner !== "jupyter") return undefined;
   const startLine = chunk?.openingLine ?? origin.selections[0]?.active.line;
   if (startLine === undefined) return undefined;
   return Object.freeze({
-    editor: origin.editor,
+    editor,
     document: origin.document,
     version: origin.version,
     sourceUri: origin.uri,
@@ -730,8 +732,8 @@ function pythonOriginFromLiterateDocument(
     commandArguments: Object.freeze([chunk?.code ?? ""]),
     startLine,
     endLine: chunk?.closingLine ?? startLine,
-    selection: origin.editor.selection,
-    selections: Object.freeze([...origin.editor.selections]),
+    selection: editor.selection,
+    selections: Object.freeze([...editor.selections]),
     viewColumn: origin.viewColumn,
     literateOrigin: origin
   });
@@ -927,29 +929,41 @@ async function selectKernelAndRestorePythonOrigin(
     );
     return false;
   }
-  const shown = await settleBeforeDeadline(
-    () =>
-      vscode.window.showNotebookDocument(notebook, {
-        viewColumn: origin.viewColumn,
-        preserveFocus: false,
-        preview: false
-      }),
-    operationDeadline
+  const visibleMatches = vscode.window.visibleNotebookEditors.filter(
+    (candidate) => candidate.notebook.uri.toString() === notebook.uri.toString()
   );
-  if (shown.kind === "timedOut") {
-    void vscode.window.showWarningMessage("Jupyter did not finish opening the Interactive Window in time.");
+  if (visibleMatches.length > 1 || (visibleMatches[0] && visibleMatches[0].notebook !== notebook)) {
+    void vscode.window.showWarningMessage(
+      "The Python file or Interactive Window changed while its kernel was being selected. Try again."
+    );
     return false;
   }
-  if (shown.kind === "rejected") {
-    void vscode.window.showWarningMessage("Jupyter could not select a kernel for the Interactive Window.");
-    return false;
+  let notebookEditor = visibleMatches[0];
+  if (!notebookEditor) {
+    const shown = await settleBeforeDeadline(
+      () =>
+        vscode.window.showNotebookDocument(notebook, {
+          viewColumn: origin.viewColumn,
+          preserveFocus: false,
+          preview: false
+        }),
+      operationDeadline
+    );
+    if (shown.kind === "timedOut") {
+      void vscode.window.showWarningMessage("Jupyter did not finish opening the Interactive Window in time.");
+      return false;
+    }
+    if (shown.kind === "rejected") {
+      void vscode.window.showWarningMessage("Jupyter could not select a kernel for the Interactive Window.");
+      return false;
+    }
+    notebookEditor = shown.value;
   }
-  const notebookEditor = shown.value;
   if (
     notebookEditor.notebook !== notebook ||
+    !isExactVisibleNotebookEditor(notebookEditor, notebook) ||
     !isSoleOpenNotebookDocument(notebook) ||
-    !isUnchangedPythonOrigin(origin) ||
-    (origin.literateOrigin !== undefined && vscode.window.activeNotebookEditor !== notebookEditor)
+    !isUnchangedPythonOrigin(origin)
   ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed while its kernel was being selected. Try again."
@@ -971,7 +985,7 @@ async function selectKernelAndRestorePythonOrigin(
   if (
     !isUnchangedPythonOrigin(origin) ||
     !isSoleOpenNotebookDocument(notebook) ||
-    (origin.literateOrigin !== undefined && vscode.window.activeNotebookEditor !== notebookEditor)
+    !isExactVisibleNotebookEditor(notebookEditor, notebook)
   ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed during kernel selection. Try again."
@@ -1007,6 +1021,12 @@ async function selectKernelAndRestorePythonOrigin(
     return false;
   }
   return true;
+}
+
+function isExactVisibleNotebookEditor(editor: vscode.NotebookEditor, notebook: vscode.NotebookDocument): boolean {
+  const uri = notebook.uri.toString();
+  const matches = vscode.window.visibleNotebookEditors.filter((candidate) => candidate.notebook.uri.toString() === uri);
+  return matches.length === 1 && matches[0] === editor && editor.notebook === notebook;
 }
 
 function isUnchangedPythonOrigin(origin: PythonCellOrigin): boolean {
