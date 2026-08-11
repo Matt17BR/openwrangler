@@ -227,10 +227,13 @@ The entry point determines which process owns the session:
   The **Open in Open Wrangler** title action uses this session while it is active. Generated R can be copied or saved,
   but it cannot be inserted because the terminal has no source document.
 - In an `.Rmd` or `.qmd` editor, the primary **Open in Open Wrangler** action detects the fenced chunk at the exact
-  cursor. It runs only that enabled R or Python chunk through the official R, Quarto, or Jupyter integration and then
-  opens a dataframe from the resulting live session. Common labels and `#|` option lines are accepted; Quarto supports
-  backtick and tilde fences, while R Markdown uses backtick fences. Moving the cursor or changing the document while
-  an integration is activating safely cancels the open. The action never renders or executes the complete document.
+  cursor. It runs only that enabled chunk through the document's executor and then opens a dataframe from the
+  resulting live session. R Markdown and knitr/reticulate Quarto Python chunks stay in the selected R terminal;
+  Jupyter Quarto Python chunks use the exact resulting Interactive Window. Common labels and `#|` option lines are
+  accepted; Quarto supports backtick and tilde fences, while R Markdown uses backtick fences. Select the owning R
+  terminal before an R-backed run. Missing integrations, ambiguous executor metadata, a terminal switch, or a changed
+  cursor/document stop the open safely. Outside a runnable chunk, the action asks which session to use when both R and
+  Python are available. It never renders or executes the complete document.
 - On local macOS and Linux workspaces, **Run R Document in Open Wrangler…** runs a trusted `.R` file or the supported
   top-level R cells in an `.Rmd` or `.qmd` document, including unsaved changes. It uses its own R process and follows
   the file start-mode setting, which defaults to Editing. This does not replace Quarto or R Markdown rendering.
