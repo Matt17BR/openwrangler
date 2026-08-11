@@ -29,6 +29,7 @@ import {
   type GroupByTransformStep,
   type InspectStepRequest,
   type LowerTextTransformStep,
+  type MinMaxScaleTransformStep,
   type OpenSessionRequest,
   type OperationKind,
   type OpenWranglerRequest,
@@ -112,6 +113,7 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "capitalizeText",
   "lowerText",
   "upperText",
+  "minMaxScale",
   "roundNumber",
   "floorNumber",
   "ceilNumber",
@@ -134,6 +136,7 @@ type RTransformStep =
   | CapitalizeTextTransformStep
   | LowerTextTransformStep
   | UpperTextTransformStep
+  | MinMaxScaleTransformStep
   | RoundNumberTransformStep
   | FloorNumberTransformStep
   | CeilNumberTransformStep
@@ -716,6 +719,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "capitalizeText" &&
       request.step.kind !== "lowerText" &&
       request.step.kind !== "upperText" &&
+      request.step.kind !== "minMaxScale" &&
       request.step.kind !== "roundNumber" &&
       request.step.kind !== "floorNumber" &&
       request.step.kind !== "ceilNumber" &&
@@ -824,11 +828,20 @@ export class RKernelBridge implements OpenWranglerBridge {
         view,
         request.step.kind === "castColumn"
           ? { columnId: request.step.params.column.id, mode: "mayAdd" }
-          : request.step.kind === "splitText"
-            ? { columnId: `c:step:${request.step.id}:0`, mode: "mayAdd" }
-            : request.step.kind === "fillMissingValues" && request.step.params.replacement.kind === "fallbackColumns"
-              ? { columnId: request.step.params.column.id, mode: "mayRemove" }
-              : undefined
+          : request.step.kind === "minMaxScale"
+            ? {
+                columnId:
+                  request.step.params.newColumn === undefined ||
+                  request.step.params.newColumn === request.step.params.column.name
+                    ? request.step.params.column.id
+                    : `c:step:${request.step.id}:0`,
+                mode: "mayAdd"
+              }
+            : request.step.kind === "splitText"
+              ? { columnId: `c:step:${request.step.id}:0`, mode: "mayAdd" }
+              : request.step.kind === "fillMissingValues" && request.step.params.replacement.kind === "fallbackColumns"
+                ? { columnId: request.step.params.column.id, mode: "mayRemove" }
+                : undefined
       );
       assertMutationDiff(request.step, inputSchema, targetSchema, inputRows, targetRows, result.page, result.diff);
       if ((request.step.kind === "fillMissingValues") !== (result.remainingMissingCells !== undefined)) {
@@ -2212,6 +2225,7 @@ function schemaAfterRStep(
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
   if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step, activeKeyColumnIds);
+  if (step.kind === "minMaxScale") return schemaAfterMinMaxScale(inputSchema, step, activeKeyColumnIds);
   if (isRNumericRoundingStep(step)) return schemaAfterNumericRounding(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (
@@ -2415,6 +2429,79 @@ function schemaAfterNumericRounding(
       nullable: source.nullable
     })
   ]);
+}
+
+function schemaAfterMinMaxScale(
+  inputSchema: readonly ColumnSchema[],
+  step: MinMaxScaleTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The min-max-scale column reference no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (source.rawType !== "integer" && source.rawType !== "double" && source.rawType !== "integer64") {
+    throw new TypeError("Min-max scale requires an R integer, double, or integer64 column.");
+  }
+
+  const outputName = step.params.newColumn;
+  if (outputName !== undefined && outputName.length === 0) {
+    throw new TypeError("The min-max-scale R column name may not be empty.");
+  }
+  const inPlace = isRMinMaxScaleInPlace(step);
+  const targetType = { rawType: "double", type: "float" as const };
+  if (inPlace) {
+    if (activeKeyColumnIds.includes(source.id)) {
+      throw new TypeError(
+        "Min-max scale cannot replace a keyed data.table column in place. Choose a new output column."
+      );
+    }
+    return Object.freeze(
+      inputSchema.map((column) =>
+        Object.freeze(column.id === source.id ? { ...column, ...targetType, nullable: true } : { ...column })
+      )
+    );
+  }
+  if (outputName === undefined) throw new TypeError("Min-max scale requires an output column for an appended result.");
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Min-max scale exceeds the R frame contract column limit.");
+  }
+  if (Buffer.byteLength(outputName, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The min-max-scale R column name exceeds the frame contract limit.");
+  }
+  if (outputName.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The min-max-scale R column name uses Open Wrangler's reserved private row-identity prefix.");
+  }
+  if (inputSchema.some((column) => column.name === outputName)) {
+    throw new TypeError(`The R column name ${JSON.stringify(outputName)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes) {
+    throw new TypeError("The min-max-scale R column identity exceeds the frame contract limit.");
+  }
+  if (inputSchema.some((column) => column.id === id)) {
+    throw new TypeError("The min-max-scale R column identity already exists in the active dataframe.");
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: outputName,
+      position: inputSchema.length,
+      ...targetType,
+      nullable: true
+    })
+  ]);
+}
+
+function isRMinMaxScaleInPlace(step: MinMaxScaleTransformStep): boolean {
+  return step.params.newColumn === undefined || step.params.newColumn === step.params.column.name;
 }
 
 function isRNumericRoundingStep(
@@ -3307,6 +3394,16 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       })
     });
   }
+  if (step.kind === "minMaxScale") {
+    return Object.freeze({
+      id: step.id,
+      kind: "minMaxScale" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
   return Object.freeze({
     id: step.id,
     kind: "renameColumn" as const,
@@ -3531,6 +3628,16 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "minMaxScale") {
+    return {
+      id: step.id,
+      kind: "minMaxScale",
+      params: {
+        column: { ...step.params.column },
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
   return {
     id: step.id,
     kind: "renameColumn",
@@ -3577,6 +3684,7 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "capitalizeText" &&
     step.kind !== "lowerText" &&
     step.kind !== "upperText" &&
+    step.kind !== "minMaxScale" &&
     step.kind !== "roundNumber" &&
     step.kind !== "floorNumber" &&
     step.kind !== "ceilNumber" &&
@@ -3662,8 +3770,13 @@ function inspectionDiff(
   const removedColumns = inputSchema.filter((column) => !outputIds.has(column.id)).map((column) => column.name);
   const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
   const numericRoundingInPlace = isRNumericRoundingStep(step) && isRNumericRoundingInPlace(step);
+  const minMaxScaleInPlace = step.kind === "minMaxScale" && isRMinMaxScaleInPlace(step);
   const changedInPlace =
-    step.kind === "castColumn" || step.kind === "fillMissingValues" || textTransformInPlace || numericRoundingInPlace;
+    step.kind === "castColumn" ||
+    step.kind === "fillMissingValues" ||
+    textTransformInPlace ||
+    numericRoundingInPlace ||
+    minMaxScaleInPlace;
   if (!changedInPlace) {
     return {
       addedRows: 0,
@@ -3792,8 +3905,13 @@ function assertMutationDiff(
   const expectedRemoved = inputSchema.filter((column) => !outputIdSet.has(column.id)).map((column) => column.name);
   const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
   const numericRoundingInPlace = isRNumericRoundingStep(step) && isRNumericRoundingInPlace(step);
+  const minMaxScaleInPlace = step.kind === "minMaxScale" && isRMinMaxScaleInPlace(step);
   const changedInPlace =
-    textTransformInPlace || numericRoundingInPlace || step.kind === "fillMissingValues" || step.kind === "castColumn";
+    textTransformInPlace ||
+    numericRoundingInPlace ||
+    minMaxScaleInPlace ||
+    step.kind === "fillMissingValues" ||
+    step.kind === "castColumn";
   const expectedAdded =
     step.kind === "cloneColumn"
       ? [step.params.newName]
@@ -3803,7 +3921,9 @@ function assertMutationDiff(
           ? [step.params.newColumn as string]
           : isRNumericRoundingStep(step) && !numericRoundingInPlace
             ? [step.params.newColumn as string]
-            : [];
+            : step.kind === "minMaxScale" && !minMaxScaleInPlace
+              ? [step.params.newColumn as string]
+              : [];
   const stepMatches =
     step.kind === "selectColumns"
       ? isDeepStrictEqual(
@@ -3823,7 +3943,9 @@ function assertMutationDiff(
               ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
               : isRNumericRoundingStep(step) && !numericRoundingInPlace
                 ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-                : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+                : step.kind === "minMaxScale" && !minMaxScaleInPlace
+                  ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+                  : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
   const projectedPosition = changedInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
   const changedInput = changedInPlace
     ? inputSchema.find((column) => column.id === step.params.column.id && column.name === step.params.column.name)
