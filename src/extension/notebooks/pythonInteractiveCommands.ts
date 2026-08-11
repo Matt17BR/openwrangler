@@ -884,7 +884,8 @@ function newlyExecutedCell(
 }
 
 function newlyOpenedBlankInteractiveWindow(
-  before: ReadonlySet<vscode.NotebookDocument>
+  before: ReadonlySet<vscode.NotebookDocument>,
+  expectedSourceUri: string
 ):
   | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument }
   | { readonly kind: "missing" }
@@ -895,7 +896,7 @@ function newlyOpenedBlankInteractiveWindow(
       !notebook.isClosed &&
       notebook.notebookType === "interactive" &&
       isSupportedPythonNotebook(notebook) &&
-      isEmptyInteractiveWindow(notebook) &&
+      isEmptyInteractiveWindow(notebook, expectedSourceUri) &&
       isSoleOpenNotebookDocument(notebook)
   );
   if (candidates.length === 0) return { kind: "missing" };
@@ -903,7 +904,7 @@ function newlyOpenedBlankInteractiveWindow(
   return { kind: "found", notebook: candidates[0]! };
 }
 
-function isEmptyInteractiveWindow(notebook: vscode.NotebookDocument): boolean {
+function isEmptyInteractiveWindow(notebook: vscode.NotebookDocument, expectedSourceUri: string): boolean {
   const cells = notebook.getCells();
   if (cells.length === 0) return true;
   if (cells.length !== 1) return false;
@@ -912,7 +913,8 @@ function isEmptyInteractiveWindow(notebook: vscode.NotebookDocument): boolean {
     cell?.kind === vscode.NotebookCellKind.Markup &&
     cell.document.languageId.trim().toLowerCase() === "markdown" &&
     isRecord(cell.metadata) &&
-    !("interactive" in cell.metadata)
+    cell.executionSummary === undefined &&
+    interactiveCellIdentity(cell, expectedSourceUri) === undefined
   );
 }
 
@@ -1083,7 +1085,7 @@ class PythonCellDispatchObserver implements vscode.Disposable {
     | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument }
     | { readonly kind: "missing" }
     | { readonly kind: "ambiguous" } {
-    return newlyOpenedBlankInteractiveWindow(this.beforeInteractiveWindows);
+    return newlyOpenedBlankInteractiveWindow(this.beforeInteractiveWindows, this.origin.sourceUri);
   }
 
   waitForChange(timeoutMs: number): Promise<"changed" | "timedOut" | "cancelled"> {

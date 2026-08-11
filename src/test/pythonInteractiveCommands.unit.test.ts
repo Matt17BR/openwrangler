@@ -582,7 +582,7 @@ describe("Python Interactive Window entry points", () => {
     }
   });
 
-  it("treats Jupyter's markup-only Interactive Window as blank for kernel selection", async () => {
+  it("treats Quarto's unassociated markup scaffold as blank for kernel selection", async () => {
     vi.useFakeTimers();
     try {
       const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
@@ -590,7 +590,11 @@ describe("Python Interactive Window entry points", () => {
       const sourceEditor = textEditor(source, 1);
       pythonMocks.activeTextEditor = sourceEditor;
       const interactive = notebook("untitled:/Interactive-1.interactive", "interactive", []);
-      interactive.cells.push(markupCell(interactive.document));
+      interactive.cells.push(
+        markupCell(interactive.document, {
+          interactive: { uristring: "untitled:/quarto-python-cell.py", lineIndex: 0 }
+        })
+      );
       const frame = polarsFrame("frame");
       pythonMocks.discover.mockResolvedValue({ variables: [frame], truncated: false });
       let runCount = 0;
@@ -670,12 +674,13 @@ describe("Python Interactive Window entry points", () => {
   });
 
   it.each([
-    ["more than Jupyter's single placeholder", "interactive", undefined, 2],
-    ["R notebook metadata", "interactive", "r", 1],
-    ["a regular Jupyter notebook", "jupyter-notebook", undefined, 1]
+    ["more than Jupyter's single placeholder", "interactive", undefined, 2, false],
+    ["R notebook metadata", "interactive", "r", 1, false],
+    ["a regular Jupyter notebook", "jupyter-notebook", undefined, 1, false],
+    ["an exact source association", "interactive", undefined, 1, true]
   ])(
     "does not treat a markup-only Interactive Window with %s as blank",
-    async (_label, notebookType, language, cellCount) => {
+    async (_label, notebookType, language, cellCount, associated) => {
       vi.useFakeTimers();
       try {
         const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
@@ -683,7 +688,12 @@ describe("Python Interactive Window entry points", () => {
         pythonMocks.activeTextEditor = textEditor(source, 1);
         const interactive = notebook("untitled:/Interactive-1.interactive", notebookType, [], language);
         for (let index = 0; index < cellCount; index += 1) {
-          interactive.cells.push(markupCell(interactive.document));
+          interactive.cells.push(
+            markupCell(
+              interactive.document,
+              associated ? { interactive: { uristring: source.uri.toString(), lineIndex: 0 } } : {}
+            )
+          );
         }
         pythonMocks.executeCommand.mockImplementation(async (id: string) => {
           if (id === "jupyter.runcurrentcell") {
@@ -695,7 +705,7 @@ describe("Python Interactive Window entry points", () => {
 
         const opening = command("openWrangler.runPythonCellAndOpenVariable")();
         await settle();
-        await vi.advanceTimersByTimeAsync(10_000);
+        await vi.advanceTimersByTimeAsync(associated ? 120_000 : 10_000);
         await opening;
 
         expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual(["jupyter.runcurrentcell"]);
@@ -1642,13 +1652,16 @@ function interactiveCell(
   } as unknown as vscode.NotebookCell;
 }
 
-function markupCell(notebookDocument: NotebookDocument): vscode.NotebookCell {
+function markupCell(
+  notebookDocument: NotebookDocument,
+  metadata: Readonly<Record<string, unknown>> = {}
+): vscode.NotebookCell {
   return {
     index: notebookDocument.cellCount,
     notebook: notebookDocument,
     kind: vscode.NotebookCellKind.Markup,
     document: { languageId: "markdown" },
-    metadata: {},
+    metadata,
     executionSummary: undefined
   } as unknown as vscode.NotebookCell;
 }
