@@ -43,6 +43,13 @@ interface WatcherProvenance {
   readonly watcherRoot: string;
 }
 
+interface VscodeRWorkspaceApi {
+  readonly workspace: {
+    readonly data?: unknown;
+    readonly onDidChangeTreeData: vscode.Event<unknown>;
+  };
+}
+
 interface AttachRecord {
   readonly pid: number;
   readonly tempdir: string;
@@ -66,11 +73,16 @@ export function createRVscodeWorkspaceWatcher(
   terminal: vscode.Terminal,
   options: RVscodeWorkspaceWatcherOptions = {}
 ): RVscodeWorkspaceWatcher | undefined {
-  const extensionPath = options.extensionPath ?? vscode.extensions.getExtension("REditorSupport.r")?.extensionPath;
+  const rExtension = vscode.extensions.getExtension("REditorSupport.r");
+  const extensionPath = options.extensionPath ?? rExtension?.extensionPath;
   if (!extensionPath) return undefined;
   const provenance = terminalProvenance(terminal, extensionPath);
   if (!provenance) return undefined;
-  return new VscodeWorkspaceWatcher(terminal, provenance, options);
+  const matchingExtension =
+    rExtension?.isActive && path.resolve(rExtension.extensionPath) === path.resolve(extensionPath)
+      ? rExtension
+      : undefined;
+  return new VscodeWorkspaceWatcher(terminal, provenance, options, matchingExtension);
 }
 
 class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
@@ -80,6 +92,8 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
   private readonly retryMs: number;
   private readonly attachTimeoutMs: number;
   private expectedProcessId: number | undefined;
+  private workspaceApi: VscodeRWorkspaceApi | undefined;
+  private workspaceApiSubscription: vscode.Disposable | undefined;
   private session: SessionFiles | undefined;
   private directoryWatcher: FSWatcher | undefined;
   private readTimer: NodeJS.Timeout | undefined;
@@ -96,7 +110,8 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
   constructor(
     readonly terminal: vscode.Terminal,
     private readonly provenance: WatcherProvenance,
-    options: RVscodeWorkspaceWatcherOptions
+    options: RVscodeWorkspaceWatcherOptions,
+    private readonly rExtension: vscode.Extension<unknown> | undefined
   ) {
     this.debounceMs = boundedDelay(options.debounceMs, DEFAULT_DEBOUNCE_MS);
     this.retryMs = boundedDelay(options.retryMs, DEFAULT_RETRY_MS);
@@ -105,13 +120,27 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
 
   readInitial(): Promise<RProcessVariableDiscovery> {
     this.assertUsable();
-    if (this.session) return this.readConsistentWorkspace();
+    if (this.session || this.workspaceApi) return this.readConsistentWorkspace();
     this.initialRead ??= this.initialize();
     return this.initialRead;
   }
 
   private async initialize(): Promise<RProcessVariableDiscovery> {
     const expectedProcessId = await terminalProcessId(this.terminal);
+    const workspaceApi = currentWorkspaceApi(this.rExtension, expectedProcessId);
+    if (workspaceApi) {
+      this.expectedProcessId = expectedProcessId;
+      this.workspaceApi = workspaceApi;
+      this.workspaceApiSubscription = workspaceApi.workspace.onDidChangeTreeData(() => this.scheduleRead());
+      try {
+        const discovery = await this.readInitialApiWorkspace();
+        this.lastSignature = discoverySignature(discovery);
+        return discovery;
+      } catch (error) {
+        this.dispose();
+        throw error;
+      }
+    }
     const session = await this.attachCurrentSession(expectedProcessId);
     this.assertUsable();
     this.expectedProcessId = expectedProcessId;
@@ -134,9 +163,19 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
   async verifyCurrent(): Promise<void> {
     this.assertUsable();
     const expectedProcessId = this.expectedProcessId;
-    const session = this.session;
-    if (!expectedProcessId || !session) throw new Error("The vscode-R workspace watcher is not attached.");
+    const workspaceApi = this.workspaceApi;
+    if (!expectedProcessId) throw new Error("The vscode-R workspace watcher is not attached.");
     await this.assertProcess(expectedProcessId);
+    if (workspaceApi) {
+      const current = currentWorkspaceApi(this.rExtension, expectedProcessId);
+      if (!current || current.workspace !== workspaceApi.workspace) {
+        throw new Error("The vscode-R workspace session changed.");
+      }
+      await this.assertProcess(expectedProcessId);
+      return;
+    }
+    const session = this.session;
+    if (!session) throw new Error("The vscode-R workspace watcher is not attached.");
     await assertDirectoryIdentity(this.provenance.watcherRoot, session.watcherRootIdentity, "vscode-R watcher root");
     await assertDirectoryIdentity(session.tempdir, session.tempdirIdentity, "vscode-R session temp directory");
     await assertDirectoryIdentity(session.sessionRoot, session.sessionRootIdentity, "vscode-R session directory");
@@ -151,6 +190,8 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
     this.cancelAttachWait();
     this.directoryWatcher?.close();
     this.directoryWatcher = undefined;
+    this.workspaceApiSubscription?.dispose();
+    this.workspaceApiSubscription = undefined;
     this.changeEmitter.dispose();
     this.invalidationEmitter.dispose();
   }
@@ -178,6 +219,18 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
 
   private async readConsistentWorkspace(): Promise<RProcessVariableDiscovery> {
     const expectedProcessId = this.expectedProcessId;
+    const workspaceApi = this.workspaceApi;
+    if (expectedProcessId && workspaceApi) {
+      await this.verifyCurrent();
+      const workspace = workspaceApi.workspace.data;
+      if (workspace === undefined) throw new WorkspaceMetadataNotReadyError();
+      const discovery = decodeWorkspaceValue(workspace);
+      if (workspaceApi.workspace.data !== workspace) {
+        throw new Error("The vscode-R workspace changed while Open Wrangler was reading it.");
+      }
+      await this.verifyCurrent();
+      return discovery;
+    }
     const session = this.session;
     if (!expectedProcessId || !session) throw new Error("The vscode-R workspace watcher is not attached.");
     let lastError: unknown;
@@ -224,12 +277,31 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
         lastError = error;
         this.assertUsable();
         await this.assertProcess(expectedProcessId);
+        if (error instanceof OverwrittenAttachRecordError) throw error;
         const remaining = deadline - Date.now();
         if (remaining <= 0) break;
         await this.waitForAttachRetry(Math.min(Math.max(this.retryMs, MIN_ATTACH_POLL_MS), remaining));
       }
     }
     throw lastError instanceof Error ? lastError : new Error("Open Wrangler could not attach to the vscode-R session.");
+  }
+
+  private async readInitialApiWorkspace(): Promise<RProcessVariableDiscovery> {
+    const deadline = Date.now() + this.attachTimeoutMs;
+    while (true) {
+      try {
+        return await this.readConsistentWorkspace();
+      } catch (error) {
+        if (!(error instanceof WorkspaceMetadataNotReadyError)) throw error;
+        this.assertUsable();
+        const expectedProcessId = this.expectedProcessId;
+        if (!expectedProcessId) throw error;
+        await this.assertProcess(expectedProcessId);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw error;
+        await this.waitForAttachRetry(Math.min(Math.max(this.retryMs, MIN_ATTACH_POLL_MS), remaining));
+      }
+    }
   }
 
   private async assertAttach(expectedProcessId: number, expectedTempdir: string): Promise<void> {
@@ -252,6 +324,8 @@ class VscodeWorkspaceWatcher implements RVscodeWorkspaceWatcher {
     this.cancelAttachWait();
     this.directoryWatcher?.close();
     this.directoryWatcher = undefined;
+    this.workspaceApiSubscription?.dispose();
+    this.workspaceApiSubscription = undefined;
     this.invalidationEmitter.fire();
   }
 
@@ -358,9 +432,14 @@ function decodeAttachRecord(payload: string, expectedProcessId: number): AttachR
   } catch {
     throw new Error("The vscode-R session record is malformed.");
   }
+  if (!isRecord(value)) throw new Error("The vscode-R session record is malformed.");
+  if (value.command !== "attach") {
+    if (value.pid === expectedProcessId) {
+      throw new OverwrittenAttachRecordError();
+    }
+    throw new Error("The selected terminal does not match the current vscode-R session record.");
+  }
   if (
-    !isRecord(value) ||
-    value.command !== "attach" ||
     value.pid !== expectedProcessId ||
     !Number.isSafeInteger(value.pid) ||
     !isAbsolutePath(value.tempdir) ||
@@ -378,9 +457,17 @@ function decodeWorkspace(payload: string): RProcessVariableDiscovery {
   } catch {
     throw new Error("The vscode-R workspace metadata is malformed.");
   }
-  if (!isRecord(value) || !isRecord(value.globalenv)) {
+  return decodeWorkspaceValue(value);
+}
+
+function decodeWorkspaceValue(value: unknown): RProcessVariableDiscovery {
+  if (!isRecord(value)) {
     throw new Error("The vscode-R workspace metadata is malformed.");
   }
+  if (value.globalenv === null) {
+    throw new Error("vscode-R workspace watching is unavailable for this session.");
+  }
+  if (!isRecord(value.globalenv)) throw new Error("The vscode-R workspace metadata is malformed.");
   const candidates = Object.entries(value.globalenv);
   const variables: RProcessVariableDescriptor[] = [];
   let truncated = false;
@@ -395,6 +482,42 @@ function decodeWorkspace(payload: string): RProcessVariableDiscovery {
     variables.push(Object.freeze({ name, backend: "r", dataframeFlavor: flavor }));
   }
   return Object.freeze({ variables: Object.freeze(variables), truncated });
+}
+
+function currentWorkspaceApi(
+  extension: vscode.Extension<unknown> | undefined,
+  expectedProcessId: number
+): VscodeRWorkspaceApi | undefined {
+  if (!extension?.isActive || !isRecord(extension.exports)) return undefined;
+  const workspace = extension.exports.rWorkspace;
+  const status = extension.exports.sessionStatusBarItem;
+  if (!isRecord(workspace) || typeof workspace.onDidChangeTreeData !== "function" || !isRecord(status)) {
+    return undefined;
+  }
+  const tooltip = status.tooltip;
+  const tooltipText =
+    typeof tooltip === "string"
+      ? tooltip
+      : isRecord(tooltip) && typeof tooltip.value === "string"
+        ? tooltip.value
+        : undefined;
+  const processMatch = tooltipText ? /(?:^|\n)Process ID:\s*(\d+)(?:\n|$)/u.exec(tooltipText) : undefined;
+  if (!processMatch || Number(processMatch[1]) !== expectedProcessId) return undefined;
+  return Object.freeze({
+    workspace: workspace as unknown as VscodeRWorkspaceApi["workspace"]
+  });
+}
+
+class WorkspaceMetadataNotReadyError extends Error {
+  constructor() {
+    super("The vscode-R workspace metadata is not ready.");
+  }
+}
+
+class OverwrittenAttachRecordError extends Error {
+  constructor() {
+    super("vscode-R no longer exposes the attach record for this active session.");
+  }
 }
 
 function dataframeFlavor(metadata: unknown): RDataframeFlavor | undefined {
