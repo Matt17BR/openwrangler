@@ -216,6 +216,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     if (!requireTrustedRSession()) return false;
     if (this.disposed) return false;
     if (origin && !isCurrentLiterateDocumentOrigin(origin)) return false;
+    const documentOrigin = fresh ? origin : undefined;
     const cached = fresh ? undefined : this.cachedPickerState();
     if (cached) return this.chooseCachedAndOpen(cached, origin);
 
@@ -307,7 +308,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
       return false;
     }
     if (!this.managedTransports.delete(transport)) return false;
-    return this.openWithTransport(transport, picked.variable, origin);
+    return this.openWithTransport(transport, picked.variable, documentOrigin);
   }
 
   private cachedPickerState(): CachedRInteractivePickerState | undefined {
@@ -376,7 +377,7 @@ class RInteractiveVariableCoordinator implements RLiveVariableProvider, Literate
     }
     this.generation += 1;
     this.replaceSnapshot(idleSnapshot(state.terminal));
-    return this.openWithTransport(state.transport, cached.variable, origin);
+    return this.openWithTransport(state.transport, cached.variable);
   }
 
   private isCurrentCachedPicker(state: CachedRInteractivePickerState): boolean {
