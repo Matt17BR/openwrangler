@@ -16,8 +16,6 @@ openwrangler_r_frame_contract <- local({
   maximum_profile_chunk_rows <- 65536L
   maximum_dataset_duplicate_sample_rows <- 100000L
   maximum_dataset_duplicate_sample_cells <- 5000000L
-  maximum_column_value_rows <- 1000000L
-  maximum_column_value_cells <- 5000000L
   maximum_top_values <- 10L
   maximum_histogram_bins <- 20L
   maximum_cached_sort_columns <- 4L
@@ -1245,22 +1243,6 @@ openwrangler_r_frame_contract <- local({
     resolved
   }
 
-  validate_column_value_work <- function(row_count, column_count, label) {
-    cell_count <- as.double(row_count) * as.double(column_count)
-    if (row_count > maximum_column_value_rows || cell_count > maximum_column_value_cells) {
-      abort(
-        "profile-too-large",
-        sprintf(
-          "%s exceeds the exact native R value-scan limit of %d rows and %.0f cells",
-          label,
-          maximum_column_value_rows,
-          maximum_column_value_cells
-        )
-      )
-    }
-    invisible(NULL)
-  }
-
   validate_profile_column <- function(column, semantics, label) {
     validated <- column_semantics(column, label, new_payload_budget(), validate_values = TRUE)
     if (!identical(validated, semantics)) source_changed()
@@ -1312,6 +1294,102 @@ openwrangler_r_frame_contract <- local({
       as.double(values)
     }
     vapply(numeric_values, exact_double, character(1L), USE.NAMES = FALSE)
+  }
+
+  profile_value_displays <- function(column, semantics, indices, keys = NULL) {
+    if (length(indices) == 0L) return(character())
+    kind <- semantics$kind
+    if (kind %in% c("logical", "integer", "integer64", "character", "factor")) {
+      return(keys %||% profile_value_keys(column, semantics, indices))
+    }
+    values <- column[indices]
+    if (kind == "double") {
+      return(vapply(values, display_double, character(1L), USE.NAMES = FALSE))
+    }
+    if (kind == "date") {
+      return(format(values, format = "%Y-%m-%d"))
+    }
+    if (kind == "datetime") {
+      display_timezone <- semantics$timezone
+      if (is.null(display_timezone) || identical(display_timezone, "")) display_timezone <- "UTC"
+      return(format(values, tz = display_timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE))
+    }
+    if (kind == "difftime") {
+      exact <- vapply(as.double(values, units = semantics$units), exact_double, character(1L), USE.NAMES = FALSE)
+      return(paste(exact, semantics$units))
+    }
+    abort("internal-error", "unknown R column kind")
+  }
+
+  chunked_searched_value_counts <- function(column, semantics, row_positions, row_count, search) {
+    counts_by_key <- new.env(hash = TRUE, parent = emptyenv())
+    key_batches <- list()
+    source_batches <- list()
+    batch_count <- 0L
+    folded_search <- ascii_fold(search)
+    start <- 1
+    while (start <= row_count) {
+      count <- min(maximum_profile_chunk_rows, row_count - start + 1)
+      source_positions <- profile_chunk_source_positions(row_positions, start, count)
+      chunk <- column[source_positions]
+      validate_profile_column(chunk, semantics, "column values")
+      missing <- profile_missing_masks(chunk, semantics)
+      present_indices <- which(!missing$null & !missing$nan)
+      if (length(present_indices) != 0L) {
+        keys <- profile_value_keys(chunk, semantics, present_indices)
+        displays <- profile_value_displays(chunk, semantics, present_indices, keys)
+        keep <- grepl(folded_search, ascii_fold(displays), fixed = TRUE)
+        if (any(keep)) {
+          matching_indices <- present_indices[keep]
+          matching_keys <- keys[keep]
+          first <- !duplicated(matching_keys)
+          unique_keys <- matching_keys[first]
+          first_sources <- source_positions[matching_indices[first]]
+          chunk_counts <- tabulate(match(matching_keys, unique_keys), nbins = length(unique_keys))
+          new_keys <- character(length(unique_keys))
+          new_sources <- integer(length(unique_keys))
+          new_count <- 0L
+          for (index in seq_along(unique_keys)) {
+            key <- unique_keys[[index]]
+            environment_key <- paste0(":", key)
+            if (exists(environment_key, envir = counts_by_key, inherits = FALSE)) {
+              assign(
+                environment_key,
+                get(environment_key, envir = counts_by_key, inherits = FALSE) + chunk_counts[[index]],
+                envir = counts_by_key
+              )
+            } else {
+              assign(environment_key, as.double(chunk_counts[[index]]), envir = counts_by_key)
+              new_count <- new_count + 1L
+              new_keys[[new_count]] <- key
+              new_sources[[new_count]] <- first_sources[[index]]
+            }
+          }
+          if (new_count != 0L) {
+            batch_count <- batch_count + 1L
+            key_batches[[batch_count]] <- new_keys[seq_len(new_count)]
+            source_batches[[batch_count]] <- new_sources[seq_len(new_count)]
+          }
+        }
+      }
+      start <- start + count
+    }
+    if (batch_count == 0L) {
+      return(list(keys = character(), firstSources = integer(), counts = numeric()))
+    }
+    keys <- unlist(key_batches, use.names = FALSE)
+    list(
+      keys = keys,
+      firstSources = unlist(source_batches, use.names = FALSE),
+      counts = vapply(
+        paste0(":", keys),
+        get,
+        numeric(1L),
+        envir = counts_by_key,
+        inherits = FALSE,
+        USE.NAMES = FALSE
+      )
+    )
   }
 
   profile_value_counts <- function(column, semantics, present_indices, budget, label) {
@@ -5830,59 +5908,64 @@ openwrangler_r_frame_contract <- local({
     frame <- read_capture_frame(capture)
     view <- view_row_positions(capture, frame, view_query, apply_sorts = FALSE)
     source_column <- frame[[resolved_column$position]]
-    initial_discovery <- is.null(search) || identical(search, "")
-    sampled <- initial_discovery && view$totalRows > maximum_profile_sample_rows
-    if (sampled) {
-      logical_positions <- deterministic_sample_positions(view$totalRows, maximum_profile_sample_rows)
-      source_positions <- if (is.null(view$rows)) logical_positions else view$rows[logical_positions]
-      column <- source_column[source_positions]
-    } else {
-      validate_column_value_work(view$totalRows, 1L, "The requested R column-value search")
-      column <- if (is.null(view$rows)) source_column else source_column[view$rows]
-    }
     column_descriptor <- descriptor$schema[[resolved_column$position]]
     semantics <- column_descriptor$semantics
-    validate_profile_column(column, semantics, "column values")
-    missing <- profile_missing_masks(column, semantics)
-    present_indices <- which(!missing$null & !missing$nan)
+    initial_discovery <- is.null(search) || identical(search, "")
+    sampled <- initial_discovery && view$totalRows > maximum_profile_sample_rows
     budget <- new_payload_budget(capture$metadataBytes)
     spend_payload_budget(budget, summary_fixed_bytes, "R column values")
-    finish <- function(values, has_more) {
+    finish <- function(values, has_more, sample_size = NULL) {
       result <- list(
         column = column_descriptor$name,
         values = values,
         hasMore = isTRUE(has_more) || sampled
       )
-      if (sampled) result$sampleSize <- length(column)
+      if (!is.null(sample_size)) result$sampleSize <- sample_size
       result
     }
-    if (length(present_indices) == 0L) {
+
+    if (!initial_discovery) {
+      searched <- chunked_searched_value_counts(
+        source_column,
+        semantics,
+        view$rows,
+        view$totalRows,
+        search
+      )
+      value_column <- source_column
+      unique_keys <- searched$keys
+      first_indices <- searched$firstSources
+      counts <- searched$counts
+    } else if (sampled) {
+      logical_positions <- deterministic_sample_positions(view$totalRows, maximum_profile_sample_rows)
+      source_positions <- if (is.null(view$rows)) logical_positions else view$rows[logical_positions]
+      column <- source_column[source_positions]
+    } else {
+      column <- if (is.null(view$rows)) source_column else source_column[view$rows]
+    }
+    if (initial_discovery) {
+      validate_profile_column(column, semantics, "column values")
+      missing <- profile_missing_masks(column, semantics)
+      present_indices <- which(!missing$null & !missing$nan)
+      if (length(present_indices) == 0L) {
+        return(finish(json_array(list()), FALSE, if (sampled) length(column) else NULL))
+      }
+      keys <- profile_value_keys(column, semantics, present_indices)
+      first <- !duplicated(keys)
+      unique_keys <- keys[first]
+      first_indices <- present_indices[first]
+      counts <- tabulate(match(keys, unique_keys), nbins = length(unique_keys))
+      value_column <- column
+    }
+    if (length(first_indices) == 0L) {
       return(finish(json_array(list()), FALSE))
     }
-    keys <- profile_value_keys(column, semantics, present_indices)
-    if (!is.null(search) && !identical(search, "")) {
-      displays <- vapply(seq_along(present_indices), function(index) {
-        encode_value(column, semantics, present_indices[[index]], "column value search", new_payload_budget())$display
-      }, character(1L), USE.NAMES = FALSE)
-      keep <- grepl(ascii_fold(search), ascii_fold(displays), fixed = TRUE)
-      present_indices <- present_indices[keep]
-      keys <- keys[keep]
-    }
-    if (length(present_indices) == 0L) {
-      return(finish(json_array(list()), FALSE))
-    }
-    first <- !duplicated(keys)
-    unique_keys <- keys[first]
-    first_indices <- present_indices[first]
-    counts <- tabulate(match(keys, unique_keys), nbins = length(unique_keys))
-    displays <- vapply(seq_along(first_indices), function(index) {
-      encode_value(column, semantics, first_indices[[index]], "column value order", new_payload_budget())$display
-    }, character(1L), USE.NAMES = FALSE)
+    displays <- profile_value_displays(value_column, semantics, first_indices, unique_keys)
     priority <- base::order(-counts, displays, seq_along(counts), method = "radix")
     selected <- utils::head(priority, limit)
     values <- lapply(seq_along(selected), function(result_index) {
       source_index <- first_indices[[selected[[result_index]]]]
-      encoded <- encode_value(column, semantics, source_index, sprintf("column value %d", result_index), budget)
+      encoded <- encode_value(value_column, semantics, source_index, sprintf("column value %d", result_index), budget)
       if (identical(semantics$kind, "double") && identical(unique_keys[[selected[[result_index]]]], "0")) {
         encoded <- ordinary_cell("number", "0", "0")
       }
@@ -5901,7 +5984,7 @@ openwrangler_r_frame_contract <- local({
         )
       )
     })
-    finish(json_array(values), length(priority) > limit)
+    finish(json_array(values), length(priority) > limit, if (sampled) length(column) else NULL)
   }
 
   materialize_page <- function(
@@ -6072,8 +6155,6 @@ openwrangler_r_frame_contract <- local({
       profileChunkRows = maximum_profile_chunk_rows,
       datasetDuplicateSampleRows = maximum_dataset_duplicate_sample_rows,
       datasetDuplicateSampleCells = maximum_dataset_duplicate_sample_cells,
-      columnValueRows = maximum_column_value_rows,
-      columnValueCells = maximum_column_value_cells,
       topValues = maximum_top_values,
       histogramBins = maximum_histogram_bins,
       cachedSortColumns = maximum_cached_sort_columns,
