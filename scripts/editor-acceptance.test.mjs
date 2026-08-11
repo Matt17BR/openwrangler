@@ -497,13 +497,50 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
   );
   const oneTab = recoveredSection.indexOf("matchingTabs.length,");
   const hydration = recoveredSection.indexOf("testing.panelHydrated(active.sessionId)", oneTab);
-  const synchronizedApp = recoveredSection.indexOf("const recoveredApp = await synchronizedSessionApp(", hydration);
-  const grid = recoveredSection.indexOf("const grid = recoveredApp.getByRole", synchronizedApp);
-  assert.ok(
-    oneTab >= 0 && hydration > oneTab && synchronizedApp > hydration && grid > synchronizedApp,
-    "Dependency recovery must keep one tab, await hydration, and then bind the current receipt-backed renderer."
+  const hydratedCheckpoint = recoveredSection.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:renderer-hydrated")',
+    hydration
   );
-  assert.doesNotMatch(recoveredSection, /install\.target\.frame|\bsameApp\b|testing\.synchronizePanel/u);
+  const verifyGrid = recoveredSection.indexOf("await verifyRecoveredExcelGrid(", hydratedCheckpoint);
+  const runtimePage = recoveredSection.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:runtime-page")',
+    verifyGrid
+  );
+  assert.ok(
+    oneTab >= 0 &&
+      hydration > oneTab &&
+      hydratedCheckpoint > hydration &&
+      verifyGrid > hydratedCheckpoint &&
+      runtimePage > verifyGrid,
+    "Dependency recovery must keep one tab, await natural hydration, bind the current renderer, and then query the runtime."
+  );
+  assert.doesNotMatch(
+    recoveredSection,
+    /synchronizedSessionApp|requireFreshExactSessionPanelHydration|testing\.synchronizePanel|ensurePanelSynchronized/u
+  );
+  assert.doesNotMatch(recoveredSection, /install\.target\.frame|\bsameApp\b/u);
+
+  const verifier = journey.slice(
+    journey.indexOf("async function verifyRecoveredExcelGrid("),
+    journey.indexOf("function excelDependencyInstallDiagnostics(")
+  );
+  const receipt = verifier.indexOf("testing.panelSynchronizationReceipt(sessionId)");
+  const currentTarget = verifier.indexOf("findCurrentOpenWranglerGridTarget(", receipt);
+  const gridBound = verifier.indexOf('recordAcceptanceProgress("excel-dependency-install:grid-bound")', currentTarget);
+  const gridKeyboard = verifier.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:grid-keyboard")',
+    gridBound
+  );
+  assert.ok(
+    receipt >= 0 && currentTarget > receipt && gridBound > currentTarget && gridKeyboard > gridBound,
+    "Recovered XLSX verification must follow the acknowledged receipt through grid binding and keyboard use."
+  );
+  assert.match(verifier, /sameRendererSynchronizationReceipt/u);
+  assert.match(verifier, /ignoreRetiredRendererProbeFailure/u);
+  assert.doesNotMatch(
+    verifier,
+    /synchronizedSessionApp|requireFreshExactSessionPanelHydration|testing\.synchronizePanel|ensurePanelSynchronized/u
+  );
 });
 
 test("native R tooling pins Quarto to an internal revealed preview", async () => {
