@@ -877,7 +877,8 @@ textarea {
 .viewFilterBarActions,
 .viewFilterRow,
 .viewFilterColumn,
-.viewFilterRules {
+.viewFilterRules,
+.viewFilterValueGroup {
   align-items: center;
   display: flex;
 }
@@ -961,6 +962,18 @@ textarea {
   flex-wrap: wrap;
   gap: 4px;
   min-width: 0;
+}
+
+.viewFilterValueGroup {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.viewFilterValueLogic {
+  color: var(--vscode-descriptionForeground);
+  flex: 0 0 auto;
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .viewFilterChip {

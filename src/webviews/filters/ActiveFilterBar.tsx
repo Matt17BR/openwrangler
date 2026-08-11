@@ -104,6 +104,7 @@ export function ActiveFilterBar({
             const columnLabel = activeFilterColumnLabel(filter.column, metadata);
             const conditionCount = activeFilterConditionCount(filter);
             const rowLogic = filter.logic === "or" ? "any" : "all";
+            const valueChoiceCount = activeValueChoiceCount(filter);
             return (
               <div
                 key={filter.column}
@@ -121,58 +122,71 @@ export function ActiveFilterBar({
                   {conditionCount > 1 && <small className="viewFilterRowLogic">Match {rowLogic}</small>}
                 </span>
                 <div className="viewFilterRules">
-                  {(filter.valueFilter?.selectedValues ?? []).map((value) => {
-                    const summary = `equals ${filterValueLabel(value)}`;
-                    return (
-                      <FilterChip
-                        key={`value:${selectionValueKey(value)}`}
-                        columnLabel={columnLabel}
-                        summary={summary}
-                        disabled={disabled}
-                        onRemove={(trigger) =>
-                          applyRuleRemoval(
-                            {
-                              ...filter,
-                              valueFilter: filter.valueFilter
-                                ? {
-                                    ...filter.valueFilter,
-                                    selectedValues: filter.valueFilter.selectedValues.filter(
-                                      (candidate) => selectionValueKey(candidate) !== selectionValueKey(value)
-                                    )
-                                  }
-                                : undefined
-                            },
-                            trigger
-                          )
-                        }
-                      />
-                    );
-                  })}
-                  {filter.valueFilter?.includeNulls && (
-                    <FilterChip
-                      columnLabel={columnLabel}
-                      summary="is null"
-                      disabled={disabled}
-                      onRemove={(trigger) =>
-                        applyRuleRemoval(
-                          { ...filter, valueFilter: { ...filter.valueFilter!, includeNulls: false } },
-                          trigger
-                        )
-                      }
-                    />
-                  )}
-                  {filter.valueFilter?.includeNaN && (
-                    <FilterChip
-                      columnLabel={columnLabel}
-                      summary="is NaN"
-                      disabled={disabled}
-                      onRemove={(trigger) =>
-                        applyRuleRemoval(
-                          { ...filter, valueFilter: { ...filter.valueFilter!, includeNaN: false } },
-                          trigger
-                        )
-                      }
-                    />
+                  {valueChoiceCount > 0 && (
+                    <div
+                      className="viewFilterValueGroup"
+                      role="group"
+                      aria-label={`${columnLabel}: match any selected value`}
+                    >
+                      {valueChoiceCount > 1 && (
+                        <small className="viewFilterValueLogic" title="Match any selected value, null, or NaN">
+                          Any value
+                        </small>
+                      )}
+                      {(filter.valueFilter?.selectedValues ?? []).map((value) => {
+                        const summary = `equals ${filterValueLabel(value)}`;
+                        return (
+                          <FilterChip
+                            key={`value:${selectionValueKey(value)}`}
+                            columnLabel={columnLabel}
+                            summary={summary}
+                            disabled={disabled}
+                            onRemove={(trigger) =>
+                              applyRuleRemoval(
+                                {
+                                  ...filter,
+                                  valueFilter: filter.valueFilter
+                                    ? {
+                                        ...filter.valueFilter,
+                                        selectedValues: filter.valueFilter.selectedValues.filter(
+                                          (candidate) => selectionValueKey(candidate) !== selectionValueKey(value)
+                                        )
+                                      }
+                                    : undefined
+                                },
+                                trigger
+                              )
+                            }
+                          />
+                        );
+                      })}
+                      {filter.valueFilter?.includeNulls && (
+                        <FilterChip
+                          columnLabel={columnLabel}
+                          summary="is null"
+                          disabled={disabled}
+                          onRemove={(trigger) =>
+                            applyRuleRemoval(
+                              { ...filter, valueFilter: { ...filter.valueFilter!, includeNulls: false } },
+                              trigger
+                            )
+                          }
+                        />
+                      )}
+                      {filter.valueFilter?.includeNaN && (
+                        <FilterChip
+                          columnLabel={columnLabel}
+                          summary="is NaN"
+                          disabled={disabled}
+                          onRemove={(trigger) =>
+                            applyRuleRemoval(
+                              { ...filter, valueFilter: { ...filter.valueFilter!, includeNaN: false } },
+                              trigger
+                            )
+                          }
+                        />
+                      )}
+                    </div>
                   )}
                   {filter.predicates.map((predicate, index) => {
                     return (
@@ -204,11 +218,14 @@ export function ActiveFilterBar({
 }
 
 function activeFilterConditionCount(filter: ColumnFilter): number {
+  return (activeValueChoiceCount(filter) > 0 ? 1 : 0) + filter.predicates.length;
+}
+
+function activeValueChoiceCount(filter: ColumnFilter): number {
   return (
     (filter.valueFilter?.selectedValues.length ?? 0) +
     (filter.valueFilter?.includeNulls ? 1 : 0) +
-    (filter.valueFilter?.includeNaN ? 1 : 0) +
-    filter.predicates.length
+    (filter.valueFilter?.includeNaN ? 1 : 0)
   );
 }
 

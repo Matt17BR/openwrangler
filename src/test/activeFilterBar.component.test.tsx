@@ -91,13 +91,17 @@ describe("ActiveFilterBar", () => {
 
     const bar = screen.getByRole("region", { name: "Viewing filters" });
     expect(within(bar).getByText("2 filtered columns; match any")).toBeVisible();
-    const cityFilters = within(bar).getByRole("group", {
-      name: "city filters, match any conditions within this column"
-    });
+    const cityFilters = within(bar).getByRole("group", { name: "city filters" });
     const salesFilters = within(bar).getByRole("group", {
       name: "sales filters, match all conditions within this column"
     });
-    expect(cityFilters).toHaveTextContent("stringMatch any");
+    expect(within(cityFilters).getByRole("group", { name: "city: match any selected value" })).toHaveTextContent(
+      'Any valueequals "Milan" (string)equals "Paris"'
+    );
+    expect(within(salesFilters).getByRole("group", { name: "sales: match any selected value" })).toHaveTextContent(
+      "Any valueis nullis NaN"
+    );
+    expect(cityFilters).toHaveTextContent("string");
     expect(salesFilters).toHaveTextContent("floatMatch all");
     expect(within(bar).getByRole("button", { name: 'Remove equals "Milan" (string) filter from city' })).toBeVisible();
     expect(within(bar).getByRole("button", { name: "Remove is null filter from sales" })).toBeVisible();
