@@ -268,8 +268,9 @@ grid position. Open Wrangler does not overwrite the live R object.
 The R workbench supports paging, filters, multi-column sorts, value search, profiles, and cleaning steps for rows,
 columns, text, numbers, missing values, and grouped summaries. Missing values can use a typed value, median, mean,
 mode, a fallback column, ordered forward or backward fill, grouped statistics, or numeric interpolation when the
-column type supports it. Every draft shows the changed data and generated R before it is applied. Applied steps can
-be inspected, edited, or undone. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
+column type supports it. Numeric columns can also be scaled to 0–1 or transformed with Round, Floor, and Ceiling.
+Every draft shows the changed data and generated R before it is applied. Applied steps can be inspected, edited, or
+undone. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
 lists the operation parameters; the workbench shows only the operations supported by the active dataframe.
 
 Large R views keep row counts, missing counts, inexpensive numeric/text statistics, and date ranges exact. Histograms

@@ -65,7 +65,7 @@ Every Open Wrangler 2 release candidate runs the R 4.5.2 contract tests. The pre
 install their canonical VSIX in VS Code and Cursor and run the R notebook journey. Linux and macOS VS Code run the
 complete profile, with macOS also covering `.R`, `.Rmd`, and `.qmd`. Windows and Cursor run the representative notebook
 profile within the same hard deadline; Windows skips direct R documents. Direct R/runtime/webview suites retain the
-complete 21-operation and document matrix. The stable job verifies the artifact again immediately before that journey.
+complete R operation and document matrix. The stable job verifies the artifact again immediately before that journey.
 The candidate workflow runs Python and R Jupyter acceptance as separate fail-fast matrix jobs. Both jobs download and
 verify the same candidate VSIX. Failed editor runs may upload only the usual sealed diagnostics.
 

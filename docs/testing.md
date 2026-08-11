@@ -43,6 +43,8 @@ matrix for release candidates or changes that cross all of its boundaries.
   label, failed parses as typed `NA`, integer truncation and range limits, UTC datetimes, stable in-place identity,
   unsupported or ambiguous source/target pairs, and keyed-data-table rejection. Lowercase and Uppercase tests cover
   in-place and derived output, factors, `NA`, invalid encodings, changed-cell diffs, source isolation, and keyed data-table guards.
+  Min-max scale cases cover integer, double, and `integer64` input, constant and non-finite ranges, the full non-missing
+  `integer64` range, adjacent wide values, nullable output, stable derived identity, and keyed-data-table rejection.
   Round, Floor, and Ceiling cases must cover ordinary integer and double inputs, exact `integer64`, `NA`, `NaN`,
   `Inf`, `-Inf`, R's ties-to-even rounding, derived output, and keyed-data-table rejection for in-place changes.
   Find and replace tests cover literal and regular-expression matching, blank patterns, factors, Unicode text, and the
@@ -72,7 +74,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   contract in each matrix cell. The contract also runs the native kernel agent through open, filtered and sorted
   pages, profiles, dataset statistics, column
   values, the Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone,
-  Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor,
+  Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor,
   Ceiling, and Group and aggregate lifecycles, variable replacement, native CSV export, malformed requests, and close
   cases. The export
   checks a pending draft and stale revision, full committed rows despite an active view, duplicate names and R types,
@@ -89,7 +91,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   `jsonlite` or `rlang`, malformed output, and notebook/kernel replacement. Host and webview tests cover the native
   picker, coordinator route, R runtime identity,
   Filter, Sort, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename, Drop, Select, Clone, Convert type,
-  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and
+  Text Length, Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and
   Group and aggregate
   capabilities, generated-code commands, bounded two-dimensional pages, and enabled viewing filters, sorts,
   profiles, and value selection. The
@@ -117,7 +119,7 @@ matrix for release candidates or changes that cross all of its boundaries.
   tibble operation, one keyed `data.table` operation, kernel restart, and the official R terminal and Operations
   sidebar. Cursor also runs one plain `.R` document where the host supports it; Windows skips R documents. The initial
   picker still checks base, tibble, `data.table`, and supported `collapse` frames. Focused R runtime and webview tests
-  cover all 21 operations and the document matrix; the representative installed-editor passes check the integration
+  cover the full R operation catalog and document matrix; the representative installed-editor passes check the integration
   seams without repeating that matrix. The profile does not raise either the 300-second hard deadline or the
   180-second inactivity deadline, and it does not retry a failed phase.
 
@@ -660,7 +662,7 @@ generated R code, notebook insertion, exports, Quarto, R Markdown, or plain `.R`
 
 The 1.99 preview test set includes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop
 Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase,
-Find and replace, Capitalize, Strip text, Split text, Round, Floor, Ceiling, and Group and aggregate in
+Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate in
 Editing mode. They
 exercise draft preview, executable generated R, mixed plans, apply, discard, inspection, latest-step editing, undo,
 revision errors, exact-kernel correlation, stable retained-column identities, and source isolation for base data
@@ -672,7 +674,10 @@ Lowercase, Uppercase, and Capitalize cover factor-to-character conversion, nativ
 output, and key safety. Find and replace covers literal and regular-expression matching with the same output and key
 rules. Strip text covers the default whitespace and selected edge characters. Split text covers literal delimiters,
 empty parts, out-of-range `NA`, and required derived output.
-Tests cover double output for ordinary integer and double input, exact `integer64` output, `NA`, `NaN`, both
+Min-max scale covers double output for integer, double, and `integer64` input, constants, all-non-finite columns,
+the full non-missing `integer64` range, adjacent wide values, stable lineage, generated R, and the in-place
+keyed-data-table guard.
+Round, Floor, and Ceiling cover double output for ordinary integer and double input, exact `integer64` output, `NA`, `NaN`, both
 infinities, R's ties-to-even rule, derived output, and the in-place keyed-data-table guard for Round, Floor, and
 Ceiling.
 Convert type covers all six target types, failed parses, factors, temporal values, `integer64`, key safety, executable
@@ -680,7 +685,7 @@ generated R, and exact typed diffs. Drop Missing Rows covers the Any and All mod
 missing. Drop Duplicates covers first/last/none retention and selected-column or whole-row comparison. Both keep source
 order, stable row IDs, explicit row names, dataframe flavor, and compatible data-table keys. A large-cell inspection
 regression checks two pages that are valid separately but exceed the kernel response limit when combined. The direct
-suites and VS Code packaged-editor profile cover all twenty-one operations. Cursor's representative profile runs the
+suites cover all supported operations, and the VS Code packaged-editor profile runs the full catalog. Cursor's representative profile runs the
 full Rename lifecycle plus one native tibble operation and one keyed-data-table operation; the shared picker still
 checks every supported R dataframe flavor.
 Group and aggregate has direct frame, kernel-agent, protocol, and host-bridge coverage for all nine aggregations,
@@ -696,7 +701,7 @@ drops the aggregation-output rule by stable ID, even when its alias matches a so
 kernel-agent test checks that replacement-diff truncation does not materialize the pre-group frame and exports a
 committed grouped result through native R Parquet. The packaged Group and aggregate journey selects a key, sums a
 numeric column, checks the two exact grouped totals and generated R, applies the draft, and undoes it back to the
-source schema. Round, Floor, and Ceiling use their visible forms and check derived values from positive and negative
+source schema. Min-max scale, Round, Floor, and Ceiling use their visible forms and check derived values from positive and negative
 fractional inputs.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
