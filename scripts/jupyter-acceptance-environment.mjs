@@ -88,6 +88,8 @@ const R_ACCEPTANCE_EXPECTED_VERSIONS = Object.entries(R_ACCEPTANCE_PACKAGE_VERSI
   .join(", ");
 const R_ACCEPTANCE_KERNEL_ID = "openwrangler-r-acceptance";
 const R_ACCEPTANCE_KERNEL_DISPLAY_NAME = "R (Open Wrangler)";
+const QUARTO_PYTHON_ACCEPTANCE_KERNEL_ID = "python3";
+const QUARTO_PYTHON_ACCEPTANCE_KERNEL_DISPLAY_NAME = "Python (Open Wrangler Quarto)";
 const R_ACCEPTANCE_BOOTSTRAP_STAGES = Object.freeze([
   "entered",
   "library-ready",
@@ -1008,6 +1010,81 @@ export function writeJupyterAcceptanceEnvironment(directory, python) {
     { encoding: "utf8", flag: "wx", mode: 0o600 }
   );
   return { dataDir, runtimeDir, configDir, path: pathDir };
+}
+
+export function addJupyterAcceptancePythonKernel(prepared, python) {
+  if (
+    typeof python !== "string" ||
+    !isAbsolute(python) ||
+    /[\0\r\n]/u.test(python) ||
+    prepared?.kernelId !== R_ACCEPTANCE_KERNEL_ID ||
+    typeof prepared.root !== "string" ||
+    !isAbsolute(prepared.root) ||
+    typeof prepared.jupyterEnvironment?.dataDir !== "string" ||
+    !isAbsolute(prepared.jupyterEnvironment.dataDir)
+  ) {
+    throw new Error("Quarto Python acceptance requires one exact prepared private R environment and interpreter.");
+  }
+  const receipt = rAcceptanceBootstrapReceipt(prepared);
+  assertEditorAcceptancePrivateRootReceipt(receipt.directoryReceipt);
+
+  let canonicalPython;
+  try {
+    canonicalPython = realpathSync(python);
+    const pythonMetadata = lstatSync(canonicalPython, { bigint: true });
+    if (!pythonMetadata.isFile() || pythonMetadata.isSymbolicLink()) throw new Error("invalid interpreter");
+  } catch {
+    throw new Error("Quarto Python acceptance requires an existing regular-file interpreter.");
+  }
+
+  const canonicalRoot = realpathSync(prepared.root);
+  const canonicalDataDir = realpathSync(prepared.jupyterEnvironment.dataDir);
+  const dataRelativePath = relative(canonicalRoot, canonicalDataDir);
+  if (
+    dataRelativePath.length === 0 ||
+    dataRelativePath === ".." ||
+    dataRelativePath.startsWith(`..${sep}`) ||
+    isAbsolute(dataRelativePath)
+  ) {
+    throw new Error("The Quarto Python kernelspec must stay inside its prepared private R environment.");
+  }
+  const dataMetadata = lstatSync(canonicalDataDir, { bigint: true });
+  if (!dataMetadata.isDirectory() || dataMetadata.isSymbolicLink()) {
+    throw new Error("The Quarto Python kernelspec requires one owned Jupyter data directory.");
+  }
+
+  const kernelsDirectory = resolve(canonicalDataDir, "kernels");
+  const kernelDirectory = resolve(kernelsDirectory, QUARTO_PYTHON_ACCEPTANCE_KERNEL_ID);
+  const ipythonDir = resolve(canonicalDataDir, "python-ipython");
+  const kernelsMetadata = lstatSync(kernelsDirectory, { bigint: true });
+  if (!kernelsMetadata.isDirectory() || kernelsMetadata.isSymbolicLink()) {
+    throw new Error("The Quarto Python kernelspec requires one owned kernels directory.");
+  }
+  mkdirSync(ipythonDir, { recursive: false, mode: 0o700 });
+  mkdirSync(kernelDirectory, { recursive: false, mode: 0o700 });
+  const kernelSpecPath = resolve(kernelDirectory, "kernel.json");
+  writeFileSync(
+    kernelSpecPath,
+    `${JSON.stringify(
+      {
+        argv: [canonicalPython, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+        display_name: QUARTO_PYTHON_ACCEPTANCE_KERNEL_DISPLAY_NAME,
+        language: "python",
+        metadata: { debugger: false },
+        env: { IPYTHONDIR: ipythonDir }
+      },
+      null,
+      2
+    )}\n`,
+    { encoding: "utf8", flag: "wx", mode: 0o600 }
+  );
+  assertEditorAcceptancePrivateRootReceipt(receipt.directoryReceipt);
+  return Object.freeze({
+    id: QUARTO_PYTHON_ACCEPTANCE_KERNEL_ID,
+    displayName: QUARTO_PYTHON_ACCEPTANCE_KERNEL_DISPLAY_NAME,
+    kernelSpecPath,
+    ipythonDir
+  });
 }
 
 export function writeRemoteJupyterAcceptanceEnvironment(directory) {

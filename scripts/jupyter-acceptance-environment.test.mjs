@@ -20,6 +20,7 @@ import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
   R_ACCEPTANCE_PACKAGE_VERSIONS,
   acceptancePythonForPhase,
+  addJupyterAcceptancePythonKernel,
   appendJupyterAcceptanceRKernelBootstrapStage,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
@@ -382,6 +383,53 @@ test("released-Jupyter R setup stays private and returns immutable probe and ins
   }
 });
 
+test("Quarto Python acceptance adds one private kernelspec to the prepared R environment", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-quarto-python-"));
+  const python = join(directory, "python");
+  const rscript = join(directory, "Rscript");
+  const rExecutable = join(directory, "R");
+  try {
+    for (const executable of [python, rscript, rExecutable]) {
+      await writeFile(executable, "fake executable\n");
+      await chmod(executable, 0o700);
+    }
+    const prepared = await prepareJupyterAcceptanceREnvironment(join(directory, "r"), rscript, {
+      containedBy: directory,
+      environment: Object.freeze({ PATH: "/safe" }),
+      async runCommand() {
+        return { stdout: rExecutable, stderr: "" };
+      }
+    });
+
+    const added = addJupyterAcceptancePythonKernel(prepared, python);
+    assert.deepEqual(added, {
+      id: "python3",
+      displayName: "Python (Open Wrangler Quarto)",
+      kernelSpecPath: join(prepared.jupyterEnvironment.dataDir, "kernels", "python3", "kernel.json"),
+      ipythonDir: join(prepared.jupyterEnvironment.dataDir, "python-ipython")
+    });
+    assert.equal(Object.isFrozen(added), true);
+    assert.equal(statSync(added.ipythonDir).mode & 0o777, 0o700);
+    assert.equal(statSync(added.kernelSpecPath).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(await readFile(added.kernelSpecPath, "utf8")), {
+      argv: [python, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+      display_name: "Python (Open Wrangler Quarto)",
+      language: "python",
+      metadata: { debugger: false },
+      env: { IPYTHONDIR: added.ipythonDir }
+    });
+    assert.equal(existsSync(prepared.kernelSpecPath), true, "Adding Python must retain the exact R kernelspec.");
+    assert.throws(
+      () => addJupyterAcceptancePythonKernel(prepared, python),
+      /EEXIST/u,
+      "The prepared environment must accept the Python kernelspec only once."
+    );
+    assert.throws(() => addJupyterAcceptancePythonKernel({ ...prepared }, python), /exact prepared environment/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("released-Jupyter R readiness launches only the exact private kernelspec and fixed base-R marker", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-r-ready-"));
   const python = join(directory, "python");
@@ -733,9 +781,17 @@ test("packaged-editor R acceptance wires the private R environment to local edit
     "await probeJupyterAcceptanceRKernel(testPython, rAcceptanceEnvironment)",
     setup
   );
+  const quartoPythonKernel = source.indexOf(
+    "addJupyterAcceptancePythonKernel(rAcceptanceEnvironment, testPython)",
+    readinessProbe
+  );
   assert.ok(
     readinessCheckpoint > setup && readinessProbe > readinessCheckpoint && readinessProbe < display,
     "The exact private R kernel must answer its base-R marker before an editor can start."
+  );
+  assert.ok(
+    quartoPythonKernel > readinessProbe && quartoPythonKernel < display,
+    "The focused literate phase must add its Python kernelspec before an editor can start."
   );
 
   const phaseBranch = source.indexOf('if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter")');
