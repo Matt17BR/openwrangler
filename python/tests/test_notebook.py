@@ -444,6 +444,61 @@ def test_formatter_links_an_ambiguous_value_through_an_opaque_weak_handle():
     assert payload["metadata"]["source"]["label"] == "DataFrame"
 
 
+@pytest.mark.parametrize(
+    ("value", "backend"),
+    [
+        (pd.DataFrame({"value": [1]}), "pandas"),
+        (pl.DataFrame({"value": [1]}), "polars"),
+        (duckdb.sql("SELECT 1 AS value"), "duckdb"),
+    ],
+)
+def test_link_live_result_returns_a_native_live_source_without_serializing(value, backend):
+    shell = type("FakeShell", (), {"user_ns": {"frame": value}})()
+
+    linked = notebook.link_live_result(value, shell)
+
+    assert linked["protocolVersion"] == 1
+    assert linked["backend"] == backend
+    assert linked["label"] == "frame"
+    handle = linked["variableName"]
+    assert isinstance(handle, str)
+    assert notebook.is_live_result_handle(handle)
+    assert notebook.resolve_live_result(handle) is value
+
+
+def test_link_live_result_handle_survives_rebinding_the_canonical_name():
+    original = pd.DataFrame({"value": [1]})
+    replacement = pd.DataFrame({"value": [2]})
+    shell = type("FakeShell", (), {"user_ns": {"frame": original}})()
+
+    linked = notebook.link_live_result(original, shell)
+    shell.user_ns["frame"] = replacement
+
+    assert linked["label"] == "frame"
+    assert notebook.resolve_live_result(linked["variableName"]) is original
+
+
+def test_link_live_result_keeps_an_unassigned_cell_result_alive_only_through_its_opaque_handle():
+    frame = pd.DataFrame({"value": [1]})
+    shell = type("FakeShell", (), {"user_ns": {"Out": {7: frame}}})()
+
+    linked = notebook.link_live_result(frame, shell)
+
+    assert linked["backend"] == "pandas"
+    assert linked["label"] == "DataFrame"
+    handle = linked["variableName"]
+    assert isinstance(handle, str)
+    assert notebook.is_live_result_handle(handle)
+    assert notebook.resolve_live_result(handle) is frame
+
+
+def test_link_live_result_rejects_non_dataframe_results():
+    shell = type("FakeShell", (), {"user_ns": {}})()
+
+    with pytest.raises(EngineError, match="not a supported"):
+        notebook.link_live_result([1, 2, 3], shell)
+
+
 def test_formatter_registration_prefers_open_wrangler_without_overriding_explicit_html():
     formatter = FakeFormatter()
     html_formatter = FakeHtmlFormatter()
