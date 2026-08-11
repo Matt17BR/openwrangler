@@ -85,10 +85,7 @@ interface PythonCellOrigin {
   readonly version: number;
   readonly sourceUri: string;
   readonly executionKind: "cell" | "chunk" | "file";
-  readonly command:
-    | "jupyter.execSelectionInteractive"
-    | "jupyter.runcurrentcell"
-    | "jupyter.runFileInteractive";
+  readonly command: "jupyter.execSelectionInteractive" | "jupyter.runcurrentcell" | "jupyter.runFileInteractive";
   readonly commandArguments: readonly unknown[];
   readonly startLine: number;
   readonly endLine: number;
