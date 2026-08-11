@@ -827,14 +827,20 @@ describe("active R session commands", () => {
 
     provider.startAutomaticDiscovery();
     await vi.waitFor(() => expect(watcher.readInitial).toHaveBeenCalledOnce(), { timeout: 1_000 });
-    await provider.shutdown();
+    let shutdownSettled = false;
+    const shutdown = provider.shutdown().then(() => {
+      shutdownSettled = true;
+    });
+    await delay(0);
 
     expect(watcher.dispose).toHaveBeenCalledOnce();
+    expect(shutdownSettled).toBe(false);
     expect(factory.create).not.toHaveBeenCalled();
     expect(terminal.sendText).not.toHaveBeenCalled();
 
     pendingMetadata.resolve(discovery(tibble));
-    await delay(0);
+    await shutdown;
+    expect(shutdownSettled).toBe(true);
     expect(provider.snapshot().state).toBe("loading");
   });
 
