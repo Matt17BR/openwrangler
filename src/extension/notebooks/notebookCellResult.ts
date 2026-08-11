@@ -423,6 +423,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
             this.pendingCells.get(cell) !== pending ||
             !this.matchesPendingCell(state, cell, pending)
           ) {
+            this.abandonPendingInspection(state, cell, pending);
             return undefined;
           }
           this.recordDiagnostic("completion-kernel");
@@ -436,6 +437,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
             this.pendingCells.get(cell) !== pending ||
             !this.matchesPendingCell(state, cell, pending)
           ) {
+            this.abandonPendingInspection(state, cell, pending);
             return undefined;
           }
           this.recordDiagnostic("rejected", completionReason ?? "kernel-unavailable");
@@ -447,7 +449,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
           this.pendingCells.get(cell) !== pending ||
           !this.matchesPendingCell(state, cell, pending)
         ) {
-          observed.dispose();
+          if (!this.abandonPendingInspection(state, cell, pending)) observed.dispose();
           return undefined;
         }
         probeAttempted = true;
@@ -467,6 +469,7 @@ export class NotebookCellResultTracker implements vscode.Disposable {
             !this.matchesPendingCell(state, cell, pending)
           ) {
             binding?.dispose();
+            this.abandonPendingInspection(state, cell, pending);
             return;
           }
           this.pendingCells.delete(cell);
@@ -493,11 +496,24 @@ export class NotebookCellResultTracker implements vscode.Disposable {
         },
         () => {
           if (this.pendingCells.get(cell) !== pending) return;
-          this.pendingCells.delete(cell);
-          state.trackedCells.delete(cell);
+          this.abandonPendingInspection(state, cell, pending);
           this.recordDiagnostic("rejected", "probe-error");
         }
       );
+  }
+
+  private abandonPendingInspection(
+    state: NotebookExecutionState,
+    cell: vscode.NotebookCell,
+    pending: PendingCellInspection
+  ): boolean {
+    if (this.pendingCells.get(cell) !== pending) return false;
+    this.pendingCells.delete(cell);
+    state.trackedCells.delete(cell);
+    pending.activeBinding?.dispose();
+    delete pending.activeBinding;
+    this.disposeObservation(pending.observation);
+    return true;
   }
 
   private recordDiagnostic(
