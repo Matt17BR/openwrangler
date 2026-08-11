@@ -1375,7 +1375,7 @@ async function verifyCleaningKeyboardShortcuts(browser) {
 
   await resetDraftHarness(page);
   await showAppliedStep(page);
-  const undo = page.getByRole("button", { name: "Undo" });
+  const undo = page.getByRole("button", { name: "Undo", exact: true });
   await undo.waitFor();
   await undo.focus();
   await page.keyboard.press("Control+Alt+z");
