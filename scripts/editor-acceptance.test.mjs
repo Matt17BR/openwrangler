@@ -492,6 +492,36 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
     source.indexOf("async function exercisePackagedExcelDependencyInstall("),
     source.indexOf("function excelDependencyInstallDiagnostics(")
   );
+  const workbench = journey.indexOf("const workbench = await connectToEditorWorkbench()");
+  const phaseStart = journey.indexOf("try {", workbench);
+  const foreground = journey.indexOf("await workbench.bringToFront()", phaseStart);
+  const closePanel = journey.indexOf('await closeVisibleWorkbenchPart(workbench, ".part.panel"', foreground);
+  const panelCommands = journey.indexOf('"workbench.action.closePanel",', closePanel);
+  const panelFallback = journey.indexOf('"workbench.action.togglePanel"', panelCommands);
+  const layoutIsolated = journey.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:layout-isolated")',
+    panelFallback
+  );
+  const configureBackend = journey.indexOf('await config.update("defaultBackend"', layoutIsolated);
+  const openWorkbook = journey.indexOf('recordAcceptanceProgress("excel-dependency-install:open")', configureBackend);
+  assert.ok(
+    workbench >= 0 &&
+      phaseStart > workbench &&
+      foreground > phaseStart &&
+      closePanel > foreground &&
+      panelCommands > closePanel &&
+      panelFallback > panelCommands &&
+      layoutIsolated > panelFallback &&
+      configureBackend > layoutIsolated &&
+      openWorkbook > configureBackend,
+    "The XLSX phase must close a visible bottom panel before configuration or workbook open."
+  );
+  assert.doesNotMatch(
+    journey.slice(phaseStart, configureBackend),
+    /\.part\.sidebar|workbench\.action\.(?:closeSidebar|toggleSidebarVisibility)/u,
+    "XLSX phase isolation must retain the ordinary sidebar width."
+  );
+
   const recoveredSection = journey.slice(
     journey.indexOf('recordAcceptanceProgress("excel-dependency-install:session-published")')
   );
