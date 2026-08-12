@@ -60,9 +60,11 @@ import {
   addJupyterAcceptancePythonKernel,
   appendJupyterAcceptanceRKernelBootstrapStage,
   createRemoteJupyterAcceptanceToken,
+  createJupyterAcceptanceCoreKernelPython,
   createJupyterAcceptanceKernelPython,
   jupyterAcceptanceRKernelBootstrapStage,
   prepareJupyterAcceptanceREnvironment,
+  probeJupyterAcceptanceQuartoPythonKernel,
   probeJupyterAcceptanceRKernel,
   writeJupyterAcceptanceEnvironment,
   writeRemoteJupyterAcceptanceDescriptor,
@@ -396,6 +398,7 @@ try {
             preflightPackagedEditorPython(testPython);
           }
           let jupyterKernelPython;
+          let quartoKernelPython;
           let rAcceptanceEnvironment;
           if (acceptanceMode === "r-jupyter") {
             writeCorrelatedProgress(
@@ -440,16 +443,48 @@ try {
               "setup:probe-r-kernel-readiness"
             );
             await probeJupyterAcceptanceRKernel(testPython, rAcceptanceEnvironment);
-            if (process.platform === "linux" && process.arch === "x64") {
-              if (rJourneySelector === "literate-documents") {
-                writeCorrelatedProgress(
-                  orchestrationProgressPath,
-                  orchestrationRunId,
-                  "setup",
-                  "setup:prepare-quarto-python-kernel"
+            if (rJourneySelector === "literate-documents") {
+              writeCorrelatedProgress(
+                orchestrationProgressPath,
+                orchestrationRunId,
+                "setup",
+                "setup:create-quarto-python-kernel-environment"
+              );
+              try {
+                quartoKernelPython = await createJupyterAcceptanceCoreKernelPython(
+                  resolve(temporaryRoot, "qv"),
+                  testPython,
+                  { containedBy: temporaryRoot }
                 );
-                addJupyterAcceptancePythonKernel(rAcceptanceEnvironment, testPython);
+              } catch (error) {
+                latchPrivateRootIdentityLoss(error, {
+                  scope: "jupyter-kernel",
+                  editor: "orchestration"
+                });
+                throw error;
               }
+              writeCorrelatedProgress(
+                orchestrationProgressPath,
+                orchestrationRunId,
+                "setup",
+                "setup:add-quarto-python-kernelspec"
+              );
+              const quartoPythonKernel = addJupyterAcceptancePythonKernel(rAcceptanceEnvironment, quartoKernelPython);
+              writeCorrelatedProgress(
+                orchestrationProgressPath,
+                orchestrationRunId,
+                "setup",
+                "setup:probe-quarto-python-kernel-readiness"
+              );
+              await probeJupyterAcceptanceQuartoPythonKernel(rAcceptanceEnvironment, quartoPythonKernel);
+              writeCorrelatedProgress(
+                orchestrationProgressPath,
+                orchestrationRunId,
+                "setup",
+                "setup:quarto-python-kernel-ready"
+              );
+            }
+            if (process.platform === "linux" && process.arch === "x64") {
               writeCorrelatedProgress(
                 orchestrationProgressPath,
                 orchestrationRunId,
@@ -1412,7 +1447,10 @@ try {
                       extensions: jupyterExtensions,
                       developmentPaths: [],
                       testModule,
-                      python: acceptancePythonForPhase("jupyter-r", testPython, jupyterKernelPython),
+                      python:
+                        rJourneySelector === "literate-documents"
+                          ? quartoKernelPython
+                          : acceptancePythonForPhase("jupyter-r", testPython, jupyterKernelPython),
                       phase: "jupyter-r",
                       testSelector: rJourneySelector,
                       resultPath: resultPaths["jupyter-r"],

@@ -68,7 +68,13 @@ same hard deadline, and Windows skips direct R documents. After the ordinary Lin
 is verified again and a fresh packaged VS Code phase covers `.Rmd`, `.qmd`, native Quarto preview, and Python Quarto.
 Direct R/runtime/webview suites retain the complete R operation and document matrix. The candidate workflow runs
 Python and R Jupyter acceptance as separate fail-fast matrix jobs, and both download and verify the same candidate
-VSIX. The ordinary and focused R invocations retain distinct sealed failure diagnostics.
+VSIX. The ordinary and focused R invocations retain distinct sealed failure diagnostics. Only the focused
+`literate-documents` invocation creates a private core Python compatibility environment under its verified temporary
+root, pins Jupyter Client 8.9.1 alongside the reviewed runtime versions, registers that exact interpreter in the
+R-owned Jupyter data directory, and directly proves one start/execute/shutdown cycle before launching VS Code. The
+probe and bounded cleanup remain in the runner-owned process tree or Windows Job, and the editor receives that same
+interpreter. This closes the unreviewed hosted-IPykernel 7.x drift observed in the failed gate without claiming that
+version caused the stall; it does not add a retry or relax either deadline.
 
 The preview-only form of the same author is `node scripts/create-canonical-release-artifact.mjs <candidate> --out-dir <directory> --preview-release`. It binds a clean exact `EXPECTED_SHA`, the intended numeric `RELEASE_TAG`, preview source/package/runtime identity, the VSIX pre-release marker, and immutable candidate bytes, but deliberately does not invoke stable parity, changelog, or README readiness and does not require the intended tag to exist. It emits the same three filenames as stable with the distinct `openwrangler-canonical-preview-release-artifact-v1` provenance protocol and `preview: true`. Pre-tag acceptance uses `scripts/verify-preview-release-artifact.mjs`; public registry intake independently revalidates the same triple. Historical two-file previews are not canonical inputs and are rejected rather than receiving invented provenance.
 
