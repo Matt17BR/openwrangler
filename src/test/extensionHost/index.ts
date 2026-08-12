@@ -32171,6 +32171,28 @@ async function exercisePackagedExcelDependencyInstall(
     );
     recordAcceptanceProgress("excel-dependency-install:marker-created");
 
+    const installedNotice = workbench
+      .locator(".notifications-toasts .notification-toast:visible")
+      .filter({ hasText: "Open Wrangler runtime dependencies were installed." })
+      .last();
+    await installedNotice.waitFor({ state: "visible", timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+    const notificationCommands = new Set(await vscode.commands.getCommands(true));
+    assert.ok(
+      notificationCommands.has("notifications.hideToasts"),
+      "The XLSX dependency journey requires the native command that hides acknowledged notification toasts."
+    );
+    await vscode.commands.executeCommand("notifications.hideToasts");
+    const visibleNotificationToasts = workbench.locator(".notifications-toasts .notification-toast:visible");
+    assert.equal(
+      await pollAcceptanceCondition(async () => (await visibleNotificationToasts.count()) === 0, {
+        timeoutMs: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+        intervalMs: 50
+      }),
+      true,
+      "The XLSX dependency journey must hide every acknowledged workbench toast before grid activation."
+    );
+    recordAcceptanceProgress("excel-dependency-install:notification-hidden");
+
     await waitFor(
       () => {
         const active = testing.activeSession();
@@ -32330,6 +32352,7 @@ async function verifyRecoveredExcelGrid(
   };
 
   do {
+    let activationBoundaryEntered = false;
     const active = testing.activeSession();
     assert.equal(active?.sessionId, sessionId, "XLSX renderer recovery must retain the exact active session.");
     assert.equal(active?.metadata.revision, revision, "XLSX renderer recovery must retain the confirmed revision.");
@@ -32407,8 +32430,8 @@ async function verifyRecoveredExcelGrid(
                 diagnostics: {
                   candidateCount: 0,
                   exposedBounds: undefined,
-                  centerExposedCellCount: 0,
                   dataColumnCount,
+                  fullyExposedCellCount: 0,
                   pointerExposedCellCount: 0,
                   scrollerFound: false
                 },
@@ -32432,50 +32455,51 @@ async function verifyRecoveredExcelGrid(
                 (header) => header.getBoundingClientRect().right
               )
             );
-            const inset = 2;
             const exposedBounds = {
-              left: rowHeaderRight + inset,
-              top: headerBottom + inset,
-              right: viewportRight - inset,
-              bottom: viewportBottom - inset
+              left: rowHeaderRight,
+              top: headerBottom,
+              right: viewportRight,
+              bottom: viewportBottom
             };
-            const centerExposed = (rect: GridRect): boolean =>
+            const tolerance = 1;
+            const fullyExposed = (rect: GridRect): boolean =>
               rect.width > 0 &&
               rect.height > 0 &&
-              rect.left + rect.width / 2 >= exposedBounds.left &&
-              rect.top + rect.height / 2 >= exposedBounds.top &&
-              rect.left + rect.width / 2 <= exposedBounds.right &&
-              rect.top + rect.height / 2 <= exposedBounds.bottom;
+              rect.left >= exposedBounds.left - tolerance &&
+              rect.top >= exposedBounds.top - tolerance &&
+              rect.right <= exposedBounds.right + tolerance &&
+              rect.bottom <= exposedBounds.bottom + tolerance;
             const cells = Array.from(
               gridElement.querySelectorAll("tbody td.gridCell[data-grid-row][data-grid-column]")
             );
-            let centerExposedCellCount = 0;
+            const candidates = cells
+              .flatMap((cell) => {
+                const row = Number(cell.dataset.gridRow);
+                const column = Number(cell.dataset.gridColumn);
+                return Number.isSafeInteger(row) &&
+                  row >= 0 &&
+                  Number.isSafeInteger(column) &&
+                  column >= 0 &&
+                  column + 1 < dataColumnCount
+                  ? [{ cell, column, row }]
+                  : [];
+              })
+              .sort((left, right) => right.column - left.column || left.row - right.row);
+            let fullyExposedCellCount = 0;
             let pointerExposedCellCount = 0;
             const diagnostics = () => ({
               candidateCount: cells.length,
-              centerExposedCellCount,
+              fullyExposedCellCount,
               exposedBounds,
               dataColumnCount,
               pointerExposedCellCount,
               scrollerFound: true
             });
 
-            for (let index = cells.length - 1; index >= 0; index -= 1) {
-              const cell = cells[index];
-              const row = Number(cell.dataset.gridRow);
-              const column = Number(cell.dataset.gridColumn);
-              if (
-                !Number.isSafeInteger(row) ||
-                row < 0 ||
-                !Number.isSafeInteger(column) ||
-                column < 0 ||
-                column + 1 >= dataColumnCount
-              ) {
-                continue;
-              }
+            for (const { cell, column, row } of candidates) {
               const rect = cell.getBoundingClientRect();
-              if (!centerExposed(rect)) continue;
-              centerExposedCellCount += 1;
+              if (!fullyExposed(rect)) continue;
+              fullyExposedCellCount += 1;
               const hit = cell.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
               if (hit !== cell && (!hit || !cell.contains(hit))) continue;
               pointerExposedCellCount += 1;
@@ -32507,23 +32531,51 @@ async function verifyRecoveredExcelGrid(
       const activationCell = app
         .locator(`td[data-grid-row="${activationTarget.row}"][data-grid-column="${activationTarget.column}"]`)
         .first();
-      await activationCell.click({ timeout: operationTimeout() });
-      const focusState = await withAcceptanceOperationDeadline(
-        activationCell.evaluate((element) => ({
-          connected: element.isConnected,
-          documentFocused: element.ownerDocument.hasFocus(),
-          cellFocused: element.ownerDocument.activeElement === element
-        })),
-        operationTimeout(),
-        "the recovered XLSX grid focus"
-      );
-      assertOpenWranglerWebviewLifecycle(workbench, browser);
-      if (
-        isRetiredRendererTarget(workbench, target.page, target.frame) ||
-        !sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))
-      ) {
-        continue;
+      const activationElement = await activationCell.elementHandle({ timeout: operationTimeout() });
+      assert.ok(activationElement, "The recovered XLSX grid must retain its exposed activation cell.");
+      let focusState: { connected: boolean; documentFocused: boolean; cellFocused: boolean };
+      try {
+        await activateExactAcceptanceElementOnce(activationElement, operationTimeout(), () => {
+          const current = testing.activeSession();
+          if (
+            current?.sessionId !== sessionId ||
+            current.metadata.revision !== revision ||
+            isRetiredRendererTarget(workbench, target.page, target.frame) ||
+            !sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))
+          ) {
+            throw new AcceptanceActionNotDispatchedError(
+              "The recovered XLSX grid activation",
+              new Error("Its exact session, renderer, or revision changed before the trusted click boundary.")
+            );
+          }
+          activationBoundaryEntered = true;
+        });
+        recordAcceptanceProgress("excel-dependency-install:grid-activation-dispatched");
+        focusState = await withAcceptanceOperationDeadline(
+          activationElement.evaluate((element) => ({
+            connected: element.isConnected,
+            documentFocused: element.ownerDocument.hasFocus(),
+            cellFocused: element.ownerDocument.activeElement === element
+          })),
+          operationTimeout(),
+          "the recovered XLSX grid focus"
+        );
+      } finally {
+        await activationElement.dispose();
       }
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      assert.equal(
+        isRetiredRendererTarget(workbench, target.page, target.frame),
+        false,
+        "The recovered XLSX renderer must remain live after its trusted cell activation."
+      );
+      assert.equal(
+        sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId)),
+        true,
+        "The recovered XLSX renderer receipt must not change after its trusted cell activation."
+      );
+      assert.equal(testing.activeSession()?.sessionId, sessionId);
+      assert.equal(testing.activeSession()?.metadata.revision, revision);
       assert.deepEqual(
         focusState,
         { connected: true, documentFocused: true, cellFocused: true },
@@ -32537,24 +32589,101 @@ async function verifyRecoveredExcelGrid(
         "the recovered XLSX grid ArrowRight action"
       );
       assertOpenWranglerWebviewLifecycle(workbench, browser);
-      if (
-        isRetiredRendererTarget(workbench, target.page, target.frame) ||
-        !sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))
-      ) {
-        continue;
-      }
+      assert.equal(
+        isRetiredRendererTarget(workbench, target.page, target.frame),
+        false,
+        "The recovered XLSX renderer must remain live after ArrowRight."
+      );
+      assert.equal(
+        sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId)),
+        true,
+        "The recovered XLSX renderer receipt must not change after ArrowRight."
+      );
       recordAcceptanceProgress("excel-dependency-install:grid-arrow-sent");
-      await app
+      const focusedNeighbor = app
         .locator(`td[data-grid-row="${activationTarget.row}"][data-grid-column="${activationTarget.column + 1}"]:focus`)
-        .waitFor({ state: "visible", timeout: operationTimeout() });
+        .first();
+      await focusedNeighbor.waitFor({ state: "visible", timeout: operationTimeout() });
+      const neighborExposure = await withAcceptanceOperationDeadline(
+        focusedNeighbor.evaluate((element) => {
+          type MeasuredHeaderElement = {
+            getBoundingClientRect(): { readonly bottom: number; readonly right: number };
+          };
+          const gridElement = element.closest('[role="grid"]');
+          const scroller = element.closest(".tableScroller");
+          if (!gridElement || !scroller) {
+            return {
+              connected: element.isConnected,
+              focused: element.ownerDocument.activeElement === element,
+              fullyExposed: false,
+              cellRect: undefined,
+              exposedBounds: undefined
+            };
+          }
+          const rect = element.getBoundingClientRect();
+          const scrollerRect = scroller.getBoundingClientRect();
+          const viewportLeft = scrollerRect.left + scroller.clientLeft;
+          const viewportTop = scrollerRect.top + scroller.clientTop;
+          const exposedBounds = {
+            left: Math.max(
+              viewportLeft,
+              ...Array.from(
+                gridElement.querySelectorAll("thead th.rowHeader") as unknown as ArrayLike<MeasuredHeaderElement>,
+                (header) => header.getBoundingClientRect().right
+              )
+            ),
+            top: Math.max(
+              viewportTop,
+              ...Array.from(
+                gridElement.querySelectorAll("thead th") as unknown as ArrayLike<MeasuredHeaderElement>,
+                (header) => header.getBoundingClientRect().bottom
+              )
+            ),
+            right: viewportLeft + scroller.clientWidth,
+            bottom: viewportTop + scroller.clientHeight
+          };
+          const tolerance = 1;
+          return {
+            connected: element.isConnected,
+            focused: element.ownerDocument.activeElement === element,
+            fullyExposed:
+              rect.width > 0 &&
+              rect.height > 0 &&
+              rect.left >= exposedBounds.left - tolerance &&
+              rect.top >= exposedBounds.top - tolerance &&
+              rect.right <= exposedBounds.right + tolerance &&
+              rect.bottom <= exposedBounds.bottom + tolerance,
+            cellRect: {
+              bottom: rect.bottom,
+              left: rect.left,
+              right: rect.right,
+              top: rect.top
+            },
+            exposedBounds
+          };
+        }),
+        operationTimeout(),
+        "the recovered XLSX grid neighbor exposure"
+      );
 
       assertOpenWranglerWebviewLifecycle(workbench, browser);
-      if (
-        isRetiredRendererTarget(workbench, target.page, target.frame) ||
-        !sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))
-      ) {
-        continue;
-      }
+      assert.equal(
+        isRetiredRendererTarget(workbench, target.page, target.frame),
+        false,
+        "The recovered XLSX renderer must remain live after neighbor focus."
+      );
+      assert.equal(
+        sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId)),
+        true,
+        "The recovered XLSX renderer receipt must not change after neighbor focus."
+      );
+      assert.equal(
+        neighborExposure.connected && neighborExposure.focused && neighborExposure.fullyExposed,
+        true,
+        `ArrowRight must focus and reveal the recovered XLSX neighbor inside the data viewport. Geometry: ${JSON.stringify(
+          neighborExposure
+        )}`
+      );
       const confirmedActive = testing.activeSession();
       assert.equal(
         confirmedActive?.sessionId,
@@ -32569,6 +32698,11 @@ async function verifyRecoveredExcelGrid(
       recordAcceptanceProgress("excel-dependency-install:grid-keyboard");
       return;
     } catch (error) {
+      if (activationBoundaryEntered) throw error;
+      if (error instanceof AcceptanceActionNotDispatchedError) {
+        await workbench.waitForTimeout(Math.min(25, operationTimeout()));
+        continue;
+      }
       if (!sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))) continue;
       ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
     }
