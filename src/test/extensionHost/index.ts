@@ -9575,10 +9575,18 @@ async function applyReleasedRQuickSort(
     `selecting the R ${column} column before sorting`
   );
   const menu = await waitForReleasedRColumnMenu(workbench, sessionId, column);
-  await menu.summary.click({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
-  const sort = menu.menu.getByRole("button", { name: `Sort ${direction}`, exact: true });
-  await sort.waitFor({ state: "visible", timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
-  await sort.click({ timeout: WORKBENCH_OPERATION_TIMEOUT_MS });
+  await withAcceptanceOperationDeadline(
+    menu.page.keyboard.press("Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `opening the focused R ${column} column menu`
+  );
+  const sort = await waitForReleasedRColumnMenuAction(workbench, sessionId, column, `Sort ${direction}`);
+  assert.equal(await sort.action.isEnabled(), true, `The R ${column} ${direction} sort must be enabled.`);
+  await withAcceptanceOperationDeadline(
+    sort.page.keyboard.press("Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `activating the focused R ${column} ${direction} sort`
+  );
   await waitFor(
     () =>
       testing
@@ -9595,8 +9603,13 @@ async function applyReleasedRQuickSort(
 }
 
 interface ReleasedRColumnMenu {
+  page: Page;
   menu: Locator;
   summary: Locator;
+}
+
+interface ReleasedRColumnMenuAction extends ReleasedRColumnMenu {
+  action: Locator;
 }
 
 async function waitForReleasedRColumnMenu(
@@ -9620,7 +9633,7 @@ async function waitForReleasedRColumnMenu(
           const menu = app.locator(`th[data-column=${JSON.stringify(column)}] details.columnMenu`).first();
           const summary = menu.getByLabel(`Column actions for ${column}`, { exact: true });
           if ((await summary.count()) !== 1 || !(await summary.isVisible())) continue;
-          return { menu, summary };
+          return { page: target.page, menu, summary };
         } catch (error) {
           ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
         }
@@ -9628,8 +9641,12 @@ async function waitForReleasedRColumnMenu(
       return undefined;
     },
     prepare: async ({ summary }) => {
-      await summary.scrollIntoViewIfNeeded({ timeout: trialTimeoutMs });
-      await summary.click({ trial: true, timeout: trialTimeoutMs });
+      await summary.focus({ timeout: trialTimeoutMs });
+      assert.equal(
+        await summary.evaluate((element) => element.isConnected && element.ownerDocument.activeElement === element),
+        true,
+        `The R ${column} column menu must own keyboard focus in the exact session renderer.`
+      );
     },
     dispose: async () => undefined,
     isRetryablePreparationError: (error) => {
@@ -9641,9 +9658,62 @@ async function waitForReleasedRColumnMenu(
   });
   assert.ok(
     prepared,
-    `The R ${column} menu must become pointer-ready in the exact session renderer. ` +
+    `The R ${column} menu must become keyboard-ready in the exact session renderer. ` +
       `Last retryable cause: ${lastRetryableError ?? "none observed"}.`
   );
+  return prepared;
+}
+
+async function waitForReleasedRColumnMenuAction(
+  workbench: Page,
+  sessionId: string,
+  column: string,
+  actionName: string
+): Promise<ReleasedRColumnMenuAction> {
+  const browser = workbench.context().browser();
+  const prepared = await acquirePreparedAcceptanceAction({
+    timeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS,
+    intervalMs: 50,
+    acquire: async () => {
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
+        if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+        try {
+          const app = await exactSessionApp(target.frame, sessionId);
+          if (!app) continue;
+          const menu = app.locator(`th[data-column=${JSON.stringify(column)}] details.columnMenu`).first();
+          const summary = menu.getByLabel(`Column actions for ${column}`, { exact: true });
+          const action = menu.getByRole("button", { name: actionName, exact: true });
+          if (
+            (await menu.count()) !== 1 ||
+            !(await menu.evaluate((element) => element.hasAttribute("open"))) ||
+            (await summary.count()) !== 1 ||
+            (await action.count()) !== 1 ||
+            !(await action.isVisible()) ||
+            !(await action.isEnabled())
+          ) {
+            continue;
+          }
+          return { page: target.page, menu, summary, action };
+        } catch (error) {
+          ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+        }
+      }
+      return undefined;
+    },
+    prepare: async ({ action }) => {
+      await action.focus({ timeout: 2_000 });
+      assert.equal(
+        await action.evaluate((element) => element.isConnected && element.ownerDocument.activeElement === element),
+        true,
+        `The R ${column} ${actionName} action must own keyboard focus in the exact session renderer.`
+      );
+    },
+    dispose: async () => undefined,
+    isRetryablePreparationError: isReleasedRColumnMenuPreparationError,
+    wait: (durationMs) => workbench.waitForTimeout(durationMs)
+  });
+  assert.ok(prepared, `The R ${column} ${actionName} action must become keyboard-ready in the exact session renderer.`);
   return prepared;
 }
 

@@ -1155,13 +1155,27 @@ test("R view mutations reacquire the renderer before the next panel action", asy
   ]);
   assertOrder("applyReleasedRQuickSort", [
     "const menu = await waitForReleasedRColumnMenu",
-    "await menu.summary.click",
-    "const sort = menu.menu.getByRole",
-    "await sort.waitFor",
-    "await sort.click",
+    'menu.page.keyboard.press("Enter")',
+    "const sort = await waitForReleasedRColumnMenuAction",
+    "await sort.action.isEnabled",
+    'sort.page.keyboard.press("Enter")',
     "await waitFor(",
     "const sortedApp = await releasedRSessionApp",
     "await closedMenu.evaluate"
+  ]);
+  assertOrder("waitForReleasedRColumnMenu", [
+    "const app = await exactSessionApp",
+    "await summary.isVisible",
+    "await summary.focus",
+    "element.ownerDocument.activeElement === element"
+  ]);
+  assertOrder("waitForReleasedRColumnMenuAction", [
+    "const app = await exactSessionApp",
+    'element.hasAttribute("open")',
+    "await action.isVisible",
+    "await action.isEnabled",
+    "await action.focus",
+    "element.ownerDocument.activeElement === element"
   ]);
 });
 

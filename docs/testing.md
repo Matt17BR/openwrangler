@@ -649,8 +649,8 @@ The preflight runs the same 1,205-row,
 failure is reported before the editor launches. The journey covers projected paging, row labels,
 compound filters and sorts, typed value selection, column and dataset profiles, kernel restart, source preservation,
 and cleanup. Before a quick sort, the harness waits for the filter drawer to close and reacquires the column menu
-after the grid reflows. Each pointer check gets up to two seconds; the harness retries for twelve seconds and never
-forces a click. The base dataframe starts in Viewing mode, keeps
+after the grid reflows. It focuses the exact session's menu and sort action, activates each with Enter, and reacquires
+the menu between those keyboard actions. The base dataframe starts in Viewing mode, keeps
 its exact notebook, public session, and compound sort
 through the visible **Switch to Editing** action, then continues through the cleaning journey on that same session.
 They also check that header profiles start off; the journey does not turn them on. The temporary R
