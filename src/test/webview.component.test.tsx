@@ -431,6 +431,7 @@ describe("DataGrid", () => {
       visualization: { kind: "numeric", bins: [{ min: 10.5, max: 10.5, count: 1 }] }
     };
     const onVisibleSummaryColumnsChange = vi.fn();
+    let unmount: (() => void) | undefined;
 
     const grid = (currentMetadata: SessionMetadata, summaries: ColumnSummary[]) => (
       <DataGrid
@@ -442,16 +443,22 @@ describe("DataGrid", () => {
         insightsOnOpen={true}
         onPage={() => undefined}
         onSortColumn={() => undefined}
+        onApplyProfileFilter={() => undefined}
         onOpenFilter={() => undefined}
         onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
       />
     );
 
     try {
-      const { rerender } = render(grid(metadata, []));
+      const rendered = render(grid(metadata, []));
+      const { rerender } = rendered;
+      unmount = rendered.unmount;
       const scroller = screen.getByTestId("data-grid-scroller");
       const tableHeader = screen.getByRole("grid").querySelector("thead");
       if (!tableHeader) throw new Error("Expected the data-grid header.");
+      const fitStatus = document.querySelector<HTMLElement>(".headerProfilesFitStatus");
+      expect(fitStatus).toBeInTheDocument();
+      expect(fitStatus).toBeEmptyDOMElement();
       let scrollerHeight = 124;
       let expandedNaturalHeight = 166;
       Object.defineProperty(scroller, "clientHeight", {
@@ -478,21 +485,20 @@ describe("DataGrid", () => {
       expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
       expect(headerProfiles).toHaveAttribute(
         "title",
-        "Header profile distributions are temporarily hidden until the grid is taller."
+        "Header profile distributions are temporarily hidden until the grid has enough room."
       );
       expect(headerProfiles).toHaveAccessibleDescription(
-        "Header profile distributions are temporarily hidden until the grid is taller."
+        "Header profile distributions are temporarily hidden until the grid has enough room."
       );
-      const fitStatus = screen.getByRole("status", {
-        name: "Header profile distributions are temporarily hidden until the grid is taller."
-      });
       expect(fitStatus).toHaveAttribute("aria-live", "polite");
       expect(fitStatus).toHaveAttribute("aria-atomic", "true");
+      expect(fitStatus).toHaveTextContent(
+        "Header profile distributions are temporarily hidden until the grid has enough room."
+      );
       expect(screen.getByRole("columnheader", { name: /^sales/u })).toHaveTextContent("Missing 1");
       expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
 
-      // The compact header itself now fits, but the retained expanded height
-      // remains the restoration threshold so the two layouts cannot oscillate.
+      // A one-pixel restoration margin keeps the two layouts from oscillating.
       scrollerHeight = 150;
       signalResize();
       expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument();
@@ -500,16 +506,34 @@ describe("DataGrid", () => {
       signalResize();
       await waitFor(() => expect(document.querySelector(".columnInsight.compact")).not.toBeInTheDocument());
       expect(document.querySelector(".columnInsight .summaryDistribution")).toBeInTheDocument();
+      expect(fitStatus).toHaveTextContent("Header profile distributions are visible again.");
       signalResize();
       expect(document.querySelector(".columnInsight.compact")).not.toBeInTheDocument();
       expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
 
+      const distributionControl = document.querySelector<HTMLButtonElement>(".numericHistogramHitTarget");
+      if (!distributionControl) throw new Error("Expected an interactive header distribution.");
+      distributionControl.focus();
+      expect(distributionControl).toHaveFocus();
       scrollerHeight = 124;
       signalResize();
+      await waitFor(() => expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument());
+      expect(headerProfiles).toHaveFocus();
+
+      // A same-session profile-layout change is measured afresh rather than
+      // retaining the height of the now-absent distribution.
+      scrollerHeight = 150;
+      rerender(grid(metadata, []));
+      await waitFor(() => expect(document.querySelector(".columnInsight.compact")).not.toBeInTheDocument());
+      expect(fitStatus).toBeEmptyDOMElement();
+
+      scrollerHeight = 124;
+      rerender(grid(metadata, [salesSummary]));
       await waitFor(() => expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument());
       fireEvent.click(headerProfiles);
       expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
       expect(document.querySelector(".columnInsight")).not.toBeInTheDocument();
+      expect(fitStatus).toBeEmptyDOMElement();
       scrollerHeight = 240;
       signalResize();
       expect(document.querySelector(".columnInsight")).not.toBeInTheDocument();
@@ -522,7 +546,11 @@ describe("DataGrid", () => {
       rerender(grid({ ...metadata, sessionId: "replacement-session" }, [salesSummary]));
       await waitFor(() => expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument());
       expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
+      unmount();
+      unmount = undefined;
+      expect(resizeObservers.size).toBe(0);
     } finally {
+      unmount?.();
       vi.unstubAllGlobals();
     }
   });
