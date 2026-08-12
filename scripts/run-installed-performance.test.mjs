@@ -85,7 +85,7 @@ test("extension-test builds explicitly stage declaration-shadowed CommonJS runti
   const packageManifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(
     packageManifest.scripts["build:test-extension"],
-    "node scripts/copy-extension-test-runtime-assets.mjs --guard-output-tree && tsc -p tsconfig.extension-test.json && node scripts/copy-extension-test-runtime-assets.mjs"
+    "node scripts/copy-extension-vendor-assets.mjs --guard-output-tree dist-test && node scripts/copy-extension-test-runtime-assets.mjs --guard-output-tree && tsc -p tsconfig.extension-test.json && node scripts/copy-extension-vendor-assets.mjs dist-test && node scripts/copy-extension-test-runtime-assets.mjs"
   );
   const compilerConfiguration = JSON.parse(
     readFileSync(new URL("../tsconfig.extension-test.json", import.meta.url), "utf8")
@@ -931,6 +931,15 @@ test("package source guard pins every exact tracked and generated input", async 
     pinGeneratedFile: (path) => packageSourceReceipt([path], [{ path }]).generatedFiles[0]
   });
   assert.deepEqual(source, packageSourceReceipt(["media/webview.js", "package.json"], [{ path: "media/webview.js" }]));
+});
+
+test("guarded packaging treats the pinned extension vendor asset as build-owned output", () => {
+  const source = readFileSync(new URL("./run-installed-performance.mjs", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /const GENERATED_EXTENSION_PACKAGE_FILES = Object\.freeze\(\["dist\/extension\/vendor\/js-yaml\.js"\]\);/u
+  );
+  assert.match(source, /new Set\(\[\.\.\.GENERATED_MEDIA_PACKAGE_FILES, \.\.\.GENERATED_EXTENSION_PACKAGE_FILES\]\)/u);
 });
 
 test("pinned package inventory rejects a source file that appears only while createVSIX runs", () => {

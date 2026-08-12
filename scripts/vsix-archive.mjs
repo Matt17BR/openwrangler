@@ -3,13 +3,15 @@ import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { fromBuffer as openZipBuffer } from "yauzl";
 import { parseStrictJson } from "./strict-json.mjs";
-import { inspectVsixEntries, requiredVsixEntriesForRelease } from "./vsix-contents.mjs";
+import { inspectVsixEntries, requiredVsixEntriesForRelease, VENDORED_JS_YAML_ENTRY } from "./vsix-contents.mjs";
 
 export const MAX_VSIX_BYTES = 128 * 1024 * 1024;
 export const MAX_VSIX_ENTRIES = 4096;
 export const MAX_VSIX_ENTRY_NAME_BYTES = 1024;
 export const MAX_VSIX_ENTRY_BYTES = 32 * 1024 * 1024;
 export const MAX_VSIX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024;
+export const VENDORED_JS_YAML_BYTES = 122_488;
+export const VENDORED_JS_YAML_SHA256 = "f1499c20ab232a283f6f9f85aeecc99dceab175e8dd4005bd3d764848f3e5965";
 
 function sameFileIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
@@ -117,10 +119,13 @@ const REQUIRED_CAPTURE_LIMITS = new Map([
   ["extension/LICENSE.txt", 1024 * 1024],
   ["extension/THIRD_PARTY_NOTICES.md", 2 * 1024 * 1024],
   ["extension/dist/extension/webviewPanel.js", 8 * 1024 * 1024],
+  [VENDORED_JS_YAML_ENTRY, VENDORED_JS_YAML_BYTES],
   ["extension/media/webview.css", 8 * 1024 * 1024],
   ["extension/media/notebookRenderer.js", 8 * 1024 * 1024],
   ["extension/python/openwrangler_runtime/version.py", 64 * 1024]
 ]);
+const PACKAGED_COMMONJS_ENTRY = /^extension\/dist\/(?:extension|shared)\/.+\.js$/u;
+const PACKAGED_COMMONJS_MAX_ENTRY_BYTES = 4 * 1024 * 1024;
 
 const crcTable = new Uint32Array(256);
 for (let index = 0; index < crcTable.length; index += 1) {
@@ -311,17 +316,18 @@ function decodeUtf8(contents, name) {
   }
 }
 
-export async function inspectVsixArchive(bytes, { requireRFrameContract = true } = {}) {
+export async function inspectVsixArchive(bytes, { requireRFrameContract = true, requireVendoredJsYaml = true } = {}) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_VSIX_BYTES) {
     throw new Error(`VSIX input must be one non-empty Buffer no larger than ${MAX_VSIX_BYTES} bytes.`);
   }
-  const requiredEntries = requiredVsixEntriesForRelease({ requireRFrameContract });
+  const requiredEntries = requiredVsixEntriesForRelease({ requireRFrameContract, requireVendoredJsYaml });
   const archive = await openArchive(bytes);
   const entries = [];
   const entryKinds = new Map();
   const entrySizes = new Map();
   const entryDigests = new Map();
   const contents = new Map();
+  const packagedCommonJsModules = new Map();
   let totalCompressedBytes = 0;
   let totalUncompressedBytes = 0;
 
@@ -355,12 +361,21 @@ export async function inspectVsixArchive(bytes, { requireRFrameContract = true }
 
         entries.push(entry.fileName);
         entryKinds.set(entry.fileName, entry.fileName.endsWith("/") ? "directory" : "file");
-        const captureLimit = REQUIRED_CAPTURE_LIMITS.get(entry.fileName);
+        const isPackagedCommonJs = PACKAGED_COMMONJS_ENTRY.test(entry.fileName);
+        const captureLimit =
+          REQUIRED_CAPTURE_LIMITS.get(entry.fileName) ??
+          (isPackagedCommonJs ? PACKAGED_COMMONJS_MAX_ENTRY_BYTES : undefined);
         const result = await readEntry(archive, entry, captureLimit);
         entrySizes.set(entry.fileName, result.size);
         entryDigests.set(entry.fileName, result.sha256);
         if (result.bytes !== undefined) {
           contents.set(entry.fileName, result.bytes);
+          if (isPackagedCommonJs) {
+            packagedCommonJsModules.set(
+              entry.fileName.slice("extension/dist/".length),
+              decodeUtf8(result.bytes, entry.fileName)
+            );
+          }
         }
         if (!settled) {
           archive.readEntry();
@@ -379,7 +394,7 @@ export async function inspectVsixArchive(bytes, { requireRFrameContract = true }
     archive.readEntry();
   });
 
-  const inventory = inspectVsixEntries(entries, { requireRFrameContract });
+  const inventory = inspectVsixEntries(entries, { requireRFrameContract, requireVendoredJsYaml });
   if (inventory.forbidden.length > 0 || inventory.missing.length > 0 || inventory.duplicates.length > 0) {
     throw new Error(
       [
@@ -399,6 +414,15 @@ export async function inspectVsixArchive(bytes, { requireRFrameContract = true }
     if (entrySizes.get(required) === 0) {
       throw new Error(`VSIX required entry ${required} must be non-empty.`);
     }
+  }
+  const vendoredJsYamlContents = contents.get(VENDORED_JS_YAML_ENTRY);
+  if (
+    (requireVendoredJsYaml || vendoredJsYamlContents !== undefined) &&
+    (vendoredJsYamlContents === undefined ||
+      entrySizes.get(VENDORED_JS_YAML_ENTRY) !== VENDORED_JS_YAML_BYTES ||
+      entryDigests.get(VENDORED_JS_YAML_ENTRY) !== VENDORED_JS_YAML_SHA256)
+  ) {
+    throw new Error("VSIX vendored js-yaml runtime must match its exact reviewed size and SHA-256 receipt.");
   }
 
   const packageBytes = contents.get("extension/package.json");
@@ -428,6 +452,9 @@ export async function inspectVsixArchive(bytes, { requireRFrameContract = true }
     entrySizes: Object.freeze([...entrySizes].map(([entry, size]) => Object.freeze([entry, size]))),
     entryCount: entries.length,
     packagedPackageJson: text("extension/package.json"),
+    packagedCommonJsModules: Object.freeze(
+      [...packagedCommonJsModules].map(([path, source]) => Object.freeze([path, source]))
+    ),
     packagedPythonVersionFile: text("extension/python/openwrangler_runtime/version.py"),
     packagedReadme: text("extension/readme.md"),
     packagedChangelog: text("extension/changelog.md"),

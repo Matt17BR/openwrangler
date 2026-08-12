@@ -13,6 +13,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { createVSIX } from "@vscode/vsce";
 import {
   createEditorAcceptanceEnvironment,
@@ -65,6 +66,8 @@ import {
 import {
   assertRemoteWorkspaceExactFileStage,
   assertRemoteWorkspaceTreeStage,
+  reconcileGeneratedCommonJsFileClosure,
+  reconcileOpenWranglerCompiledCommonJsClosure,
   stageRemoteWorkspaceExactFile,
   stageRemoteWorkspaceTree
 } from "./remote-workspace-staging.mjs";
@@ -124,6 +127,10 @@ try {
   candidatePath = validateRemoteWorkspaceCandidatePath(candidateArguments[0]);
   candidateExpectation = validateRemoteWorkspaceCandidateExpectation(candidateArguments[1], candidateArguments[2]);
   candidateSourceReceipt = assertRegularCandidate(candidatePath, candidateExpectation);
+  const sourceTestModuleClosure = reconcileOpenWranglerCompiledCommonJsClosure({
+    root: repositoryRoot,
+    outputRoot: "dist-test"
+  });
   const tools = await assertRemoteWorkspaceHost({}, { runCommand: commandRunner.run });
   const preparedXvfb = await prepareRepositoryLocalXvfb();
   assertRemoteWorkspaceCandidateReceipt(candidatePath, candidateSourceReceipt, candidateExpectation);
@@ -150,6 +157,13 @@ try {
   const phaseLoaderStage = stageRemoteWorkspacePhaseLoader(scriptsRoot, layout.phaseRuntime, preparedXvfb);
   const xvfbStage = phaseLoaderStage.xvfbStage;
   const testModuleStage = stageTestModuleTree(layout.remoteTestModule);
+  const stagedTestModuleClosure = reconcileRemoteTestModuleClosure(
+    testModuleStage.stage.stagedRoot,
+    testModuleStage.entrypoint
+  );
+  if (!isDeepStrictEqual(sourceTestModuleClosure, stagedTestModuleClosure)) {
+    throw new Error("The Remote SSH staged test-module CommonJS closure does not match its pinned source closure.");
+  }
   const playwrightStage = stageTestRuntimeDependency(
     playwrightCoreRoot,
     join(layout.remoteTestModule, "node_modules", "playwright-core"),
@@ -563,6 +577,15 @@ function stageTestModuleTree(destination) {
   return Object.freeze({
     entrypoint: join(stagedRoot, relative(testModuleRoot, testModule)),
     stage
+  });
+}
+
+function reconcileRemoteTestModuleClosure(root, entrypoint) {
+  return reconcileGeneratedCommonJsFileClosure({
+    root,
+    entrypoint,
+    expectedHostExternals: ["vscode"],
+    expectedPackagedExternals: ["playwright-core"]
   });
 }
 

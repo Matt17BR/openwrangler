@@ -13,7 +13,7 @@ import {
   load,
   parseEvents,
   type Event
-} from "js-yaml";
+} from "./vendor/js-yaml";
 import {
   closesMarkdownOpaqueContainer,
   openingMarkdownOpaqueContainer,

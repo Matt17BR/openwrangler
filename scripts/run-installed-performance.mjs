@@ -120,6 +120,7 @@ const GENERATED_MEDIA_PACKAGE_FILES = Object.freeze([
   "media/webview.css",
   "media/webview.js"
 ]);
+const GENERATED_EXTENSION_PACKAGE_FILES = Object.freeze(["dist/extension/vendor/js-yaml.js"]);
 
 export function parseInstalledPerformanceArguments(arguments_) {
   const options = {
@@ -2135,7 +2136,7 @@ function packagePathIdentity(file) {
 }
 
 function expectedGeneratedPackageFiles(trackedFiles) {
-  const generated = new Set(GENERATED_MEDIA_PACKAGE_FILES);
+  const generated = new Set([...GENERATED_MEDIA_PACKAGE_FILES, ...GENERATED_EXTENSION_PACKAGE_FILES]);
   for (const file of trackedFiles) {
     if (/^src\/(?:extension|shared)\/.+\.ts$/u.test(file) && !file.endsWith(".d.ts")) {
       generated.add(`dist/${file.slice("src/".length, -".ts".length)}.js`);

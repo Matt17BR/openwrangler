@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
+import { reconcileGeneratedCommonJsModuleClosure } from "./remote-workspace-staging.mjs";
 import {
   inspectNotebookRendererBundle,
   inspectPackagedReadmeSource,
@@ -20,6 +21,7 @@ const snapshot = readBoundedVsixFileSnapshot(vsix);
 const payload = await inspectVsixArchive(snapshot.bytes);
 const {
   archiveEntries,
+  packagedCommonJsModules,
   packagedPackageJson,
   packagedReadme,
   vsixManifest,
@@ -27,6 +29,18 @@ const {
   webviewPanel,
   notebookRenderer
 } = payload;
+reconcileGeneratedCommonJsModuleClosure({
+  entrypoint: "extension/activate.js",
+  modules: packagedCommonJsModules,
+  expectedHostExternals: ["vscode"],
+  expectedPackagedExternals: [],
+  limits: {
+    maximumModules: 256,
+    maximumEdges: 4_096,
+    maximumFileBytes: 4 * 1024 * 1024,
+    maximumBytes: 16 * 1024 * 1024
+  }
+});
 const preReleaseProblems = inspectVsixPreReleaseMetadata(packagedPackageJson, vsixManifest);
 if (preReleaseProblems.length > 0) {
   throw new Error(`Invalid ${basename(vsix)}. ${preReleaseProblems.join(" ")}`);

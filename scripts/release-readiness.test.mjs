@@ -20,7 +20,13 @@ import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { ZipFile } from "yazl";
 import { COMPARISON_TEST_SHA, createReleaseComparisonReport } from "./data-wrangler-comparison-test-fixtures.mjs";
-import { inspectVsixArchive, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
+import {
+  inspectVsixArchive,
+  MAX_VSIX_ENTRY_BYTES,
+  VENDORED_JS_YAML_BYTES,
+  VENDORED_JS_YAML_SHA256
+} from "./vsix-archive.mjs";
+import { VENDORED_JS_YAML_ENTRY } from "./vsix-contents.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 import {
   inspectPreviewReleaseMetadata,
@@ -56,6 +62,13 @@ import {
 
 const namespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 const repositoryRoot = resolve(import.meta.dirname, "..");
+const vendoredJsYaml = readFileSync(resolve(repositoryRoot, "node_modules/js-yaml/dist/js-yaml.cjs.js"));
+const rRuntimeEntries = Object.freeze([
+  "extension/r/openwrangler_runtime/frame_contract.R",
+  "extension/r/openwrangler_runtime/interactive_agent.R",
+  "extension/r/openwrangler_runtime/kernel_agent.R",
+  "extension/r/openwrangler_runtime/process_agent.R"
+]);
 const stablePackage = {
   name: "openwrangler",
   displayName: "Open Wrangler",
@@ -139,8 +152,9 @@ function releaseVsixEntries(packageJson = stablePackage) {
     ["extension/readme.md", `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`],
     ["extension/changelog.md", "# Changelog\n"],
     ["extension/THIRD_PARTY_NOTICES.md", "# Third-party notices\n"],
-    ["extension/dist/extension/activate.js", "export {};"],
+    ["extension/dist/extension/activate.js", 'require("vscode");'],
     ["extension/dist/extension/webviewPanel.js", "const policy = `font-src ${webview.cspSource};`;"],
+    [VENDORED_JS_YAML_ENTRY, vendoredJsYaml],
     ["extension/media/webview.js", "export {};"],
     ["extension/media/webview.css", "@font-face{src:url('./codicon.ttf')}"],
     ["extension/media/codicon.ttf", "font"],
@@ -1487,6 +1501,21 @@ test("strictly streams and validates the complete shared VSIX inventory", async 
   assert.equal(payload.packagedChangelog, "# Changelog\n");
   assert.equal(payload.packagedLicense, "MIT License\n");
   assert.equal(payload.packagedThirdPartyNotices, "# Third-party notices\n");
+  assert.equal(new Map(payload.entrySizes).get(VENDORED_JS_YAML_ENTRY), VENDORED_JS_YAML_BYTES);
+  assert.equal(new Map(payload.entryDigests).get(VENDORED_JS_YAML_ENTRY), VENDORED_JS_YAML_SHA256);
+
+  const packageWithoutR = await inspectVsixArchive(
+    await createReleaseVsixBuffer({ omitted: new Set(rRuntimeEntries) }),
+    { requireRFrameContract: false }
+  );
+  assert.equal(new Map(packageWithoutR.entryDigests).get(VENDORED_JS_YAML_ENTRY), VENDORED_JS_YAML_SHA256);
+  await assert.rejects(
+    inspectVsixArchive(
+      await createReleaseVsixBuffer({ omitted: new Set([...rRuntimeEntries, VENDORED_JS_YAML_ENTRY]) }),
+      { requireRFrameContract: false }
+    ),
+    /Missing: extension\/dist\/extension\/vendor\/js-yaml\.js/u
+  );
 
   await assert.rejects(
     inspectVsixArchive(
@@ -1496,6 +1525,52 @@ test("strictly streams and validates the complete shared VSIX inventory", async 
     ),
     /Missing: extension\/LICENSE\.txt/u
   );
+
+  await assert.rejects(
+    inspectVsixArchive(
+      await createReleaseVsixBuffer({
+        omitted: new Set([VENDORED_JS_YAML_ENTRY])
+      })
+    ),
+    /Missing: extension\/dist\/extension\/vendor\/js-yaml\.js/u
+  );
+
+  const mutatedVendorEntries = releaseVsixEntries();
+  const mutatedVendor = Buffer.from(vendoredJsYaml);
+  const asciiMutation = mutatedVendor.indexOf(Buffer.from("function"));
+  assert.notEqual(asciiMutation, -1);
+  mutatedVendor[asciiMutation] = "g".charCodeAt(0);
+  mutatedVendorEntries.set(VENDORED_JS_YAML_ENTRY, mutatedVendor);
+  await assert.rejects(
+    inspectVsixArchive(await createReleaseVsixBuffer({ entries: mutatedVendorEntries })),
+    /vendored js-yaml runtime must match its exact reviewed size and SHA-256 receipt/u
+  );
+  await assert.rejects(
+    inspectVsixArchive(await createReleaseVsixBuffer({ entries: mutatedVendorEntries }), {
+      requireVendoredJsYaml: false
+    }),
+    /vendored js-yaml runtime must match its exact reviewed size and SHA-256 receipt/u
+  );
+
+  const unexpectedVendorEntries = releaseVsixEntries();
+  unexpectedVendorEntries.set("extension/dist/extension/vendor/unreviewed.js", "export {};");
+  await assert.rejects(
+    inspectVsixArchive(await createReleaseVsixBuffer({ entries: unexpectedVendorEntries })),
+    /Forbidden: extension\/dist\/extension\/vendor\/unreviewed\.js/u
+  );
+
+  for (const mixedCaseVendor of [
+    "extension/dist/extension/VENDOR/unreviewed.js",
+    "extension/dist/extension/VeNdOr/js-yaml.js",
+    "extension/dist/extension/nested/vEnDoR/unreviewed.js"
+  ]) {
+    const mixedCaseVendorEntries = releaseVsixEntries();
+    mixedCaseVendorEntries.set(mixedCaseVendor, "export {};");
+    await assert.rejects(
+      inspectVsixArchive(await createReleaseVsixBuffer({ entries: mixedCaseVendorEntries })),
+      new RegExp(`Forbidden: ${mixedCaseVendor.replaceAll(".", "\\.")}`, "u")
+    );
+  }
 
   await assert.rejects(
     inspectVsixArchive(

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,6 +13,7 @@ import {
 } from "./verify-marketplace-publication.mjs";
 
 const version = "1.0.2";
+const vendoredJsYaml = readFileSync(new URL("../node_modules/js-yaml/dist/js-yaml.cjs.js", import.meta.url));
 const packageJson = Object.freeze({
   name: "openwrangler",
   displayName: "Open Wrangler",
@@ -63,8 +64,9 @@ function releaseEntries(
     ["extension/readme.md", readme],
     ["extension/changelog.md", "# Changelog\n"],
     ["extension/THIRD_PARTY_NOTICES.md", "# Third-party notices\n"],
-    ["extension/dist/extension/activate.js", "export {};"],
+    ["extension/dist/extension/activate.js", 'require("vscode");'],
     ["extension/dist/extension/webviewPanel.js", "export {};"],
+    ["extension/dist/extension/vendor/js-yaml.js", vendoredJsYaml],
     ["extension/media/webview.js", "export {};"],
     ["extension/media/webview.css", "@font-face{src:url('./codicon.ttf')}"],
     ["extension/media/codicon.ttf", "font"],
@@ -86,6 +88,7 @@ function releaseEntries(
   ]);
   if (!includeRFrameContract) {
     entries.delete("extension/r/openwrangler_runtime/frame_contract.R");
+    entries.delete("extension/dist/extension/vendor/js-yaml.js");
   }
   return entries;
 }
@@ -215,6 +218,7 @@ test("verifies historical v1 Marketplace packages without the later R runtime", 
     fetchImpl: fetchFixture(gallery(candidateSha256), publicVsix),
     prerelease: false,
     requireRFrameContract: false,
+    requireVendoredJsYaml: false,
     version
   });
   assert.equal(receipt.candidateSha256, candidateSha256);

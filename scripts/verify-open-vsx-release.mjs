@@ -122,6 +122,7 @@ export async function verifyOpenVsxReleaseOnce({
   fetchImpl = fetch,
   inspectCandidate = inspectVsixArchive,
   requireRFrameContract = true,
+  requireVendoredJsYaml = true,
   root = OPEN_VSX_ROOT,
   version
 }) {
@@ -156,7 +157,7 @@ export async function verifyOpenVsxReleaseOnce({
   }
   const metadataBytes = await readBoundedResponse(response, METADATA_MAX_BYTES, "Open VSX metadata");
   const metadata = parseStrictJson(metadataBytes.toString("utf8"), { maxBytes: METADATA_MAX_BYTES });
-  const candidateArchive = await inspectCandidate(candidateBytes, { requireRFrameContract });
+  const candidateArchive = await inspectCandidate(candidateBytes, { requireRFrameContract, requireVendoredJsYaml });
   const packageJson = requirePlainObject(
     parseStrictJson(candidateArchive.packagedPackageJson),
     "Canonical VSIX package metadata"
@@ -257,6 +258,7 @@ export async function waitForOpenVsxRelease({
   fetchImpl = fetch,
   inspectCandidate = inspectVsixArchive,
   requireRFrameContract = true,
+  requireVendoredJsYaml = true,
   root = OPEN_VSX_ROOT,
   version
 }) {
@@ -273,6 +275,7 @@ export async function waitForOpenVsxRelease({
         fetchImpl,
         inspectCandidate,
         requireRFrameContract,
+        requireVendoredJsYaml,
         root,
         version
       });

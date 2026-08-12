@@ -436,6 +436,7 @@ export async function verifyMarketplacePublication({
   fetchImpl = fetch,
   prerelease,
   requireRFrameContract = true,
+  requireVendoredJsYaml = true,
   sleep = delay,
   version
 }) {
@@ -459,7 +460,7 @@ export async function verifyMarketplacePublication({
   if (actualCandidateSha256 !== candidateSha256) {
     throw new Error("Canonical Marketplace candidate changed before public verification.");
   }
-  const canonicalArchive = await inspectVsixArchive(candidate.bytes, { requireRFrameContract });
+  const canonicalArchive = await inspectVsixArchive(candidate.bytes, { requireRFrameContract, requireVendoredJsYaml });
   const candidateIconSize = new Map(canonicalArchive.entrySizes).get("extension/media/icon.png");
   const candidateIconSha256 = new Map(canonicalArchive.entryDigests).get("extension/media/icon.png");
   if (
@@ -497,7 +498,10 @@ export async function verifyMarketplacePublication({
         prerelease,
         version
       });
-      const publishedArchive = await inspectVsixArchive(publishedBytes, { requireRFrameContract });
+      const publishedArchive = await inspectVsixArchive(publishedBytes, {
+        requireRFrameContract,
+        requireVendoredJsYaml
+      });
       assertSameVsixSemantics(canonicalArchive, publishedArchive);
       const finalCandidate = readBoundedVsixFileSnapshot(candidatePath, { requireOwner: true });
       if (
@@ -544,6 +548,7 @@ async function runCli() {
     candidateSha256: canonical.candidateSha256,
     prerelease: canonical.prerelease,
     requireRFrameContract: canonical.requireRFrameContract,
+    requireVendoredJsYaml: canonical.requireVendoredJsYaml,
     version: canonical.version
   });
   console.log(

@@ -4,6 +4,7 @@ import {
   closeSync,
   constants,
   cpSync,
+  existsSync,
   fstatSync,
   linkSync,
   lstatSync,
@@ -78,6 +79,11 @@ import {
   validateRemoteWorkspaceProcfsType
 } from "./remote-workspace-contract.mjs";
 import { createRemoteWorkspaceImmutableMountTemplate } from "./remote-workspace-launch.mjs";
+import {
+  reconcileGeneratedCommonJsFileClosure,
+  reconcileGeneratedCommonJsModuleClosure,
+  reconcileOpenWranglerCompiledCommonJsClosure
+} from "./remote-workspace-staging.mjs";
 
 const linuxTest = process.platform === "linux" ? test : test.skip;
 const resultWaitControllerCodes = Object.freeze([
@@ -96,6 +102,188 @@ const resultWaitControllerCodes = Object.freeze([
   "phase-result-wait-harness-cleanup-stalled",
   "phase-result-wait-harness-completion-stalled"
 ]);
+
+const commonJsPolicy = Object.freeze({
+  expectedHostExternals: Object.freeze(["vscode"]),
+  expectedPackagedExternals: Object.freeze(["playwright-core"])
+});
+
+test("reconciles a bounded generated CommonJS closure with exact host and packaged externals", () => {
+  const result = reconcileGeneratedCommonJsModuleClosure({
+    entrypoint: "test/index.js",
+    modules: [
+      ["test/index.js", 'require("node:path"); require("vscode"); require("playwright-core"); require("../local");'],
+      ["local.js", 'module.exports = require("./vendor/parser");'],
+      ["vendor/parser.js", "module.exports = Object.freeze({});"]
+    ],
+    ...commonJsPolicy
+  });
+
+  assert.deepEqual(result, {
+    entrypoint: "test/index.js",
+    hostExternals: ["vscode"],
+    modules: ["local.js", "test/index.js", "vendor/parser.js"],
+    packagedExternals: ["playwright-core"]
+  });
+  assert.equal(Object.isFrozen(result), true);
+});
+
+test("rejects dynamic CommonJS edges and unexpected module syntax", () => {
+  for (const [source, pattern] of [
+    ["require(target);", /dynamic require/u],
+    ['import("./lazy.js");', /dynamic import/u],
+    ['require.resolve("./local.js");', /indirect require/u],
+    ['const load = require; load("left-pad");', /indirect require/u],
+    ['module.require("left-pad");', /indirect require/u],
+    ['module["require"]("left-pad");', /indirect require/u],
+    ['module["re" + "quire"]("left-pad");', /indirect require/u],
+    ['const { "require": load } = module; load("left-pad");', /module-loader reference/u],
+    ['function harmless(module) {} module.require("left-pad");', /indirect require/u],
+    ['Reflect.get(module, "require")("left-pad");', /reflective dynamic access/u],
+    ['const Module = require("node:module"); Module._load("left-pad");', /indirect require/u],
+    ['process.getBuiltinModule("module")._load("left-pad");', /indirect require/u],
+    ['globalThis[`require`]("left-pad");', /indirect require/u],
+    ['(0, require)("left-pad");', /indirect require/u],
+    ["globalThis.eval('require(\"left-pad\")');", /evaluation edge/u],
+    ["eval('require(\"left-pad\")');", /dynamic code evaluation/u],
+    ["const evaluate = eval; evaluate('require(\"left-pad\")');", /dynamic code evaluation/u],
+    ["new Function('return require(\"left-pad\")')();", /dynamic code evaluation/u],
+    ["const Build = Function; new Build('return require(\"left-pad\")')();", /dynamic code evaluation/u],
+    [
+      'const loader = (0, node_module_1.createRequire)(__filename); loader("left-pad");',
+      /createRequire result escapes/u
+    ],
+    [
+      'const loader = (0, node_module_1.createRequire)(__filename); const load = loader; load("left-pad");',
+      /createRequire result escapes/u
+    ],
+    ['const loader = createRequire(__filename); loader("left-pad");', /untracked createRequire/u],
+    ['export { value } from "./local.js";', /unexpected module syntax/u],
+    ["export default 1;", /unexpected module syntax/u]
+  ]) {
+    assert.throws(
+      () =>
+        reconcileGeneratedCommonJsModuleClosure({
+          entrypoint: "index.js",
+          modules: [
+            ["index.js", source],
+            ["local.js", "module.exports = 1;"],
+            ["lazy.js", "module.exports = 1;"]
+          ],
+          expectedHostExternals: [],
+          expectedPackagedExternals: []
+        }),
+      pattern
+    );
+  }
+});
+
+test("rejects absolute, escaping, unresolved, ambiguous, unknown, and stale CommonJS edges", () => {
+  for (const [source, modules, policy, pattern] of [
+    ['require("/private/module.js");', [], emptyCommonJsPolicy(), /absolute module edge/u],
+    ['require("../../escape");', [], emptyCommonJsPolicy(), /escapes its closure root/u],
+    ['require("./missing");', [], emptyCommonJsPolicy(), /unresolved or ambiguous/u],
+    [
+      'require("./local");',
+      [
+        ["local.js", "module.exports = 1;"],
+        ["local/index.js", "module.exports = 2;"]
+      ],
+      emptyCommonJsPolicy(),
+      /unresolved or ambiguous/u
+    ],
+    ['require("left-pad");', [], emptyCommonJsPolicy(), /unknown external package/u],
+    [
+      'require("vscode/../js-yaml");',
+      [],
+      { expectedHostExternals: ["vscode"], expectedPackagedExternals: [] },
+      /unknown external package/u
+    ],
+    [
+      'require("playwright-core/../js-yaml");',
+      [],
+      { expectedHostExternals: [], expectedPackagedExternals: ["playwright-core"] },
+      /unknown external package/u
+    ],
+    ["module.exports = 1;", [], { expectedHostExternals: ["vscode"], expectedPackagedExternals: [] }, /stale/u]
+  ]) {
+    assert.throws(
+      () =>
+        reconcileGeneratedCommonJsModuleClosure({
+          entrypoint: "nested/index.js",
+          modules: [["nested/index.js", source], ...modules],
+          ...policy
+        }),
+      pattern
+    );
+  }
+});
+
+test("rejects linked files in a generated CommonJS filesystem closure", (context) => {
+  const root = mkdtempSync(join(tmpdir(), "ow-commonjs-links-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  writeCommonJsModule(root, "index.js", 'require("vscode"); require("playwright-core"); require("./linked");');
+  writeCommonJsModule(root, "real.js", "module.exports = 1;");
+  symlinkSync(join(root, "real.js"), join(root, "linked.js"));
+
+  assert.throws(
+    () =>
+      reconcileGeneratedCommonJsFileClosure({
+        root,
+        entrypoint: join(root, "index.js"),
+        ...commonJsPolicy
+      }),
+    /contains or traverses a link/u
+  );
+
+  rmSync(join(root, "linked.js"));
+  linkSync(join(root, "real.js"), join(root, "linked.js"));
+  assert.throws(
+    () =>
+      reconcileGeneratedCommonJsFileClosure({
+        root,
+        entrypoint: join(root, "index.js"),
+        ...commonJsPolicy
+      }),
+    /single-link regular file/u
+  );
+});
+
+const compiledRemoteRoot = resolve(import.meta.dirname, "..", "dist-test");
+const compiledRemoteEntrypoint = join(compiledRemoteRoot, "test", "extensionHost", "index.js");
+const compiledRemoteTest = existsSync(compiledRemoteEntrypoint) ? test : test.skip;
+compiledRemoteTest("reconciles the actual compiled Remote SSH test-module closure", () => {
+  const result = reconcileOpenWranglerCompiledCommonJsClosure({
+    root: resolve(import.meta.dirname, ".."),
+    outputRoot: "dist-test"
+  });
+  assert.deepEqual(result.hostExternals, ["vscode"]);
+  assert.deepEqual(result.packagedExternals, ["playwright-core"]);
+  assert.ok(result.modules.includes("extension/vendor/js-yaml.js"));
+});
+
+const compiledProductRoot = resolve(import.meta.dirname, "..", "dist");
+const compiledProductEntrypoint = join(compiledProductRoot, "extension", "activate.js");
+const compiledProductTest = existsSync(compiledProductEntrypoint) ? test : test.skip;
+compiledProductTest("reconciles the actual compiled product CommonJS closure without packaged externals", () => {
+  const result = reconcileOpenWranglerCompiledCommonJsClosure({
+    root: resolve(import.meta.dirname, ".."),
+    outputRoot: "dist"
+  });
+  assert.deepEqual(result.hostExternals, ["vscode"]);
+  assert.deepEqual(result.packagedExternals, []);
+  assert.ok(result.modules.includes("extension/vendor/js-yaml.js"));
+});
+
+function emptyCommonJsPolicy() {
+  return { expectedHostExternals: [], expectedPackagedExternals: [] };
+}
+
+function writeCommonJsModule(root, path, source) {
+  const target = join(root, path);
+  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  writeFileSync(target, source, { flag: "wx", mode: 0o600 });
+}
 
 function readPrivateTestFile(path) {
   const descriptor = openSync(

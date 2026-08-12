@@ -64,6 +64,7 @@ function sourcePackageJson(root, commit) {
 }
 
 const R_FRAME_CONTRACT_SOURCE = "r/openwrangler_runtime/frame_contract.R";
+const VENDORED_JS_YAML_MARKER = "scripts/copy-extension-vendor-assets.mjs";
 
 function releaseTreeHasRFrameContract(root, commit) {
   const output = execFileSync("git", ["ls-tree", "-z", "--full-tree", commit, "--", R_FRAME_CONTRACT_SOURCE], {
@@ -86,9 +87,33 @@ function releaseTreeHasRFrameContract(root, commit) {
   return true;
 }
 
+function releaseTreeHasVendoredJsYaml(root, commit) {
+  const output = execFileSync("git", ["ls-tree", "-z", "--full-tree", commit, "--", VENDORED_JS_YAML_MARKER], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 4096,
+    timeout: 10_000,
+    windowsHide: true
+  });
+  if (output.length === 0) return false;
+  const expected = new RegExp(
+    `^100(?:644|755) blob [0-9a-f]{40}\\t${VENDORED_JS_YAML_MARKER.replaceAll(".", "\\.")}\\0$`,
+    "u"
+  );
+  if (!expected.test(output)) {
+    throw new Error("The selected release has an invalid vendored js-yaml source marker.");
+  }
+  return true;
+}
+
 function releaseVersionRequiresRFrameContract(version) {
   const [major, minor] = version.split(".").map(Number);
   return major >= 2 || (major === 1 && minor === 99);
+}
+
+function releaseVersionRequiresVendoredJsYaml(version) {
+  const [major, minor, patch] = version.split(".").map(Number);
+  return major >= 2 || (major === 1 && minor === 99 && patch >= 3);
 }
 
 function releaseSource(packageJson, releaseTag, prerelease) {
@@ -148,6 +173,7 @@ export async function verifyPinnedPreviewReleaseArtifact({
   expectedCommit,
   pinned,
   requireRFrameContract = true,
+  requireVendoredJsYaml = true,
   releaseTag,
   sourcePackageJson
 }) {
@@ -186,7 +212,7 @@ export async function verifyPinnedPreviewReleaseArtifact({
   ) {
     throw new Error("The canonical pre-release files do not describe one exact preview artifact.");
   }
-  const archive = await inspectVsixArchive(candidateAsset.bytes, { requireRFrameContract });
+  const archive = await inspectVsixArchive(candidateAsset.bytes, { requireRFrameContract, requireVendoredJsYaml });
   const packaged = releaseSource(archive.packagedPackageJson, releaseTag, true);
   const preReleaseProblems = inspectVsixPreReleaseMetadata(archive.packagedPackageJson, archive.vsixManifest);
   if (
@@ -224,6 +250,7 @@ export async function verifyRegistryReleaseArtifact({
   expectedCommit,
   prerelease,
   requireRFrameContract = true,
+  requireVendoredJsYaml = true,
   releaseTag,
   sourcePackageJson
 }) {
@@ -242,6 +269,7 @@ export async function verifyRegistryReleaseArtifact({
       expectedCommit,
       releaseTag,
       requireRFrameContract,
+      requireVendoredJsYaml,
       sourcePackageJson
     });
   }
@@ -250,6 +278,7 @@ export async function verifyRegistryReleaseArtifact({
     expectedCommit,
     releaseTag,
     requireRFrameContract,
+    requireVendoredJsYaml,
     sourceCommit: expectedCommit,
     sourcePackageJson
   });
@@ -282,18 +311,23 @@ export async function verifyRegistryReleaseArtifactFromCheckout({
   const packageJson = sourcePackageJson(canonicalRoot, tagCommit);
   const source = releaseSource(packageJson, releaseTag, prerelease);
   const requireRFrameContract = releaseTreeHasRFrameContract(canonicalRoot, tagCommit);
+  const requireVendoredJsYaml = releaseTreeHasVendoredJsYaml(canonicalRoot, tagCommit);
   if (releaseVersionRequiresRFrameContract(source.version) && !requireRFrameContract) {
     throw new Error("Open Wrangler 2 release sources must include the native R frame contract.");
+  }
+  if (releaseVersionRequiresVendoredJsYaml(source.version) && !requireVendoredJsYaml) {
+    throw new Error("Open Wrangler 1.99.3 and newer release sources must include the vendored js-yaml marker.");
   }
   const receipt = await verifyRegistryReleaseArtifact({
     directory,
     expectedCommit: tagCommit,
     prerelease,
     requireRFrameContract,
+    requireVendoredJsYaml,
     releaseTag,
     sourcePackageJson: packageJson
   });
-  return Object.freeze({ ...receipt, requireRFrameContract });
+  return Object.freeze({ ...receipt, requireRFrameContract, requireVendoredJsYaml });
 }
 
 async function runCli() {
