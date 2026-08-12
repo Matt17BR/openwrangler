@@ -838,6 +838,74 @@ test("native R tooling pins Quarto to an internal revealed preview", async () =>
   assert.match(tooling, /get<boolean>\("render\.previewReveal"\),\s*true/u);
 });
 
+test("focused literate acceptance owns and probes its exact private Python kernel", async () => {
+  const source = await readFile(resolve("scripts/run-packaged-editor-tests.mjs"), "utf8");
+  const rSetup = source.indexOf("rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(");
+  const rReadiness = source.indexOf("await probeJupyterAcceptanceRKernel(testPython, rAcceptanceEnvironment)", rSetup);
+  const selectorGuard = source.indexOf('if (rJourneySelector === "literate-documents")', rReadiness);
+  const createCheckpoint = source.indexOf('"setup:create-quarto-python-kernel-environment"', selectorGuard);
+  const createKernel = source.indexOf(
+    "quartoKernelPython = await createJupyterAcceptanceCoreKernelPython(",
+    createCheckpoint
+  );
+  const addCheckpoint = source.indexOf('"setup:add-quarto-python-kernelspec"', createKernel);
+  const addKernel = source.indexOf("const quartoPythonKernel = addJupyterAcceptancePythonKernel(", addCheckpoint);
+  const probeCheckpoint = source.indexOf('"setup:probe-quarto-python-kernel-readiness"', addKernel);
+  const probeKernel = source.indexOf("await probeJupyterAcceptanceQuartoPythonKernel(", probeCheckpoint);
+  const readyCheckpoint = source.indexOf('"setup:quarto-python-kernel-ready"', probeKernel);
+  const editor = source.indexOf("await runEditorAcceptancePhase({", readyCheckpoint);
+
+  assert.ok(rSetup >= 0 && rReadiness > rSetup, "The R environment must be ready before the Python setup begins.");
+  assert.ok(
+    selectorGuard > rReadiness &&
+      createCheckpoint > selectorGuard &&
+      createKernel > createCheckpoint &&
+      addCheckpoint > createKernel &&
+      addKernel > addCheckpoint &&
+      probeCheckpoint > addKernel &&
+      probeKernel > probeCheckpoint &&
+      readyCheckpoint > probeKernel &&
+      editor > readyCheckpoint,
+    "The literate selector must create, register, and directly probe its private kernel before an editor starts."
+  );
+  assert.equal(
+    (source.match(/createJupyterAcceptanceCoreKernelPython\(/gu) ?? []).length,
+    1,
+    "Only the focused literate selector may create the private core kernel environment."
+  );
+  assert.match(
+    source.slice(createKernel, addCheckpoint),
+    /resolve\(temporaryRoot, "qv"\)[\s\S]*\{ containedBy: temporaryRoot \}/u
+  );
+  assert.match(
+    source.slice(createKernel, addCheckpoint),
+    /latchPrivateRootIdentityLoss\(error, \{\s*scope: "jupyter-kernel",\s*editor: "orchestration"\s*\}\)/u,
+    "Private core-kernel identity loss must use the registered fail-closed Jupyter scope."
+  );
+  assert.match(
+    source.slice(addKernel, probeCheckpoint),
+    /addJupyterAcceptancePythonKernel\(\s*rAcceptanceEnvironment,\s*quartoKernelPython\s*\)/u
+  );
+  assert.doesNotMatch(
+    source,
+    /addJupyterAcceptancePythonKernel\(\s*rAcceptanceEnvironment,\s*testPython\s*\)/u,
+    "The focused kernelspec must never retain the hosted interpreter."
+  );
+  assert.match(
+    source.slice(probeKernel, readyCheckpoint),
+    /probeJupyterAcceptanceQuartoPythonKernel\(\s*rAcceptanceEnvironment,\s*quartoPythonKernel\s*\)/u
+  );
+
+  const rPhase = source.indexOf('if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter")', editor);
+  const rPhaseEnd = source.indexOf("} else if (jupyterExtensionInstallTarget", rPhase);
+  assert.ok(rPhase > editor && rPhaseEnd > rPhase);
+  assert.match(
+    source.slice(rPhase, rPhaseEnd),
+    /python:\s*rJourneySelector === "literate-documents"\s*\? quartoKernelPython\s*:\s*acceptancePythonForPhase\("jupyter-r", testPython, jupyterKernelPython\)/u,
+    "The focused phase must receive the same exact interpreter registered by its kernelspec."
+  );
+});
+
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
   const zip = new ZipFile();
   const targetAttribute = targetPlatform === undefined ? "" : ` TargetPlatform="${targetPlatform}"`;

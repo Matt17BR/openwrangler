@@ -812,6 +812,18 @@ associated with the source URI and the selected chunk. Jupyter may expose that c
 source line and Python kernel ownership identify it. The later sentinel chunk must remain absent, and opening the
 result must reuse that exact session with one user-code dispatch rather than rerunning or retargeting it.
 
+The focused `literate-documents` selector creates a separate core compatibility environment below the verified
+per-run temporary root. It pins Jupyter Client 8.9.1, IPykernel 6.30.1, Pandas 2.3.3, Polars 1.35.2, and DuckDB 1.5.4
+without installing PySpark, registers that exact interpreter in the prepared R environment's private Jupyter data
+directory, and passes the same interpreter to the native editor phase. Before an editor starts, a direct
+`jupyter_client` probe launches that exact kernelspec, executes a fixed Pandas marker, and shuts the kernel down. Its
+launcher, kernel, and bounded cleanup remain inside the runner-owned process tree or Windows Job. Creation,
+registration, probing, and readiness publish distinct setup checkpoints; the ordinary R and focused
+`interactive-terminal` journeys continue to use the selected host interpreter. The release failure that exposed this
+missing boundary had inherited hosted IPykernel 7.x while the reviewed compatibility lane pinned 6.30.1. That proves
+unreviewed dependency drift entered the focused gate, not that IPykernel 7.x caused the Interactive Window stall. The
+correction adds no editor retry and does not extend either the operation or native-phase deadline.
+
 `collapse` is not a runtime dependency. Packaged R/Jupyter acceptance installs collapse 2.1.7 in its private test
 library. It creates real `qDF()`, `qTBL()`, and `qDT()` objects, checks their picker labels, opens each one, and confirms
 that grouped and indexed objects stay out of the picker. The R contract tests cover the same class boundary directly.

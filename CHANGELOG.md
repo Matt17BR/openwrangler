@@ -45,6 +45,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Focused Python Quarto release acceptance now creates a private core Jupyter environment pinned to Jupyter Client
+  8.9.1 and the reviewed runtime versions, registers its exact interpreter with the prepared R environment, and proves
+  one direct kernel start, Pandas execution, and shutdown before VS Code starts. The probe remains in the runner-owned
+  process tree or Windows Job with bounded cleanup. Hosted IPykernel 7.x drift can no longer change this gate, and no
+  retry or timeout was added.
 - Remote R release acceptance now builds its snapshot-pinned base image, R runtime image, and server
   launch/readiness stage under independent 300-second hard and 180-second inactivity budgets. Exact Docker engine,
   image, and owner receipts stay in process between stages; cleanup runs in reverse and still withholds all failure

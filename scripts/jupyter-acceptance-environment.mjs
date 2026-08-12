@@ -24,6 +24,7 @@ import {
   createEditorAcceptancePrivateRootReceipt
 } from "./packaged-editor-orchestration.mjs";
 
+const CORE_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-client", "pandas", "polars", "duckdb"]);
 const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars", "duckdb", "pyspark"]);
 const BINARY_DEPENDENCIES = Object.freeze([
   "ipykernel",
@@ -40,6 +41,7 @@ const BINARY_DEPENDENCIES = Object.freeze([
 ]);
 const RELEASED_JUPYTER_COMPATIBILITY_VERSIONS = Object.freeze({
   ipykernel: "6.30.1",
+  "jupyter-client": "8.9.1",
   pandas: "2.3.3",
   polars: "1.35.2",
   duckdb: "1.5.4",
@@ -143,6 +145,95 @@ finally:
         stage, succeeded = "cleanup", False
 sys.stdout.write("OPEN_WRANGLER_R_KERNEL_" + ("READY" if succeeded else "FAILED:" + stage) + "\n")
 `.trimStart();
+const QUARTO_PYTHON_ACCEPTANCE_KERNEL_PROBE = String.raw`
+import os, stat, subprocess, sys, time
+stage, process, client, connection_identity, succeeded = "start", None, None, None, False
+try:
+    from jupyter_client import __version__ as jupyter_client_version
+    from jupyter_client.blocking.client import BlockingKernelClient
+    from jupyter_client.connect import write_connection_file
+    from jupyter_client.kernelspec import KernelSpec
+    if jupyter_client_version != "8.9.1": raise RuntimeError("jupyter-client version mismatch")
+    kernel_id, kernel_spec_path, connection_file, private_cwd = sys.argv[1:]
+    kernel_spec = KernelSpec.from_resource_dir(os.path.dirname(kernel_spec_path))
+    if kernel_id != "python3": raise RuntimeError("kernel id mismatch")
+    if sum(value.count("{connection_file}") for value in kernel_spec.argv) != 1: raise RuntimeError("connection placeholder mismatch")
+    command = [value.replace("{connection_file}", connection_file) for value in kernel_spec.argv]
+    if command[1:] != ["-I", "-m", "ipykernel_launcher", "-f", connection_file]: raise RuntimeError("kernel argv mismatch")
+    if not os.path.samefile(command[0], sys.executable): raise RuntimeError("kernel interpreter mismatch")
+    connection_key = os.urandom(32).hex().encode("ascii")
+    _, connection_info = write_connection_file(
+        fname=connection_file, ip="127.0.0.1", key=connection_key, kernel_name=kernel_id
+    )
+    connection_stat = os.lstat(connection_file)
+    if not stat.S_ISREG(connection_stat.st_mode) or connection_stat.st_nlink != 1:
+        raise RuntimeError("connection file identity invalid")
+    if os.name == "posix" and connection_stat.st_mode & 0o777 != 0o600:
+        raise RuntimeError("connection file mode invalid")
+    connection_identity = (connection_stat.st_dev, connection_stat.st_ino, connection_stat.st_mode, connection_stat.st_nlink, connection_stat.st_size, connection_stat.st_mtime_ns, connection_stat.st_ctime_ns)
+    kernel_environment = os.environ.copy(); kernel_environment.update(kernel_spec.env or {})
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=private_cwd,
+        env=kernel_environment,
+        close_fds=True,
+        start_new_session=False,
+        creationflags=0,
+    )
+    if process.poll() is not None: raise RuntimeError("kernel exited during launch")
+    if os.name == "posix" and os.getpgid(process.pid) != os.getpgrp(): raise RuntimeError("kernel escaped owned process group")
+    client = BlockingKernelClient(); client.load_connection_info(connection_info); client.start_channels(); client.wait_for_ready(timeout=12)
+    stage = "execute"
+    code = "import pandas as pd\nframe = pd.DataFrame({'city': ['Berlin', 'Oslo'], 'value': [1, 2]})\nassert frame.shape == (2, 2) and list(frame.columns) == ['city', 'value']\nprint('__OW_QUARTO_PYTHON_KERNEL__:2:city,value')"
+    request = client.execute(code, store_history=False, allow_stdin=False, stop_on_error=True)
+    deadline, output = time.monotonic() + 8, ""
+    while time.monotonic() < deadline:
+        message = client.get_iopub_msg(timeout=max(0.01, deadline - time.monotonic()))
+        if message.get("parent_header", {}).get("msg_id") != request: continue
+        kind, content = message.get("header", {}).get("msg_type"), message.get("content", {})
+        if kind == "stream" and content.get("name") == "stdout":
+            output += content.get("text", "")
+            if len(output) > 128: raise RuntimeError("oversized marker")
+        elif kind == "error": raise RuntimeError("kernel error")
+        elif kind == "status" and content.get("execution_state") == "idle":
+            if output != "__OW_QUARTO_PYTHON_KERNEL__:2:city,value\n": raise RuntimeError("missing marker")
+            succeeded = True; break
+except BaseException: pass
+finally:
+    cleanup_failed = False
+    try:
+        if client is not None: client.stop_channels()
+    except BaseException:
+        cleanup_failed = True
+    try:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try: process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=2)
+        if process is not None and process.poll() is None: raise RuntimeError("kernel process survived cleanup")
+    except BaseException:
+        cleanup_failed = True
+    try:
+        if connection_identity is None:
+            if os.path.lexists(connection_file): raise RuntimeError("unowned connection file")
+        else:
+            connection_stat = os.lstat(connection_file)
+            current_identity = (connection_stat.st_dev, connection_stat.st_ino, connection_stat.st_mode, connection_stat.st_nlink, connection_stat.st_size, connection_stat.st_mtime_ns, connection_stat.st_ctime_ns)
+            if current_identity != connection_identity: raise RuntimeError("connection file identity changed")
+            os.unlink(connection_file)
+            if os.path.lexists(connection_file): raise RuntimeError("connection file survived cleanup")
+    except BaseException:
+        cleanup_failed = True
+    if cleanup_failed:
+        stage, succeeded = "cleanup", False
+sys.stdout.write("OPEN_WRANGLER_QUARTO_PYTHON_KERNEL_" + ("READY" if succeeded else "FAILED:" + stage) + "\n")
+`.trimStart();
+const jupyterAcceptanceKernelPythonReceipts = new Map();
+const quartoPythonKernelReceipts = new WeakMap();
 
 function rAcceptanceKernelBootstrap(libraryDir, stagePath) {
   const libraryLiteral = JSON.stringify(libraryDir.replaceAll("\\", "/"));
@@ -351,6 +442,57 @@ export async function createJupyterAcceptanceKernelPython(
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
+  validateJupyterAcceptanceKernelPythonInput(directory, basePython, containedBy, runCommand);
+  const java = await probeJupyterAcceptanceJava({
+    environment,
+    runCommand
+  });
+  console.log(`Released-Jupyter PySpark Java preflight passed: Java ${java.version} (major ${java.major}).`);
+  return createJupyterAcceptanceKernelPythonEnvironment(directory, basePython, {
+    containedBy,
+    environment,
+    platform,
+    runCommand,
+    includePySpark: true,
+    labels: Object.freeze({
+      baseProbe: "Released-Jupyter base dependency version probe",
+      create: "Released-Jupyter private kernel environment creation",
+      install: "Released-Jupyter private kernel binary dependency installation",
+      pysparkInstall: "Released-Jupyter private kernel PySpark installation",
+      finalProbe: "Released-Jupyter private kernel dependency probe",
+      compatibility: "Released-Jupyter private kernel"
+    })
+  });
+}
+
+export async function createJupyterAcceptanceCoreKernelPython(
+  directory,
+  basePython,
+  {
+    containedBy,
+    environment = createEditorAcceptanceEnvironment(),
+    platform = process.platform,
+    runCommand = runBoundedEditorCommand
+  } = {}
+) {
+  validateJupyterAcceptanceKernelPythonInput(directory, basePython, containedBy, runCommand);
+  return createJupyterAcceptanceKernelPythonEnvironment(directory, basePython, {
+    containedBy,
+    environment,
+    platform,
+    runCommand,
+    includePySpark: false,
+    labels: Object.freeze({
+      baseProbe: "Quarto Python base dependency version probe",
+      create: "Quarto Python private kernel environment creation",
+      install: "Quarto Python private kernel dependency installation",
+      finalProbe: "Quarto Python private kernel dependency probe",
+      compatibility: "Quarto Python private kernel"
+    })
+  });
+}
+
+function validateJupyterAcceptanceKernelPythonInput(directory, basePython, containedBy, runCommand) {
   if (
     typeof directory !== "string" ||
     !isAbsolute(directory) ||
@@ -369,16 +511,18 @@ export async function createJupyterAcceptanceKernelPython(
       "Released-Jupyter acceptance requires a new contained private environment and an existing absolute base interpreter."
     );
   }
+}
 
-  const java = await probeJupyterAcceptanceJava({
-    environment,
-    runCommand
-  });
-  console.log(`Released-Jupyter PySpark Java preflight passed: Java ${java.version} (major ${java.major}).`);
+async function createJupyterAcceptanceKernelPythonEnvironment(
+  directory,
+  basePython,
+  { containedBy, environment, platform, runCommand, includePySpark, labels }
+) {
   await probeJupyterAcceptancePython(basePython, {
     environment,
     requirePySpark: false,
-    label: "Released-Jupyter base dependency version probe",
+    requireJupyterClient: false,
+    label: labels.baseProbe,
     requireRuntimeAbsent: false,
     runCommand
   });
@@ -390,7 +534,7 @@ export async function createJupyterAcceptanceKernelPython(
       executable: basePython,
       args: ["-I", "-m", "venv", venvDirectory],
       environment,
-      label: "Released-Jupyter private kernel environment creation"
+      label: labels.create
     },
     { timeoutMs: 60_000 }
   );
@@ -414,50 +558,63 @@ export async function createJupyterAcceptanceKernelPython(
         "--no-warn-script-location",
         "--no-cache-dir",
         "--only-binary=:all:",
-        ...BINARY_DEPENDENCIES.map(
+        ...(includePySpark ? BINARY_DEPENDENCIES : CORE_DEPENDENCIES).map(
           (dependency) => `${dependency}==${RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency]}`
         )
       ],
       environment,
-      label: "Released-Jupyter private kernel binary dependency installation"
+      label: labels.install
     },
     { timeoutMs: 240_000 }
   );
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
-  await runCommand(
-    {
-      executable: kernelPython,
-      args: [
-        "-I",
-        "-m",
-        "pip",
-        "--isolated",
-        "install",
-        "--disable-pip-version-check",
-        "--no-input",
-        "--no-warn-script-location",
-        "--no-cache-dir",
-        "--no-deps",
-        PYSPARK_SOURCE_REQUIREMENT
-      ],
-      environment,
-      label: "Released-Jupyter private kernel PySpark installation"
-    },
-    { timeoutMs: 240_000 }
-  );
-  assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+  if (includePySpark) {
+    await runCommand(
+      {
+        executable: kernelPython,
+        args: [
+          "-I",
+          "-m",
+          "pip",
+          "--isolated",
+          "install",
+          "--disable-pip-version-check",
+          "--no-input",
+          "--no-warn-script-location",
+          "--no-cache-dir",
+          "--no-deps",
+          PYSPARK_SOURCE_REQUIREMENT
+        ],
+        environment,
+        label: labels.pysparkInstall
+      },
+      { timeoutMs: 240_000 }
+    );
+    assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+  }
   const installedVersions = await probeJupyterAcceptancePython(kernelPython, {
     environment,
-    label: "Released-Jupyter private kernel dependency probe",
+    label: labels.finalProbe,
+    requirePySpark: includePySpark,
+    requireJupyterClient: !includePySpark,
     requireRuntimeAbsent: true,
     runCommand
   });
-  for (const dependency of DEPENDENCIES) {
+  for (const dependency of includePySpark ? DEPENDENCIES : CORE_DEPENDENCIES) {
     if (installedVersions[dependency] !== RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency]) {
-      throw new Error(`Released-Jupyter private kernel did not retain the ${dependency} compatibility version.`);
+      throw new Error(`${labels.compatibility} did not retain the ${dependency} compatibility version.`);
     }
   }
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+  if (!includePySpark) {
+    jupyterAcceptanceKernelPythonReceipts.set(
+      kernelPython,
+      Object.freeze({
+        directoryReceipt,
+        identity: captureKernelPythonIdentity(kernelPython, directoryReceipt)
+      })
+    );
+  }
   return kernelPython;
 }
 
@@ -1012,6 +1169,97 @@ export function writeJupyterAcceptanceEnvironment(directory, python) {
   return { dataDir, runtimeDir, configDir, path: pathDir };
 }
 
+function sameKernelPathSnapshot(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function captureStandaloneKernelPythonIdentity(python) {
+  let invocationSnapshot;
+  let canonicalPath;
+  let targetSnapshot;
+  try {
+    invocationSnapshot = lstatSync(python, { bigint: true });
+    canonicalPath = realpathSync(python);
+    targetSnapshot = lstatSync(canonicalPath, { bigint: true });
+  } catch {
+    throw new Error("Quarto Python acceptance requires an existing regular-file interpreter.");
+  }
+  if (
+    (!invocationSnapshot.isFile() && !invocationSnapshot.isSymbolicLink()) ||
+    !targetSnapshot.isFile() ||
+    targetSnapshot.isSymbolicLink()
+  ) {
+    throw new Error("Quarto Python acceptance requires an existing regular-file interpreter.");
+  }
+  return Object.freeze({ python, canonicalPath, invocationSnapshot, targetSnapshot });
+}
+
+function captureKernelPythonIdentity(python, directoryReceipt) {
+  const relativePython = relative(directoryReceipt.path, resolve(python));
+  if (
+    relativePython.length === 0 ||
+    relativePython === ".." ||
+    relativePython.startsWith(`..${sep}`) ||
+    isAbsolute(relativePython)
+  ) {
+    throw new Error("A private Jupyter kernel interpreter must stay inside its owned environment path.");
+  }
+  return captureStandaloneKernelPythonIdentity(python);
+}
+
+function assertKernelPythonIdentity(identity) {
+  let invocationSnapshot;
+  let canonicalPath;
+  let targetSnapshot;
+  try {
+    invocationSnapshot = lstatSync(identity.python, { bigint: true });
+    canonicalPath = realpathSync(identity.python);
+    targetSnapshot = lstatSync(canonicalPath, { bigint: true });
+  } catch {
+    throw new Error("Quarto Python private kernel interpreter identity changed.");
+  }
+  if (
+    canonicalPath !== identity.canonicalPath ||
+    !sameKernelPathSnapshot(invocationSnapshot, identity.invocationSnapshot) ||
+    !sameKernelPathSnapshot(targetSnapshot, identity.targetSnapshot)
+  ) {
+    throw new Error("Quarto Python private kernel interpreter identity changed.");
+  }
+}
+
+function captureOwnedFileIdentity(path, description) {
+  let snapshot;
+  let canonicalPath;
+  try {
+    snapshot = lstatSync(path, { bigint: true });
+    canonicalPath = realpathSync(path);
+  } catch {
+    throw new Error(`The ${description} lost its owned file identity.`);
+  }
+  if (!snapshot.isFile() || snapshot.isSymbolicLink() || snapshot.nlink !== 1n) {
+    throw new Error(`The ${description} lost its owned file identity.`);
+  }
+  return Object.freeze({ canonicalPath, snapshot });
+}
+
+function assertOwnedFileIdentity(path, identity, description) {
+  const current = captureOwnedFileIdentity(path, description);
+  if (
+    current.canonicalPath !== identity.canonicalPath ||
+    !sameKernelPathSnapshot(current.snapshot, identity.snapshot)
+  ) {
+    throw new Error(`The ${description} lost its owned file identity.`);
+  }
+}
+
 export function addJupyterAcceptancePythonKernel(prepared, python) {
   if (
     typeof python !== "string" ||
@@ -1026,6 +1274,8 @@ export function addJupyterAcceptancePythonKernel(prepared, python) {
     throw new Error("Quarto Python acceptance requires one exact prepared private R environment and interpreter.");
   }
   const receipt = rAcceptanceBootstrapReceipt(prepared);
+  const privatePythonReceipt = jupyterAcceptanceKernelPythonReceipts.get(python);
+  if (privatePythonReceipt) jupyterAcceptanceKernelPythonReceipts.delete(python);
   assertEditorAcceptancePrivateRootReceipt(receipt.directoryReceipt);
 
   try {
@@ -1078,12 +1328,135 @@ export function addJupyterAcceptancePythonKernel(prepared, python) {
     { encoding: "utf8", flag: "wx", mode: 0o600 }
   );
   assertEditorAcceptancePrivateRootReceipt(receipt.directoryReceipt);
-  return Object.freeze({
+  const added = Object.freeze({
     id: QUARTO_PYTHON_ACCEPTANCE_KERNEL_ID,
     displayName: QUARTO_PYTHON_ACCEPTANCE_KERNEL_DISPLAY_NAME,
     kernelSpecPath,
     ipythonDir
   });
+  quartoPythonKernelReceipts.set(
+    added,
+    Object.freeze({
+      prepared,
+      python,
+      pythonIdentity: captureStandaloneKernelPythonIdentity(python),
+      privatePythonReceipt,
+      kernelSpecIdentity: captureOwnedFileIdentity(kernelSpecPath, "Quarto Python kernelspec")
+    })
+  );
+  return added;
+}
+
+export async function probeJupyterAcceptanceQuartoPythonKernel(
+  prepared,
+  added,
+  { runCommand = runBoundedEditorCommand } = {}
+) {
+  if (
+    prepared?.kernelId !== R_ACCEPTANCE_KERNEL_ID ||
+    added?.id !== QUARTO_PYTHON_ACCEPTANCE_KERNEL_ID ||
+    typeof added.kernelSpecPath !== "string" ||
+    !isAbsolute(added.kernelSpecPath) ||
+    typeof prepared.kernelProbeWorkingDirectory !== "string" ||
+    !isAbsolute(prepared.kernelProbeWorkingDirectory) ||
+    typeof prepared.jupyterEnvironment?.runtimeDir !== "string" ||
+    !isAbsolute(prepared.jupyterEnvironment.runtimeDir) ||
+    typeof prepared.dependencyProbe?.input?.environment !== "object" ||
+    typeof runCommand !== "function"
+  ) {
+    throw new Error("Quarto Python kernel readiness requires one exact prepared private environment and kernelspec.");
+  }
+  const kernelReceipt = quartoPythonKernelReceipts.get(added);
+  if (!kernelReceipt || kernelReceipt.prepared !== prepared) {
+    throw new Error("Quarto Python kernel readiness requires the exact returned private kernelspec.");
+  }
+  if (!kernelReceipt.privatePythonReceipt) {
+    throw new Error("Quarto Python kernel readiness requires its dedicated private core interpreter.");
+  }
+  const connectionFile = resolve(prepared.jupyterEnvironment.runtimeDir, "python-kernel-readiness.json");
+
+  const assertReadinessIdentity = () => {
+    rAcceptanceBootstrapReceipt(prepared);
+    assertEditorAcceptancePrivateRootReceipt(kernelReceipt.privatePythonReceipt.directoryReceipt);
+    assertKernelPythonIdentity(kernelReceipt.privatePythonReceipt.identity);
+    assertKernelPythonIdentity(kernelReceipt.pythonIdentity);
+    assertOwnedFileIdentity(added.kernelSpecPath, kernelReceipt.kernelSpecIdentity, "Quarto Python kernelspec");
+    const expectedKernelSpec = {
+      argv: [kernelReceipt.python, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+      display_name: QUARTO_PYTHON_ACCEPTANCE_KERNEL_DISPLAY_NAME,
+      language: "python",
+      metadata: { debugger: false },
+      env: { IPYTHONDIR: added.ipythonDir }
+    };
+    let kernelSpec;
+    try {
+      kernelSpec = JSON.parse(
+        readBoundedAcceptanceText(added.kernelSpecPath, 4_096, "Quarto Python kernelspec", {
+          expectedPathSnapshot: kernelReceipt.kernelSpecIdentity.snapshot
+        })
+      );
+    } catch (error) {
+      throw new Error("Quarto Python kernel readiness could not validate its exact private kernelspec.", {
+        cause: error
+      });
+    }
+    if (JSON.stringify(kernelSpec) !== JSON.stringify(expectedKernelSpec)) {
+      throw new Error("Quarto Python kernel readiness requires its unchanged exact private kernelspec.");
+    }
+  };
+  const assertConnectionTargetAbsent = () => {
+    try {
+      lstatSync(connectionFile);
+      throw new Error("Quarto Python kernel readiness requires an absent private connection-file target.");
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "ENOENT") throw error;
+    }
+  };
+  assertReadinessIdentity();
+  assertConnectionTargetAbsent();
+
+  const probeEnvironment = Object.freeze({
+    ...prepared.dependencyProbe.input.environment,
+    JUPYTER_DATA_DIR: prepared.jupyterEnvironment.dataDir,
+    JUPYTER_RUNTIME_DIR: prepared.jupyterEnvironment.runtimeDir,
+    JUPYTER_CONFIG_DIR: prepared.jupyterEnvironment.configDir,
+    JUPYTER_PATH: prepared.jupyterEnvironment.path
+  });
+  const result = await runCommand(
+    {
+      executable: kernelReceipt.python,
+      args: [
+        "-I",
+        "-c",
+        QUARTO_PYTHON_ACCEPTANCE_KERNEL_PROBE,
+        added.id,
+        added.kernelSpecPath,
+        connectionFile,
+        prepared.kernelProbeWorkingDirectory
+      ],
+      environment: probeEnvironment,
+      label: "Quarto Python private kernel readiness probe",
+      beforeSpawnCheck() {
+        assertReadinessIdentity();
+        assertConnectionTargetAbsent();
+      }
+    },
+    { timeoutMs: 30_000, maxOutputBytes: 1_024 }
+  );
+  assertReadinessIdentity();
+  if (result?.stderr !== "") {
+    throw new Error("Quarto Python kernel readiness probe returned a malformed fixed result.");
+  }
+  if (/^OPEN_WRANGLER_QUARTO_PYTHON_KERNEL_READY\r?\n$/u.test(result.stdout)) {
+    assertConnectionTargetAbsent();
+    return;
+  }
+  const failure = /^OPEN_WRANGLER_QUARTO_PYTHON_KERNEL_FAILED:(start|execute|cleanup)\r?\n$/u.exec(result.stdout);
+  if (failure) {
+    if (failure[1] !== "cleanup") assertConnectionTargetAbsent();
+    throw new Error(`Quarto Python kernel readiness failed during ${failure[1]}.`);
+  }
+  throw new Error("Quarto Python kernel readiness probe returned a malformed fixed result.");
 }
 
 export function writeRemoteJupyterAcceptanceEnvironment(directory) {
@@ -1241,27 +1614,37 @@ export async function probeJupyterAcceptancePython(
     environment = createEditorAcceptanceEnvironment(),
     label = "Released-Jupyter Python dependency probe",
     requirePySpark = true,
+    requireJupyterClient = false,
     requireRuntimeAbsent = true,
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
-  if (typeof requirePySpark !== "boolean" || typeof requireRuntimeAbsent !== "boolean") {
+  if (
+    typeof requirePySpark !== "boolean" ||
+    typeof requireJupyterClient !== "boolean" ||
+    typeof requireRuntimeAbsent !== "boolean"
+  ) {
     throw new Error(
-      "Released-Jupyter Python dependency probing requires explicit PySpark and runtime-absence policies."
+      "Released-Jupyter Python dependency probing requires explicit PySpark, Jupyter-client, and runtime-absence policies."
     );
   }
-  const dependencies = requirePySpark ? DEPENDENCIES : DEPENDENCIES.filter((dependency) => dependency !== "pyspark");
+  const dependencies = [
+    ...(requirePySpark ? DEPENDENCIES : DEPENDENCIES.filter((dependency) => dependency !== "pyspark")),
+    ...(requireJupyterClient ? ["jupyter-client"] : [])
+  ];
   const probe = [
     "import importlib.metadata",
     "import importlib.util",
     "import json",
     "import ipykernel",
+    ...(requireJupyterClient ? ["import jupyter_client"] : []),
     "import pandas",
     "import polars",
     "import duckdb",
     ...(requirePySpark ? ["import pyspark"] : []),
     "print(json.dumps({",
     '  "ipykernel": importlib.metadata.version("ipykernel"),',
+    ...(requireJupyterClient ? ['  "jupyter-client": importlib.metadata.version("jupyter-client"),'] : []),
     '  "pandas": importlib.metadata.version("pandas"),',
     '  "polars": importlib.metadata.version("polars"),',
     '  "duckdb": importlib.metadata.version("duckdb"),',
