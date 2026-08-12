@@ -4,6 +4,19 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.4] - 2026-08-13
+
+### Changed
+
+- Preview and stable release candidates now verify their exact README source, media ancestry, and every declared image
+  byte before creating a tag. Open VSX recovery and Visual Studio Marketplace publication restore the exact release
+  lockfile and run the same check from the exact release commit before registry authentication.
+
+### Fixed
+
+- GitHub, Visual Studio Marketplace, and Open VSX now use one reviewed, immutable media revision for every README
+  product image and full-size gallery link.
+
 ## [1.99.3] - 2026-08-12
 
 ### Added
