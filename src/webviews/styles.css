@@ -1069,6 +1069,18 @@ textarea {
   gap: 4px;
 }
 
+.headerProfilesFitStatus {
+  border: 0;
+  clip-path: inset(50%);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 .profileValueToggle.compact button {
   min-height: 30px;
   min-width: 30px;
@@ -1517,6 +1529,10 @@ th:hover .columnResizeHandle,
   display: grid;
   gap: 2px;
   padding-top: 4px;
+}
+
+.columnInsight.compact > .summaryDistribution {
+  display: none;
 }
 
 .sampledLabel {

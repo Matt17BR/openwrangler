@@ -397,6 +397,137 @@ describe("DataGrid", () => {
     expect(within(salesHeader).getByText("Missing 1")).toBeVisible();
   });
 
+  it("temporarily compacts header distributions when they would hide every body row", async () => {
+    const resizeObservers = new Map<object, ResizeObserverCallback>();
+    class ControlledResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeObservers.set(this, callback);
+      }
+
+      observe(): void {}
+      unobserve(): void {}
+
+      disconnect(): void {
+        resizeObservers.delete(this);
+      }
+    }
+    vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+    const signalResize = () => {
+      act(() => {
+        for (const [observer, callback] of [...resizeObservers]) callback([], observer as ResizeObserver);
+      });
+    };
+    const salesSummary: ColumnSummary = {
+      columnId: "c:1",
+      column: "sales",
+      type: "float",
+      rawType: "Float64",
+      totalCount: 2,
+      nullCount: 1,
+      nanCount: 0,
+      distinctCount: 1,
+      topValues: [],
+      numeric: { min: 10.5, max: 10.5 },
+      visualization: { kind: "numeric", bins: [{ min: 10.5, max: 10.5, count: 1 }] }
+    };
+    const onVisibleSummaryColumnsChange = vi.fn();
+
+    const grid = (currentMetadata: SessionMetadata, summaries: ColumnSummary[]) => (
+      <DataGrid
+        metadata={currentMetadata}
+        page={page}
+        summaries={summaries}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
+      />
+    );
+
+    try {
+      const { rerender } = render(grid(metadata, []));
+      const scroller = screen.getByTestId("data-grid-scroller");
+      const tableHeader = screen.getByRole("grid").querySelector("thead");
+      if (!tableHeader) throw new Error("Expected the data-grid header.");
+      let scrollerHeight = 124;
+      let expandedNaturalHeight = 166;
+      Object.defineProperty(scroller, "clientHeight", {
+        configurable: true,
+        get: () => scrollerHeight
+      });
+      Object.defineProperty(tableHeader, "getBoundingClientRect", {
+        configurable: true,
+        value: () => {
+          const completeSummary = tableHeader.querySelector(".columnInsight:not(.emptyInsight)");
+          const height = completeSummary
+            ? tableHeader.querySelector(".columnInsight.compact")
+              ? 68
+              : expandedNaturalHeight
+            : 68;
+          return { bottom: height, height, left: 0, right: 400, top: 0, width: 400, x: 0, y: 0 };
+        }
+      });
+
+      signalResize();
+      expect(document.querySelector(".columnInsight.compact")).not.toBeInTheDocument();
+      rerender(grid(metadata, [salesSummary]));
+      await waitFor(() => expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument());
+      const headerProfiles = screen.getByRole("button", { name: "Header profiles" });
+      expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
+      expect(headerProfiles).toHaveAttribute(
+        "title",
+        "Header profile distributions are temporarily hidden until the grid is taller."
+      );
+      expect(headerProfiles).toHaveAccessibleDescription(
+        "Header profile distributions are temporarily hidden until the grid is taller."
+      );
+      const fitStatus = screen.getByRole("status", {
+        name: "Header profile distributions are temporarily hidden until the grid is taller."
+      });
+      expect(fitStatus).toHaveAttribute("aria-live", "polite");
+      expect(fitStatus).toHaveAttribute("aria-atomic", "true");
+      expect(screen.getByRole("columnheader", { name: /^sales/u })).toHaveTextContent("Missing 1");
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
+
+      // The compact header itself now fits, but the retained expanded height
+      // remains the restoration threshold so the two layouts cannot oscillate.
+      scrollerHeight = 150;
+      signalResize();
+      expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument();
+      scrollerHeight = 196;
+      signalResize();
+      await waitFor(() => expect(document.querySelector(".columnInsight.compact")).not.toBeInTheDocument());
+      expect(document.querySelector(".columnInsight .summaryDistribution")).toBeInTheDocument();
+      signalResize();
+      expect(document.querySelector(".columnInsight.compact")).not.toBeInTheDocument();
+      expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
+
+      scrollerHeight = 124;
+      signalResize();
+      await waitFor(() => expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument());
+      fireEvent.click(headerProfiles);
+      expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
+      expect(document.querySelector(".columnInsight")).not.toBeInTheDocument();
+      scrollerHeight = 240;
+      signalResize();
+      expect(document.querySelector(".columnInsight")).not.toBeInTheDocument();
+      fireEvent.click(headerProfiles);
+      await waitFor(() => expect(document.querySelector(".columnInsight:not(.compact)")).toBeInTheDocument());
+      expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
+
+      expandedNaturalHeight = 190;
+      scrollerHeight = 196;
+      rerender(grid({ ...metadata, sessionId: "replacement-session" }, [salesSummary]));
+      await waitFor(() => expect(document.querySelector(".columnInsight.compact")).toBeInTheDocument());
+      expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("hides the compact profile value switch when header profiles are unavailable", () => {
     render(
       <DataGrid
