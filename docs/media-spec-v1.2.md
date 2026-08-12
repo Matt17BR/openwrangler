@@ -159,7 +159,8 @@ After GitHub and both registries have rendered a release README, install the loc
 `npm run verify:public-media-surfaces -- --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION"` from the
 exact released source checkout. The SHA must be lowercase 40-hex and the version must be semantic without a leading
 `v`. Starting with `1.2.1`, the verifier byte-compares the exact source README and package version; rejects an
-undeclared media series; pre-stats a bounded inventory before any full file read; checks all 48 PNGs for chunk CRC,
+undeclared media series; pre-stats a bounded inventory before any full file read; checks all 48 PNGs in the current
+contract (and every asset declared by an exact historical release inventory) for chunk CRC,
 ordered structure, complete decode, reviewed natural dimensions, standard sRGB, per-file and total budgets, and
 immutable remote bytes; and opens GitHub, Visual Studio Marketplace, and Open VSX at DPR 2. Every one of the 20
 rendered README images must retain its exact reviewed `src`/`currentSrc` and natural dimensions. Their width-only
@@ -170,5 +171,8 @@ and gallery at both widths, checks every screenshot and full-size link, and reje
 overflow. A promotion with the contract on protected `main` runs the public check after registry
 verification, with forty fresh-context attempts at thirty-second intervals inside a thirty-minute public-propagation
 window. Only typed stale/unavailable registry observations retry; deterministic contract failures stop immediately.
+Starting with `1.99.4`, recovery publishers independently restore the exact release source's lockfile and run that
+source's browser-free `--prepublish` inventory, ancestry, exact-source, and immutable-byte checks before their
+authentication boundary. Earlier releases predate this capability and retain their existing exact-tag recovery path.
 The check can fail workflow success but cannot undo the public writes it observes. The same reviewed `main` contract
 covers stable and preview releases.

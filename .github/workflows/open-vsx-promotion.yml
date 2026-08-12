@@ -73,6 +73,24 @@ jobs:
           EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
           RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
         run: node scripts/verify-registry-release-artifact.mjs canonical-release
+      - id: public_media_prepublish
+        name: Preflight immutable public README media
+        env:
+          RELEASE_SOURCE_SHA: ${{ steps.release_source.outputs.release_commit }}
+          RELEASE_VERSION: ${{ steps.release_source.outputs.release_version }}
+        run: |
+          required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"
+          printf 'required=%s\n' "$required" >> "$GITHUB_OUTPUT"
+          case "$required" in
+            true)
+              npm ci --ignore-scripts --prefix release-source
+              node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish
+              ;;
+            false)
+              printf 'Prepublication public-media verification starts with v1.99.4; historical %s recovery is unchanged.\n' "$RELEASE_VERSION"
+              ;;
+            *) exit 64 ;;
+          esac
       - name: Verify the Open VSX publisher token
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
@@ -160,7 +178,14 @@ jobs:
           printf 'required=%s\n' "$required" >> "$GITHUB_OUTPUT"
       - name: Install the lockfile-pinned public-media browser
         if: ${{ steps.public_media_contract.outputs.required == 'true' }}
-        run: npx playwright-core install --with-deps chromium
+        env:
+          PREPUBLICATION_REQUIRED: ${{ steps.public_media_prepublish.outputs.required }}
+        run: |
+          case "$PREPUBLICATION_REQUIRED" in
+            true) release-source/node_modules/.bin/playwright-core install --with-deps chromium ;;
+            false) npx playwright-core install --with-deps chromium ;;
+            *) exit 64 ;;
+          esac
       - name: Verify public README media after registry propagation
         if: ${{ steps.public_media_contract.outputs.required == 'true' }}
         env:

@@ -5,7 +5,8 @@ import { load as parseYaml } from "js-yaml";
 import {
   OPEN_VSX_PUBLISH_RUN,
   OPEN_VSX_VERIFY_PAT_RUN,
-  PUBLIC_MEDIA_CONTRACT_RUN
+  PUBLIC_MEDIA_CONTRACT_RUN,
+  PUBLIC_MEDIA_PREFLIGHT_RUN
 } from "./open-vsx-promotion-workflow.mjs";
 import { inspectCandidateMatrixCaller } from "./candidate-acceptance-workflow.mjs";
 
@@ -375,6 +376,21 @@ export function inspectStableReleaseWorkflow(source) {
   const packaging = workflow.jobs.package;
   inspectCheckout(packaging, "package", problems);
   inspectPackageSourceBinding(packaging, problems);
+  const packageJobSteps = steps(packaging);
+  const packageInstallStep = findRun(packaging, "npm ci");
+  const publicMediaPreflightStep = findRun(packaging, PUBLIC_MEDIA_PREFLIGHT_RUN);
+  const localPackageTagStep = packageJobSteps.find((step) => step?.name === "Prepare exact local release tag");
+  if (
+    !exactKeys(publicMediaPreflightStep, ["name", "env", "run"]) ||
+    publicMediaPreflightStep.name !== "Preflight immutable public README media" ||
+    !exactKeys(publicMediaPreflightStep.env, ["RELEASE_SOURCE_SHA", "RELEASE_VERSION"]) ||
+    publicMediaPreflightStep.env.RELEASE_SOURCE_SHA !== EVENT_SHA ||
+    publicMediaPreflightStep.env.RELEASE_VERSION !== "${{ steps.release_metadata.outputs.version }}" ||
+    packageJobSteps.indexOf(publicMediaPreflightStep) !== packageJobSteps.indexOf(packageInstallStep) + 1 ||
+    packageJobSteps.indexOf(localPackageTagStep) !== packageJobSteps.indexOf(publicMediaPreflightStep) + 1
+  ) {
+    problems.push("package must verify immutable public-media bytes before creating a stable tag or artifact.");
+  }
   if (packaging.permissions !== undefined || packaging.environment !== undefined) {
     problems.push("package must inherit read-only permissions and use no protected release environment.");
   }

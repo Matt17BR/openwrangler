@@ -3,6 +3,7 @@ import {
   PUBLIC_MEDIA_MAX_INVENTORY_ENTRIES,
   PUBLIC_MEDIA_ROOT_PATH,
   PUBLIC_MEDIA_SERIES_PATH,
+  PUBLIC_README_FULL_SIZE_LINKS,
   PUBLIC_README_IMAGE_COUNT
 } from "./public-media-inventory.mjs";
 
@@ -20,6 +21,7 @@ export const PUBLIC_MEDIA_RENDER_ATTEMPT_TIMEOUT_MS = 3 * 60_000;
 export const PUBLIC_MEDIA_FETCH_TIMEOUT_MS = 60_000;
 export const PUBLIC_MEDIA_CONTEXT_CLEANUP_TIMEOUT_MS = 10_000;
 export const PUBLIC_MEDIA_FIRST_REQUIRED_VERSION = "1.2.1";
+export const PUBLIC_MEDIA_FIRST_PREPUBLICATION_VERSION = "1.99.4";
 export const PUBLIC_MEDIA_MAX_DISPLAY_WIDTH = 960;
 export const PUBLIC_MEDIA_RESPONSIVE_WIDTHS = Object.freeze([760, 1_400]);
 
@@ -39,11 +41,18 @@ export const REPRESENTATIVE_PUBLIC_IMAGES = [
 export function parsePublicMediaVerifierArguments(arguments_) {
   const values = new Map();
   let waitForPropagation = false;
+  let prepublish = false;
   for (let index = 0; index < arguments_.length;) {
     const name = arguments_[index];
     if (name === "--wait-for-propagation") {
       if (waitForPropagation) throw new Error("--wait-for-propagation may be supplied only once.");
       waitForPropagation = true;
+      index += 1;
+      continue;
+    }
+    if (name === "--prepublish") {
+      if (prepublish) throw new Error("--prepublish may be supplied only once.");
+      prepublish = true;
       index += 1;
       continue;
     }
@@ -76,13 +85,24 @@ export function parsePublicMediaVerifierArguments(arguments_) {
   ) {
     throw new Error("--source-root must be one bounded relative path below the automation checkout.");
   }
-  return { sourceSha, version, sourceRoot, waitForPropagation };
+  if (prepublish && waitForPropagation) {
+    throw new Error("--prepublish cannot be combined with --wait-for-propagation.");
+  }
+  return { sourceSha, version, sourceRoot, waitForPropagation, prepublish };
 }
 
 export function publicMediaVerificationRequired(version) {
+  return versionAtLeast(version, PUBLIC_MEDIA_FIRST_REQUIRED_VERSION);
+}
+
+export function publicMediaPrepublicationRequired(version) {
+  return versionAtLeast(version, PUBLIC_MEDIA_FIRST_PREPUBLICATION_VERSION);
+}
+
+function versionAtLeast(version, minimum) {
   if (!SEMANTIC_VERSION.test(version)) throw new TypeError("A public-media release version must be semantic.");
   const actual = version.split(/[+-]/u, 1)[0].split(".").map(Number);
-  const required = PUBLIC_MEDIA_FIRST_REQUIRED_VERSION.split(".").map(Number);
+  const required = minimum.split(".").map(Number);
   for (let index = 0; index < required.length; index += 1) {
     if (actual[index] !== required[index]) return actual[index] > required[index];
   }
@@ -174,6 +194,55 @@ export function extractImmutableProductReferences(readme) {
     }
   }
   return references;
+}
+
+export function extractImmutableReadmeMediaSourceSha(readme) {
+  const sourceShas = new Set();
+  let referenceCount = 0;
+  for (const match of readme.matchAll(/\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/giu)) {
+    const value = match[1] ?? match[2] ?? "";
+    const assetPath = repositoryProductMediaPath(value);
+    if (assetPath !== "assets/icon.png" && !assetPath?.startsWith(PUBLIC_MEDIA_SERIES_PATH)) continue;
+    const reference = immutableRepositoryProductMediaReference(value);
+    if (reference === undefined) {
+      throw new Error("README product-media links must use one immutable reviewed source commit.");
+    }
+    sourceShas.add(reference.sourceSha);
+    referenceCount += 1;
+    if (referenceCount > PUBLIC_MEDIA_MAX_INVENTORY_ENTRIES) {
+      throw new Error("README product-media links exceed their bounded reference count.");
+    }
+  }
+  const fullSizeByDisplayPath = new Map(
+    PUBLIC_README_FULL_SIZE_LINKS.map(({ displayPath, fullSizePath }) => [displayPath, fullSizePath])
+  );
+  const linkedImageUrls = new Set();
+  for (const match of readme.matchAll(/<a\b([^>]*)>\s*(<img\b[^>]*>)\s*<\/a>/giu)) {
+    const imageSource = htmlAttribute(match[2], "src");
+    const imageReference = imageSource === undefined ? undefined : immutableProductReference(imageSource);
+    if (imageReference === undefined) continue;
+    const target = immutableRepositoryProductMediaReference(htmlAttribute(match[1], "href") ?? "");
+    if (target === undefined || target.sourceSha !== imageReference.sourceSha) {
+      throw new Error("Every README product image must link to one immutable full-size asset at its reviewed commit.");
+    }
+    const expectedFullSize = fullSizeByDisplayPath.get(imageReference.relativePath);
+    if (expectedFullSize === undefined) {
+      throw new Error("A README product image is absent from the canonical full-size link contract.");
+    }
+    const expectedFullSizePath = `${PUBLIC_MEDIA_SERIES_PATH}${expectedFullSize}`;
+    if (target.assetPath !== expectedFullSizePath) {
+      throw new Error("A README product image links to the wrong full-size public-media asset.");
+    }
+    linkedImageUrls.add(imageReference.url);
+  }
+  const displayed = extractImmutableProductReferences(readme);
+  if (displayed.some((reference) => !linkedImageUrls.has(reference.url))) {
+    throw new Error("Every README product image must have one immutable full-size public-media link.");
+  }
+  if (referenceCount === 0 || sourceShas.size !== 1) {
+    throw new Error("README product-media links must share one immutable reviewed source commit.");
+  }
+  return [...sourceShas][0];
 }
 
 export function extractDeclaredPublicMediaPaths(...documents) {
@@ -362,6 +431,50 @@ function repositoryProductMediaPath(value) {
   return assetPath;
 }
 
+function immutableRepositoryProductMediaReference(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.port !== "" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    return undefined;
+  }
+  const segments = url.pathname.split("/").filter(Boolean);
+  let sourceSha;
+  let assetSegments;
+  if (url.hostname === "raw.githubusercontent.com" && segments[0] === "Matt17BR" && segments[1] === "openwrangler") {
+    sourceSha = segments[2];
+    assetSegments = segments.slice(3);
+  } else if (
+    url.hostname === "github.com" &&
+    segments[0] === "Matt17BR" &&
+    segments[1] === "openwrangler" &&
+    (segments[2] === "blob" || segments[2] === "raw")
+  ) {
+    sourceSha = segments[3];
+    assetSegments = segments.slice(4);
+  } else {
+    return undefined;
+  }
+  const assetPath = assetSegments.join("/");
+  if (
+    !FULL_SOURCE_SHA.test(sourceSha) ||
+    (assetPath !== "assets/icon.png" && !assetPath.startsWith(PUBLIC_MEDIA_SERIES_PATH))
+  ) {
+    return undefined;
+  }
+  return { assetPath, sourceSha };
+}
+
 function validatedRelativePath(relativePath) {
   if (!relativePath || relativePath.split("/").some((part) => part === "" || part === "." || part === "..")) {
     throw new Error("README contains a malformed public-media path.");
@@ -372,6 +485,6 @@ function validatedRelativePath(relativePath) {
 function usageError() {
   return new Error(
     "Usage: npm run verify:public-media-surfaces -- --source-sha <40-hex-commit> --version <semantic-version> " +
-      "[--source-root <relative-path>] [--wait-for-propagation]"
+      "[--source-root <relative-path>] [--prepublish | --wait-for-propagation]"
   );
 }

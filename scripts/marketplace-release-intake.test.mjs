@@ -63,6 +63,7 @@ function marketplaceRuntimeClosure() {
     "scripts/download-canonical-github-release.mjs",
     "scripts/marketplace-identity-profile.mjs",
     "scripts/marketplace-release-intake.mjs",
+    "scripts/verify-public-media-surfaces.mjs",
     "scripts/verify-marketplace-publication.mjs",
     "scripts/verify-registry-release-artifact.mjs"
   ];
@@ -112,6 +113,8 @@ test("Marketplace recovery runs only for an exact single-parent reviewed infrast
     "scripts/packaged-editor-orchestration.mjs",
     "scripts/prepare-xvfb.mjs",
     "scripts/public-media-contract.mjs",
+    "scripts/public-media-inventory.mjs",
+    "scripts/public-media-surface-contract.mjs",
     "scripts/release-metadata.mjs",
     "scripts/remote-workspace-acquisition.mjs",
     "scripts/remote-workspace-contract.mjs",
@@ -119,6 +122,7 @@ test("Marketplace recovery runs only for an exact single-parent reviewed infrast
     "scripts/strict-json.mjs",
     "scripts/verify-canonical-release-artifact.mjs",
     "scripts/verify-marketplace-publication.mjs",
+    "scripts/verify-public-media-surfaces.mjs",
     "scripts/verify-registry-release-artifact.mjs",
     "scripts/vsix-archive.mjs",
     "scripts/vsix-contents.mjs",
@@ -195,7 +199,8 @@ test("Marketplace recovery derives only the canonical package identity and numer
 });
 
 test("Marketplace intake accepts exact automatic stable and pre-release tag checkouts", () => {
-  assert.deepEqual(inspectMarketplaceReleaseIntake(automatic()), {
+  const stable = inspectMarketplaceReleaseIntake(automatic());
+  assert.deepEqual(stable, {
     eligible: true,
     prerelease: false,
     problems: [],
@@ -204,6 +209,14 @@ test("Marketplace intake accepts exact automatic stable and pre-release tag chec
     releaseTag: "v1.0.2",
     version: "1.0.2"
   });
+  assert.deepEqual(marketplaceReleaseIntakeOutput(stable), [
+    "##vso[task.setvariable variable=promote;isOutput=true]true",
+    "##vso[task.setvariable variable=releaseTag;isOutput=true]v1.0.2",
+    `##vso[task.setvariable variable=releaseCommit;isOutput=true]${commit}`,
+    "##vso[task.setvariable variable=releaseVersion;isOutput=true]1.0.2",
+    "##vso[task.setvariable variable=releasePrerelease;isOutput=true]false",
+    "Accepted stable Marketplace promotion v1.0.2."
+  ]);
 
   assert.deepEqual(
     inspectMarketplaceReleaseIntake(

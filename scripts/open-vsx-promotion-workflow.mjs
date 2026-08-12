@@ -59,6 +59,27 @@ fi
 export const PUBLIC_MEDIA_CONTRACT_RUN = `required="$(node --input-type=module -e 'import { publicMediaVerificationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaVerificationRequired(process.env.RELEASE_VERSION)));')"
 printf 'required=%s\\n' "$required" >> "$GITHUB_OUTPUT"
 `;
+export const PUBLIC_MEDIA_PREFLIGHT_RUN =
+  'node scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish';
+export const PUBLIC_MEDIA_RECOVERY_PREFLIGHT_RUN = `required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"
+printf 'required=%s\\n' "$required" >> "$GITHUB_OUTPUT"
+case "$required" in
+true)
+npm ci --ignore-scripts --prefix release-source
+node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish
+;;
+false)
+printf 'Prepublication public-media verification starts with v1.99.4; historical %s recovery is unchanged.\\n' "$RELEASE_VERSION"
+;;
+*) exit 64 ;;
+esac
+`;
+export const PUBLIC_MEDIA_BROWSER_INSTALL_RUN = `case "$PREPUBLICATION_REQUIRED" in
+true) release-source/node_modules/.bin/playwright-core install --with-deps chromium ;;
+false) npx playwright-core install --with-deps chromium ;;
+*) exit 64 ;;
+esac
+`;
 
 const EXPECTED_RUNS = Object.freeze([
   "npm ci --ignore-scripts",
@@ -66,6 +87,7 @@ const EXPECTED_RUNS = Object.freeze([
   "node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source",
   "node scripts/download-canonical-github-release.mjs canonical-release",
   "node scripts/verify-registry-release-artifact.mjs canonical-release",
+  PUBLIC_MEDIA_RECOVERY_PREFLIGHT_RUN,
   OPEN_VSX_VERIFY_PAT_RUN,
   "node scripts/verify-registry-release-artifact.mjs canonical-release",
   "node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight",
@@ -75,7 +97,7 @@ const EXPECTED_RUNS = Object.freeze([
   "node scripts/verify-open-vsx-github-release.mjs canonical-release --verify",
   "node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source",
   PUBLIC_MEDIA_CONTRACT_RUN,
-  "npx playwright-core install --with-deps chromium",
+  PUBLIC_MEDIA_BROWSER_INSTALL_RUN,
   'node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --wait-for-propagation'
 ]);
 
@@ -224,22 +246,45 @@ export function inspectOpenVsxPromotionWorkflow(source) {
       "Every artifact, preflight, and public verification must use the exact automation and release source."
     );
   }
+  const publicMediaPreflightStep = job.steps.find(
+    (step) =>
+      typeof step?.run === "string" &&
+      step.run.includes("verify-public-media-surfaces.mjs") &&
+      step.run.includes("--prepublish")
+  );
   const publicMediaStep = job.steps.find(
-    (step) => typeof step?.run === "string" && step.run.includes("verify-public-media-surfaces.mjs")
+    (step) =>
+      typeof step?.run === "string" &&
+      step.run.includes("verify-public-media-surfaces.mjs") &&
+      step.run.includes("--wait-for-propagation")
   );
   const publicMediaContractStep = job.steps.find((step) => step?.id === "public_media_contract");
   const publicMediaInstallStep = job.steps.find(
-    (step) => step?.run === "npx playwright-core install --with-deps chromium"
+    (step) => command(step?.run) === command(PUBLIC_MEDIA_BROWSER_INSTALL_RUN)
   );
   const requiredCondition = "${{ steps.public_media_contract.outputs.required == 'true' }}";
+  const tokenStepIndex = job.steps.findIndex(
+    (step) => typeof step?.run === "string" && step.run.includes("ovsx verify-pat Matt17BR")
+  );
   if (
+    !exactKeys(publicMediaPreflightStep, ["id", "name", "env", "run"]) ||
+    publicMediaPreflightStep.id !== "public_media_prepublish" ||
+    publicMediaPreflightStep.name !== "Preflight immutable public README media" ||
+    !exactPublicMediaEnvironment(publicMediaPreflightStep) ||
+    command(publicMediaPreflightStep.run) !== command(PUBLIC_MEDIA_RECOVERY_PREFLIGHT_RUN) ||
+    tokenStepIndex < 0 ||
+    job.steps.indexOf(publicMediaPreflightStep) >= tokenStepIndex ||
     !exactKeys(publicMediaContractStep?.env, ["RELEASE_VERSION"]) ||
     publicMediaContractStep.env.RELEASE_VERSION !== VERSION_EXPRESSION ||
     publicMediaInstallStep?.if !== requiredCondition ||
+    !exactKeys(publicMediaInstallStep?.env, ["PREPUBLICATION_REQUIRED"]) ||
+    publicMediaInstallStep.env.PREPUBLICATION_REQUIRED !== "${{ steps.public_media_prepublish.outputs.required }}" ||
     publicMediaStep?.if !== requiredCondition ||
     !exactPublicMediaEnvironment(publicMediaStep)
   ) {
-    problems.push("Post-publication media verification must use the exact release source and version without secrets.");
+    problems.push(
+      "Public-media byte preflight must precede authentication, and post-publication rendering must use the exact release source and version without secrets."
+    );
   }
   const secretSteps = job.steps.filter((step) => step?.env?.OVSX_PAT !== undefined);
   const tokenStep = secretSteps.find(

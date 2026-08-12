@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
@@ -12,12 +13,14 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { PUBLIC_MEDIA_MAX_FILE_BYTES } from "./public-media-contract.mjs";
 import {
   PUBLIC_MEDIA_ASSETS,
   PUBLIC_MEDIA_MAX_DIRECTORY_DEPTH,
   PUBLIC_MEDIA_MAX_INVENTORY_ENTRIES,
   PUBLIC_MEDIA_MAX_RELATIVE_PATH_BYTES,
   PUBLIC_MEDIA_SERIES_PATH,
+  PUBLIC_README_FULL_SIZE_LINKS,
   PUBLIC_README_IMAGE_COUNT
 } from "./public-media-inventory.mjs";
 import {
@@ -31,10 +34,12 @@ import {
   expectedRepresentativeReferences,
   extractDeclaredPublicMediaPaths,
   extractImmutableProductReferences,
+  extractImmutableReadmeMediaSourceSha,
   immutableProductReference,
   parsePublicMediaVerifierArguments,
   PUBLIC_MEDIA_CONTEXT_CLEANUP_TIMEOUT_MS,
   PUBLIC_MEDIA_FETCH_TIMEOUT_MS,
+  PUBLIC_MEDIA_FIRST_PREPUBLICATION_VERSION,
   PUBLIC_MEDIA_FIRST_REQUIRED_VERSION,
   PUBLIC_MEDIA_MAX_DISPLAY_WIDTH,
   PUBLIC_MEDIA_PROPAGATION_ATTEMPTS,
@@ -44,6 +49,7 @@ import {
   PUBLIC_MEDIA_RESPONSIVE_WIDTHS,
   PUBLIC_SURFACE_CONTENT,
   publicMediaVerificationRequired,
+  publicMediaPrepublicationRequired,
   publicSurfaceDefinitions,
   REPRESENTATIVE_PUBLIC_IMAGES
 } from "./public-media-surface-contract.mjs";
@@ -55,13 +61,20 @@ import {
   observeRegistryPropagation,
   resolveVerifiedSourceRoot,
   RetryablePublicMediaObservationError,
+  runBoundedGit,
   runFreshPublicMediaContextAttempt,
+  runPublicMediaVerification,
   runPublicMediaPropagation,
+  verifyImmutablePublicBytes,
+  verifyImmutableMediaAncestry,
+  verifyExactSource,
   verifyLocalPublicMedia
 } from "./verify-public-media-surfaces.mjs";
 
 const sourceSha = "a".repeat(40);
 const version = "1.2.1";
+const reviewedMediaSha = "9fc096eabb1d0b5c0a66c3371a2a8ff8ce40de22";
+const staleMediaSha = "5acf731e8b44e9ff82c4ac48fdc151210636da95";
 const productPrefix = `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/docs/images/readme/v1.2/`;
 const root = resolve(import.meta.dirname, "..");
 
@@ -69,6 +82,11 @@ test("public media inventory declares one exact bounded series", () => {
   assert.equal(PUBLIC_MEDIA_SERIES_PATH, "docs/images/readme/v1.2/");
   assert.equal(PUBLIC_MEDIA_ASSETS.length, 48);
   assert.equal(PUBLIC_README_IMAGE_COUNT, 20);
+  assert.equal(PUBLIC_README_FULL_SIZE_LINKS.length, PUBLIC_README_IMAGE_COUNT);
+  assert.equal(
+    new Set(PUBLIC_README_FULL_SIZE_LINKS.map(({ displayPath }) => displayPath)).size,
+    PUBLIC_README_IMAGE_COUNT
+  );
   assert.equal(PUBLIC_MEDIA_MAX_INVENTORY_ENTRIES, 64);
   assert.equal(PUBLIC_MEDIA_MAX_DIRECTORY_DEPTH, 4);
   assert.equal(PUBLIC_MEDIA_MAX_RELATIVE_PATH_BYTES, 240);
@@ -90,7 +108,7 @@ test("the complete checked-in public media inventory satisfies the release-surfa
     readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8")
   );
   assert.equal(result.displayed.length, PUBLIC_README_IMAGE_COUNT);
-  assert.match(result.mediaSourceSha, /^[0-9a-f]{40}$/u);
+  assert.equal(result.mediaSourceSha, reviewedMediaSha);
 });
 
 test("public surface verification requires one exact source commit and semantic version", () => {
@@ -98,7 +116,8 @@ test("public surface verification requires one exact source commit and semantic 
     sourceSha,
     version,
     sourceRoot: undefined,
-    waitForPropagation: false
+    waitForPropagation: false,
+    prepublish: false
   });
   assert.deepEqual(
     parsePublicMediaVerifierArguments([
@@ -114,7 +133,18 @@ test("public surface verification requires one exact source commit and semantic 
       sourceSha,
       version: "1.99.0",
       sourceRoot: "release-source",
-      waitForPropagation: true
+      waitForPropagation: true,
+      prepublish: false
+    }
+  );
+  assert.deepEqual(
+    parsePublicMediaVerifierArguments(["--source-sha", sourceSha, "--version", "1.99.0", "--prepublish"]),
+    {
+      sourceSha,
+      version: "1.99.0",
+      sourceRoot: undefined,
+      waitForPropagation: false,
+      prepublish: true
     }
   );
   assert.equal(PUBLIC_MEDIA_PROPAGATION_ATTEMPTS, 40);
@@ -133,6 +163,8 @@ test("public surface verification requires one exact source commit and semantic 
     ["--source-sha", sourceSha, "--version", "01.2.1"],
     ["--source-sha", sourceSha, "--version", version, "--version", version],
     ["--source-sha", sourceSha, "--version", version, "--wait-for-propagation", "--wait-for-propagation"],
+    ["--source-sha", sourceSha, "--version", version, "--prepublish", "--prepublish"],
+    ["--source-sha", sourceSha, "--version", version, "--prepublish", "--wait-for-propagation"],
     ["--source-sha", sourceSha, "--version", version, "--source-root", "../release-source"],
     ["--source-sha", sourceSha, "--version", version, "--source-root", "release-source/.."],
     ["--source-sha", sourceSha, "--version", version, "--source-root", "/release-source"],
@@ -143,6 +175,392 @@ test("public surface verification requires one exact source commit and semantic 
   }
 });
 
+test("the CLI passes parsed arguments directly into executable media orchestration", () => {
+  const source = readFileSync(resolve(root, "scripts", "verify-public-media-surfaces.mjs"), "utf8");
+  const mainStart = source.indexOf("async function main() {");
+  const mainEnd = source.indexOf("export async function runPublicMediaVerification", mainStart);
+  assert.ok(mainStart >= 0 && mainEnd > mainStart);
+  const main = source.slice(mainStart, mainEnd);
+  assert.equal(
+    main,
+    "async function main() {\n  await runPublicMediaVerification(parsePublicMediaVerifierArguments(process.argv.slice(2)));\n}\n\n"
+  );
+});
+
+test("the executable CLI entrypoint rejects missing release identity", () => {
+  const result = spawnSync(process.execPath, [resolve(root, "scripts", "verify-public-media-surfaces.mjs")], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024,
+    timeout: 10_000,
+    windowsHide: true
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1);
+  assert.equal(result.signal, null);
+  assert.match(
+    result.stderr,
+    /Usage: npm run verify:public-media-surfaces -- --source-sha <40-hex-commit> --version <semantic-version>/u
+  );
+});
+
+test("prepublication and rendered modes execute their exact ordered verification boundaries", async () => {
+  for (const [prepublish, expectedResult, expectedCalls] of [
+    [
+      true,
+      "prepublish",
+      ["root", "read:README.md", "read:docs/media-gallery.md", "local", "ancestry", "source", "bytes", "report"]
+    ],
+    [
+      false,
+      "rendered",
+      ["root", "read:README.md", "read:docs/media-gallery.md", "local", "ancestry", "source", "bytes", "rendered"]
+    ]
+  ]) {
+    const calls = [];
+    const references = { mediaSourceSha: reviewedMediaSha };
+    const result = await runPublicMediaVerification(
+      { prepublish, sourceRoot: undefined, sourceSha, version, waitForPropagation: true },
+      {
+        resolveSourceRoot: (value) => {
+          assert.equal(value, undefined);
+          calls.push("root");
+          return "/verified-source";
+        },
+        readSource: (verifiedRoot, path) => {
+          assert.equal(verifiedRoot, "/verified-source");
+          calls.push(`read:${path}`);
+          return path;
+        },
+        verifyLocal: (imageRoot, readme, gallery) => {
+          assert.equal(imageRoot, `/verified-source/${PUBLIC_MEDIA_SERIES_PATH.slice(0, -1)}`);
+          assert.equal(readme, "README.md");
+          assert.equal(gallery, "docs/media-gallery.md");
+          calls.push("local");
+          return references;
+        },
+        verifyAncestry: (verifiedRoot, exactSource, mediaSource) => {
+          assert.deepEqual([verifiedRoot, exactSource, mediaSource], ["/verified-source", sourceSha, reviewedMediaSha]);
+          calls.push("ancestry");
+        },
+        verifySource: async (verifiedRoot, exactSource, exactVersion, readme) => {
+          assert.deepEqual(
+            [verifiedRoot, exactSource, exactVersion, readme],
+            ["/verified-source", sourceSha, version, "README.md"]
+          );
+          calls.push("source");
+        },
+        verifyBytes: async (actualReferences) => {
+          assert.equal(actualReferences, references);
+          calls.push("bytes");
+        },
+        verifyRendered: async (exactSource, exactVersion, readme, actualReferences, wait) => {
+          assert.deepEqual(
+            [exactSource, exactVersion, readme, actualReferences, wait],
+            [sourceSha, version, "README.md", references, true]
+          );
+          calls.push("rendered");
+        },
+        report: () => calls.push("report")
+      }
+    );
+    assert.equal(result, expectedResult);
+    assert.deepEqual(calls, expectedCalls);
+  }
+});
+
+test("media orchestration propagates every verification-boundary failure unchanged", async () => {
+  const options = { prepublish: false, sourceRoot: undefined, sourceSha, version, waitForPropagation: false };
+  const baseOverrides = {
+    resolveSourceRoot: () => "/verified-source",
+    readSource: () => "source",
+    verifyLocal: () => ({ mediaSourceSha: reviewedMediaSha }),
+    verifyAncestry: () => {},
+    verifySource: async () => {},
+    verifyBytes: async () => {},
+    verifyRendered: async () => {},
+    report: () => {}
+  };
+  for (const [boundary, asynchronous] of [
+    ["resolveSourceRoot", false],
+    ["readSource", false],
+    ["verifyLocal", false],
+    ["verifyAncestry", false],
+    ["verifySource", true],
+    ["verifyBytes", true],
+    ["verifyRendered", true]
+  ]) {
+    const expected = new Error(`authoritative ${boundary} failure`);
+    const reject = asynchronous
+      ? async () => {
+          throw expected;
+        }
+      : () => {
+          throw expected;
+        };
+    await assert.rejects(
+      runPublicMediaVerification(options, { ...baseOverrides, [boundary]: reject }),
+      (error) => error === expected,
+      `${boundary} must remain authoritative`
+    );
+  }
+});
+
+test("prepublication immutable-byte verification rejects a stale README media commit", async () => {
+  const readme = readFileSync(resolve(root, "README.md"), "utf8");
+  assert.ok(readme.includes(reviewedMediaSha));
+  assert.doesNotMatch(readme, new RegExp(staleMediaSha, "u"));
+  const staleReadme = readme.replaceAll(reviewedMediaSha, staleMediaSha);
+  const references = verifyLocalPublicMedia(
+    resolve(root, "docs", "images", "readme", "v1.2"),
+    staleReadme,
+    readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8")
+  );
+  assert.equal(references.mediaSourceSha, staleMediaSha);
+
+  const mismatchPath = "gallery/by-example-preview-detail.png";
+  const requestedPaths = [];
+  await assert.rejects(
+    verifyImmutablePublicBytes(references, async (source) => {
+      const prefix = `/${PUBLIC_MEDIA_SERIES_PATH}`;
+      const pathStart = new URL(source).pathname.indexOf(prefix);
+      assert.ok(pathStart >= 0);
+      assert.ok(source.includes(`/${staleMediaSha}/`));
+      const relativePath = new URL(source).pathname.slice(pathStart + prefix.length);
+      requestedPaths.push(relativePath);
+      const local = references.localBytes.get(relativePath);
+      assert.ok(local);
+      const remote = Buffer.from(local);
+      if (relativePath === mismatchPath) remote[remote.length - 1] ^= 1;
+      return new Response(remote, {
+        status: 200,
+        headers: { "content-length": String(remote.length) }
+      });
+    }),
+    new RegExp(`${mismatchPath.replaceAll(".", "\\.")} differs from its immutable remote bytes`, "u")
+  );
+  assert.deepEqual(
+    requestedPaths,
+    PUBLIC_MEDIA_ASSETS.slice(0, 5).map((asset) => asset.relativePath)
+  );
+  references.localBytes.clear();
+});
+
+test("immutable-byte verification fetches every declared asset with bounded request options", async () => {
+  const localBytes = new Map(
+    PUBLIC_MEDIA_ASSETS.map(({ relativePath }) => [relativePath, Buffer.from(`exact:${relativePath}`, "utf8")])
+  );
+  const references = { localBytes, mediaSourceSha: reviewedMediaSha };
+  const requests = [];
+  await verifyImmutablePublicBytes(references, async (source, options) => {
+    const relativePath = new URL(source).pathname.split(`/${PUBLIC_MEDIA_SERIES_PATH}`)[1];
+    const local = localBytes.get(relativePath);
+    assert.ok(local);
+    assert.equal(options.redirect, "follow");
+    assert.equal(options.headers["user-agent"], "Open-Wrangler-public-media-verifier");
+    assert.ok(options.signal instanceof AbortSignal);
+    requests.push(source);
+    return new Response(local, { headers: { "content-length": String(local.length) } });
+  });
+  assert.deepEqual(
+    requests,
+    PUBLIC_MEDIA_ASSETS.map(
+      ({ relativePath }) =>
+        `https://raw.githubusercontent.com/Matt17BR/openwrangler/${reviewedMediaSha}/${PUBLIC_MEDIA_SERIES_PATH}${relativePath}`
+    )
+  );
+  assert.equal(localBytes.size, 0);
+
+  const finalAsset = PUBLIC_MEDIA_ASSETS.at(-1);
+  assert.ok(finalAsset);
+  const finalLocalBytes = new Map(
+    PUBLIC_MEDIA_ASSETS.map(({ relativePath }) => [relativePath, Buffer.from(`final:${relativePath}`, "utf8")])
+  );
+  await assert.rejects(
+    verifyImmutablePublicBytes({ localBytes: finalLocalBytes, mediaSourceSha: reviewedMediaSha }, async (source) => {
+      const relativePath = new URL(source).pathname.split(`/${PUBLIC_MEDIA_SERIES_PATH}`)[1];
+      const local = finalLocalBytes.get(relativePath);
+      assert.ok(local);
+      const remote = Buffer.from(local);
+      if (relativePath === finalAsset.relativePath) remote[0] ^= 1;
+      return new Response(remote, { headers: { "content-length": String(remote.length) } });
+    }),
+    new RegExp(`${finalAsset.relativePath.replaceAll(".", "\\.")} differs from its immutable remote bytes`, "u")
+  );
+  await assert.rejects(
+    verifyImmutablePublicBytes(
+      {
+        localBytes: new Map(
+          PUBLIC_MEDIA_ASSETS.map(({ relativePath }) => [relativePath, Buffer.from(`fetch:${relativePath}`, "utf8")])
+        ),
+        mediaSourceSha: reviewedMediaSha
+      },
+      async (source) => {
+        if (source.endsWith(`/${finalAsset.relativePath}`)) return new Response("unavailable", { status: 503 });
+        const relativePath = new URL(source).pathname.split(`/${PUBLIC_MEDIA_SERIES_PATH}`)[1];
+        const local = Buffer.from(`fetch:${relativePath}`, "utf8");
+        return new Response(local, { headers: { "content-length": String(local.length) } });
+      }
+    ),
+    /Could not fetch immutable public media: HTTP 503/u
+  );
+
+  await assert.rejects(
+    verifyImmutablePublicBytes(
+      {
+        localBytes: new Map(PUBLIC_MEDIA_ASSETS.map(({ relativePath }) => [relativePath, Buffer.from(relativePath)])),
+        mediaSourceSha: reviewedMediaSha
+      },
+      async () =>
+        new Response("x", {
+          headers: { "content-length": String(PUBLIC_MEDIA_MAX_FILE_BYTES + 1) }
+        })
+    ),
+    /exceeds the public-media file budget/u
+  );
+  await assert.rejects(
+    verifyImmutablePublicBytes(
+      {
+        localBytes: new Map(PUBLIC_MEDIA_ASSETS.map(({ relativePath }) => [relativePath, Buffer.from(relativePath)])),
+        mediaSourceSha: reviewedMediaSha
+      },
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(Buffer.alloc(PUBLIC_MEDIA_MAX_FILE_BYTES));
+              controller.enqueue(Buffer.from("overflow"));
+              controller.close();
+            }
+          })
+        )
+    ),
+    /exceeds the public-media file budget/u
+  );
+});
+
+test("exact-source verification fetches and binds both README and package bytes", async (t) => {
+  const sourceRoot = mkdtempSync(join(tmpdir(), "ow-media-source-"));
+  t.after(() => rmSync(sourceRoot, { recursive: true, force: true }));
+  writeFileSync(join(sourceRoot, "package.json"), JSON.stringify({ version }), "utf8");
+  const localReadme = "# Exact reviewed README\n";
+  const expectedUrls = [
+    `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/README.md`,
+    `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/package.json`
+  ];
+  const requested = [];
+  await verifyExactSource(sourceRoot, sourceSha, version, localReadme, async (source) => {
+    requested.push(source);
+    return Buffer.from(source.endsWith("README.md") ? localReadme : JSON.stringify({ version }));
+  });
+  assert.deepEqual(requested, expectedUrls);
+  await assert.rejects(
+    verifyExactSource(sourceRoot, sourceSha, version, localReadme, async (source) =>
+      Buffer.from(source.endsWith("README.md") ? "# stale\n" : JSON.stringify({ version }))
+    ),
+    /README does not byte-match/u
+  );
+  await assert.rejects(
+    verifyExactSource(sourceRoot, sourceSha, version, localReadme, async (source) =>
+      Buffer.from(source.endsWith("README.md") ? localReadme : JSON.stringify({ version: "1.2.2" }))
+    ),
+    /instead of/u
+  );
+  writeFileSync(join(sourceRoot, "package.json"), JSON.stringify({ version: "1.2.2" }), "utf8");
+  await assert.rejects(
+    verifyExactSource(sourceRoot, sourceSha, version, localReadme, async (source) =>
+      Buffer.from(source.endsWith("README.md") ? localReadme : JSON.stringify({ version }))
+    ),
+    /instead of/u
+  );
+});
+
+test("prepublication verification rejects stale or mutable full-size README media links", () => {
+  const readme = readFileSync(resolve(root, "README.md"), "utf8");
+  assert.equal(extractImmutableReadmeMediaSourceSha(readme), reviewedMediaSha);
+  const reviewedHref = `https://github.com/Matt17BR/openwrangler/blob/${reviewedMediaSha}/docs/images/readme/v1.2/explore.png`;
+  assert.ok(readme.includes(reviewedHref));
+  for (const replacement of [
+    reviewedHref.replace(reviewedMediaSha, staleMediaSha),
+    reviewedHref.replace(reviewedMediaSha, "main"),
+    "https://example.invalid/explore.png",
+    reviewedHref.replace("explore.png", "filter-result.png")
+  ]) {
+    const candidate = readme.replace(reviewedHref, replacement);
+    assert.throws(
+      () =>
+        verifyLocalPublicMedia(
+          resolve(root, "docs", "images", "readme", "v1.2"),
+          candidate,
+          readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8")
+        ),
+      /immutable reviewed source commit|share one immutable reviewed source commit|immutable full-size asset|wrong full-size/u
+    );
+  }
+  assert.throws(
+    () => extractImmutableReadmeMediaSourceSha(readme.replace(`<a href="${reviewedHref}">`, "")),
+    /must have one immutable full-size/u
+  );
+});
+
+test("prepublication media ancestry rejects a byte-valid commit on a divergent branch", (t) => {
+  const repository = mkdtempSync(join(tmpdir(), "ow-media-ancestry-"));
+  t.after(() => rmSync(repository, { recursive: true, force: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", arguments_, { cwd: repository, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git("init", "--initial-branch=main");
+  git("config", "user.name", "Open Wrangler media test");
+  git("config", "user.email", "media-test@example.invalid");
+  writeFileSync(join(repository, "history.txt"), "base\n");
+  git("add", "history.txt");
+  git("commit", "-m", "base");
+  const baseSha = git("rev-parse", "HEAD");
+  writeFileSync(join(repository, "history.txt"), "base\nrelease\n");
+  git("commit", "-am", "release");
+  const releaseSha = git("rev-parse", "HEAD");
+  git("checkout", "-b", "diverged-media", baseSha);
+  writeFileSync(join(repository, "history.txt"), "base\ndiverged media\n");
+  git("commit", "-am", "diverged media");
+  const divergedMediaSha = git("rev-parse", "HEAD");
+  git("checkout", "main");
+
+  assert.doesNotThrow(() => verifyImmutableMediaAncestry(repository, releaseSha, baseSha));
+  assert.throws(
+    () => verifyImmutableMediaAncestry(repository, releaseSha, divergedMediaSha),
+    /must be an ancestor of the exact release source/u
+  );
+  assert.throws(
+    () => verifyImmutableMediaAncestry(repository, releaseSha, "f".repeat(40)),
+    /does not contain the exact README media source commit/u
+  );
+});
+
+test("media ancestry launches Git with fixed time and output bounds", () => {
+  const invocations = [];
+  const result = runBoundedGit(
+    "/verified-source",
+    ["merge-base", "--is-ancestor", sourceSha, reviewedMediaSha],
+    (executable, arguments_, options) => {
+      invocations.push({ executable, arguments_, options });
+      return { status: 0, stdout: "" };
+    }
+  );
+  assert.deepEqual(result, { status: 0, stdout: "" });
+  assert.deepEqual(invocations, [
+    {
+      executable: "git",
+      arguments_: ["-C", "/verified-source", "merge-base", "--is-ancestor", sourceSha, reviewedMediaSha],
+      options: {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+        windowsHide: true
+      }
+    }
+  ]);
+});
+
 test("public media verification starts at v1.2.1 without changing historical recovery", () => {
   for (const historical of ["0.9.0", "1.1.1", "1.2.0", "1.2.0-preview.1"]) {
     assert.equal(publicMediaVerificationRequired(historical), false);
@@ -151,6 +569,17 @@ test("public media verification starts at v1.2.1 without changing historical rec
     assert.equal(publicMediaVerificationRequired(protectedVersion), true);
   }
   assert.throws(() => publicMediaVerificationRequired("v1.2.1"), /must be semantic/u);
+});
+
+test("prepublication recovery uses the exact release-source contract starting with v1.99.4", () => {
+  assert.equal(PUBLIC_MEDIA_FIRST_PREPUBLICATION_VERSION, "1.99.4");
+  for (const historical of ["1.2.1", "1.2.2", "1.99.0", "1.99.1", "1.99.2", "1.99.3"]) {
+    assert.equal(publicMediaPrepublicationRequired(historical), false);
+  }
+  for (const protectedVersion of ["1.99.4", "1.99.4-preview.1", "1.100.0", "2.0.0"]) {
+    assert.equal(publicMediaPrepublicationRequired(protectedVersion), true);
+  }
+  assert.throws(() => publicMediaPrepublicationRequired("v1.99.4"), /must be semantic/u);
 });
 
 test("the injected propagation controller retries only typed registry observations", async () => {
