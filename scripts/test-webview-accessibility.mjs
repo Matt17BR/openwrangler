@@ -1721,6 +1721,72 @@ async function verifyGridKeyboardWorkflow(browser) {
   if (!initialProjectionIsExact) {
     throw new Error("Wide-grid browser harness did not start from an exact 16-column projected page.");
   }
+
+  await page.locator('th[data-grid-column="0"] .exactSummaryStats').waitFor();
+  const retainedCellScrollTop = 2 * 29;
+  await scroller.evaluate((element, scrollTop) => {
+    element.scrollTop = scrollTop;
+    element.dispatchEvent(new Event("scroll"));
+  }, retainedCellScrollTop);
+  await page.waitForFunction(
+    ({ scrollTop }) => {
+      const scroller = document.querySelector("[data-testid='data-grid-scroller']");
+      return (
+        scroller instanceof HTMLElement &&
+        Math.abs(scroller.scrollTop - scrollTop) <= 1 &&
+        document.querySelector('td[data-grid-row="0"][data-grid-column="0"]') instanceof HTMLElement &&
+        document.querySelector('td[data-grid-row="4"][data-grid-column="0"]') instanceof HTMLElement
+      );
+    },
+    { scrollTop: retainedCellScrollTop }
+  );
+  const retainedCellGeometry = await page.evaluate(() => {
+    const retained = document.querySelector('td[data-grid-row="0"][data-grid-column="0"]');
+    const exposed = document.querySelector('td[data-grid-row="4"][data-grid-column="0"]');
+    const header = document.querySelector('th[data-grid-column="0"]');
+    if (!(retained instanceof HTMLElement) || !(exposed instanceof HTMLElement) || !(header instanceof HTMLElement)) {
+      return undefined;
+    }
+    const retainedRect = retained.getBoundingClientRect();
+    const exposedRect = exposed.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    const retainedTopLeftHit = document.elementFromPoint(retainedRect.left + 8, retainedRect.top + 8);
+    const exposedCenterHit = document.elementFromPoint(
+      exposedRect.left + exposedRect.width / 2,
+      exposedRect.top + exposedRect.height / 2
+    );
+    return {
+      exposedCenterHitsCell: exposedCenterHit === exposed || exposed.contains(exposedCenterHit),
+      exposedTop: exposedRect.top,
+      headerBottom: headerRect.bottom,
+      retainedTopLeftHit: retainedTopLeftHit?.tagName,
+      retainedTopLeftHitsHeader: retainedTopLeftHit === header || header.contains(retainedTopLeftHit),
+      retainedTopLeftHitsCell: retainedTopLeftHit === retained || retained.contains(retainedTopLeftHit),
+      retainedTop: retainedRect.top
+    };
+  });
+  if (
+    !retainedCellGeometry ||
+    retainedCellGeometry.retainedTopLeftHitsCell ||
+    !retainedCellGeometry.retainedTopLeftHitsHeader ||
+    !retainedCellGeometry.exposedCenterHitsCell ||
+    retainedCellGeometry.exposedTop < retainedCellGeometry.headerBottom
+  ) {
+    throw new Error(
+      `Sticky profiles did not retain an occluded first cell beside an exposed click target: ${JSON.stringify(retainedCellGeometry)}.`
+    );
+  }
+  const exposedCell = page.locator('[data-grid-row="4"][data-grid-column="0"]');
+  await exposedCell.click();
+  await waitForFocusedGridCell(page, 4, 0);
+  await page.keyboard.press("ArrowRight");
+  await waitForFocusedGridCell(page, 4, 1);
+
+  await scroller.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await page.waitForFunction(() => document.querySelector("[data-testid='data-grid-scroller']")?.scrollTop === 0);
   await firstCell.focus();
   await waitForFocusedGridCell(page, 0, 0);
 
@@ -1835,7 +1901,7 @@ async function verifyGridKeyboardWorkflow(browser) {
   await assertProjectedHarnessClean(page, "wide-grid keyboard workflow");
   await page.close();
   console.log(
-    "Grid arrows, two-dimensional projected paging, exact far-column rendering, and cross-block focus verified."
+    "Grid pointer activation below sticky profiles, arrows, two-dimensional projected paging, exact far-column rendering, and cross-block focus verified."
   );
 }
 
