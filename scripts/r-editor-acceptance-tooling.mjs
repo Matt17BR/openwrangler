@@ -6,6 +6,12 @@ import { pipeline } from "node:stream/promises";
 import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
 
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
+const MAX_DOWNLOAD_ATTEMPTS = 3;
+const DOWNLOAD_RETRY_DELAYS_MS = Object.freeze([2_000, 4_000]);
+const DEFAULT_TIMER_OPERATIONS = Object.freeze({
+  setTimeout,
+  clearTimeout
+});
 
 export const R_EDITOR_ACCEPTANCE_TOOLING = Object.freeze({
   rSyntax: Object.freeze({
@@ -44,12 +50,16 @@ export async function prepareREditorAcceptanceTooling(
   {
     artifactPaths = {},
     fetchImpl = fetch,
+    onArtifactAttempt,
     runCommand = runBoundedEditorCommand,
     environment = createEditorAcceptanceEnvironment()
   } = {}
 ) {
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("Native R and Quarto editor acceptance currently supports Linux x64 only.");
+  }
+  if (onArtifactAttempt !== undefined && typeof onArtifactAttempt !== "function") {
+    throw new Error("R editor tooling artifact attempt reporting must be a function.");
   }
   const canonicalParent = privateDirectory(parent);
   const root = join(canonicalParent, `r-editor-${randomUUID()}`);
@@ -58,14 +68,16 @@ export async function prepareREditorAcceptanceTooling(
   for (const key of ["rSyntax", "r", "quartoExtension"]) {
     const pin = R_EDITOR_ACCEPTANCE_TOOLING[key];
     extensionVsixes.push(
-      await acquireExactArtifact(root, pin, {
+      await acquireExactArtifact(root, key, pin, {
         fetchImpl,
+        onAttempt: onArtifactAttempt,
         sourcePath: artifactPaths[key]
       })
     );
   }
-  const quartoArchive = await acquireExactArtifact(root, R_EDITOR_ACCEPTANCE_TOOLING.quartoCli, {
+  const quartoArchive = await acquireExactArtifact(root, "quartoCli", R_EDITOR_ACCEPTANCE_TOOLING.quartoCli, {
     fetchImpl,
+    onAttempt: onArtifactAttempt,
     sourcePath: artifactPaths.quartoCli
   });
   const installRoot = join(root, "quarto");
@@ -104,8 +116,55 @@ export async function prepareREditorAcceptanceTooling(
   });
 }
 
-async function acquireExactArtifact(root, pin, { fetchImpl, sourcePath }) {
-  const destination = join(root, pin.fileName);
+export async function acquireExactArtifact(
+  root,
+  key,
+  pin,
+  {
+    fetchImpl = fetch,
+    onAttempt,
+    sourcePath,
+    timeoutMs = DOWNLOAD_TIMEOUT_MS,
+    timersForTest = DEFAULT_TIMER_OPERATIONS,
+    waitForRetryForTest = waitForRetry
+  } = {}
+) {
+  if (typeof key !== "string" || !/^[A-Za-z][A-Za-z0-9]{0,31}$/u.test(key)) {
+    throw new Error("R editor tooling artifact acquisition requires a public artifact key.");
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > DOWNLOAD_TIMEOUT_MS) {
+    throw new Error(`R editor tooling artifact timeout must be no larger than ${DOWNLOAD_TIMEOUT_MS} ms.`);
+  }
+  if (
+    !timersForTest ||
+    typeof timersForTest !== "object" ||
+    typeof timersForTest.setTimeout !== "function" ||
+    typeof timersForTest.clearTimeout !== "function" ||
+    typeof waitForRetryForTest !== "function"
+  ) {
+    throw new Error("R editor tooling artifact acquisition requires bounded timer operations.");
+  }
+  if (onAttempt !== undefined && typeof onAttempt !== "function") {
+    throw new Error("R editor tooling artifact attempt reporting must be a function.");
+  }
+  if (
+    !pin ||
+    typeof pin !== "object" ||
+    typeof pin.fileName !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(pin.fileName) ||
+    pin.fileName === "." ||
+    pin.fileName === ".." ||
+    basename(pin.fileName) !== pin.fileName ||
+    typeof pin.url !== "string" ||
+    !isPublicArtifactUrl(pin.url) ||
+    !Number.isSafeInteger(pin.bytes) ||
+    pin.bytes <= 0 ||
+    typeof pin.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(pin.sha256)
+  ) {
+    throw new Error("R editor tooling artifact acquisition requires one valid pinned artifact.");
+  }
+  const destination = join(privateDirectory(root), pin.fileName);
   if (sourcePath !== undefined) {
     if (typeof sourcePath !== "string" || !isAbsolute(sourcePath)) {
       throw new Error(`${pin.fileName} override must be an absolute path.`);
@@ -117,25 +176,232 @@ async function acquireExactArtifact(root, pin, { fetchImpl, sourcePath }) {
     await writeVerifiedArtifact(createReadStream(source), destination, pin);
     return destination;
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+  const deadlineController = new AbortController();
+  let timer;
   try {
-    const response = await fetchImpl(pin.url, {
-      headers: { "User-Agent": "Open-Wrangler-release-acceptance" },
-      redirect: "follow",
-      signal: controller.signal
-    });
-    if (!response.ok || !response.body) {
-      throw new Error(`Could not download ${pin.fileName}: HTTP ${response.status}.`);
+    try {
+      timer = timersForTest.setTimeout(() => deadlineController.abort(), timeoutMs);
+    } catch {
+      throw artifactAttemptError(key, pin, 1, "could not schedule its aggregate download deadline");
     }
-    await writeVerifiedArtifact(Readable.fromWeb(response.body), destination, pin);
-    return destination;
+    for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt += 1) {
+      if (deadlineController.signal.aborted) {
+        throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
+      }
+      try {
+        onAttempt?.(
+          Object.freeze({
+            key,
+            fileName: pin.fileName,
+            attempt,
+            maximumAttempts: MAX_DOWNLOAD_ATTEMPTS
+          })
+        );
+      } catch {
+        throw artifactAttemptError(key, pin, attempt, "could not publish its attempt checkpoint");
+      }
+
+      const attemptController = new AbortController();
+      const detachDeadline = forwardAbort(deadlineController.signal, attemptController);
+      let transportRejected = false;
+      try {
+        let responsePromise;
+        try {
+          responsePromise = fetchImpl(pin.url, {
+            headers: { "User-Agent": "Open-Wrangler-release-acceptance" },
+            redirect: "follow",
+            signal: attemptController.signal
+          });
+        } catch {
+          throw artifactAttemptError(key, pin, attempt, "could not start its fetch");
+        }
+
+        const fetchOutcome = await settleOperationBeforeAbort(() => responsePromise, deadlineController.signal);
+        let response;
+        if (fetchOutcome.outcome === "aborted") {
+          throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
+        }
+        if (fetchOutcome.outcome === "failed") {
+          transportRejected = true;
+        } else {
+          response = fetchOutcome.value;
+        }
+
+        if (!transportRejected) {
+          if (deadlineController.signal.aborted) {
+            await disposeRejectedResponseBody(response?.body, key, pin, attempt, deadlineController.signal);
+            throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
+          }
+          if (!response || typeof response !== "object") {
+            throw artifactAttemptError(key, pin, attempt, "returned an invalid response");
+          }
+          if (response.ok !== true) {
+            await disposeRejectedResponseBody(response.body, key, pin, attempt, deadlineController.signal);
+            if (deadlineController.signal.aborted) {
+              throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
+            }
+            throw artifactAttemptError(key, pin, attempt, "returned a non-success HTTP response");
+          }
+          if (!response.body) {
+            throw artifactAttemptError(key, pin, attempt, "returned no response body");
+          }
+
+          let body;
+          try {
+            body = Readable.fromWeb(response.body);
+          } catch {
+            await disposeRejectedResponseBody(response.body, key, pin, attempt, deadlineController.signal);
+            if (deadlineController.signal.aborted) {
+              throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
+            }
+            throw artifactAttemptError(key, pin, attempt, "returned an invalid response body");
+          }
+          try {
+            await writeVerifiedArtifact(body, destination, pin, attemptController.signal);
+          } catch {
+            if (deadlineController.signal.aborted) {
+              throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
+            }
+            throw artifactAttemptError(key, pin, attempt, "failed exact response-body verification");
+          }
+          if (deadlineController.signal.aborted) {
+            try {
+              rmSync(destination, { force: true });
+            } catch {
+              throw artifactAttemptError(key, pin, attempt, "could not remove its expired response body");
+            }
+            throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
+          }
+          return destination;
+        }
+      } finally {
+        detachDeadline();
+        attemptController.abort();
+      }
+
+      if (deadlineController.signal.aborted) {
+        throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
+      }
+      if (attempt === MAX_DOWNLOAD_ATTEMPTS) {
+        throw artifactAttemptError(key, pin, attempt, "exhausted its fetch attempts");
+      }
+      const backoffOutcome = await settleOperationBeforeAbort(
+        () => waitForRetryForTest(DOWNLOAD_RETRY_DELAYS_MS[attempt - 1], deadlineController.signal, timersForTest),
+        deadlineController.signal
+      );
+      if (deadlineController.signal.aborted || backoffOutcome.outcome === "aborted") {
+        throw artifactAttemptError(key, pin, attempt, "exceeded its aggregate download deadline");
+      }
+      if (backoffOutcome.outcome === "failed") {
+        throw artifactAttemptError(key, pin, attempt, "could not complete its retry backoff");
+      }
+    }
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) timersForTest.clearTimeout(timer);
+    deadlineController.abort();
   }
 }
 
-async function writeVerifiedArtifact(source, destination, pin) {
+function isPublicArtifactUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.hostname.length > 0 &&
+      parsed.pathname.startsWith("/") &&
+      parsed.pathname.length > 1 &&
+      parsed.search === "" &&
+      parsed.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+function artifactAttemptError(key, pin, attempt, failure) {
+  return new Error(
+    `R editor tooling artifact ${key} (${pin.fileName}) attempt ${attempt}/${MAX_DOWNLOAD_ATTEMPTS} ${failure}.`
+  );
+}
+
+function forwardAbort(source, target) {
+  if (source.aborted) {
+    target.abort();
+    return () => {};
+  }
+  const abort = () => target.abort();
+  source.addEventListener("abort", abort, { once: true });
+  return () => source.removeEventListener("abort", abort);
+}
+
+async function disposeRejectedResponseBody(body, key, pin, attempt, signal) {
+  if (!body) return;
+  if (typeof body.cancel !== "function") {
+    throw artifactAttemptError(key, pin, attempt, "could not dispose its rejected response body");
+  }
+  const outcome = await settleOperationBeforeAbort(() => body.cancel(), signal);
+  if (outcome.outcome === "aborted") return;
+  if (outcome.outcome === "failed") {
+    throw artifactAttemptError(key, pin, attempt, "could not dispose its rejected response body");
+  }
+}
+
+function settleOperationBeforeAbort(operation, signal) {
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const finish = (outcome, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      resolvePromise(Object.freeze({ outcome, value }));
+    };
+    const abort = () => finish("aborted");
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve()
+      .then(operation)
+      .then(
+        (value) => finish("completed", value),
+        () => finish("failed")
+      );
+    if (signal.aborted) abort();
+  });
+}
+
+function waitForRetry(delayMs, signal, timers) {
+  return new Promise((resolvePromise, reject) => {
+    if (signal.aborted) {
+      reject(new Error("R editor tooling retry backoff was cancelled."));
+      return;
+    }
+    let settled = false;
+    let timer;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) timers.clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      callback();
+    };
+    const abort = () => finish(() => reject(new Error("R editor tooling retry backoff was cancelled.")));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    try {
+      timer = timers.setTimeout(() => finish(resolvePromise), delayMs);
+    } catch {
+      finish(() => reject(new Error("R editor tooling retry backoff could not be scheduled.")));
+      return;
+    }
+    if (settled && timer !== undefined) timers.clearTimeout(timer);
+    if (signal.aborted) abort();
+  });
+}
+
+async function writeVerifiedArtifact(source, destination, pin, signal) {
   const digest = createHash("sha256");
   let bytes = 0;
   const verifier = new Transform({
@@ -158,7 +424,11 @@ async function writeVerifiedArtifact(source, destination, pin) {
   });
   const writer = createWriteStream(destination, { flags: "wx", mode: 0o600 });
   try {
-    await pipeline(source, verifier, writer);
+    if (signal) {
+      await pipeline(source, verifier, writer, { signal });
+    } else {
+      await pipeline(source, verifier, writer);
+    }
   } catch (error) {
     rmSync(destination, { force: true });
     throw error;

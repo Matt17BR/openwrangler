@@ -497,6 +497,14 @@ try {
                   r: process.env.OPEN_WRANGLER_R_EXTENSION_VSIX,
                   quartoExtension: process.env.OPEN_WRANGLER_QUARTO_EXTENSION_VSIX,
                   quartoCli: process.env.OPEN_WRANGLER_QUARTO_CLI_ARCHIVE
+                },
+                onArtifactAttempt: ({ key, fileName, attempt }) => {
+                  writeCorrelatedProgress(
+                    orchestrationProgressPath,
+                    orchestrationRunId,
+                    "setup",
+                    `setup:fetch-r-editor-tooling-${key}-${fileName}-attempt-${attempt}`
+                  );
                 }
               });
             }
