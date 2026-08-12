@@ -527,9 +527,17 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
   const receipt = verifier.indexOf("testing.panelSynchronizationReceipt(sessionId)");
   const currentTarget = verifier.indexOf("findCurrentOpenWranglerGridTarget(", receipt);
   const gridBound = verifier.indexOf('recordAcceptanceProgress("excel-dependency-install:grid-bound")', currentTarget);
-  const clickCell = verifier.indexOf("await firstCell.click(", gridBound);
-  const safeClickPosition = verifier.indexOf("position: { x: 8, y: 8 }", clickCell);
-  const documentFocus = verifier.indexOf("documentFocused: element.ownerDocument.hasFocus()", safeClickPosition);
+  const exposedBounds = verifier.indexOf("const exposedBounds =", gridBound);
+  const renderedCells = verifier.indexOf('"tbody td.gridCell[data-grid-row][data-grid-column]"', exposedBounds);
+  const rightNeighbor = verifier.indexOf("const nextCell = cellsByPosition.get", renderedCells);
+  const hitTest = verifier.indexOf("ownerDocument.elementFromPoint", rightNeighbor);
+  const activationTarget = verifier.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:grid-activation-target")',
+    hitTest
+  );
+  const activationCell = verifier.indexOf("const activationCell = app", activationTarget);
+  const clickCell = verifier.indexOf("await activationCell.click({ timeout: operationTimeout() })", activationCell);
+  const documentFocus = verifier.indexOf("documentFocused: element.ownerDocument.hasFocus()", clickCell);
   const cellFocus = verifier.indexOf("cellFocused: element.ownerDocument.activeElement === element", documentFocus);
   const postClickRetirementGuard = verifier.indexOf(
     "isRetiredRendererTarget(workbench, target.page, target.frame)",
@@ -548,22 +556,28 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
     'recordAcceptanceProgress("excel-dependency-install:grid-focused")',
     exactFocusState
   );
-  const arrowRight = verifier.indexOf('await firstCell.press("ArrowRight"', gridFocused);
+  const arrowRight = verifier.indexOf('await activationCell.press("ArrowRight"', gridFocused);
   const arrowSent = verifier.indexOf(
     'recordAcceptanceProgress("excel-dependency-install:grid-arrow-sent")',
     arrowRight
   );
+  const dynamicNeighbor = verifier.indexOf("activationTarget.column + 1", arrowSent);
   const gridKeyboard = verifier.indexOf(
     'recordAcceptanceProgress("excel-dependency-install:grid-keyboard")',
-    arrowSent
+    dynamicNeighbor
   );
   assert.ok(
     receipt >= 0 &&
       currentTarget > receipt &&
       gridBound > currentTarget &&
-      clickCell > gridBound &&
-      safeClickPosition > clickCell &&
-      documentFocus > safeClickPosition &&
+      exposedBounds > gridBound &&
+      renderedCells > exposedBounds &&
+      rightNeighbor > renderedCells &&
+      hitTest > rightNeighbor &&
+      activationTarget > hitTest &&
+      activationCell > activationTarget &&
+      clickCell > activationCell &&
+      documentFocus > clickCell &&
       cellFocus > documentFocus &&
       postClickRetirementGuard > cellFocus &&
       postClickReceiptGuard > postClickRetirementGuard &&
@@ -572,12 +586,16 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
       gridFocused > exactFocusState &&
       arrowRight > gridFocused &&
       arrowSent > arrowRight &&
-      gridKeyboard > arrowSent,
-    "Recovered XLSX verification must activate the current renderer before sending a real keyboard action."
+      dynamicNeighbor > arrowSent &&
+      gridKeyboard > dynamicNeighbor,
+    "Recovered XLSX verification must hit-test an exposed body cell before sending a real keyboard action."
   );
   assert.match(verifier, /sameRendererSynchronizationReceipt/u);
   assert.match(verifier, /ignoreRetiredRendererProbeFailure/u);
-  assert.doesNotMatch(verifier, /bringToFront\(|firstCell\.focus\(/u);
+  assert.doesNotMatch(
+    verifier,
+    /bringToFront\(|firstCell\.focus\(|firstCell\.click\(|force:\s*true|position:\s*\{\s*x:/u
+  );
   assert.doesNotMatch(
     verifier,
     /synchronizedSessionApp|requireFreshExactSessionPanelHydration|testing\.synchronizePanel|ensurePanelSynchronized/u
