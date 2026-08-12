@@ -76,6 +76,16 @@ probe and bounded cleanup remain in the runner-owned process tree or Windows Job
 interpreter. This closes the unreviewed hosted-IPykernel 7.x drift observed in the failed gate without claiming that
 version caused the stall; it does not add a retry or relax either deadline.
 
+Acquisition of the four pinned R/Quarto tooling artifacts may retry only when the initial `fetch` promise rejects
+before producing a response. Each artifact gets at most three total attempts, separated by cancellable fixed 2-second
+and 4-second waits, all within its original aggregate 10-minute download budget. A synchronous fetch-start failure,
+any non-success HTTP response (including 429 or 5xx), a missing or failing body, byte-count or SHA-256 mismatch,
+filesystem error, override failure, extraction error, version mismatch, and every editor phase remain single-attempt
+failures.
+Download-attempt checkpoints and download errors contain no more than the public artifact key, pinned filename, and
+bounded attempt number; they do not retain a request or redirect URL, headers, or raw transport cause. This setup-only
+transport policy does not extend or retry the 300-second hard and 180-second inactivity-bounded native editor phases.
+
 The preview-only form of the same author is `node scripts/create-canonical-release-artifact.mjs <candidate> --out-dir <directory> --preview-release`. It binds a clean exact `EXPECTED_SHA`, the intended numeric `RELEASE_TAG`, preview source/package/runtime identity, the VSIX pre-release marker, and immutable candidate bytes, but deliberately does not invoke stable parity, changelog, or README readiness and does not require the intended tag to exist. It emits the same three filenames as stable with the distinct `openwrangler-canonical-preview-release-artifact-v1` provenance protocol and `preview: true`. Pre-tag acceptance uses `scripts/verify-preview-release-artifact.mjs`; public registry intake independently revalidates the same triple. Historical two-file previews are not canonical inputs and are rejected rather than receiving invented provenance.
 
 The content guard parses GitHub-flavored Markdown and requires exactly one active canonical 1.0 Pandas/Polars table in the top-level section of `docs/feature-parity.md`; every exact ordered row must be Done and carry human completion text plus at least one positive `test:`, `workflow:`, or `record:` reference to a tracked file of the matching kind. Empty, malformed, untracked, placeholder, and future-action evidence fails. Fenced, indented, HTML-commented, or raw-HTML decoys cannot satisfy either that table or the one real dated changelog section, which must also contain a substantive bullet under an accepted change category. The guard pins the fixed `Matt17BR.openwrangler` identity, rejects duplicate JSON members, and requires the complete parsed packaged manifest to equal the source manifest. An exact `vsce` probe found no package-manifest transformation, so none is currently allowed; any future tool transformation must be documented, normalized narrowly, and covered before it can enter this gate. Source and packaged Python runtime versions and the canonical VSIX identity/channel must agree with the tag, with explicit `preview: false` and no prerelease VSIX property.

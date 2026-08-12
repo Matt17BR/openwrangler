@@ -45,6 +45,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- R/Quarto release-tooling downloads now make at most three attempts only when the initial transport promise rejects,
+  with cancellable 2-second and 4-second waits inside the same 10-minute per-artifact budget. Non-success HTTP
+  responses, body, integrity, filesystem, extraction, version, and editor failures remain single-attempt. Download
+  failures use fixed redacted artifact diagnostics; native editor deadlines and the no-retry phase policy are unchanged.
 - Focused Python Quarto release acceptance now creates a private core Jupyter environment pinned to Jupyter Client
   8.9.1 and the reviewed runtime versions, registers its exact interpreter with the prepared R environment, and proves
   one direct kernel start, Pandas execution, and shutdown before VS Code starts. The probe remains in the runner-owned

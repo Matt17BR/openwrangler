@@ -794,6 +794,17 @@ R extension at the test R executable and private package library. R Markdown use
 CLI, and the Quarto extension uses the same private installation. No extension or package is installed into the
 user's editor profile or R library.
 
+Each of those four downloads retains one aggregate 10-minute budget. Only rejection of the initial transport promise
+before a response exists can start another attempt: there are at most three attempts, with cancellable fixed
+2-second and 4-second waits charged to that same budget. Non-success HTTP status, absent or streaming body, size,
+SHA-256, filesystem, verified offline override, extraction, version, and editor failures are never retried. Non-success
+response bodies are disposed before the fixed failure is surfaced. Every download-attempt checkpoint and download
+error identifies no more than the public artifact key, pinned filename, and bounded attempt number, never a request or
+redirect URL, headers, or raw transport cause. Focused script tests cover one- and two-rejection recovery, exhaustion,
+aggregate-deadline expiry during fetch and backoff, no-retry response/body/integrity/filesystem paths, override bypass,
+fixed diagnostics, and timer cleanup. This acquisition retry happens before any native editor starts and does not
+change its 300-second hard deadline, 180-second inactivity deadline, or no-automatic-retry rule.
+
 The packaged journey activates all three extensions, checks their exact versions and public current-cell/selection commands, and confirms
 that `.Rmd` and `.qmd` have the expected editor language modes. It asks the Quarto extension to render the real `.qmd`
 fixture and verifies the rendered table before invoking **Open in Open Wrangler** with the exact cursor in its R
