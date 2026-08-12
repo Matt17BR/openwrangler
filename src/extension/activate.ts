@@ -43,7 +43,7 @@ export interface OpenWranglerTestApi {
   panelSynchronizable(sessionId: string): boolean;
   panelSynchronizationReceipt(
     sessionId: string
-  ): Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined;
+  ): Readonly<{ syncId: string; sessionId: string; revision: number; layoutTransitionPending: boolean }> | undefined;
   cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void;
   requestExecutionCheckpoint: SessionCoordinator["testingRequestExecutionCheckpoint"];
   sessionSchedulerState: SessionCoordinator["testingSessionSchedulerState"];

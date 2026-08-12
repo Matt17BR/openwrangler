@@ -679,7 +679,8 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toEqual({
       syncId: initialMarker.syncId,
       sessionId: initialMarker.sessionId,
-      revision: initialMarker.revision
+      revision: initialMarker.revision,
+      layoutTransitionPending: initialMarker.layoutTransitionPending
     });
 
     harness.posted.length = 0;
@@ -703,7 +704,8 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toEqual({
       syncId: pulledMarker.syncId,
       sessionId: pulledMarker.sessionId,
-      revision: pulledMarker.revision
+      revision: pulledMarker.revision,
+      layoutTransitionPending: pulledMarker.layoutTransitionPending
     });
     harness.posted.length = 0;
 
@@ -735,7 +737,8 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(opened.metadata.sessionId)).toEqual({
       syncId: marker.syncId,
       sessionId: marker.sessionId,
-      revision: marker.revision
+      revision: marker.revision,
+      layoutTransitionPending: marker.layoutTransitionPending
     });
 
     await harness.receive({ kind: "updateViewState", state: rendererState });
@@ -1690,6 +1693,12 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.htmlAssignmentCount).toBe(1);
     expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(1);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(openedResponse.metadata.sessionId)).toEqual({
+      syncId: draftMarker.syncId,
+      sessionId: draftMarker.sessionId,
+      revision: draftMarker.revision,
+      layoutTransitionPending: true
+    });
 
     codePreviewFocus.resolve(undefined);
     await vi.waitFor(() => expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2));
@@ -1717,6 +1726,12 @@ describe("OpenWranglerPanel retained view state", () => {
       revision: settledMarker.revision
     });
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+    expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(openedResponse.metadata.sessionId)).toEqual({
+      syncId: settledMarker.syncId,
+      sessionId: settledMarker.sessionId,
+      revision: settledMarker.revision,
+      layoutTransitionPending: false
+    });
     expect(executeCommand).toHaveBeenCalledTimes(1);
     expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
 
@@ -3187,7 +3202,8 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(openedResponse.metadata.sessionId)).toEqual({
       syncId: liveSynchronization.syncId,
       sessionId: openedResponse.metadata.sessionId,
-      revision: openedResponse.metadata.revision
+      revision: openedResponse.metadata.revision,
+      layoutTransitionPending: liveSynchronization.layoutTransitionPending
     });
     expect(synchronizePanel).not.toHaveBeenCalled();
     expect(ensurePanelSynchronized).not.toHaveBeenCalled();

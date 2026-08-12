@@ -279,14 +279,15 @@ export class OpenWranglerPanel {
 
   static panelSynchronizationReceiptForSession(
     sessionId: string
-  ): Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined {
+  ): Readonly<{ syncId: string; sessionId: string; revision: number; layoutTransitionPending: boolean }> | undefined {
     const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
     const synchronization = target?.rendererSynchronizationIdentity;
     return target?.hasHydratedRenderer() && synchronization?.sessionId === sessionId
       ? {
           syncId: synchronization.syncId,
           sessionId: synchronization.sessionId,
-          revision: synchronization.revision
+          revision: synchronization.revision,
+          layoutTransitionPending: synchronization.layoutTransitionPending
         }
       : undefined;
   }

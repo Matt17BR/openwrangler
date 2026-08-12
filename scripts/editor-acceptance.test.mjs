@@ -321,6 +321,24 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
   );
   assert.doesNotMatch(firstUseJourney, /lastDrawerText:\s*lastDrawerText|sourceLabel/u);
   assert.match(firstUseJourney, /scheduler: testing\.sessionSchedulerState\(sessionId\)/u);
+  assert.match(firstUseJourney, /selectedColumnId: active\?\.viewState\.selectedColumnId/u);
+  assert.match(firstUseJourney, /scrollLeft: active\?\.viewState\.viewport\.scrollLeft/u);
+  const generatedColumnReveal = firstUseJourney.slice(
+    firstUseJourney.indexOf('const draftCodePreview = await waitForCodePreview(workbench, "market_upper")'),
+    firstUseJourney.indexOf("const addedHeader =", firstUseJourney.indexOf("const draftCodePreview ="))
+  );
+  assert.match(generatedColumnReveal, /const addedColumn = discardedDraft\.metadata\.schema\.find/u);
+  assert.match(
+    generatedColumnReveal,
+    /testing\.panelSynchronizationReceipt\(sessionId\)\?\.layoutTransitionPending === false/u
+  );
+  assert.match(generatedColumnReveal, /viewState\.selectedColumnId === addedColumn\.id/u);
+  assert.match(generatedColumnReveal, /app = await reacquireApp\("Post-Code Preview generated-column reveal"\)/u);
+  assert.doesNotMatch(
+    generatedColumnReveal,
+    /rediscoverApp|synchronizedSessionApp|testing\.synchronizePanel|ensurePanelSynchronized/u,
+    "Generated-column reveal must await the natural settled receipt instead of forcing another host snapshot."
+  );
   const previousValueDiscard = source.slice(
     source.indexOf("async function previewAndDiscardPreviousRevenue("),
     source.indexOf("async function previewApplyAndUndoGroupedRevenue(")
