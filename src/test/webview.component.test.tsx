@@ -458,6 +458,7 @@ describe("DataGrid", () => {
       if (!tableHeader) throw new Error("Expected the data-grid header.");
       const fitStatus = document.querySelector<HTMLElement>(".headerProfilesFitStatus");
       expect(fitStatus).toBeInTheDocument();
+      expect(fitStatus).toHaveAccessibleName("Header profile layout");
       expect(fitStatus).toBeEmptyDOMElement();
       let scrollerHeight = 124;
       let expandedNaturalHeight = 166;

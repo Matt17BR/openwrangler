@@ -1600,6 +1600,7 @@ export function DataGrid({
             id={profileFitDescriptionId}
             className="headerProfilesFitStatus"
             role="status"
+            aria-label="Header profile layout"
             aria-live="polite"
             aria-atomic="true"
           >
