@@ -629,3 +629,39 @@ jobs:
       - name: Fail after R-Jupyter diagnostics
         if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' }}
         run: exit 1
+      - id: canonical_r_literate
+        name: Reverify the candidate for R Markdown and Quarto
+        if: ${{ matrix.phase == 'r' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_literate
+        name: Test R Markdown and Quarto in a fresh packaged VS Code phase
+        if: ${{ matrix.phase == 'r' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_literate.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: literate-documents
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload R Markdown and Quarto failure diagnostics
+        if: ${{ always() && steps.packaged_editor_r_literate.outcome == 'failure' && steps.packaged_editor_r_literate.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-literate-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_literate.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - name: Fail after R Markdown and Quarto diagnostics
+        if: ${{ always() && steps.packaged_editor_r_literate.outcome == 'failure' }}
+        run: exit 1
