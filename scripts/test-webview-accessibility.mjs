@@ -107,6 +107,7 @@ try {
   await verifyInsightsDrawerWorkflow(browser);
   await verifyRProfileAccessibility(browser);
   await verifyGridStatusBar(browser);
+  await verifyShortGridProfileResponsiveness(browser);
   await verifyGridKeyboardWorkflow(browser);
   await verifyWideGridPerformance(browser);
 } finally {
@@ -1259,6 +1260,216 @@ async function verifyGridStatusBar(browser) {
   }
   await forcedPage.close();
   console.log("Bottom grid status, narrow/200%-zoom range visibility, Codicon navigation, and forced colors verified.");
+}
+
+async function verifyShortGridProfileResponsiveness(browser) {
+  const shortViewport = { width: 435, height: 300 };
+  const page = await browser.newPage();
+  await page.setViewportSize(shortViewport);
+  await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
+  const headerProfiles = page.getByRole("button", { name: "Header profiles", exact: true });
+  await page.locator(".columnInsight.compact .exactSummaryStats").first().waitFor();
+  await page.waitForFunction(() => {
+    const distributions = [...document.querySelectorAll(".summaryDistribution")];
+    return (
+      distributions.length > 0 &&
+      distributions.every((distribution) => getComputedStyle(distribution).display === "none")
+    );
+  });
+
+  const initial = await shortGridProfileState(page);
+  if (
+    initial.profilePreference !== "true" ||
+    initial.profileDescription !==
+      "Header profile distributions are temporarily hidden until the grid has enough room." ||
+    initial.profileStatusCount !== 1 ||
+    initial.profileStatusText !== initial.profileDescription ||
+    initial.profileTitle !== initial.profileDescription ||
+    initial.insightCount === 0 ||
+    initial.compactInsightCount !== initial.insightCount ||
+    initial.visibleDistributionCount !== 0 ||
+    !initial.exposedCell ||
+    !initial.exposedCell.centerHitsCell ||
+    !initial.exposedCell.fullyExposedVertically ||
+    !initial.exposedCell.rowFullyExposedVertically ||
+    !initial.exposedCell.hasRightNeighbor
+  ) {
+    throw new Error(
+      `The 435x300 production grid did not compact distributions while retaining an exposed body target: ${JSON.stringify(initial)}.`
+    );
+  }
+
+  const exposedCell = page.locator(
+    `td[data-grid-row="${initial.exposedCell.row}"][data-grid-column="${initial.exposedCell.column}"]`
+  );
+  await exposedCell.click();
+  await waitForFocusedGridCell(page, initial.exposedCell.row, initial.exposedCell.column);
+  await page.keyboard.press("ArrowRight");
+  await waitForFocusedGridCell(page, initial.exposedCell.row, initial.exposedCell.column + 1);
+
+  await page.setViewportSize({ width: shortViewport.width, height: 760 });
+  await page.waitForFunction(() => {
+    const distributions = [...document.querySelectorAll(".summaryDistribution")];
+    return (
+      document.querySelectorAll(".columnInsight").length > 0 &&
+      document.querySelectorAll(".columnInsight.compact").length === 0 &&
+      distributions.some((distribution) => getComputedStyle(distribution).display !== "none")
+    );
+  });
+  const tall = await shortGridProfileState(page);
+  if (
+    tall.profilePreference !== "true" ||
+    tall.profileDescription !== undefined ||
+    tall.profileStatusCount !== 1 ||
+    tall.profileStatusText !== "Header profile distributions are visible again." ||
+    tall.compactInsightCount !== 0 ||
+    tall.visibleDistributionCount === 0
+  ) {
+    throw new Error(
+      `A taller production grid did not restore requested profile distributions: ${JSON.stringify(tall)}.`
+    );
+  }
+
+  const distributionControl = page.locator(".numericHistogramHitTarget").first();
+  await distributionControl.waitFor();
+  await distributionControl.focus();
+  if (!(await distributionControl.evaluate((element) => document.activeElement === element))) {
+    throw new Error("The restored numeric header distribution could not receive focus before compaction.");
+  }
+  await page.setViewportSize(shortViewport);
+  await page.waitForFunction(() => {
+    const insights = [...document.querySelectorAll(".columnInsight")];
+    const distributions = [...document.querySelectorAll(".summaryDistribution")];
+    return (
+      insights.length > 0 &&
+      insights.every((insight) => insight.classList.contains("compact")) &&
+      distributions.every((distribution) => getComputedStyle(distribution).display === "none")
+    );
+  });
+  const compactAgain = await shortGridProfileState(page);
+  if (
+    compactAgain.profilePreference !== "true" ||
+    !compactAgain.headerProfilesFocused ||
+    compactAgain.profileStatusCount !== 1 ||
+    compactAgain.profileStatusText !==
+      "Header profile distributions are temporarily hidden until the grid has enough room." ||
+    compactAgain.insightCount === 0 ||
+    compactAgain.compactInsightCount !== compactAgain.insightCount ||
+    compactAgain.visibleDistributionCount !== 0 ||
+    !compactAgain.exposedCell?.centerHitsCell ||
+    !compactAgain.exposedCell.fullyExposedVertically ||
+    !compactAgain.exposedCell.rowFullyExposedVertically
+  ) {
+    throw new Error(
+      `The production grid did not compact stably after a second short resize: ${JSON.stringify(compactAgain)}.`
+    );
+  }
+
+  await page.addScriptTag({ path: axePath });
+  await scanPageAccessibility(page, "wide-view.html (435x300 compact header profiles)");
+  await headerProfiles.click();
+  await page.waitForFunction(() => {
+    const toggle = document.querySelector(".headerProfilesButton");
+    return toggle?.getAttribute("aria-pressed") === "false" && !document.querySelector(".columnInsight");
+  });
+  await page.setViewportSize({ width: shortViewport.width, height: 760 });
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".headerProfilesButton")?.getAttribute("aria-pressed") === "false" &&
+      !document.querySelector(".columnInsight")
+  );
+  const disabledAfterResize = await shortGridProfileState(page);
+  if (
+    disabledAfterResize.profilePreference !== "false" ||
+    disabledAfterResize.profileDescription !== undefined ||
+    disabledAfterResize.insightCount !== 0 ||
+    disabledAfterResize.visibleDistributionCount !== 0
+  ) {
+    throw new Error(
+      `Turning header profiles off in a short grid did not persist across a taller resize: ${JSON.stringify(disabledAfterResize)}.`
+    );
+  }
+
+  await assertProjectedHarnessClean(page, "short-grid profile responsiveness");
+  await page.close();
+  console.log(
+    "Short-grid profile compaction, exposed pointer/ArrowRight activation, focus transfer, live resize status, retained preference, and axe verified."
+  );
+}
+
+async function shortGridProfileState(page) {
+  return page.evaluate(() => {
+    const scroller = document.querySelector("[data-testid='data-grid-scroller']");
+    const toggle = document.querySelector(".headerProfilesButton");
+    if (!(scroller instanceof HTMLElement) || !(toggle instanceof HTMLButtonElement)) {
+      throw new Error("The production grid did not expose its scroller and Header profiles toggle.");
+    }
+    const scrollerRect = scroller.getBoundingClientRect();
+    const headerBottom = Math.max(
+      scrollerRect.top,
+      ...[...scroller.querySelectorAll("thead th")].map((header) => header.getBoundingClientRect().bottom)
+    );
+    const profileDescriptionId = toggle.getAttribute("aria-describedby");
+    const distributions = [...scroller.querySelectorAll(".summaryDistribution")];
+    const cells = [...scroller.querySelectorAll("td[data-grid-row][data-grid-column]")];
+    const exposedCell = cells.flatMap((cell) => {
+      if (!(cell instanceof HTMLElement)) return [];
+      const row = Number(cell.dataset.gridRow);
+      const column = Number(cell.dataset.gridColumn);
+      const rightNeighbor = scroller.querySelector(`td[data-grid-row="${row}"][data-grid-column="${column + 1}"]`);
+      const bounds = cell.getBoundingClientRect();
+      const rowBounds = cell.closest("tr")?.getBoundingClientRect();
+      const centerX = bounds.left + bounds.width / 2;
+      const centerY = bounds.top + bounds.height / 2;
+      const centerHit = document.elementFromPoint(centerX, centerY);
+      const centerHitsCell = centerHit === cell || cell.contains(centerHit);
+      const fullyExposedVertically = bounds.top >= headerBottom - 1 && bounds.bottom <= scrollerRect.bottom + 1;
+      const rowFullyExposedVertically = Boolean(
+        rowBounds && rowBounds.top >= headerBottom - 1 && rowBounds.bottom <= scrollerRect.bottom + 1
+      );
+      return centerX >= scrollerRect.left &&
+        centerX <= scrollerRect.right &&
+        centerY >= headerBottom &&
+        centerY <= scrollerRect.bottom &&
+        centerHitsCell &&
+        rightNeighbor instanceof HTMLElement
+        ? [
+            {
+              bottom: bounds.bottom,
+              centerHitsCell,
+              column,
+              fullyExposedVertically,
+              hasRightNeighbor: true,
+              row,
+              rowBottom: rowBounds?.bottom,
+              rowFullyExposedVertically,
+              rowTop: rowBounds?.top,
+              top: bounds.top
+            }
+          ]
+        : [];
+    })[0];
+    return {
+      compactInsightCount: scroller.querySelectorAll(".columnInsight.compact").length,
+      exposedCell,
+      headerBottom,
+      insightCount: scroller.querySelectorAll(".columnInsight").length,
+      headerProfilesFocused: document.activeElement === toggle,
+      profileDescription: profileDescriptionId
+        ? document.getElementById(profileDescriptionId)?.textContent?.trim()
+        : undefined,
+      profilePreference: toggle.getAttribute("aria-pressed"),
+      profileStatusCount: document.querySelectorAll(".headerProfilesFitStatus").length,
+      profileStatusText: document.querySelector(".headerProfilesFitStatus")?.textContent?.trim(),
+      profileTitle: toggle.getAttribute("title") ?? undefined,
+      scrollerBottom: scrollerRect.bottom,
+      scrollerHeight: scroller.clientHeight,
+      visibleDistributionCount: distributions.filter((distribution) => {
+        const bounds = distribution.getBoundingClientRect();
+        return getComputedStyle(distribution).display !== "none" && bounds.width > 0 && bounds.height > 0;
+      }).length
+    };
+  });
 }
 
 async function scanPageAccessibility(page, harness, selector) {
