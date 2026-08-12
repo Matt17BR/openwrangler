@@ -932,7 +932,12 @@ export async function run(): Promise<void> {
     );
     const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-r-literate-"));
     try {
-      await exerciseReleasedRLiterateDocumentJourneys(testing, await connectToEditorWorkbench(), directory);
+      await exerciseReleasedRLiterateDocumentJourneys(
+        testing,
+        await connectToEditorWorkbench(),
+        directory,
+        process.platform === "linux" ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS : undefined
+      );
     } finally {
       cleanupAcceptanceTemporaryDirectory(directory);
     }
@@ -2200,7 +2205,6 @@ type ReleasedRAcceptanceCoverageProfile = Readonly<{
   name: "comprehensive" | "representative";
   gridPaging: "all-blocks" | "single-round-trip";
   editing: "all-operations" | "rename-lifecycle";
-  documents: "plain-and-literate" | "plain-only";
   openCollapseSessions: boolean;
   openNativeFramesInViewingMode: boolean;
   nativeFrameEditing: "rename-and-drop" | "one-operation-per-flavor";
@@ -2210,7 +2214,6 @@ const RELEASED_R_COMPREHENSIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Ob
   name: "comprehensive",
   gridPaging: "all-blocks",
   editing: "all-operations",
-  documents: "plain-and-literate",
   openCollapseSessions: true,
   openNativeFramesInViewingMode: true,
   nativeFrameEditing: "rename-and-drop"
@@ -2220,7 +2223,6 @@ const RELEASED_R_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = O
   name: "representative",
   gridPaging: "single-round-trip",
   editing: "rename-lifecycle",
-  documents: "plain-only",
   openCollapseSessions: false,
   openNativeFramesInViewingMode: false,
   nativeFrameEditing: "one-operation-per-flavor"
@@ -2470,13 +2472,7 @@ async function exerciseReleasedRJupyterExtension(
 
       if (supportsRDocumentExecution(process.platform)) {
         recordReleasedRAcceptanceSection(phase, coverage, "document", "start");
-        await exerciseReleasedRDocumentJourney(
-          testing,
-          workbench,
-          directory,
-          coverage.documents === "plain-and-literate",
-          screenshotOutput
-        );
+        await exerciseReleasedRDocumentJourney(testing, workbench, directory);
         ranRDocumentJourney = true;
         assert.equal(testing.diagnostics().sessionCount, 0, "The R document journey must release its processes.");
         recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
@@ -2635,13 +2631,7 @@ async function exerciseReleasedRJupyterExtension(
 
     if (phase === "jupyter-r" && supportsRDocumentExecution(process.platform) && !ranRDocumentJourney) {
       recordReleasedRAcceptanceSection(phase, coverage, "document", "start");
-      await exerciseReleasedRDocumentJourney(
-        testing,
-        workbench,
-        directory,
-        coverage.documents === "plain-and-literate",
-        screenshotOutput
-      );
+      await exerciseReleasedRDocumentJourney(testing, workbench, directory);
       assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
       recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
     }
@@ -3403,13 +3393,7 @@ function releasedRInteractiveMailboxRoots(): string[] {
     .sort();
 }
 
-async function exerciseReleasedRDocumentJourney(
-  testing: TestApi,
-  workbench: Page,
-  directory: string,
-  includeLiterateDocuments: boolean,
-  screenshotOutput?: string
-): Promise<void> {
+async function exerciseReleasedRDocumentJourney(testing: TestApi, workbench: Page, directory: string): Promise<void> {
   recordAcceptanceProgress("jupyter-r:document:create");
   assert.equal(vscode.workspace.isTrusted, true, "Running a plain R file requires the trusted packaged workspace.");
   assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must start without another session.");
@@ -3767,9 +3751,6 @@ async function exerciseReleasedRDocumentJourney(
         await filesConfiguration.update("autoSave", originalAutoSave, vscode.ConfigurationTarget.Workspace);
       }
     }
-  }
-  if (includeLiterateDocuments) {
-    await exerciseReleasedRLiterateDocumentJourneys(testing, workbench, directory, screenshotOutput);
   }
 }
 

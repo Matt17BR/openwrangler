@@ -103,6 +103,39 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
         "vscode";
     },
     (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_literate"
+      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "interactive-terminal";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.name === "Upload R Markdown and Quarto failure diagnostics"
+      ).with.name = "preview-release-r-jupyter";
+    },
+    (workflow) => {
+      const upload = workflow.jobs.jupyter.steps.find(
+        (step) => step.name === "Upload R Markdown and Quarto failure diagnostics"
+      );
+      upload.if = "${{ always() && steps.packaged_editor_r_literate.outcome == 'failure' }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.name === "Upload R Markdown and Quarto failure diagnostics").with[
+        "if-no-files-found"
+      ] = "warn";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.name === "Upload R Markdown and Quarto failure diagnostics").with[
+        "include-hidden-files"
+      ] = true;
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_literate");
+      const focused = steps.splice(focusedStart, 4);
+      const ordinaryStart = steps.findIndex((step) => step.id === "canonical_r_jupyter");
+      steps.splice(ordinaryStart, 0, ...focused);
+    },
+    (workflow) => {
       workflow.jobs.linux.steps.find((step) => step.id === "packaged_cursor").env.OPEN_WRANGLER_XVFB_EXECUTABLE =
         "Xvfb";
     }

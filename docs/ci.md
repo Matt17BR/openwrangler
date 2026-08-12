@@ -42,16 +42,18 @@ The release tier adds the expensive product checks that no longer run on every p
 - packaged VS Code on macOS and Windows;
 - packaged Cursor on macOS and Windows;
 - released Jupyter in separate Python and R jobs: local and remote Python kernels in VS Code, local R in VS Code and
-  Cursor, and remote R in VS Code;
+  Cursor, remote R in VS Code, and a fresh focused Linux VS Code phase for R Markdown and Quarto;
 - Remote SSH;
 - installed performance in pinned VS Code and Cursor;
 - the complete source, platform, package, accessibility, and security checks.
 
 A release cannot publish until every candidate job passes. GitHub, Open VSX, and the Visual Studio Marketplace receive the accepted VSIX; none of them rebuild it.
 
-The Python and R Jupyter jobs start together and verify the same candidate VSIX. If either one fails, its job names
-the affected runtime and GitHub cancels the other matrix cell once the failure is reported. Each native editor phase
-still has its own 300-second hard deadline and 180-second inactivity deadline.
+The Python and R Jupyter jobs start together and verify the same candidate VSIX. The R job completes its ordinary
+plain-document journey, reverifies the candidate, and starts the focused literate journey in a new editor process.
+Each invocation owns distinct failure evidence. If either job fails, its job names the affected runtime and GitHub
+cancels the other matrix cell once the failure is reported. Every native editor phase retains its own 300-second hard
+deadline and 180-second inactivity deadline.
 
 Cross-platform, CodeQL, and performance workflows also run on schedules so changes in external products are found
 between releases. Released Jupyter is run manually when that integration needs to be checked. Dispatching the same

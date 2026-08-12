@@ -833,13 +833,19 @@ test("packaged-editor R acceptance wires the private R environment to local edit
     "addJupyterAcceptancePythonKernel(rAcceptanceEnvironment, testPython)",
     readinessProbe
   );
+  const quartoPythonKernelGuard = source.lastIndexOf(
+    'if (rJourneySelector === "literate-documents")',
+    quartoPythonKernel
+  );
   assert.ok(
     readinessCheckpoint > setup && readinessProbe > readinessCheckpoint && readinessProbe < display,
     "The exact private R kernel must answer its base-R marker before an editor can start."
   );
   assert.ok(
-    quartoPythonKernel > readinessProbe && quartoPythonKernel < display,
-    "The focused literate phase must add its Python kernelspec before an editor can start."
+    quartoPythonKernelGuard > readinessProbe &&
+      quartoPythonKernel > quartoPythonKernelGuard &&
+      quartoPythonKernel < display,
+    "Only the focused literate phase may add its Python kernelspec before an editor starts."
   );
 
   const phaseBranch = source.indexOf('if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter")');
@@ -896,7 +902,7 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("Cursor and Windows use the representative R coverage profile", async () => {
+test("default R profiles stay plain-only while Cursor and Windows use representative coverage", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(", profileStart);
@@ -907,12 +913,13 @@ test("Cursor and Windows use the representative R coverage profile", async () =>
 
   assert.match(
     profiles,
-    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "all-operations"[\s\S]*documents: "plain-and-literate"[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
+    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "all-operations"[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
   );
   assert.match(
     profiles,
-    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*documents: "plain-only"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
+    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
   );
+  assert.doesNotMatch(profiles, /documents:/u, "The default R coverage profiles must be structurally plain-only.");
   assert.match(
     profiles,
     /process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\s*\|\|\s*process\.platform === "win32"\s*\? RELEASED_R_REPRESENTATIVE_COVERAGE\s*:\s*RELEASED_R_COMPREHENSIVE_COVERAGE/u
@@ -927,7 +934,7 @@ test("Cursor and Windows use the representative R coverage profile", async () =>
     journey,
     /if \(coverage\.editing === "all-operations"\)[\s\S]*exerciseReleasedREditingJourney\([\s\S]*else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\(/u
   );
-  assert.match(journey, /coverage\.documents === "plain-and-literate"/u);
+  assert.doesNotMatch(journey, /coverage\.documents|exerciseReleasedRLiterateDocumentJourneys/u);
   assert.match(journey, /if \(coverage\.openCollapseSessions\)/u);
   assert.match(journey, /if \(coverage\.openNativeFramesInViewingMode\)/u);
   assert.match(journey, /coverage\.nativeFrameEditing === "rename-and-drop"/u);

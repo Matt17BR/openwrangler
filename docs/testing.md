@@ -220,8 +220,10 @@ The pull-request `canonical-vsix` job performs one clean production build, verif
 The heavyweight pull-request `Remote SSH acceptance` job is opt-in: a ready full-matrix pull request carrying the `acceptance:remote-ssh` label when its next supported pull-request activity starts makes an ephemeral Ubuntu 24.04 VM consume the same canonical artifact, enable and verify the kernel namespace primitive required by Bubblewrap, and run the existing zero-window Remote SSH gate once. A hosted runner image may expose trusted system ancestors with runner ownership or writable modes: the current static Podman extraction assigns the top-level `/usr` and `/etc` directories to the runner UID, while `/usr/share` is writable. After package installation, the job first requires `/usr` and `/etc` to be canonical real directories owned only by root or the current runner, restores exactly those two ancestors to `root:root` without traversing either tree, removes their group/other write bits, and revalidates `/`, `/usr`, and `/etc`. It then restores the root-owned `/usr/share` parent mode, removes group/other write access from only the seven fixed font, icon, MIME, GLib, X11, and timezone subtrees used by the namespace, and recursively verifies their root ownership, entry types, and non-writable file/directory modes before the harness accepts them. The harness independently requires every system-runtime root and ancestor to remain canonical, root-owned, and non-writable before each pathname-bound read-only mount. It copies the exact Node executable that launched it into a private receipt-bound file and mounts that staged executable through the immutable launch descriptor, so setup-node toolcache layouts need no distro-level Node installation or unleased host path. It is evidence for an intentional release candidate, not another default PR cost; merely applying a label does not restart the complete CI workflow. A complete workflow re-run replaces the earlier run-attempt artifact before consumers start; rerunning only a failed consumer reuses and revalidates the unchanged existing artifact. CI owns the complete Linux/Python 3.10 and 3.14 suites; cross-platform runtime adds only the distinct macOS/Python 3.12 and Windows/Python 3.14 suites plus focused native Windows dependency guards. CI, cross-platform runtime, and CodeQL cancel only superseded pull-request heads within their ref-scoped groups; scheduled and manual evidence is never cancelled, and a failed phase is never retried automatically. Protected-branch pushes run only the CI workflow's `Fast feedback` job. `scripts/ci-workflow.test.mjs` checks that ownership and result mapping. The manually dispatched Released Jupyter workflow builds a clean production bundle, packages it, verifies the VSIX, and then runs the Python journey in VS Code plus the local R journey in VS Code and Cursor; both remote fixtures stay limited to VS Code. It remains outside pull-request CI and does not repeat the full source suite. Performance history and experimental-editor smokes remain scheduled/manual. `npm run package:prepared` is CI-internal: the pull-request `canonical-vsix` producer, candidate-first release producers, and manually dispatched Released Jupyter lanes may use it only after a clean production build. Local development and workflows that do not build first must use `npm run package`; do not invoke its internal continuation directly.
 
 Preview and stable candidates dispatch Python and R Jupyter acceptance as separate matrix jobs. Each job downloads and
-verifies the same candidate VSIX, then runs only its own packaged-editor command. A reported failure identifies the
-runtime and cancels the sibling matrix job; the workflow does not wait for Python to finish before starting R.
+verifies the same candidate VSIX. The R job first runs the ordinary local and remote journey, whose direct-document
+coverage is plain `.R`, then reverifies the candidate and runs `.Rmd`, `.qmd`, and Python Quarto in a fresh Linux
+VS Code phase with separate sealed diagnostics. A reported failure identifies the runtime and cancels the sibling
+matrix job; the workflow does not wait for Python to finish before starting R.
 
 The manual stable workflow is the final exact-artifact gate, not another pull-request matrix. With `publish: false`,
 it packages once from the exact protected `main` commit, uploads one VSIX/checksum/provenance set, and runs every
@@ -579,7 +581,7 @@ After a forced renderer synchronization, editor interaction binds to the host-ac
 
 In Cursor's remote-kernel phase, the harness restores the captured notebook once if focus moved before waiting for the Variables row action. It does not reopen the Variables view or repeat the action. Timeout output includes only bounded loading state and element counts; it excludes webview URLs and table text.
 
-For affected pull requests, the released-Jupyter CI job downloads and revalidates the same checksum-bound VSIX produced by `canonical-vsix`; it never rebuilds the extension. Documentation-only, package-only, and draft pull requests require that conditional job to be skipped. The draft aggregate still fails deliberately; every ready full-matrix pull request requires the job to succeed through the fail-closed `validate` aggregate. Protected-branch pushes run only `Fast feedback`, so neither this job nor the aggregate runs after merge. The standalone Released Jupyter workflow is manual and self-packages its selected source because it has no caller artifact. Preview and stable release jobs consume their canonical artifact in two jobs: `phase: python` and `phase: r`. Both repeat artifact verification immediately before their packaged editor command; the R job also runs the exact R 4.5.2 contract. Each native phase keeps the 300-second hard deadline and 180-second inactivity deadline enforced by the packaged-editor harness.
+For affected pull requests, the released-Jupyter CI job downloads and revalidates the same checksum-bound VSIX produced by `canonical-vsix`; it never rebuilds the extension. Documentation-only, package-only, and draft pull requests require that conditional job to be skipped. The draft aggregate still fails deliberately; every ready full-matrix pull request requires the job to succeed through the fail-closed `validate` aggregate. Protected-branch pushes run only `Fast feedback`, so neither this job nor the aggregate runs after merge. The standalone Released Jupyter workflow is manual and self-packages its selected source because it has no caller artifact. Preview and stable release jobs consume their canonical artifact in two jobs: `phase: python` and `phase: r`. The Python command and both R invocations repeat artifact verification immediately before they start; the R job also runs the exact R 4.5.2 contract. Each native phase keeps the 300-second hard deadline and 180-second inactivity deadline enforced by the packaged-editor harness.
 
 The packaged Classic and Connect PySpark fixtures arm class-level `toPandas`, `toArrow`, `mapInPandas`, and
 `mapInArrow` traps before Open Wrangler launches. Any accidental dataframe conversion must therefore fail inside
@@ -606,11 +608,12 @@ Generated-code insertion tests cover Python and R cells, the 10-second observati
 R notebook acceptance opens real `data.frame`, tibble, and data.table variables through IRkernel. It checks that the
 active notebook's base, tibble, data.table, `collapse::qDF()`, `qTBL()`, and `qDT()` variables appear in Operations,
 that unsupported grouped/indexed collapse objects do not, and that an Operations row opens through the exact kernel.
-The literate-document journey closes the exact R terminal it created before terminal-only checks begin.
-Every path uses R 4.5.2. Linux runs the local journey in VS Code and Cursor and the remote journey in VS Code. Preview and stable
-release candidates also run the complete local journey in VS Code on macOS and Windows. The cross-platform jobs reuse
-the ordinary `r-jupyter` phase rather than a reduced smoke test; they do not repeat the complete Python suite or the
-standalone R contract suite.
+The focused literate-document journey closes the exact R terminal it created before moving to Python Quarto.
+Every path uses R 4.5.2. Linux runs the ordinary local journey in VS Code and Cursor and the remote journey in VS Code.
+Preview and stable candidates additionally run the complete literate-document journey in its own Linux VS Code
+phase. Their macOS and Windows cross-platform jobs reuse the ordinary `r-jupyter` phase rather than a reduced smoke
+test; macOS retains the plain `.R` journey, Windows skips direct documents, and neither job repeats the complete
+Python suite or standalone R contract suite.
 The allow phase also starts with a private cell-marked Python file and no Interactive Window. It clicks the visible
 **Open in Open Wrangler** editor action once, selects the pinned kernel if Jupyter asks, and checks that only the
 `# %%` cell under the cursor runs and opens its native Polars dataframe with the expected values. The resulting cell
@@ -815,9 +818,10 @@ A setup failure records only a fixed stage name; R errors and notebook output st
 macOS builds collapse from its pinned source package, while Linux and Windows use the pinned binary. Setup loads
 every pinned namespace and exercises all three supported constructors before the editor starts.
 
-Local screenshot mode also captures the supported IRkernel dataframe list in Operations, a generated 2,400-row orders dataframe in the
-viewing workbench, a Group and aggregate draft after switching that same session to Editing mode, the generated R
-inserted into its notebook, and the dataframe picker over a real Quarto document beside its rendered HTML preview.
+Across the ordinary and focused invocations, local screenshot mode captures the supported IRkernel dataframe list in
+Operations, a generated 2,400-row orders dataframe in the viewing workbench, a Group and aggregate draft after
+switching that same session to Editing mode, the generated R inserted into its notebook, and the dataframe picker
+over a real Quarto document beside its rendered HTML preview.
 The viewing image shows two filters, two
 ordered sorts, and exact revenue statistics. The editing image groups the orders by market and channel and shows the
 native R code preview beside the draft, cleaning history, and Apply/Discard controls.
@@ -837,10 +841,11 @@ new accepted capture.
 
 The manual **Released Jupyter acceptance** workflow cancels an older run of the same selected target when a newer
 diagnostic run is dispatched; its Linux, macOS, and Windows targets do not cancel one another. It has a `macos-r` lane
-for the packaged VS Code and local IRkernel notebook plus Open Wrangler's direct `.R`, `.Rmd`, and `.qmd` journeys.
-Use it while diagnosing macOS-only R failures;
+for the packaged VS Code and local IRkernel notebook plus Open Wrangler's direct plain `.R` journey. Use it while
+diagnosing macOS-only R failures;
 the default `linux-all` lane also installs the pinned R and Quarto editor tooling and keeps the broader VS Code, Cursor,
-Python, active R terminal, native Quarto preview, and remote-Jupyter coverage.
+Python, active R terminal, plain `.R`, and remote-Jupyter coverage. The release-candidate workflow owns the separate
+Linux literate-document gate.
 
 ```bash
 npm run build:test-extension &&
@@ -870,7 +875,8 @@ For a focused local rerun, add `OPEN_WRANGLER_PACKAGED_R_JOURNEY=interactive-ter
 cleanup. The second checks the packaged `.Rmd` and `.qmd` title actions, native Quarto preview, dataframe opening,
 editing, code insertion, the Python/Jupyter Quarto path, and cleanup. Both still verify the VSIX, editor, R packages,
 and pinned R and Quarto extensions. No other selector is accepted, and focused selectors cannot be combined with
-remote Jupyter.
+remote Jupyter. To refresh the complete R media set, run screenshot mode once without a selector for notebook images
+and once with `OPEN_WRANGLER_PACKAGED_R_JOURNEY=literate-documents` for the Quarto picker.
 
 On Linux, `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=1` adds a container-isolated remote-server phase. The default mode uses the Python fixture; `r-jupyter` uses the R fixture. The hosted workflow runs both remote journeys only in VS Code.
 

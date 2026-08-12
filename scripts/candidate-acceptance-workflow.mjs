@@ -160,6 +160,34 @@ function inspectPackagedRunner(jobName, job, specification, problems) {
   }
 }
 
+function inspectFailureDiagnosticUpload(jobName, job, specification, problems) {
+  const uploads = steps(job).filter((step) => step?.name === specification.name);
+  const upload = uploads[0];
+  if (
+    uploads.length !== 1 ||
+    !exactKeys(upload, ["name", "if", "uses", "with"]) ||
+    upload?.uses !== UPLOAD ||
+    upload?.if !==
+      `\${{ always() && steps.${specification.runnerId}.outcome == 'failure' && steps.${specification.runnerId}.outputs.evidence_ready == 'true' }}` ||
+    !exactKeys(upload?.with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "retention-days",
+      "compression-level",
+      "include-hidden-files"
+    ]) ||
+    upload.with.name !== specification.artifactName ||
+    upload.with.path !== `\${{ steps.${specification.runnerId}.outputs.evidence_path }}` ||
+    upload.with["if-no-files-found"] !== "error" ||
+    upload.with["retention-days"] !== 7 ||
+    upload.with["compression-level"] !== 9 ||
+    upload.with["include-hidden-files"] !== false
+  ) {
+    problems.push(`${jobName}/${specification.runnerId} must upload only its exact sealed failure evidence.`);
+  }
+}
+
 function inspectXvfb(jobName, job, id, beforeRunnerId, problems) {
   const jobSteps = steps(job);
   const preparations = jobSteps.filter((step) => step?.id === id);
@@ -454,7 +482,46 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     },
     problems
   );
+  inspectPackagedRunner(
+    "jupyter",
+    workflow.jobs.jupyter,
+    {
+      id: "packaged_editor_r_literate",
+      verifierId: "canonical_r_literate",
+      condition: "${{ matrix.phase == 'r' }}",
+      run: "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_literate.outputs.candidate_path }}",
+      env: {
+        OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+        OPEN_WRANGLER_PACKAGED_R_JOURNEY: "literate-documents",
+        OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+        OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+        OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+        OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+        OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+        OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+        VSCODE_TEST_VERSION: "stable"
+      }
+    },
+    problems
+  );
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor", problems);
+  inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r_literate", problems);
+  inspectFailureDiagnosticUpload(
+    "jupyter",
+    workflow.jobs.jupyter,
+    {
+      name: "Upload R Markdown and Quarto failure diagnostics",
+      runnerId: "packaged_editor_r_literate",
+      artifactName: "${{ inputs.channel }}-release-r-jupyter-literate-${{ runner.os }}-${{ github.run_attempt }}"
+    },
+    problems
+  );
+  const jupyterStepList = steps(workflow.jobs.jupyter);
+  const ordinaryRFailure = jupyterStepList.findIndex((step) => step?.name === "Fail after R-Jupyter diagnostics");
+  const literateVerifier = jupyterStepList.findIndex((step) => step?.id === "canonical_r_literate");
+  if (ordinaryRFailure < 0 || literateVerifier <= ordinaryRFailure) {
+    problems.push("jupyter must finish ordinary R acceptance before starting the focused literate phase.");
+  }
 
   for (const [jobName, job] of Object.entries(workflow.jobs)) {
     for (const step of steps(job)) {

@@ -571,6 +571,49 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     ),
     true
   );
+  const literateR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_literate");
+  assert.equal(literateR?.if, "${{ matrix.phase == 'r' }}");
+  assert.equal(
+    literateR?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_literate.outputs.candidate_path }}"
+  );
+  assert.deepEqual(literateR?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "literate-documents",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const literateRDiagnostics = releasedJupyter?.steps?.find(
+    (step) => step?.name === "Upload R Markdown and Quarto failure diagnostics"
+  );
+  assert.equal(
+    literateRDiagnostics?.with?.name,
+    "${{ inputs.channel }}-release-r-jupyter-literate-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(literateRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_literate.outputs.evidence_path }}");
+  assert.equal(
+    literateRDiagnostics?.if,
+    "${{ always() && steps.packaged_editor_r_literate.outcome == 'failure' && steps.packaged_editor_r_literate.outputs.evidence_ready == 'true' }}"
+  );
+  assert.deepEqual(
+    {
+      ifNoFilesFound: literateRDiagnostics?.with?.["if-no-files-found"],
+      retentionDays: literateRDiagnostics?.with?.["retention-days"],
+      compressionLevel: literateRDiagnostics?.with?.["compression-level"],
+      includeHiddenFiles: literateRDiagnostics?.with?.["include-hidden-files"]
+    },
+    {
+      ifNoFilesFound: "error",
+      retentionDays: 7,
+      compressionLevel: 9,
+      includeHiddenFiles: false
+    }
+  );
 });
 
 test("PR CI gates expensive work behind bounded preflight lanes without removing checks", () => {

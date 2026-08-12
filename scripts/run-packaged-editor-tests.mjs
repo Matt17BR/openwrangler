@@ -441,7 +441,7 @@ try {
             );
             await probeJupyterAcceptanceRKernel(testPython, rAcceptanceEnvironment);
             if (process.platform === "linux" && process.arch === "x64") {
-              if (rJourneySelector !== "interactive-terminal") {
+              if (rJourneySelector === "literate-documents") {
                 writeCorrelatedProgress(
                   orchestrationProgressPath,
                   orchestrationRunId,

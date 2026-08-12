@@ -664,6 +664,11 @@ test("native R tooling pins Quarto to an internal revealed preview", async () =>
   assert.match(focusedRoute, /await exerciseReleasedRInteractiveTerminalJourney\(/u);
   assert.match(focusedRoute, /testSelector === "literate-documents"/u);
   assert.match(focusedRoute, /await exerciseReleasedRLiterateDocumentJourneys\(/u);
+  assert.match(
+    focusedRoute,
+    /exerciseReleasedRLiterateDocumentJourneys\([\s\S]*process\.platform === "linux"\s*\? process\.env\.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS\s*: undefined/u,
+    "Focused literate acceptance must retain the Linux screenshot-capture path."
+  );
   assert.match(focusedRoute, /return;/u);
   const notebookJourney = source.slice(
     source.indexOf("async function exerciseReleasedRJupyterExtension("),
