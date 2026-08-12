@@ -146,7 +146,7 @@ interface TestApi {
   panelSynchronizable(sessionId: string): boolean;
   panelSynchronizationReceipt(
     sessionId: string
-  ): Readonly<{ syncId: string; sessionId: string; revision: number }> | undefined;
+  ): Readonly<{ syncId: string; sessionId: string; revision: number; layoutTransitionPending: boolean }> | undefined;
   sessionSchedulerState(sessionId: string): SessionSchedulerState | undefined;
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
@@ -17418,6 +17418,8 @@ async function exercisePackagedFirstUseInteractionJourney(
       revision: active?.metadata.revision,
       draft: active?.metadata.draftStep?.kind,
       stepCount: active?.metadata.steps.length,
+      selectedColumnId: active?.viewState.selectedColumnId,
+      scrollLeft: active?.viewState.viewport.scrollLeft,
       scheduler: testing.sessionSchedulerState(sessionId),
       panel: {
         hydrated: testing.panelHydrated(sessionId),
@@ -17748,24 +17750,33 @@ async function exercisePackagedFirstUseInteractionJourney(
   const draftCodePreviewText = await draftCodePreview.innerText();
   assert.match(draftCodePreviewText, /import polars as pl/u);
   assert.match(draftCodePreviewText, /market_upper/u);
+  const discardedDraft = testing.activeSession();
+  assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
+  assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
+  const addedColumn = discardedDraft.metadata.schema.find((column) => column.name === "market_upper");
+  assert.ok(addedColumn, "The draft grid must preview its added output column.");
   // `view.focus` resolves independently from the workbench's asynchronous
   // panel-title layout. VS Code can briefly report no title while Cursor
   // mirrors the same visible title in both the panel and view headers. The
-  // rendered Code Preview webview above is the cross-editor source of truth;
-  // rediscover the exact dataframe renderer afterwards to prove that opening
-  // the panel did not replace or hide the custom editor.
-  app = await rediscoverApp("Post-Code Preview renderer synchronization");
+  // rendered Code Preview webview above is the cross-editor source of truth.
+  // Wait for the grid's own reveal publication before binding its current
+  // receipt. A test-only synchronization here can replay the preceding host
+  // viewport before the trailing view-state publication arrives.
+  await waitFor(
+    () =>
+      confirmedMutationRendererReady() &&
+      testing.activeSession()?.metadata.revision === discardedDraft.metadata.revision &&
+      testing.panelSynchronizationReceipt(sessionId)?.layoutTransitionPending === false &&
+      testing.activeSession()?.viewState.selectedColumnId === addedColumn.id,
+    OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+    "the generated draft column to publish its natural reveal on the current renderer",
+    confirmedMutationDiagnostics
+  );
+  app = await reacquireApp("Post-Code Preview generated-column reveal");
   await app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first().waitFor({
     state: "visible",
     timeout: 10_000
   });
-  const discardedDraft = testing.activeSession();
-  assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
-  assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
-  assert.ok(
-    discardedDraft.metadata.schema.some((column) => column.name === "market_upper"),
-    "The draft grid must preview its added output column."
-  );
   const draftReview = app.getByRole("region", { name: "Draft review" });
   await draftReview.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await draftReview.count(), 1, "A pending operation must expose exactly one compact draft review.");

@@ -407,12 +407,14 @@ describe("packaged editor screenshot evidence", () => {
       'await revealPackagedProductSceneColumn(testing, workbench, sessionId, "market_upper");'
     );
     expect(extensionHost).toContain("const boundaryTolerance = 1;");
-    const finalDraftHydration = extensionHost.indexOf(
-      'app = await rediscoverApp("Post-Code Preview renderer synchronization");'
+    const settledDraftReveal = extensionHost.indexOf(
+      'app = await reacquireApp("Post-Code Preview generated-column reveal");'
     );
     const generatedColumnInspection = extensionHost.indexOf("const addedHeader =");
-    expect(finalDraftHydration).toBeGreaterThan(0);
-    expect(generatedColumnInspection).toBeGreaterThan(finalDraftHydration);
+    expect(settledDraftReveal).toBeGreaterThan(0);
+    expect(generatedColumnInspection).toBeGreaterThan(settledDraftReveal);
+    expect(extensionHost).toContain("layoutTransitionPending === false");
+    expect(extensionHost).not.toContain('rediscoverApp("Post-Code Preview renderer synchronization")');
     expect(extensionHost).toContain('"notebook-code-insertion"');
     expect(extensionHost).toContain('insertionInputColumn: "units"');
     expect(extensionHost).toContain('insertionOutputColumn: "units_plus_10"');
