@@ -45,6 +45,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Remote R release acceptance now builds its snapshot-pinned base image, R runtime image, and server
+  launch/readiness stage under independent 300-second hard and 180-second inactivity budgets. Exact Docker engine,
+  image, and owner receipts stay in process between stages; cleanup runs in reverse and still withholds all failure
+  evidence when ownership cannot be proven.
 - When hiding the taller header distributions is enough to expose a complete data row in a short editor, Open
   Wrangler now does so automatically. Exact Missing, Distinct, and numeric Min/Max values stay visible, distributions
   return as the layout changes, and the Header profiles toggle keeps the user's choice throughout.

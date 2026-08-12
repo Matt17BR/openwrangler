@@ -579,6 +579,11 @@ try {
                       "jupyter-r": resolve(profile, "jupyter-r-result.json"),
                       ...(remoteRJupyterEnabled
                         ? {
+                            "jupyter-r-remote-base-build": resolve(profile, "jupyter-r-remote-base-build-result.json"),
+                            "jupyter-r-remote-runtime-build": resolve(
+                              profile,
+                              "jupyter-r-remote-runtime-build-result.json"
+                            ),
                             "jupyter-r-remote-setup": resolve(profile, "jupyter-r-remote-setup-result.json"),
                             "jupyter-r-remote": resolve(profile, "jupyter-r-remote-result.json"),
                             "jupyter-r-remote-cleanup": resolve(profile, "jupyter-r-remote-cleanup-result.json")
@@ -623,6 +628,8 @@ try {
                       "jupyter-r": randomUUID(),
                       ...(remoteRJupyterEnabled
                         ? {
+                            "jupyter-r-remote-base-build": randomUUID(),
+                            "jupyter-r-remote-runtime-build": randomUUID(),
                             "jupyter-r-remote-setup": randomUUID(),
                             "jupyter-r-remote": randomUUID(),
                             "jupyter-r-remote-cleanup": randomUUID()
@@ -663,6 +670,8 @@ try {
               ["restricted", restrictedUserData],
               ["python-environment", pythonEnvironmentUserData],
               ["jupyter-r", jupyterRUserData],
+              ["jupyter-r-remote-base-build", jupyterRemoteRUserData],
+              ["jupyter-r-remote-runtime-build", jupyterRemoteRUserData],
               ["jupyter-r-remote-setup", jupyterRemoteRUserData],
               ["jupyter-r-remote", jupyterRemoteRUserData],
               ["jupyter-r-remote-cleanup", jupyterRemoteRUserData],
@@ -1198,11 +1207,17 @@ try {
                   errorLabel
                 }) => {
                   const {
+                    baseBuild: remoteBaseBuildPhase,
+                    runtimeBuild: remoteRuntimeBuildPhase,
                     setup: remoteSetupPhase,
                     editor: remoteEditorPhase,
                     cleanup: remoteCleanupPhase
                   } = phaseNames;
-                  const remoteSetupRunId = runIds[remoteSetupPhase];
+                  const remoteSetupPhaseByStage = new Map([
+                    ["base-build", remoteBaseBuildPhase ?? remoteSetupPhase],
+                    ["runtime-build", remoteRuntimeBuildPhase ?? remoteSetupPhase],
+                    ["setup", remoteSetupPhase]
+                  ]);
                   const remoteRunId = runIds[remoteEditorPhase];
                   const remoteCleanupRunId = runIds[remoteCleanupPhase];
                   const publishRemoteProgress = (progressPath, runId, phase, checkpoint) => {
@@ -1228,18 +1243,19 @@ try {
                     if (checkpoint === "complete") activePhase = resumePhase;
                   };
 
-                  activePhase = remoteSetupPhase;
+                  activePhase = remoteBaseBuildPhase ?? remoteSetupPhase;
                   const dockerPrivateDirectory = resolve(profile, privatePaths.docker);
                   const descriptorDirectory = resolve(profile, privatePaths.descriptor);
                   mkdirSync(dockerPrivateDirectory, { mode: 0o700 });
                   mkdirSync(descriptorDirectory, { mode: 0o700 });
                   const token = createRemoteJupyterAcceptanceToken();
                   let fixture;
+                  const initialSetupPhase = remoteBaseBuildPhase ?? remoteSetupPhase;
                   publishRemoteProgress(
-                    progressPaths[remoteSetupPhase],
-                    remoteSetupRunId,
-                    remoteSetupPhase,
-                    `${remoteSetupPhase}:start`
+                    progressPaths[initialSetupPhase],
+                    runIds[initialSetupPhase],
+                    initialSetupPhase,
+                    `${initialSetupPhase}:start`
                   );
                   try {
                     fixture = await startRemoteJupyterAcceptanceFixture(
@@ -1247,15 +1263,26 @@ try {
                       {
                         dockerPrivateDirectory,
                         fixtureKind,
-                        onSetupCheckpoint: (checkpoint) =>
+                        onSetupCheckpoint: (checkpoint, { stage = "setup" } = {}) => {
+                          const checkpointPhase = remoteSetupPhaseByStage.get(stage);
+                          if (!checkpointPhase) {
+                            throw new Error("Remote Jupyter setup reported an unknown correlated stage.");
+                          }
+                          activePhase = checkpointPhase;
                           publishRemoteProgress(
-                            progressPaths[remoteSetupPhase],
-                            remoteSetupRunId,
-                            remoteSetupPhase,
-                            `${remoteSetupPhase}:${checkpoint}`
-                          ),
-                        onCleanupCheckpoint: (checkpoint) =>
-                          publishRemoteCleanupCheckpoint(checkpoint, remoteSetupPhase)
+                            progressPaths[checkpointPhase],
+                            runIds[checkpointPhase],
+                            checkpointPhase,
+                            `${checkpointPhase}:${checkpoint}`
+                          );
+                        },
+                        onCleanupCheckpoint: (checkpoint, { originatingPhase = "setup" } = {}) => {
+                          const cleanupOrigin = remoteSetupPhaseByStage.get(originatingPhase);
+                          if (!cleanupOrigin) {
+                            throw new Error("Remote Jupyter cleanup reported an unknown correlated stage.");
+                          }
+                          publishRemoteCleanupCheckpoint(checkpoint, cleanupOrigin);
+                        }
                       }
                     );
                   } catch (error) {
@@ -1410,6 +1437,8 @@ try {
                   if (remoteRJupyterEnabled) {
                     await runRemoteJupyterPhase({
                       phaseNames: {
+                        baseBuild: "jupyter-r-remote-base-build",
+                        runtimeBuild: "jupyter-r-remote-runtime-build",
                         setup: "jupyter-r-remote-setup",
                         editor: "jupyter-r-remote",
                         cleanup: "jupyter-r-remote-cleanup"

@@ -855,6 +855,9 @@ test("packaged-editor R acceptance wires the private R environment to local edit
   assert.match(rPhase, /phase: "jupyter-r"/u);
   assert.match(rPhase, /testSelector: rJourneySelector/u);
   assert.match(rPhase, /editor: "jupyter-r-remote"/u);
+  assert.match(rPhase, /baseBuild: "jupyter-r-remote-base-build"/u);
+  assert.match(rPhase, /runtimeBuild: "jupyter-r-remote-runtime-build"/u);
+  assert.match(rPhase, /setup: "jupyter-r-remote-setup"/u);
   assert.match(rPhase, /fixtureKind: "r"/u);
   assert.match(rPhase, /if \(editorProcessTreeMayBeLive\(error\)\) throw error/u);
   assert.match(rPhase, /jupyterAcceptanceRKernelBootstrapStage\(rAcceptanceEnvironment\)/u);

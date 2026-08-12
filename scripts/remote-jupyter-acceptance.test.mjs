@@ -34,6 +34,8 @@ const OWNER_ID = "12345678-1234-4123-8123-123456789abc";
 const RUN_ID = "abcdef12-3456-4789-8abc-def012345678";
 const HOSTNAME = "owr-abcdef123456";
 const IMAGE_ID = `sha256:${"a".repeat(64)}`;
+const BASE_IMAGE_ID = `sha256:${"c".repeat(64)}`;
+const BASE_OWNER_ID = "23456789-2345-4234-9234-23456789abcd";
 const CONTAINER_ID = "b".repeat(64);
 const TOKEN = `owr_${"A".repeat(39)}`;
 const ENGINE_ID = "OWDOCKER:ENGINE:12345678";
@@ -132,7 +134,7 @@ function rKernelspecResponse(overrides = {}) {
 function createFakeDocker({ alterResult } = {}) {
   const commands = [];
   const state = {
-    imagePresent: false,
+    images: new Map(),
     containerPresent: false,
     engineId: ENGINE_ID,
     versionReport: "28.3.0",
@@ -141,12 +143,20 @@ function createFakeDocker({ alterResult } = {}) {
     identityArchitecture: "x86_64",
     ownerId: undefined,
     imageTag: undefined,
+    containerImageId: undefined,
     containerName: undefined,
     hostname: undefined,
     runId: undefined,
     injectedToken: undefined,
     injectedBuffer: undefined
   };
+  Object.defineProperty(state, "imagePresent", {
+    enumerable: true,
+    get: () => state.images.size > 0,
+    set: (present) => {
+      if (!present) state.images.clear();
+    }
+  });
 
   const runCommand = async (input, options) => {
     const snapshot = {
@@ -184,21 +194,32 @@ function createFakeDocker({ alterResult } = {}) {
       result = success(matches ? `${CONTAINER_ID}\n` : "");
     } else if (command === "image" && operation === "ls") {
       const filter = input.args.at(-1);
-      const matches = state.imagePresent && filter === `label=io.openwrangler.remote-jupyter.owner=${state.ownerId}`;
-      result = success(matches ? `${IMAGE_ID}\n` : "");
+      const ownerId = filter.startsWith("label=io.openwrangler.remote-jupyter.owner=")
+        ? filter.slice("label=io.openwrangler.remote-jupyter.owner=".length)
+        : undefined;
+      const matches = [...state.images.values()].filter((image) => image.ownerId === ownerId);
+      result = success(matches.map((image) => image.imageId).join("\n") + (matches.length ? "\n" : ""));
     } else if (command === "build") {
       state.ownerId = valueAfter(input.args, "--label").split("=").at(-1);
       state.imageTag = valueAfter(input.args, "--tag");
-      state.imagePresent = true;
-      result = success(`${IMAGE_ID}\n`);
+      const dockerfile = valueAfter(input.args, "--file");
+      const imageId = dockerfile.endsWith("Dockerfile.r.base") ? BASE_IMAGE_ID : IMAGE_ID;
+      state.images.set(state.ownerId, { imageId, imageTag: state.imageTag, ownerId: state.ownerId });
+      result = success(`${imageId}\n`);
     } else if (command === "image" && operation === "inspect") {
-      result = success(`${IMAGE_ID}\t${state.ownerId}\n`);
+      const reference = input.args.at(-1);
+      const image = [...state.images.values()].find(
+        (candidate) => candidate.imageId === reference || candidate.imageTag === reference
+      );
+      result = image ? success(`${image.imageId}\t${image.ownerId}\n`) : { exitCode: 1, stdout: "", stderr: "missing" };
     } else if (command === "run") {
       state.containerName = valueAfter(input.args, "--name");
       state.hostname = input.args.find((value) => value.startsWith("--hostname="))?.slice("--hostname=".length);
       state.runId = input.args
         .find((value) => value.startsWith("--env=OPEN_WRANGLER_REMOTE_RUN_ID="))
         ?.slice("--env=OPEN_WRANGLER_REMOTE_RUN_ID=".length);
+      state.ownerId = valueAfter(input.args, "--label").split("=").at(-1);
+      state.containerImageId = input.args.at(-1);
       state.containerPresent = true;
       result = success(`${CONTAINER_ID}\n`);
     } else if (command === "container" && operation === "inspect") {
@@ -213,8 +234,11 @@ function createFakeDocker({ alterResult } = {}) {
       state.containerPresent = false;
       result = success(`${CONTAINER_ID}\n`);
     } else if (command === "image" && operation === "rm") {
-      state.imagePresent = false;
-      result = success(`Deleted: ${IMAGE_ID}\n`);
+      const imageId = input.args.at(-1);
+      for (const [ownerId, image] of state.images) {
+        if (image.imageId === imageId) state.images.delete(ownerId);
+      }
+      result = success(`Deleted: ${imageId}\n`);
     } else {
       assert.fail(`Unexpected fake Docker command: ${input.args.join(" ")}`);
     }
@@ -234,11 +258,21 @@ function valueAfter(args, flag) {
   return args[index + 1];
 }
 
+function argumentCount(args, value) {
+  return args.filter((candidate) => candidate === value).length;
+}
+
+function cleanupMutations(commands) {
+  return commands
+    .filter(({ args }) => (args[0] === "container" && args[1] === "rm") || (args[0] === "image" && args[1] === "rm"))
+    .map(({ args }) => args.slice(0, 4));
+}
+
 function containerInspection(state, overrides = {}) {
   const values = {
     id: CONTAINER_ID,
     name: `/${state.containerName}`,
-    image: IMAGE_ID,
+    image: state.containerImageId ?? IMAGE_ID,
     owner: state.ownerId,
     user: "65532:65532",
     hostname: state.hostname,
@@ -284,13 +318,16 @@ function containerInspection(state, overrides = {}) {
 }
 
 async function startWithFake(fake, overrides = {}) {
+  const fixtureKind = overrides.fixtureKind ?? "python";
+  const generatedOwnerIds = fixtureKind === "r" ? [BASE_OWNER_ID, OWNER_ID] : [OWNER_ID];
+  let ownerIndex = 0;
   return await startRemoteJupyterAcceptanceFixture(
     { token: TOKEN, runId: RUN_ID },
     {
       environment: enabledEnvironment(),
       dockerPrivateDirectory: PRIVATE_DIRECTORY,
       runCommand: fake.runCommand,
-      randomUUIDImpl: () => OWNER_ID,
+      randomUUIDImpl: () => generatedOwnerIds[ownerIndex++],
       fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? kernelspecResponse() : readyResponse()),
       ...overrides
     }
@@ -324,6 +361,8 @@ test("remote fixtures accept only the two fixed language definitions", async () 
     language: "python"
   });
   assert.deepEqual(remoteJupyterFixtureDefinition("r"), {
+    baseDockerfile: "Dockerfile.r.base",
+    baseImageName: "openwrangler-remote-r-jupyter-base",
     dockerfile: "Dockerfile.r",
     imageName: "openwrangler-remote-r-jupyter",
     kernelName: "openwrangler-r-remote-acceptance",
@@ -345,13 +384,51 @@ linuxTest("the R fixture selects its fixed Dockerfile and exact IRkernel", async
     fixtureKind: "r",
     fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
   });
-  const build = fake.commands.find(({ args }) => args[0] === "build");
+  const builds = fake.commands.filter(({ args }) => args[0] === "build");
+  assert.equal(builds.length, 2);
   assert.equal(
-    build.args[build.args.indexOf("--file") + 1],
+    builds[0].args[builds[0].args.indexOf("--file") + 1],
+    resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile.r.base")
+  );
+  assert.match(builds[0].args[builds[0].args.indexOf("--tag") + 1], /^openwrangler-remote-r-jupyter-base:/u);
+  assert.equal(
+    builds[1].args[builds[1].args.indexOf("--file") + 1],
     resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile.r")
   );
-  assert.match(build.args[build.args.indexOf("--tag") + 1], /^openwrangler-remote-r-jupyter:/u);
+  assert.match(builds[1].args[builds[1].args.indexOf("--tag") + 1], /^openwrangler-remote-r-jupyter:/u);
+  assert.equal(argumentCount(builds[0].args, "--build-arg"), 0);
+  assert.equal(argumentCount(builds[1].args, "--build-arg"), 1);
+  assert.equal(
+    valueAfter(builds[1].args, "--build-arg"),
+    `OPEN_WRANGLER_REMOTE_R_BASE_IMAGE=${valueAfter(builds[0].args, "--tag")}`
+  );
+  for (const build of builds) {
+    for (const flag of ["--quiet", "--no-cache", "--pull=false", "--file", "--label", "--tag"]) {
+      assert.equal(argumentCount(build.args, flag), 1, `expected one ${flag} in ${build.args.join(" ")}`);
+    }
+    assert.equal(build.stdin, undefined);
+    assert.equal(
+      build.args.some((value) => value.includes(TOKEN)),
+      false
+    );
+    assert.equal(build.label.includes(TOKEN), false);
+    assert.equal(
+      Object.values(build.environment).some((value) => value.includes?.(TOKEN)),
+      false
+    );
+  }
+  assert.notEqual(valueAfter(builds[0].args, "--label"), valueAfter(builds[1].args, "--label"));
+  assert.equal(fake.commands.find(({ args }) => args[0] === "run")?.args.at(-1), IMAGE_ID);
+  const cleanupStart = fake.commands.length;
   await fixture.cleanup();
+  assert.deepEqual(cleanupMutations(fake.commands.slice(cleanupStart)), [
+    ["container", "rm", "--force", CONTAINER_ID],
+    ["image", "rm", IMAGE_ID],
+    ["image", "rm", BASE_IMAGE_ID]
+  ]);
+  const cleanedCommandCount = fake.commands.length;
+  await fixture.cleanup();
+  assert.equal(fake.commands.length, cleanedCommandCount);
 });
 
 linuxTest("language fixtures reject the other kernelspec", async () => {
@@ -662,6 +739,23 @@ linuxTest("remote-Jupyter validates its private token and ownership random sourc
     /safe random ownership identifier/u
   );
   assert.equal(called, false);
+
+  await assert.rejects(
+    startRemoteJupyterAcceptanceFixture(
+      { token: TOKEN, runId: RUN_ID },
+      {
+        environment: enabledEnvironment(),
+        dockerPrivateDirectory: PRIVATE_DIRECTORY,
+        fixtureKind: "r",
+        randomUUIDImpl: () => OWNER_ID,
+        runCommand: async () => {
+          called = true;
+        }
+      }
+    ),
+    /distinct safe random ownership identifiers/u
+  );
+  assert.equal(called, false);
 });
 
 test("derives a fixed non-secret hostname and forwards only a minimal local-Docker environment", () => {
@@ -765,6 +859,344 @@ linuxTest("setup shares one aggregate budget and publishes changing attached-com
   assert.match(checkpoints.at(-1), /^setup:complete:[0-9]+$/u);
 
   await fixture.cleanup();
+});
+
+linuxTest("remote R base, runtime, and launch setup receive independent fixed budgets", async () => {
+  let clock = 0;
+  let setupActive = true;
+  const buildBudgets = [];
+  const firstCommandBudgetByStage = new Map();
+  const checkpoints = [];
+  let activeStage;
+  const fake = createFakeDocker({
+    alterResult({ input, snapshot, result }) {
+      if (!setupActive) return result;
+      if (!firstCommandBudgetByStage.has(activeStage)) {
+        firstCommandBudgetByStage.set(activeStage, snapshot.options.timeoutMs);
+      }
+      if (input.args[0] === "build") {
+        buildBudgets.push(snapshot.options.timeoutMs);
+        clock += 700;
+        snapshot.options.onProgress();
+      }
+      return result;
+    }
+  });
+
+  const fixture = await startWithFake(fake, {
+    fixtureKind: "r",
+    now: () => clock,
+    setupTimeoutMs: 1_000,
+    setupInactivityTimeoutMs: 900,
+    setupHeartbeatMs: 100,
+    onSetupCheckpoint: (checkpoint, context) => {
+      activeStage = context.stage;
+      checkpoints.push({ checkpoint, context });
+    },
+    fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+  });
+  setupActive = false;
+
+  assert.deepEqual(buildBudgets, [1_000, 1_000]);
+  assert.deepEqual(Object.fromEntries(firstCommandBudgetByStage), {
+    "base-build": 1_000,
+    "runtime-build": 1_000,
+    setup: 1_000
+  });
+  assert.deepEqual(
+    [...new Set(checkpoints.map(({ context }) => context.stage))],
+    ["base-build", "runtime-build", "setup"]
+  );
+  for (const stage of ["base-build", "runtime-build", "setup"]) {
+    const stageCheckpoints = checkpoints
+      .filter(({ context }) => context.stage === stage)
+      .map(({ checkpoint }) => checkpoint);
+    assert.match(stageCheckpoints[0], new RegExp(`^${stage}:start:1$`, "u"));
+    assert.match(stageCheckpoints.at(-1), new RegExp(`^${stage}:complete:[0-9]+$`, "u"));
+    assert.ok(stageCheckpoints.some((checkpoint) => checkpoint.includes(":docker-")));
+  }
+
+  await fixture.cleanup();
+});
+
+linuxTest("remote R handoff drift latches uncertainty without subsequent Docker access", async (t) => {
+  await t.test("engine identity", async () => {
+    const fake = createFakeDocker();
+    const checkpoints = [];
+    let commandCountAtBoundary;
+    let error;
+    try {
+      await startWithFake(fake, {
+        fixtureKind: "r",
+        onSetupCheckpoint: (checkpoint, { stage }) => {
+          checkpoints.push({ checkpoint, stage });
+          if (stage === "base-build" && checkpoint.startsWith("base-build:complete:")) {
+            commandCountAtBoundary = fake.commands.length;
+            fake.state.engineId = "OWDOCKER:ENGINE:87654321";
+          }
+        },
+        fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.ok(remoteJupyterOwnershipMayBeLive(error));
+    assert.match(error.message, /base-to-runtime build ownership handoff/u);
+    assert.equal(fake.commands.length, commandCountAtBoundary + 3);
+    assert.equal(fake.commands.at(-1).args[0], "info");
+    assert.equal(
+      fake.commands.some(({ args }) => args[0] === "run"),
+      false
+    );
+    assert.equal(
+      fake.commands.some(({ args }) => args[0] === "image" && args[1] === "rm"),
+      false
+    );
+    assert.equal(fake.state.images.size, 1);
+  });
+
+  await t.test("image tag identity", async () => {
+    const fake = createFakeDocker();
+    let commandCountAtBoundary;
+    let error;
+    try {
+      await startWithFake(fake, {
+        fixtureKind: "r",
+        onSetupCheckpoint: (checkpoint, { stage }) => {
+          if (stage === "base-build" && checkpoint.startsWith("base-build:complete:")) {
+            commandCountAtBoundary = fake.commands.length;
+            fake.state.images.get(BASE_OWNER_ID).imageTag = "openwrangler-remote-r-jupyter-base:rebound";
+          }
+        },
+        fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.ok(remoteJupyterOwnershipMayBeLive(error));
+    assert.match(error.message, /base-to-runtime build ownership handoff/u);
+    assert.equal(fake.commands.length, commandCountAtBoundary + 5);
+    assert.equal(fake.commands.at(-1).args[0], "image");
+    assert.equal(fake.commands.at(-1).args[1], "inspect");
+    assert.equal(
+      fake.commands.some(({ args }) => args[0] === "image" && args[1] === "rm"),
+      false
+    );
+    assert.equal(fake.state.images.size, 1);
+  });
+});
+
+linuxTest("remote R runtime-to-launch ownership drift fails closed before launch or cleanup", async (t) => {
+  const driftCases = [
+    ["engine", 3, (fake) => (fake.state.engineId = "OWDOCKER:ENGINE:87654321")],
+    ["image identity", 6, (fake) => (fake.state.images.get(OWNER_ID).imageId = `sha256:${"d".repeat(64)}`)],
+    ["image tag", 7, (fake) => (fake.state.images.get(OWNER_ID).imageTag = "openwrangler-remote-r-jupyter:rebound")],
+    ["owner label", 6, (fake) => (fake.state.images.get(OWNER_ID).ownerId = BASE_OWNER_ID)]
+  ];
+
+  for (const [label, expectedDetectionCommands, applyDrift] of driftCases) {
+    await t.test(label, async () => {
+      const fake = createFakeDocker();
+      let commandCountAtBoundary;
+      let error;
+      try {
+        await startWithFake(fake, {
+          fixtureKind: "r",
+          onSetupCheckpoint: (checkpoint, { stage }) => {
+            if (stage === "runtime-build" && checkpoint.startsWith("runtime-build:complete:")) {
+              commandCountAtBoundary = fake.commands.length;
+              applyDrift(fake);
+            }
+          },
+          fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+        });
+      } catch (caught) {
+        error = caught;
+      }
+
+      assert.ok(remoteJupyterOwnershipMayBeLive(error));
+      assert.match(error.message, /runtime-to-launch ownership handoff/u);
+      assert.ok(Number.isSafeInteger(commandCountAtBoundary));
+      const commandsAfterBoundary = fake.commands.slice(commandCountAtBoundary);
+      assert.equal(commandsAfterBoundary.length, expectedDetectionCommands);
+      assert.equal(
+        commandsAfterBoundary.some(
+          ({ args }) =>
+            ["build", "run", "exec"].includes(args[0]) ||
+            (args[0] === "container" && args[1] === "rm") ||
+            (args[0] === "image" && args[1] === "rm")
+        ),
+        false
+      );
+      assert.equal(fake.state.containerPresent, false);
+      assert.equal(fake.state.images.size, 2);
+    });
+  }
+});
+
+linuxTest("remote R ready-fixture ownership drift leaves every live resource untouched", async (t) => {
+  const driftCases = [
+    ["engine", 3, (fake) => (fake.state.engineId = "OWDOCKER:ENGINE:87654321")],
+    ["image identity", 6, (fake) => (fake.state.images.get(OWNER_ID).imageId = `sha256:${"d".repeat(64)}`)],
+    ["image tag", 7, (fake) => (fake.state.images.get(OWNER_ID).imageTag = "openwrangler-remote-r-jupyter:rebound")],
+    ["owner label", 6, (fake) => (fake.state.images.get(OWNER_ID).ownerId = BASE_OWNER_ID)]
+  ];
+
+  for (const [label, expectedDetectionCommands, applyDrift] of driftCases) {
+    await t.test(label, async () => {
+      const fake = createFakeDocker();
+      let commandCountAtBoundary;
+      let error;
+      try {
+        await startWithFake(fake, {
+          fixtureKind: "r",
+          onSetupCheckpoint: (checkpoint, { stage }) => {
+            if (stage === "setup" && checkpoint.startsWith("setup:readiness-complete:")) {
+              commandCountAtBoundary = fake.commands.length;
+              applyDrift(fake);
+            }
+          },
+          fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+        });
+      } catch (caught) {
+        error = caught;
+      }
+
+      assert.ok(remoteJupyterOwnershipMayBeLive(error));
+      assert.match(error.message, /ready fixture ownership handoff/u);
+      assert.ok(Number.isSafeInteger(commandCountAtBoundary));
+      const commandsAfterBoundary = fake.commands.slice(commandCountAtBoundary);
+      assert.equal(commandsAfterBoundary.length, expectedDetectionCommands);
+      assert.equal(
+        commandsAfterBoundary.some(
+          ({ args }) =>
+            ["build", "run", "exec"].includes(args[0]) ||
+            (args[0] === "container" && args[1] === "rm") ||
+            (args[0] === "image" && args[1] === "rm")
+        ),
+        false
+      );
+      assert.equal(fake.state.containerPresent, true);
+      assert.equal(fake.state.images.size, 2);
+      assert.deepEqual(cleanupMutations(fake.commands), []);
+    });
+  }
+});
+
+linuxTest("a pre-runtime failure cleans only the proven base image", async () => {
+  const fake = createFakeDocker();
+  const preexistingRuntimeImage = Object.freeze({
+    imageId: `sha256:${"d".repeat(64)}`,
+    imageTag: "unrelated:retained",
+    ownerId: OWNER_ID
+  });
+  fake.state.images.set(OWNER_ID, preexistingRuntimeImage);
+
+  let error;
+  try {
+    await startWithFake(fake, {
+      fixtureKind: "r",
+      fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+    });
+  } catch (caught) {
+    error = caught;
+  }
+
+  assert.ok(error instanceof Error);
+  assert.equal(remoteJupyterOwnershipMayBeLive(error), false);
+  assert.equal(fake.state.images.get(OWNER_ID), preexistingRuntimeImage);
+  assert.equal(fake.state.images.has(BASE_OWNER_ID), false);
+  assert.equal(
+    fake.commands.some(({ args }) => args[0] === "container"),
+    false
+  );
+  assert.deepEqual(
+    fake.commands.filter(({ args }) => args[0] === "image" && args[1] === "rm").map(({ args }) => args[2]),
+    [BASE_IMAGE_ID]
+  );
+});
+
+linuxTest("remote R build failures block later stages and preserve stage-specific cleanup ownership", async (t) => {
+  const failureKinds = ["ordinary", "ownership-uncertain", "completion-unknown"];
+  for (const failedBuild of [1, 2]) {
+    for (const failureKind of failureKinds) {
+      await t.test(`build ${failedBuild} ${failureKind}`, async () => {
+        const cleanupCheckpoints = [];
+        let buildOrdinal = 0;
+        let commandCountAtFailure;
+        const injectedError = new Error(`injected ${failureKind} build failure`);
+        if (failureKind === "ownership-uncertain") {
+          injectedError.code = REMOTE_JUPYTER_OWNERSHIP_UNCERTAIN_CODE;
+        } else if (failureKind === "completion-unknown") {
+          injectedError.code = "REMOTE_JUPYTER_DOCKER_COMPLETION_UNKNOWN";
+        }
+        const fake = createFakeDocker({
+          alterResult({ input, result }) {
+            if (input.args[0] !== "build") return result;
+            buildOrdinal += 1;
+            if (buildOrdinal !== failedBuild) return result;
+            commandCountAtFailure = fake.commands.length;
+            if (failureKind === "ordinary") {
+              return { exitCode: 1, stdout: "", stderr: "ordinary completed failure" };
+            }
+            throw injectedError;
+          }
+        });
+
+        let error;
+        try {
+          await startWithFake(fake, {
+            fixtureKind: "r",
+            onCleanupCheckpoint: (checkpoint, context) => cleanupCheckpoints.push({ checkpoint, context }),
+            fetchImpl: async (url) => (url.endsWith("/api/kernelspecs") ? rKernelspecResponse() : readyResponse())
+          });
+        } catch (caught) {
+          error = caught;
+        }
+
+        assert.ok(error instanceof Error);
+        assert.equal(
+          fake.commands.filter(({ args }) => args[0] === "build").length,
+          failedBuild,
+          "a failed R build must block every later build"
+        );
+        assert.equal(
+          fake.commands.some(({ args }) => args[0] === "run"),
+          false,
+          "a failed R build must block launch"
+        );
+        const originatingPhase = failedBuild === 1 ? "base-build" : "runtime-build";
+        if (failureKind === "ownership-uncertain") {
+          assert.equal(error, injectedError);
+          assert.equal(fake.commands.length, commandCountAtFailure);
+          assert.deepEqual(cleanupCheckpoints, []);
+          assert.deepEqual(cleanupMutations(fake.commands), []);
+          assert.equal(fake.state.images.size, failedBuild);
+        } else {
+          assert.deepEqual(
+            cleanupCheckpoints,
+            failureKind === "ordinary"
+              ? [
+                  { checkpoint: "start", context: { originatingPhase } },
+                  { checkpoint: "complete", context: { originatingPhase } }
+                ]
+              : [{ checkpoint: "start", context: { originatingPhase } }]
+          );
+          assert.deepEqual(
+            cleanupMutations(fake.commands),
+            failedBuild === 1
+              ? [["image", "rm", BASE_IMAGE_ID]]
+              : [
+                  ["image", "rm", IMAGE_ID],
+                  ["image", "rm", BASE_IMAGE_ID]
+                ]
+          );
+          assert.equal(fake.state.images.size, 0);
+          assert.equal(remoteJupyterOwnershipMayBeLive(error), failureKind === "completion-unknown");
+        }
+      });
+    }
+  }
 });
 
 linuxTest(
@@ -911,11 +1343,19 @@ linuxTest("starts one hardened loopback-only fixture and removes every owned res
   assert.equal(requests[0].url.includes(TOKEN), false);
   assert.equal(requests[0].init.headers.authorization, `token ${TOKEN}`);
 
-  const build = fake.commands.find(({ args }) => args[0] === "build");
-  assert.ok(build);
+  const builds = fake.commands.filter(({ args }) => args[0] === "build");
+  assert.equal(builds.length, 1);
+  const [build] = builds;
+  assert.equal(valueAfter(build.args, "--file"), resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile"));
+  assert.equal(argumentCount(build.args, "--build-arg"), 0);
   assert.ok(build.args.includes("--quiet"));
   assert.ok(build.args.includes("--no-cache"));
   assert.equal(build.args.includes("--pull=true"), false);
+  const buildIndex = fake.commands.indexOf(build);
+  const containerNameProbeIndex = fake.commands.findIndex(
+    ({ args }) => args[0] === "container" && args[1] === "ls" && args.at(-1).startsWith("name=^/ow-rj-")
+  );
+  assert.ok(containerNameProbeIndex >= 0 && containerNameProbeIndex < buildIndex);
 
   const launch = fake.commands.find(({ args }) => args[0] === "run");
   assert.ok(launch);
@@ -1170,6 +1610,33 @@ linuxTest("Docker output containing authentication material is rejected without 
   assert.match(error.message, /forbidden authentication material/u);
   assert.equal(fake.state.containerPresent, false);
   assert.equal(fake.state.imagePresent, false);
+});
+
+linuxTest("an unproven built-image label latches uncertainty without cleanup access", async () => {
+  const fake = createFakeDocker({
+    alterResult({ input, result }) {
+      if (input.args[0] === "image" && input.args[1] === "inspect") {
+        return success(`${IMAGE_ID}\tsomeone-else\n`);
+      }
+      return result;
+    }
+  });
+
+  let error;
+  try {
+    await startWithFake(fake);
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(remoteJupyterOwnershipMayBeLive(error));
+  assert.match(error.message, /runtime image ownership could not be established/u);
+  assert.equal(fake.commands.at(-1).args[0], "image");
+  assert.equal(fake.commands.at(-1).args[1], "inspect");
+  assert.equal(
+    fake.commands.some(({ args }) => args[0] === "image" && args[1] === "rm"),
+    false
+  );
+  assert.equal(fake.state.imagePresent, true);
 });
 
 linuxTest("cleanup refuses mutation when the Docker engine identity changes and latches uncertainty", async () => {
@@ -1523,7 +1990,7 @@ test("the container definition pins its base and direct wheels and never receive
   assert.match(workflow, /OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"/u);
   assert.equal(/OPEN_WRANGLER_REMOTE_TOKEN|JUPYTER_TOKEN/u.test(workflow), false);
   for (const phase of ["jupyter-remote-setup", "jupyter-remote", "jupyter-remote-cleanup"]) {
-    assert.match(runner, new RegExp(`"${phase}": resolve\\(profile, "${phase}-result\\.json"\\)`, "u"));
+    assert.match(runner, new RegExp(`"${phase}": resolve\\(\\s*profile,\\s*"${phase}-result\\.json"\\s*\\)`, "u"));
   }
   assert.equal(REMOTE_JUPYTER_SETUP_TIMEOUT_MS, 300_000);
   assert.equal(REMOTE_JUPYTER_SETUP_INACTIVITY_TIMEOUT_MS, 180_000);
@@ -1531,14 +1998,19 @@ test("the container definition pins its base and direct wheels and never receive
 });
 
 test("the R container definition pins R, package snapshots, and its exact kernelspec", async () => {
+  const baseDockerfile = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile.r.base"), "utf8");
   const dockerfile = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "Dockerfile.r"), "utf8");
   const dockerignore = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", ".dockerignore"), "utf8");
   const requirementsInput = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "requirements.r.in"), "utf8");
   const requirements = await readFile(resolve(SCRIPT_DIRECTORY, "remote-jupyter", "requirements.r.txt"), "utf8");
+  const runner = await readFile(resolve(SCRIPT_DIRECTORY, "run-packaged-editor-tests.mjs"), "utf8");
 
-  assert.ok(dockerfile.startsWith(`FROM ${REMOTE_R_JUPYTER_BASE_IMAGE}\n`));
-  assert.match(dockerfile, /^ARG UBUNTU_SNAPSHOT=20260311T000000Z$/mu);
-  assert.match(dockerfile, /https:\/\/snapshot\.ubuntu\.com\/ubuntu\/\$\{UBUNTU_SNAPSHOT\}/u);
+  assert.ok(baseDockerfile.startsWith(`FROM ${REMOTE_R_JUPYTER_BASE_IMAGE}\n`));
+  assert.match(baseDockerfile, /^ARG UBUNTU_SNAPSHOT=20260311T000000Z$/mu);
+  assert.match(baseDockerfile, /https:\/\/snapshot\.ubuntu\.com\/ubuntu\/\$\{UBUNTU_SNAPSHOT\}/u);
+  assert.ok(
+    dockerfile.startsWith("ARG OPEN_WRANGLER_REMOTE_R_BASE_IMAGE\nFROM ${OPEN_WRANGLER_REMOTE_R_BASE_IMAGE}\n")
+  );
   assert.match(dockerfile, /^ARG R_REPOSITORY=https:\/\/p3m\.dev\/cran\/__linux__\/noble\/2026-03-10$/mu);
   assert.match(dockerfile, /^ARG R_SUPPLEMENTAL_REPOSITORY=https:\/\/p3m\.dev\/cran\/__linux__\/noble\/2026-06-01$/mu);
   for (const [name, version] of [
@@ -1552,10 +2024,21 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   ]) {
     assert.match(dockerfile, new RegExp(`^ARG ${name}=${version.replaceAll(".", "\\.")}$`, "mu"));
   }
-  assert.match(dockerfile, /--only-binary=:all:/u);
-  assert.match(dockerfile, /--require-hashes/u);
-  assert.match(dockerfile, /--requirement \/opt\/openwrangler\/requirements\.r\.txt/u);
-  assert.match(dockerfile, /python -I -m pip check/u);
+  assert.match(baseDockerfile, /--only-binary=:all:/u);
+  assert.match(baseDockerfile, /--require-hashes/u);
+  assert.match(baseDockerfile, /--requirement \/opt\/openwrangler\/requirements\.r\.txt/u);
+  assert.match(baseDockerfile, /python -I -m pip check/u);
+  for (const forbidden of [
+    /install\.packages/u,
+    /IRkernel::installspec/u,
+    /COPY inject-token\.py server\.py/u,
+    /^ENTRYPOINT /mu
+  ]) {
+    assert.doesNotMatch(baseDockerfile, forbidden);
+  }
+  for (const forbidden of [/apt-get/u, /python3 -m venv/u, /python -I -m pip install/u, /COPY requirements\.r\.txt/u]) {
+    assert.doesNotMatch(dockerfile, forbidden);
+  }
   assert.match(dockerfile, /supplemental_repository <- Sys\.getenv\("R_SUPPLEMENTAL_REPOSITORY"\)/u);
   assert.match(dockerfile, /collapse = Sys\.getenv\("COLLAPSE_VERSION"\)/u);
   assert.match(dockerfile, /nanoparquet = Sys\.getenv\("NANOPARQUET_VERSION"\)/u);
@@ -1567,14 +2050,142 @@ test("the R container definition pins R, package snapshots, and its exact kernel
   assert.match(dockerfile, /^USER 65532:65532$/mu);
   assert.match(dockerfile, /^ENTRYPOINT \["python", "-I", "\/opt\/openwrangler\/server\.py"\]$/mu);
   assert.equal(/OPEN_WRANGLER_REMOTE_TOKEN|JUPYTER_TOKEN/u.test(dockerfile), false);
+  assert.equal(/OPEN_WRANGLER_REMOTE_TOKEN|JUPYTER_TOKEN/u.test(baseDockerfile), false);
   assert.equal(requirementsInput, "jupyter-server==2.20.0\n");
   for (const dependency of ["duckdb", "ipykernel", "ipython", "pandas", "polars", "polars-runtime-32"]) {
     assert.doesNotMatch(requirements, new RegExp(`^${dependency}==`, "mu"));
   }
   assert.ok((requirements.match(/^[a-z][a-z0-9-]*==/gmu) ?? []).length > 40);
   assert.match(dockerignore, /^!Dockerfile\.r$/mu);
+  assert.match(dockerignore, /^!Dockerfile\.r\.base$/mu);
   assert.match(dockerignore, /^!requirements\.r\.in$/mu);
   assert.match(dockerignore, /^!requirements\.r\.txt$/mu);
+  for (const phase of [
+    "jupyter-r-remote-base-build",
+    "jupyter-r-remote-runtime-build",
+    "jupyter-r-remote-setup",
+    "jupyter-r-remote",
+    "jupyter-r-remote-cleanup"
+  ]) {
+    assert.match(runner, new RegExp(`"${phase}": resolve\\(\\s*profile,\\s*"${phase}-result\\.json"\\s*\\)`, "u"));
+  }
+});
+
+test("remote R orchestration keeps five uniquely correlated phase identities and exact stage routing", async () => {
+  const runner = await readFile(resolve(SCRIPT_DIRECTORY, "run-packaged-editor-tests.mjs"), "utf8");
+  const phases = [
+    "jupyter-r-remote-base-build",
+    "jupyter-r-remote-runtime-build",
+    "jupyter-r-remote-setup",
+    "jupyter-r-remote",
+    "jupyter-r-remote-cleanup"
+  ];
+  const resultPathsStart = runner.indexOf("const resultPaths = {");
+  const runIdsStart = runner.indexOf("const runIds = {", resultPathsStart);
+  const progressPathsStart = runner.indexOf("const progressPaths = Object.fromEntries(", runIdsStart);
+  const userDataStart = runner.indexOf("const userDataByPhase = new Map([", progressPathsStart);
+  const activePhaseStart = runner.indexOf('let activePhase = "setup";', userDataStart);
+  assert.ok(
+    resultPathsStart >= 0 &&
+      runIdsStart > resultPathsStart &&
+      progressPathsStart > runIdsStart &&
+      userDataStart > progressPathsStart &&
+      activePhaseStart > userDataStart
+  );
+  const resultPathsSource = runner.slice(resultPathsStart, runIdsStart);
+  const runIdsSource = runner.slice(runIdsStart, progressPathsStart);
+  const progressPathsSource = runner.slice(progressPathsStart, userDataStart);
+  const userDataSource = runner.slice(userDataStart, activePhaseStart);
+
+  for (const phase of phases) {
+    assert.equal(
+      (
+        resultPathsSource.match(new RegExp(`"${phase}": resolve\\(\\s*profile,\\s*"${phase}-result\\.json"`, "gu")) ??
+        []
+      ).length,
+      1,
+      `${phase} must own one result path`
+    );
+    assert.equal(
+      (runIdsSource.match(new RegExp(`"${phase}": randomUUID\\(\\)`, "gu")) ?? []).length,
+      1,
+      `${phase} must own one random run ID`
+    );
+    assert.equal(
+      (userDataSource.match(new RegExp(`\\["${phase}", jupyterRemoteRUserData\\]`, "gu")) ?? []).length,
+      1,
+      `${phase} must own the fixed remote-R user-data root`
+    );
+  }
+  assert.match(
+    progressPathsSource,
+    /Object\.entries\(resultPaths\)\.map\(\(\[phase, resultPath\]\) => \[\s*phase,\s*editorAcceptanceProgressPath\(resultPath, runIds\[phase\], phase\)\s*\]\)/u
+  );
+
+  const stageMapStart = runner.indexOf("const remoteSetupPhaseByStage = new Map([", activePhaseStart);
+  const stageMapEnd = runner.indexOf("const remoteRunId =", stageMapStart);
+  assert.ok(stageMapStart >= 0 && stageMapEnd > stageMapStart);
+  const stageMapSource = runner.slice(stageMapStart, stageMapEnd);
+  assert.deepEqual(
+    [...stageMapSource.matchAll(/\["(base-build|runtime-build|setup)", ([^\]]+)\]/gu)].map((match) => [
+      match[1],
+      match[2]
+    ]),
+    [
+      ["base-build", "remoteBaseBuildPhase ?? remoteSetupPhase"],
+      ["runtime-build", "remoteRuntimeBuildPhase ?? remoteSetupPhase"],
+      ["setup", "remoteSetupPhase"]
+    ]
+  );
+
+  const checkpointRouterStart = runner.indexOf("onSetupCheckpoint:", stageMapEnd);
+  const checkpointRouterEnd = runner.indexOf("onCleanupCheckpoint:", checkpointRouterStart);
+  assert.ok(checkpointRouterStart >= 0 && checkpointRouterEnd > checkpointRouterStart);
+  const checkpointRouter = runner.slice(checkpointRouterStart, checkpointRouterEnd);
+  assert.match(checkpointRouter, /const checkpointPhase = remoteSetupPhaseByStage\.get\(stage\)/u);
+  assert.match(checkpointRouter, /activePhase = checkpointPhase/u);
+  assert.match(
+    checkpointRouter,
+    /publishRemoteProgress\(\s*progressPaths\[checkpointPhase\],\s*runIds\[checkpointPhase\],\s*checkpointPhase,/u
+  );
+
+  const cleanupRouterStart = checkpointRouterEnd;
+  const cleanupRouterEnd = runner.indexOf("}\n                    );", cleanupRouterStart);
+  assert.ok(cleanupRouterEnd > cleanupRouterStart);
+  const cleanupRouter = runner.slice(cleanupRouterStart, cleanupRouterEnd);
+  assert.match(cleanupRouter, /const cleanupOrigin = remoteSetupPhaseByStage\.get\(originatingPhase\)/u);
+  assert.match(cleanupRouter, /publishRemoteCleanupCheckpoint\(checkpoint, cleanupOrigin\)/u);
+
+  const remotePhaseStart = runner.indexOf("const runRemoteJupyterPhase = async (", activePhaseStart);
+  const remotePhaseEnd = runner.indexOf(
+    'if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter")',
+    remotePhaseStart
+  );
+  assert.ok(remotePhaseStart >= 0 && remotePhaseEnd > remotePhaseStart);
+  const remotePhaseSource = runner.slice(remotePhaseStart, remotePhaseEnd);
+  assert.match(
+    remotePhaseSource,
+    /publishRemoteProgress\(\s*progressPaths\[remoteCleanupPhase\],\s*remoteCleanupRunId,\s*remoteCleanupPhase,/u
+  );
+  assert.match(remotePhaseSource, /activePhase = remoteEditorPhase/u);
+  assert.match(remotePhaseSource, /phase: remoteEditorPhase/u);
+  assert.match(remotePhaseSource, /resultPath: resultPaths\[remoteEditorPhase\]/u);
+  assert.match(remotePhaseSource, /runId: remoteRunId/u);
+  assert.match(remotePhaseSource, /progressPath: progressPaths\[remoteEditorPhase\]/u);
+
+  const invocationStart = runner.indexOf("if (remoteRJupyterEnabled) {", remotePhaseEnd);
+  const invocationEnd = runner.indexOf("});", invocationStart);
+  assert.ok(invocationStart >= 0 && invocationEnd > invocationStart);
+  const invocationSource = runner.slice(invocationStart, invocationEnd);
+  for (const [property, phase] of [
+    ["baseBuild", phases[0]],
+    ["runtimeBuild", phases[1]],
+    ["setup", phases[2]],
+    ["editor", phases[3]],
+    ["cleanup", phases[4]]
+  ]) {
+    assert.match(invocationSource, new RegExp(`${property}: "${phase}"`, "u"));
+  }
 });
 
 test("the private released-Jupyter profiles suppress unrelated extension recommendations", async () => {

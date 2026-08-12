@@ -51,6 +51,8 @@ const PRIVATE_ROOT_IDENTITY_ORIGIN_PHASES = new Set([
   "jupyter-remote-setup",
   "jupyter-remote",
   "jupyter-remote-cleanup",
+  "jupyter-r-remote-base-build",
+  "jupyter-r-remote-runtime-build",
   "jupyter-r-remote-setup",
   "jupyter-r-remote",
   "jupyter-r-remote-cleanup",

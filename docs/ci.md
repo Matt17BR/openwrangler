@@ -55,6 +55,13 @@ Each invocation owns distinct failure evidence. If either job fails, its job nam
 cancels the other matrix cell once the failure is reported. Every native editor phase retains its own 300-second hard
 deadline and 180-second inactivity deadline.
 
+Remote R fixture preparation also keeps those bounds local to the work being proved. `Dockerfile.r.base` builds the
+snapshot-pinned base, `Dockerfile.r` builds the R runtime from that exact owned image, and the existing
+launch/readiness stage starts the server; each stage has an independent 300-second hard deadline and 180-second
+inactivity deadline. Exact Docker engine, image, and owner receipts pass opaquely in process between stages. Cleanup
+revalidates them while removing the container, runtime image, and base image in reverse order, and ownership
+uncertainty still withholds failure evidence.
+
 Cross-platform, CodeQL, and performance workflows also run on schedules so changes in external products are found
 between releases. Released Jupyter is run manually when that integration needs to be checked. Dispatching the same
 Released Jupyter target again cancels its older diagnostic run; a macOS, Windows, or Linux target does not cancel

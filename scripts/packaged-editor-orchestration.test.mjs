@@ -42,6 +42,8 @@ test("Cursor cleanup never inspects or launches an uninstaller under ownership u
 test("R notebook phases use fixed private-root identity classifiers", () => {
   for (const cleanupOfPhase of [
     "jupyter-r",
+    "jupyter-r-remote-base-build",
+    "jupyter-r-remote-runtime-build",
     "jupyter-r-remote-setup",
     "jupyter-r-remote",
     "jupyter-r-remote-cleanup"

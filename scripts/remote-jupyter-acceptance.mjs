@@ -29,6 +29,8 @@ const REMOTE_FIXTURE_DEFINITIONS = Object.freeze({
     language: "python"
   }),
   r: Object.freeze({
+    baseDockerfile: "Dockerfile.r.base",
+    baseImageName: "openwrangler-remote-r-jupyter-base",
     dockerfile: "Dockerfile.r",
     imageName: "openwrangler-remote-r-jupyter",
     kernelName: "openwrangler-r-remote-acceptance",
@@ -45,6 +47,7 @@ const DEFAULT_READY_TIMEOUT_MS = 60_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 15_000;
 const DEFAULT_DOCKER_FORCE_CLOSE_TIMEOUT_MS = 2_000;
 const POLL_INTERVAL_MS = 100;
+const REMOTE_R_BUILD_STAGES = Object.freeze(["base-build", "runtime-build"]);
 const TOKEN = /^owr_[A-Za-z0-9_-]{39}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u;
@@ -319,23 +322,23 @@ export async function startRemoteJupyterAcceptanceFixture(
   ) {
     throw new Error("Remote Jupyter phase deadlines exceed their fixed acceptance bounds.");
   }
-  const setupBudget = createRemoteJupyterSetupBudget({
-    now: monotonicNow,
-    timeoutMs: setupTimeoutMs,
-    inactivityTimeoutMs: setupInactivityTimeoutMs,
-    heartbeatMs: setupHeartbeatMs,
-    onCheckpoint: onSetupCheckpoint
-  });
-  setupBudget.checkpoint("setup:start");
-
-  const ownerId = randomUUIDImpl();
-  if (!UUID.test(ownerId)) {
-    throw new Error("Remote Jupyter acceptance did not receive a safe random ownership identifier.");
+  const createPhaseBudget = (stage) =>
+    createRemoteJupyterSetupBudget({
+      now: monotonicNow,
+      timeoutMs: setupTimeoutMs,
+      inactivityTimeoutMs: setupInactivityTimeoutMs,
+      heartbeatMs: setupHeartbeatMs,
+      phaseLabel: stage,
+      onCheckpoint: (checkpoint) => onSetupCheckpoint(checkpoint, Object.freeze({ stage }))
+    });
+  const ownerIds = fixtureKind === "r" ? [randomUUIDImpl(), randomUUIDImpl()] : [randomUUIDImpl()];
+  if (ownerIds.some((ownerId) => !UUID.test(ownerId)) || new Set(ownerIds).size !== ownerIds.length) {
+    throw new Error("Remote Jupyter acceptance did not receive distinct safe random ownership identifiers.");
   }
-  const compactOwner = ownerId.replaceAll("-", "").toLowerCase();
+  const runtimeOwnerId = ownerIds.at(-1);
+  const compactOwner = runtimeOwnerId.replaceAll("-", "").toLowerCase();
   const hostname = remoteJupyterHostnameForRun(credentials.runId);
   const containerName = `ow-rj-${compactOwner.slice(0, 24)}`;
-  const imageTag = `${fixtureDefinition.imageName}:${compactOwner}`;
   const token = credentials.token;
   const docker = createDockerClient({
     dockerExecutable,
@@ -344,56 +347,92 @@ export async function startRemoteJupyterAcceptanceFixture(
     dockerTimeoutMs,
     token
   });
-  const setupDocker = createRemoteJupyterSetupDockerClient(docker, setupBudget, dockerTimeoutMs);
+  const runtimeImage = createOwnedImageResource("runtime", fixtureDefinition.imageName, runtimeOwnerId);
+  const baseImage =
+    fixtureKind === "r" ? createOwnedImageResource("base", fixtureDefinition.baseImageName, ownerIds[0]) : undefined;
   const resources = {
-    ownerId,
+    ownerId: runtimeOwnerId,
     containerName,
     containerId: undefined,
-    imageTag,
-    imageId: undefined,
-    mutationStarted: false,
-    buildOwnershipUncertain: false,
+    images: [...(baseImage ? [baseImage] : []), runtimeImage],
+    launchMutationStarted: false,
     launchOwnershipUncertain: false,
     hostname,
     runId: credentials.runId
   };
   let initialEngine;
   let cleanupHandle;
+  let baseReceipt;
+  let originatingPhase = fixtureKind === "r" ? REMOTE_R_BUILD_STAGES[0] : "setup";
 
   try {
-    initialEngine = await probeDockerEngine(setupDocker);
-    await assertContainerNameAvailable(setupDocker, containerName);
-    await assertOwnerLabelAvailable(setupDocker, ownerId);
+    let runtimeReceipt;
+    if (fixtureKind === "r") {
+      const baseBudget = createPhaseBudget("base-build");
+      const baseDocker = createRemoteJupyterSetupDockerClient(docker, baseBudget, dockerTimeoutMs);
+      baseBudget.checkpoint("base-build:start");
+      initialEngine = await probeDockerEngine(baseDocker);
+      await assertImageOwnerLabelAvailable(baseDocker, baseImage.ownerId);
+      baseReceipt = await buildOwnedImage(baseDocker, baseImage, {
+        buildContext,
+        dockerfile: fixtureDefinition.baseDockerfile,
+        label: "Remote R Jupyter base image build",
+        timeoutMs: buildTimeoutMs
+      });
+      await revalidateRemoteJupyterHandoff(baseDocker, initialEngine, [baseReceipt], "base build");
+      baseBudget.checkpoint("base-build:complete");
 
-    resources.mutationStarted = true;
-    resources.buildOwnershipUncertain = true;
-    let build;
-    try {
-      build = await setupDocker.required(
-        [
-          "build",
-          "--quiet",
-          "--no-cache",
-          "--pull=false",
-          "--file",
-          resolve(buildContext, fixtureDefinition.dockerfile),
-          "--label",
-          `${OWNER_LABEL}=${ownerId}`,
-          "--tag",
-          imageTag,
-          buildContext
-        ],
-        "Remote Jupyter image build",
-        buildTimeoutMs
+      originatingPhase = "runtime-build";
+      const runtimeBudget = createPhaseBudget("runtime-build");
+      const runtimeDocker = createRemoteJupyterSetupDockerClient(docker, runtimeBudget, dockerTimeoutMs);
+      runtimeBudget.checkpoint("runtime-build:start");
+      await revalidateRemoteJupyterHandoff(runtimeDocker, initialEngine, [baseReceipt], "base-to-runtime build");
+      await assertImageOwnerLabelAvailable(runtimeDocker, runtimeImage.ownerId);
+      runtimeReceipt = await buildOwnedImage(runtimeDocker, runtimeImage, {
+        buildArguments: [`OPEN_WRANGLER_REMOTE_R_BASE_IMAGE=${baseReceipt.imageTag}`],
+        buildContext,
+        dockerfile: fixtureDefinition.dockerfile,
+        label: "Remote R Jupyter runtime image build",
+        timeoutMs: buildTimeoutMs
+      });
+      if (runtimeReceipt.imageId === baseReceipt.imageId) {
+        throw ownershipUncertainError("Remote R Jupyter build stages produced an ambiguous shared image identity.");
+      }
+      await revalidateRemoteJupyterHandoff(
+        runtimeDocker,
+        initialEngine,
+        [baseReceipt, runtimeReceipt],
+        "runtime build"
       );
-    } catch (error) {
-      if (!dockerCommandCompletionUnknown(error)) resources.buildOwnershipUncertain = false;
-      throw error;
+      runtimeBudget.checkpoint("runtime-build:complete");
     }
-    resources.imageId = parseExactImageId(build.stdout, "Remote Jupyter image build");
-    await assertOwnedImage(setupDocker, resources);
-    resources.buildOwnershipUncertain = false;
 
+    originatingPhase = "setup";
+    const setupBudget = createPhaseBudget("setup");
+    const setupDocker = createRemoteJupyterSetupDockerClient(docker, setupBudget, dockerTimeoutMs);
+    setupBudget.checkpoint("setup:start");
+    if (fixtureKind === "python") {
+      initialEngine = await probeDockerEngine(setupDocker);
+      await assertContainerNameAvailable(setupDocker, containerName);
+      await assertOwnerLabelAvailable(setupDocker, runtimeImage.ownerId);
+      runtimeReceipt = await buildOwnedImage(setupDocker, runtimeImage, {
+        buildContext,
+        dockerfile: fixtureDefinition.dockerfile,
+        label: "Remote Jupyter image build",
+        timeoutMs: buildTimeoutMs
+      });
+    } else {
+      await revalidateRemoteJupyterHandoff(
+        setupDocker,
+        initialEngine,
+        [baseReceipt, runtimeReceipt],
+        "runtime-to-launch"
+      );
+      await assertContainerNameAvailable(setupDocker, containerName);
+      await assertContainerOwnerLabelAvailable(setupDocker, runtimeImage.ownerId);
+    }
+
+    resources.launchMutationStarted = true;
     resources.launchOwnershipUncertain = true;
     let launched;
     try {
@@ -406,7 +445,7 @@ export async function startRemoteJupyterAcceptanceFixture(
           `--hostname=${hostname}`,
           `--env=OPEN_WRANGLER_REMOTE_RUN_ID=${credentials.runId}`,
           "--label",
-          `${OWNER_LABEL}=${ownerId}`,
+          `${OWNER_LABEL}=${runtimeImage.ownerId}`,
           "--restart=no",
           "--read-only",
           "--tmpfs",
@@ -423,7 +462,7 @@ export async function startRemoteJupyterAcceptanceFixture(
           "--user=65532:65532",
           "--network=bridge",
           "--publish=127.0.0.1::8888/tcp",
-          resources.imageId
+          runtimeReceipt.imageId
         ],
         "Remote Jupyter container launch"
       );
@@ -452,7 +491,12 @@ export async function startRemoteJupyterAcceptanceFixture(
     });
     setupBudget.checkpoint("setup:readiness-complete");
 
-    assertSameDockerEngine(initialEngine, await probeDockerEngine(setupDocker));
+    await revalidateRemoteJupyterHandoff(
+      setupDocker,
+      initialEngine,
+      resources.images.map(captureOwnedImageReceipt),
+      "ready fixture"
+    );
     await assertOwnedContainer(setupDocker, resources, { requireRunning: true });
     cleanupHandle = createCleanupHandle({
       docker,
@@ -477,7 +521,7 @@ export async function startRemoteJupyterAcceptanceFixture(
       cleanupTimeoutMs
     });
     try {
-      onCleanupCheckpoint("start", { originatingPhase: "setup" });
+      onCleanupCheckpoint("start", { originatingPhase });
     } catch {
       throw ownershipUncertainError(
         "Remote Jupyter setup cleanup checkpoint could not preserve private-root ownership."
@@ -491,7 +535,7 @@ export async function startRemoteJupyterAcceptanceFixture(
       );
     }
     try {
-      onCleanupCheckpoint("complete", { originatingPhase: "setup" });
+      onCleanupCheckpoint("complete", { originatingPhase });
     } catch {
       throw ownershipUncertainError(
         "Remote Jupyter setup cleanup completion checkpoint could not preserve private-root ownership."
@@ -665,7 +709,14 @@ export async function runBoundedDockerCommand(
   });
 }
 
-function createRemoteJupyterSetupBudget({ now, timeoutMs, inactivityTimeoutMs, heartbeatMs, onCheckpoint }) {
+function createRemoteJupyterSetupBudget({
+  now,
+  timeoutMs,
+  inactivityTimeoutMs,
+  heartbeatMs,
+  phaseLabel = "setup",
+  onCheckpoint
+}) {
   const startedAt = now();
   const deadline = startedAt + timeoutMs;
   let lastCheckpointAt = startedAt;
@@ -674,19 +725,20 @@ function createRemoteJupyterSetupBudget({ now, timeoutMs, inactivityTimeoutMs, h
   const currentTime = () => {
     const current = now();
     if (current >= deadline) {
-      throw new Error("Remote Jupyter setup exceeded its fixed aggregate deadline.");
+      throw new Error(`Remote Jupyter ${phaseLabel} exceeded its fixed aggregate deadline.`);
     }
     if (current - lastCheckpointAt >= inactivityTimeoutMs) {
-      throw new Error("Remote Jupyter setup exceeded its fixed checkpoint inactivity deadline.");
+      throw new Error(`Remote Jupyter ${phaseLabel} exceeded its fixed checkpoint inactivity deadline.`);
     }
     return current;
   };
 
   return Object.freeze({
     heartbeatMs,
+    phaseLabel,
     checkpoint(label) {
       if (typeof label !== "string" || label.length === 0 || label.length > 128 || /[\0\r\n]/u.test(label)) {
-        throw new Error("Remote Jupyter setup checkpoint is malformed.");
+        throw new Error(`Remote Jupyter ${phaseLabel} checkpoint is malformed.`);
       }
       currentTime();
       checkpointSequence += 1;
@@ -694,7 +746,7 @@ function createRemoteJupyterSetupBudget({ now, timeoutMs, inactivityTimeoutMs, h
         onCheckpoint(`${label}:${checkpointSequence}`);
       } catch {
         throw ownershipUncertainError(
-          "Remote Jupyter setup checkpoint publication could not preserve private-root ownership."
+          `Remote Jupyter ${phaseLabel} checkpoint publication could not preserve private-root ownership.`
         );
       }
       const completedAt = currentTime();
@@ -702,11 +754,11 @@ function createRemoteJupyterSetupBudget({ now, timeoutMs, inactivityTimeoutMs, h
     },
     remainingTimeout(requestedTimeoutMs) {
       if (!Number.isSafeInteger(requestedTimeoutMs) || requestedTimeoutMs <= 0) {
-        throw new Error("Remote Jupyter setup operation timeout is invalid.");
+        throw new Error(`Remote Jupyter ${phaseLabel} operation timeout is invalid.`);
       }
       const remaining = Math.floor(deadline - currentTime());
       if (remaining <= 0) {
-        throw new Error("Remote Jupyter setup exceeded its fixed aggregate deadline.");
+        throw new Error(`Remote Jupyter ${phaseLabel} exceeded its fixed aggregate deadline.`);
       }
       return Math.min(requestedTimeoutMs, remaining);
     }
@@ -718,7 +770,7 @@ function createRemoteJupyterSetupDockerClient(docker, budget, defaultTimeoutMs) 
   return Object.freeze({
     async required(args, label, timeoutMs = defaultTimeoutMs, stdin) {
       commandSequence += 1;
-      const command = `setup:docker-${commandSequence}`;
+      const command = `${budget.phaseLabel}:docker-${commandSequence}`;
       budget.checkpoint(`${command}:start`);
       const result = await docker.required(args, label, budget.remainingTimeout(timeoutMs), stdin, {
         intervalMs: budget.heartbeatMs,
@@ -836,33 +888,123 @@ async function assertContainerNameAvailable(docker, name) {
   }
 }
 
-async function assertOwnerLabelAvailable(docker, ownerId) {
-  const containers = await listContainerIds(
-    docker,
-    `label=${OWNER_LABEL}=${ownerId}`,
-    "Remote Jupyter container ownership-label probe"
-  );
+async function assertImageOwnerLabelAvailable(docker, ownerId) {
   const images = await listImageIds(
     docker,
     `label=${OWNER_LABEL}=${ownerId}`,
     "Remote Jupyter image ownership-label probe"
   );
-  if (containers.length !== 0 || images.length !== 0) {
-    throw new Error("Remote Jupyter random ownership label was already in use.");
+  if (images.length !== 0) {
+    throw new Error("Remote Jupyter random image ownership label was already in use.");
   }
 }
 
-async function assertOwnedImage(docker, resources) {
-  if (!IMAGE_ID.test(resources.imageId ?? "")) {
+async function assertContainerOwnerLabelAvailable(docker, ownerId) {
+  const containers = await listContainerIds(
+    docker,
+    `label=${OWNER_LABEL}=${ownerId}`,
+    "Remote Jupyter container ownership-label probe"
+  );
+  if (containers.length !== 0) {
+    throw new Error("Remote Jupyter random container ownership label was already in use.");
+  }
+}
+
+async function assertOwnerLabelAvailable(docker, ownerId) {
+  await assertContainerOwnerLabelAvailable(docker, ownerId);
+  await assertImageOwnerLabelAvailable(docker, ownerId);
+}
+
+function createOwnedImageResource(role, imageName, ownerId) {
+  const compactOwner = ownerId.replaceAll("-", "").toLowerCase();
+  return {
+    role,
+    ownerId,
+    imageTag: `${imageName}:${compactOwner}`,
+    imageId: undefined,
+    mutationStarted: false,
+    buildOwnershipUncertain: false
+  };
+}
+
+function captureOwnedImageReceipt(image) {
+  if (
+    !image ||
+    !["base", "runtime"].includes(image.role) ||
+    !UUID.test(image.ownerId ?? "") ||
+    typeof image.imageTag !== "string" ||
+    !/^[a-z0-9][a-z0-9._/-]{0,127}:[0-9a-f]{32}$/u.test(image.imageTag) ||
+    !IMAGE_ID.test(image.imageId ?? "")
+  ) {
     throw new Error("Remote Jupyter image identity is unavailable.");
   }
-  const inspected = await docker.required(
-    ["image", "inspect", "--format", `{{.Id}}\t{{index .Config.Labels "${OWNER_LABEL}"}}`, resources.imageId],
-    "Remote Jupyter owned-image inspection"
-  );
-  const fields = oneLine(inspected.stdout, "Remote Jupyter image inspection").split("\t");
-  if (fields.length !== 2 || fields[0] !== resources.imageId || fields[1] !== resources.ownerId) {
-    throw new Error("Remote Jupyter image ownership could not be proven.");
+  return Object.freeze({
+    role: image.role,
+    ownerId: image.ownerId,
+    imageTag: image.imageTag,
+    imageId: image.imageId
+  });
+}
+
+async function buildOwnedImage(docker, image, { buildArguments = [], buildContext, dockerfile, label, timeoutMs }) {
+  image.mutationStarted = true;
+  image.buildOwnershipUncertain = true;
+  let build;
+  try {
+    build = await docker.required(
+      [
+        "build",
+        "--quiet",
+        "--no-cache",
+        "--pull=false",
+        ...buildArguments.flatMap((argument) => ["--build-arg", argument]),
+        "--file",
+        resolve(buildContext, dockerfile),
+        "--label",
+        `${OWNER_LABEL}=${image.ownerId}`,
+        "--tag",
+        image.imageTag,
+        buildContext
+      ],
+      label,
+      timeoutMs
+    );
+  } catch (error) {
+    if (!dockerCommandCompletionUnknown(error)) image.buildOwnershipUncertain = false;
+    throw error;
+  }
+  image.buildOwnershipUncertain = false;
+  image.imageId = parseExactImageId(build.stdout, label);
+  const receipt = captureOwnedImageReceipt(image);
+  try {
+    await assertOwnedImageReceipt(docker, receipt);
+  } catch (error) {
+    if (remoteJupyterOwnershipMayBeLive(error)) throw error;
+    throw ownershipUncertainError(`Remote Jupyter ${image.role} image ownership could not be established.`);
+  }
+  return receipt;
+}
+
+async function assertOwnedImageReceipt(docker, receipt) {
+  for (const reference of [receipt.imageId, receipt.imageTag]) {
+    const inspected = await docker.required(
+      ["image", "inspect", "--format", `{{.Id}}\t{{index .Config.Labels "${OWNER_LABEL}"}}`, reference],
+      `Remote Jupyter owned ${receipt.role} image inspection`
+    );
+    const fields = oneLine(inspected.stdout, "Remote Jupyter image inspection").split("\t");
+    if (fields.length !== 2 || fields[0] !== receipt.imageId || fields[1] !== receipt.ownerId) {
+      throw new Error(`Remote Jupyter ${receipt.role} image ownership could not be proven.`);
+    }
+  }
+}
+
+async function revalidateRemoteJupyterHandoff(docker, expectedEngine, imageReceipts, boundary) {
+  try {
+    assertSameDockerEngine(expectedEngine, await probeDockerEngine(docker));
+    for (const receipt of imageReceipts) await assertOwnedImageReceipt(docker, receipt);
+  } catch (error) {
+    if (remoteJupyterOwnershipMayBeLive(error)) throw error;
+    throw ownershipUncertainError(`Remote Jupyter ${boundary} ownership handoff could not be revalidated.`);
   }
 }
 
@@ -909,10 +1051,11 @@ async function assertOwnedContainer(docker, resources, { requireRunning, require
         (value) => typeof value === "string" && value.startsWith("OPEN_WRANGLER_REMOTE_RUN_ID=")
       )
     : [];
+  const runtimeImage = resources.images.at(-1);
   if (
     id !== resources.containerId ||
     name !== `/${resources.containerName}` ||
-    image !== resources.imageId ||
+    image !== runtimeImage?.imageId ||
     owner !== resources.ownerId ||
     hostname !== resources.hostname ||
     !Array.isArray(containerEnvironment) ||
@@ -1155,41 +1298,31 @@ function createCleanupHandle({ docker, initialEngine, resources, now, sleep, cle
       const cleanupDocker = createDeadlineDockerClient(docker, now, deadline);
       try {
         if (!initialEngine) {
-          if (!resources.mutationStarted) {
+          if (!resources.launchMutationStarted && resources.images.every((image) => !image.mutationStarted)) {
             cleaned = true;
             return;
           }
-          const possibleContainers = await listContainerIds(
-            cleanupDocker,
-            `name=^/${resources.containerName}$`,
-            "Remote Jupyter failed-start container discovery"
-          );
-          const possibleImages = await listImageIds(
-            cleanupDocker,
-            `label=${OWNER_LABEL}=${resources.ownerId}`,
-            "Remote Jupyter failed-start image discovery"
-          );
-          if (possibleContainers.length !== 0 || possibleImages.length !== 0) {
-            throw new Error("Remote Jupyter Docker ownership was not established before cleanup.");
-          }
-          cleaned = true;
-          return;
+          throw new Error("Remote Jupyter Docker ownership was not established before mutation.");
         }
 
         assertSameDockerEngine(initialEngine, await probeDockerEngine(cleanupDocker));
-        await removeOwnedContainer(cleanupDocker, resources, {
-          now,
-          sleep,
-          deadline
-        });
-        await removeOwnedImage(cleanupDocker, resources, {
-          now,
-          sleep,
-          deadline
-        });
+        if (resources.launchMutationStarted) {
+          await removeOwnedContainer(cleanupDocker, resources, {
+            now,
+            sleep,
+            deadline
+          });
+        }
+        for (const image of [...resources.images].reverse().filter((candidate) => candidate.mutationStarted)) {
+          await removeOwnedImage(cleanupDocker, image, {
+            now,
+            sleep,
+            deadline
+          });
+        }
         assertSameDockerEngine(initialEngine, await probeDockerEngine(cleanupDocker));
         await assertResourcesAbsent(cleanupDocker, resources);
-        if (resources.buildOwnershipUncertain || resources.launchOwnershipUncertain) {
+        if (resources.images.some((image) => image.buildOwnershipUncertain) || resources.launchOwnershipUncertain) {
           throw ownershipUncertainError("Remote Jupyter Docker command completion remained ownership-uncertain.");
         }
         cleaned = true;
@@ -1274,52 +1407,61 @@ async function removeOwnedContainer(docker, resources, { now, sleep, deadline })
   }
 }
 
-async function removeOwnedImage(docker, resources, { now, sleep, deadline }) {
+async function removeOwnedImage(docker, image, { now, sleep, deadline }) {
   const owned = await listImageIds(
     docker,
-    `label=${OWNER_LABEL}=${resources.ownerId}`,
-    "Remote Jupyter cleanup image discovery"
+    `label=${OWNER_LABEL}=${image.ownerId}`,
+    `Remote Jupyter cleanup ${image.role} image discovery`
   );
   if (owned.length === 0) return;
   if (owned.length !== 1) {
     throw new Error("Remote Jupyter cleanup found ambiguous image ownership.");
   }
-  if (resources.imageId && owned[0] !== resources.imageId) {
+  if (image.imageId && owned[0] !== image.imageId) {
     throw new Error("Remote Jupyter cleanup image identity changed.");
   }
-  resources.imageId = owned[0];
-  await assertOwnedImage(docker, resources);
-  await docker.required(["image", "rm", resources.imageId], "Remote Jupyter owned-image removal");
+  image.imageId = owned[0];
+  await assertOwnedImageReceipt(docker, captureOwnedImageReceipt(image));
+  await docker.required(["image", "rm", image.imageId], `Remote Jupyter owned ${image.role} image removal`);
   await waitForAbsence(
     async () =>
       (
         await listImageIds(
           docker,
-          `label=${OWNER_LABEL}=${resources.ownerId}`,
-          "Remote Jupyter image disappearance probe"
+          `label=${OWNER_LABEL}=${image.ownerId}`,
+          `Remote Jupyter ${image.role} image disappearance probe`
         )
       ).length === 0,
-    { now, sleep, deadline, label: "Remote Jupyter image" }
+    { now, sleep, deadline, label: `Remote Jupyter ${image.role} image` }
   );
 }
 
 async function assertResourcesAbsent(docker, resources) {
-  const byName = await listContainerIds(
-    docker,
-    `name=^/${resources.containerName}$`,
-    "Remote Jupyter final container-name probe"
-  );
-  const byOwner = await listContainerIds(
-    docker,
-    `label=${OWNER_LABEL}=${resources.ownerId}`,
-    "Remote Jupyter final container-label probe"
-  );
-  const images = await listImageIds(
-    docker,
-    `label=${OWNER_LABEL}=${resources.ownerId}`,
-    "Remote Jupyter final image-label probe"
-  );
-  if (byName.length !== 0 || byOwner.length !== 0 || images.length !== 0) {
+  let containerPresent = false;
+  if (resources.launchMutationStarted) {
+    const byName = await listContainerIds(
+      docker,
+      `name=^/${resources.containerName}$`,
+      "Remote Jupyter final container-name probe"
+    );
+    const byOwner = await listContainerIds(
+      docker,
+      `label=${OWNER_LABEL}=${resources.ownerId}`,
+      "Remote Jupyter final container-label probe"
+    );
+    containerPresent = byName.length !== 0 || byOwner.length !== 0;
+  }
+  const imageLists = [];
+  for (const image of resources.images.filter((candidate) => candidate.mutationStarted)) {
+    imageLists.push(
+      await listImageIds(
+        docker,
+        `label=${OWNER_LABEL}=${image.ownerId}`,
+        `Remote Jupyter final ${image.role} image-label probe`
+      )
+    );
+  }
+  if (containerPresent || imageLists.some((images) => images.length !== 0)) {
     throw new Error("Remote Jupyter Docker resources remained after cleanup.");
   }
 }
