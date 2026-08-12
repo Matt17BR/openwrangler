@@ -302,7 +302,10 @@ export function DataGrid({
         return;
       }
 
-      const headerHeight = header.getBoundingClientRect().height;
+      // offsetHeight and clientHeight share the element's layout-pixel
+      // coordinate system. getBoundingClientRect() is scaled by CSS zoom,
+      // which would make a 200%-zoom editor compact profiles too early.
+      const headerHeight = header.offsetHeight;
       if (headerHeight <= 0) return;
       expandedHeaderHeight.current = {
         height: Math.max(expanded.height ?? 0, headerHeight),

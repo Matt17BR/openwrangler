@@ -458,16 +458,15 @@ describe("DataGrid", () => {
         configurable: true,
         get: () => scrollerHeight
       });
-      Object.defineProperty(tableHeader, "getBoundingClientRect", {
+      Object.defineProperty(tableHeader, "offsetHeight", {
         configurable: true,
-        value: () => {
+        get: () => {
           const completeSummary = tableHeader.querySelector(".columnInsight:not(.emptyInsight)");
-          const height = completeSummary
+          return completeSummary
             ? tableHeader.querySelector(".columnInsight.compact")
               ? 68
               : expandedNaturalHeight
             : 68;
-          return { bottom: height, height, left: 0, right: 400, top: 0, width: 400, x: 0, y: 0 };
         }
       });
 
