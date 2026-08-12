@@ -32182,84 +32182,119 @@ async function verifyRecoveredExcelGrid(
       }
       recordAcceptanceProgress("excel-dependency-install:grid-bound");
 
-      const activationTarget = await withAcceptanceOperationDeadline(
-        grid.evaluate((table) => {
-          type GridRect = { bottom: number; height: number; left: number; right: number; top: number; width: number };
-          type GridCellElement = {
-            readonly dataset: { readonly gridColumn?: string; readonly gridRow?: string };
-            readonly ownerDocument: { elementFromPoint(x: number, y: number): unknown };
-            contains(target: unknown): boolean;
-            getBoundingClientRect(): GridRect;
-          };
-          type GridElement = {
-            readonly clientHeight: number;
-            readonly clientLeft: number;
-            readonly clientTop: number;
-            readonly clientWidth: number;
-            closest(selector: string): GridElement | null;
-            getBoundingClientRect(): GridRect;
-            querySelectorAll(selector: string): ArrayLike<GridCellElement>;
-          };
-          const gridElement = table as unknown as GridElement;
-          const scroller = gridElement.closest(".tableScroller");
-          if (!scroller) return undefined;
+      const activationProbe = await withAcceptanceOperationDeadline(
+        grid.evaluate(
+          (table, dataColumnCount) => {
+            type GridRect = { bottom: number; height: number; left: number; right: number; top: number; width: number };
+            type GridCellElement = {
+              readonly dataset: { readonly gridColumn?: string; readonly gridRow?: string };
+              readonly ownerDocument: { elementFromPoint(x: number, y: number): unknown };
+              contains(target: unknown): boolean;
+              getBoundingClientRect(): GridRect;
+            };
+            type GridElement = {
+              readonly clientHeight: number;
+              readonly clientLeft: number;
+              readonly clientTop: number;
+              readonly clientWidth: number;
+              closest(selector: string): GridElement | null;
+              getBoundingClientRect(): GridRect;
+              querySelectorAll(selector: string): ArrayLike<GridCellElement>;
+            };
+            const gridElement = table as unknown as GridElement;
+            const scroller = gridElement.closest(".tableScroller");
+            if (!scroller) {
+              return {
+                diagnostics: {
+                  candidateCount: 0,
+                  exposedBounds: undefined,
+                  centerExposedCellCount: 0,
+                  dataColumnCount,
+                  pointerExposedCellCount: 0,
+                  scrollerFound: false
+                },
+                target: undefined
+              };
+            }
 
-          const scrollerRect = scroller.getBoundingClientRect();
-          const viewportLeft = scrollerRect.left + scroller.clientLeft;
-          const viewportTop = scrollerRect.top + scroller.clientTop;
-          const viewportRight = viewportLeft + scroller.clientWidth;
-          const viewportBottom = viewportTop + scroller.clientHeight;
-          const headerBottom = Math.max(
-            viewportTop,
-            ...Array.from(gridElement.querySelectorAll("thead th"), (header) => header.getBoundingClientRect().bottom)
-          );
-          const rowHeaderRight = Math.max(
-            viewportLeft,
-            ...Array.from(
-              gridElement.querySelectorAll("thead th.rowHeader"),
-              (header) => header.getBoundingClientRect().right
-            )
-          );
-          const inset = 2;
-          const exposedBounds = {
-            left: rowHeaderRight + inset,
-            top: headerBottom + inset,
-            right: viewportRight - inset,
-            bottom: viewportBottom - inset
-          };
-          const fullyExposed = (rect: GridRect): boolean =>
-            rect.width > 0 &&
-            rect.height > 0 &&
-            rect.left >= exposedBounds.left &&
-            rect.top >= exposedBounds.top &&
-            rect.right <= exposedBounds.right &&
-            rect.bottom <= exposedBounds.bottom;
-          const cells = Array.from(gridElement.querySelectorAll("tbody td.gridCell[data-grid-row][data-grid-column]"));
-          const cellsByPosition = new Map(
-            cells.map((cell) => [`${cell.dataset.gridRow}:${cell.dataset.gridColumn}`, cell] as const)
-          );
+            const scrollerRect = scroller.getBoundingClientRect();
+            const viewportLeft = scrollerRect.left + scroller.clientLeft;
+            const viewportTop = scrollerRect.top + scroller.clientTop;
+            const viewportRight = viewportLeft + scroller.clientWidth;
+            const viewportBottom = viewportTop + scroller.clientHeight;
+            const headerBottom = Math.max(
+              viewportTop,
+              ...Array.from(gridElement.querySelectorAll("thead th"), (header) => header.getBoundingClientRect().bottom)
+            );
+            const rowHeaderRight = Math.max(
+              viewportLeft,
+              ...Array.from(
+                gridElement.querySelectorAll("thead th.rowHeader"),
+                (header) => header.getBoundingClientRect().right
+              )
+            );
+            const inset = 2;
+            const exposedBounds = {
+              left: rowHeaderRight + inset,
+              top: headerBottom + inset,
+              right: viewportRight - inset,
+              bottom: viewportBottom - inset
+            };
+            const centerExposed = (rect: GridRect): boolean =>
+              rect.width > 0 &&
+              rect.height > 0 &&
+              rect.left + rect.width / 2 >= exposedBounds.left &&
+              rect.top + rect.height / 2 >= exposedBounds.top &&
+              rect.left + rect.width / 2 <= exposedBounds.right &&
+              rect.top + rect.height / 2 <= exposedBounds.bottom;
+            const cells = Array.from(
+              gridElement.querySelectorAll("tbody td.gridCell[data-grid-row][data-grid-column]")
+            );
+            let centerExposedCellCount = 0;
+            let pointerExposedCellCount = 0;
+            const diagnostics = () => ({
+              candidateCount: cells.length,
+              centerExposedCellCount,
+              exposedBounds,
+              dataColumnCount,
+              pointerExposedCellCount,
+              scrollerFound: true
+            });
 
-          for (let index = cells.length - 1; index >= 0; index -= 1) {
-            const cell = cells[index];
-            const row = Number(cell.dataset.gridRow);
-            const column = Number(cell.dataset.gridColumn);
-            if (!Number.isSafeInteger(row) || row < 0 || !Number.isSafeInteger(column) || column < 0) continue;
-            const nextCell = cellsByPosition.get(`${row}:${column + 1}`);
-            if (!nextCell) continue;
-            const rect = cell.getBoundingClientRect();
-            if (!fullyExposed(rect) || !fullyExposed(nextCell.getBoundingClientRect())) continue;
-            const hit = cell.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-            if (hit !== cell && (!hit || !cell.contains(hit))) continue;
-            return { row, column };
-          }
-          return undefined;
-        }),
+            for (let index = cells.length - 1; index >= 0; index -= 1) {
+              const cell = cells[index];
+              const row = Number(cell.dataset.gridRow);
+              const column = Number(cell.dataset.gridColumn);
+              if (
+                !Number.isSafeInteger(row) ||
+                row < 0 ||
+                !Number.isSafeInteger(column) ||
+                column < 0 ||
+                column + 1 >= dataColumnCount
+              ) {
+                continue;
+              }
+              const rect = cell.getBoundingClientRect();
+              if (!centerExposed(rect)) continue;
+              centerExposedCellCount += 1;
+              const hit = cell.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+              if (hit !== cell && (!hit || !cell.contains(hit))) continue;
+              pointerExposedCellCount += 1;
+              return { diagnostics: diagnostics(), target: { row, column } };
+            }
+            return { diagnostics: diagnostics(), target: undefined };
+          },
+          Number(columnCount) - 1
+        ),
         operationTimeout(),
         "an exposed cell in the recovered XLSX grid"
       );
+      const activationTarget = activationProbe.target;
       assert.ok(
         activationTarget,
-        "The recovered XLSX grid must expose a body cell and its right neighbor below the sticky headers."
+        `The recovered XLSX grid must expose one body cell below the sticky headers. Geometry: ${JSON.stringify(
+          activationProbe.diagnostics
+        )}`
       );
       assertOpenWranglerWebviewLifecycle(workbench, browser);
       if (
@@ -32297,7 +32332,18 @@ async function verifyRecoveredExcelGrid(
       );
       recordAcceptanceProgress("excel-dependency-install:grid-focused");
 
-      await activationCell.press("ArrowRight", { timeout: operationTimeout() });
+      await withAcceptanceOperationDeadline(
+        target.page.keyboard.press("ArrowRight"),
+        operationTimeout(),
+        "the recovered XLSX grid ArrowRight action"
+      );
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      if (
+        isRetiredRendererTarget(workbench, target.page, target.frame) ||
+        !sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))
+      ) {
+        continue;
+      }
       recordAcceptanceProgress("excel-dependency-install:grid-arrow-sent");
       await app
         .locator(`td[data-grid-row="${activationTarget.row}"][data-grid-column="${activationTarget.column + 1}"]:focus`)
