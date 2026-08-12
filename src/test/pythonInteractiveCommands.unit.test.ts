@@ -712,6 +712,135 @@ describe("Python Interactive Window entry points", () => {
     }
   });
 
+  it("does not retry a published Quarto cell that never finishes after kernel selection", async () => {
+    vi.useFakeTimers();
+    const previousExtensionTests = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+    try {
+      const source = textDocument(
+        "file:///workspace/analysis.qmd",
+        "```{python}\nframe = make_frame()\n```\n",
+        "quarto"
+      );
+      const editor = textEditor(source, 1);
+      pythonMocks.textDocuments.push(source);
+      pythonMocks.activeTextEditor = editor;
+      const origin = literateOrigin(editor, "quarto", {
+        language: "python",
+        executableSyntax: true,
+        supportedFence: true,
+        enabled: true,
+        fenceCharacter: "`",
+        openingLine: 0,
+        codeStartLine: 1,
+        codeEndLine: 1,
+        closingLine: 2,
+        code: "frame = make_frame()\n"
+      });
+      const interactive = notebook("untitled:/Interactive-quarto-stalled.interactive", "interactive", []);
+      const systemCell = markupCell(interactive.document, { isInteractiveWindowMessageCell: true });
+      Object.defineProperty(systemCell, "executionSummary", { value: {}, writable: true });
+      interactive.cells.push(systemCell);
+      const interactiveEditor = { notebook: interactive.document } as NotebookEditor;
+      let runCount = 0;
+      pythonMocks.executeCommand.mockImplementation(
+        async (id: string, argument?: { notebookEditor?: NotebookEditor }) => {
+          if (id === "notebook.selectKernel") {
+            expect(argument?.notebookEditor).toBe(interactiveEditor);
+            Object.defineProperty(interactive.document, "metadata", {
+              value: { kernelspec: { language: "python" } },
+              writable: true
+            });
+            return undefined;
+          }
+          if (id !== "jupyter.execSelectionInteractive") return undefined;
+          runCount += 1;
+          if (runCount === 1) {
+            pythonMocks.activeTextEditor = undefined;
+            pythonMocks.activeNotebookEditor = interactiveEditor;
+            pythonMocks.visibleNotebookEditors.push(interactiveEditor);
+            pythonMocks.notebookDocuments.push(interactive.document);
+            fire(pythonMocks.openNotebookListeners, interactive.document);
+            return undefined;
+          }
+          expect(pythonMocks.activeTextEditor?.document).toBe(source);
+          const cell = interactiveCell(interactive.document, source.uri.toString(), 1, "quarto-run", true, "quarto");
+          Object.defineProperty(cell, "executionSummary", { value: undefined, writable: true });
+          setTimeout(() => {
+            interactive.cells.push(cell);
+            fire(pythonMocks.changeNotebookListeners, {
+              notebook: interactive.document,
+              cellChanges: [{ cell, executionSummary: undefined }],
+              contentChanges: []
+            } as unknown as NotebookDocumentChangeEvent);
+          }, 1);
+          return undefined;
+        }
+      );
+      pythonMocks.showTextDocument.mockImplementation(async (document: TextDocument) => {
+        expect(document).toBe(source);
+        pythonMocks.activeTextEditor = editor;
+        pythonMocks.activeNotebookEditor = undefined;
+        return editor;
+      });
+      const listenerCounts = notebookListenerCounts();
+
+      const opening = literateProvider(provider).runLiterateChunkAndOpen(origin);
+      let settled = false;
+      void opening.finally(() => {
+        settled = true;
+      });
+      await settle();
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(diagnosticProvider(provider).diagnosticsForTesting()).toMatchObject({
+        invocation: 1,
+        stage: "waiting-for-cell-publication",
+        lastActiveStage: "waiting-for-cell-publication"
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(diagnosticProvider(provider).diagnosticsForTesting()).toMatchObject({
+        invocation: 1,
+        stage: "waiting-for-cell-completion",
+        lastActiveStage: "waiting-for-cell-completion"
+      });
+      expect(diagnosticProvider(provider).diagnosticsForTesting()?.stages).toEqual([
+        "dispatching-cell",
+        "waiting-for-cell-publication",
+        "selecting-kernel",
+        "restoring-source-editor",
+        "waiting-for-cell-publication",
+        "retrying-cell",
+        "waiting-for-cell-publication",
+        "waiting-for-cell-completion"
+      ]);
+      await vi.advanceTimersByTimeAsync(108_998);
+      expect(settled).toBe(false);
+      expect(pythonMocks.showWarningMessage).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(opening).resolves.toBe(false);
+
+      expect(pythonMocks.executeCommand.mock.calls.map(([id]) => id)).toEqual([
+        "jupyter.execSelectionInteractive",
+        "notebook.selectKernel",
+        "jupyter.execSelectionInteractive"
+      ]);
+      expect(diagnosticProvider(provider).diagnosticsForTesting()).toMatchObject({
+        invocation: 1,
+        stage: "failed",
+        lastActiveStage: "waiting-for-cell-completion"
+      });
+      expect(pythonMocks.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining("within two minutes"));
+      expect(pythonMocks.discover).not.toHaveBeenCalled();
+      expect(pythonMocks.openVariable).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(notebookListenerCounts()).toEqual(listenerCounts);
+    } finally {
+      if (previousExtensionTests === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+      else process.env.OPEN_WRANGLER_EXTENSION_TESTS = previousExtensionTests;
+      vi.useRealTimers();
+    }
+  });
+
   it("waits for Jupyter to publish and finish the Interactive Window cell", async () => {
     const source = textDocument("file:///workspace/analysis.py", "# %%\nframe = make_frame()\n");
     pythonMocks.textDocuments.push(source);
