@@ -125,11 +125,23 @@ const maximumColumnRevealLayoutFrames = 120;
 const maximumRenderedCellCharacters = 4_096;
 const headerProfileFitTolerance = 1;
 const compactHeaderProfilesDescription =
-  "Header profile distributions are temporarily hidden until the grid is taller.";
+  "Header profile distributions are temporarily hidden until the grid has enough room.";
+const restoredHeaderProfilesDescription = "Header profile distributions are visible again.";
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
 const ignoreColumnRevealSignal = (): void => undefined;
+
+function expandedProfileHeaderHeight(header: HTMLTableSectionElement): number {
+  const compactInsights = [...header.querySelectorAll<HTMLElement>(".columnInsight.compact")];
+  if (compactInsights.length === 0) return header.offsetHeight;
+  for (const insight of compactInsights) insight.classList.remove("compact");
+  try {
+    return header.offsetHeight;
+  } finally {
+    for (const insight of compactInsights) insight.classList.add("compact");
+  }
+}
 
 export function requestedGridPageOffset(
   desiredOffset: number,
@@ -194,10 +206,7 @@ export function DataGrid({
   );
   const scrollerRef = useRef<HTMLDivElement>(null);
   const tableHeaderRef = useRef<HTMLTableSectionElement>(null);
-  const expandedHeaderHeight = useRef<{ height: number | undefined; sessionId: string }>({
-    height: undefined,
-    sessionId: metadata.sessionId
-  });
+  const headerProfilesButtonRef = useRef<HTMLButtonElement>(null);
   const profileFitDescriptionId = useId();
   const nextRowHeaderWidth = rowHeaderWidthForRows(page.rows);
   const [rowHeaderState, setRowHeaderState] = useState({
@@ -262,8 +271,20 @@ export function DataGrid({
     startsWithHeaderProfilesOff || profilesDisabled ? false : insightsOnOpen
   );
   const [profileFitState, setProfileFitState] = useState({ compact: false, sessionId: metadata.sessionId });
+  const [profileFitAnnouncement, setProfileFitAnnouncement] = useState({
+    message: "",
+    sessionId: metadata.sessionId
+  });
   const compactHeaderProfiles =
     showInsights && !profilesDisabled && profileFitState.sessionId === metadata.sessionId && profileFitState.compact;
+  const profileFitStatusText =
+    !showInsights || profilesDisabled
+      ? ""
+      : compactHeaderProfiles
+        ? compactHeaderProfilesDescription
+        : profileFitAnnouncement.sessionId === metadata.sessionId
+          ? profileFitAnnouncement.message
+          : "";
   const [viewport, setViewport] = useState({
     firstVisibleRow: viewState.viewport.firstVisibleRow,
     scrollLeft: 0,
@@ -276,57 +297,6 @@ export function DataGrid({
     column: selectedColumnPosition(metadata.schema, viewState.selectedColumnId)
   });
   const [cellFilterMenuTarget, setCellFilterMenuTarget] = useState<CellFilterMenuTarget>();
-
-  useLayoutEffect(() => {
-    const scroller = scrollerRef.current;
-    const header = tableHeaderRef.current;
-    if (!showInsights || profilesDisabled) return;
-    if (!scroller || !header) return;
-
-    const updateProfileFit = (): void => {
-      const scrollerHeight = scroller.clientHeight;
-      if (scrollerHeight <= 0) return;
-      let expanded = expandedHeaderHeight.current;
-      if (expanded.sessionId !== metadata.sessionId) {
-        expanded = { height: undefined, sessionId: metadata.sessionId };
-        expandedHeaderHeight.current = expanded;
-      }
-      if (compactHeaderProfiles) {
-        const expandedHeight = expanded.height;
-        if (
-          expandedHeight !== undefined &&
-          scrollerHeight >= expandedHeight + gridRowHeight + headerProfileFitTolerance
-        ) {
-          setProfileFitState({ compact: false, sessionId: metadata.sessionId });
-        }
-        return;
-      }
-
-      // offsetHeight and clientHeight share the element's layout-pixel
-      // coordinate system. getBoundingClientRect() is scaled by CSS zoom,
-      // which would make a 200%-zoom editor compact profiles too early.
-      const headerHeight = header.offsetHeight;
-      if (headerHeight <= 0) return;
-      expandedHeaderHeight.current = {
-        height: Math.max(expanded.height ?? 0, headerHeight),
-        sessionId: metadata.sessionId
-      };
-      if (scrollerHeight - headerHeight < gridRowHeight) {
-        setProfileFitState({ compact: true, sessionId: metadata.sessionId });
-      }
-    };
-
-    updateProfileFit();
-    const resizeObserver =
-      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => updateProfileFit());
-    resizeObserver?.observe(scroller);
-    resizeObserver?.observe(header);
-    window.addEventListener("resize", updateProfileFit);
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", updateProfileFit);
-    };
-  }, [compactHeaderProfiles, metadata.sessionId, profilesDisabled, showInsights, summaries]);
 
   useLayoutEffect(() => {
     if (!cellFilterMenuTarget) return;
@@ -827,6 +797,78 @@ export function DataGrid({
   useEffect(() => {
     onVisibleSummaryColumnsChange(showInsights && !profilesDisabled ? visibleColumns.map((column) => column.id) : []);
   }, [onVisibleSummaryColumnsChange, profilesDisabled, showInsights, viewScope, visibleColumns]);
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    const header = tableHeaderRef.current;
+    if (!showInsights || profilesDisabled) return;
+    if (!scroller || !header) return;
+
+    const updateProfileFit = (): void => {
+      const scrollerHeight = scroller.clientHeight;
+      if (scrollerHeight <= 0) return;
+      const hasDistributions = header.querySelector(".summaryDistribution") !== null;
+      if (!hasDistributions) {
+        if (profileFitState.sessionId === metadata.sessionId && profileFitState.compact) {
+          setProfileFitState({ compact: false, sessionId: metadata.sessionId });
+        }
+        if (profileFitAnnouncement.sessionId === metadata.sessionId && profileFitAnnouncement.message !== "") {
+          setProfileFitAnnouncement({ message: "", sessionId: metadata.sessionId });
+        }
+        return;
+      }
+
+      // offsetHeight and clientHeight share the element's layout-pixel
+      // coordinate system. getBoundingClientRect() is scaled by CSS zoom,
+      // which would make a 200%-zoom editor compact profiles too early.
+      const expandedHeight = expandedProfileHeaderHeight(header);
+      if (expandedHeight <= 0) return;
+      const currentCompact = profileFitState.sessionId === metadata.sessionId && profileFitState.compact;
+      const nextCompact = currentCompact
+        ? scrollerHeight < expandedHeight + gridRowHeight + headerProfileFitTolerance
+        : scrollerHeight - expandedHeight < gridRowHeight;
+      if (nextCompact === currentCompact) return;
+
+      if (nextCompact) {
+        const activeElement = document.activeElement;
+        if (
+          activeElement instanceof Element &&
+          [...header.querySelectorAll(".summaryDistribution")].some((distribution) =>
+            distribution.contains(activeElement)
+          )
+        ) {
+          headerProfilesButtonRef.current?.focus({ preventScroll: true });
+        }
+      }
+      setProfileFitAnnouncement({
+        message: nextCompact ? compactHeaderProfilesDescription : restoredHeaderProfilesDescription,
+        sessionId: metadata.sessionId
+      });
+      setProfileFitState({ compact: nextCompact, sessionId: metadata.sessionId });
+    };
+
+    updateProfileFit();
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => updateProfileFit());
+    resizeObserver?.observe(scroller);
+    resizeObserver?.observe(header);
+    window.addEventListener("resize", updateProfileFit);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateProfileFit);
+    };
+  }, [
+    metadata.sessionId,
+    profileFitAnnouncement.message,
+    profileFitAnnouncement.sessionId,
+    profileFitState.compact,
+    profileFitState.sessionId,
+    profileValueMode,
+    profilesDisabled,
+    showInsights,
+    summaries,
+    visibleColumns
+  ]);
 
   useEffect(() => {
     visibleColumnRangeHandler.current({ start: visibleColumnRange.start, end: visibleColumnRange.end });
@@ -1526,6 +1568,7 @@ export function DataGrid({
             />
           )}
           <button
+            ref={headerProfilesButtonRef}
             type="button"
             className="headerProfilesButton"
             aria-pressed={showInsights}
@@ -1543,23 +1586,25 @@ export function DataGrid({
                       : undefined
             }
             onClick={() => {
-              if (!profilesDisabled) setShowInsights((current) => !current);
+              if (profilesDisabled) return;
+              if (showInsights) {
+                setProfileFitState({ compact: false, sessionId: metadata.sessionId });
+                setProfileFitAnnouncement({ message: "", sessionId: metadata.sessionId });
+              }
+              setShowInsights(!showInsights);
             }}
           >
             {profilesDisabled ? "Profiles unavailable" : "Header profiles"}
           </button>
-          {compactHeaderProfiles && (
-            <span
-              id={profileFitDescriptionId}
-              className="headerProfilesFitStatus"
-              role="status"
-              aria-label={compactHeaderProfilesDescription}
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              {compactHeaderProfilesDescription}
-            </span>
-          )}
+          <span
+            id={profileFitDescriptionId}
+            className="headerProfilesFitStatus"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {profileFitStatusText}
+          </span>
         </div>
       </div>
     </div>
