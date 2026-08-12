@@ -127,7 +127,7 @@ Hover or right-click a scalar grid cell to keep or exclude its exact value. Null
     <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with inline priority, reorder, edit, and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/5acf731e8b44e9ff82c4ac48fdc151210636da95/docs/images/readme/v1.2/gallery/sort-priority.png" width="448"></a></td>
   </tr>
   <tr>
-    <td>Switch between counts and percentages from the grid or column panel. Hover or focus a bin for both, or click a value or bin to filter. In a short editor, exact header statistics stay visible while the taller distribution returns automatically when space allows.</td>
+    <td>Switch between counts and percentages from the grid or column panel. Hover or focus a bin for both, or click a value or bin to filter. In a compact but usable grid, exact header statistics stay visible while taller distributions hide and return automatically as the layout changes.</td>
     <td>Add multiple sort keys, then reorder them or change direction and null placement.</td>
   </tr>
 </table>
