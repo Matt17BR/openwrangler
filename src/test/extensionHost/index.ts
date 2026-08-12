@@ -16887,6 +16887,188 @@ async function exercisePackagedBackendSwitchJourney(
   const expectedViewState = testing.activeSession()?.viewState;
   assert.ok(expectedViewState, "The backend-switch journey must retain its confirmed view state.");
 
+  interface PhysicalViewSample {
+    backendLabel: string | null;
+    backendWidth: number | null;
+    connected: boolean;
+    headerSelected: string | null;
+    headerWidth: number | null;
+    rowHeight: number | null;
+    rowPresent: boolean;
+    scrollLeft: number | null;
+    scrollTop: number | null;
+    syncId: string | null;
+  }
+
+  const physicalViewMatches = (
+    sample: PhysicalViewSample,
+    synchronizationId: string,
+    backend: "Polars" | "Pandas"
+  ): boolean =>
+    sample.backendLabel === `Change dataframe engine. Current engine: ${backend}` &&
+    sample.backendWidth !== null &&
+    sample.backendWidth > 0 &&
+    sample.connected &&
+    sample.syncId === synchronizationId &&
+    sample.headerSelected === "true" &&
+    sample.headerWidth !== null &&
+    Math.abs(sample.headerWidth - 287) <= 1.5 &&
+    sample.rowPresent &&
+    sample.rowHeight !== null &&
+    sample.rowHeight > 0 &&
+    sample.scrollLeft !== null &&
+    Math.abs(sample.scrollLeft - 113) <= 1 &&
+    sample.scrollTop !== null &&
+    Math.abs(sample.scrollTop / sample.rowHeight - 37) <= 0.1;
+
+  const verifySwitchedPhysicalView = async (next: "Polars" | "Pandas", expectedRevision: number): Promise<void> => {
+    const physicalDeadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+    const expectation = `The ${next} renderer must acknowledge the switched file session before its physical view is checked.`;
+    await requireFreshExactSessionPanelHydration(
+      testing,
+      sessionId,
+      expectation,
+      Math.max(1, physicalDeadline - Date.now())
+    );
+    type RendererReceipt = NonNullable<ReturnType<TestApi["panelSynchronizationReceipt"]>>;
+    let bound:
+      | Readonly<{
+          app: Locator;
+          receipt: RendererReceipt;
+          target: OpenWranglerWebviewTarget;
+        }>
+      | undefined;
+    const supersededSynchronizationIds = new Set<string>();
+    let lastSample: PhysicalViewSample | undefined;
+    const receiptIsCurrent = (receipt: RendererReceipt): boolean =>
+      sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId));
+    const targetIsRetired = (target: OpenWranglerWebviewTarget): boolean =>
+      isRetiredRendererTarget(workbench, target.page, target.frame);
+    const supersede = (receipt: RendererReceipt): void => {
+      supersededSynchronizationIds.add(receipt.syncId);
+      bound = undefined;
+    };
+
+    while (Date.now() < physicalDeadline) {
+      const browser = workbench.context().browser();
+      assertOpenWranglerWebviewLifecycle(workbench, browser);
+      const active = testing.activeSession();
+      assert.equal(active?.sessionId, sessionId, `${expectation} The exact session must remain active.`);
+      assert.equal(
+        active?.metadata.revision,
+        expectedRevision,
+        `${expectation} The switched revision must remain unchanged through physical verification.`
+      );
+
+      if (bound === undefined) {
+        const receipt = testing.panelSynchronizationReceipt(sessionId);
+        if (
+          receipt?.sessionId === sessionId &&
+          receipt.revision === expectedRevision &&
+          testing.panelHydrated(sessionId) &&
+          !supersededSynchronizationIds.has(receipt.syncId)
+        ) {
+          let target: OpenWranglerWebviewTarget | undefined;
+          try {
+            target = await findCurrentOpenWranglerGridTarget(
+              workbench,
+              browser,
+              testing,
+              sessionId,
+              receipt,
+              physicalDeadline
+            );
+          } catch (error) {
+            assertOpenWranglerWebviewLifecycle(workbench, browser);
+            if (receiptIsCurrent(receipt)) throw error;
+            supersede(receipt);
+            continue;
+          }
+          const receiptAfterDiscovery = testing.panelSynchronizationReceipt(sessionId);
+          if (
+            !sameRendererSynchronizationReceipt(receipt, receiptAfterDiscovery) ||
+            (target && targetIsRetired(target))
+          ) {
+            supersede(receipt);
+          } else if (target) {
+            try {
+              const app = await exactSessionApp(target.frame, sessionId, receipt.syncId);
+              if (app && receiptIsCurrent(receipt) && !targetIsRetired(target)) {
+                bound = { app, receipt, target };
+              } else if (!receiptIsCurrent(receipt) || targetIsRetired(target)) {
+                supersede(receipt);
+              } else {
+                throw new Error(`${expectation} The acknowledged renderer did not expose its exact synchronized app.`);
+              }
+            } catch (error) {
+              if (receiptIsCurrent(receipt) && !targetIsRetired(target)) throw error;
+              supersede(receipt);
+            }
+          }
+        }
+      } else {
+        const boundReceipt = bound.receipt;
+        const boundTarget = bound.target;
+        if (!receiptIsCurrent(boundReceipt) || targetIsRetired(boundTarget)) {
+          supersede(boundReceipt);
+          continue;
+        }
+
+        let sample: PhysicalViewSample;
+        try {
+          sample = await withAcceptanceOperationDeadline(
+            bound.app.evaluate((root): PhysicalViewSample => {
+              const backendBadge = root.querySelector('[data-session-badge="backend"]');
+              const header = root.querySelector('th[data-column="market"]');
+              const restoredCell = root.querySelector('td[data-grid-row="37"][data-grid-column="1"]');
+              const restoredRow = restoredCell?.closest("tr");
+              const scroller = root.querySelector('[data-testid="data-grid-scroller"]');
+              const backendBox = backendBadge?.getBoundingClientRect();
+              const headerBox = header?.getBoundingClientRect();
+              const rowBox = restoredRow?.getBoundingClientRect();
+              return {
+                backendLabel: backendBadge?.getAttribute("aria-label") ?? null,
+                backendWidth: backendBox?.width ?? null,
+                connected: root.isConnected,
+                headerSelected: header?.getAttribute("aria-selected") ?? null,
+                headerWidth: headerBox?.width ?? null,
+                rowHeight: rowBox?.height ?? null,
+                rowPresent: restoredCell !== null,
+                scrollLeft: scroller?.scrollLeft ?? null,
+                scrollTop: scroller?.scrollTop ?? null,
+                syncId: root.getAttribute("data-renderer-sync-id")
+              };
+            }),
+            Math.max(1, physicalDeadline - Date.now()),
+            `the ${next} receipt-bound physical grid sample`
+          );
+        } catch (error) {
+          assertOpenWranglerWebviewLifecycle(workbench, browser);
+          if (receiptIsCurrent(boundReceipt) && !targetIsRetired(boundTarget)) throw error;
+          supersede(boundReceipt);
+          continue;
+        }
+
+        if (!receiptIsCurrent(boundReceipt) || targetIsRetired(boundTarget)) {
+          supersede(boundReceipt);
+          continue;
+        }
+        lastSample = sample;
+        if (physicalViewMatches(sample, boundReceipt.syncId, next)) return;
+      }
+      const remainingMs = physicalDeadline - Date.now();
+      if (remainingMs > 0) await workbench.waitForTimeout(Math.min(25, remainingMs));
+    }
+
+    throw new Error(
+      `The ${next} switched physical view exceeded its shared renderer deadline. ${JSON.stringify({
+        receipt: testing.panelSynchronizationReceipt(sessionId),
+        lastSample,
+        supersededSynchronizationIds: Array.from(supersededSynchronizationIds).slice(-8)
+      })}`
+    );
+  };
+
   const chooseBackend = async (current: "Polars" | "Pandas", next: "Polars" | "Pandas"): Promise<void> => {
     const before = testing.activeSession();
     assert.equal(before?.sessionId, sessionId);
@@ -16923,12 +17105,6 @@ async function exercisePackagedBackendSwitchJourney(
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       `the file session to switch from ${current} to ${next}`
     );
-    await requireFreshExactSessionPanelHydration(
-      testing,
-      sessionId,
-      `The ${next} renderer must acknowledge the switched file session.`
-    );
-
     const switched = testing.activeSession();
     assert.equal(switched?.sessionId, sessionId, "Changing engines must retain the public session ID.");
     assert.ok(switched, `The ${next} file session must remain active.`);
@@ -16940,42 +17116,7 @@ async function exercisePackagedBackendSwitchJourney(
       sourceBytes,
       `Switching the file session to ${next} must not modify its source.`
     );
-    const switchedApp = await exactSessionApp(
-      (await waitForOpenWranglerGridTarget(workbench, testing, sessionId)).frame,
-      sessionId
-    );
-    assert.ok(switchedApp, `The ${next} switch must leave one exact live renderer.`);
-    await switchedApp
-      .getByRole("button", { name: `Change dataframe engine. Current engine: ${next}`, exact: true })
-      .waitFor({ state: "visible", timeout: 10_000 });
-    const selectedHeader = switchedApp.locator('th[data-column="market"]');
-    const restoredRow = switchedApp.locator('td[data-grid-row="37"][data-grid-column="1"]');
-    await selectedHeader.waitFor({ state: "visible", timeout: 10_000 });
-    await restoredRow.waitFor({ state: "visible", timeout: 10_000 });
-    const headerBox = await selectedHeader.boundingBox();
-    const rowBox = await restoredRow.locator("xpath=ancestor::tr[1]").boundingBox();
-    assert.ok(headerBox, `The ${next} selected header must have rendered geometry.`);
-    assert.ok(rowBox, `The ${next} restored row must have rendered geometry.`);
-    const scroller = switchedApp.locator('[data-testid="data-grid-scroller"]');
-    const renderedView = await scroller.evaluate((element) => ({
-      scrollLeft: Number(Reflect.get(element, "scrollLeft")),
-      scrollTop: Number(Reflect.get(element, "scrollTop"))
-    }));
-    const headerSelected = await selectedHeader.getAttribute("aria-selected");
-    assert.equal(headerSelected, "true", `${next} must render market as the selected column.`);
-    assert.ok(
-      Math.abs(headerBox.width - 287) <= 1.5,
-      `${next} must restore the 287px market width; rendered ${headerBox.width}px.`
-    );
-    assert.ok(
-      Math.abs(renderedView.scrollLeft - 113) <= 1,
-      `${next} must restore horizontal scroll 113; rendered ${renderedView.scrollLeft}.`
-    );
-    assert.ok(rowBox.height > 0, `${next} must render a measurable restored row.`);
-    assert.ok(
-      Math.abs(renderedView.scrollTop / rowBox.height - 37) <= 0.1,
-      `${next} must restore row 37 as the first visible row; rendered scroll ${renderedView.scrollTop}.`
-    );
+    await verifySwitchedPhysicalView(next, switched.metadata.revision);
   };
 
   await chooseBackend("Polars", "Pandas");
@@ -18914,7 +19055,8 @@ async function exercisePackagedReopenAndUndoJourney(
 async function requireFreshExactSessionPanelHydration(
   testing: TestApi,
   sessionId: string,
-  expectation: string
+  expectation: string,
+  timeoutMs = OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS
 ): Promise<void> {
   const active = testing.activeSession();
   assert.equal(active?.sessionId, sessionId, `${expectation} The exact session must remain active.`);
@@ -18922,7 +19064,7 @@ async function requireFreshExactSessionPanelHydration(
   const expectedRevision = active.metadata.revision;
   const synchronized = await waitForFreshExactSessionPanelHydration(testing, sessionId, {
     expectedRevision,
-    timeoutMs: OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+    timeoutMs,
     pollIntervalMs: 25
   });
   assert.equal(

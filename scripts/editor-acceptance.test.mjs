@@ -194,14 +194,15 @@ test("ordinary Quarto acceptance does not require a headless preview webview", a
   assert.doesNotMatch(journey, /priorTabs|instanceof vscode\.TabInputWebview/u);
 });
 
-test("panel hydration uses the renderer discovery deadline", async () => {
+test("panel hydration defaults to the renderer discovery deadline and accepts a shared bound", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const helper = source.slice(
     source.indexOf("async function requireFreshExactSessionPanelHydration("),
     source.indexOf("async function previewUppercaseMarketReplacement(")
   );
-  assert.match(helper, /timeoutMs: OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS/u);
-  assert.doesNotMatch(helper, /timeoutMs: WORKBENCH_OPERATION_TIMEOUT_MS/u);
+  assert.match(helper, /timeoutMs = OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS/u);
+  assert.match(helper, /expectedRevision,\s*timeoutMs,\s*pollIntervalMs: 25/u);
+  assert.doesNotMatch(helper, /WORKBENCH_OPERATION_TIMEOUT_MS/u);
 });
 
 test("packaged panel actions stay bound to the acknowledged renderer", async () => {
@@ -483,6 +484,75 @@ test("packaged webview actions accept a current replacement at the failure bound
   assert.doesNotMatch(
     failureFinalization,
     /setTimeout|OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS|\bdo\s*\{|\bwhile\s*\(/u
+  );
+});
+
+test("packaged backend switching checks the receipt-bound physical grid", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const journey = source.slice(
+    source.indexOf("async function exercisePackagedBackendSwitchJourney("),
+    source.indexOf("async function exercisePrimarySortJourney(")
+  );
+  const physicalContract = journey.slice(
+    journey.indexOf("const physicalViewMatches = ("),
+    journey.indexOf("const chooseBackend = async (")
+  );
+  const verifier = physicalContract.slice(physicalContract.indexOf("const verifySwitchedPhysicalView = async ("));
+  const chooseBackend = journey.slice(
+    journey.indexOf("const chooseBackend = async ("),
+    journey.indexOf('await chooseBackend("Polars", "Pandas")')
+  );
+  assert.equal(
+    chooseBackend.match(/await matchingLabels\.first\(\)\.click\(\)/gu)?.length,
+    1,
+    "Each backend switch must dispatch its exact picker choice once."
+  );
+  assert.match(
+    chooseBackend,
+    /assertExactBytes[\s\S]*await verifySwitchedPhysicalView\(next, switched\.metadata\.revision\)/u,
+    "Backend switching must confirm the source and switched revision before physical verification."
+  );
+  assert.equal(
+    verifier.match(/OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS/gu)?.length,
+    1,
+    "Physical verification must own one renderer deadline."
+  );
+  assert.match(verifier, /await requireFreshExactSessionPanelHydration\([\s\S]*physicalDeadline - Date\.now\(\)/u);
+  assert.match(verifier, /const supersededSynchronizationIds = new Set<string>\(\)/u);
+  assert.match(verifier, /receipt\.revision === expectedRevision/u);
+  assert.match(verifier, /active\?\.metadata\.revision,\s*expectedRevision/u);
+  assert.match(verifier, /!supersededSynchronizationIds\.has\(receipt\.syncId\)/u);
+  assert.match(
+    verifier,
+    /findCurrentOpenWranglerGridTarget\([\s\S]*receipt,\s*physicalDeadline[\s\S]*if \(receiptIsCurrent\(receipt\)\) throw error[\s\S]*receiptAfterDiscovery[\s\S]*sameRendererSynchronizationReceipt\(receipt, receiptAfterDiscovery\)/u
+  );
+  assert.match(
+    verifier,
+    /exactSessionApp\(target\.frame, sessionId, receipt\.syncId\)[\s\S]*receiptIsCurrent\(receipt\)[\s\S]*!targetIsRetired\(target\)/u
+  );
+  const atomicSample = verifier.indexOf("bound.app.evaluate((root): PhysicalViewSample =>");
+  assert.ok(atomicSample >= 0, "Physical verification must sample the exact bound renderer in one browser task.");
+  const evaluateBody = verifier.slice(atomicSample, verifier.indexOf("lastSample = sample", atomicSample));
+  assert.match(evaluateBody, /data-session-badge="backend"/u);
+  assert.match(evaluateBody, /th\[data-column="market"\]/u);
+  assert.match(evaluateBody, /td\[data-grid-row="37"\]\[data-grid-column="1"\]/u);
+  assert.match(evaluateBody, /data-testid="data-grid-scroller"/u);
+  assert.match(evaluateBody, /data-renderer-sync-id/u);
+  assert.ok(
+    (verifier.match(/receiptIsCurrent\(boundReceipt\) \|\| targetIsRetired\(boundTarget\)/gu)?.length ?? 0) >= 2,
+    "Receipt and target guards must bracket the atomic sample."
+  );
+  assert.match(verifier, /physicalViewMatches\(sample, boundReceipt\.syncId, next\)/u);
+  assert.match(physicalContract, /Change dataframe engine\. Current engine: \$\{backend\}/u);
+  assert.match(physicalContract, /sample\.backendWidth > 0/u);
+  assert.match(physicalContract, /Math\.abs\(sample\.headerWidth - 287\) <= 1\.5/u);
+  assert.match(physicalContract, /Math\.abs\(sample\.scrollLeft - 113\) <= 1/u);
+  assert.match(physicalContract, /Math\.abs\(sample\.scrollTop \/ sample\.rowHeight - 37\) <= 0\.1/u);
+  assert.doesNotMatch(verifier, /10_000|WORKBENCH_PLAYWRIGHT_TIMEOUT_MS|generationDeadline|matchingSince/u);
+  assert.doesNotMatch(verifier, /restoredRow\.waitFor|\.boundingBox\(|selectedHeader\.getAttribute/u);
+  assert.doesNotMatch(
+    verifier,
+    /waitForOpenWranglerGridTarget\(|requireFreshExactSessionPanelHydration\([\s\S]*requireFreshExactSessionPanelHydration\(/u
   );
 });
 
