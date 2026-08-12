@@ -592,6 +592,33 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
     "XLSX phase isolation must retain the ordinary sidebar width."
   );
 
+  const markerCreated = journey.indexOf('recordAcceptanceProgress("excel-dependency-install:marker-created")');
+  const installedNotice = journey.indexOf(
+    'hasText: "Open Wrangler runtime dependencies were installed."',
+    markerCreated
+  );
+  const installedNoticeVisible = journey.indexOf('installedNotice.waitFor({ state: "visible"', installedNotice);
+  const hideToasts = journey.indexOf('executeCommand("notifications.hideToasts")', installedNoticeVisible);
+  const zeroVisibleToasts = journey.indexOf("visibleNotificationToasts.count()) === 0", hideToasts);
+  const notificationHidden = journey.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:notification-hidden")',
+    zeroVisibleToasts
+  );
+  const sessionPublished = journey.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:session-published")',
+    notificationHidden
+  );
+  assert.ok(
+    markerCreated >= 0 &&
+      installedNotice > markerCreated &&
+      installedNoticeVisible > installedNotice &&
+      hideToasts > installedNoticeVisible &&
+      zeroVisibleToasts > hideToasts &&
+      notificationHidden > zeroVisibleToasts &&
+      sessionPublished > notificationHidden,
+    "XLSX recovery must acknowledge and hide its exact install-success toast before pointer activation."
+  );
+
   const recoveredSection = journey.slice(
     journey.indexOf('recordAcceptanceProgress("excel-dependency-install:session-published")')
   );
@@ -630,8 +657,13 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
   const dataColumnCount = verifier.indexOf("(table, dataColumnCount) =>", gridBound);
   const exposedBounds = verifier.indexOf("const exposedBounds =", dataColumnCount);
   const renderedCells = verifier.indexOf('"tbody td.gridCell[data-grid-row][data-grid-column]"', exposedBounds);
-  const eligibleColumn = verifier.indexOf("column + 1 >= dataColumnCount", renderedCells);
-  const exposedCellCount = verifier.indexOf("centerExposedCellCount += 1", eligibleColumn);
+  const eligibleColumn = verifier.indexOf("column + 1 < dataColumnCount", renderedCells);
+  const rankedCells = verifier.indexOf(
+    ".sort((left, right) => right.column - left.column || left.row - right.row)",
+    eligibleColumn
+  );
+  const fullyExposed = verifier.indexOf("if (!fullyExposed(rect)) continue", rankedCells);
+  const exposedCellCount = verifier.indexOf("fullyExposedCellCount += 1", fullyExposed);
   const hitTest = verifier.indexOf("ownerDocument.elementFromPoint", exposedCellCount);
   const exactDataColumnCount = verifier.indexOf("Number(columnCount) - 1", hitTest);
   const probeTarget = verifier.indexOf("const activationTarget = activationProbe.target", hitTest);
@@ -641,18 +673,20 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
     geometryDiagnostic
   );
   const activationCell = verifier.indexOf("const activationCell = app", activationTarget);
-  const clickCell = verifier.indexOf("await activationCell.click({ timeout: operationTimeout() })", activationCell);
-  const documentFocus = verifier.indexOf("documentFocused: element.ownerDocument.hasFocus()", clickCell);
+  const activationElement = verifier.indexOf(
+    "const activationElement = await activationCell.elementHandle",
+    activationCell
+  );
+  const oneShotActivation = verifier.indexOf("await activateExactAcceptanceElementOnce(", activationElement);
+  const preClickReceiptGuard = verifier.indexOf("sameRendererSynchronizationReceipt(receipt", oneShotActivation);
+  const activationBoundary = verifier.indexOf("activationBoundaryEntered = true", preClickReceiptGuard);
+  const activationDispatched = verifier.indexOf(
+    'recordAcceptanceProgress("excel-dependency-install:grid-activation-dispatched")',
+    activationBoundary
+  );
+  const documentFocus = verifier.indexOf("documentFocused: element.ownerDocument.hasFocus()", activationDispatched);
   const cellFocus = verifier.indexOf("cellFocused: element.ownerDocument.activeElement === element", documentFocus);
-  const postClickRetirementGuard = verifier.indexOf(
-    "isRetiredRendererTarget(workbench, target.page, target.frame)",
-    cellFocus
-  );
-  const postClickReceiptGuard = verifier.indexOf(
-    "sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))",
-    postClickRetirementGuard
-  );
-  const focusAssertion = verifier.indexOf("assert.deepEqual(", postClickReceiptGuard);
+  const focusAssertion = verifier.indexOf("assert.deepEqual(", cellFocus);
   const exactFocusState = verifier.indexOf(
     "{ connected: true, documentFocused: true, cellFocused: true }",
     focusAssertion
@@ -662,22 +696,17 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
     exactFocusState
   );
   const arrowRight = verifier.indexOf('target.page.keyboard.press("ArrowRight")', gridFocused);
-  const postArrowRetirementGuard = verifier.indexOf(
-    "isRetiredRendererTarget(workbench, target.page, target.frame)",
-    arrowRight
-  );
-  const postArrowReceiptGuard = verifier.indexOf(
-    "sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(sessionId))",
-    postArrowRetirementGuard
-  );
   const arrowSent = verifier.indexOf(
     'recordAcceptanceProgress("excel-dependency-install:grid-arrow-sent")',
-    postArrowReceiptGuard
+    arrowRight
   );
   const dynamicNeighbor = verifier.indexOf("activationTarget.column + 1", arrowSent);
+  const neighborExposure = verifier.indexOf("const neighborExposure =", dynamicNeighbor);
+  const neighborDataViewport = verifier.indexOf('querySelectorAll("thead th.rowHeader")', neighborExposure);
+  const neighborFullyExposed = verifier.indexOf("neighborExposure.fullyExposed", neighborDataViewport);
   const gridKeyboard = verifier.indexOf(
     'recordAcceptanceProgress("excel-dependency-install:grid-keyboard")',
-    dynamicNeighbor
+    neighborFullyExposed
   );
   assert.ok(
     receipt >= 0 &&
@@ -687,35 +716,58 @@ test("XLSX dependency recovery follows the current acknowledged renderer", async
       exposedBounds > dataColumnCount &&
       renderedCells > exposedBounds &&
       eligibleColumn > renderedCells &&
-      exposedCellCount > eligibleColumn &&
+      rankedCells > eligibleColumn &&
+      fullyExposed > rankedCells &&
+      exposedCellCount > fullyExposed &&
       hitTest > exposedCellCount &&
       exactDataColumnCount > hitTest &&
       probeTarget > exactDataColumnCount &&
       geometryDiagnostic > probeTarget &&
       activationTarget > geometryDiagnostic &&
       activationCell > activationTarget &&
-      clickCell > activationCell &&
-      documentFocus > clickCell &&
+      activationElement > activationCell &&
+      oneShotActivation > activationElement &&
+      preClickReceiptGuard > oneShotActivation &&
+      activationBoundary > preClickReceiptGuard &&
+      activationDispatched > activationBoundary &&
+      documentFocus > activationDispatched &&
       cellFocus > documentFocus &&
-      postClickRetirementGuard > cellFocus &&
-      postClickReceiptGuard > postClickRetirementGuard &&
-      focusAssertion > postClickReceiptGuard &&
+      focusAssertion > cellFocus &&
       exactFocusState > focusAssertion &&
       gridFocused > exactFocusState &&
       arrowRight > gridFocused &&
-      postArrowRetirementGuard > arrowRight &&
-      postArrowReceiptGuard > postArrowRetirementGuard &&
-      arrowSent > postArrowReceiptGuard &&
+      arrowSent > arrowRight &&
       dynamicNeighbor > arrowSent &&
-      gridKeyboard > dynamicNeighbor,
+      neighborExposure > dynamicNeighbor &&
+      neighborDataViewport > neighborExposure &&
+      neighborFullyExposed > neighborDataViewport &&
+      gridKeyboard > neighborFullyExposed,
     "Recovered XLSX verification must hit-test an exposed body cell before sending a real keyboard action."
   );
   assert.match(verifier, /sameRendererSynchronizationReceipt/u);
   assert.match(verifier, /ignoreRetiredRendererProbeFailure/u);
+  assert.match(
+    verifier,
+    /if \(activationBoundaryEntered\) throw error;[\s\S]*error instanceof AcceptanceActionNotDispatchedError/u
+  );
+  const postDispatch = verifier.slice(activationBoundary, verifier.indexOf("return;", gridKeyboard));
+  assert.doesNotMatch(postDispatch, /continue;/u, "A trusted grid activation must never be dispatched again.");
+  assert.ok(
+    (postDispatch.match(/sameRendererSynchronizationReceipt\(receipt/gu)?.length ?? 0) >= 3,
+    "Activation, ArrowRight, and neighbor focus must each retain the exact renderer receipt."
+  );
+  assert.ok(
+    (postDispatch.match(/isRetiredRendererTarget\(workbench, target\.page, target\.frame\)/gu)?.length ?? 0) >= 3,
+    "Activation, ArrowRight, and neighbor focus must each reject a retired renderer."
+  );
+  assert.match(
+    verifier,
+    /rect\.left >= exposedBounds\.left - tolerance[\s\S]*rect\.top >= exposedBounds\.top - tolerance[\s\S]*rect\.right <= exposedBounds\.right \+ tolerance[\s\S]*rect\.bottom <= exposedBounds\.bottom \+ tolerance/u
+  );
   assert.doesNotMatch(verifier, /fullyExposed\(nextCell|getBoundingClientRect\(\)\s*\)\s*&&\s*fullyExposed/u);
   assert.doesNotMatch(
     verifier,
-    /bringToFront\(|firstCell\.focus\(|firstCell\.click\(|force:\s*true|position:\s*\{\s*x:/u
+    /bringToFront\(|firstCell\.focus\(|firstCell\.click\(|activationCell\.click\(|force:\s*true|position:\s*\{\s*x:/u
   );
   assert.doesNotMatch(
     verifier,
