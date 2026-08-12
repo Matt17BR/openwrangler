@@ -72,6 +72,7 @@ stages:
           releaseCommit: $[stageDependencies.Intake.Bind.outputs['release_intake.releaseCommit']]
           releasePrerelease: $[stageDependencies.Intake.Bind.outputs['release_intake.releasePrerelease']]
           releaseTag: $[stageDependencies.Intake.Bind.outputs['release_intake.releaseTag']]
+          releaseVersion: $[stageDependencies.Intake.Bind.outputs['release_intake.releaseVersion']]
         strategy:
           runOnce:
             deploy:
@@ -102,6 +103,36 @@ stages:
                     EXPECTED_SHA: $(releaseCommit)
                     RELEASE_PRERELEASE: $(releasePrerelease)
                     RELEASE_TAG: $(releaseTag)
+                - script: |
+                    set -euo pipefail
+                    pwd -P | grep -Fqx -- "$AUTOMATION_ROOT"
+                    test ! -e release-source
+                    test ! -L release-source
+                    git worktree add --detach release-source "$RELEASE_COMMIT"
+                    git -C release-source rev-parse --verify HEAD^{commit} | grep -Fqx -- "$RELEASE_COMMIT"
+                    git -C release-source rev-parse --show-toplevel | grep -Fqx -- "$AUTOMATION_ROOT/release-source"
+                    git -C release-source status --porcelain=v1 --untracked-files=all | cmp -s - /dev/null
+                  displayName: Materialize the exact clean release source
+                  env:
+                    AUTOMATION_ROOT: $(System.DefaultWorkingDirectory)
+                    RELEASE_COMMIT: $(releaseCommit)
+                - script: |
+                    set -euo pipefail
+                    required="$(node --input-type=module -e 'import { publicMediaPrepublicationRequired } from "./scripts/public-media-surface-contract.mjs"; process.stdout.write(String(publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)));')"
+                    case "$required" in
+                      true)
+                        npm ci --ignore-scripts --prefix release-source
+                        node release-source/scripts/verify-public-media-surfaces.mjs --source-sha "$RELEASE_SOURCE_SHA" --version "$RELEASE_VERSION" --prepublish
+                        ;;
+                      false)
+                        printf 'Prepublication public-media verification starts with v1.99.4; historical %s recovery is unchanged.\n' "$RELEASE_VERSION"
+                        ;;
+                      *) exit 64 ;;
+                    esac
+                  displayName: Preflight immutable public README media
+                  env:
+                    RELEASE_SOURCE_SHA: $(releaseCommit)
+                    RELEASE_VERSION: $(releaseVersion)
                 - task: AzureCLI@2
                   displayName: Publish with the federated Marketplace identity
                   inputs:

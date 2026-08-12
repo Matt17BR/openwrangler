@@ -1829,6 +1829,16 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       ).if = "always()";
     },
     (workflow) => {
+      workflow.jobs.package.steps.find((step) => String(step.run ?? "").includes("--prepublish")).run =
+        "echo media preflight skipped";
+    },
+    (workflow) => {
+      const packageSteps = workflow.jobs.package.steps;
+      const preflightIndex = packageSteps.findIndex((step) => String(step.run ?? "").includes("--prepublish"));
+      const [preflight] = packageSteps.splice(preflightIndex, 1);
+      packageSteps.push(preflight);
+    },
+    (workflow) => {
       workflow.jobs.release.steps.push({
         name: "Unrelated Open VSX token consumer",
         env: { OVSX_PAT: "${{ secrets.OVSX_PAT }}" },

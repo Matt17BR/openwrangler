@@ -38,6 +38,8 @@ export const MARKETPLACE_RECOVERY_PATHS = Object.freeze([
   "scripts/packaged-editor-orchestration.mjs",
   "scripts/prepare-xvfb.mjs",
   "scripts/public-media-contract.mjs",
+  "scripts/public-media-inventory.mjs",
+  "scripts/public-media-surface-contract.mjs",
   "scripts/release-metadata.mjs",
   "scripts/remote-workspace-acquisition.mjs",
   "scripts/remote-workspace-contract.mjs",
@@ -45,6 +47,7 @@ export const MARKETPLACE_RECOVERY_PATHS = Object.freeze([
   "scripts/strict-json.mjs",
   "scripts/verify-canonical-release-artifact.mjs",
   "scripts/verify-marketplace-publication.mjs",
+  "scripts/verify-public-media-surfaces.mjs",
   "scripts/verify-registry-release-artifact.mjs",
   "scripts/vsix-archive.mjs",
   "scripts/vsix-contents.mjs",
@@ -566,7 +569,8 @@ export function marketplaceReleaseIntakeOutput(result) {
     !result.eligible ||
     result.promote !== true ||
     result.releaseTag === undefined ||
-    result.releaseCommit === undefined
+    result.releaseCommit === undefined ||
+    result.version === undefined
   ) {
     throw new Error("Marketplace release intake did not produce one promotable release.");
   }
@@ -574,6 +578,7 @@ export function marketplaceReleaseIntakeOutput(result) {
     "##vso[task.setvariable variable=promote;isOutput=true]true",
     `##vso[task.setvariable variable=releaseTag;isOutput=true]${result.releaseTag}`,
     `##vso[task.setvariable variable=releaseCommit;isOutput=true]${result.releaseCommit}`,
+    `##vso[task.setvariable variable=releaseVersion;isOutput=true]${result.version}`,
     `##vso[task.setvariable variable=releasePrerelease;isOutput=true]${String(result.prerelease)}`,
     `Accepted ${result.prerelease ? "pre-release" : "stable"} Marketplace promotion ${result.releaseTag}.`
   ]);

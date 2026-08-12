@@ -242,6 +242,14 @@ installed performance, released and remote Jupyter, Remote SSH, and macOS/Window
 the final job accepts only an absent or exact lightweight tag, pushes it immediately before GitHub Release creation,
 and promotes the accepted VSIX to Open VSX. The tag event starts Marketplace promotion.
 
+Marketplace intake exports the exact release commit, version, and channel. Its deployment must materialize that
+commit as a clean, contained, detached `release-source` worktree from the full-history automation checkout. For
+`1.99.4` and later it restores that exact checkout's lockfile and runs its browser-free immutable-media verifier only
+after canonical artifact verification and before the AzureCLI authentication boundary; older releases predate the
+mode and retain their historical recovery path. The pipeline inspector pins the complete command and environment contract;
+mutation tests reject a moving source, missing root/identity/cleanliness checks, output drift, and every reordering
+across canonical verification, source materialization, media preflight, authentication, and public verification.
+
 The separate `.github/workflows/open-vsx-promotion.yml` contract is the explicit reusable publisher for both preview and stable GitHub release jobs, as well as the protected recovery dispatch. Each caller must retain a direct `needs: release` reusable-workflow call so automation does not depend on GitHub delivering a second workflow event for a release created with `GITHUB_TOKEN`; mutation tests reject removing or redirecting either call. Promotion checks out reviewed `main` automation separately from the exact immutable release tag, derives stable versus preview from that tag's tracked manifest, requires the public tag at the bound commit before and after promotion, and downloads the canonical VSIX/checksum/provenance triple for either channel. Only the protected token-verification and publish steps receive `OVSX_PAT`; no step rebuilds, retags, or mutates the artifact. The reusable job and both public GitHub release owners share the global non-cancelling `openwrangler-release-publication` queue with `queue: max`; preview publication adds `ovsx --pre-release`, while stable publication must not. Preflight accepts only an absent or byte-identical registry version, and postflight uses a bounded fifteen-minute propagation window before downloading the public Open VSX VSIX and checksum and verifying its exact channel and publisher. Parsed-YAML mutation tests reject trigger, permission, timeout, checkout, channel, queue, token, command-order, and public-verification drift. Remote SSH currently emits no failure artifact: its raw private workspace is never uploaded, and adding diagnostics requires a separately sealed, redacted, receipt-bound implementation that satisfies invariant 40. This absence does not weaken the Remote SSH result. It remains an unconditional fail-closed release job.
 
 [GitHub reports a conditionally skipped job as a successful check](https://docs.github.com/en/pull-requests/reference/status-checks), including when that check is required. Drafts therefore report `Draft feedback` under a different name; the protected `validate` check appears only after `ready_for_review` starts the merge tier at the same commit. Directly protected cross-platform and CodeQL matrices still expand small carrier cells for documentation-only, package-only, and draft changes so their required names remain stable. When multiple ready branches share one base, finish and merge one matrix before updating and starting the next. Routine Dependabot version updates are staggered on separate UTC days and group compatible minor and patch updates by ecosystem; major and security updates remain separate.
@@ -561,8 +569,20 @@ natural aspect ratio within one CSS pixel of height rounding, and retain at leas
 pixel. The hero, histogram, PySpark workbench, and R editing scene repeat those checks near 760px and 1400px viewport
 widths.
 
-The versioned gate begins with `1.2.1`; older recovery runs skip browser installation and public-media verification.
-For protected versions, the workflow runs the verifier from the exact release checkout with
+Before any preview or stable tag, GitHub Release, or registry write, the package job runs the same verifier with
+`--prepublish`. That mode performs local inventory, exact-source, version, and all 48 immutable remote-byte checks,
+requires the README media commit to be a reachable ancestor of the exact release source in the selected full-history
+checkout, then exits without launching Chromium or reading registry pages. The Open VSX recovery workflow applies
+the same mode starting with `1.99.4`, restoring and executing the exact release checkout's lockfile and verifier before
+token authentication or registry mutation. Older releases predate this capability and do not inherit a future
+inventory. A README commit
+pin that lags any checked-in media change, names a missing object, or comes from a divergent branch is therefore a
+deterministic prepublication failure.
+
+Rendered versioned verification begins with `1.2.1`; older recovery runs skip browser installation and public-media
+verification. Browser-free recovery prepublication begins independently with `1.99.4`; those releases install the
+browser through the restored release-local Playwright, while earlier exact releases retain their historical
+current-automation browser pairing. For protected versions, the workflow runs the verifier from the exact release checkout with
 `--wait-for-propagation`, so each release uses its own reviewed media inventory.
 The retry controller is injected and directly tested: a deterministic error stops after one attempt, typed stale or
 unavailable registry observations exhaust the exact attempt/delay count, and every retry owns and closes a distinct

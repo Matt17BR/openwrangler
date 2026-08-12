@@ -2,7 +2,8 @@ import { load as parseYaml } from "js-yaml";
 import {
   OPEN_VSX_PUBLISH_RUN,
   OPEN_VSX_VERIFY_PAT_RUN,
-  PUBLIC_MEDIA_CONTRACT_RUN
+  PUBLIC_MEDIA_CONTRACT_RUN,
+  PUBLIC_MEDIA_PREFLIGHT_RUN
 } from "./open-vsx-promotion-workflow.mjs";
 import { inspectCandidateMatrixCaller } from "./candidate-acceptance-workflow.mjs";
 
@@ -256,6 +257,21 @@ export function inspectPreviewReleaseWorkflow(source) {
   const packaging = workflow.jobs.package;
   inspectCheckout(packaging, "package", problems);
   inspectPackageSourceBinding(packaging, problems);
+  const packageSteps = steps(packaging);
+  const packageInstall = findRun(packaging, "npm ci");
+  const publicMediaPreflight = findRun(packaging, PUBLIC_MEDIA_PREFLIGHT_RUN);
+  const packageBuild = packageSteps.find((step) => step?.name === "Package the preview VSIX once");
+  if (
+    !exactKeys(publicMediaPreflight, ["name", "env", "run"]) ||
+    publicMediaPreflight.name !== "Preflight immutable public README media" ||
+    !exactKeys(publicMediaPreflight.env, ["RELEASE_SOURCE_SHA", "RELEASE_VERSION"]) ||
+    publicMediaPreflight.env.RELEASE_SOURCE_SHA !== EVENT_SHA ||
+    publicMediaPreflight.env.RELEASE_VERSION !== "${{ steps.release_metadata.outputs.version }}" ||
+    packageSteps.indexOf(publicMediaPreflight) !== packageSteps.indexOf(packageInstall) + 1 ||
+    packageSteps.indexOf(publicMediaPreflight) >= packageSteps.indexOf(packageBuild)
+  ) {
+    problems.push("package must verify immutable public-media bytes before preview packaging or publication.");
+  }
   if (
     packaging["runs-on"] !== "ubuntu-24.04" ||
     packaging.environment !== undefined ||

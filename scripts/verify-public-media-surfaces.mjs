@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   closeSync,
   constants as fileSystemConstants,
@@ -12,7 +13,6 @@ import {
 } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 import {
   PUBLIC_MEDIA_MAX_FILE_BYTES,
@@ -38,6 +38,7 @@ import {
   expectedRepresentativeReferences,
   extractDeclaredPublicMediaPaths,
   extractImmutableProductReferences,
+  extractImmutableReadmeMediaSourceSha,
   parsePublicMediaVerifierArguments,
   PUBLIC_MEDIA_CONTEXT_CLEANUP_TIMEOUT_MS,
   PUBLIC_MEDIA_FETCH_TIMEOUT_MS,
@@ -52,6 +53,8 @@ import {
 
 const automationRoot = resolve(import.meta.dirname, "..");
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const FULL_SOURCE_SHA = /^[0-9a-f]{40}$/u;
+const PUBLIC_MEDIA_GIT_TIMEOUT_MS = 30_000;
 
 export class RetryablePublicMediaObservationError extends Error {
   constructor(message, options) {
@@ -61,21 +64,54 @@ export class RetryablePublicMediaObservationError extends Error {
 }
 
 async function main() {
-  const { sourceSha, version, sourceRoot, waitForPropagation } = parsePublicMediaVerifierArguments(
-    process.argv.slice(2)
-  );
-  if (!publicMediaVerificationRequired(version)) {
-    console.log(`Public README media verification starts with v1.2.1; historical ${version} recovery is unchanged.`);
-    return;
+  await runPublicMediaVerification(parsePublicMediaVerifierArguments(process.argv.slice(2)));
+}
+
+export async function runPublicMediaVerification(options, overrides = {}) {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw new TypeError("Public-media verification requires parsed command options.");
   }
-  const root = resolveVerifiedSourceRoot(sourceRoot);
+  const { sourceSha, version, sourceRoot, waitForPropagation, prepublish } = options;
+  const resolveSourceRoot = overrides.resolveSourceRoot ?? resolveVerifiedSourceRoot;
+  const readSource = overrides.readSource ?? ((root, path) => readFileSync(resolve(root, path), "utf8"));
+  const verifyLocal = overrides.verifyLocal ?? verifyLocalPublicMedia;
+  const verifyAncestry = overrides.verifyAncestry ?? verifyImmutableMediaAncestry;
+  const verifySource = overrides.verifySource ?? verifyExactSource;
+  const verifyBytes = overrides.verifyBytes ?? verifyImmutablePublicBytes;
+  const verifyRendered = overrides.verifyRendered ?? verifyRenderedSurfaces;
+  const report = overrides.report ?? ((message) => console.log(message));
+  for (const dependency of [
+    resolveSourceRoot,
+    readSource,
+    verifyLocal,
+    verifyAncestry,
+    verifySource,
+    verifyBytes,
+    verifyRendered,
+    report
+  ]) {
+    if (typeof dependency !== "function") {
+      throw new TypeError("Public-media verification dependencies must be functions.");
+    }
+  }
+  if (!publicMediaVerificationRequired(version)) {
+    report(`Public README media verification starts with v1.2.1; historical ${version} recovery is unchanged.`);
+    return "historical";
+  }
+  const root = resolveSourceRoot(sourceRoot);
   const productImageRoot = resolve(root, ...PUBLIC_MEDIA_SERIES_PATH.split("/").filter(Boolean));
-  const readme = readFileSync(resolve(root, "README.md"), "utf8");
-  const gallery = readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8");
-  const references = verifyLocalPublicMedia(productImageRoot, readme, gallery);
-  await verifyExactSource(root, sourceSha, version, readme);
-  await verifyImmutablePublicBytes(references);
-  await verifyRenderedSurfaces(sourceSha, version, readme, references, waitForPropagation);
+  const readme = readSource(root, "README.md");
+  const gallery = readSource(root, "docs/media-gallery.md");
+  const references = verifyLocal(productImageRoot, readme, gallery);
+  verifyAncestry(root, sourceSha, references.mediaSourceSha);
+  await verifySource(root, sourceSha, version, readme);
+  await verifyBytes(references);
+  if (prepublish) {
+    report("Prepublication public-media verification completed without browser or registry access.");
+    return "prepublish";
+  }
+  await verifyRendered(sourceSha, version, readme, references, waitForPropagation);
+  return "rendered";
 }
 
 export function resolveVerifiedSourceRoot(sourceRoot, checkoutRoot = automationRoot) {
@@ -103,6 +139,7 @@ export function verifyLocalPublicMedia(productImageRoot, readme, gallery) {
   if (JSON.stringify(declaredPaths) !== JSON.stringify(expectedPaths)) {
     throw new Error("README and gallery media references differ from the canonical public-media inventory.");
   }
+  const declaredMediaSourceSha = extractImmutableReadmeMediaSourceSha(readme);
   const inventory = inspectLocalPublicMediaInventory(productImageRoot);
   const actualPaths = inventory.files.map((file) => file.relativePath);
   if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
@@ -148,37 +185,83 @@ export function verifyLocalPublicMedia(productImageRoot, readme, gallery) {
   if (mediaSourceShas.size !== 1) {
     throw new Error("README public product images must share one immutable reviewed media commit.");
   }
+  const mediaSourceSha = [...mediaSourceShas][0];
+  if (declaredMediaSourceSha !== mediaSourceSha) {
+    throw new Error("README image sources and full-size product-media links must share one reviewed commit.");
+  }
   console.log(
     `Verified ${PUBLIC_MEDIA_ASSETS.length} declared sRGB PNGs and width-only README presentations within the media budgets.`
   );
-  return { displayed, localBytes, mediaSourceSha: [...mediaSourceShas][0] };
+  return { displayed, localBytes, mediaSourceSha };
 }
 
-async function verifyExactSource(root, sourceSha, version, localReadme) {
+export function verifyImmutableMediaAncestry(root, sourceSha, mediaSourceSha, runGit = runBoundedGit) {
+  if (
+    typeof root !== "string" ||
+    !FULL_SOURCE_SHA.test(sourceSha) ||
+    !FULL_SOURCE_SHA.test(mediaSourceSha) ||
+    typeof runGit !== "function"
+  ) {
+    throw new TypeError("Public-media ancestry requires one repository and two exact lowercase commit IDs.");
+  }
+  for (const [label, sha] of [
+    ["release source", sourceSha],
+    ["README media source", mediaSourceSha]
+  ]) {
+    const result = runGit(root, ["rev-parse", "--verify", `${sha}^{commit}`]);
+    if (result?.status !== 0 || typeof result.stdout !== "string" || result.stdout.trim() !== sha) {
+      throw new Error(`The selected checkout does not contain the exact ${label} commit.`);
+    }
+  }
+  const ancestry = runGit(root, ["merge-base", "--is-ancestor", mediaSourceSha, sourceSha]);
+  if (ancestry?.status === 1) {
+    throw new Error("The immutable README media commit must be an ancestor of the exact release source.");
+  }
+  if (ancestry?.status !== 0) {
+    throw new Error("The immutable README media ancestry could not be verified in the selected checkout.");
+  }
+  console.log(`Verified immutable README media ancestry ${mediaSourceSha}..${sourceSha}.`);
+}
+
+export function runBoundedGit(root, arguments_, spawn = spawnSync) {
+  if (typeof spawn !== "function") throw new TypeError("Public-media Git verification requires one spawn function.");
+  return spawn("git", ["-C", root, ...arguments_], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: PUBLIC_MEDIA_GIT_TIMEOUT_MS,
+    windowsHide: true
+  });
+}
+
+export async function verifyExactSource(root, sourceSha, version, localReadme, fetchSource = fetchBounded) {
+  if (typeof fetchSource !== "function") {
+    throw new TypeError("Exact public-media source verification requires one bounded fetch function.");
+  }
   const localPackage = readFileSync(resolve(root, "package.json"), "utf8");
   assertSourcePackageVersion(localPackage, version);
 
-  const remoteReadme = await fetchBounded(
+  const remoteReadme = await fetchSource(
     `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/README.md`
   );
   if (!remoteReadme.equals(Buffer.from(localReadme))) {
     throw new Error("The exact source commit README does not byte-match the reviewed local README.");
   }
-  const remotePackage = await fetchBounded(
+  const remotePackage = await fetchSource(
     `https://raw.githubusercontent.com/Matt17BR/openwrangler/${sourceSha}/package.json`
   );
   assertSourcePackageVersion(remotePackage.toString("utf8"), version);
   console.log(`Verified exact source ${sourceSha} at version ${version}.`);
 }
 
-async function verifyImmutablePublicBytes(references) {
+export async function verifyImmutablePublicBytes(references, fetchMedia = fetch) {
   for (const asset of PUBLIC_MEDIA_ASSETS) {
     const local = references.localBytes.get(asset.relativePath);
     if (local === undefined) throw new Error(`${asset.relativePath} is absent from the verified local byte set.`);
     const source =
       `https://raw.githubusercontent.com/Matt17BR/openwrangler/${references.mediaSourceSha}/` +
       `${PUBLIC_MEDIA_SERIES_PATH}${asset.relativePath}`;
-    const response = await fetch(source, {
+    const response = await fetchMedia(source, {
       headers: { "user-agent": "Open-Wrangler-public-media-verifier" },
       redirect: "follow",
       signal: AbortSignal.timeout(PUBLIC_MEDIA_FETCH_TIMEOUT_MS)
@@ -209,6 +292,7 @@ async function verifyRenderedSurfaces(sourceSha, version, readme, references, wa
     }
     return displayed;
   });
+  const { chromium } = await import("playwright-core");
   const browser = await chromium.launch({ headless: true });
   const attempts = waitForPropagation ? PUBLIC_MEDIA_PROPAGATION_ATTEMPTS : 1;
   try {
@@ -708,6 +792,6 @@ async function fetchBounded(source) {
   return readBoundedResponse(response, source);
 }
 
-if (fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   await main();
 }

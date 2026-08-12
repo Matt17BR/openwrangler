@@ -5,6 +5,31 @@ export const PUBLIC_MEDIA_MAX_INVENTORY_ENTRIES = 64;
 export const PUBLIC_MEDIA_MAX_DIRECTORY_DEPTH = 4;
 export const PUBLIC_MEDIA_MAX_RELATIVE_PATH_BYTES = 240;
 
+export const PUBLIC_README_FULL_SIZE_LINKS = Object.freeze(
+  [
+    ["explore.png", "explore.png"],
+    ["gallery/sidebar-overview.png", "gallery/sidebar-overview.png"],
+    ["gallery/file-explorer-action-detail.png", "gallery/file-explorer-action.png"],
+    ["gallery/column-search-wide-detail.png", "gallery/column-search-wide.png"],
+    ["filter-result.png", "filter-result.png"],
+    ["gallery/histogram-hover.png", "gallery/histogram-hover.png"],
+    ["gallery/sort-priority.png", "gallery/sort-priority.png"],
+    ["workflow.png", "workflow.png"],
+    ["gallery/latest-step-edited-detail.png", "gallery/latest-step-edited.png"],
+    ["gallery/latest-step-undone-detail.png", "gallery/latest-step-undone.png"],
+    ["gallery/notebook-variable-picker-detail.png", "gallery/notebook-variable-picker.png"],
+    ["gallery/notebook-code-insertion.png", "gallery/notebook-code-insertion.png"],
+    ["gallery/notebook-pandas-detail.png", "notebook-pandas.png"],
+    ["gallery/notebook-polars-detail.png", "gallery/notebook-polars.png"],
+    ["gallery/notebook-duckdb-detail.png", "gallery/notebook-duckdb.png"],
+    ["gallery/notebook-pyspark-detail.png", "gallery/notebook-pyspark.png"],
+    ["gallery/r-quarto-variable-picker-detail.png", "gallery/r-quarto-variable-picker.png"],
+    ["gallery/notebook-r-editing.png", "gallery/notebook-r-editing.png"],
+    ["gallery/export-script-detail.png", "gallery/export-script.png"],
+    ["gallery/export-data-detail.png", "gallery/export-data.png"]
+  ].map(([displayPath, fullSizePath]) => Object.freeze({ displayPath, fullSizePath }))
+);
+
 const definitions = [
   ["explore.png", 1_440, 870],
   ["filter-result.png", 1_440, 846],

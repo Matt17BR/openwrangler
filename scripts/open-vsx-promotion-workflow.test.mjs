@@ -57,6 +57,27 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
     source.replace("Published Matt17BR.openwrangler v$RELEASE_VERSION", "Published something"),
     source.replace("node scripts/verify-open-vsx-github-release.mjs canonical-release --verify", "echo published"),
     source.replace("npx playwright-core install --with-deps chromium", "echo browser-skipped"),
+    source.replace(
+      "release-source/node_modules/.bin/playwright-core install --with-deps chromium",
+      "npx playwright-core install --with-deps chromium"
+    ),
+    source.replace(
+      "PREPUBLICATION_REQUIRED: ${{ steps.public_media_prepublish.outputs.required }}",
+      "PREPUBLICATION_REQUIRED: false"
+    ),
+    source.replace('printf \'required=%s\\n\' "$required" >> "$GITHUB_OUTPUT"', "echo output-skipped"),
+    source.replace("publicMediaPrepublicationRequired(process.env.RELEASE_VERSION)", "false"),
+    source.replace("npm ci --ignore-scripts --prefix release-source", "npm ci --ignore-scripts"),
+    source.replace(
+      "node release-source/scripts/verify-public-media-surfaces.mjs",
+      "node scripts/verify-public-media-surfaces.mjs"
+    ),
+    source.replace("Prepublication public-media verification starts with v1.99.4", "starts whenever"),
+    source.replace(" --prepublish", ""),
+    source.replace(
+      "        name: Preflight immutable public README media\n",
+      "        name: Preflight immutable public README media too late\n"
+    ),
     source.replace("steps.public_media_contract.outputs.required == 'true'", "always()"),
     source.replace(
       "publicMediaVerificationRequired(process.env.RELEASE_VERSION)",

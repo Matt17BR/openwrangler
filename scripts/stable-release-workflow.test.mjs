@@ -75,6 +75,16 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       workflow.jobs.release.steps.find((step) =>
         String(step.run ?? "").includes("verify-public-media-surfaces.mjs")
       ).run = "echo media verified";
+    },
+    (workflow) => {
+      workflow.jobs.package.steps.find((step) => String(step.run ?? "").includes("--prepublish")).run =
+        "echo media preflight skipped";
+    },
+    (workflow) => {
+      const packageSteps = workflow.jobs.package.steps;
+      const preflightIndex = packageSteps.findIndex((step) => String(step.run ?? "").includes("--prepublish"));
+      const [preflight] = packageSteps.splice(preflightIndex, 1);
+      packageSteps.push(preflight);
     }
   ];
   for (const [index, change] of cases.entries()) {
