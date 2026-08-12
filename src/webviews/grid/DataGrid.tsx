@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import type {
   CellDiff,
@@ -123,6 +123,9 @@ const scrollQuantizationTolerance = 1;
 // after this budget is exhausted and may start another bounded watch.
 const maximumColumnRevealLayoutFrames = 120;
 const maximumRenderedCellCharacters = 4_096;
+const headerProfileFitTolerance = 1;
+const compactHeaderProfilesDescription =
+  "Header profile distributions are temporarily hidden until the grid is taller.";
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
 const ignoreVisibleColumnRangeChange = (): void => undefined;
@@ -190,6 +193,12 @@ export function DataGrid({
     [beforePage, beforeSchema, diff, metadata.schema, page]
   );
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const tableHeaderRef = useRef<HTMLTableSectionElement>(null);
+  const expandedHeaderHeight = useRef<{ height: number | undefined; sessionId: string }>({
+    height: undefined,
+    sessionId: metadata.sessionId
+  });
+  const profileFitDescriptionId = useId();
   const nextRowHeaderWidth = rowHeaderWidthForRows(page.rows);
   const [rowHeaderState, setRowHeaderState] = useState({
     sessionId: metadata.sessionId,
@@ -252,6 +261,9 @@ export function DataGrid({
   const [showInsights, setShowInsights] = useState(
     startsWithHeaderProfilesOff || profilesDisabled ? false : insightsOnOpen
   );
+  const [profileFitState, setProfileFitState] = useState({ compact: false, sessionId: metadata.sessionId });
+  const compactHeaderProfiles =
+    showInsights && !profilesDisabled && profileFitState.sessionId === metadata.sessionId && profileFitState.compact;
   const [viewport, setViewport] = useState({
     firstVisibleRow: viewState.viewport.firstVisibleRow,
     scrollLeft: 0,
@@ -264,6 +276,54 @@ export function DataGrid({
     column: selectedColumnPosition(metadata.schema, viewState.selectedColumnId)
   });
   const [cellFilterMenuTarget, setCellFilterMenuTarget] = useState<CellFilterMenuTarget>();
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    const header = tableHeaderRef.current;
+    if (!showInsights || profilesDisabled) return;
+    if (!scroller || !header) return;
+
+    const updateProfileFit = (): void => {
+      const scrollerHeight = scroller.clientHeight;
+      if (scrollerHeight <= 0) return;
+      let expanded = expandedHeaderHeight.current;
+      if (expanded.sessionId !== metadata.sessionId) {
+        expanded = { height: undefined, sessionId: metadata.sessionId };
+        expandedHeaderHeight.current = expanded;
+      }
+      if (compactHeaderProfiles) {
+        const expandedHeight = expanded.height;
+        if (
+          expandedHeight !== undefined &&
+          scrollerHeight >= expandedHeight + gridRowHeight + headerProfileFitTolerance
+        ) {
+          setProfileFitState({ compact: false, sessionId: metadata.sessionId });
+        }
+        return;
+      }
+
+      const headerHeight = header.getBoundingClientRect().height;
+      if (headerHeight <= 0) return;
+      expandedHeaderHeight.current = {
+        height: Math.max(expanded.height ?? 0, headerHeight),
+        sessionId: metadata.sessionId
+      };
+      if (scrollerHeight - headerHeight < gridRowHeight) {
+        setProfileFitState({ compact: true, sessionId: metadata.sessionId });
+      }
+    };
+
+    updateProfileFit();
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => updateProfileFit());
+    resizeObserver?.observe(scroller);
+    resizeObserver?.observe(header);
+    window.addEventListener("resize", updateProfileFit);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateProfileFit);
+    };
+  }, [compactHeaderProfiles, metadata.sessionId, profilesDisabled, showInsights, summaries]);
 
   useLayoutEffect(() => {
     if (!cellFilterMenuTarget) return;
@@ -1144,7 +1204,7 @@ export function DataGrid({
             ))}
             {rightSpacerWidth > 0 && <col style={{ width: rightSpacerWidth }} />}
           </colgroup>
-          <thead>
+          <thead ref={tableHeaderRef}>
             <tr>
               <th
                 className={`rowHeader${hasRowLabels ? " labeledRowHeader" : ""}`}
@@ -1165,6 +1225,7 @@ export function DataGrid({
                     selected={viewState.selectedColumnId === column.id}
                     added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
                     showInsights={showInsights}
+                    compactInsights={compactHeaderProfiles}
                     summary={summaryByColumnId.get(column.id)}
                     profileValueMode={profileValueMode}
                     viewControlsDisabled={viewControlsDisabled}
@@ -1465,15 +1526,18 @@ export function DataGrid({
             type="button"
             className="headerProfilesButton"
             aria-pressed={showInsights}
+            aria-describedby={compactHeaderProfiles ? profileFitDescriptionId : undefined}
             disabled={profilesDisabled}
             title={
               profilesDisabled
                 ? profilesDisabledReason
-                : metadata.backend === "pyspark"
-                  ? "Runs Spark profiling queries for the visible columns."
-                  : metadata.backend === "r"
-                    ? "Runs R profiling queries for the visible columns."
-                    : undefined
+                : compactHeaderProfiles
+                  ? compactHeaderProfilesDescription
+                  : metadata.backend === "pyspark"
+                    ? "Runs Spark profiling queries for the visible columns."
+                    : metadata.backend === "r"
+                      ? "Runs R profiling queries for the visible columns."
+                      : undefined
             }
             onClick={() => {
               if (!profilesDisabled) setShowInsights((current) => !current);
@@ -1481,6 +1545,18 @@ export function DataGrid({
           >
             {profilesDisabled ? "Profiles unavailable" : "Header profiles"}
           </button>
+          {compactHeaderProfiles && (
+            <span
+              id={profileFitDescriptionId}
+              className="headerProfilesFitStatus"
+              role="status"
+              aria-label={compactHeaderProfilesDescription}
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {compactHeaderProfilesDescription}
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -1779,6 +1855,7 @@ function ColumnHeader({
   selected,
   added,
   showInsights,
+  compactInsights,
   summary,
   profileValueMode,
   viewControlsDisabled,
@@ -1804,6 +1881,7 @@ function ColumnHeader({
   selected: boolean;
   added: boolean;
   showInsights: boolean;
+  compactInsights: boolean;
   summary: ColumnSummary | undefined;
   profileValueMode: ProfileValueMode;
   viewControlsDisabled: boolean;
@@ -2052,7 +2130,7 @@ function ColumnHeader({
       </div>
       {showInsights &&
         (summary ? (
-          <div className="columnInsight">
+          <div className={`columnInsight${compactInsights ? " compact" : ""}`}>
             <div className="exactSummaryStats">
               <HeaderProfileValue
                 label="Missing"
