@@ -1,6 +1,7 @@
 *
 !Dockerfile
 !Dockerfile.r
+!Dockerfile.r.base
 !requirements.txt
 !requirements.in
 !requirements.r.txt
