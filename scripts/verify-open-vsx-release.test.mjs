@@ -111,12 +111,13 @@ test("forwards the release's R inventory requirement to archive inspection", asy
       return inspectCandidate();
     },
     requireRFrameContract: false,
+    requireVendoredJsYaml: false,
     root,
     version
   });
 
   assert.equal(result.status, "exact");
-  assert.deepEqual(received, [{ requireRFrameContract: false }]);
+  assert.deepEqual(received, [{ requireRFrameContract: false, requireVendoredJsYaml: false }]);
 });
 
 test("verifies preview metadata only for an explicitly preview candidate", async () => {

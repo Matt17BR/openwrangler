@@ -10,6 +10,7 @@ import { publishVerifiedGitHubStableRelease } from "./publish-github-stable-rele
 import { verifyCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
 
 const expectedCommit = "a".repeat(40);
+const vendoredJsYaml = readFileSync(new URL("../node_modules/js-yaml/dist/js-yaml.cjs.js", import.meta.url));
 const sourceManifest = Object.freeze({
   name: "openwrangler",
   displayName: "Open Wrangler",
@@ -37,8 +38,9 @@ function releaseEntries({ includeRFrameContract = true } = {}) {
     ["extension/readme.md", "# Open Wrangler\n"],
     ["extension/changelog.md", "# Changelog\n"],
     ["extension/THIRD_PARTY_NOTICES.md", "# Third-party notices\n"],
-    ["extension/dist/extension/activate.js", "export {};"],
+    ["extension/dist/extension/activate.js", 'require("vscode");'],
     ["extension/dist/extension/webviewPanel.js", "export {};"],
+    ["extension/dist/extension/vendor/js-yaml.js", vendoredJsYaml],
     ["extension/media/webview.js", "export {};"],
     ["extension/media/webview.css", "@font-face{src:url('./codicon.ttf')}"],
     ["extension/media/codicon.ttf", "font"],
@@ -60,6 +62,7 @@ function releaseEntries({ includeRFrameContract = true } = {}) {
   ]);
   if (!includeRFrameContract) {
     entries.delete("extension/r/openwrangler_runtime/frame_contract.R");
+    entries.delete("extension/dist/extension/vendor/js-yaml.js");
   }
   return entries;
 }
@@ -141,8 +144,15 @@ test("canonical consumer accepts a historical v1 package without the later R run
     sourcePackageJson: JSON.stringify(sourceManifest)
   };
 
-  await assert.rejects(verifyCanonicalReleaseArtifact(options), /Missing: extension\/r\/openwrangler_runtime/u);
-  const receipt = await verifyCanonicalReleaseArtifact({ ...options, requireRFrameContract: false });
+  await assert.rejects(
+    verifyCanonicalReleaseArtifact(options),
+    /Missing: extension\/dist\/extension\/vendor\/js-yaml\.js, extension\/r\/openwrangler_runtime/u
+  );
+  const receipt = await verifyCanonicalReleaseArtifact({
+    ...options,
+    requireRFrameContract: false,
+    requireVendoredJsYaml: false
+  });
   assert.equal(receipt.candidateSha256, fixture.digest);
 });
 

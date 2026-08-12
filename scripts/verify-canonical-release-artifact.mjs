@@ -81,6 +81,7 @@ export async function verifyPinnedCanonicalReleaseArtifact({
   expectedCommit,
   pinned,
   requireRFrameContract = true,
+  requireVendoredJsYaml = true,
   releaseTag,
   sourceCommit,
   sourcePackageJson
@@ -127,7 +128,7 @@ export async function verifyPinnedCanonicalReleaseArtifact({
     throw new Error("The canonical release files do not describe one exact stable artifact.");
   }
 
-  const archive = await inspectVsixArchive(candidateAsset.bytes, { requireRFrameContract });
+  const archive = await inspectVsixArchive(candidateAsset.bytes, { requireRFrameContract, requireVendoredJsYaml });
   const packaged = validateSourceManifest(archive.packagedPackageJson);
   if (
     packaged.extensionId !== source.extensionId ||

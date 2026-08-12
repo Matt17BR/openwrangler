@@ -9,6 +9,8 @@ export const packagedSourceDocumentEntries = Object.freeze([
   Object.freeze({ source: "THIRD_PARTY_NOTICES.md", archive: "extension/THIRD_PARTY_NOTICES.md" })
 ]);
 
+export const VENDORED_JS_YAML_ENTRY = "extension/dist/extension/vendor/js-yaml.js";
+
 export const allowedVsixEntryPatterns = [
   /^\[Content_Types\]\.xml$/u,
   /^extension\.vsixmanifest$/u,
@@ -16,7 +18,9 @@ export const allowedVsixEntryPatterns = [
   /^extension\/(package\.json|LICENSE\.txt|README\.md|CHANGELOG\.md|THIRD_PARTY_NOTICES\.md)$/iu,
   /^extension\/dist\/$/u,
   /^extension\/dist\/(extension|shared)\/$/u,
-  /^extension\/dist\/(extension|shared)\/.+\.js$/u,
+  /^extension\/dist\/(extension|shared)\/(?![vV][eE][nN][dD][oO][rR](?:\/|$))(?!.*\/[vV][eE][nN][dD][oO][rR](?:\/|$)).+\.js$/u,
+  /^extension\/dist\/extension\/vendor\/$/u,
+  /^extension\/dist\/extension\/vendor\/js-yaml\.js$/u,
   /^extension\/media\/$/u,
   /^extension\/media\/(action-icon-(?:dark|light)\.svg|activity-icon\.svg|codicon\.ttf|icon(?:-(?:128|256))?\.png|icon\.svg|codePreview\.js|notebookRenderer\.js|webview\.(css|js))$/u,
   /^extension\/python\/$/u,
@@ -62,17 +66,25 @@ const requiredVsixEntriesBeforeR = Object.freeze([
 
 export const requiredVsixEntries = Object.freeze([
   ...requiredVsixEntriesBeforeR,
+  VENDORED_JS_YAML_ENTRY,
   rFrameContractEntry,
   rInteractiveAgentEntry,
   rKernelAgentEntry,
   rProcessAgentEntry
 ]);
 
-export function requiredVsixEntriesForRelease({ requireRFrameContract = true } = {}) {
-  if (typeof requireRFrameContract !== "boolean") {
-    throw new TypeError("VSIX R frame-contract requirement must be boolean.");
+export function requiredVsixEntriesForRelease({ requireRFrameContract = true, requireVendoredJsYaml = true } = {}) {
+  if (typeof requireRFrameContract !== "boolean" || typeof requireVendoredJsYaml !== "boolean") {
+    throw new TypeError("VSIX R frame-contract and vendored js-yaml requirements must be boolean.");
   }
-  return requireRFrameContract ? requiredVsixEntries : requiredVsixEntriesBeforeR;
+  if (requireRFrameContract && requireVendoredJsYaml) return requiredVsixEntries;
+  return Object.freeze([
+    ...requiredVsixEntriesBeforeR,
+    ...(requireVendoredJsYaml ? [VENDORED_JS_YAML_ENTRY] : []),
+    ...(requireRFrameContract
+      ? [rFrameContractEntry, rInteractiveAgentEntry, rKernelAgentEntry, rProcessAgentEntry]
+      : [])
+  ]);
 }
 
 const windowsReservedBasename = /^(?:aux|com[1-9¹²³]|con|lpt[1-9¹²³]|nul|prn)$/iu;
@@ -132,8 +144,8 @@ function portableVsixEntryIdentity(entry) {
   return path.toUpperCase().toLowerCase().normalize("NFC");
 }
 
-export function inspectVsixEntries(entries, { requireRFrameContract = true } = {}) {
-  const requiredEntries = requiredVsixEntriesForRelease({ requireRFrameContract });
+export function inspectVsixEntries(entries, { requireRFrameContract = true, requireVendoredJsYaml = true } = {}) {
+  const requiredEntries = requiredVsixEntriesForRelease({ requireRFrameContract, requireVendoredJsYaml });
   const seen = new Map();
   const duplicates = [];
   const inspectedEntries = entries.map((entry) => ({

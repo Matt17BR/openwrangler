@@ -2,6 +2,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
 
+const jsYamlVendorTestModule = resolve(__dirname, "node_modules/js-yaml/dist/js-yaml.cjs.js");
+
 export default defineConfig(({ mode }) => {
   const notebookRendererBuild = mode === "notebook-renderer";
   return {
@@ -29,7 +31,10 @@ export default defineConfig(({ mode }) => {
       }
     },
     test: {
-      alias: { vscode: resolve(__dirname, "src/test/vscode.mock.ts") },
+      alias: [
+        { find: /^\.\/vendor\/js-yaml$/u, replacement: jsYamlVendorTestModule },
+        { find: "vscode", replacement: resolve(__dirname, "src/test/vscode.mock.ts") }
+      ],
       environment: "jsdom",
       globals: true,
       // Vitest otherwise derives its fork count from the host CPU count. Keep

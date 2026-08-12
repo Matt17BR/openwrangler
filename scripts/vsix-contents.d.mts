@@ -1,12 +1,13 @@
 export const allowedVsixEntryPatterns: readonly RegExp[];
 export const requiredVsixEntries: readonly string[];
+export const VENDORED_JS_YAML_ENTRY: "extension/dist/extension/vendor/js-yaml.js";
 export function requiredVsixEntriesForRelease(
-  options?: Readonly<{ requireRFrameContract?: boolean }>
+  options?: Readonly<{ requireRFrameContract?: boolean; requireVendoredJsYaml?: boolean }>
 ): readonly string[];
 export const packagedSourceDocumentEntries: readonly Readonly<{ source: string; archive: string }>[];
 export function inspectVsixEntries(
   entries: readonly string[],
-  options?: Readonly<{ requireRFrameContract?: boolean }>
+  options?: Readonly<{ requireRFrameContract?: boolean; requireVendoredJsYaml?: boolean }>
 ): {
   forbidden: string[];
   missing: string[];

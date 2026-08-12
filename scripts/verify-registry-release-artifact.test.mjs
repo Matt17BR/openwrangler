@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +27,7 @@ import {
 } from "./verify-registry-release-artifact.mjs";
 
 const expectedCommit = "a".repeat(40);
+const vendoredJsYaml = readFileSync(new URL("../node_modules/js-yaml/dist/js-yaml.cjs.js", import.meta.url));
 const releaseTag = "v0.3.0";
 const sourceManifest = Object.freeze({
   name: "openwrangler",
@@ -27,7 +37,11 @@ const sourceManifest = Object.freeze({
 });
 const previewProperty = '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />';
 
-function createVsix(packageJson = sourceManifest, property = previewProperty, { includeRFrameContract = true } = {}) {
+function createVsix(
+  packageJson = sourceManifest,
+  property = previewProperty,
+  { includeRFrameContract = true, omitVendoredJsYaml = false } = {}
+) {
   const zip = new ZipFile();
   const entries = [
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
@@ -40,8 +54,9 @@ function createVsix(packageJson = sourceManifest, property = previewProperty, { 
     ["extension/readme.md", "# Open Wrangler\n"],
     ["extension/changelog.md", "# Changelog\n"],
     ["extension/THIRD_PARTY_NOTICES.md", "# Third-party notices\n"],
-    ["extension/dist/extension/activate.js", "export {};"],
+    ["extension/dist/extension/activate.js", 'require("vscode");'],
     ["extension/dist/extension/webviewPanel.js", "export {};"],
+    ["extension/dist/extension/vendor/js-yaml.js", vendoredJsYaml],
     ["extension/media/webview.js", "export {};"],
     ["extension/media/webview.css", "@font-face{src:url('./codicon.ttf')}"],
     ["extension/media/codicon.ttf", "font"],
@@ -62,7 +77,9 @@ function createVsix(packageJson = sourceManifest, property = previewProperty, { 
     ["extension/python/openwrangler_runtime/version.py", `__version__ = "${packageJson.version}"\n`]
   ];
   for (const [name, value] of entries.filter(
-    ([name]) => includeRFrameContract || name !== "extension/r/openwrangler_runtime/frame_contract.R"
+    ([name]) =>
+      (includeRFrameContract || name !== "extension/r/openwrangler_runtime/frame_contract.R") &&
+      (!omitVendoredJsYaml || name !== "extension/dist/extension/vendor/js-yaml.js")
   )) {
     zip.addBuffer(Buffer.from(value), name);
   }
@@ -395,7 +412,8 @@ test("historical verification keeps current automation HEAD separate from the im
     taggedCommit,
     {},
     {
-      includeRFrameContract: false
+      includeRFrameContract: false,
+      omitVendoredJsYaml: true
     }
   );
   git("tag", stableTag);
@@ -417,6 +435,7 @@ test("historical verification keeps current automation HEAD separate from the im
   });
   assert.equal(receipt.sourceCommit, taggedCommit);
   assert.equal(receipt.requireRFrameContract, false);
+  assert.equal(receipt.requireVendoredJsYaml, false);
   assert.notEqual(automationCommit, taggedCommit);
 
   await assert.rejects(
@@ -465,5 +484,136 @@ test("Open Wrangler 2 release sources cannot omit the R frame contract", async (
       root
     }),
     /must include the native R frame contract/u
+  );
+});
+
+test("historical 1.99 releases may contain R without the later vendored js-yaml marker", async (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-historical-r-no-vendor-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
+  const manifest = { ...sourceManifest, version: "1.99.2" };
+  const tag = "v1.99.2";
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "tests@openwrangler.invalid");
+  git("config", "user.name", "Open Wrangler tests");
+  mkdirSync(join(root, "r", "openwrangler_runtime"), { recursive: true });
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(manifest)}\n`);
+  writeFileSync(join(root, "r", "openwrangler_runtime", "frame_contract.R"), "frame_contract <- function(x) x\n");
+  git("add", "package.json", "r/openwrangler_runtime/frame_contract.R");
+  git("commit", "-m", "historical R release without vendor marker");
+  const commit = git("rev-parse", "HEAD");
+  git("tag", tag);
+  const release = await fixture(context, manifest, previewProperty, commit, {}, { omitVendoredJsYaml: true });
+
+  const receipt = await verifyRegistryReleaseArtifactFromCheckout({
+    automationCommit: commit,
+    directory: release.directory,
+    expectedCommit: commit,
+    prerelease: true,
+    releaseTag: tag,
+    root
+  });
+  assert.equal(receipt.requireRFrameContract, true);
+  assert.equal(receipt.requireVendoredJsYaml, false);
+});
+
+async function assertVendoredJsYamlMarkerRequired(context, version) {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-vendor-required-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
+  const preview = version.startsWith("1.99.");
+  const manifest = { ...sourceManifest, preview, version };
+  const tag = `v${version}`;
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "tests@openwrangler.invalid");
+  git("config", "user.name", "Open Wrangler tests");
+  mkdirSync(join(root, "r", "openwrangler_runtime"), { recursive: true });
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(manifest)}\n`);
+  writeFileSync(join(root, "r", "openwrangler_runtime", "frame_contract.R"), "frame_contract <- function(x) x\n");
+  git("add", "package.json", "r/openwrangler_runtime/frame_contract.R");
+  git("commit", "-m", "new release without vendor marker");
+  const commit = git("rev-parse", "HEAD");
+  git("tag", tag);
+  const release = await fixture(
+    context,
+    manifest,
+    preview ? previewProperty : "",
+    commit,
+    {},
+    {
+      omitVendoredJsYaml: true
+    }
+  );
+
+  await assert.rejects(
+    verifyRegistryReleaseArtifactFromCheckout({
+      automationCommit: commit,
+      directory: release.directory,
+      expectedCommit: commit,
+      prerelease: preview,
+      releaseTag: tag,
+      root
+    }),
+    /must include the vendored js-yaml marker/u
+  );
+}
+
+test("Open Wrangler 1.99.3 and every future major require the vendored js-yaml marker", async (context) => {
+  for (const version of ["1.99.3", "2.0.0", "3.0.0"]) {
+    await assertVendoredJsYamlMarkerRequired(context, version);
+  }
+});
+
+test("historical registry intake rejects a non-file vendored js-yaml marker", async (context) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-invalid-vendor-marker-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
+  const manifest = { ...sourceManifest, version: "1.99.2" };
+  const tag = "v1.99.2";
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "tests@openwrangler.invalid");
+  git("config", "user.name", "Open Wrangler tests");
+  mkdirSync(join(root, "r", "openwrangler_runtime"), { recursive: true });
+  mkdirSync(join(root, "scripts"));
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(manifest)}\n`);
+  writeFileSync(join(root, "r", "openwrangler_runtime", "frame_contract.R"), "frame_contract <- function(x) x\n");
+  symlinkSync("../package.json", join(root, "scripts", "copy-extension-vendor-assets.mjs"));
+  git("add", "package.json", "r/openwrangler_runtime/frame_contract.R", "scripts/copy-extension-vendor-assets.mjs");
+  git("commit", "-m", "invalid vendor marker");
+  const commit = git("rev-parse", "HEAD");
+  git("tag", tag);
+  const release = await fixture(context, manifest, previewProperty, commit, {}, { omitVendoredJsYaml: true });
+
+  await assert.rejects(
+    verifyRegistryReleaseArtifactFromCheckout({
+      automationCommit: commit,
+      directory: release.directory,
+      expectedCommit: commit,
+      prerelease: true,
+      releaseTag: tag,
+      root
+    }),
+    /invalid vendored js-yaml source marker/u
   );
 });

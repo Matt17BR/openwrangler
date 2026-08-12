@@ -6,6 +6,34 @@ Open Wrangler is distributed under the MIT License. Its production webview bundl
 - React, React DOM, and Scheduler: MIT License.
 - Codicons font from `@vscode/codicons`: Creative Commons Attribution 4.0 International (CC-BY-4.0).
 
+The extension host bundles the exact CommonJS runtime from js-yaml 5.2.3 for bounded Quarto and R Markdown front
+matter parsing. js-yaml remains a build-time development dependency; only this reviewed runtime file is shipped.
+The upstream notice follows in full:
+
+```text
+(The MIT License)
+
+Copyright (C) 2011-2015 by Vitaly Puzrin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
 The bundled pure-Python runtime interoperates with, but does not redistribute, the following packages from the user's selected environment:
 
 - Pandas: BSD 3-Clause License. Loaded from the user's selected Python environment.

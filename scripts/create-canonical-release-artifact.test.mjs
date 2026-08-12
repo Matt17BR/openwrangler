@@ -43,6 +43,7 @@ import {
 import { parseStrictJson } from "./strict-json.mjs";
 
 const namespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
+const vendoredJsYaml = readFileSync(new URL("../node_modules/js-yaml/dist/js-yaml.cjs.js", import.meta.url));
 const stablePackage = Object.freeze({
   name: "openwrangler",
   displayName: "Open Wrangler",
@@ -143,8 +144,9 @@ function releaseEntries(readmeSection = STABLE_README_RELEASE_SECTION, manifest 
     ["extension/readme.md", `# Open Wrangler\n\n${readmeSection}\n`],
     ["extension/changelog.md", "# Changelog\n"],
     ["extension/THIRD_PARTY_NOTICES.md", "# Third-party notices\n"],
-    ["extension/dist/extension/activate.js", "export {};"],
+    ["extension/dist/extension/activate.js", 'require("vscode");'],
     ["extension/dist/extension/webviewPanel.js", "const policy = `font-src ${webview.cspSource};`;"],
+    ["extension/dist/extension/vendor/js-yaml.js", vendoredJsYaml],
     ["extension/media/webview.js", "export {};"],
     ["extension/media/webview.css", "@font-face{src:url('./codicon.ttf')}"],
     ["extension/media/codicon.ttf", "font"],

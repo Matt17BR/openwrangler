@@ -19,6 +19,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Quarto and R Markdown front matter now uses the same js-yaml 5.2.3 parser through one exact vendored CommonJS
+  runtime asset. Production and test builds verify its 122,488-byte SHA-256 receipt, package verification admits only
+  that vendor filename, and Remote SSH acceptance proves the compiled CommonJS closure resolves it without ambient
+  workspace dependencies. Historical registry verification derives this capability independently from R support, so
+  1.99.0–1.99.2 artifacts may predate it while 1.99.3 and future 2.x sources fail closed if their tracked marker or
+  exact packaged asset is missing. Parsing behavior is unchanged.
 - The README now separates the stable release, published previews, and current `main` source. `npm run package:dev`
   builds `openwrangler-dev.vsix` from the current checkout without running the release test matrix.
 - Ready pull requests now run source and contract preflight before starting the heavier UI, engine, package, and
