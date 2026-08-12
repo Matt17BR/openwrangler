@@ -45,9 +45,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
-- Header profiles now keep at least one complete data row available in a short editor. The exact Missing, Distinct,
-  Min, and Max values stay visible while the taller distribution is temporarily compacted, then returns when the
-  grid has enough height. The Header profiles toggle keeps the user's choice throughout.
+- When hiding the taller header distributions is enough to expose a complete data row in a short editor, Open
+  Wrangler now does so automatically. Exact Missing, Distinct, and numeric Min/Max values stay visible, distributions
+  return as the layout changes, and the Header profiles toggle keeps the user's choice throughout.
 - Preview and stable candidate lanes now validate the requested runner label instead of GitHub's reserved host OS
   variable, so all five acceptance lanes start with the intended configuration.
 - R chunks launched from Quarto or R Markdown now resolve relative paths from the document folder and restore the

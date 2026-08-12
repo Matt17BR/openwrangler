@@ -931,9 +931,9 @@ Grid status and profile vocabulary, 2026-07-31:
 - Grid-header summaries remain an independent **Header profiles** toggle with a constant name and `aria-pressed`.
   `openWrangler.insightsOnOpen` keeps its public key and behavior. R and PySpark start this toggle off, with a tooltip
   explaining the profiling work that an explicit click starts.
-- A short grid keeps one complete data row pointer- and keyboard-reachable by temporarily hiding only the taller
-  header distributions. Exact statistics and the pressed profile preference remain visible, and distributions return
-  automatically when the editor becomes tall enough.
+- In a compact grid where the shorter header leaves room for a complete data row, taller distributions hide
+  automatically. Exact Missing, Distinct, and numeric Min/Max statistics and the pressed profile preference remain
+  visible, and distributions return when the current profile layout fits again.
 - React, production-bundle screenshot, axe, forced-colors, narrow-width, 200%-zoom, packaged-layout, and PySpark
   media assertions cover direct status-bar placement, exact range text, Codicon presence, pressed state, and
   unclipped controls. Dedicated 100,000,000-row terminal fixtures prove the exact
