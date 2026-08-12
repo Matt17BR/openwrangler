@@ -1282,6 +1282,7 @@ async function verifyShortGridProfileResponsiveness(browser) {
     initial.profilePreference !== "true" ||
     initial.profileDescription !==
       "Header profile distributions are temporarily hidden until the grid has enough room." ||
+    initial.profileStatusName !== "Header profile layout" ||
     initial.profileStatusCount !== 1 ||
     initial.profileStatusText !== initial.profileDescription ||
     initial.profileTitle !== initial.profileDescription ||
@@ -1460,6 +1461,7 @@ async function shortGridProfileState(page) {
         : undefined,
       profilePreference: toggle.getAttribute("aria-pressed"),
       profileStatusCount: document.querySelectorAll(".headerProfilesFitStatus").length,
+      profileStatusName: document.querySelector(".headerProfilesFitStatus")?.getAttribute("aria-label"),
       profileStatusText: document.querySelector(".headerProfilesFitStatus")?.textContent?.trim(),
       profileTitle: toggle.getAttribute("title") ?? undefined,
       scrollerBottom: scrollerRect.bottom,
