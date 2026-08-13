@@ -55,6 +55,11 @@ Each invocation owns distinct failure evidence. If either job fails, its job nam
 cancels the other matrix cell once the failure is reported. Every native editor phase retains its own 300-second hard
 deadline and 180-second inactivity deadline.
 
+The release R cell uses the same commit-pinned dependency action, explicit package set, and resolved-lock/binary-package
+policy as the pull-request contract matrix. GitHub scopes pull-request caches to their merge refs, so a release
+dispatch cannot restore them. Later candidate dispatches may reuse a compatible cache created on `main`; the first
+matching `main` dispatch performs a valid cold install before the unchanged R contract and packaged-editor checks.
+
 Remote R fixture preparation also keeps those bounds local to the work being proved. `Dockerfile.r.base` builds the
 snapshot-pinned base, `Dockerfile.r` builds the R runtime from that exact owned image, and the existing
 launch/readiness stage starts the server; each stage has an independent 300-second hard deadline and 180-second
