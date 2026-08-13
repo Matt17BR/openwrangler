@@ -144,6 +144,98 @@ describe.skipIf(!enabled)("official R extension interactive transport", () => {
     }
   }, 30_000);
 
+  it("streams committed active-terminal CSV and Parquet bytes and leaves the live source unchanged", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-interactive-export-test-"));
+    const parquetPath = resolve(temporaryParent, "active-orders.parquet");
+    const verificationPath = resolve(temporaryParent, "active-orders-verification.txt");
+    const interactive = startInteractiveR();
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      testProcessId: interactive.pid!,
+      runSelection: async (code) => writeR(interactive, code)
+    });
+    const sessionId = randomUUID();
+    try {
+      await writeR(
+        interactive,
+        'active_orders <- data.frame(order_id = c(3400001L, 3400002L), label = c("ALPHA", "BETA"), check.names = FALSE)'
+      );
+      const opened = await transport.open("active_orders", pageWindow(), {
+        requestedSessionId: sessionId,
+        timeoutMs: 10_000
+      });
+      expect(opened.exportFormats).toEqual(["csv", "parquet"]);
+      const preview = await transport.previewStep(
+        sessionId,
+        0,
+        {
+          id: "lower-active-label",
+          kind: "lowerText",
+          params: { column: { id: "r:c:1", name: "label" } }
+        },
+        pageWindow(),
+        opened.page.schema,
+        undefined,
+        { timeoutMs: 10_000 }
+      );
+      const applied = await transport.applyDraft(sessionId, preview.revision, pageWindow(), { timeoutMs: 10_000 });
+
+      const csvChunks: Uint8Array[] = [];
+      await expect(
+        transport.exportData(
+          sessionId,
+          applied.revision,
+          "csv",
+          async (chunk) => {
+            csvChunks.push(Uint8Array.from(chunk));
+          },
+          { timeoutMs: 10_000 }
+        )
+      ).resolves.toEqual({ sessionId, revision: applied.revision, format: "csv", rows: 2, columns: 2 });
+      const csv = Buffer.concat(csvChunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+      expect(csv).toMatch(/order_id.*label/u);
+      expect(csv).toMatch(/3400001.*alpha/u);
+      expect(csv).toMatch(/3400002.*beta/u);
+      expect(csv).not.toMatch(/ALPHA|BETA/u);
+
+      const parquetChunks: Uint8Array[] = [];
+      await expect(
+        transport.exportData(
+          sessionId,
+          applied.revision,
+          "parquet",
+          async (chunk) => {
+            parquetChunks.push(Uint8Array.from(chunk));
+          },
+          { timeoutMs: 10_000 }
+        )
+      ).resolves.toEqual({ sessionId, revision: applied.revision, format: "parquet", rows: 2, columns: 2 });
+      const parquet = Buffer.concat(parquetChunks.map((chunk) => Buffer.from(chunk)));
+      expect(parquet.subarray(0, 4).toString("ascii")).toBe("PAR1");
+      expect(parquet.subarray(-4).toString("ascii")).toBe("PAR1");
+      await writeFile(parquetPath, parquet);
+      await writeR(
+        interactive,
+        `base::local({${[
+          `candidate <- nanoparquet::read_parquet(${JSON.stringify(parquetPath)}, options = nanoparquet::parquet_options(class = "data.frame"))`,
+          "stopifnot(identical(candidate$order_id, c(3400001L, 3400002L)))",
+          'stopifnot(identical(as.character(candidate$label), c("alpha", "beta")))',
+          'stopifnot(identical(active_orders$label, c("ALPHA", "BETA")))',
+          `writeLines("verified", ${JSON.stringify(verificationPath)})`
+        ].join("; ")}})`
+      );
+      await waitForFileText(verificationPath, "verified");
+      await unlink(verificationPath);
+      await unlink(parquetPath);
+      await transport.close(sessionId, { timeoutMs: 10_000 });
+    } finally {
+      await transport.dispose();
+      await stopInteractiveR(interactive);
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("evaluates a literate chunk from its document directory and restores the terminal directory", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-interactive-working-directory-test-"));
     const documentDirectory = resolve(temporaryParent, "document");

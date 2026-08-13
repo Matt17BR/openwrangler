@@ -12,6 +12,7 @@ import {
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
+  probeAcceptanceBeforeDeadline,
   pressKeyboardKeyPairWithoutTransitionGap,
   probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
@@ -687,6 +688,62 @@ describe("extension-host Playwright lifecycle", () => {
   it("preserves an operation's own failure", async () => {
     const error = new Error("locator failed");
     await expect(withAcceptanceOperationDeadline(Promise.reject(error), 10_000, "the prompt")).rejects.toBe(error);
+  });
+
+  it("returns a passive probe value before its shared deadline", async () => {
+    const probe = vi.fn<() => Promise<string>>().mockResolvedValue("visible");
+    await expect(probeAcceptanceBeforeDeadline(probe, 1_500, () => 1_000)).resolves.toBe("visible");
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start a passive probe after its shared deadline", async () => {
+    const probe = vi.fn<() => Promise<string>>().mockResolvedValue("late");
+    await expect(probeAcceptanceBeforeDeadline(probe, 1_000, () => 1_000)).resolves.toBeUndefined();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("returns undefined for a stalled passive probe and handles its late rejection", async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectLate: ((error: unknown) => void) | undefined;
+      const stalled = new Promise<never>((_resolve, reject) => {
+        rejectLate = reject;
+      });
+      const outcome = probeAcceptanceBeforeDeadline(
+        () => stalled,
+        10_000,
+        () => 0
+      );
+      const assertion = expect(outcome).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+      rejectLate?.(new Error("late locator failure"));
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves synchronous and asynchronous passive-probe failures", async () => {
+    const syncError = new Error("synchronous locator failure");
+    const asyncError = new Error("asynchronous locator failure");
+    await expect(
+      probeAcceptanceBeforeDeadline(
+        () => {
+          throw syncError;
+        },
+        10_000,
+        () => 0
+      )
+    ).rejects.toBe(syncError);
+    await expect(
+      probeAcceptanceBeforeDeadline(
+        () => Promise.reject(asyncError),
+        10_000,
+        () => 0
+      )
+    ).rejects.toBe(asyncError);
   });
 
   it("polls a naturally transferred focus state without assigning focus", async () => {

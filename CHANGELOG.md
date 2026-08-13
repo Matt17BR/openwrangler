@@ -6,6 +6,19 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Native R candidate acceptance now runs the focused R Markdown and Quarto journey in both packaged VS Code and
+  Cursor. The active R-terminal journey also exports CSV and Parquet results through the public picker and Save
+  dialog in packaged Linux VS Code and Cursor, backed by the production terminal transport and a direct atomic-export
+  contract.
+- A fresh Jupyter-owned Quarto Python run now sends one empty selection to create the source-routed Interactive Window,
+  waits for that exact window's marked Jupyter system cell or its user-cell-free canonical auto-selected Python state,
+  and reveals that captured notebook through the stable editor API when Cursor has exposed only Jupyter's proposed REPL
+  view. Because the public kernel picker returns no selection value, Open Wrangler accepts an auto-selected kernel only
+  when canonical nested metadata already names Python; otherwise the
+  picker must produce that explicit metadata. It then restores and revalidates the source and dispatches the real chunk
+  exactly once. Publication and completion remain pinned to that
+  notebook through the shared operation deadline without retry; packaged diagnostics stop as soon as this product path
+  reports terminal failure instead of consuming the later outer inactivity deadline.
 - Canonical stable 2.x artifact authoring now passes the immutable commit's linked performance report and the
   already-owned candidate VSIX digest into readiness. A report for the release must bind those exact bytes before
   any canonical output directory can be published.

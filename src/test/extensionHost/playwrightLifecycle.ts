@@ -309,6 +309,33 @@ export async function withAcceptanceOperationDeadline<T>(
   }
 }
 
+export async function probeAcceptanceBeforeDeadline<T>(
+  probe: () => PromiseLike<T>,
+  deadline: number,
+  now: () => number = Date.now
+): Promise<T | undefined> {
+  const remainingMs = deadline - now();
+  if (remainingMs <= 0) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const outcome = await Promise.race([
+      Promise.resolve()
+        .then(probe)
+        .then(
+          (value) => ({ kind: "fulfilled" as const, value }),
+          (error: unknown) => ({ kind: "rejected" as const, error })
+        ),
+      new Promise<{ readonly kind: "timedOut" }>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "timedOut" }), remainingMs);
+      })
+    ]);
+    if (outcome.kind === "rejected") throw outcome.error;
+    return outcome.kind === "fulfilled" ? outcome.value : undefined;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function pollAcceptanceCondition(
   probe: () => Promise<boolean>,
   { timeoutMs, intervalMs, now = Date.now, wait = waitForPollInterval }: AcceptancePollOptions

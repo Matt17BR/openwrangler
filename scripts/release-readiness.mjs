@@ -161,15 +161,11 @@ export const R_STABLE_PARITY_SCOPE = Object.freeze([
     "Linux, macOS, and Windows",
     "src/test/rKernelTransport.cross.test.ts"
   ),
+  stableRScope("Exact active R-terminal transport", "Linux", "src/test/rInteractiveSessionTransport.cross.test.ts"),
   stableRScope(
-    "Exact active R-terminal transport",
-    "Linux, macOS, and Windows",
-    "src/test/rInteractiveSessionTransport.cross.test.ts"
-  ),
-  stableRScope(
-    "Cursor-owned .Rmd and .qmd R/Python chunks",
-    "Linux and macOS",
-    "src/test/literateDocumentChunks.unit.test.ts"
+    "Cursor .Rmd document command and .qmd R/Python chunk actions",
+    "Linux",
+    "src/test/rDocumentCommands.unit.test.ts"
   ),
   stableRScope("Owned .R source process", "Linux and macOS", "src/test/rProcessTransport.cross.test.ts"),
   stableRScope("Owned .Rmd and .qmd cell process", "Linux and macOS", "src/test/literateDocumentChunks.unit.test.ts"),
@@ -177,9 +173,13 @@ export const R_STABLE_PARITY_SCOPE = Object.freeze([
   stableRScope(
     "Complete R cleaning catalog and generated code",
     "All 28 catalog operations",
-    "r/tests/frame_contract.R"
+    "r/tests/complete_catalog_contract.R"
   ),
-  stableRScope("Copy or save generated R", "All 28 catalog operations", "src/test/rKernelBridge.unit.test.ts"),
+  stableRScope(
+    "Copy or save generated R",
+    "All 28 catalog operations",
+    "src/test/rCompleteCatalogCodeExport.unit.test.ts"
+  ),
   stableRScope(
     "Insert generated R into its IRkernel notebook",
     "Linux, macOS, and Windows",
@@ -192,11 +192,7 @@ export const R_STABLE_PARITY_SCOPE = Object.freeze([
   ),
   stableRScope("Insert generated R into .Rmd and .qmd", "Linux and macOS", "src/test/rDocumentInsertion.unit.test.ts"),
   stableRScope("Cleaned-data export", "CSV and Parquet", "r/tests/frame_contract.R"),
-  stableRScope(
-    "Active R-terminal cleaned-data export",
-    "Linux, macOS, and Windows",
-    "src/test/rInteractiveExport.unit.test.ts"
-  ),
+  stableRScope("Active R-terminal cleaned-data export", "Linux", "src/test/rInteractiveExport.unit.test.ts"),
   stableRScope(
     "Quarto and R Markdown lexical R-cell run",
     "Linux and macOS",

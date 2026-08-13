@@ -77,6 +77,7 @@ import {
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
+  probeAcceptanceBeforeDeadline,
   pressKeyboardKeyPairWithoutTransitionGap,
   probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
@@ -1567,7 +1568,7 @@ async function waitForNotebookPreviewConflict(workbench: Page): Promise<{
 }> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   do {
-    for (const frame of releasedWorkbenchFrames(workbench)) {
+    for (const frame of [workbench.mainFrame()]) {
       const dialog = frame
         .locator(".monaco-dialog-box:visible")
         .filter({ hasText: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE })
@@ -1606,7 +1607,7 @@ async function assertNotebookPreviewConflictAbsent(
   const deadline = Date.now() + observationMs;
   do {
     let count = 0;
-    for (const frame of releasedWorkbenchFrames(workbench)) {
+    for (const frame of [workbench.mainFrame()]) {
       count += await frame
         .locator(".monaco-dialog-box:visible")
         .filter({ hasText: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE })
@@ -2999,7 +3000,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     assert.equal(opened.metadata.capabilities.notebookInsert, false);
     assert.notEqual(opened.metadata.capabilities.documentInsert, true);
     await assertReleasedSessionPage(testing, opened, "3400001", "jupyter-r-interactive-page");
-    await assertReleasedRInteractiveProfileAndEditing(testing, workbench, opened.sessionId);
+    await assertReleasedRInteractiveProfileEditingAndExport(testing, workbench, opened.sessionId, directory);
 
     recordAcceptanceProgress("jupyter-r:interactive:replacement-terminal-close");
     const confirmed = testing.activeSession();
@@ -3327,10 +3328,11 @@ async function assertReleasedRInteractiveRows(operations: Locator): Promise<void
   }
 }
 
-async function assertReleasedRInteractiveProfileAndEditing(
+async function assertReleasedRInteractiveProfileEditingAndExport(
   testing: TestApi,
   workbench: Page,
-  sessionId: string
+  sessionId: string,
+  directory: string
 ): Promise<void> {
   await requireFreshExactSessionPanelHydration(
     testing,
@@ -3381,9 +3383,36 @@ async function assertReleasedRInteractiveProfileAndEditing(
   assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
   assert.equal((await app.locator('[data-session-badge="mode"]').innerText()).trim(), "EDITING");
   const active = testing.activeSession();
-  assert.equal(active?.metadata.rDataframeFlavor, "r.data.frame");
-  assert.equal(active?.metadata.capabilities.editable, true);
-  assert.deepEqual(active?.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
+  assert.ok(active, "The Editing-mode active R terminal session must remain confirmed.");
+  assert.equal(active.metadata.rDataframeFlavor, "r.data.frame");
+  assert.equal(active.metadata.capabilities.editable, true);
+  assert.equal(active.metadata.capabilities.exportCsv, true);
+  assert.equal(active.metadata.capabilities.exportParquet, true);
+  assert.deepEqual(active.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
+
+  recordAcceptanceProgress("jupyter-r:interactive:export-csv");
+  const csvPath = path.join(directory, "base-orders.cleaned.csv");
+  await exportCleanedDataThroughWorkbench(app, workbench, csvPath, "csv");
+  await waitFor(() => existsSync(csvPath), 30_000, "the active R terminal CSV export to appear");
+  const csvLines = readFileSync(csvPath, "utf8").trimEnd().split(/\r?\n/u);
+  assert.equal(csvLines.length, 241, "The active R terminal CSV export must contain its header and all 240 rows.");
+  assert.match(csvLines[0] ?? "", /order_id.*market.*revenue.*fulfilled.*order_date/u);
+  assert.match(csvLines[1] ?? "", /3400001/u);
+
+  recordAcceptanceProgress("jupyter-r:interactive:export-parquet");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the CSV-exported active R terminal session");
+  const parquetPath = path.join(directory, "base-orders.cleaned.parquet");
+  await exportCleanedDataThroughWorkbench(app, workbench, parquetPath, "parquet");
+  await waitFor(() => existsSync(parquetPath), 30_000, "the active R terminal Parquet export to appear");
+  assertParquetFile(parquetPath, "The active R terminal Parquet export");
+
+  const afterExports = testing.activeSession();
+  assert.ok(afterExports, "The active R terminal session must remain open after both exports.");
+  assert.equal(afterExports.sessionId, sessionId);
+  assert.equal(afterExports.metadata.revision, active.metadata.revision);
+  assert.equal(afterExports.metadata.steps.length, 0);
+  await assertReleasedSessionPage(testing, afterExports, "3400001", "jupyter-r-interactive-post-export-page");
+  recordAcceptanceProgress("jupyter-r:interactive:export-complete");
 }
 
 function releasedRInteractiveMailboxRoots(): string[] {
@@ -4148,6 +4177,18 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
           lastPythonStage = pythonDiagnostics.lastActiveStage;
           recordAcceptanceProgress(`${checkpoint}:python-${pythonDiagnostics.lastActiveStage}`);
         }
+        if (pythonDiagnostics.stage === "failed") {
+          recordAcceptanceProgress(
+            `${checkpoint}:python-${pythonDiagnostics.lastActiveStage ?? "unknown-stage"}:failed`
+          );
+          const quickInputDiagnostics = await boundedReleasedJupyterQuickInputDiagnostics(workbench);
+          throw new Error(
+            "The Python Quarto action reported a terminal failure. " +
+              `Python Interactive: ${JSON.stringify(pythonDiagnostics)}. ` +
+              `Interactive Window: ${releasedPythonEntrypointDiagnostics(interactive, sourceDocument)}. ` +
+              `Quick Input: ${JSON.stringify(quickInputDiagnostics)}.`
+          );
+        }
       }
       const candidates = vscode.workspace.notebookDocuments.filter(
         (candidate) =>
@@ -4175,63 +4216,112 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
         break;
       }
 
-      const pythonFailure = await releasedPythonFailureNotification(workbench);
+      const passiveProbeDeadline = Date.now() + WORKBENCH_DIAGNOSTIC_TIMEOUT_MS;
+      const pythonFailure = await probeAcceptanceBeforeDeadline(
+        () => releasedPythonFailureNotification(workbench),
+        passiveProbeDeadline
+      );
       if (pythonFailure) {
         throw new Error(`The Python Quarto action failed (${pythonFailure}).`);
       }
 
-      if (!consentAccepted && (await visibleReleasedJupyterConsentCount(workbench)) === 1) {
-        const consent = await waitForReleasedJupyterConsent(workbench, testing);
+      if (
+        !consentAccepted &&
+        (await probeAcceptanceBeforeDeadline(
+          () => visibleReleasedJupyterConsentCount(workbench),
+          passiveProbeDeadline
+        )) === 1
+      ) {
+        const consent = await withBoundedAcceptancePromise(
+          waitForReleasedJupyterConsent(workbench, testing),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "Python Quarto released-Jupyter consent"
+        );
         recordAcceptanceProgress(`${checkpoint}:consent`);
-        await consent.allow.click();
-        await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+        await withBoundedAcceptancePromise(
+          consent.allow.click(),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "Python Quarto consent acceptance"
+        );
+        await withBoundedAcceptancePromise(
+          consent.dialog.waitFor({ state: "hidden", timeout: 10_000 }),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "Python Quarto consent dismissal"
+        );
         consentAccepted = true;
         continue;
       }
 
-      const picker = await visibleReleasedJupyterQuickInput(workbench);
+      const picker = await probeAcceptanceBeforeDeadline(
+        () => visibleReleasedJupyterQuickInput(workbench),
+        passiveProbeDeadline
+      );
       if (!picker) {
-        await workbench.waitForTimeout(100);
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
         continue;
       }
       if (pickerStage === "not-seen") {
         pickerStage = "visible";
         recordAcceptanceProgress(`${checkpoint}:kernel-picker-visible`);
       }
-      const kernel = await releasedJupyterQuickPickRow(picker, target.label);
+      const kernel = await probeAcceptanceBeforeDeadline(
+        () => releasedJupyterQuickPickRow(picker, target.label),
+        passiveProbeDeadline
+      );
       if (kernel) {
         pickerStage = "target-found";
         if (!targetSelected) {
           recordAcceptanceProgress(`${checkpoint}:kernel-picker-target`);
-          await kernel.click();
+          await withBoundedAcceptancePromise(
+            kernel.click(),
+            WORKBENCH_OPERATION_TIMEOUT_MS,
+            "Python Quarto target-kernel selection"
+          );
           targetSelected = true;
         }
-        await workbench.waitForTimeout(100);
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
         continue;
       }
-      if (filterForTarget && !(await releasedJupyterRouteLabel(picker, target.routeLabels))) {
+      if (
+        filterForTarget &&
+        !(await probeAcceptanceBeforeDeadline(
+          () => releasedJupyterRouteLabel(picker, target.routeLabels),
+          passiveProbeDeadline
+        ))
+      ) {
         const input = picker.locator(".quick-input-box input:visible").first();
-        if ((await input.count()) > 0) {
-          await input.fill(target.label);
+        if ((await probeAcceptanceBeforeDeadline(() => input.count(), passiveProbeDeadline)) === 1) {
+          await withBoundedAcceptancePromise(
+            input.fill(target.label),
+            WORKBENCH_OPERATION_TIMEOUT_MS,
+            "Python Quarto kernel filtering"
+          );
           filterForTarget = false;
-          await workbench.waitForTimeout(100);
+          await new Promise<void>((resolve) => setTimeout(resolve, 100));
           continue;
         }
       }
       let advanced = false;
       for (const label of ["Select Another Kernel...", ...target.routeLabels]) {
         if (traversed.has(label)) continue;
-        const row = await releasedJupyterQuickPickRow(picker, label);
+        const row = await probeAcceptanceBeforeDeadline(
+          () => releasedJupyterQuickPickRow(picker, label),
+          passiveProbeDeadline
+        );
         if (!row) continue;
         if (pickerStage !== "target-found") pickerStage = "route-found";
         traversed.add(label);
         recordAcceptanceProgress(`${checkpoint}:kernel-picker-route`);
-        await row.click();
+        await withBoundedAcceptancePromise(
+          row.click(),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          `Python Quarto kernel-route ${JSON.stringify(label)} selection`
+        );
         filterForTarget = target.routeLabels.includes(label);
         advanced = true;
         break;
       }
-      await workbench.waitForTimeout(advanced ? 100 : 50);
+      await new Promise<void>((resolve) => setTimeout(resolve, advanced ? 100 : 50));
     } while (Date.now() < deadline);
 
     assert.ok(
@@ -4250,7 +4340,7 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
           `Kernel picker: ${pickerStage}. ` +
           `Python Interactive: ${JSON.stringify(testing.pythonInteractiveDiagnostics())}. ` +
           `Coordinator: ${JSON.stringify(testing.diagnostics())}. ` +
-          `Quick Input: ${JSON.stringify(await releasedJupyterQuickInputDiagnostics(workbench))}. ` +
+          `Quick Input: ${JSON.stringify(await boundedReleasedJupyterQuickInputDiagnostics(workbench))}. ` +
           `Interactive Window: ${releasedPythonEntrypointDiagnostics(interactive, sourceDocument)}.`
       );
     }
@@ -4309,7 +4399,14 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
     await closeExactReleasedPythonInteractiveWindow(interactive);
     const sourceTab = textDocumentTab(fixture.sourceUri);
     assert.ok(sourceTab, "The Python Quarto journey must retain its exact source tab.");
-    assert.equal(await vscode.window.tabGroups.close(sourceTab, true), true);
+    assert.equal(
+      await withBoundedAcceptancePromise(
+        vscode.window.tabGroups.close(sourceTab, true),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        "the successful Python Quarto source tab cleanup"
+      ),
+      true
+    );
     await waitFor(
       () => textDocumentTab(fixture.sourceUri) === undefined,
       10_000,
@@ -4323,14 +4420,31 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
       active.metadata.source.variableName === fixture.variableName
     ) {
       try {
-        await disposePackagedSessionPanel(testing, active.sessionId, "the failed Python Quarto session");
+        await withBoundedAcceptancePromise(
+          disposePackagedSessionPanel(testing, active.sessionId, "the failed Python Quarto session"),
+          30_000,
+          "the failed Python Quarto session cleanup"
+        );
       } catch {
         // Preserve the original acceptance failure.
       }
     }
+    if (!interactive) {
+      const candidates = vscode.workspace.notebookDocuments.filter(
+        (candidate) =>
+          !candidate.isClosed &&
+          candidate.notebookType === "interactive" &&
+          !existingInteractive.has(candidate.uri.toString())
+      );
+      if (candidates.length === 1) interactive = candidates[0];
+    }
     if (interactive && !interactive.isClosed) {
       try {
-        await closeExactReleasedPythonInteractiveWindow(interactive);
+        await withBoundedAcceptancePromise(
+          closeExactReleasedPythonInteractiveWindow(interactive),
+          30_000,
+          "the failed Python Quarto Interactive Window cleanup"
+        );
       } catch {
         // Preserve the original acceptance failure.
       }
@@ -4338,7 +4452,11 @@ async function exerciseReleasedPythonQuartoDocumentJourney(
     const sourceTab = textDocumentTab(fixture.sourceUri);
     if (sourceTab) {
       try {
-        await vscode.window.tabGroups.close(sourceTab, true);
+        await withBoundedAcceptancePromise(
+          vscode.window.tabGroups.close(sourceTab, true),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "the failed Python Quarto source tab cleanup"
+        );
       } catch {
         // Preserve the original acceptance failure.
       }
@@ -4431,7 +4549,14 @@ async function openReleasedNativeQuartoPreview(
     captureOwnedUi();
     const openTabs = previewTabs.filter((tab) => vscode.window.tabGroups.all.some((group) => group.tabs.includes(tab)));
     if (openTabs.length > 0) {
-      assert.equal(await vscode.window.tabGroups.close(openTabs, true), true);
+      assert.equal(
+        await withBoundedAcceptancePromise(
+          vscode.window.tabGroups.close(openTabs, true),
+          WORKBENCH_OPERATION_TIMEOUT_MS,
+          "the owned Quarto preview tabs to close"
+        ),
+        true
+      );
     }
     for (const terminal of previewTerminals) terminal.dispose();
     await waitFor(
@@ -4439,14 +4564,16 @@ async function openReleasedNativeQuartoPreview(
       10_000,
       "the official Quarto preview terminal to close"
     );
-    await workbench.waitForTimeout(250);
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
     rmSync(outputPath, { force: true });
   };
 
   let previewFailure: unknown;
   try {
     recordAcceptanceProgress("jupyter-r:quarto:preview");
-    void Promise.resolve(vscode.commands.executeCommand("quarto.preview")).catch((error: unknown) => {
+    const previewCommand = vscode.commands.executeCommand("quarto.preview");
+    recordAcceptanceProgress("jupyter-r:quarto:preview-command-returned");
+    void Promise.resolve(previewCommand).catch((error: unknown) => {
       previewFailure = error;
     });
     const deadline = Date.now() + 120_000;
@@ -4454,10 +4581,23 @@ async function openReleasedNativeQuartoPreview(
     let renderedHtmlReady = false;
     let previousHtmlSignature: string | undefined;
     let stableHtmlObservations = 0;
+    let previewProbeReturned = false;
+    if (!requireVisiblePreview) {
+      recordAcceptanceProgress("jupyter-r:quarto:preview-probe-skipped");
+    }
     while (Date.now() < deadline) {
       if (previewFailure) throw previewFailure;
       captureOwnedUi();
-      previewLocator = await releasedQuartoPreviewLocator(workbench);
+      if (requireVisiblePreview) {
+        previewLocator = await probeAcceptanceBeforeDeadline(
+          () => releasedQuartoPreviewLocator(workbench),
+          Math.min(deadline, Date.now() + WORKBENCH_DIAGNOSTIC_TIMEOUT_MS)
+        );
+        if (!previewProbeReturned) {
+          previewProbeReturned = true;
+          recordAcceptanceProgress("jupyter-r:quarto:preview-probe-returned");
+        }
+      }
       const html = releasedRenderedHtmlSnapshot(outputPath, ["Regional orders", "Regional orders preview", "2400001"]);
       if (html) {
         if (html.signature === previousHtmlSignature) stableHtmlObservations += 1;
@@ -4469,7 +4609,7 @@ async function openReleasedNativeQuartoPreview(
       }
       const visiblePreviewReady = previewTabs.length === 1 && previewLocator !== undefined;
       if (previewTerminals.length >= 1 && renderedHtmlReady && (!requireVisiblePreview || visiblePreviewReady)) break;
-      await workbench.waitForTimeout(100);
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
     assert.ok(previewTerminals.length >= 1, "Quarto Preview must own a disposable terminal.");
     assert.equal(renderedHtmlReady, true, "Quarto Preview must finish the expected HTML render.");
@@ -4494,8 +4634,8 @@ function releasedQuartoPreviewTabs(): vscode.Tab[] {
   return vscode.window.tabGroups.all
     .flatMap((group) => group.tabs)
     .filter((tab) => {
-      const input = tab.input as { readonly viewType?: unknown };
-      return input.viewType === "quarto.previewView" || tab.label === "Quarto Preview";
+      const input = tab.input as { readonly viewType?: unknown } | undefined;
+      return input?.viewType === "quarto.previewView" || tab.label === "Quarto Preview";
     });
 }
 
@@ -4767,14 +4907,16 @@ async function assertReleasedRDocumentPickerMediaGeometry(
     .filter({ hasText: `${variableName} <-` })
     .first();
   await sourceLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  const preview = await releasedQuartoPreviewLocator(workbench);
+  const preview = await probeAcceptanceBeforeDeadline(
+    () => releasedQuartoPreviewLocator(workbench),
+    Date.now() + WORKBENCH_DIAGNOSTIC_TIMEOUT_MS
+  );
   assert.ok(preview, "The Quarto media scene requires the official rendered preview.");
-  const [lineText, lineBounds, pickerBounds, previewBounds] = await Promise.all([
-    sourceLine.innerText(),
-    sourceLine.boundingBox(),
-    picker.boundingBox(),
-    preview.boundingBox()
-  ]);
+  const [lineText, lineBounds, pickerBounds, previewBounds] = await withBoundedAcceptancePromise(
+    Promise.all([sourceLine.innerText(), sourceLine.boundingBox(), picker.boundingBox(), preview.boundingBox()]),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "Quarto picker media geometry"
+  );
   assert.match(lineText, new RegExp(`${variableName}\\s*<-\\s*utils::read\\.csv`, "u"));
   assert.ok(lineBounds, "The Quarto picker scene requires a measurable dataframe source line.");
   assert.ok(pickerBounds, "The Quarto picker scene requires a measurable picker.");
@@ -11782,7 +11924,9 @@ async function releasedPythonFailureNotification(workbench: Page): Promise<strin
     .find((notice) => notice.includes("Source: Open Wrangler"));
   if (!text) return undefined;
   if (/kernel|restored|focused after kernel/iu.test(text)) return "kernel recovery / rejected";
-  if (/did not finish within|failed\. Fix the error/iu.test(text)) return "execution / failed";
+  if (/did not finish(?: within|\s+(?:opening|preparing))|failed\. Fix the error/iu.test(text)) {
+    return "execution / failed";
+  }
   if (/didn't confirm whether this Python/iu.test(text)) return "dispatch / unconfirmed";
   if (/did not produce an Interactive Window execution/iu.test(text)) return "dispatch / missing execution";
   if (/changed or closed|more than one matching cell/iu.test(text)) return "dispatch / stale or ambiguous";
@@ -13373,17 +13517,15 @@ async function dismissReleasedJupyterKernelPicker(
   workbench: Page,
   selection: Promise<{ kind: "fulfilled" } | { kind: "rejected"; error: unknown }>
 ): Promise<void> {
-  for (const frame of releasedWorkbenchFrames(workbench)) {
-    const quickInputs = frame.locator(".quick-input-widget:visible");
-    const count = Math.min(await quickInputs.count().catch(() => 0), 8);
-    for (let index = 0; index < count; index += 1) {
-      const quickInput = quickInputs.nth(index);
-      const input = quickInput.locator(".quick-input-box input:visible").first();
-      if ((await input.count().catch(() => 0)) > 0) {
-        await input.press("Escape").catch(() => {});
-      } else {
-        await quickInput.press("Escape").catch(() => {});
-      }
+  const quickInputs = workbench.mainFrame().locator(".quick-input-widget:visible");
+  const count = Math.min(await quickInputs.count().catch(() => 0), 8);
+  for (let index = 0; index < count; index += 1) {
+    const quickInput = quickInputs.nth(index);
+    const input = quickInput.locator(".quick-input-box input:visible").first();
+    if ((await input.count().catch(() => 0)) > 0) {
+      await input.press("Escape").catch(() => {});
+    } else {
+      await quickInput.press("Escape").catch(() => {});
     }
   }
   await Promise.race([selection, workbench.waitForTimeout(2_000)]).catch(() => {});
@@ -13393,20 +13535,18 @@ async function waitForReleasedJupyterKernelLabel(workbench: Page, expectedLabel:
   const deadline = Date.now() + 10_000;
   do {
     let exactMatches = 0;
-    for (const frame of releasedWorkbenchFrames(workbench)) {
-      const labels = frame.locator(".kernel-action-view-item .kernel-label:visible");
-      const count = Math.min(await labels.count().catch(() => 0), 16);
-      for (let index = 0; index < count; index += 1) {
-        if (
-          (
-            await labels
-              .nth(index)
-              .innerText()
-              .catch(() => "")
-          ).trim() === expectedLabel
-        )
-          exactMatches += 1;
-      }
+    const labels = workbench.mainFrame().locator(".kernel-action-view-item .kernel-label:visible");
+    const count = Math.min(await labels.count().catch(() => 0), 16);
+    for (let index = 0; index < count; index += 1) {
+      if (
+        (
+          await labels
+            .nth(index)
+            .innerText()
+            .catch(() => "")
+        ).trim() === expectedLabel
+      )
+        exactMatches += 1;
     }
     if (exactMatches === 1) return;
     assert.ok(exactMatches < 2, `The workbench exposed duplicate ${JSON.stringify(expectedLabel)} kernel labels.`);
@@ -13416,11 +13556,9 @@ async function waitForReleasedJupyterKernelLabel(workbench: Page, expectedLabel:
 }
 
 async function visibleReleasedJupyterQuickInput(workbench: Page): Promise<Locator | undefined> {
-  for (const frame of releasedWorkbenchFrames(workbench)) {
-    const quickInput = frame.locator(".quick-input-widget:visible").last();
-    if ((await quickInput.count().catch(() => 0)) > 0 && (await quickInput.isVisible().catch(() => false))) {
-      return quickInput;
-    }
+  const quickInput = workbench.mainFrame().locator(".quick-input-widget:visible").last();
+  if ((await quickInput.count().catch(() => 0)) > 0 && (await quickInput.isVisible().catch(() => false))) {
+    return quickInput;
   }
   return undefined;
 }
@@ -13442,23 +13580,33 @@ async function releasedJupyterQuickPickRow(quickInput: Locator, label: string): 
 
 async function releasedJupyterQuickInputDiagnostics(workbench: Page): Promise<string[]> {
   const diagnostics: string[] = [];
-  for (const frame of releasedWorkbenchFrames(workbench)) {
-    const labels = frame.locator(".quick-input-widget:visible [role='option'] .label-name:visible");
-    const count = Math.min(await labels.count().catch(() => 0), 64);
-    for (let index = 0; index < count; index += 1) {
-      diagnostics.push(
-        (
-          await labels
-            .nth(index)
-            .innerText()
-            .catch(() => "")
-        )
-          .trim()
-          .slice(0, 256)
-      );
-    }
+  const labels = workbench.mainFrame().locator(".quick-input-widget:visible [role='option'] .label-name:visible");
+  const count = Math.min(await labels.count().catch(() => 0), 64);
+  for (let index = 0; index < count; index += 1) {
+    diagnostics.push(
+      (
+        await labels
+          .nth(index)
+          .innerText()
+          .catch(() => "")
+      )
+        .trim()
+        .slice(0, 256)
+    );
   }
   return diagnostics;
+}
+
+async function boundedReleasedJupyterQuickInputDiagnostics(workbench: Page): Promise<string[] | string> {
+  try {
+    return await withBoundedAcceptancePromise(
+      releasedJupyterQuickInputDiagnostics(workbench),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "released-Jupyter quick-input diagnostics"
+    );
+  } catch {
+    return "unavailable within the diagnostics deadline";
+  }
 }
 
 async function exerciseFormatterDisabledFirstNotebookResult(
@@ -14105,15 +14253,13 @@ async function waitForReleasedJupyterConsent(
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   let dialog: Locator | undefined;
   do {
-    for (const frame of releasedWorkbenchFrames(workbench)) {
-      const candidate = frame
-        .locator(".monaco-dialog-box:visible")
-        .filter({ hasText: RELEASED_JUPYTER_CONSENT_MESSAGE })
-        .last();
-      if ((await candidate.count().catch(() => 0)) > 0 && (await candidate.isVisible().catch(() => false))) {
-        dialog = candidate;
-        break;
-      }
+    const candidate = workbench
+      .mainFrame()
+      .locator(".monaco-dialog-box:visible")
+      .filter({ hasText: RELEASED_JUPYTER_CONSENT_MESSAGE })
+      .last();
+    if ((await candidate.count().catch(() => 0)) > 0 && (await candidate.isVisible().catch(() => false))) {
+      dialog = candidate;
     }
     if (dialog) break;
     const panelError = await visibleOpenWranglerPanelAlert(workbench);
@@ -14150,15 +14296,12 @@ async function waitForReleasedJupyterConsent(
 }
 
 async function visibleReleasedJupyterConsentCount(workbench: Page): Promise<number> {
-  let count = 0;
-  for (const frame of releasedWorkbenchFrames(workbench)) {
-    count += await frame
-      .locator(".monaco-dialog-box:visible")
-      .filter({ hasText: RELEASED_JUPYTER_CONSENT_MESSAGE })
-      .count()
-      .catch(() => 0);
-  }
-  return count;
+  return workbench
+    .mainFrame()
+    .locator(".monaco-dialog-box:visible")
+    .filter({ hasText: RELEASED_JUPYTER_CONSENT_MESSAGE })
+    .count()
+    .catch(() => 0);
 }
 
 async function waitForReleasedJupyterTerminalPanelError(workbench: Page, testing: TestApi): Promise<string> {
@@ -14957,7 +15100,7 @@ function assertActiveNotebookTab(notebook: vscode.NotebookDocument, message: str
 async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promise<ReleasedNotebookPreparedAction> {
   const deadline = Date.now() + 20_000;
   do {
-    for (const frame of releasedWorkbenchFrames(workbench)) {
+    for (const frame of [workbench.mainFrame()]) {
       try {
         const titleActions = frame.locator(".part.editor .editor-group-container.active .editor-actions:visible");
         const commandItems = notebookToolbarCommandItems(titleActions, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
@@ -15047,7 +15190,7 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
   let lastStructuralFailure: "none" | "transient-toolbar-rerender" = "none";
   let observedOverflowAction = { total: 0, visible: 0, enabled: 0 };
   do {
-    for (const frame of releasedWorkbenchFrames(workbench)) {
+    for (const frame of [workbench.mainFrame()]) {
       try {
         const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
         const directItems = notebookToolbarCommandItems(toolbar, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
@@ -15228,7 +15371,7 @@ async function releasedNotebookLaunchSurfaceMatches(
 ): Promise<boolean> {
   let notebookToolbar = 0;
   let editorTitle = 0;
-  for (const frame of releasedWorkbenchFrames(workbench)) {
+  for (const frame of [workbench.mainFrame()]) {
     const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
     const title = frame.locator(".part.editor .editor-group-container.active .editor-actions:visible");
     notebookToolbar += await releasedVisibleOwnedActionCount(toolbar, "button");
@@ -15300,7 +15443,7 @@ async function releaseReleasedNotebookOverflowAfterInspection(overflow: Released
 }
 
 async function probeReleasedNotebookToolbarOverflow(workbench: Page): Promise<ReleasedNotebookOverflowProbe> {
-  for (const frame of releasedWorkbenchFrames(workbench)) {
+  for (const frame of [workbench.mainFrame()]) {
     const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
     const moreItems = notebookToolbarCommandItems(toolbar, NOTEBOOK_TOOLBAR_MORE_COMMAND);
     const moreCount = await moreItems.count();
@@ -15472,54 +15615,50 @@ async function releasedNotebookToolbarDiagnostics(
       ? RELEASED_JUPYTER_INTERACTIVE_EXPORT_COMMAND
       : RELEASED_JUPYTER_EXPORT_COMMAND;
   const frames = await Promise.all(
-    releasedWorkbenchFrames(workbench)
-      .slice(0, NOTEBOOK_RENDERER_TARGET_LIMIT)
-      .map(async (frame) => {
-        const notebookEditors = frame.locator(".notebook-editor");
-        const toolbars = frame.locator(".notebook-editor .notebook-toolbar-container");
-        const directCommand = notebookToolbarCommandItems(toolbars, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
-        const directCommandState = await releasedLocatorState(directCommand);
-        const directActionLocator =
-          directCommandState.total === 1
-            ? releasedCommandOwnedAction(toolbars, directCommand.first(), "button", true)
-            : toolbars.getByRole("button", {
-                name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN,
-                includeHidden: true
-              });
-        const directAction = await releasedLocatorState(directActionLocator);
-        const directActionLabel =
-          directAction.total === 1 ? await releasedNotebookActionLabelEvidence(directActionLocator) : undefined;
-        const editorTitles = frame.locator(".part.editor .editor-group-container.active .editor-actions");
-        const editorTitleCommand = notebookToolbarCommandItems(editorTitles, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
-        const editorTitleCommandState = await releasedLocatorState(editorTitleCommand);
-        const editorTitleActionLocator =
-          editorTitleCommandState.total === 1
-            ? releasedCommandOwnedAction(editorTitles, editorTitleCommand.first(), "button", true)
-            : editorTitles.getByRole("button", {
-                name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN,
-                includeHidden: true
-              });
-        const editorTitleAction = await releasedLocatorState(editorTitleActionLocator);
-        const editorTitleActionLabel =
-          editorTitleAction.total === 1
-            ? await releasedNotebookActionLabelEvidence(editorTitleActionLocator)
-            : undefined;
-        const jupyterExport = notebookToolbarCommandItems(toolbars, jupyterExportCommand);
-        return {
-          notebookEditors: await releasedLocatorState(notebookEditors),
-          toolbars: await releasedLocatorState(toolbars),
-          toolbarButtons: await releasedLocatorState(toolbars.getByRole("button", { includeHidden: true })),
-          directAction,
-          directActionLabel,
-          editorTitleAction,
-          editorTitleActionLabel,
-          jupyterExport: await releasedLocatorState(jupyterExport),
-          tableIcons: await toolbars
-            .locator(".codicon-table")
-            .count()
-            .catch(() => -1)
-        };
-      })
+    [workbench.mainFrame()].slice(0, NOTEBOOK_RENDERER_TARGET_LIMIT).map(async (frame) => {
+      const notebookEditors = frame.locator(".notebook-editor");
+      const toolbars = frame.locator(".notebook-editor .notebook-toolbar-container");
+      const directCommand = notebookToolbarCommandItems(toolbars, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
+      const directCommandState = await releasedLocatorState(directCommand);
+      const directActionLocator =
+        directCommandState.total === 1
+          ? releasedCommandOwnedAction(toolbars, directCommand.first(), "button", true)
+          : toolbars.getByRole("button", {
+              name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN,
+              includeHidden: true
+            });
+      const directAction = await releasedLocatorState(directActionLocator);
+      const directActionLabel =
+        directAction.total === 1 ? await releasedNotebookActionLabelEvidence(directActionLocator) : undefined;
+      const editorTitles = frame.locator(".part.editor .editor-group-container.active .editor-actions");
+      const editorTitleCommand = notebookToolbarCommandItems(editorTitles, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
+      const editorTitleCommandState = await releasedLocatorState(editorTitleCommand);
+      const editorTitleActionLocator =
+        editorTitleCommandState.total === 1
+          ? releasedCommandOwnedAction(editorTitles, editorTitleCommand.first(), "button", true)
+          : editorTitles.getByRole("button", {
+              name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN,
+              includeHidden: true
+            });
+      const editorTitleAction = await releasedLocatorState(editorTitleActionLocator);
+      const editorTitleActionLabel =
+        editorTitleAction.total === 1 ? await releasedNotebookActionLabelEvidence(editorTitleActionLocator) : undefined;
+      const jupyterExport = notebookToolbarCommandItems(toolbars, jupyterExportCommand);
+      return {
+        notebookEditors: await releasedLocatorState(notebookEditors),
+        toolbars: await releasedLocatorState(toolbars),
+        toolbarButtons: await releasedLocatorState(toolbars.getByRole("button", { includeHidden: true })),
+        directAction,
+        directActionLabel,
+        editorTitleAction,
+        editorTitleActionLabel,
+        jupyterExport: await releasedLocatorState(jupyterExport),
+        tableIcons: await toolbars
+          .locator(".codicon-table")
+          .count()
+          .catch(() => -1)
+      };
+    })
   );
   const totals = frames.reduce(
     (result, frame) => ({
@@ -15609,7 +15748,7 @@ async function waitForReleasedNotebookVariablePicker(workbench: Page): Promise<L
   const deadline = Date.now() + 10_000;
   do {
     const matches: Locator[] = [];
-    for (const frame of releasedWorkbenchFrames(workbench)) {
+    for (const frame of [workbench.mainFrame()]) {
       const widgets = frame.locator(".quick-input-widget:visible");
       const count = Math.min(await widgets.count().catch(() => 0), 8);
       for (let index = 0; index < count; index += 1) {

@@ -1055,7 +1055,7 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
   assert.deepEqual(literateR?.env, {
     OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
     OPEN_WRANGLER_PACKAGED_R_JOURNEY: "literate-documents",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
     OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
     OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
     OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
