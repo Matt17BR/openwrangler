@@ -40,18 +40,23 @@ import {
   inspectPerformanceEvidenceReadme,
   inspectPreviewReadme,
   inspectStablePublicCopy,
+  inspectStableReadme,
   PREVIEW_README_RELEASE_SECTION
 } from "./release-documents.mjs";
 import {
   inspectPerformanceEvidenceCandidateReadiness,
   inspectPerformanceEvidenceSourceReadiness,
   inspectPerformanceSummary,
+  inspectPreviewRParitySource,
+  inspectReleaseDocumentationSource,
   inspectStableReleaseReadiness,
   inspectStableSourceReadiness,
   PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
   PERFORMANCE_EVIDENCE_PARTIAL_ROWS,
   PERFORMANCE_EVIDENCE_VERSION,
   PRIMARY_PARITY_SCOPE,
+  R_PREVIEW_PARITY_SCOPE,
+  R_STABLE_PARITY_SCOPE,
   readOwnedVsixSnapshot,
   readReleaseSourceSnapshot,
   readStableVsixPayload,
@@ -110,6 +115,154 @@ ${rows}
 | --- | --- |
 | Grid | Partial |
 `;
+}
+
+function previewRParity({ currentChecks, scope = R_PREVIEW_PARITY_SCOPE, status } = {}) {
+  const surfaceMarkdown = new Map([
+    ["Base data.frame, tibble, and data.table", "Base `data.frame`, tibble, and `data.table`"],
+    ["Cursor-owned .Rmd and .qmd R/Python chunk", "Cursor-owned `.Rmd` and `.qmd` R/Python chunk"],
+    ["Owned .R source process", "Owned `.R` source process"],
+    ["Owned .Rmd and .qmd cell process", "Owned `.Rmd` and `.qmd` cell process"],
+    ["Insert generated R into its source .R file", "Insert generated R into its source `.R` file"],
+    ["Insert generated R into .Rmd and .qmd", "Insert generated R into `.Rmd` and `.qmd`"]
+  ]);
+  const rows = scope
+    .map(([surface, availability, expectedStatus, expectedChecks]) => {
+      const rowStatus = typeof status === "function" ? status(surface) : (status ?? expectedStatus);
+      const rowChecks =
+        typeof currentChecks === "function"
+          ? currentChecks(surface)
+          : (currentChecks ?? expectedChecks ?? "Current automated preview evidence remains truthful.");
+      return `| ${surfaceMarkdown.get(surface) ?? surface} | ${availability} | ${rowStatus} | ${rowChecks} | Preview release |`;
+    })
+    .join("\n");
+  return `## Native R preview
+
+| Surface | Availability | Status | Current checks | Release check |
+| --- | --- | --- | --- | --- |
+${rows}
+`;
+}
+
+function stableRParity({ evidence, scope = R_STABLE_PARITY_SCOPE, status = "Done" } = {}) {
+  const rows = scope
+    .map((row) => {
+      const rowStatus = typeof status === "function" ? status(row.surface) : status;
+      const rowEvidence =
+        typeof evidence === "function"
+          ? evidence(row)
+          : (evidence ?? `Exact stable acceptance passed and is recorded; ${row.evidence.join("; ")}`);
+      return `| ${row.surface} | ${row.availability} | ${rowStatus} | ${rowEvidence} | Stable release |`;
+    })
+    .join("\n");
+  return `## Native R support
+
+| Surface | Availability | Status | Required evidence | Release gate |
+| --- | --- | --- | --- | --- |
+${rows}
+`;
+}
+
+function stableRTrackedEvidencePaths() {
+  return new Set(
+    R_STABLE_PARITY_SCOPE.flatMap((row) => row.evidence.map((reference) => reference.slice(reference.indexOf(":") + 1)))
+  );
+}
+
+const expectedStableRScope = [
+  ["Native R frame paging and typed cells", "All supported R sessions", "r/tests/frame_contract.R"],
+  ["Native R compound viewing filters", "All supported R sessions", "r/tests/frame_contract.R"],
+  ["Native R value search and selections", "All supported R sessions", "r/tests/frame_contract.R"],
+  ["Native R ordered viewing sorts", "All supported R sessions", "r/tests/frame_contract.R"],
+  ["Native R column and dataset profiles", "All supported R sessions", "r/tests/frame_contract.R"],
+  ["Base data.frame, tibble, and data.table", "All supported R sessions", "r/tests/frame_contract.R"],
+  [
+    "Ordinary collapse::qDF(), collapse::qTBL(), and collapse::qDT() frames",
+    "All supported R sessions",
+    "r/tests/frame_contract.R"
+  ],
+  ["Exact IRkernel session transport", "Linux, macOS, and Windows", "src/test/rKernelTransport.cross.test.ts"],
+  [
+    "Exact active R-terminal transport",
+    "Linux, macOS, and Windows",
+    "src/test/rInteractiveSessionTransport.cross.test.ts"
+  ],
+  ["Cursor-owned .Rmd and .qmd R/Python chunks", "Linux and macOS", "src/test/literateDocumentChunks.unit.test.ts"],
+  ["Owned .R source process", "Linux and macOS", "src/test/rProcessTransport.cross.test.ts"],
+  ["Owned .Rmd and .qmd cell process", "Linux and macOS", "src/test/literateDocumentChunks.unit.test.ts"],
+  ["Notebook workbench", "Linux, macOS, and Windows", "src/test/rKernelBridge.unit.test.ts"],
+  ["Complete R cleaning catalog and generated code", "All 28 catalog operations", "r/tests/frame_contract.R"],
+  ["Copy or save generated R", "All 28 catalog operations", "src/test/rKernelBridge.unit.test.ts"],
+  [
+    "Insert generated R into its IRkernel notebook",
+    "Linux, macOS, and Windows",
+    "src/test/notebookInsertion.unit.test.ts"
+  ],
+  ["Insert generated R into its source .R file", "Linux and macOS", "src/test/rDocumentInsertion.unit.test.ts"],
+  ["Insert generated R into .Rmd and .qmd", "Linux and macOS", "src/test/rDocumentInsertion.unit.test.ts"],
+  ["Cleaned-data export", "CSV and Parquet", "r/tests/frame_contract.R"],
+  ["Active R-terminal cleaned-data export", "Linux, macOS, and Windows", "src/test/rInteractiveExport.unit.test.ts"],
+  ["Quarto and R Markdown lexical R-cell run", "Linux and macOS", "src/test/literateDocumentChunks.unit.test.ts"],
+  ["Native R performance record", "Release candidate", "scripts/r-performance-report.test.mjs"],
+  ["First-class editor candidate acceptance", "VS Code and Cursor", "scripts/candidate-acceptance-workflow.test.mjs"]
+].map(([surface, availability, rowTest]) => ({
+  availability,
+  evidence: [
+    `test:${rowTest}`,
+    "test:src/test/extensionHost/index.ts",
+    "workflow:.github/workflows/candidate-acceptance.yml",
+    "record:docs/testing.md"
+  ],
+  surface
+}));
+
+const stableV2Version = "2.0.0";
+const stableV2ReportPath = `docs/performance/data-wrangler-${stableV2Version}/review.md`;
+const stableV2ReportDataPath = `docs/performance/data-wrangler-${stableV2Version}/report.json`;
+const stableV2Readme = `# Open Wrangler
+
+${STABLE_README_RELEASE_SECTION}
+
+## Performance
+
+[dated report](https://github.com/Matt17BR/openwrangler/blob/main/${stableV2ReportPath})
+`;
+
+function stableV2Ready(overrides = {}) {
+  const packageJson = { ...stablePackage, version: stableV2Version };
+  return ready({
+    releaseTag: `v${stableV2Version}`,
+    sourcePackageJson: JSON.stringify(packageJson),
+    pythonVersionFile: `__version__ = "${stableV2Version}"\n`,
+    featureParity: `${parity()}\n${stableRParity()}`,
+    changelog: `# Changelog
+
+## [${stableV2Version}] - 2026-08-13
+
+### Added
+
+- Published the reviewed stable Native R scope.
+`,
+    readme: stableV2Readme,
+    packagedPackageJson: JSON.stringify(packageJson),
+    packagedPythonVersionFile: `__version__ = "${stableV2Version}"\n`,
+    packagedReadme: stableV2Readme,
+    trackedEvidencePaths: new Set([
+      ...ready().trackedEvidencePaths,
+      ...stableRTrackedEvidencePaths(),
+      stableV2ReportPath,
+      stableV2ReportDataPath
+    ]),
+    performanceReportFiles: new Map([
+      [
+        stableV2ReportDataPath,
+        JSON.stringify(createReleaseComparisonReport({ version: stableV2Version, sha256: COMPARISON_TEST_SHA }))
+      ]
+    ]),
+    candidateSha256: COMPARISON_TEST_SHA,
+    vsixManifest: manifest({ version: stableV2Version }),
+    ...overrides
+  });
 }
 
 function ready(overrides = {}) {
@@ -226,11 +379,669 @@ test("accepts one internally consistent stable release candidate", () => {
   assert.deepEqual(inspectStableReleaseReadiness(ready()), []);
 });
 
+test("binds the checked-in Native R preview table to its exact truthful structure", () => {
+  assert.equal(Object.isFrozen(R_PREVIEW_PARITY_SCOPE), true);
+  assert.equal(
+    R_PREVIEW_PARITY_SCOPE.every((row) => Object.isFrozen(row)),
+    true
+  );
+  assert.throws(() => {
+    R_PREVIEW_PARITY_SCOPE[0][2] = "Done";
+  }, TypeError);
+  const checkedIn = readFileSync(new URL("../docs/feature-parity.md", import.meta.url), "utf8");
+  assert.deepEqual(inspectPreviewRParitySource({ featureParity: checkedIn }), []);
+  assert.deepEqual(inspectPreviewRParitySource({ featureParity: previewRParity() }), []);
+
+  const hiddenCanonicalTable = previewRParity().replace(/^## Native R preview\n+/u, "");
+  for (const hidden of [`\`\`\`markdown\n${hiddenCanonicalTable}\n\`\`\``]) {
+    assert.deepEqual(inspectPreviewRParitySource({ featureParity: `${previewRParity()}\n${hidden}\n` }), []);
+  }
+
+  const structuralMutations = [
+    `${previewRParity()}\n## \u200bNative R archive\n`,
+    previewRParity().replace("## Native R preview", "Native R preview\n---"),
+    previewRParity().replace("## Native R preview", "### Native R preview"),
+    previewRParity().replace("## Native R preview", "## ~~Native R preview~~"),
+    previewRParity().replace("## Native R preview", "## Native R ~~preview~~"),
+    previewRParity().replace("## Native R preview", "## Native R support"),
+    `${previewRParity()}\n## Native R archive\n`,
+    previewRParity().replace(
+      "| Surface | Availability | Status | Current checks | Release check |",
+      "| Surface | Status | Availability | Current checks | Release check |"
+    ),
+    previewRParity().replace("| Preview release |", "| Stable release |"),
+    previewRParity().replace("| 1.99 preview |", "| Stable |"),
+    previewRParity().replace("| Partial |", "| Planned |"),
+    previewRParity().replace("| Partial |", "| ~~Partial~~ |"),
+    previewRParity().replace("| Partial |", "| Partial ![Done](https://example.invalid/done.svg) |"),
+    previewRParity().replace("| Surface |", "| `Surface` |"),
+    previewRParity().replace(
+      "| Native R frame paging and typed cells |",
+      "| `Native R frame paging and typed cells` |"
+    ),
+    previewRParity().replace(
+      "Linux local VS Code/Cursor and remote VS Code; macOS/Windows VS Code gate",
+      "Tests did not pass."
+    ),
+    previewRParity().replace(R_PREVIEW_PARITY_SCOPE[0][0], `~~${R_PREVIEW_PARITY_SCOPE[0][0]}~~`),
+    previewRParity().replace(
+      "Current automated preview evidence remains truthful.",
+      "~~Current automated preview evidence remains truthful.~~"
+    ),
+    previewRParity().replace(
+      "## Native R preview\n",
+      "## Native R preview\n\n<table><tr><td>decoy</td></tr></table>\n"
+    ),
+    `<div hidden>\n\n${previewRParity()}\n</div>\n`,
+    `<details>\n\n${previewRParity()}\n</details>\n`,
+    `<template>\n\n${previewRParity()}\n</template>\n`,
+    `${previewRParity()}\n<!--\n${hiddenCanonicalTable}\n-->\n`,
+    `${previewRParity()}\n<!--><style>table{display:none!important}</style><!-- -->\n`,
+    previewRParity().replace("## Native R preview\n", "## Native R preview\n\n### Deferred\n")
+  ];
+  for (const mutated of structuralMutations) {
+    assert.notDeepEqual(inspectPreviewRParitySource({ featureParity: mutated }), []);
+  }
+
+  assert.notDeepEqual(
+    inspectPreviewRParitySource({
+      featureParity: previewRParity({
+        currentChecks: "Will add evidence later.",
+        status: (surface) => (surface === R_PREVIEW_PARITY_SCOPE[0][0] ? "Done" : "Partial")
+      })
+    }),
+    []
+  );
+  for (const surface of [
+    "Native R frame paging and typed cells",
+    "Base data.frame, tibble, and data.table",
+    "R cleaning operations and generated code",
+    "Owned .R source process"
+  ]) {
+    assert.notDeepEqual(
+      inspectPreviewRParitySource({
+        featureParity: previewRParity({
+          status: (candidateSurface) =>
+            candidateSurface === surface
+              ? "Done"
+              : R_PREVIEW_PARITY_SCOPE.find(([name]) => name === candidateSurface)[2]
+        })
+      }),
+      []
+    );
+  }
+
+  for (let index = 0; index < R_PREVIEW_PARITY_SCOPE.length; index += 1) {
+    const deleted = R_PREVIEW_PARITY_SCOPE.filter((_, candidateIndex) => candidateIndex !== index);
+    assert.notDeepEqual(inspectPreviewRParitySource({ featureParity: previewRParity({ scope: deleted }) }), []);
+    if (index + 1 < R_PREVIEW_PARITY_SCOPE.length) {
+      const swapped = R_PREVIEW_PARITY_SCOPE.map((row) => row);
+      [swapped[index], swapped[index + 1]] = [swapped[index + 1], swapped[index]];
+      assert.notDeepEqual(inspectPreviewRParitySource({ featureParity: previewRParity({ scope: swapped }) }), []);
+    }
+  }
+});
+
+test("requires the exact all-Done Native R scope for stable 2.x source and candidate readiness", () => {
+  const stableFeatureParity = `${parity()}\n${stableRParity()}`;
+  const trackedEvidencePaths = new Set([...ready().trackedEvidencePaths, ...stableRTrackedEvidencePaths()]);
+
+  assert.deepEqual(
+    inspectStableSourceReadiness({
+      featureParity: parity(),
+      readme: ready().readme,
+      trackedEvidencePaths: ready().trackedEvidencePaths,
+      version: "1.2.2"
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspectStableSourceReadiness({
+      featureParity: stableFeatureParity,
+      readme: ready().readme,
+      trackedEvidencePaths,
+      version: stableV2Version
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspectStableSourceReadiness({
+      featureParity: stableFeatureParity,
+      readme: ready().readme,
+      trackedEvidencePaths,
+      version: "3.0.0"
+    }),
+    []
+  );
+  assert.ok(
+    inspectStableSourceReadiness({
+      featureParity: parity(),
+      readme: ready().readme,
+      trackedEvidencePaths: ready().trackedEvidencePaths,
+      version: "3.0.0"
+    }).some((problem) => problem.includes('"## Native R support"'))
+  );
+  assert.deepEqual(inspectStableReleaseReadiness(stableV2Ready()), []);
+  const crlfReadme = ready().readme.replace(/\n/gu, "\r\n");
+  assert.deepEqual(
+    inspectStableSourceReadiness({
+      featureParity: stableFeatureParity,
+      readme: crlfReadme,
+      trackedEvidencePaths,
+      version: stableV2Version
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspectStableReleaseReadiness(
+      stableV2Ready({
+        packagedReadme: stableV2Readme.replace(/\n/gu, "\r\n"),
+        readme: stableV2Readme.replace(/\n/gu, "\r\n")
+      })
+    ),
+    []
+  );
+
+  for (const version of [
+    undefined,
+    "2",
+    "2.0",
+    "02.0.0",
+    "2.0.0-beta.1",
+    Object("2.0.0"),
+    ["2.0.0"],
+    { toString: () => "2.0.0" }
+  ]) {
+    assert.ok(
+      inspectStableSourceReadiness({
+        featureParity: stableFeatureParity,
+        readme: ready().readme,
+        trackedEvidencePaths,
+        version
+      }).includes("Stable source version must use major.minor.patch syntax.")
+    );
+  }
+  for (const version of ["0.3.0", "1.99.0"]) {
+    assert.ok(
+      inspectStableSourceReadiness({
+        featureParity: parity(),
+        readme: ready().readme,
+        trackedEvidencePaths: ready().trackedEvidencePaths,
+        version
+      }).includes(`Stable source version ${version} is reserved for preview releases.`)
+    );
+  }
+
+  for (const featureParity of [parity(), `${parity()}\n${previewRParity()}`]) {
+    const isPreviewShaped = featureParity.includes("## Native R preview");
+    const expectedRProblem = (problem) =>
+      isPreviewShaped
+        ? problem.includes("must not contain active preview-era Native R copy")
+        : problem.includes('"## Native R support"');
+    assert.ok(
+      inspectStableSourceReadiness({
+        featureParity,
+        readme: ready().readme,
+        trackedEvidencePaths,
+        version: stableV2Version
+      }).some(expectedRProblem)
+    );
+    assert.ok(inspectStableReleaseReadiness(stableV2Ready({ featureParity })).some(expectedRProblem));
+  }
+
+  const primaryPartial = inspectStableReleaseReadiness(
+    stableV2Ready({ featureParity: `${parity("Partial")}\n${stableRParity()}` })
+  );
+  assert.ok(primaryPartial.includes('Parity row "CSV/TSV/Parquet/Excel/JSONL entry points" is Partial, not Done.'));
+});
+
+test("dispatches source documentation only after exact version and preview-channel agreement", () => {
+  const stableFeatureParity = `${parity()}\n${stableRParity()}`;
+  const trackedEvidencePaths = new Set([...ready().trackedEvidencePaths, ...stableRTrackedEvidencePaths()]);
+  assert.deepEqual(
+    inspectReleaseDocumentationSource({
+      featureParity: previewRParity(),
+      preview: true,
+      readme: `# Open Wrangler\n\n${PREVIEW_README_RELEASE_SECTION}\n`,
+      version: "1.99.5"
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspectReleaseDocumentationSource({
+      featureParity: stableFeatureParity,
+      preview: false,
+      readme: ready().readme,
+      trackedEvidencePaths,
+      version: stableV2Version
+    }),
+    []
+  );
+  for (const input of [
+    { version: stableV2Version, preview: true },
+    { version: "1.99.5", preview: false },
+    { version: stableV2Version, preview: "true" },
+    { version: stableV2Version, preview: 1 },
+    { version: "2.0", preview: false }
+  ]) {
+    assert.notDeepEqual(
+      inspectReleaseDocumentationSource({
+        featureParity: previewRParity(),
+        readme: `# Open Wrangler\n\n${PREVIEW_README_RELEASE_SECTION}\n`,
+        ...input
+      }),
+      []
+    );
+  }
+});
+
+test("rejects structural and semantic drift in the stable Native R matrix", () => {
+  const inspect = (rTable, trackedEvidencePaths = stableRTrackedEvidencePaths()) =>
+    inspectStableSourceReadiness({
+      featureParity: `${parity()}\n${rTable}`,
+      readme: ready().readme,
+      trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...trackedEvidencePaths]),
+      version: stableV2Version
+    });
+
+  assert.deepEqual(inspect(stableRParity()), []);
+  assert.deepEqual(R_STABLE_PARITY_SCOPE, expectedStableRScope);
+  const hiddenCanonicalTable = stableRParity().replace(/^## Native R support\n+/u, "");
+
+  const structuralMutations = [
+    `${stableRParity()}\n\`\`\`markdown\n${hiddenCanonicalTable}\n\`\`\``,
+    `${stableRParity()}\n## \u200eNative R archive\n`,
+    stableRParity().replace("## Native R support", "Native R support\n---"),
+    stableRParity().replace("## Native R support", "### Native R support"),
+    stableRParity().replace("## Native R support", "## ~~Native R support~~"),
+    stableRParity().replace("## Native R support", "## Native R ~~support~~"),
+    stableRParity().replace("## Native R support", "## Native R stable parity"),
+    `${stableRParity()}\n## Native R archive\n`,
+    `${stableRParity()}\n## Native r archive\n`,
+    stableRParity().replace(
+      "| Surface | Availability | Status | Required evidence | Release gate |",
+      "| Surface | Status | Availability | Required evidence | Release gate |"
+    ),
+    stableRParity().replace("| Stable release |", "| Preview release |"),
+    stableRParity().replace("| Done |", "| Partial |"),
+    stableRParity().replace("| Done |", "| ~~Done~~ |"),
+    stableRParity().replace("| Done |", "| Done ![Partial](https://example.invalid/partial.svg) |"),
+    stableRParity().replace("| Surface |", "| `Surface` |"),
+    stableRParity().replace("| Native R frame paging and typed cells |", "| `Native R frame paging and typed cells` |"),
+    stableRParity().replace(
+      "Exact stable acceptance passed and is recorded;",
+      '[Exact stable acceptance passed and is recorded](https://example.invalid/unreviewed "tests did not pass");'
+    ),
+    stableRParity().replace(R_STABLE_PARITY_SCOPE[0].surface, `~~${R_STABLE_PARITY_SCOPE[0].surface}~~`),
+    stableRParity().replace(
+      "Exact stable acceptance passed and is recorded;",
+      "~~Exact stable acceptance passed and is recorded;~~"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99 preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99.5 preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99.x preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99-preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99.5-preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99\u2011preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99.5\u2013preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99 (preview) remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99 ![preview](https://example.invalid/preview.svg) remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99\u200bpreview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.\u034f99 preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.\ufe0f99 preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99         preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99.........preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99-era preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 1.99 series preview remains supported.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOther cleaning operations are not available in R yet.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nBefore a 2.0 tag can be published, acceptance must pass.\n"
+    ),
+    stableRParity().replace(
+      "## Native R support\n",
+      "## Native R support\n\nOpen Wrangler 2.0 previews remain supported.\n"
+    ),
+    `${stableRParity()}\n## R limitations\n\nOther cleaning operations are not available in R yet.\n`,
+    `${stableRParity()}\n## R roadmap\n\nBefore a 2.0 tag can be published, acceptance must pass.\n`,
+    `${stableRParity()}\n## R status\n\nOpen Wrangler 2.0 previews remain supported.\n`,
+    `${stableRParity()}\n## R history\n\nOpen Wrangler v1.99 preview remains supported.\n`,
+    `${stableRParity()}\n## R history\n\nOpen Wrangler version1.99 preview remains supported.\n`,
+    `${stableRParity()}\n## R history\n\nOpen Wrangler 1.\u007f99 preview remains supported.\n`,
+    `${stableRParity()}\n## R history\n\nOpen Wrangler 1.\ufff999 preview remains supported.\n`,
+    `${stableRParity()}\n## R history\n\nOpen Wrangler 1.99\u3164release preview remains supported.\n`,
+    `${stableRParity()}\n## R history\n\nOpen Wrangler \u202eweiverp 99.1\u202c remains supported.\n`,
+    `${stableRParity()}\n## History\n\n![Open Wrangler 1.**99** preview](https://example.invalid/preview.svg)\n`,
+    `${stableRParity()}\n## R preview archive\n\nOpen Wrangler 1.99.5 preview remains supported.\n`,
+    `${stableRParity()}\n## Something else\n\n${previewRParity()}\n`,
+    stableRParity().replace("## Native R support\n", "## Native R support\n\n<table><tr><td>decoy</td></tr></table>\n"),
+    `<div hidden>\n\n${stableRParity()}\n</div>\n`,
+    `<details>\n\n${stableRParity()}\n</details>\n`,
+    `<template>\n\n${stableRParity()}\n</template>\n`,
+    `${stableRParity()}\n<!--\n${hiddenCanonicalTable}\n-->\n`,
+    `${stableRParity()}\n<!--><style>table{display:none!important}</style><!-- -->\n`,
+    stableRParity().replace("## Native R support\n", "## Native R support\n\n### Deferred\n")
+  ];
+  for (const [mutationIndex, mutated] of structuralMutations.entries()) {
+    assert.notDeepEqual(inspect(mutated), [], `stable structural mutation ${mutationIndex} must fail closed`);
+  }
+  for (const unrelatedVersion of ["1.990", "1.99beta"]) {
+    assert.deepEqual(
+      inspect(`${stableRParity()}\n## History\n\nCompatibility note for format ${unrelatedVersion}.\n`),
+      []
+    );
+  }
+
+  for (let index = 0; index < R_STABLE_PARITY_SCOPE.length; index += 1) {
+    const deleted = R_STABLE_PARITY_SCOPE.filter((_, candidateIndex) => candidateIndex !== index);
+    assert.notDeepEqual(inspect(stableRParity({ scope: deleted })), []);
+
+    const duplicated = R_STABLE_PARITY_SCOPE.flatMap((row, candidateIndex) =>
+      candidateIndex === index ? [row, row] : [row]
+    );
+    assert.notDeepEqual(inspect(stableRParity({ scope: duplicated })), []);
+
+    if (index + 1 < R_STABLE_PARITY_SCOPE.length) {
+      const swapped = R_STABLE_PARITY_SCOPE.map((row) => row);
+      [swapped[index], swapped[index + 1]] = [swapped[index + 1], swapped[index]];
+      assert.notDeepEqual(inspect(stableRParity({ scope: swapped })), []);
+    }
+  }
+
+  for (const mutated of [
+    stableRParity().replace("All 28 catalog operations", "All 22 catalog operations"),
+    stableRParity().replace("collapse::qDF()", "collapse frame"),
+    stableRParity().replace("collapse::qTBL()", "collapse frame"),
+    stableRParity().replace("collapse::qDT()", "collapse frame")
+  ]) {
+    assert.notDeepEqual(inspect(mutated), []);
+  }
+});
+
+test("binds every stable Native R row to its exact reviewed tracked evidence", () => {
+  const inspect = (rTable, trackedEvidencePaths = stableRTrackedEvidencePaths()) =>
+    inspectStableSourceReadiness({
+      featureParity: `${parity()}\n${rTable}`,
+      readme: ready().readme,
+      trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...trackedEvidencePaths]),
+      version: stableV2Version
+    });
+
+  for (const reference of new Set(R_STABLE_PARITY_SCOPE.flatMap((row) => row.evidence))) {
+    const tracked = stableRTrackedEvidencePaths();
+    tracked.delete(reference.slice(reference.indexOf(":") + 1));
+    assert.notDeepEqual(inspect(stableRParity(), tracked), []);
+  }
+
+  const evidenceMutations = [
+    (row) => `Exact stable acceptance passed and is recorded; ${row.evidence.slice(1).join("; ")}`,
+    (row) => `Will add stable acceptance later; ${row.evidence.join("; ")}`,
+    (row) => `Exact stable acceptance did not pass; ${row.evidence.join("; ")}`,
+    (row) => `Stable acceptance failed; ${row.evidence.join("; ")}`,
+    (row) => `No acceptance evidence exists; ${row.evidence.join("; ")}`,
+    (row) => `Tests were not run; ${row.evidence.join("; ")}`,
+    (row) => `Never tested; ${row.evidence.join("; ")}`,
+    (row) => `Evidence is available; ${row.evidence.join("; ")}`,
+    (row) => `Exact stable acceptance passed and is recorded; ${row.evidence.join("; ")}; ${row.evidence[0]}`,
+    (row) => `Exact stable acceptance passed and is recorded; ${row.evidence.join("; ")}#unreviewed`,
+    (row) => `Exact stable acceptance passed and is recorded; ${row.evidence.join("; ")}#`,
+    (row) => `Exact stable acceptance passed and is recorded; ${row.evidence.join("; ")}?unreviewed`,
+    (row) => `Exact stable acceptance passed and is recorded; ${row.evidence.join("; ")}@unreviewed`,
+    (row) => `Exact stable acceptance passed and is recorded; ${row.evidence.join("; ")}%23unreviewed`,
+    (row) => `Exact stable acceptance passed and is recorded; ${row.evidence.join("; ")}:unreviewed`,
+    (row) =>
+      `Exact stable acceptance passed and is recorded; ${row.evidence.slice(1).join("; ")}; test:scripts/release-readiness.test.mjs`,
+    (row) =>
+      `Exact stable acceptance passed and is recorded; ${row.evidence.join("; ")}; test:scripts/untracked.test.mjs`,
+    (row) => `Exact stable acceptance passed and is recorded; test docs/testing.md; ${row.evidence.slice(1).join("; ")}`
+  ];
+  for (const mutation of evidenceMutations) {
+    assert.notDeepEqual(inspect(stableRParity({ evidence: mutation })), []);
+  }
+
+  const first = R_STABLE_PARITY_SCOPE[0];
+  const second = R_STABLE_PARITY_SCOPE[7];
+  assert.notDeepEqual(
+    inspect(
+      stableRParity({
+        evidence: (row) =>
+          `Exact stable acceptance passed and is recorded; ${(row === first ? second.evidence : row.evidence).join("; ")}`
+      })
+    ),
+    []
+  );
+  assert.notDeepEqual(
+    inspectStableSourceReadiness({
+      featureParity: `${parity()}\n${stableRParity()}`,
+      readme: ready().readme,
+      trackedEvidencePaths: undefined,
+      version: stableV2Version
+    }),
+    []
+  );
+});
+
 test("stable public copy rejects leftover 1.99 preview labels", () => {
   assert.deepEqual(inspectStablePublicCopy("## R dataframes", "docs/media-gallery.md"), []);
-  assert.deepEqual(inspectStablePublicCopy("## R dataframes (1.99 preview)", "docs/media-gallery.md"), [
-    "docs/media-gallery.md still contains a 1.99 preview label. Remove it before the stable version 2 release."
-  ]);
+  const expected =
+    "docs/media-gallery.md still contains a 1.99 preview label. Remove it before the stable version 2 release.";
+  const staleLabels = [
+    "1.99 preview",
+    "v1.99 preview",
+    "1.99-preview",
+    "1.99 (preview)",
+    "1.99\u2011preview",
+    "1.99 **preview**",
+    "1.99 pre**view**",
+    "1.99 [preview](https://example.invalid/preview)",
+    "1.99 ![preview](https://example.invalid/preview.svg)",
+    '1.99 <img alt="preview" src="https://example.invalid/preview.svg">',
+    '<img alt="Open Wrangler 1.99 preview" src="https://example.invalid/preview.svg">',
+    "1.99 <strong>preview</strong>",
+    "1.99 `preview`",
+    "1.99 version preview",
+    "1.99.5 preview",
+    "1.99-era preview",
+    "1.99 release preview",
+    "1.99 channel preview",
+    "v1.99-era preview",
+    "version1.99 preview",
+    "OpenWrangler1.99 preview",
+    "releasev1.99 preview",
+    "Preview release 1.99",
+    "The preview channel for Open Wrangler 1.99",
+    "The preview era was Open Wrangler 1.99",
+    "Open Wrangler preview v1.99"
+  ];
+  for (const staleLabel of staleLabels) {
+    const contents = `## R dataframes (${staleLabel})`;
+    assert.deepEqual(inspectStablePublicCopy(contents, "docs/media-gallery.md"), [expected]);
+    assert.ok(
+      inspectStableSourceReadiness({
+        featureParity: `${parity()}\n${stableRParity()}`,
+        readme: `${ready().readme}\n${contents}\n`,
+        trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...stableRTrackedEvidencePaths()]),
+        version: stableV2Version
+      }).some((problem) => problem.includes("still contains a 1.99 preview label"))
+    );
+  }
+  for (const renderedStaleLabel of [
+    "<h2>R dataframes (Open Wrangler v1.99 pre<!-- inert -->view)</h2>",
+    "<h2>R dataframes (Open Wrangler v1.99 pre<!-- a < b -->view)</h2>",
+    "<h2>R dataframes (Open Wrangler v1.99 pre<!-->view)</h2>",
+    "<h2>R dataframes (Open Wrangler v1.99 pre<?ignored>view)</h2>",
+    "<h2>R dataframes (Open Wrangler v1.99 pre</>view)</h2>",
+    "Open Wrangler v1.99 ![pre**view**](https://example.invalid/preview.svg)",
+    'Open Wrangler v1.99<img alt="." width="0" height="0" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="> preview',
+    "Open Wrangler v1.99 ![.](https://example.invalid/pixel.gif) preview",
+    "<blockquote>Open Wrangler v1.99</blockquote><blockquote>preview</blockquote>",
+    "<ul>Open Wrangler v1.99</ul><ul>preview</ul>",
+    "<table>Open Wrangler v1.99</table><table>preview</table>"
+  ]) {
+    assert.deepEqual(inspectStablePublicCopy(renderedStaleLabel, "docs/media-gallery.md"), [expected]);
+    assert.ok(
+      inspectStableSourceReadiness({
+        featureParity: `${parity()}\n${stableRParity()}`,
+        readme: `${ready().readme}\n${renderedStaleLabel}\n`,
+        trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...stableRTrackedEvidencePaths()]),
+        version: stableV2Version
+      }).some((problem) => problem.includes("still contains a 1.99 preview label"))
+    );
+  }
+  for (const unsupportedHtml of [
+    '<div style="display:inline">Open Wrangler v1.99</div><div style="display:inline"> preview</div>',
+    "Open Wrangler v1.99<span hidden>.</span> preview remains supported.",
+    'Open Wrangler v1.99<span style="display:none">.</span> preview remains supported.',
+    '<style>.hidden { display: none }</style>Open Wrangler v1.99<span class="hidden">.</span> preview remains supported.',
+    "Open Wrangler v1.99<script>.</script> preview remains supported."
+  ]) {
+    assert.ok(
+      inspectStablePublicCopy(unsupportedHtml, "docs/media-gallery.md").some((problem) =>
+        problem.includes("unsupported active HTML")
+      )
+    );
+    assert.ok(
+      inspectStableSourceReadiness({
+        featureParity: `${parity()}\n${stableRParity()}`,
+        readme: `${ready().readme}\n${unsupportedHtml}\n`,
+        trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...stableRTrackedEvidencePaths()]),
+        version: stableV2Version
+      }).some((problem) => problem.includes("unsupported active HTML"))
+    );
+  }
+  const ambiguousImageCopy =
+    'Open Wrangler v1.99<img alt="." width="0" height="0" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="> pre<img alt="view" src="data:image/png;base64,AAAA">';
+  assert.deepEqual(inspectStablePublicCopy(ambiguousImageCopy, "docs/media-gallery.md"), [expected]);
+  assert.ok(
+    inspectStableSourceReadiness({
+      featureParity: `${parity()}\n${stableRParity()}`,
+      readme: `${ready().readme}\n${ambiguousImageCopy}\n`,
+      trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...stableRTrackedEvidencePaths()]),
+      version: stableV2Version
+    }).some((problem) => problem.includes("still contains a 1.99 preview label"))
+  );
+  const bidiCopy = "Open Wrangler v1.99 \u202eweiverp\u202c remains supported.";
+  assert.ok(
+    inspectStablePublicCopy(bidiCopy, "docs/media-gallery.md").some((problem) =>
+      problem.includes("bidirectional text controls")
+    )
+  );
+  assert.ok(
+    inspectStableSourceReadiness({
+      featureParity: `${parity()}\n${stableRParity()}`,
+      readme: `${ready().readme}\n${bidiCopy}\n`,
+      trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...stableRTrackedEvidencePaths()]),
+      version: stableV2Version
+    }).some((problem) => problem.includes("bidirectional text controls"))
+  );
+  const controlCopy = "Open Wrangler 1.\u007f99 preview remains supported.";
+  assert.ok(
+    inspectStablePublicCopy(controlCopy, "docs/media-gallery.md").some((problem) =>
+      problem.includes("unsupported control characters")
+    )
+  );
+  assert.ok(
+    inspectStableSourceReadiness({
+      featureParity: `${parity()}\n${stableRParity()}`,
+      readme: `${ready().readme}\n${controlCopy}\n`,
+      trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...stableRTrackedEvidencePaths()]),
+      version: stableV2Version
+    }).some((problem) => problem.includes("unsupported control characters"))
+  );
+  const formatCopy = "Open Wrangler 1.\ufff999 preview remains supported.";
+  assert.ok(
+    inspectStablePublicCopy(formatCopy, "docs/media-gallery.md").some((problem) =>
+      problem.includes("Unicode format characters")
+    )
+  );
+  assert.ok(
+    inspectStableSourceReadiness({
+      featureParity: `${parity()}\n${stableRParity()}`,
+      readme: `${ready().readme}\n${formatCopy}\n`,
+      trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...stableRTrackedEvidencePaths()]),
+      version: stableV2Version
+    }).some((problem) => problem.includes("Unicode format characters"))
+  );
+  const ignorableCopy = "Open Wrangler 1.99\u3164release preview remains supported.";
+  assert.ok(
+    inspectStablePublicCopy(ignorableCopy, "docs/media-gallery.md").some((problem) =>
+      problem.includes("default-ignorable characters")
+    )
+  );
+  assert.ok(
+    inspectStableSourceReadiness({
+      featureParity: `${parity()}\n${stableRParity()}`,
+      readme: `${ready().readme}\n${ignorableCopy}\n`,
+      trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...stableRTrackedEvidencePaths()]),
+      version: stableV2Version
+    }).some((problem) => problem.includes("default-ignorable characters"))
+  );
+  for (const unrelatedVersion of ["1.990", "1.99beta"]) {
+    const copy = `Compatibility note for format ${unrelatedVersion}.`;
+    assert.deepEqual(inspectStablePublicCopy(copy, "docs/media-gallery.md"), []);
+    assert.deepEqual(
+      inspectStableSourceReadiness({
+        featureParity: `${parity()}\n${stableRParity()}`,
+        readme: `${ready().readme}\n${copy}\n`,
+        trackedEvidencePaths: new Set(["scripts/release-readiness.test.mjs", ...stableRTrackedEvidencePaths()]),
+        version: stableV2Version
+      }),
+      []
+    );
+  }
+  assert.deepEqual(inspectStablePublicCopy("<!-- Open Wrangler v1.99 preview -->", "docs/media-gallery.md"), []);
+  assert.deepEqual(inspectStablePublicCopy("```text\nOpen Wrangler v1.99 preview\n```", "docs/media-gallery.md"), []);
 
   const problems = inspectStableReleaseReadiness(
     ready({ readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n## R (1.99 preview)\n` })
@@ -287,12 +1098,14 @@ test("requires one tracked, release-matched Data Wrangler review in the stable P
       sourcePackageJson: JSON.stringify({ ...stablePackage, version: sourceVersion }),
       pythonVersionFile: `__version__ = "${sourceVersion}"\n`,
       changelog: `# Changelog\n\n## [${sourceVersion}] - 2026-08-08\n\n### Added\n\n- Published R support.\n`,
+      featureParity: `${parity()}\n${stableRParity()}`,
       readme: readmeWithReport(reportVersion),
       packagedPackageJson: JSON.stringify({ ...stablePackage, version: sourceVersion }),
       packagedPythonVersionFile: `__version__ = "${sourceVersion}"\n`,
       packagedReadme: readmeWithReport(reportVersion),
       trackedEvidencePaths: new Set([
         ...ready().trackedEvidencePaths,
+        ...stableRTrackedEvidencePaths(),
         reportPath(reportVersion),
         reportDataPath(reportVersion)
       ]),
@@ -576,7 +1389,8 @@ test("keeps performance evidence truthful and non-interchangeable with stable re
     inspectStableSourceReadiness({
       featureParity: ready().featureParity,
       readme: ready().readme,
-      trackedEvidencePaths: ready().trackedEvidencePaths
+      trackedEvidencePaths: ready().trackedEvidencePaths,
+      version: stablePackage.version
     }),
     []
   );
@@ -963,6 +1777,10 @@ test("requires one real dated changelog heading for the stable version", () => {
 });
 
 test("requires one exact positive stable release and install section in both README copies", () => {
+  assert.deepEqual(inspectStableReadme(ready().readme.replace(/\n/gu, "\r\n")), []);
+  for (const malformed of [undefined, null, 1, {}, Buffer.from("# Open Wrangler\n")]) {
+    assert.notDeepEqual(inspectStableReadme(malformed), []);
+  }
   for (const readme of [
     "# Open Wrangler\n\nOpen Wrangler remains preview software.\n",
     "# Open Wrangler\n\nNo packaged releases are available.\n",
@@ -1008,17 +1826,18 @@ test("requires one exact positive stable release and install section in both REA
 
 test("keeps the checked-in README release and install section generated for its current source channel", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const featureParity = readFileSync(new URL("../docs/feature-parity.md", import.meta.url), "utf8");
   const packageJson = parseStrictJson(readFileSync(new URL("../package.json", import.meta.url), "utf8"), {
     maxBytes: 1024 * 1024
   });
   assert.equal(typeof packageJson?.preview, "boolean");
   if (packageJson.preview === true) {
     assert.deepEqual(inspectPreviewReadme(readme), []);
+    assert.deepEqual(inspectPreviewRParitySource({ featureParity }), []);
     assert.ok(readme.includes(PREVIEW_README_RELEASE_SECTION));
     return;
   }
 
-  const featureParity = readFileSync(new URL("../docs/feature-parity.md", import.meta.url), "utf8");
   const trackedEvidencePaths = new Set(
     execFileSync("git", ["ls-files", "-z", "--"], {
       cwd: new URL("..", import.meta.url),
@@ -1032,7 +1851,8 @@ test("keeps the checked-in README release and install section generated for its 
   const stableProblems = inspectStableSourceReadiness({
     featureParity,
     readme,
-    trackedEvidencePaths
+    trackedEvidencePaths,
+    version: packageJson.version
   });
   const evidenceProblems = inspectPerformanceEvidenceSourceReadiness({
     featureParity,

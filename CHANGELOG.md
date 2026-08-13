@@ -4,6 +4,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Changed
+
+- Stable releases at major version 2 or newer now require an exact all-green Native R release matrix with reviewed
+  row-specific evidence. The gate explicitly covers ordinary base, tibble, `data.table`, and collapse frame types,
+  the complete 28-operation catalog, editor/document/export journeys, an R performance record, and first-class
+  VS Code/Cursor candidate acceptance. Preview documentation remains truthful and may retain Partial rows.
+
 ## [1.99.5] - 2026-08-13
 
 ### Changed

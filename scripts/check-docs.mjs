@@ -3,10 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { inspectDataWranglerComparisonReview } from "./data-wrangler-comparison-report.mjs";
 import { inspectCandidateAcceptanceWorkflow } from "./candidate-acceptance-workflow.mjs";
-import { inspectPreviewReadme, inspectStablePublicCopy } from "./release-documents.mjs";
+import { inspectStablePublicCopy } from "./release-documents.mjs";
 import {
   inspectPerformanceSummary,
-  inspectStableSourceReadiness,
+  inspectReleaseDocumentationSource,
   performanceReportLink
 } from "./release-readiness.mjs";
 import { inspectPreviewReleaseWorkflow as inspectReleaseWorkflow } from "./preview-release-workflow.mjs";
@@ -40,7 +40,10 @@ if (missing.length > 0) {
 
 const packageJsonSource = readFileSync(resolve(root, "package.json"), "utf8");
 const packageLockSource = readFileSync(resolve(root, "package-lock.json"), "utf8");
-const packageJson = JSON.parse(packageJsonSource);
+const packageJson = parseStrictJson(packageJsonSource, { maxBytes: 1024 * 1024 });
+if (typeof packageJson !== "object" || packageJson === null || Array.isArray(packageJson)) {
+  throw new Error("package.json must contain one bounded JSON object.");
+}
 const repositoryMetadataProblems = inspectPublicRepositoryMetadata({
   contractSource: readFileSync(resolve(root, ".github/repository-metadata.json"), "utf8"),
   packageSource: packageJsonSource
@@ -70,15 +73,15 @@ const trackedEvidencePaths = new Set(
     .split("\0")
     .filter(Boolean)
 );
-const readmeProblems = packageJson.preview
-  ? inspectPreviewReadme(readme)
-  : inspectStableSourceReadiness({
-      featureParity,
-      readme,
-      trackedEvidencePaths
-    });
+const readmeProblems = inspectReleaseDocumentationSource({
+  featureParity,
+  preview: packageJson.preview,
+  readme,
+  trackedEvidencePaths,
+  version: packageJson.version
+});
 if (readmeProblems.length > 0) {
-  throw new Error(`README release/install region is stale:\n- ${readmeProblems.join("\n- ")}`);
+  throw new Error(`Release documentation is stale:\n- ${readmeProblems.join("\n- ")}`);
 }
 const linkedComparison = performanceReportLink(readme);
 const performanceSummaryProblems = inspectPerformanceSummary(readme);
