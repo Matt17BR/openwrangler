@@ -842,7 +842,7 @@ test("focused literate acceptance owns and probes its exact private Python kerne
   const source = await readFile(resolve("scripts/run-packaged-editor-tests.mjs"), "utf8");
   const rSetup = source.indexOf("rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(");
   const rReadiness = source.indexOf("await probeJupyterAcceptanceRKernel(testPython, rAcceptanceEnvironment)", rSetup);
-  const selectorGuard = source.indexOf('if (rJourneySelector === "literate-documents")', rReadiness);
+  const selectorGuard = source.indexOf("if (rJupyterSelection.literateDocuments)", rReadiness);
   const createCheckpoint = source.indexOf('"setup:create-quarto-python-kernel-environment"', selectorGuard);
   const createKernel = source.indexOf(
     "quartoKernelPython = await createJupyterAcceptanceCoreKernelPython(",
@@ -901,7 +901,7 @@ test("focused literate acceptance owns and probes its exact private Python kerne
   assert.ok(rPhase > editor && rPhaseEnd > rPhase);
   assert.match(
     source.slice(rPhase, rPhaseEnd),
-    /python:\s*rJourneySelector === "literate-documents"\s*\? quartoKernelPython\s*:\s*acceptancePythonForPhase\("jupyter-r", testPython, jupyterKernelPython\)/u,
+    /python:\s*rJupyterSelection\.literateDocuments\s*\? quartoKernelPython\s*:\s*acceptancePythonForPhase\("jupyter-r", testPython, jupyterKernelPython\)/u,
     "The focused phase must receive the same exact interpreter registered by its kernelspec."
   );
 });

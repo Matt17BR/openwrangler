@@ -17,6 +17,89 @@ import {
   runPackagedEditorOrchestration,
   runWithRetainedFailure
 } from "./packaged-editor-orchestration.mjs";
+import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
+
+test("R journey selection keeps combined diagnostics by default and isolates remote-only acceptance", () => {
+  const resolve = (overrides = {}) =>
+    resolvePackagedRJourneySelection({
+      acceptanceMode: "r-jupyter",
+      selector: undefined,
+      requestedEditors: ["vscode", "cursor"],
+      remoteJupyterEnabled: false,
+      platform: "linux",
+      ...overrides
+    });
+
+  assert.deepEqual(resolve(), {
+    local: true,
+    remote: false,
+    remoteOnly: false,
+    requiresHostR: true,
+    literateDocuments: false
+  });
+  assert.deepEqual(resolve({ remoteJupyterEnabled: true }), {
+    local: true,
+    remote: true,
+    remoteOnly: false,
+    requiresHostR: true,
+    literateDocuments: false
+  });
+  for (const [selector, literateDocuments] of [
+    ["interactive-terminal", false],
+    ["literate-documents", true]
+  ]) {
+    assert.deepEqual(resolve({ selector, requestedEditors: ["vscode"] }), {
+      local: true,
+      remote: false,
+      remoteOnly: false,
+      requiresHostR: true,
+      literateDocuments
+    });
+  }
+  assert.deepEqual(
+    resolve({
+      selector: "remote-r-jupyter",
+      requestedEditors: ["vscode"],
+      remoteJupyterEnabled: true
+    }),
+    { local: false, remote: true, remoteOnly: true, requiresHostR: false, literateDocuments: false }
+  );
+  assert.deepEqual(
+    resolvePackagedRJourneySelection({
+      acceptanceMode: "full",
+      selector: undefined,
+      requestedEditors: undefined,
+      remoteJupyterEnabled: false,
+      platform: "linux"
+    }),
+    { local: false, remote: false, remoteOnly: false, requiresHostR: false, literateDocuments: false }
+  );
+
+  for (const [overrides, message] of [
+    [{ selector: "unknown" }, /must be unset/u],
+    [{ acceptanceMode: "full", selector: "literate-documents" }, /requires OPEN_WRANGLER_PACKAGED_MODE/u],
+    [{ requestedEditors: undefined }, /explicit, duplicate-free/u],
+    [{ requestedEditors: ["vscode", "vscode"] }, /explicit, duplicate-free/u],
+    [{ requestedEditors: ["vscode", "other"] }, /explicit, duplicate-free/u],
+    [{ selector: "literate-documents", remoteJupyterEnabled: true }, /cannot be combined/u],
+    [{ remoteJupyterEnabled: true, requestedEditors: ["cursor"] }, /requires VS Code/u],
+    [{ selector: "remote-r-jupyter", requestedEditors: ["vscode"] }, /requires real remote/u],
+    [
+      { selector: "remote-r-jupyter", requestedEditors: ["vscode"], remoteJupyterEnabled: true, platform: "darwin" },
+      /Linux-only/u
+    ],
+    [
+      {
+        selector: "remote-r-jupyter",
+        requestedEditors: ["vscode", "cursor"],
+        remoteJupyterEnabled: true
+      },
+      /exactly VS Code/u
+    ]
+  ]) {
+    assert.throws(() => resolve(overrides), message);
+  }
+});
 
 test("Cursor cleanup never inspects or launches an uninstaller under ownership uncertainty", async () => {
   let propertyReads = 0;

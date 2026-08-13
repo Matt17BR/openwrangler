@@ -48,14 +48,21 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
       workflow.jobs.jupyter.steps.find((step) => step.id === "canonical").env.EXPECTED_SHA = "${{ github.sha }}";
     },
     (workflow) => {
-      workflow.jobs.jupyter.strategy["fail-fast"] = false;
+      workflow.jobs.jupyter.strategy["fail-fast"] = true;
     },
     (workflow) => {
       workflow.jobs.jupyter.strategy.matrix.phase = ["python"];
     },
     (workflow) => {
+      workflow.jobs.jupyter.container = "rocker/r-ver:4.5.2";
+    },
+    (workflow) => {
       workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).if =
         "${{ matrix.phase == 'python' }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).uses =
+        "r-lib/actions/setup-r@0000000000000000000000000000000000000000";
     },
     (workflow) => {
       findRDependencies(workflow).uses = "r-lib/actions/setup-r-dependencies@0000000000000000000000000000000000000000";
@@ -144,6 +151,26 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
       );
     },
     (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      const preparation = steps.splice(
+        steps.findIndex((step) => step.id === "prepare_xvfb"),
+        1
+      )[0];
+      steps.splice(steps.findIndex((step) => step.id === "packaged_editor_r") + 1, 0, preparation);
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.id === "prepare_xvfb").run +=
+        '\nrequire("node:child_process").execFileSync("sudo", ["apt-get", "install", "r-base"]);';
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.run === "npm ci").if = "${{ matrix.phase == 'r-remote' }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.run === "npm run verify:vsix -- canonical-release/openwrangler.vsix"
+      ).if = "${{ matrix.phase != 'r-remote' }}";
+    },
+    (workflow) => {
       workflow.jobs.jupyter.steps.find((step) => step.id === "packaged_editor").env.OPEN_WRANGLER_PACKAGED_EDITORS =
         "vscode";
     },
@@ -151,6 +178,68 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
       workflow.jobs.jupyter.steps.find(
         (step) => step.id === "packaged_editor_r_literate"
       ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "interactive-terminal";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_remote"
+      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "literate-documents";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_remote"
+      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode,cursor";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_remote"
+      ).env.OPEN_WRANGLER_TEST_RSCRIPT = "${{ steps.rscript.outputs.executable }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.run === 'python -m pip install -e "python[dev]"').if = undefined;
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.push(
+        structuredClone(
+          workflow.jobs.jupyter.steps.find((step) => step.run === 'python -m pip install -e "python[dev]"')
+        )
+      );
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.push(
+        structuredClone(
+          workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@"))
+        )
+      );
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.push({ run: "python -m pip install --upgrade setuptools" });
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.push({ if: "${{ matrix.phase == 'r-remote' }}", run: "sudo apt-get install r-base" });
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.splice(18, 0, {
+        if: "${{ matrix.phase == 'r-remote' }}",
+        run: "python -m venv .remote-host"
+      });
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.splice(31, 0, {
+        if: "${{ matrix.phase == 'r-remote' }}",
+        run: "Rscript --version"
+      });
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.unshift(
+        structuredClone(workflow.jobs.jupyter.steps.find((step) => step.id === "canonical_r_remote"))
+      );
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.id === "canonical_r_remote").id = "";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).if =
+        "${{ matrix.phase != 'python' }}";
     },
     (workflow) => {
       workflow.jobs.jupyter.steps.find(
@@ -172,6 +261,18 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
       workflow.jobs.jupyter.steps.find((step) => step.name === "Upload R Markdown and Quarto failure diagnostics").with[
         "include-hidden-files"
       ] = true;
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.name === "Upload remote R-Jupyter failure diagnostics"
+      ).with.name = "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}";
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      steps.splice(
+        steps.findIndex((step) => step.name === "Fail after remote R-Jupyter diagnostics"),
+        1
+      );
     },
     (workflow) => {
       const steps = workflow.jobs.jupyter.steps;

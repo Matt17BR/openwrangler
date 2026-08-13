@@ -126,7 +126,7 @@ jobs:
     name: Candidate acceptance (${{ matrix.name }})
     needs: package
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - name: macOS platform

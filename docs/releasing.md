@@ -83,8 +83,9 @@ comprehensive notebook profile plus plain `.R`; Windows and Cursor run the repre
 same hard deadline, and Windows skips direct R documents. After the ordinary Linux R invocation passes, the candidate
 is verified again and a fresh packaged VS Code phase covers `.Rmd`, `.qmd`, native Quarto preview, and Python Quarto.
 Direct R/runtime/webview suites retain the complete R operation and document matrix. The candidate workflow runs
-Python and R Jupyter acceptance as separate fail-fast matrix jobs, and both download and verify the same candidate
-VSIX. The ordinary and focused R invocations retain distinct sealed failure diagnostics. Only the focused
+Python, local R, and remote R Jupyter acceptance as separate non-cancelling matrix jobs, and all three download and
+verify the same candidate VSIX. The local ordinary, focused literate, and remote R invocations retain distinct sealed
+failure diagnostics. Only the focused
 `literate-documents` invocation creates a private core Python compatibility environment under its verified temporary
 root, pins Jupyter Client 8.9.1 alongside the reviewed runtime versions, registers that exact interpreter in the
 R-owned Jupyter data directory, and directly proves one start/execute/shutdown cycle before launching VS Code. The
@@ -229,22 +230,20 @@ version, changelog, release notes, and required release metadata.
 
 For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR artifact and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. A failed candidate is recorded and is not automatically retried.
 
-`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Five outer lanes run macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. The Jupyter lane expands into separate Python and R jobs; after the ordinary R command passes, its cell reverifies the artifact and starts the focused literate journey with a fresh phase deadline and distinct diagnostics. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH depends only on the package and starts alongside those lanes; publication still depends directly on the package, complete matrix, and Remote SSH results. The overlap saves about three minutes on successful release wall time without removing evidence. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
+`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Five outer lanes run macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. The Jupyter lane expands into Python, local R, and remote R jobs; after the ordinary local R command passes, its cell reverifies the artifact and starts the focused literate journey with a fresh phase deadline and distinct diagnostics. The remote R cell avoids hosted R and local editor tooling and starts the existing five-phase Docker journey immediately after common package setup and artifact verification. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH depends only on the package and starts alongside those lanes; publication still depends directly on the package, complete matrix, and Remote SSH results. The overlap saves about three minutes on successful release wall time without removing evidence. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
 
-The R cell provisions its contract packages through the same pinned dependency action and exact configuration as the
+The local R cell provisions its contract packages through the same pinned dependency action and exact configuration as the
 pull-request R matrix. The action reconciles the resolved lock and may restore a compatible versioned cache created by
 an earlier candidate dispatch on `main`. GitHub's pull-request merge-ref cache is not available to the release
 dispatch, so the first matching `main` dispatch performs a valid cold install. The cache is neither immutable package
 pinning nor supply-chain evidence. The R contract, ordinary packaged-editor journey, artifact revalidation, and
 focused R Markdown/Quarto journey remain required release evidence.
 
-The candidate matrix uses GitHub's fail-fast behavior. Once a cell reports failure, GitHub cancels the other running
-cells because that candidate cannot publish. A suspected failure is not enough: the command must finish and return
-failure first. Editor, performance, and webview commands that produce diagnostics therefore upload them immediately
-after the failing command and then exit before another expensive command starts. Remote SSH stays outside the matrix
-so matrix cancellation cannot interrupt its cleanup. It may therefore finish after a candidate lane fails, spending
-some otherwise unnecessary runner time in exchange for deterministic cleanup; the failed matrix still blocks
-publication.
+The outer candidate matrix and its inner Jupyter matrix keep fail-fast cancellation disabled. Once a cell reports a
+failure, sibling editor, Docker, performance, and Remote SSH owners may finish their bounded work and cleanup rather
+than being interrupted. This can spend additional runner time on a failed candidate, but every failed result still
+blocks publication. Diagnostic-producing commands upload available sealed evidence immediately before their explicit
+failure step.
 
 A `publish: false` run proves source binding, package integrity, and the complete acceptance topology only. It does not enter the `publishing` environment, receive registry secrets or `contents: write`, push a tag, call a registry, or trigger the Marketplace pipeline. Its run-scoped artifact is not promoted by a later dispatch; an explicitly authorized `publish: true` run repeats acceptance and promotes only the exact artifact created and tested in that same run. Consequently a rehearsal does **not** prove protected-environment approval, secret availability, GitHub publication API behavior, the global publication queue under live contention, Azure workload federation, or registry propagation.
 
