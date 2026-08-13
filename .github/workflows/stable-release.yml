@@ -162,7 +162,7 @@ jobs:
       runner_os: ${{ matrix.os }}
   remote-ssh:
     name: Remote SSH acceptance
-    needs: [package, candidate-acceptance]
+    needs: package
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:

@@ -214,7 +214,7 @@ version, changelog, release notes, and required release metadata.
 
 For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR artifact and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. A failed candidate is recorded and is not automatically retried.
 
-`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Five outer lanes run macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. The Jupyter lane expands into separate Python and R jobs; after the ordinary R command passes, its cell reverifies the artifact and starts the focused literate journey with a fresh phase deadline and distinct diagnostics. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH starts only after every lane passes, and publication depends directly on the package, matrix, and Remote SSH results. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
+`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Five outer lanes run macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. The Jupyter lane expands into separate Python and R jobs; after the ordinary R command passes, its cell reverifies the artifact and starts the focused literate journey with a fresh phase deadline and distinct diagnostics. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH depends only on the package and starts alongside those lanes; publication still depends directly on the package, complete matrix, and Remote SSH results. The overlap saves about three minutes on successful release wall time without removing evidence. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
 
 The R cell provisions its contract packages through the same pinned dependency action and exact configuration as the
 pull-request R matrix. The action reconciles the resolved lock and may restore a compatible versioned cache created by
@@ -227,15 +227,17 @@ The candidate matrix uses GitHub's fail-fast behavior. Once a cell reports failu
 cells because that candidate cannot publish. A suspected failure is not enough: the command must finish and return
 failure first. Editor, performance, and webview commands that produce diagnostics therefore upload them immediately
 after the failing command and then exit before another expensive command starts. Remote SSH stays outside the matrix
-so matrix cancellation cannot interrupt its cleanup.
+so matrix cancellation cannot interrupt its cleanup. It may therefore finish after a candidate lane fails, spending
+some otherwise unnecessary runner time in exchange for deterministic cleanup; the failed matrix still blocks
+publication.
 
 A `publish: false` run proves source binding, package integrity, and the complete acceptance topology only. It does not enter the `publishing` environment, receive registry secrets or `contents: write`, push a tag, call a registry, or trigger the Marketplace pipeline. Its run-scoped artifact is not promoted by a later dispatch; an explicitly authorized `publish: true` run repeats acceptance and promotes only the exact artifact created and tested in that same run. Consequently a rehearsal does **not** prove protected-environment approval, secret availability, GitHub publication API behavior, the global publication queue under live contention, Azure workload federation, or registry propagation.
 
 The stable workflow is manual and defaults to validation-only. It accepts only the exact current protected `main`
 commit. Packaging may preflight an absent tag or one that already resolves to that commit; publication accepts only
 an absent or exact lightweight tag. One job builds the VSIX and uploads `openwrangler.vsix`, its lowercase SHA-256,
-and stable provenance JSON. The same shared five-lane matrix validates it before Remote SSH runs. The package,
-matrix, and Remote SSH jobs must all pass before promotion.
+and stable provenance JSON. The shared five-lane matrix and Remote SSH consume that canonical set in parallel after
+packaging. The package, matrix, and Remote SSH jobs must all pass before promotion.
 
 `publish: true` makes the final job eligible for the branch-and-tag-restricted `publishing` environment. That job
 alone receives `contents: write`, downloads the artifact ID again, and revalidates it before each publisher. Both
@@ -294,7 +296,7 @@ run builds and tests one canonical set, then creates the lightweight tag and Git
 The tag event starts the Marketplace pipeline. Do not create stable tags manually; the stable workflow creates the
 tag and GitHub Release together at the accepted `main` commit.
 
-Preview candidates run macOS/Python 3.12 and Windows/Python 3.14 native acceptance beside, not before, the complete Linux owner. Cross-platform jobs keep environment smoke, extension-host, packaged VS Code and Cursor platform coverage, plus one local R/IRkernel journey in packaged VS Code, without rerunning the complete Python or R contract suites. Linux owns source checks, script contracts, visual/accessibility, instrumented coverage, dependency audits, runtime benchmark, and full packaged VS Code/Cursor journeys exactly once. Installed performance, released/remote Jupyter, and Remote SSH remain independent parallel consumers of the same canonical triple.
+Preview candidates run macOS/Python 3.12 and Windows/Python 3.14 native acceptance beside, not before, the complete Linux owner. Cross-platform jobs keep environment smoke, extension-host, packaged VS Code and Cursor platform coverage, plus one local R/IRkernel journey in packaged VS Code, without rerunning the complete Python or R contract suites. Linux owns source checks, script contracts, visual/accessibility, instrumented coverage, dependency audits, runtime benchmark, and full packaged VS Code/Cursor journeys exactly once. Installed performance, released/remote Jupyter, and Remote SSH remain independent parallel consumers of the same canonical triple. Remote SSH is not optional: the final publication fan-in still requires its success together with the package and complete candidate matrix.
 
 The shared candidate validator binds the requested runner label to its own input variable. Do not use a `RUNNER_*`
 name for that value: GitHub reserves those variables for host metadata and ignores attempts to override them.

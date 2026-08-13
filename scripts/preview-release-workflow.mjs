@@ -320,15 +320,12 @@ export function inspectPreviewReleaseWorkflow(source) {
 
   const remote = workflow.jobs["remote-ssh"];
   if (
-    !Array.isArray(remote.needs) ||
-    remote.needs.length !== 2 ||
-    !remote.needs.includes("package") ||
-    !remote.needs.includes("candidate-acceptance") ||
+    remote.needs !== "package" ||
     remote.permissions !== undefined ||
     remote.environment !== undefined ||
     remote.concurrency !== undefined
   ) {
-    problems.push("remote-ssh must start only after the package and candidate matrix succeed.");
+    problems.push("remote-ssh must start from only the package artifact, in parallel with the candidate matrix.");
   }
   inspectCheckout(remote, "remote-ssh", problems);
   inspectCanonicalConsumer(remote, "remote-ssh", problems);

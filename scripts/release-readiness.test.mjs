@@ -1749,7 +1749,7 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       workflow.jobs["candidate-acceptance"].with.artifact_id = "openwrangler-preview-release";
     },
     (workflow) => {
-      workflow.jobs["remote-ssh"].needs = ["package"];
+      workflow.jobs["remote-ssh"].needs = ["package", "candidate-acceptance"];
     },
     (workflow) => {
       workflow.jobs["remote-ssh"].steps.find((step) =>
@@ -1758,6 +1758,12 @@ test("structurally gates the candidate-first preview workflow and exact artifact
     },
     (workflow) => {
       workflow.jobs.release.needs = ["package", "candidate-acceptance"];
+    },
+    (workflow) => {
+      workflow.jobs.release.needs = ["package", "remote-ssh"];
+    },
+    (workflow) => {
+      workflow.jobs.release.needs = ["candidate-acceptance", "remote-ssh"];
     },
     (workflow) => {
       workflow.jobs.release.if = "${{ inputs.publish != false }}";
