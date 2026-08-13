@@ -16,6 +16,7 @@ import { chmod, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import ts from "typescript";
 import { editorProcessTreeMayBeLive, runBoundedEditorCommand } from "./editor-acceptance.mjs";
 import {
   R_ACCEPTANCE_PACKAGE_VERSIONS,
@@ -1185,17 +1186,15 @@ test("released-Jupyter R setup preserves probe ownership uncertainty through its
 test("packaged-editor R acceptance wires the private R environment to local editors and one VS Code remote phase", async () => {
   const source = await readFile(new URL("./run-packaged-editor-tests.mjs", import.meta.url), "utf8");
   assert.match(source, /const rJourneySelector = process\.env\.OPEN_WRANGLER_PACKAGED_R_JOURNEY/u);
-  assert.match(source, /rJourneySelector !== "interactive-terminal"/u);
-  assert.match(source, /rJourneySelector !== "literate-documents"/u);
-  assert.match(source, /rJourneySelector !== undefined && remoteJupyterEnabled/u);
+  assert.match(source, /const rJupyterSelection = resolvePackagedRJourneySelection\(\{/u);
+  assert.match(source, /selector: rJourneySelector/u);
+  assert.match(source, /remoteJupyterEnabled,/u);
+  assert.match(source, /platform: process\.platform/u);
   const modeStart = source.indexOf('if (acceptanceMode === "r-jupyter")');
   const supportedEditors = source.indexOf("const supportedEditorKeys", modeStart);
   assert.ok(modeStart >= 0 && supportedEditors > modeStart);
   assert.doesNotMatch(source.slice(modeStart, supportedEditors), /process\.env\.CI/u);
-  assert.match(
-    source,
-    /remoteRJupyterEnabled =\s*acceptanceMode === "r-jupyter" && remoteJupyterEnabled && editor\.key === "vscode"/u
-  );
+  assert.match(source, /remoteRJupyterEnabled = rJupyterSelection\.remote && editor\.key === "vscode"/u);
   assert.match(source, /for \(const phase of Object\.keys\(resultPaths\)\) userDataForPhase\(phase\)/u);
   assert.match(source, /logRoot: resolve\(userDataForPhase\(activePhase\), "logs"\)/u);
   assert.doesNotMatch(source, /userDataByPhase\.get\(activePhase\)\s*\?\?/u);
@@ -1223,10 +1222,7 @@ test("packaged-editor R acceptance wires the private R environment to local edit
     "addJupyterAcceptancePythonKernel(rAcceptanceEnvironment, quartoKernelPython)",
     readinessProbe
   );
-  const quartoPythonKernelGuard = source.lastIndexOf(
-    'if (rJourneySelector === "literate-documents")',
-    quartoPythonKernel
-  );
+  const quartoPythonKernelGuard = source.lastIndexOf("if (rJupyterSelection.literateDocuments)", quartoPythonKernel);
   assert.ok(
     readinessCheckpoint > setup && readinessProbe > readinessCheckpoint && readinessProbe < display,
     "The exact private R kernel must answer its base-R marker before an editor can start."
@@ -1255,6 +1251,135 @@ test("packaged-editor R acceptance wires the private R environment to local edit
   assert.match(rPhase, /\[error, bootstrapStageError\]/u);
   assert.doesNotMatch(rPhase, /RProfileStartupStage|profileStageError/u);
   assert.equal((source.match(/await runRemoteJupyterPhase\(\{/gu) ?? []).length, 2);
+});
+
+test("the remote-only R selector bypasses every local runtime owner while retaining the five remote phases", async () => {
+  const source = await readFile(new URL("./run-packaged-editor-tests.mjs", import.meta.url), "utf8");
+  const sourceFile = ts.createSourceFile(
+    "run-packaged-editor-tests.mjs",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS
+  );
+  assert.equal(sourceFile.parseDiagnostics.length, 0);
+  const descendants = (root, predicate) => {
+    const matches = [];
+    const visit = (node) => {
+      if (predicate(node)) matches.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(root);
+    return matches;
+  };
+  const callsNamed = (root, name) =>
+    descendants(
+      root,
+      (node) => ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name
+    );
+  const selection = source.indexOf("const rJupyterSelection = resolvePackagedRJourneySelection({");
+  assert.equal(callsNamed(sourceFile, "resolvePackagedRJourneySelection").length, 1);
+  const localSetup = source.indexOf("if (rJupyterSelection.local) {", selection);
+  const genericPython = source.indexOf(
+    '} else if (acceptanceMode !== "r-jupyter" && jupyterExtensionInstallTarget) {',
+    localSetup
+  );
+  const display = source.indexOf("editorDisplay = await startIsolatedEditorDisplay()", genericPython);
+  assert.ok(selection >= 0 && localSetup > selection && genericPython > localSetup && display > genericPython);
+  const localSetupSource = source.slice(localSetup, genericPython);
+  const localSetupBranches = descendants(
+    sourceFile,
+    (node) => ts.isIfStatement(node) && node.expression.getText(sourceFile) === "rJupyterSelection.local"
+  );
+  assert.equal(localSetupBranches.length, 1, "The helper-owned local selection must guard one setup branch.");
+  const localSetupBranch = localSetupBranches[0];
+  assert.ok(ts.isBlock(localSetupBranch.thenStatement));
+  assert.ok(ts.isIfStatement(localSetupBranch.elseStatement));
+  assert.equal(
+    localSetupBranch.elseStatement.expression.getText(sourceFile),
+    'acceptanceMode !== "r-jupyter" && jupyterExtensionInstallTarget',
+    "The generic kernel branch must be the exact else branch of helper-owned local setup."
+  );
+  for (const owner of [
+    "prepareJupyterAcceptanceREnvironment",
+    "probeJupyterAcceptanceRKernel",
+    "createJupyterAcceptanceCoreKernelPython",
+    "prepareREditorAcceptanceTooling"
+  ]) {
+    assert.equal(callsNamed(sourceFile, owner).length, 1, `${owner} must have one local-only owner.`);
+    assert.equal(
+      callsNamed(localSetupBranch.thenStatement, owner).length,
+      1,
+      `${owner} must remain inside the helper-owned local setup branch.`
+    );
+    assert.match(localSetupSource, new RegExp(`${owner}\\(`, "u"));
+  }
+  assert.equal(callsNamed(sourceFile, "createJupyterAcceptanceKernelPython").length, 1);
+  assert.equal(callsNamed(localSetupBranch.elseStatement, "createJupyterAcceptanceKernelPython").length, 1);
+  assert.match(
+    source.slice(genericPython, display),
+    /createJupyterAcceptanceKernelPython\(/u,
+    "Only non-R acceptance may create the generic private Python kernel."
+  );
+
+  assert.match(source, /const localRJupyterEnabled = rJupyterSelection\.local/u);
+  assert.match(source, /const remoteRJupyterEnabled = rJupyterSelection\.remote && editor\.key === "vscode"/u);
+  assert.equal((source.match(/rJupyterSelection\.literateDocuments/gu) ?? []).length, 2);
+  assert.doesNotMatch(source, /rJourneySelector\s*===\s*"literate-documents"/u);
+  assert.match(source, /\.\.\.\(localRJupyterEnabled \? \{ "jupyter-r": resolve/u);
+  assert.match(source, /\.\.\.\(localRJupyterEnabled \? \{ "jupyter-r": randomUUID\(\) \} : \{\}\)/u);
+  assert.match(source, /\.\.\.\(localRJupyterEnabled \? \[jupyterRWorkspace\] : \[\]\)/u);
+  assert.match(source, /\.\.\.\(localRJupyterEnabled \? \[jupyterRUserData\] : \[\]\)/u);
+  assert.equal((source.match(/"jupyter-r": resolve\(/gu) ?? []).length, 1);
+  assert.equal((source.match(/"jupyter-r": randomUUID\(\)/gu) ?? []).length, 1);
+  assert.equal((source.match(/\[jupyterRWorkspace\]/gu) ?? []).length, 1);
+  assert.equal((source.match(/\[jupyterRUserData\]/gu) ?? []).length, 1);
+  assert.match(source, /if \(localRJupyterEnabled\) \{\s*activePhase = "jupyter-r"/u);
+  assert.match(
+    source,
+    /rJupyterSelection\.requiresHostR &&\s*\(typeof rscript !== "string" \|\| !isAbsolute\(rscript\) \|\| !existsSync\(rscript\)\)/u
+  );
+  assert.equal((source.match(/phase: "jupyter-r",/gu) ?? []).length, 1);
+  const localEditorEnvironmentAssignment = "jupyterREnvironment = rAcceptanceEnvironment.jupyterEnvironment;";
+  assert.equal(source.split(localEditorEnvironmentAssignment).length - 1, 1);
+  const environmentAssignments = descendants(
+    sourceFile,
+    (node) =>
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      node.left.getText(sourceFile) === "jupyterREnvironment" &&
+      node.right.getText(sourceFile) === "rAcceptanceEnvironment.jupyterEnvironment"
+  );
+  assert.equal(environmentAssignments.length, 1);
+  const environmentStatement = environmentAssignments[0].parent;
+  const environmentBlock = environmentStatement.parent;
+  const environmentGuard = environmentBlock.parent;
+  assert.ok(ts.isExpressionStatement(environmentStatement));
+  assert.ok(ts.isBlock(environmentBlock));
+  assert.equal(environmentBlock.statements.length, 1);
+  assert.ok(ts.isIfStatement(environmentGuard));
+  assert.equal(environmentGuard.expression.getText(sourceFile), "localRJupyterEnabled");
+  assert.equal(environmentGuard.thenStatement, environmentBlock);
+  assert.equal(environmentGuard.elseStatement, undefined);
+  assert.match(source, /if \(remoteRJupyterEnabled\) \{\s*await runRemoteJupyterPhase\(\{/u);
+  assert.match(
+    source,
+    /remoteRJourneyOnly\s*\? jupyterRemoteRUserData\s*:\s*jupyterRUserData/u,
+    "Remote-only extension installation and inventory must use the remote profile."
+  );
+  assert.equal((source.match(/remoteRJourneyOnly\s*\? jupyterRemoteRUserData/gu) ?? []).length, 2);
+
+  for (const phase of [
+    "jupyter-r-remote-base-build",
+    "jupyter-r-remote-runtime-build",
+    "jupyter-r-remote-setup",
+    "jupyter-r-remote",
+    "jupyter-r-remote-cleanup"
+  ]) {
+    assert.match(source, new RegExp(`"${phase}": resolve\\(`, "u"));
+    assert.match(source, new RegExp(`"${phase}": randomUUID\\(\\)`, "u"));
+    assert.match(source, new RegExp(`\\["${phase}", jupyterRemoteRUserData\\]`, "u"));
+  }
 });
 
 test("extension-host R acceptance routes the remote kernel and does not probe a host extension path", async () => {

@@ -72,6 +72,7 @@ import {
 } from "./jupyter-acceptance-environment.mjs";
 import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
 import { preflightPackagedEditorPython } from "./packaged-python-preflight.mjs";
+import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
 import { prepareREditorAcceptanceTooling, R_EDITOR_ACCEPTANCE_TOOLING } from "./r-editor-acceptance-tooling.mjs";
 import {
   REAL_REMOTE_JUPYTER_ENV,
@@ -231,21 +232,14 @@ try {
               `OPEN_WRANGLER_PACKAGED_MODE=${JSON.stringify(acceptanceMode)} requires exactly one supported editor in OPEN_WRANGLER_PACKAGED_EDITORS.`
             );
           }
-          if (
-            rJourneySelector !== undefined &&
-            rJourneySelector !== "interactive-terminal" &&
-            rJourneySelector !== "literate-documents"
-          ) {
-            throw new Error(
-              'OPEN_WRANGLER_PACKAGED_R_JOURNEY must be unset, "interactive-terminal", or "literate-documents".'
-            );
-          }
-          if (rJourneySelector !== undefined && acceptanceMode !== "r-jupyter") {
-            throw new Error('OPEN_WRANGLER_PACKAGED_R_JOURNEY requires OPEN_WRANGLER_PACKAGED_MODE="r-jupyter".');
-          }
-          if (rJourneySelector !== undefined && remoteJupyterEnabled) {
-            throw new Error("OPEN_WRANGLER_PACKAGED_R_JOURNEY cannot be combined with remote Jupyter acceptance.");
-          }
+          const rJupyterSelection = resolvePackagedRJourneySelection({
+            acceptanceMode,
+            selector: rJourneySelector,
+            requestedEditors: requested,
+            remoteJupyterEnabled,
+            platform: process.platform
+          });
+          const remoteRJourneyOnly = rJupyterSelection.remoteOnly;
           if (
             acceptanceMode === "data-wrangler-coexistence" &&
             (requested?.[0] !== "vscode" || !dataWranglerExtensionInstallTarget || !jupyterExtensionInstallTarget)
@@ -256,16 +250,6 @@ try {
           }
           const rscript = process.env.OPEN_WRANGLER_TEST_RSCRIPT;
           if (acceptanceMode === "r-jupyter") {
-            if (
-              !requested?.length ||
-              requested.length > 2 ||
-              new Set(requested).size !== requested.length ||
-              requested.some((key) => !["vscode", "cursor"].includes(key))
-            ) {
-              throw new Error(
-                'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" requires an explicit, duplicate-free VS Code/Cursor list in OPEN_WRANGLER_PACKAGED_EDITORS.'
-              );
-            }
             if (!jupyterExtensionInstallTarget) {
               throw new Error(
                 'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" requires the released Jupyter extension opt-in.'
@@ -276,12 +260,10 @@ try {
                 'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" cannot be combined with the Data Wrangler coexistence opt-in.'
               );
             }
-            if (remoteJupyterEnabled && !requested.includes("vscode")) {
-              throw new Error(
-                "Remote R acceptance requires VS Code in OPEN_WRANGLER_PACKAGED_EDITORS; local R acceptance may also include Cursor."
-              );
-            }
-            if (typeof rscript !== "string" || !isAbsolute(rscript) || !existsSync(rscript)) {
+            if (
+              rJupyterSelection.requiresHostR &&
+              (typeof rscript !== "string" || !isAbsolute(rscript) || !existsSync(rscript))
+            ) {
               throw new Error(
                 'OPEN_WRANGLER_PACKAGED_MODE="r-jupyter" requires OPEN_WRANGLER_TEST_RSCRIPT to name an existing absolute Rscript executable.'
               );
@@ -400,7 +382,7 @@ try {
           let jupyterKernelPython;
           let quartoKernelPython;
           let rAcceptanceEnvironment;
-          if (acceptanceMode === "r-jupyter") {
+          if (rJupyterSelection.local) {
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
@@ -443,7 +425,7 @@ try {
               "setup:probe-r-kernel-readiness"
             );
             await probeJupyterAcceptanceRKernel(testPython, rAcceptanceEnvironment);
-            if (rJourneySelector === "literate-documents") {
+            if (rJupyterSelection.literateDocuments) {
               writeCorrelatedProgress(
                 orchestrationProgressPath,
                 orchestrationRunId,
@@ -514,7 +496,7 @@ try {
               "setup",
               "setup:r-jupyter-environment-ready"
             );
-          } else if (jupyterExtensionInstallTarget) {
+          } else if (acceptanceMode !== "r-jupyter" && jupyterExtensionInstallTarget) {
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
@@ -554,8 +536,8 @@ try {
           for (const editor of candidates) {
             const dataWranglerCoexistenceEnabled =
               dataWranglerExtensionInstallTarget !== undefined && editor.key === "vscode";
-            const remoteRJupyterEnabled =
-              acceptanceMode === "r-jupyter" && remoteJupyterEnabled && editor.key === "vscode";
+            const localRJupyterEnabled = rJupyterSelection.local;
+            const remoteRJupyterEnabled = rJupyterSelection.remote && editor.key === "vscode";
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
@@ -619,7 +601,7 @@ try {
               ...(jupyterExtensionInstallTarget
                 ? acceptanceMode === "r-jupyter"
                   ? {
-                      "jupyter-r": resolve(profile, "jupyter-r-result.json"),
+                      ...(localRJupyterEnabled ? { "jupyter-r": resolve(profile, "jupyter-r-result.json") } : {}),
                       ...(remoteRJupyterEnabled
                         ? {
                             "jupyter-r-remote-base-build": resolve(profile, "jupyter-r-remote-base-build-result.json"),
@@ -668,7 +650,7 @@ try {
               ...(jupyterExtensionInstallTarget
                 ? acceptanceMode === "r-jupyter"
                   ? {
-                      "jupyter-r": randomUUID(),
+                      ...(localRJupyterEnabled ? { "jupyter-r": randomUUID() } : {}),
                       ...(remoteRJupyterEnabled
                         ? {
                             "jupyter-r-remote-base-build": randomUUID(),
@@ -764,7 +746,10 @@ try {
                 if (jupyterExtensionInstallTarget) {
                   const jupyterWorkspaces =
                     acceptanceMode === "r-jupyter"
-                      ? [jupyterRWorkspace, ...(remoteRJupyterEnabled ? [jupyterRemoteRWorkspace] : [])]
+                      ? [
+                          ...(localRJupyterEnabled ? [jupyterRWorkspace] : []),
+                          ...(remoteRJupyterEnabled ? [jupyterRemoteRWorkspace] : [])
+                        ]
                       : [
                           jupyterAllowWorkspace,
                           jupyterDenyWorkspace,
@@ -805,11 +790,16 @@ try {
                 if (jupyterExtensionInstallTarget) {
                   let jupyterUserData;
                   if (acceptanceMode === "r-jupyter") {
-                    jupyterREnvironment = rAcceptanceEnvironment.jupyterEnvironment;
+                    if (localRJupyterEnabled) {
+                      jupyterREnvironment = rAcceptanceEnvironment.jupyterEnvironment;
+                    }
                     if (remoteRJupyterEnabled) {
                       jupyterRemoteREnvironment = writeRemoteJupyterAcceptanceEnvironment(resolve(profile, "kq"));
                     }
-                    jupyterUserData = [jupyterRUserData, ...(remoteRJupyterEnabled ? [jupyterRemoteRUserData] : [])];
+                    jupyterUserData = [
+                      ...(localRJupyterEnabled ? [jupyterRUserData] : []),
+                      ...(remoteRJupyterEnabled ? [jupyterRemoteRUserData] : [])
+                    ];
                   } else {
                     jupyterAllowEnvironment = writeJupyterAcceptanceEnvironment(
                       resolve(profile, "ka"),
@@ -961,7 +951,11 @@ try {
                 }
                 if (jupyterExtensionInstallTarget) {
                   const jupyterInstallUserData =
-                    acceptanceMode === "r-jupyter" ? jupyterRUserData : jupyterAllowUserData;
+                    acceptanceMode === "r-jupyter"
+                      ? remoteRJourneyOnly
+                        ? jupyterRemoteRUserData
+                        : jupyterRUserData
+                      : jupyterAllowUserData;
                   writeCorrelatedProgress(
                     progressPaths.setup,
                     runIds.setup,
@@ -1161,7 +1155,11 @@ try {
                 }
                 if (jupyterExtensionInstallTarget) {
                   const jupyterInstallUserData =
-                    acceptanceMode === "r-jupyter" ? jupyterRUserData : jupyterAllowUserData;
+                    acceptanceMode === "r-jupyter"
+                      ? remoteRJourneyOnly
+                        ? jupyterRemoteRUserData
+                        : jupyterRUserData
+                      : jupyterAllowUserData;
                   const { stdout: jupyterInstalled } = await runBoundedEditorCliCommand(
                     {
                       editor,
@@ -1446,39 +1444,40 @@ try {
                   });
                 }
                 if (jupyterExtensionInstallTarget && acceptanceMode === "r-jupyter") {
-                  activePhase = "jupyter-r";
-                  try {
-                    await runEditorAcceptancePhase({
-                      editor: identifiedEditor,
-                      workspace: jupyterRWorkspace,
-                      userData: jupyterRUserData,
-                      extensions: jupyterExtensions,
-                      developmentPaths: [],
-                      testModule,
-                      python:
-                        rJourneySelector === "literate-documents"
+                  if (localRJupyterEnabled) {
+                    activePhase = "jupyter-r";
+                    try {
+                      await runEditorAcceptancePhase({
+                        editor: identifiedEditor,
+                        workspace: jupyterRWorkspace,
+                        userData: jupyterRUserData,
+                        extensions: jupyterExtensions,
+                        developmentPaths: [],
+                        testModule,
+                        python: rJupyterSelection.literateDocuments
                           ? quartoKernelPython
                           : acceptancePythonForPhase("jupyter-r", testPython, jupyterKernelPython),
-                      phase: "jupyter-r",
-                      testSelector: rJourneySelector,
-                      resultPath: resultPaths["jupyter-r"],
-                      runId: runIds["jupyter-r"],
-                      progressPath: progressPaths["jupyter-r"],
-                      requiresWorkbenchCdp: true,
-                      jupyterEnvironment: jupyterREnvironment
-                    });
-                  } catch (error) {
-                    if (editorProcessTreeMayBeLive(error)) throw error;
-                    let bootstrapStage;
-                    try {
-                      bootstrapStage = jupyterAcceptanceRKernelBootstrapStage(rAcceptanceEnvironment);
-                    } catch (bootstrapStageError) {
-                      throw new AggregateError(
-                        [error, bootstrapStageError],
-                        "Released-Jupyter R failed and its bootstrap stage could not be verified."
-                      );
+                        phase: "jupyter-r",
+                        testSelector: rJourneySelector,
+                        resultPath: resultPaths["jupyter-r"],
+                        runId: runIds["jupyter-r"],
+                        progressPath: progressPaths["jupyter-r"],
+                        requiresWorkbenchCdp: true,
+                        jupyterEnvironment: jupyterREnvironment
+                      });
+                    } catch (error) {
+                      if (editorProcessTreeMayBeLive(error)) throw error;
+                      let bootstrapStage;
+                      try {
+                        bootstrapStage = jupyterAcceptanceRKernelBootstrapStage(rAcceptanceEnvironment);
+                      } catch (bootstrapStageError) {
+                        throw new AggregateError(
+                          [error, bootstrapStageError],
+                          "Released-Jupyter R failed and its bootstrap stage could not be verified."
+                        );
+                      }
+                      throw appendJupyterAcceptanceRKernelBootstrapStage(error, bootstrapStage);
                     }
-                    throw appendJupyterAcceptanceRKernelBootstrapStage(error, bootstrapStage);
                   }
                   if (remoteRJupyterEnabled) {
                     await runRemoteJupyterPhase({

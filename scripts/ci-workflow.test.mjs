@@ -1000,7 +1000,7 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     const workflow = parseYaml(readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8"));
     const candidate = workflow?.jobs?.["candidate-acceptance"];
     assert.equal(candidate?.uses, "./.github/workflows/candidate-acceptance.yml");
-    assert.equal(candidate?.strategy?.["fail-fast"], true);
+    assert.equal(candidate?.strategy?.["fail-fast"], false);
     assert.deepEqual(candidate?.strategy?.matrix?.include, expectedMatrix);
   }
 
@@ -1026,11 +1026,11 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
   });
   const releasedJupyter = acceptance?.jobs?.jupyter;
   assert.deepEqual(releasedJupyter?.strategy, {
-    "fail-fast": true,
-    matrix: { phase: ["python", "r"] }
+    "fail-fast": false,
+    matrix: { phase: ["python", "r-local", "r-remote"] }
   });
   const rContract = releasedJupyter?.steps?.find((step) => step?.run === "npm run test:r-contract");
-  assert.equal(rContract?.if, "${{ matrix.phase == 'r' }}");
+  assert.equal(rContract?.if, "${{ matrix.phase == 'r-local' }}");
   assert.equal(
     releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor")?.if,
     "${{ matrix.phase == 'python' }}"
@@ -1039,15 +1039,15 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     releasedJupyter?.steps?.some(
       (step) =>
         step?.id === "packaged_editor_r" &&
-        step?.if === "${{ matrix.phase == 'r' }}" &&
+        step?.if === "${{ matrix.phase == 'r-local' }}" &&
         step?.env?.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter" &&
         step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode,cursor" &&
-        step?.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "1"
+        step?.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "0"
     ),
     true
   );
   const literateR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_literate");
-  assert.equal(literateR?.if, "${{ matrix.phase == 'r' }}");
+  assert.equal(literateR?.if, "${{ matrix.phase == 'r-local' }}");
   assert.equal(
     literateR?.run,
     "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_literate.outputs.candidate_path }}"
@@ -1089,6 +1089,22 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
       includeHiddenFiles: false
     }
   );
+  const remoteR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_remote");
+  assert.equal(remoteR?.if, "${{ matrix.phase == 'r-remote' }}");
+  assert.equal(
+    remoteR?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_remote.outputs.candidate_path }}"
+  );
+  assert.deepEqual(remoteR?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "remote-r-jupyter",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
+    VSCODE_TEST_VERSION: "stable"
+  });
 });
 
 test("PR CI gates expensive work behind bounded preflight lanes without removing checks", () => {

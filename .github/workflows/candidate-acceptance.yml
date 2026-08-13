@@ -451,14 +451,14 @@ jobs:
 
   jupyter:
     if: ${{ inputs.lane == 'jupyter' }}
-    name: Released Jupyter acceptance (${{ matrix.phase == 'python' && 'Python' || 'R' }})
+    name: Released Jupyter acceptance (${{ matrix.phase == 'python' && 'Python' || matrix.phase == 'r-local' && 'R local' || 'R remote' }})
     needs: contract
     runs-on: ${{ inputs.runner_os }}
     timeout-minutes: 120
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        phase: [python, r]
+        phase: [python, r-local, r-remote]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -479,13 +479,13 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        if: ${{ matrix.phase == 'r' }}
+        if: ${{ matrix.phase == 'r-local' }}
         with:
           r-version: "4.5.2"
           use-public-rspm: true
       - id: rscript
         name: Locate hosted Rscript
-        if: ${{ matrix.phase == 'r' }}
+        if: ${{ matrix.phase == 'r-local' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -504,7 +504,7 @@ jobs:
           printf 'Hosted R: %s\n' "$r_version"
       - run: npm ci
       - name: Resolve R contract packages
-        if: ${{ matrix.phase == 'r' }}
+        if: ${{ matrix.phase == 'r-local' }}
         uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
           packages: ""
@@ -523,11 +523,13 @@ jobs:
           install-pandoc: false
           install-quarto: false
       - run: npm run test:r-contract
-        if: ${{ matrix.phase == 'r' }}
+        if: ${{ matrix.phase == 'r-local' }}
         env:
           RSCRIPT: ${{ steps.rscript.outputs.executable }}
       - run: python -m pip install --upgrade pip
+        if: ${{ matrix.phase != 'r-remote' }}
       - run: python -m pip install -e "python[dev]"
+        if: ${{ matrix.phase != 'r-remote' }}
       - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
         if: ${{ matrix.phase == 'python' }}
       - run: npm run lock:remote-jupyter:check
@@ -607,16 +609,16 @@ jobs:
         if: ${{ always() && steps.packaged_editor.outcome == 'failure' }}
         run: exit 1
       - id: canonical_r_jupyter
-        name: Reverify the candidate for R Jupyter
-        if: ${{ matrix.phase == 'r' }}
+        name: Reverify the candidate for local R Jupyter
+        if: ${{ matrix.phase == 'r-local' }}
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
       - id: packaged_editor_r
-        name: Test R Jupyter in the exact packaged VSIX
-        if: ${{ matrix.phase == 'r' }}
+        name: Test local R Jupyter in the exact packaged VSIX
+        if: ${{ matrix.phase == 'r-local' }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}
         env:
@@ -625,25 +627,25 @@ jobs:
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
-          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
           OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
           VSCODE_TEST_VERSION: stable
-      - name: Upload R-Jupyter failure diagnostics
+      - name: Upload local R-Jupyter failure diagnostics
         if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-${{ runner.os }}-${{ github.run_attempt }}
+          name: ${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
-      - name: Fail after R-Jupyter diagnostics
+      - name: Fail after local R-Jupyter diagnostics
         if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' }}
         run: exit 1
       - id: canonical_r_literate
         name: Reverify the candidate for R Markdown and Quarto
-        if: ${{ matrix.phase == 'r' }}
+        if: ${{ matrix.phase == 'r-local' }}
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -651,7 +653,7 @@ jobs:
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
       - id: packaged_editor_r_literate
         name: Test R Markdown and Quarto in a fresh packaged VS Code phase
-        if: ${{ matrix.phase == 'r' }}
+        if: ${{ matrix.phase == 'r-local' }}
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_literate.outputs.candidate_path }}
         env:
@@ -676,4 +678,39 @@ jobs:
           include-hidden-files: false
       - name: Fail after R Markdown and Quarto diagnostics
         if: ${{ always() && steps.packaged_editor_r_literate.outcome == 'failure' }}
+        run: exit 1
+      - id: canonical_r_remote
+        name: Reverify the candidate for remote R Jupyter
+        if: ${{ matrix.phase == 'r-remote' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_remote
+        name: Test remote R Jupyter in the exact packaged VSIX
+        if: ${{ matrix.phase == 'r-remote' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_remote.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: remote-r-jupyter
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"
+          VSCODE_TEST_VERSION: stable
+      - name: Upload remote R-Jupyter failure diagnostics
+        if: ${{ always() && steps.packaged_editor_r_remote.outcome == 'failure' && steps.packaged_editor_r_remote.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-remote-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_remote.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - name: Fail after remote R-Jupyter diagnostics
+        if: ${{ always() && steps.packaged_editor_r_remote.outcome == 'failure' }}
         run: exit 1

@@ -1702,7 +1702,16 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       workflow.jobs["candidate-acceptance"].uses = "./.github/workflows/other.yml";
     },
     (workflow) => {
-      workflow.jobs["candidate-acceptance"].strategy["fail-fast"] = false;
+      workflow.jobs["candidate-acceptance"].strategy["fail-fast"] = true;
+    },
+    (workflow) => {
+      workflow.jobs["candidate-acceptance"].strategy["max-parallel"] = 1;
+    },
+    (workflow) => {
+      workflow.jobs["candidate-acceptance"].strategy.matrix.exclude = [{ lane: "jupyter" }];
+    },
+    (workflow) => {
+      workflow.jobs["candidate-acceptance"].strategy.matrix.experimental = [false];
     },
     (workflow) => {
       workflow.jobs["candidate-acceptance"].strategy.matrix.include.pop();
