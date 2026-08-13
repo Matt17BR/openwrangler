@@ -33,6 +33,13 @@ const FILE_LIMITS = new Map([
 
 export class GithubReleasePendingError extends Error {}
 
+function fetchResponse(fetchImpl, url, init) {
+  const responsePromise = fetchImpl(url, init);
+  return Promise.resolve(responsePromise).catch(() => {
+    throw new GithubReleasePendingError("GitHub release transport failed before a response was received.");
+  });
+}
+
 function assertStableTag(releaseTag) {
   if (typeof releaseTag !== "string" || !STABLE_TAG.test(releaseTag)) {
     throw new Error("RELEASE_TAG must be one canonical numeric vmajor.minor.patch tag.");
@@ -155,7 +162,7 @@ async function fetchReleaseAssets({ fetchImpl, prerelease, releaseTag }) {
   const releaseUrl = `https://api.github.com/repos/${GITHUB_RELEASE_REPOSITORY}/releases/tags/${encodeURIComponent(
     releaseTag
   )}`;
-  const response = await fetchImpl(releaseUrl, {
+  const response = await fetchResponse(fetchImpl, releaseUrl, {
     headers: {
       Accept: "application/vnd.github+json",
       "User-Agent": "OpenWrangler-marketplace-promotion/1",
@@ -182,13 +189,17 @@ async function fetchReleaseAssets({ fetchImpl, prerelease, releaseTag }) {
     if (asset.size > limit) {
       throw new Error(`GitHub release asset ${fileName} exceeds its byte limit.`);
     }
-    const assetResponse = await fetchImpl(validateReleaseAssetUrl(asset.browser_download_url, releaseTag, fileName), {
-      headers: {
-        Accept: "application/octet-stream",
-        "User-Agent": "OpenWrangler-marketplace-promotion/1"
-      },
-      redirect: "follow"
-    });
+    const assetResponse = await fetchResponse(
+      fetchImpl,
+      validateReleaseAssetUrl(asset.browser_download_url, releaseTag, fileName),
+      {
+        headers: {
+          Accept: "application/octet-stream",
+          "User-Agent": "OpenWrangler-marketplace-promotion/1"
+        },
+        redirect: "follow"
+      }
+    );
     if (!assetResponse.ok) {
       throw new GithubReleasePendingError(
         `GitHub release asset ${fileName} is not downloadable yet (${assetResponse.status}).`

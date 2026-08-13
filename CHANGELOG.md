@@ -15,6 +15,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   cache created on `main`; the first matching `main` dispatch installs the full set before the existing contract and
   packaged-editor checks.
 
+### Fixed
+
+- Microsoft Marketplace recovery now reuses its existing bounded public-release poll when an anonymous GitHub
+  metadata or asset request rejects before returning an HTTP response. The fixed diagnostic retains no request URL or
+  transport cause. Existing explicitly pending HTTP/release observations keep their prior poll behavior; response-body
+  reads, release validation, filesystem work, authentication, and publication remain single-attempt boundaries.
+
 ## [1.99.4] - 2026-08-13
 
 ### Changed
