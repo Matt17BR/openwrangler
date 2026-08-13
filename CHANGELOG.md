@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Canonical stable 2.x artifact authoring now passes the immutable commit's linked performance report and the
+  already-owned candidate VSIX digest into readiness. A report for the release must bind those exact bytes before
+  any canonical output directory can be published.
 - Stable releases at major version 2 or newer now require an exact all-green Native R release matrix with reviewed
   row-specific evidence. The gate explicitly covers ordinary base, tibble, `data.table`, and collapse frame types,
   the complete 28-operation catalog, editor/document/export journeys, an R performance record, and first-class

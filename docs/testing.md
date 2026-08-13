@@ -244,6 +244,11 @@ installed performance, released and remote Jupyter, Remote SSH, and macOS/Window
 the final job accepts only an absent or exact lightweight tag, pushes it immediately before GitHub Release creation,
 and promotes the accepted VSIX to Open VSX. The tag event starts Marketplace promotion.
 
+For stable major 2 and later, the canonical artifact author passes the linked `report.json` bytes from that same
+immutable source snapshot and the already-owned candidate VSIX SHA-256 into readiness. Its end-to-end fixture proves
+the matching report can publish one canonical triple and that a different candidate digest produces no output
+directory.
+
 Marketplace intake exports the exact release commit, version, and channel. Its deployment must materialize that
 commit as a clean, contained, detached `release-source` worktree from the full-history automation checkout. For
 `1.99.4` and later it restores that exact checkout's lockfile and runs its browser-free immutable-media verifier only
