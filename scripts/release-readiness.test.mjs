@@ -182,17 +182,17 @@ const expectedStableRScope = [
     "r/tests/frame_contract.R"
   ],
   ["Exact IRkernel session transport", "Linux, macOS, and Windows", "src/test/rKernelTransport.cross.test.ts"],
-  [
-    "Exact active R-terminal transport",
-    "Linux, macOS, and Windows",
-    "src/test/rInteractiveSessionTransport.cross.test.ts"
-  ],
-  ["Cursor-owned .Rmd and .qmd R/Python chunks", "Linux and macOS", "src/test/literateDocumentChunks.unit.test.ts"],
+  ["Exact active R-terminal transport", "Linux", "src/test/rInteractiveSessionTransport.cross.test.ts"],
+  ["Cursor .Rmd document command and .qmd R/Python chunk actions", "Linux", "src/test/rDocumentCommands.unit.test.ts"],
   ["Owned .R source process", "Linux and macOS", "src/test/rProcessTransport.cross.test.ts"],
   ["Owned .Rmd and .qmd cell process", "Linux and macOS", "src/test/literateDocumentChunks.unit.test.ts"],
   ["Notebook workbench", "Linux, macOS, and Windows", "src/test/rKernelBridge.unit.test.ts"],
-  ["Complete R cleaning catalog and generated code", "All 28 catalog operations", "r/tests/frame_contract.R"],
-  ["Copy or save generated R", "All 28 catalog operations", "src/test/rKernelBridge.unit.test.ts"],
+  [
+    "Complete R cleaning catalog and generated code",
+    "All 28 catalog operations",
+    "r/tests/complete_catalog_contract.R"
+  ],
+  ["Copy or save generated R", "All 28 catalog operations", "src/test/rCompleteCatalogCodeExport.unit.test.ts"],
   [
     "Insert generated R into its IRkernel notebook",
     "Linux, macOS, and Windows",
@@ -201,7 +201,7 @@ const expectedStableRScope = [
   ["Insert generated R into its source .R file", "Linux and macOS", "src/test/rDocumentInsertion.unit.test.ts"],
   ["Insert generated R into .Rmd and .qmd", "Linux and macOS", "src/test/rDocumentInsertion.unit.test.ts"],
   ["Cleaned-data export", "CSV and Parquet", "r/tests/frame_contract.R"],
-  ["Active R-terminal cleaned-data export", "Linux, macOS, and Windows", "src/test/rInteractiveExport.unit.test.ts"],
+  ["Active R-terminal cleaned-data export", "Linux", "src/test/rInteractiveExport.unit.test.ts"],
   ["Quarto and R Markdown lexical R-cell run", "Linux and macOS", "src/test/literateDocumentChunks.unit.test.ts"],
   ["Native R performance record", "Release candidate", "scripts/r-performance-report.test.mjs"],
   ["First-class editor candidate acceptance", "VS Code and Cursor", "scripts/candidate-acceptance-workflow.test.mjs"]
@@ -668,6 +668,23 @@ test("rejects structural and semantic drift in the stable Native R matrix", () =
     stableRParity().replace("| Done |", "| Done ![Partial](https://example.invalid/partial.svg) |"),
     stableRParity().replace("| Surface |", "| `Surface` |"),
     stableRParity().replace("| Native R frame paging and typed cells |", "| `Native R frame paging and typed cells` |"),
+    stableRParity().replace(
+      "| Exact active R-terminal transport | Linux |",
+      "| Exact active R-terminal transport | Linux, macOS, and Windows |"
+    ),
+    stableRParity().replace(
+      "| Cursor .Rmd document command and .qmd R/Python chunk actions | Linux |",
+      "| Cursor-owned .Rmd and .qmd R/Python chunks | Linux and macOS |"
+    ),
+    stableRParity().replace("test:r/tests/complete_catalog_contract.R", "test:r/tests/frame_contract.R"),
+    stableRParity().replace(
+      "test:src/test/rCompleteCatalogCodeExport.unit.test.ts",
+      "test:src/test/rKernelBridge.unit.test.ts"
+    ),
+    stableRParity().replace(
+      "| Active R-terminal cleaned-data export | Linux |",
+      "| Active R-terminal cleaned-data export | Linux, macOS, and Windows |"
+    ),
     stableRParity().replace(
       "Exact stable acceptance passed and is recorded;",
       '[Exact stable acceptance passed and is recorded](https://example.invalid/unreviewed "tests did not pass");'

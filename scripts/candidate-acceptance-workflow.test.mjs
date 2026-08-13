@@ -181,6 +181,11 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
     },
     (workflow) => {
       workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_literate"
+      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
         (step) => step.id === "packaged_editor_r_remote"
       ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "literate-documents";
     },

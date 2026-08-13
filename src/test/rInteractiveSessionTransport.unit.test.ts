@@ -8,12 +8,285 @@ import * as vscode from "vscode";
 import { describe, expect, it, vi } from "vitest";
 import { DetachedBridgeRequestError } from "../extension/dataBridge";
 import { KernelRequestCancelledError } from "../extension/notebooks/kernelLifecycle";
-import { R_KERNEL_MAX_REQUEST_BYTES } from "../extension/r/rKernelProtocol";
+import { R_KERNEL_EXPORT_CHUNK_BYTES, R_KERNEL_MAX_REQUEST_BYTES } from "../extension/r/rKernelProtocol";
 import { RInteractiveSessionTransport } from "../extension/r/rInteractiveSessionTransport";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 describe("interactive R session transport", () => {
+  it.each(["csv", "parquet"] as const)(
+    "streams one bounded %s export through the real interactive transport and closes its private artifact",
+    async (format) => {
+      const temporaryParent = await mkdtemp(resolve(tmpdir(), `ow-r-live-${format}-export-unit-`));
+      const sessionId = "22222222-2222-4222-8222-222222222222";
+      const exportId = testId(4);
+      const requestKinds: string[] = [];
+      const requests: KernelRequestRecord[] = [];
+      const chunks: Uint8Array[] = [];
+      const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+        temporaryParent,
+        createId: sequenceIds(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+        runSelection: async (code) => {
+          const { requestPath, responsePath } = mailboxPaths(code);
+          const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+          requestKinds.push(request.kind);
+          requests.push(request);
+          await writeFile(responsePath, exportTransportResponse(request, sessionId, exportId, format), {
+            flag: "wx",
+            mode: 0o600
+          });
+        }
+      });
+      try {
+        await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+        await expect(
+          transport.exportData(sessionId, 0, format, async (chunk) => {
+            chunks.push(Uint8Array.from(chunk));
+          })
+        ).resolves.toEqual({ sessionId, revision: 0, format, rows: 2, columns: 1 });
+        expect(chunks).toHaveLength(2);
+        expect(chunks[0]).toHaveLength(R_KERNEL_EXPORT_CHUNK_BYTES);
+        expect(Buffer.from(chunks[1]!).toString("utf8")).toBe("end");
+        expect(requestKinds).toEqual([
+          "openSession",
+          "exportData",
+          "readDataExport",
+          "readDataExport",
+          "closeDataExport"
+        ]);
+        expect(requests[2]?.payload).toMatchObject({ offset: 0, limit: R_KERNEL_EXPORT_CHUNK_BYTES });
+        expect(requests[3]?.payload).toMatchObject({ offset: R_KERNEL_EXPORT_CHUNK_BYTES, limit: 3 });
+      } finally {
+        await transport.dispose();
+        expect(await readdir(temporaryParent)).toEqual([]);
+        await rm(temporaryParent, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("closes the exact private export when the host chunk writer fails", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-writer-export-unit-"));
+    const sessionId = "44444444-4444-4444-8444-444444444444";
+    const exportId = testId(4);
+    const requestKinds: string[] = [];
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      createId: sequenceIds(1, 2, 3, 4, 5, 6, 7, 8, 9),
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+        requestKinds.push(request.kind);
+        await writeFile(responsePath, exportTransportResponse(request, sessionId, exportId, "csv", true), {
+          flag: "wx",
+          mode: 0o600
+        });
+      }
+    });
+    try {
+      await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+      await expect(
+        transport.exportData(sessionId, 0, "csv", async () => {
+          throw new Error("injected host writer failure");
+        })
+      ).rejects.toThrow("injected host writer failure");
+      expect(requestKinds).toEqual(["openSession", "exportData", "readDataExport", "closeDataExport"]);
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a mismatched export chunk and still closes the exact private artifact", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-mismatched-export-unit-"));
+    const sessionId = "45454545-4545-4545-8545-454545454545";
+    const exportId = testId(4);
+    const requestKinds: string[] = [];
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      createId: sequenceIds(1, 2, 3, 4, 5, 6, 7, 8),
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+        requestKinds.push(request.kind);
+        let response = exportTransportResponse(request, sessionId, exportId, "csv", true);
+        if (request.kind === "readDataExport") {
+          const decoded = JSON.parse(response) as Record<string, unknown>;
+          decoded.offset = 1;
+          response = JSON.stringify(decoded);
+        }
+        await writeFile(responsePath, response, { flag: "wx", mode: 0o600 });
+      }
+    });
+    try {
+      await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+      await expect(transport.exportData(sessionId, 0, "csv", async () => undefined)).rejects.toThrow(
+        "mismatched data-export chunk"
+      );
+      expect(requestKinds).toEqual(["openSession", "exportData", "readDataExport", "closeDataExport"]);
+    } finally {
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps detached export settlement pending through exact artifact cleanup", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-detached-export-unit-"));
+    const token = new vscode.CancellationTokenSource();
+    const sessionId = "66666666-6666-4666-8666-666666666666";
+    const exportId = testId(4);
+    let releaseExport!: () => void;
+    let beginStarted!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releaseExport = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      beginStarted = resolve;
+    });
+    const requestKinds: string[] = [];
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      createId: sequenceIds(1, 2, 3, 4, 5, 6, 7, 8),
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+        requestKinds.push(request.kind);
+        if (request.kind === "exportData") {
+          beginStarted();
+          await blocked;
+        }
+        await writeFile(responsePath, exportTransportResponse(request, sessionId, exportId, "csv", true, 0), {
+          flag: "wx",
+          mode: 0o600
+        });
+      }
+    });
+    try {
+      await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+      const pending = transport.exportData(sessionId, 0, "csv", async () => undefined, {
+        cancellation: token.token
+      });
+      await started;
+      token.cancel();
+      const detached = await pending.catch((error: unknown) => error);
+      expect(detached).toBeInstanceOf(DetachedBridgeRequestError);
+      let settled = false;
+      void (detached as DetachedBridgeRequestError).settlement.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      releaseExport();
+      await (detached as DetachedBridgeRequestError).settlement;
+      expect(requestKinds).toEqual(["openSession", "exportData", "closeDataExport"]);
+    } finally {
+      releaseExport();
+      token.dispose();
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for a timed-out export close before giving the exact session-close recovery its own budget", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-export-close-timeout-unit-"));
+    const sessionId = "88888888-8888-4888-8888-888888888888";
+    const exportId = testId(4);
+    let releaseArtifactClose!: () => void;
+    let artifactCloseStarted!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releaseArtifactClose = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      artifactCloseStarted = resolve;
+    });
+    const requestKinds: string[] = [];
+    const invalidated = vi.fn();
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      dataExportCleanupTimeoutMs: 20,
+      createId: sequenceIds(1, 2, 3, 4, 5, 6, 7, 8),
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+        requestKinds.push(request.kind);
+        if (request.kind === "closeDataExport") {
+          artifactCloseStarted();
+          await blocked;
+        }
+        await writeFile(responsePath, exportTransportResponse(request, sessionId, exportId, "csv", true, 0), {
+          flag: "wx",
+          mode: 0o600
+        });
+      }
+    });
+    const subscription = transport.onDidInvalidateKernel(invalidated);
+    try {
+      await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+      const exporting = transport.exportData(sessionId, 0, "csv", async () => undefined);
+      await started;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
+      expect(requestKinds).toEqual(["openSession", "exportData", "closeDataExport"]);
+      releaseArtifactClose();
+      await expect(exporting).rejects.toMatchObject({ reason: "timeout", dispatched: true });
+      expect(requestKinds).toEqual(["openSession", "exportData", "closeDataExport", "closeSession"]);
+      expect(invalidated).toHaveBeenCalledOnce();
+      expect(transport.isSessionMapped(sessionId)).toBe(false);
+    } finally {
+      releaseArtifactClose();
+      subscription.dispose();
+      await transport.dispose();
+      expect(await readdir(temporaryParent)).toEqual([]);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
+  it("retains an unrecovered export-cleanup failure through invalidation and disposal", async () => {
+    const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-export-cleanup-failure-unit-"));
+    const sessionId = "89898989-8989-4989-8989-898989898989";
+    const exportId = testId(4);
+    const requestKinds: string[] = [];
+    const invalidated = vi.fn();
+    const transport = new RInteractiveSessionTransport({ extensionPath: repositoryRoot } as vscode.ExtensionContext, {
+      temporaryParent,
+      createId: sequenceIds(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+      runSelection: async (code) => {
+        const { requestPath, responsePath } = mailboxPaths(code);
+        const request = JSON.parse(await readFile(requestPath, "utf8")) as KernelRequestRecord;
+        requestKinds.push(request.kind);
+        const response =
+          request.kind === "closeDataExport" || request.kind === "closeSession"
+            ? JSON.stringify({
+                transportVersion: 10,
+                requestId: request.requestId,
+                kind: "error",
+                code: "runtime_error",
+                message: "injected export cleanup failure",
+                recoverable: false
+              })
+            : exportTransportResponse(request, sessionId, exportId, "csv", true, 0);
+        await writeFile(responsePath, response, { flag: "wx", mode: 0o600 });
+      }
+    });
+    const subscription = transport.onDidInvalidateKernel(invalidated);
+    try {
+      await transport.open("orders", pageWindow(), { requestedSessionId: sessionId });
+      await expect(transport.exportData(sessionId, 0, "csv", async () => undefined)).rejects.toThrow(
+        "injected export cleanup failure"
+      );
+      expect(invalidated).toHaveBeenCalledOnce();
+      expect(transport.isSessionMapped(sessionId)).toBe(false);
+      await expect(transport.dispose()).rejects.toThrow("completely clean up its interactive R transport");
+      expect(requestKinds.filter((kind) => kind === "closeSession").length).toBeGreaterThanOrEqual(2);
+      expect(await readdir(temporaryParent)).toEqual([]);
+    } finally {
+      subscription.dispose();
+      await transport.dispose().catch(() => undefined);
+      await rm(temporaryParent, { recursive: true, force: true });
+    }
+  });
+
   it("serializes requests through a mode-0700 mailbox and removes it on disposal", async () => {
     const temporaryParent = await mkdtemp(resolve(tmpdir(), "ow-r-live-unit-"));
     let active = 0;
@@ -853,6 +1126,91 @@ async function writeMockAttachment(code: string, processId: number): Promise<voi
     }),
     { encoding: "utf8" }
   );
+}
+
+interface KernelRequestRecord {
+  readonly requestId: string;
+  readonly kind: string;
+  readonly payload?: Readonly<{
+    sessionId?: string;
+    revision?: number;
+    exportId?: string;
+    format?: "csv" | "parquet";
+    offset?: number;
+    limit?: number;
+  }>;
+}
+
+function testId(value: number): string {
+  return `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
+}
+
+function sequenceIds(...values: readonly number[]): () => string {
+  let index = 0;
+  return () => {
+    const value = values[index] ?? 1_000 + index;
+    index += 1;
+    return testId(value);
+  };
+}
+
+function exportTransportResponse(
+  request: KernelRequestRecord,
+  sessionId: string,
+  exportId: string,
+  format: "csv" | "parquet",
+  singleChunk = false,
+  totalBytes = R_KERNEL_EXPORT_CHUNK_BYTES + 3
+): string {
+  if (request.kind === "openSession") return openResponse(request.requestId, sessionId);
+  if (request.kind === "exportData") {
+    expect(request.payload).toMatchObject({ sessionId, revision: 0, exportId, format });
+    return JSON.stringify({
+      transportVersion: 10,
+      requestId: request.requestId,
+      kind: "dataExported",
+      sessionId,
+      revision: 0,
+      exportId,
+      format,
+      rows: 2,
+      columns: 1,
+      bytes: totalBytes
+    });
+  }
+  if (request.kind === "readDataExport") {
+    const offset = request.payload?.offset ?? -1;
+    const limit = request.payload?.limit ?? -1;
+    expect(request.payload).toMatchObject({ sessionId, revision: 0, exportId });
+    const data =
+      singleChunk || totalBytes <= 3 || offset > 0
+        ? Buffer.from("end", "utf8").subarray(0, Math.max(0, totalBytes - offset))
+        : Buffer.alloc(R_KERNEL_EXPORT_CHUNK_BYTES, 0x61);
+    expect(data.byteLength).toBeLessThanOrEqual(limit);
+    return JSON.stringify({
+      transportVersion: 10,
+      requestId: request.requestId,
+      kind: "dataExportChunk",
+      sessionId,
+      revision: 0,
+      exportId,
+      offset,
+      bytes: data.byteLength,
+      data: data.toString("base64")
+    });
+  }
+  if (request.kind === "closeDataExport") {
+    expect(request.payload).toMatchObject({ sessionId, revision: 0, exportId });
+    return JSON.stringify({
+      transportVersion: 10,
+      requestId: request.requestId,
+      kind: "dataExportClosed",
+      sessionId,
+      revision: 0,
+      exportId
+    });
+  }
+  return interactiveResponse(request);
 }
 
 function interactiveResponse(request: { requestId: string; kind: string }): string {

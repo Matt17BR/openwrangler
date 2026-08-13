@@ -64,7 +64,8 @@ The release tier adds the expensive product checks that no longer run on every p
 - packaged VS Code on macOS and Windows;
 - packaged Cursor on macOS and Windows;
 - released Jupyter in separate Python, local R, and remote R jobs: local and remote Python kernels in VS Code, local R
-  in VS Code and Cursor, remote R in VS Code, and a fresh focused Linux VS Code phase for R Markdown and Quarto;
+  in VS Code and Cursor, remote R in VS Code, and fresh focused Linux VS Code and Cursor phases for R Markdown and
+  Quarto;
 - Remote SSH;
 - installed performance in pinned VS Code and Cursor;
 - the complete source, platform, package, accessibility, and security checks.
@@ -78,8 +79,8 @@ job may finish anyway so its editor and namespace cleanup are not interrupted; t
 publish.
 
 The Python, local R, and remote R Jupyter jobs start together and verify the same candidate VSIX. The local R job
-completes its ordinary plain-document journey, reverifies the candidate, and starts the focused literate journey in a
-new editor process. The remote R job runs only the packaged VS Code Docker journey; it does not install hosted R,
+completes its ordinary plain-document journey, reverifies the candidate, and starts the focused literate journey in
+one fresh process per editor. The remote R job runs only the packaged VS Code Docker journey; it does not install hosted R,
 local R packages, local kernel environments, or native R/Quarto tooling. Each invocation owns distinct failure
 evidence. Both the outer candidate matrix and the inner Jupyter matrix keep sibling cancellation disabled, so one
 failure cannot interrupt another cell's editor or Docker cleanup. Every native editor phase retains its own

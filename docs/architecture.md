@@ -59,8 +59,19 @@ raw HTML, and comments are opaque to chunk lookup. After resolving the chunk, Op
 Quarto, Jupyter, and R integrations before asking for a terminal or kernel. An R-backed chunk is sent with discovery
 as one correlated request to the exact selected R terminal, so vscode-R cannot interleave another multiline command
 between evaluation and discovery. Jupyter-owned Python chunks run in the exact Interactive Window associated with the
-source document. Every activation, execution, discovery, picker, and focus-restoration await revalidates the captured
-editor object, document object, version, URI uniqueness, cursor selections, and—on R paths—the exact terminal object.
+source document. The released Jupyter selection command is fire-and-forget, so its fulfilled command promise is not
+execution authority. On a fresh run, Open Wrangler first sends an empty selection to create the source-routed
+Interactive Window without user code. It requires the exact new sole-open window either to expose Jupyter's marked
+system cell or to remain user-cell-free with a canonically auto-selected Python kernel. When Cursor exposes only the
+proposed REPL surface, Open Wrangler reveals that exact captured document through the stable notebook-editor API. The
+public kernel-picker command has no result value, so completion alone is not selection proof: an already auto-selected
+scaffold must explicitly carry nonconflicting canonical nested Jupyter metadata naming Python, or a metadata-free
+marked scaffold must acquire it after the picker closes. A bounded macrotask and a second exact-object/scaffold
+check let Jupyter's controller listener settle before Open Wrangler restores and revalidates the source and dispatches
+the real chunk once. Publication and completion stay pinned to that notebook
+through the shared operation deadline; there is no Quarto retry. Every activation, execution, discovery, picker, and
+focus-restoration await revalidates the captured editor object, document object, version, URI uniqueness, cursor
+selections, and—on R paths—the exact terminal object.
 The primary literate action never renders or executes the complete document. Outside a supported chunk it can reuse
 one exact associated Python Interactive Window or the selected R session; when both exist it asks explicitly which
 one to open.
@@ -261,9 +272,9 @@ finishes. Page and profile requests that time out or are cancelled still retain 
 promise. The transport waits for that promise before sending another request to the same IRkernel. Kernel restart
 ends the mappings. Close uses the mapped kernel and never looks one up by URI. Session IDs and pending cleanup records
 have fixed bounds, and repeated disposal joins the same cleanup operation. Once a mutation returns its correlated
-response, a later host cancellation cannot hide the new revision. A CSV export is first written inside that same
-kernel. The host reads it by byte offset in chunks of at most 1 MiB. R sends each chunk as unwrapped canonical base64,
-and the host closes the kernel artifact after the transfer.
+response, a later host cancellation cannot hide the new revision. A CSV or Parquet export is first written inside
+that same kernel. IRkernel and active-terminal transports read it by byte offset in chunks of at most 1 MiB. R sends
+each chunk as unwrapped canonical base64, and the host closes the exact process-local artifact after the transfer.
 A timed-out request must settle before cleanup is sent to the mapped kernel; cleanup never looks up a replacement
 notebook or kernel.
 
@@ -279,10 +290,10 @@ removes its temporary directory.
 
 An editable R notebook, active-terminal, or local R document session can export its committed cleaning result as CSV
 or Parquet. CSV is part of base R. Parquet requires `nanoparquet` 0.5.1 or newer in the exact R process that owns the
-session; the runtime checks this when the session opens and again when export starts. A document or active-terminal
-process writes an opaque file in its private directory; the extension verifies and streams that file. IRkernel keeps
-its file inside the kernel and returns bounded, offset-addressed chunks. Both routes feed the existing atomic file
-transaction, and R never receives the destination path. Drafts and stale revisions are rejected. Viewing filters and
+session; the runtime checks this when the session opens and again when export starts. An owned document process writes
+an opaque file in its host-private directory; the extension verifies and streams that file. IRkernel and the official
+active R terminal keep their artifacts inside the exact R process and return bounded, offset-addressed chunks. Both
+routes feed the existing atomic file transaction, and R never receives the destination path. Drafts and stale revisions are rejected. Viewing filters and
 sorts are not part of the exported cleaning result. Notebook export is offered only when the notebook belongs to the
 current local extension host; the public export request does not yet carry a VS Code remote authority. The
 active-terminal export path is not counted as release evidence until its packaged VS Code and Cursor journey passes.

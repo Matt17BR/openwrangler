@@ -802,7 +802,7 @@ export async function prepareJupyterAcceptanceREnvironment(
       environment: commandEnvironment,
       label: "Released-Jupyter private R dependency installation"
     },
-    600_000
+    1_200_000
   );
 
   const prepared = Object.freeze({

@@ -191,7 +191,64 @@ test("ordinary Quarto acceptance does not require a headless preview webview", a
   assert.match(journey, /if \(requireVisiblePreview\) \{/u);
   assert.match(journey, /Quarto media capture must open one new internal preview tab/u);
   assert.match(journey, /releasedQuartoPreviewTabs\(\)/u);
+  assert.match(journey, /input\?\.viewType === "quarto\.previewView"/u);
+  const previewStart = journey.indexOf('recordAcceptanceProgress("jupyter-r:quarto:preview")');
+  const previewDispatch = journey.indexOf('vscode.commands.executeCommand("quarto.preview")', previewStart);
+  const previewCommandReturned = journey.indexOf(
+    'recordAcceptanceProgress("jupyter-r:quarto:preview-command-returned")',
+    previewDispatch
+  );
+  const previewProbeSkipped = journey.indexOf(
+    'recordAcceptanceProgress("jupyter-r:quarto:preview-probe-skipped")',
+    previewCommandReturned
+  );
+  const previewProbeGuard = journey.indexOf("if (requireVisiblePreview) {", previewProbeSkipped);
+  const previewProbe = journey.indexOf("releasedQuartoPreviewLocator(workbench)", previewCommandReturned);
+  const previewProbeReturned = journey.indexOf(
+    'recordAcceptanceProgress("jupyter-r:quarto:preview-probe-returned")',
+    previewProbe
+  );
+  assert.ok(
+    previewStart >= 0 &&
+      previewDispatch > previewStart &&
+      previewCommandReturned > previewDispatch &&
+      previewProbeSkipped > previewCommandReturned &&
+      previewProbeGuard > previewProbeSkipped &&
+      previewProbe > previewProbeGuard &&
+      previewProbeReturned > previewProbe,
+    "The native Quarto preview must distinguish command entry, command return, a skipped ordinary UI probe, and its first bounded media probe."
+  );
+  assert.match(
+    journey,
+    /previewLocator = await probeAcceptanceBeforeDeadline\(\s*\(\) => releasedQuartoPreviewLocator\(workbench\),\s*Math\.min\(deadline, Date\.now\(\) \+ WORKBENCH_DIAGNOSTIC_TIMEOUT_MS\)\s*\)/u,
+    "The native Quarto preview probe must share the render deadline and a bounded diagnostic slice."
+  );
+  assert.match(
+    journey,
+    /withBoundedAcceptancePromise\(\s*vscode\.window\.tabGroups\.close\(openTabs, true\),\s*WORKBENCH_OPERATION_TIMEOUT_MS,\s*"the owned Quarto preview tabs to close"\s*\)/u,
+    "Native Quarto preview cleanup must not let a Cursor tab close mask the render result."
+  );
+  assert.doesNotMatch(
+    journey,
+    /workbench\.waitForTimeout/u,
+    "Native Quarto preview polling and cleanup must use local timers rather than unbounded Playwright waits."
+  );
   assert.doesNotMatch(journey, /priorTabs|instanceof vscode\.TabInputWebview/u);
+
+  const mediaGeometry = source.slice(
+    source.indexOf("async function assertReleasedRDocumentPickerMediaGeometry("),
+    source.indexOf("async function invokeReleasedRDocumentVariable(")
+  );
+  assert.match(
+    mediaGeometry,
+    /probeAcceptanceBeforeDeadline\(\s*\(\) => releasedQuartoPreviewLocator\(workbench\),\s*Date\.now\(\) \+ WORKBENCH_DIAGNOSTIC_TIMEOUT_MS\s*\)/u,
+    "Quarto media capture must bound its dedicated preview locator probe."
+  );
+  assert.match(
+    mediaGeometry,
+    /withBoundedAcceptancePromise\(\s*Promise\.all\(\[sourceLine\.innerText\(\), sourceLine\.boundingBox\(\), picker\.boundingBox\(\), preview\.boundingBox\(\)\]\),\s*WORKBENCH_OPERATION_TIMEOUT_MS,\s*"Quarto picker media geometry"\s*\)/u,
+    "Quarto media capture must bound all geometry reads as one operation."
+  );
 });
 
 test("panel hydration defaults to the renderer discovery deadline and accepts a shared bound", async () => {

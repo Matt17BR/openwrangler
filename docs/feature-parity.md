@@ -220,8 +220,9 @@ and cleanup of both host and IRkernel artifacts. Native export tests cover the s
 second macOS/Linux run starts from a real `.R` file,
 opens a discovered dataframe, inserts generated code back into that exact unsaved document, and reruns the result
 without changing a decoy editor or either source file on disk.
-A separate focused Linux VS Code phase includes realistic `.Rmd` and `.qmd` fixtures with first-line YAML, ignored prose, a
-relative CSV read, native editing, and a generated fenced R cell. Its Quarto title-action journey pins the cursor in
+A separate pair of focused Linux VS Code and Cursor phases is configured to require realistic `.Rmd` and `.qmd` fixtures with
+first-line YAML, ignored prose, a relative CSV read, native editing, and a generated fenced R cell. Its Quarto
+title-action journey pins the cursor in
 the exact R chunk, verifies the Quarto and R integrations, and evaluates only that cell in the captured R terminal;
 R Markdown retains the explicit owned-process journey. A focused packaged Linux run at `a64ce66` also passes the
 Jupyter/Python Quarto title action in VS Code 1.132.0: it runs only the selected chunk, opens its live Pandas frame,
@@ -231,13 +232,13 @@ integration preflight ordering, strict YAML ownership metadata, opaque-container
 staleness, and explicit choice when both associated sessions exist. The
 explicit R-document parser fixture also includes a non-R cell and a disabled R cell and continues to cover nested presentation options and disabled external chunk references,
 while malformed or enabled code-replacement options fail before R starts. Python-only documents do not start R; the
-explicit R-document command explains that no R code chunk was found. The installed VS Code run locally on Linux covers
-all three document types through separate plain and focused literate phases.
-Cursor runs the complete plain `.R` document path, including cleaned CSV export; parser, runtime, and VS Code
-acceptance cover the literate formats without repeating them in Cursor's single installed-editor phase.
+explicit R-document command explains that no R code chunk was found. Packaged Linux runs cover all three document
+types through separate plain and focused literate phases. Cursor already runs the complete plain `.R` document path,
+including cleaned CSV export; the candidate workflow must also pass the focused literate formats in its own fresh
+installed-editor phase.
 The macOS preview and stable release cells retain the same plain `.R` subjourney in packaged VS Code, while the
-candidate's focused Linux VS Code phase owns `.Rmd`, `.qmd`, and Python Quarto. Their Windows counterparts run the
-complete local IRkernel journey but skip direct documents. Local Windows hides the explicit
+candidate's focused Linux VS Code and Cursor phases are required to own `.Rmd`, `.qmd`, and Python Quarto. Their Windows counterparts
+run the complete local IRkernel journey but skip direct documents. Local Windows hides the explicit
 **Run R Document** Explorer and tab-menu actions; the stable title action can still open a dataframe from an active
 official R terminal. Remote-resource actions and the Command Palette remain reachable because static client keys
 cannot identify the extension-host platform. The runtime platform check is authoritative. Remote R-document execution is experimental
@@ -247,7 +248,7 @@ extension can own the complete spawned process tree. Other cleaning operations a
 Before a 2.0 tag can be published, both release workflows must pass the local `r-jupyter` journey in packaged VS Code
 on hosted macOS and Windows. The freshly verified candidate VSIX is used directly; these jobs do not rebuild it or
 substitute a smaller R smoke test. The same candidate must also pass the separately verified focused literate journey
-in packaged Linux VS Code.
+in packaged Linux VS Code and Cursor.
 
 | Surface                                       | Availability                    | Status  | Current checks                                                                                                                       | Release check   |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
@@ -258,19 +259,19 @@ in packaged Linux VS Code.
 | Native R column and dataset profiles          | 1.99 preview                    | Partial | R 4.4/4.5 tests, filtered contracts, large chunk/sample regressions, and sampled-label UI tests                                      | Preview release |
 | Base `data.frame`, tibble, and `data.table`   | 1.99 preview                    | Partial | Native discovery, paging, queries, and profile tests                                                                                 | Preview release |
 | Exact IRkernel session transport              | 1.99 preview                    | Done    | Linux local VS Code/Cursor and remote VS Code; macOS/Windows VS Code gate                                                            | Preview release |
-| Exact active R-terminal transport             | 1.99 preview                    | Partial | Zero-command vscode-R hints, explicit PID-checked bootstrap, native callback and cleanup tests; packaged journey pending             | Preview release |
-| Cursor-owned `.Rmd` and `.qmd` R/Python chunk | 1.99 preview                    | Partial | Executor-aware mixed-fence and exact-origin tests; packaged VS Code 1.132.0 R/Python Quarto title actions                            | Preview release |
+| Exact active R-terminal transport             | 1.99 preview                    | Partial | Zero-command vscode-R hints, explicit PID-checked bootstrap, native callback tests, and packaged VS Code/Cursor journey              | Preview release |
+| Cursor-owned `.Rmd` and `.qmd` R/Python chunk | 1.99 preview                    | Partial | Executor-aware mixed-fence and exact-origin tests; candidate gate now requires fresh Cursor R/Python Quarto title actions            | Preview release |
 | Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                              | Preview release |
-| Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser and real-R contracts; focused Linux VS Code installed run                                                                     | Preview release |
+| Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser, real-R contracts, and prior focused VS Code run; candidate gate now also requires Cursor                                     | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                                | Preview release |
 | R cleaning operations and generated code      | 22 operations                   | Partial | Native runtime and generated-code tests cover all 22; the VS Code journey covers the full catalog and Cursor the representative path | Preview release |
 | Copy or save generated R                      | 22 operations                   | Partial | Rename uses packaged save; all 22 generate executable code                                                                           | Preview release |
 | Insert generated R into its IRkernel notebook | 1.99 preview                    | Partial | Shared exact-document helper and packaged VS Code run                                                                                | Preview release |
 | Insert generated R into its source `.R` file  | 1.99 preview                    | Partial | Exact-document helper and packaged rerun                                                                                             | Preview release |
-| Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview                    | Partial | Exact-document tests and packaged VS Code run                                                                                        | Preview release |
+| Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview                    | Partial | Exact-document tests and prior packaged VS Code run; candidate gate now also requires Cursor                                         | Preview release |
 | Cleaned-data export                           | R notebook/document CSV/Parquet | Partial | Native writers, bounded transfer, atomic save, installed notebook/document run                                                       | Preview release |
-| Active R-terminal cleaned-data export         | 1.99 preview                    | Partial | Native writer and atomic-save tests; packaged VS Code/Cursor journey pending                                                         | Preview release |
-| Quarto and R Markdown lexical R-cell run      | 1.99 preview                    | Partial | Parser and owned process; packaged VS Code 1.132.0 R Markdown and R/Python Quarto journeys                                           | Preview release |
+| Active R-terminal cleaned-data export         | 1.99 preview                    | Partial | Real-R streaming and atomic-save tests; candidate gate now requires packaged Linux VS Code/Cursor CSV and Parquet                    | Preview release |
+| Quarto and R Markdown lexical R-cell run      | 1.99 preview                    | Partial | Parser, owned process, and prior VS Code run; candidate gate now also requires Cursor R Markdown and R/Python Quarto                 | Preview release |
 
 ## DuckDB file-backed preview matrix
 

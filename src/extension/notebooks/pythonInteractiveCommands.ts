@@ -155,6 +155,15 @@ type PythonExecutedCellResult =
   | { readonly kind: "timedOut" }
   | { readonly kind: "stale" };
 
+type PythonInteractiveBootstrapResult =
+  | { readonly kind: "ready"; readonly notebook: vscode.NotebookDocument }
+  | { readonly kind: "missing" }
+  | { readonly kind: "ambiguous" }
+  | { readonly kind: "stale" }
+  | { readonly kind: "timedOut" }
+  | { readonly kind: "dispatchRejected" }
+  | { readonly kind: "selectionFailed" };
+
 type PythonCellAttemptResult =
   | { readonly kind: "published"; readonly notebook: vscode.NotebookDocument; readonly cell: vscode.NotebookCell }
   | {
@@ -349,13 +358,49 @@ class NotebookInteractiveCoordinator implements NotebookLiveVariableProvider, Li
     const observer = new PythonCellDispatchObserver(origin, beforeCells, beforeInteractiveWindows);
     let attempt: PythonCellAttemptResult;
     try {
+      let pinnedLiterateNotebook: vscode.NotebookDocument | undefined;
+      if (origin.command === "jupyter.execSelectionInteractive" && beforeInteractiveWindows.size === 0) {
+        const bootstrap = await prepareFreshLiteratePythonInteractiveWindow(
+          origin,
+          observer,
+          operationDeadline,
+          (stage) => this.setDiagnosticStage(stage)
+        );
+        if (bootstrap.kind !== "ready") {
+          if (bootstrap.kind === "dispatchRejected") {
+            void vscode.window.showWarningMessage("Jupyter could not prepare a Python Interactive Window.");
+          } else if (bootstrap.kind === "timedOut" || bootstrap.kind === "missing") {
+            void vscode.window.showWarningMessage(
+              "Jupyter did not finish preparing the Python Interactive Window in time. Try again."
+            );
+          } else if (bootstrap.kind === "selectionFailed") {
+            // The exact picker/restoration helper already reported why it could
+            // not establish a selected kernel. Do not replace that diagnostic
+            // with a misleading source-staleness warning.
+          } else if (bootstrap.kind === "stale") {
+            void vscode.window.showWarningMessage(
+              "The Python document changed while its Interactive Window was being prepared. Try again."
+            );
+          } else {
+            void vscode.window.showWarningMessage(
+              "Jupyter opened more than one candidate Interactive Window. Close the extra window and try again."
+            );
+          }
+          return false;
+        }
+        pinnedLiterateNotebook = bootstrap.notebook;
+      }
+
+      const allowKernelRecovery = origin.command !== "jupyter.execSelectionInteractive";
       attempt = await runPythonCellAttempt(
         origin,
         observer,
         operationDeadline,
-        true,
+        allowKernelRecovery,
         (stage) => this.setDiagnosticStage(stage),
-        "dispatching-cell"
+        "dispatching-cell",
+        pinnedLiterateNotebook,
+        pinnedLiterateNotebook !== undefined
       );
       if (attempt.kind === "needsKernel") {
         const kernelAttempt = attempt;
@@ -955,13 +1000,51 @@ function notebookLanguageHint(notebook: vscode.NotebookDocument): string | undef
 
 function notebookMetadataLanguageHint(notebook: vscode.NotebookDocument): string | undefined {
   const metadata = notebook.metadata;
-  for (const candidate of [
+  const contentMetadata = isRecord(metadata) ? metadata.metadata : undefined;
+  const candidates = [
     nestedString(metadata, "kernelspec", "language"),
-    nestedString(metadata, "language_info", "name")
-  ]) {
-    if (candidate) return candidate.trim().toLowerCase();
+    nestedString(metadata, "language_info", "name"),
+    nestedString(contentMetadata, "kernelspec", "language"),
+    nestedString(contentMetadata, "language_info", "name")
+  ]
+    .map((candidate) => candidate?.trim().toLowerCase())
+    .filter((candidate): candidate is string => candidate !== undefined && candidate.length > 0);
+  const unique = new Set(candidates);
+  if (unique.size === 0) return undefined;
+  return unique.size === 1 ? candidates[0] : "conflicting";
+}
+
+type FreshJupyterKernelMetadata = "absent" | "python" | "notPython" | "ambiguous";
+
+function freshJupyterKernelMetadata(notebook: vscode.NotebookDocument): FreshJupyterKernelMetadata {
+  const metadata = notebook.metadata;
+  if (!isRecord(metadata)) return "ambiguous";
+  const owns = (record: Readonly<Record<string, unknown>>, key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(record, key);
+
+  // Jupyter writes nbformat metadata below NotebookDocument.metadata.metadata.
+  // A flat lookalike must not authorize skipping its public kernel picker.
+  if (owns(metadata, "kernelspec") || owns(metadata, "language_info")) return "ambiguous";
+  if (!owns(metadata, "metadata")) return "absent";
+  const content = metadata.metadata;
+  if (!isRecord(content)) return "ambiguous";
+  const hasKernelSpec = owns(content, "kernelspec");
+  const hasLanguageInfo = owns(content, "language_info");
+  if (!hasKernelSpec && !hasLanguageInfo) return "absent";
+  if (!hasKernelSpec || !isRecord(content.kernelspec)) return "ambiguous";
+
+  const kernelLanguage = content.kernelspec.language;
+  if (typeof kernelLanguage !== "string" || kernelLanguage.trim().length === 0) return "ambiguous";
+  const normalizedKernelLanguage = kernelLanguage.trim().toLowerCase();
+  if (hasLanguageInfo) {
+    if (!isRecord(content.language_info)) return "ambiguous";
+    if (owns(content.language_info, "name")) {
+      const languageName = content.language_info.name;
+      if (typeof languageName !== "string" || languageName.trim().length === 0) return "ambiguous";
+      if (languageName.trim().toLowerCase() !== normalizedKernelLanguage) return "ambiguous";
+    }
   }
-  return undefined;
+  return normalizedKernelLanguage === "python" ? "python" : "notPython";
 }
 
 function nestedString(record: unknown, parent: string, child: string): string | undefined {
@@ -1151,17 +1234,113 @@ function isRecoverablePythonInteractiveWindow(notebook: vscode.NotebookDocument,
   return isSupportedPythonNotebook(notebook) && cell.executionSummary === undefined;
 }
 
+function newlyOpenedKernelSelectableInteractiveWindow(
+  before: ReadonlySet<vscode.NotebookDocument>
+):
+  | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument }
+  | { readonly kind: "missing" }
+  | { readonly kind: "ambiguous" } {
+  const candidates = vscode.workspace.notebookDocuments.filter(
+    (notebook) => !before.has(notebook) && !notebook.isClosed && notebook.notebookType === "interactive"
+  );
+  if (candidates.length === 0) return { kind: "missing" };
+  if (candidates.length !== 1) return { kind: "ambiguous" };
+  const notebook = candidates[0]!;
+  if (!isSoleOpenNotebookDocument(notebook)) {
+    return { kind: "ambiguous" };
+  }
+  const cells = notebook.getCells();
+  if (cells.length === 0) {
+    const metadata = freshJupyterKernelMetadata(notebook);
+    return metadata === "python"
+      ? { kind: "found", notebook }
+      : metadata === "absent"
+        ? { kind: "missing" }
+        : { kind: "ambiguous" };
+  }
+  if (cells.length !== 1) return { kind: "ambiguous" };
+  const cell = cells[0]!;
+  if (
+    cell.kind !== vscode.NotebookCellKind.Markup ||
+    cell.document.languageId.trim().toLowerCase() !== "markdown" ||
+    !isRecord(cell.metadata) ||
+    cell.metadata.isInteractiveWindowMessageCell !== true
+  ) {
+    return { kind: "ambiguous" };
+  }
+  return { kind: "found", notebook };
+}
+
+function isOnlyNewInteractiveWindow(
+  before: ReadonlySet<vscode.NotebookDocument>,
+  expected: vscode.NotebookDocument
+): boolean {
+  const candidates = vscode.workspace.notebookDocuments.filter(
+    (notebook) => !before.has(notebook) && !notebook.isClosed && notebook.notebookType === "interactive"
+  );
+  return candidates.length === 1 && candidates[0] === expected && isSoleOpenNotebookDocument(expected);
+}
+
+async function prepareFreshLiteratePythonInteractiveWindow(
+  origin: PythonCellOrigin,
+  observer: PythonCellDispatchObserver,
+  operationDeadline: number,
+  reportStage: (stage: PythonInteractiveDiagnosticStage) => void
+): Promise<PythonInteractiveBootstrapResult> {
+  if (!isExactPythonOrigin(origin)) return { kind: "stale" };
+  const bootstrapDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
+  reportStage("opening-interactive-editor");
+  const dispatched = await settleBeforeDeadline(
+    () => vscode.commands.executeCommand("jupyter.execSelectionInteractive", ""),
+    bootstrapDeadline
+  );
+  if (dispatched.kind === "rejected") return { kind: "dispatchRejected" };
+  if (dispatched.kind === "timedOut") return { kind: "timedOut" };
+
+  while (true) {
+    // Jupyter moves focus to the newly created Interactive Window before its
+    // system cell appears. Keep validating the captured source object/version
+    // here; exact active-source focus is restored and revalidated after the
+    // kernel picker, immediately before the real code dispatch.
+    if (!isUnchangedPythonOrigin(origin)) return { kind: "stale" };
+    const unexpectedCell = observer.snapshot();
+    if (unexpectedCell.kind === "stale") return unexpectedCell;
+    if (unexpectedCell.kind !== "missing") return { kind: "ambiguous" };
+    const selectable = observer.kernelSelectableBlankWindow();
+    if (selectable.kind === "ambiguous") return selectable;
+    if (selectable.kind === "found") {
+      const restored = await selectKernelAndRestorePythonOrigin(
+        selectable.notebook,
+        origin,
+        operationDeadline,
+        observer,
+        reportStage,
+        true,
+        true
+      );
+      return restored ? { kind: "ready", notebook: selectable.notebook } : { kind: "selectionFailed" };
+    }
+    const remaining = bootstrapDeadline - Date.now();
+    if (remaining <= 0) return { kind: "timedOut" };
+    const event = await observer.waitForChange(remaining);
+    if (event === "changed") continue;
+    return event === "cancelled" ? { kind: "stale" } : { kind: "timedOut" };
+  }
+}
+
 async function selectKernelAndRestorePythonOrigin(
   notebook: vscode.NotebookDocument,
   origin: PythonCellOrigin,
   operationDeadline: number,
   observer: PythonCellDispatchObserver,
-  reportStage: (stage: PythonInteractiveDiagnosticStage) => void
+  reportStage: (stage: PythonInteractiveDiagnosticStage) => void,
+  requireConfirmedSelection = false,
+  requireFreshScaffold = false
 ): Promise<boolean> {
   if (
     !isUnchangedPythonOrigin(origin) ||
     !isSoleOpenNotebookDocument(notebook) ||
-    !isPinnedKernelRecoveryTarget(observer, notebook)
+    !isPinnedKernelTarget(observer, notebook, requireFreshScaffold)
   ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed while its kernel was being selected. Try again."
@@ -1180,54 +1359,104 @@ async function selectKernelAndRestorePythonOrigin(
   let notebookEditor = visibleMatches[0];
   if (!notebookEditor) {
     reportStage("opening-interactive-editor");
-    const appeared = await waitForExactVisibleNotebookEditor(
-      notebook,
-      origin,
-      observer,
-      Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS)
-    );
-    if (appeared.kind === "timedOut") {
-      void vscode.window.showWarningMessage("Jupyter did not finish opening the Interactive Window in time.");
-      return false;
-    }
-    if (appeared.kind === "stale") {
-      void vscode.window.showWarningMessage(
-        "The Python file or Interactive Window changed while its kernel was being selected. Try again."
+    if (requireFreshScaffold) {
+      const revealed = await settleBeforeDeadline(
+        () =>
+          vscode.window.showNotebookDocument(notebook, {
+            viewColumn: vscode.ViewColumn.Beside,
+            preserveFocus: false,
+            preview: false
+          }),
+        Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS)
       );
-      return false;
+      if (revealed.kind === "timedOut") {
+        void vscode.window.showWarningMessage("Jupyter did not finish opening the Interactive Window in time.");
+        return false;
+      }
+      if (revealed.kind === "rejected") {
+        void vscode.window.showWarningMessage("Jupyter could not reveal the Interactive Window.");
+        return false;
+      }
+      notebookEditor = revealed.value;
+    } else {
+      const appeared = await waitForExactVisibleNotebookEditor(
+        notebook,
+        origin,
+        observer,
+        Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS),
+        requireFreshScaffold
+      );
+      if (appeared.kind === "timedOut") {
+        void vscode.window.showWarningMessage("Jupyter did not finish opening the Interactive Window in time.");
+        return false;
+      }
+      if (appeared.kind === "stale") {
+        void vscode.window.showWarningMessage(
+          "The Python file or Interactive Window changed while its kernel was being selected. Try again."
+        );
+        return false;
+      }
+      notebookEditor = appeared.editor;
     }
-    notebookEditor = appeared.editor;
   }
   if (
     notebookEditor.notebook !== notebook ||
     !isExactVisibleNotebookEditor(notebookEditor, notebook) ||
     !isSoleOpenNotebookDocument(notebook) ||
     !isUnchangedPythonOrigin(origin) ||
-    !isPinnedKernelRecoveryTarget(observer, notebook)
+    !isPinnedKernelTarget(observer, notebook, requireFreshScaffold)
   ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed while its kernel was being selected. Try again."
     );
     return false;
   }
-  reportStage("selecting-kernel");
-  const selected = await settleBeforeDeadline(
-    () => vscode.commands.executeCommand("notebook.selectKernel", { notebookEditor }),
-    operationDeadline
-  );
-  if (selected.kind === "timedOut") {
-    void vscode.window.showWarningMessage("Kernel selection did not finish in time.");
+  const initialMetadata = requireConfirmedSelection ? freshJupyterKernelMetadata(notebook) : "absent";
+  if (requireConfirmedSelection && (initialMetadata === "notPython" || initialMetadata === "ambiguous")) {
+    void vscode.window.showWarningMessage("Open Wrangler requires a Python kernel for this Interactive Window.");
     return false;
   }
-  if (selected.kind === "rejected") {
-    void vscode.window.showWarningMessage("Jupyter could not select a kernel for the Interactive Window.");
-    return false;
+  if (!requireConfirmedSelection || initialMetadata === "absent") {
+    reportStage("selecting-kernel");
+    const selected = await settleBeforeDeadline(
+      () => vscode.commands.executeCommand("notebook.selectKernel", { notebookEditor }),
+      operationDeadline
+    );
+    if (selected.kind === "timedOut") {
+      void vscode.window.showWarningMessage("Kernel selection did not finish in time.");
+      return false;
+    }
+    if (selected.kind === "rejected") {
+      void vscode.window.showWarningMessage("Jupyter could not select a kernel for the Interactive Window.");
+      return false;
+    }
+  }
+  if (requireConfirmedSelection) {
+    const confirmation = await confirmPythonKernelSelection(
+      notebook,
+      notebookEditor,
+      origin,
+      observer,
+      Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS),
+      requireFreshScaffold
+    );
+    if (confirmation !== "confirmed") {
+      void vscode.window.showWarningMessage(
+        confirmation === "notPython"
+          ? "Open Wrangler requires a Python kernel for this Interactive Window."
+          : confirmation === "timedOut"
+            ? "No Python kernel selection was confirmed for the Interactive Window."
+            : "The Python file or Interactive Window changed during kernel selection. Try again."
+      );
+      return false;
+    }
   }
   if (
     !isUnchangedPythonOrigin(origin) ||
     !isSoleOpenNotebookDocument(notebook) ||
     !isExactVisibleNotebookEditor(notebookEditor, notebook) ||
-    !isPinnedKernelRecoveryTarget(observer, notebook)
+    !isPinnedKernelTarget(observer, notebook, requireFreshScaffold) ||
+    (requireConfirmedSelection && freshJupyterKernelMetadata(notebook) !== "python")
   ) {
     void vscode.window.showWarningMessage(
       "The Python file or Interactive Window changed during kernel selection. Try again."
@@ -1259,11 +1488,59 @@ async function selectKernelAndRestorePythonOrigin(
   }
   restored.selection = origin.selection;
   restored.selections = [...origin.selections];
-  if (vscode.window.activeTextEditor !== restored || !isExactPythonOrigin(origin)) {
+  if (
+    vscode.window.activeTextEditor !== restored ||
+    !isExactPythonOrigin(origin) ||
+    !isPinnedKernelTarget(observer, notebook, requireFreshScaffold) ||
+    (requireConfirmedSelection && freshJupyterKernelMetadata(notebook) !== "python")
+  ) {
     void vscode.window.showWarningMessage("The Python file could not be focused after kernel selection. Try again.");
     return false;
   }
   return true;
+}
+
+async function confirmPythonKernelSelection(
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  origin: PythonCellOrigin,
+  observer: PythonCellDispatchObserver,
+  deadline: number,
+  requireFreshScaffold: boolean
+): Promise<"confirmed" | "notPython" | "stale" | "timedOut"> {
+  while (true) {
+    if (
+      !isUnchangedPythonOrigin(origin) ||
+      !isSoleOpenNotebookDocument(notebook) ||
+      !isExactVisibleNotebookEditor(notebookEditor, notebook)
+    ) {
+      return "stale";
+    }
+    const metadata = freshJupyterKernelMetadata(notebook);
+    if (metadata !== "absent") {
+      if (metadata === "notPython") return "notPython";
+      if (metadata !== "python") return "stale";
+      if (!isPinnedKernelTarget(observer, notebook, requireFreshScaffold)) return "stale";
+      const yielded = await settleBeforeDeadline(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+        deadline
+      );
+      if (yielded.kind !== "fulfilled") return yielded.kind === "timedOut" ? "timedOut" : "stale";
+      return isUnchangedPythonOrigin(origin) &&
+        isSoleOpenNotebookDocument(notebook) &&
+        isExactVisibleNotebookEditor(notebookEditor, notebook) &&
+        freshJupyterKernelMetadata(notebook) === "python" &&
+        isPinnedKernelTarget(observer, notebook, requireFreshScaffold)
+        ? "confirmed"
+        : "stale";
+    }
+    if (!isPinnedKernelTarget(observer, notebook, requireFreshScaffold)) return "stale";
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return "timedOut";
+    const changed = await observer.waitForChange(remaining);
+    if (changed === "changed") continue;
+    return changed === "cancelled" ? "stale" : "timedOut";
+  }
 }
 
 function isExactVisibleNotebookEditor(editor: vscode.NotebookEditor, notebook: vscode.NotebookDocument): boolean {
@@ -1276,7 +1553,8 @@ function waitForExactVisibleNotebookEditor(
   notebook: vscode.NotebookDocument,
   origin: PythonCellOrigin,
   observer: PythonCellDispatchObserver,
-  deadline: number
+  deadline: number,
+  requireFreshScaffold = false
 ): Promise<
   | { readonly kind: "found"; readonly editor: vscode.NotebookEditor }
   | { readonly kind: "stale" }
@@ -1289,7 +1567,7 @@ function waitForExactVisibleNotebookEditor(
     if (
       !isUnchangedPythonOrigin(origin) ||
       !isSoleOpenNotebookDocument(notebook) ||
-      !isPinnedKernelRecoveryTarget(observer, notebook)
+      !isPinnedKernelTarget(observer, notebook, requireFreshScaffold)
     ) {
       return { kind: "stale" };
     }
@@ -1408,6 +1686,17 @@ class PythonCellDispatchObserver implements vscode.Disposable {
     return newlyOpenedBlankInteractiveWindow(this.beforeInteractiveWindows, this.origin.sourceUri);
   }
 
+  kernelSelectableBlankWindow():
+    | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument }
+    | { readonly kind: "missing" }
+    | { readonly kind: "ambiguous" } {
+    return newlyOpenedKernelSelectableInteractiveWindow(this.beforeInteractiveWindows);
+  }
+
+  isOnlyNewInteractiveWindow(expected: vscode.NotebookDocument): boolean {
+    return isOnlyNewInteractiveWindow(this.beforeInteractiveWindows, expected);
+  }
+
   waitForChange(timeoutMs: number): Promise<"changed" | "timedOut" | "cancelled"> {
     return this.cancelableWaitForChange(timeoutMs).promise;
   }
@@ -1457,27 +1746,70 @@ function isPinnedKernelRecoveryTarget(
   return snapshot.kind === "missing" && blankWindow.kind === "found" && blankWindow.notebook === notebook;
 }
 
+function isPinnedFreshLiterateBootstrapTarget(
+  observer: PythonCellDispatchObserver,
+  notebook: vscode.NotebookDocument
+): boolean {
+  const snapshot = observer.snapshot();
+  const selectable = observer.kernelSelectableBlankWindow();
+  return (
+    snapshot.kind === "missing" &&
+    selectable.kind === "found" &&
+    selectable.notebook === notebook &&
+    observer.isOnlyNewInteractiveWindow(notebook)
+  );
+}
+
+function isPinnedFreshLiteratePythonTarget(
+  observer: PythonCellDispatchObserver,
+  notebook: vscode.NotebookDocument
+): boolean {
+  return isPinnedFreshLiterateBootstrapTarget(observer, notebook) && freshJupyterKernelMetadata(notebook) === "python";
+}
+
+function isPinnedKernelTarget(
+  observer: PythonCellDispatchObserver,
+  notebook: vscode.NotebookDocument,
+  requireFreshScaffold: boolean
+): boolean {
+  return requireFreshScaffold
+    ? isPinnedFreshLiterateBootstrapTarget(observer, notebook)
+    : isPinnedKernelRecoveryTarget(observer, notebook);
+}
+
 async function runPythonCellAttempt(
   origin: PythonCellOrigin,
   observer: PythonCellDispatchObserver,
   operationDeadline: number,
   allowKernelRecovery: boolean,
   reportStage: (stage: PythonInteractiveDiagnosticStage) => void,
-  dispatchStage: "dispatching-cell" | "retrying-cell"
+  dispatchStage: "dispatching-cell" | "retrying-cell",
+  expectedNotebook?: vscode.NotebookDocument,
+  requireFreshDispatch = false
 ): Promise<PythonCellAttemptResult> {
   if (Date.now() >= operationDeadline) return { kind: "dispatchTimedOut" };
-  const initial = observer.snapshot();
-  if (initial.kind === "found") return { kind: "published", notebook: initial.notebook, cell: initial.cell };
+  if (requireFreshDispatch && (!expectedNotebook || !isPinnedFreshLiteratePythonTarget(observer, expectedNotebook))) {
+    return { kind: "ambiguous" };
+  }
+  const initial = expectedPythonCellSnapshot(observer, expectedNotebook);
+  if (initial.kind === "found") {
+    return requireFreshDispatch
+      ? { kind: "ambiguous" }
+      : { kind: "published", notebook: initial.notebook, cell: initial.cell };
+  }
   if (initial.kind !== "missing") return initial;
   if (!isExactPythonOrigin(origin)) return { kind: "stale" };
 
   const dispatchDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
   reportStage(dispatchStage);
+  if (requireFreshDispatch && (!expectedNotebook || !isPinnedFreshLiteratePythonTarget(observer, expectedNotebook))) {
+    return { kind: "ambiguous" };
+  }
   const dispatch = boundedPythonCellDispatch(origin, dispatchDeadline);
   let dispatchTransferred = false;
   try {
     while (true) {
-      const snapshot = observer.snapshot();
+      const snapshot = expectedPythonCellSnapshot(observer, expectedNotebook);
       if (snapshot.kind === "found") return { kind: "published", notebook: snapshot.notebook, cell: snapshot.cell };
       if (snapshot.kind !== "missing") return snapshot;
 
@@ -1487,7 +1819,7 @@ async function runPythonCellAttempt(
         for (let turn = 0; turn < 3 && dispatch.outcome() === undefined; turn += 1) {
           await Promise.resolve();
         }
-        const afterBlank = observer.snapshot();
+        const afterBlank = expectedPythonCellSnapshot(observer, expectedNotebook);
         if (afterBlank.kind === "found") {
           return { kind: "published", notebook: afterBlank.notebook, cell: afterBlank.cell };
         }
@@ -1517,7 +1849,7 @@ async function runPythonCellAttempt(
       ]).finally(() => change.dispose());
       if (event.kind === "change" && event.outcome === "changed") continue;
 
-      const afterDispatch = observer.snapshot();
+      const afterDispatch = expectedPythonCellSnapshot(observer, expectedNotebook);
       if (afterDispatch.kind === "found") {
         return { kind: "published", notebook: afterDispatch.notebook, cell: afterDispatch.cell };
       }
@@ -1533,7 +1865,28 @@ async function runPythonCellAttempt(
     if (!dispatchTransferred) dispatch.dispose();
   }
 
-  return await waitForPublishedCellAfterDispatch(observer, operationDeadline, allowKernelRecovery);
+  const publicationDeadline =
+    origin.command === "jupyter.execSelectionInteractive" && !allowKernelRecovery
+      ? operationDeadline
+      : Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
+  return await waitForPublishedCellAfterDispatch(observer, publicationDeadline, allowKernelRecovery, expectedNotebook);
+}
+
+function expectedPythonCellSnapshot(
+  observer: PythonCellDispatchObserver,
+  expectedNotebook?: vscode.NotebookDocument
+):
+  | { readonly kind: "found"; readonly notebook: vscode.NotebookDocument; readonly cell: vscode.NotebookCell }
+  | { readonly kind: "missing" }
+  | { readonly kind: "ambiguous" }
+  | { readonly kind: "stale" } {
+  const snapshot = observer.snapshot();
+  if (!expectedNotebook) return snapshot;
+  if (snapshot.kind === "found") {
+    return snapshot.notebook === expectedNotebook ? snapshot : { kind: "ambiguous" };
+  }
+  if (snapshot.kind !== "missing") return snapshot;
+  return observer.isOnlyNewInteractiveWindow(expectedNotebook) ? snapshot : { kind: "stale" };
 }
 
 function boundedPythonCellDispatch(origin: PythonCellOrigin, deadline: number): PythonCellDispatch {
@@ -1621,13 +1974,13 @@ async function waitForTransferredDispatchAfterKernel(
 
 async function waitForPublishedCellAfterDispatch(
   observer: PythonCellDispatchObserver,
-  operationDeadline: number,
-  allowKernelRecovery: boolean
+  publicationDeadline: number,
+  allowKernelRecovery: boolean,
+  expectedNotebook?: vscode.NotebookDocument
 ): Promise<PythonCellAttemptResult> {
-  const publicationDeadline = Math.min(operationDeadline, Date.now() + PYTHON_CELL_PUBLICATION_TIMEOUT_MS);
   let pinnedBlankWindow: vscode.NotebookDocument | undefined;
   while (true) {
-    const snapshot = observer.snapshot();
+    const snapshot = expectedPythonCellSnapshot(observer, expectedNotebook);
     if (snapshot.kind === "found") {
       return { kind: "published", notebook: snapshot.notebook, cell: snapshot.cell };
     }
@@ -1644,7 +1997,7 @@ async function waitForPublishedCellAfterDispatch(
     const event = await observer.waitForChange(publicationDeadline - Date.now());
     if (event === "changed") continue;
 
-    const finalSnapshot = observer.snapshot();
+    const finalSnapshot = expectedPythonCellSnapshot(observer, expectedNotebook);
     if (finalSnapshot.kind === "found") {
       return { kind: "published", notebook: finalSnapshot.notebook, cell: finalSnapshot.cell };
     }

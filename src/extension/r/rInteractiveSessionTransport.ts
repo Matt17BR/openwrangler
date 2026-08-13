@@ -13,11 +13,14 @@ import type { RKernelBridgeTransport } from "./rKernelBridge";
 import {
   decodeRKernelResponseJson,
   encodeRKernelRequest,
+  R_KERNEL_EXPORT_CHUNK_BYTES,
   R_KERNEL_MAX_REQUEST_BYTES,
   R_KERNEL_MAX_RESPONSE_BYTES,
   R_KERNEL_TRANSPORT_VERSION,
   type RKernelColumnReference,
+  type RKernelDataExportResult,
   type RKernelDatasetStatsResult,
+  type RKernelExportFormat,
   type RKernelPageWindow,
   type RKernelPlanUpdatedResult,
   type RKernelRequest,
@@ -42,6 +45,7 @@ const MAX_DISCOVERY_VARIABLES = 256;
 const MAX_VARIABLE_NAME_BYTES = 1_024;
 const MAX_RETIRED_SESSION_IDS = 1_024;
 const DISPOSAL_SETTLEMENT_MS = 5_000;
+const DATA_EXPORT_CLEANUP_TIMEOUT_MS = 5_000;
 const TERMINAL_CHANGED_MESSAGE = "The active R terminal changed.";
 const PRIVATE_READ_FLAGS =
   fsConstants.O_RDONLY |
@@ -59,6 +63,8 @@ export interface RInteractiveSessionTransportOptions {
   readonly removeFile?: (filePath: string) => Promise<void>;
   /** Test seam for bounded disposal coverage. */
   readonly disposalSettlementMs?: number;
+  /** Test seam for bounded data-export cleanup coverage. */
+  readonly dataExportCleanupTimeoutMs?: number;
   /** Bind only to the currently active official R terminal, or create one when none is available. */
   readonly terminalMode?: "active" | "activeOrCreate";
   /** Exact official R terminal captured by the caller before any asynchronous work. */
@@ -109,6 +115,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private readonly temporaryParent: string;
   private readonly removeFile: (filePath: string) => Promise<void>;
   private readonly disposalSettlementMs: number;
+  private readonly dataExportCleanupTimeoutMs: number;
   private readonly terminalMode: "active" | "activeOrCreate";
   private readonly invalidatedEmitter = new vscode.EventEmitter<void>();
   private readonly variablesChangedEmitter = new vscode.EventEmitter<RProcessVariableDiscovery>();
@@ -135,6 +142,8 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   private terminalCleanup: Promise<void> | undefined;
   private hostCleanup: Promise<void> | undefined;
   private readonly artifactCleanupFailures: unknown[] = [];
+  private readonly exportCleanupFailures: unknown[] = [];
+  private readonly activeExportWork = new Set<Promise<unknown>>();
   private invalidationPublished = false;
   private notificationReadTimer: NodeJS.Timeout | undefined;
   private notificationReadTail: Promise<void> = Promise.resolve();
@@ -149,6 +158,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     this.temporaryParent = options.temporaryParent ?? tmpdir();
     this.removeFile = options.removeFile ?? unlink;
     this.disposalSettlementMs = options.disposalSettlementMs ?? DISPOSAL_SETTLEMENT_MS;
+    this.dataExportCleanupTimeoutMs = options.dataExportCleanupTimeoutMs ?? DATA_EXPORT_CLEANUP_TIMEOUT_MS;
     this.terminalMode = options.terminalMode ?? "activeOrCreate";
     if (!path.isAbsolute(this.runtimeRoot)) throw new TypeError("The bundled R runtime path must be absolute.");
     if (!path.isAbsolute(this.temporaryParent)) {
@@ -156,6 +166,9 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     }
     if (!Number.isSafeInteger(this.disposalSettlementMs) || this.disposalSettlementMs < 1) {
       throw new TypeError("The R interactive disposal timeout must be a positive integer.");
+    }
+    if (!Number.isSafeInteger(this.dataExportCleanupTimeoutMs) || this.dataExportCleanupTimeoutMs < 1) {
+      throw new TypeError("The R interactive export cleanup timeout must be a positive integer.");
     }
     if (options.runSelection) {
       this.terminalAmbiguousAtCreation = false;
@@ -484,6 +497,122 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     });
   }
 
+  exportData(
+    sessionId: string,
+    revision: number,
+    format: RKernelExportFormat,
+    writeChunk: (chunk: Uint8Array) => Promise<void>,
+    options: RKernelRequestOptions = {}
+  ): Promise<RKernelDataExportResult> {
+    const work = this.exportDataOnce(sessionId, revision, format, writeChunk, options);
+    return this.trackExportWork(work);
+  }
+
+  private async exportDataOnce(
+    sessionId: string,
+    revision: number,
+    format: RKernelExportFormat,
+    writeChunk: (chunk: Uint8Array) => Promise<void>,
+    options: RKernelRequestOptions
+  ): Promise<RKernelDataExportResult> {
+    this.assertActive();
+    if (typeof writeChunk !== "function") throw new TypeError("The R export chunk writer must be a function.");
+    if (!this.mappedSessions.has(sessionId)) {
+      throw new Error(`Open Wrangler has no live interactive R session ${sessionId}.`);
+    }
+    const exportId = this.createId();
+    const startedAt = performance.now();
+    const timeoutMs = requestTimeout(options.timeoutMs);
+    const remainingOptions = (): RKernelRequestOptions => ({
+      ...options,
+      timeoutMs: Math.floor(remainingTimeout(timeoutMs, startedAt))
+    });
+    let failure: unknown;
+    let result: RKernelDataExportResult | undefined;
+
+    try {
+      const ready = await this.executeMapped(
+        this.request("exportData", { sessionId, revision, exportId, format }),
+        remainingOptions()
+      );
+      if (ready.kind === "error") throw new RKernelDiagnosticError(ready);
+      if (
+        ready.kind !== "dataExported" ||
+        ready.sessionId !== sessionId ||
+        ready.revision !== revision ||
+        ready.exportId !== exportId ||
+        ready.format !== format
+      ) {
+        throw new Error("The interactive R session returned a mismatched data export.");
+      }
+
+      let offset = 0;
+      while (offset < ready.bytes) {
+        const limit = Math.min(R_KERNEL_EXPORT_CHUNK_BYTES, ready.bytes - offset);
+        const chunk = await this.executeMapped(
+          this.request("readDataExport", { sessionId, revision, exportId, offset, limit }),
+          remainingOptions()
+        );
+        if (chunk.kind === "error") throw new RKernelDiagnosticError(chunk);
+        if (
+          chunk.kind !== "dataExportChunk" ||
+          chunk.sessionId !== sessionId ||
+          chunk.revision !== revision ||
+          chunk.exportId !== exportId ||
+          chunk.offset !== offset ||
+          chunk.bytes < 1 ||
+          chunk.bytes > limit ||
+          chunk.data.byteLength !== chunk.bytes ||
+          offset + chunk.bytes > ready.bytes
+        ) {
+          throw new Error("The interactive R session returned a mismatched data-export chunk.");
+        }
+        await writeChunk(chunk.data);
+        offset += chunk.bytes;
+      }
+      if (offset !== ready.bytes) throw new Error("The interactive R session returned an incomplete data export.");
+      result = Object.freeze({
+        sessionId,
+        revision,
+        format,
+        rows: ready.rows,
+        columns: ready.columns
+      });
+    } catch (error) {
+      if (error instanceof DetachedBridgeRequestError && error.dispatched) {
+        const scheduledClose = this.scheduleExactDataExportClose(sessionId, revision, exportId);
+        const cleanup = this.trackExportWork(
+          error.settlement.then(async () => {
+            try {
+              await this.awaitExactDataExportClose(scheduledClose, sessionId, revision, exportId);
+            } catch (cleanupError) {
+              await this.recoverFromExportCleanupFailure(sessionId, cleanupError);
+            }
+          })
+        );
+        throw new DetachedBridgeRequestError(error.message, error.reason, true, cleanup);
+      }
+      failure = error;
+    }
+
+    try {
+      const scheduledClose = this.scheduleExactDataExportClose(sessionId, revision, exportId);
+      await this.awaitExactDataExportClose(scheduledClose, sessionId, revision, exportId);
+    } catch (cleanupError) {
+      await this.recoverFromExportCleanupFailure(sessionId, cleanupError);
+      if (failure !== undefined) {
+        throw new AggregateError(
+          [failure, cleanupError],
+          "Interactive R export failed and its private terminal artifact could not be closed safely."
+        );
+      }
+      throw cleanupError;
+    }
+    if (failure !== undefined) throw failure;
+    if (!result) throw new Error("The interactive R session did not return a completed data export.");
+    return result;
+  }
+
   async close(sessionId: string, options: RKernelRequestOptions = {}): Promise<void> {
     if (this.retiredSessions.has(sessionId)) return;
     this.assertActive();
@@ -711,6 +840,65 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     }
   }
 
+  private scheduleExactDataExportClose(
+    sessionId: string,
+    revision: number,
+    exportId: string
+  ): ScheduledRequest<RKernelResponse> {
+    return this.scheduleKernelDuringDisposal(this.request("closeDataExport", { sessionId, revision, exportId }));
+  }
+
+  private async awaitExactDataExportClose(
+    scheduled: ScheduledRequest<RKernelResponse>,
+    sessionId: string,
+    revision: number,
+    exportId: string
+  ): Promise<void> {
+    const response = await this.waitForScheduled(scheduled, {
+      timeoutMs: this.dataExportCleanupTimeoutMs
+    });
+    if (response.kind === "error") {
+      if (response.code === "unknown_session") {
+        this.retireSession(sessionId);
+        this.publishInvalidation();
+        return;
+      }
+      throw new RKernelDiagnosticError(response);
+    }
+    if (
+      response.kind !== "dataExportClosed" ||
+      response.sessionId !== sessionId ||
+      response.revision !== revision ||
+      response.exportId !== exportId
+    ) {
+      throw new Error("The interactive R session returned a mismatched data-export cleanup response.");
+    }
+  }
+
+  private async recoverFromExportCleanupFailure(sessionId: string, cleanupError: unknown): Promise<void> {
+    const scheduledClose = this.scheduleKernelDuringDisposal(this.request("closeSession", { sessionId }));
+    try {
+      if (cleanupError instanceof DetachedBridgeRequestError && cleanupError.dispatched) {
+        await cleanupError.settlement;
+      }
+      const response = await this.waitForScheduled(scheduledClose, { timeoutMs: this.dataExportCleanupTimeoutMs });
+      if (!isCorrelatedClose(response, sessionId)) {
+        if (response.kind === "error") throw new RKernelDiagnosticError(response);
+        throw new Error("The interactive R session returned a mismatched terminal export-cleanup response.");
+      }
+      this.retireSession(sessionId);
+      this.publishInvalidation();
+    } catch (terminalError) {
+      this.exportCleanupFailures.push(
+        new AggregateError(
+          [cleanupError, terminalError],
+          "Open Wrangler could not close a private interactive R export or its exact terminal session."
+        )
+      );
+      this.publishInvalidation();
+    }
+  }
+
   private async cleanupAbandonedOpen(sessionId: string, candidateMayExist: boolean): Promise<void> {
     if (!candidateMayExist) {
       this.retireSession(sessionId);
@@ -792,7 +980,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
   }
 
   private async disposeOnce(): Promise<void> {
-    const pending = this.queueTail;
+    const pending = Promise.all([settle(this.queueTail), this.settleActiveExportWork()]).then(() => undefined);
     if (!(await settleWithin(pending, this.disposalSettlementMs))) {
       this.deferCleanup(settle(pending).then(() => this.runTerminalCleanup()));
       throw new Error(
@@ -848,7 +1036,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
     } catch (error) {
       this.deferCleanup(
         terminalSettlement.then((lateFailures) =>
-          this.finishHostCleanup([...lateFailures, ...this.takeCleanupFailures()])
+          this.finishHostCleanup([...lateFailures, ...this.takeAllCleanupFailures()])
         )
       );
       throw new Error(
@@ -856,7 +1044,7 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
         { cause: error }
       );
     }
-    await this.finishHostCleanup([...failures, ...this.takeCleanupFailures()]);
+    await this.finishHostCleanup([...failures, ...this.takeAllCleanupFailures()]);
   }
 
   private scheduleKernelDuringDisposal(request: RKernelRequest): ScheduledRequest<RKernelResponse> {
@@ -984,6 +1172,26 @@ export class RInteractiveSessionTransport implements RKernelBridgeTransport {
 
   private takeCleanupFailures(): unknown[] {
     return this.artifactCleanupFailures.splice(0);
+  }
+
+  private takeAllCleanupFailures(): unknown[] {
+    return [...this.takeCleanupFailures(), ...this.exportCleanupFailures.splice(0)];
+  }
+
+  private trackExportWork<T>(work: Promise<T>): Promise<T> {
+    this.activeExportWork.add(work);
+    void work
+      .finally(() => {
+        this.activeExportWork.delete(work);
+      })
+      .catch(() => undefined);
+    return work;
+  }
+
+  private async settleActiveExportWork(): Promise<void> {
+    while (this.activeExportWork.size > 0) {
+      await Promise.allSettled([...this.activeExportWork]);
+    }
   }
 
   private retireSession(sessionId: string): void {
