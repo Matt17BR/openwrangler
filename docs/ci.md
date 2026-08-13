@@ -29,6 +29,28 @@ restored from a versioned cache, so an unchanged dependency set does not compile
 
 Documentation-only changes run just the source checks. Changes limited to shipped documents such as the README also build the VSIX so the Marketplace package can be checked.
 
+Ready pull requests limited to release infrastructure use a separate fail-closed tier. The pull request must change at
+least one registered release script or focused release test exported by
+`scripts/ci-path-classification.mjs`. It may additionally change only `CHANGELOG.md`, `README.md`, `docs/ci.md`,
+`docs/media-gallery.md`, `docs/media-spec-v1.2.md`, `docs/releasing.md`, or `docs/testing.md`. Documentation by itself
+cannot select this tier. An unlisted path, a classifier or shared workflow change, a product/runtime path, or one of
+the registered shared script dependencies falls back to the complete matrix.
+In particular, `.github/workflows/candidate-acceptance.yml` forces full CI until its semantic inspector owns an exact
+per-job step inventory; `.github/workflows/release.yml` and `.github/workflows/stable-release.yml` likewise force full
+CI while publication-permissioned jobs lack exact step inventories. Their inspectors and focused tests remain eligible
+and run in the narrow job.
+`.github/workflows/open-vsx-promotion.yml` also forces full CI until its inspector rejects unknown steps; its parser and
+focused tests still run in the narrow job. `azure-pipelines-marketplace.yml` likewise forces full CI because changing
+it together with its hash-owning inspector could otherwise bless a new baseline. No workflow or pipeline YAML is
+eligible until an exact inventory is enforced independently of every allowlisted hash owner.
+
+That focused tier still runs `Fast feedback`, a canonical VSIX build and inspection, the exact release transaction
+and immutable-media tests, and real JavaScript/TypeScript CodeQL analysis. The required Python CodeQL, macOS/Windows
+runtime, and Windows dependency-guard check names remain present through no-work carrier cells. Python, R, UI,
+extension-host, and native editor execution remains reserved for a product change or the release-candidate boundary.
+The focused job also executes the remote-Jupyter lock and editor-diagnostic artifact contracts because release
+workflows depend on those boundaries; changing either test itself remains a full-matrix change.
+
 The `validate` job reads the result of every required job. Missing, cancelled, failed, or unexpectedly skipped work keeps the pull request blocked. Cross-platform and CodeQL checks keep their stable names because the repository ruleset requires them directly.
 
 Superseded pull-request runs are cancelled. Release jobs are never cancelled this way.

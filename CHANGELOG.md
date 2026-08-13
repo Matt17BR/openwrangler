@@ -6,6 +6,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Ready pull requests limited to registered release scripts, their focused tests, and reviewed adjunct documentation
+  now run a fail-closed release-infrastructure tier: fast feedback, canonical VSIX
+  verification, fixed release/media contracts, and real JavaScript/TypeScript CodeQL. Unlisted, mixed, classifier,
+  shared candidate-workflow, product/runtime, and shared-dependency changes retain the full matrix, while carrier
+  cells preserve every required check name.
 - Preview and stable Remote SSH jobs now start from the packaged artifact in parallel with the candidate
   matrix, saving about three minutes of successful release wall time. Publication still requires the package, every
   matrix lane, and Remote SSH, so no evidence was removed. On a candidate failure, Remote SSH may finish to preserve

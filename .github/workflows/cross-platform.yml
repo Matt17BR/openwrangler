@@ -27,6 +27,7 @@ jobs:
       draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
       package_only: ${{ steps.classify.outputs.package_only }}
+      release_infrastructure_only: ${{ steps.classify.outputs.release_infrastructure_only }}
       full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
     steps:
       - uses: actions/checkout@v6
@@ -73,6 +74,8 @@ jobs:
              needs.classify.outputs.lightweight_only != 'false') ||
             (needs.classify.outputs.package_only != 'true' &&
              needs.classify.outputs.package_only != 'false') ||
+            (needs.classify.outputs.release_infrastructure_only != 'true' &&
+             needs.classify.outputs.release_infrastructure_only != 'false') ||
             (needs.classify.outputs.full_matrix_required != 'true' &&
              needs.classify.outputs.full_matrix_required != 'false') ||
             (needs.classify.outputs.lightweight_only == 'true' &&
@@ -91,17 +94,25 @@ jobs:
             (needs.classify.outputs.dependency_lock_only == 'true' &&
              (needs.classify.outputs.documentation_only == 'true' ||
               needs.classify.outputs.package_only == 'true')) ||
+            (needs.classify.outputs.release_infrastructure_only == 'true' &&
+             (needs.classify.outputs.benchmark_harness_only == 'true' ||
+              needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.package_only == 'true' ||
+              needs.classify.outputs.dependency_lock_only == 'true' ||
+              needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'true' &&
              (needs.classify.outputs.benchmark_harness_only == 'true' ||
               needs.classify.outputs.documentation_only == 'true' ||
               needs.classify.outputs.package_only == 'true' ||
               needs.classify.outputs.dependency_lock_only == 'true' ||
+              needs.classify.outputs.release_infrastructure_only == 'true' ||
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'false' &&
              needs.classify.outputs.benchmark_harness_only == 'false' &&
              needs.classify.outputs.documentation_only == 'false' &&
              needs.classify.outputs.package_only == 'false' &&
              needs.classify.outputs.dependency_lock_only == 'false' &&
+             needs.classify.outputs.release_infrastructure_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false')
           }}
         run: exit 1
@@ -169,6 +180,8 @@ jobs:
              needs.classify.outputs.lightweight_only != 'false') ||
             (needs.classify.outputs.package_only != 'true' &&
              needs.classify.outputs.package_only != 'false') ||
+            (needs.classify.outputs.release_infrastructure_only != 'true' &&
+             needs.classify.outputs.release_infrastructure_only != 'false') ||
             (needs.classify.outputs.full_matrix_required != 'true' &&
              needs.classify.outputs.full_matrix_required != 'false') ||
             (needs.classify.outputs.lightweight_only == 'true' &&
@@ -187,17 +200,25 @@ jobs:
             (needs.classify.outputs.dependency_lock_only == 'true' &&
              (needs.classify.outputs.documentation_only == 'true' ||
               needs.classify.outputs.package_only == 'true')) ||
+            (needs.classify.outputs.release_infrastructure_only == 'true' &&
+             (needs.classify.outputs.benchmark_harness_only == 'true' ||
+              needs.classify.outputs.documentation_only == 'true' ||
+              needs.classify.outputs.package_only == 'true' ||
+              needs.classify.outputs.dependency_lock_only == 'true' ||
+              needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'true' &&
              (needs.classify.outputs.benchmark_harness_only == 'true' ||
               needs.classify.outputs.documentation_only == 'true' ||
               needs.classify.outputs.package_only == 'true' ||
               needs.classify.outputs.dependency_lock_only == 'true' ||
+              needs.classify.outputs.release_infrastructure_only == 'true' ||
               needs.classify.outputs.draft_pull_request == 'true')) ||
             (needs.classify.outputs.full_matrix_required == 'false' &&
              needs.classify.outputs.benchmark_harness_only == 'false' &&
              needs.classify.outputs.documentation_only == 'false' &&
              needs.classify.outputs.package_only == 'false' &&
              needs.classify.outputs.dependency_lock_only == 'false' &&
+             needs.classify.outputs.release_infrastructure_only == 'false' &&
              needs.classify.outputs.draft_pull_request == 'false')
           }}
         run: exit 1

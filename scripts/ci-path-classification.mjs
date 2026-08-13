@@ -21,6 +21,88 @@ export const BENCHMARK_HARNESS_PATHS = Object.freeze([
   "src/test/extensionHost/dataWranglerComparisonNotebookTrial.ts"
 ]);
 const BENCHMARK_HARNESS_PATH_SET = new Set(BENCHMARK_HARNESS_PATHS);
+export const RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS = Object.freeze([
+  "scripts/candidate-acceptance-workflow.mjs",
+  "scripts/canonical-release-assets.mjs",
+  "scripts/create-canonical-release-artifact.mjs",
+  "scripts/download-canonical-github-release.mjs",
+  "scripts/github-release-publisher.mjs",
+  "scripts/marketplace-identity-profile.mjs",
+  "scripts/marketplace-promotion-workflow.mjs",
+  "scripts/marketplace-release-intake.mjs",
+  "scripts/open-vsx-promotion-workflow.mjs",
+  "scripts/package-current-channel.mjs",
+  "scripts/prepare-stable-candidate-tag.mjs",
+  "scripts/preview-release-workflow.mjs",
+  "scripts/public-media-contract.mjs",
+  "scripts/public-media-inventory.mjs",
+  "scripts/public-media-surface-contract.mjs",
+  "scripts/public-repository-metadata.mjs",
+  "scripts/publish-github-preview-release.mjs",
+  "scripts/publish-github-stable-release.mjs",
+  "scripts/push-stable-release-tag.mjs",
+  "scripts/registry-release-source.mjs",
+  "scripts/release-diagnostic-order.mjs",
+  "scripts/release-documents.mjs",
+  "scripts/release-metadata.mjs",
+  "scripts/release-notes.mjs",
+  "scripts/release-readiness.mjs",
+  "scripts/release-tag-publisher.mjs",
+  "scripts/stable-release-workflow.mjs",
+  "scripts/verify-canonical-release-artifact.mjs",
+  "scripts/verify-marketplace-publication.mjs",
+  "scripts/verify-open-vsx-release.mjs",
+  "scripts/verify-preview-release-artifact.mjs",
+  "scripts/verify-public-media-surfaces.mjs",
+  "scripts/verify-registry-release-artifact.mjs"
+]);
+export const RELEASE_INFRASTRUCTURE_TEST_PATHS = Object.freeze([
+  "scripts/candidate-acceptance-workflow.test.mjs",
+  "scripts/create-canonical-release-artifact.test.mjs",
+  "scripts/download-canonical-github-release.test.mjs",
+  "scripts/marketplace-identity-profile.test.mjs",
+  "scripts/marketplace-promotion-workflow.test.mjs",
+  "scripts/marketplace-release-intake.test.mjs",
+  "scripts/open-vsx-promotion-workflow.test.mjs",
+  "scripts/package-current-channel.test.mjs",
+  "scripts/prepare-stable-candidate-tag.test.mjs",
+  "scripts/public-media-surfaces.test.mjs",
+  "scripts/public-repository-metadata.test.mjs",
+  "scripts/publish-github-stable-release.test.mjs",
+  "scripts/push-stable-release-tag.test.mjs",
+  "scripts/readme-media.test.mjs",
+  "scripts/registry-release-source.test.mjs",
+  "scripts/release-readiness.test.mjs",
+  "scripts/stable-release-workflow.test.mjs",
+  "scripts/verify-canonical-release-artifact.test.mjs",
+  "scripts/verify-marketplace-publication.test.mjs",
+  "scripts/verify-open-vsx-release.test.mjs",
+  "scripts/verify-registry-release-artifact.test.mjs"
+]);
+export const RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS = Object.freeze([
+  "CHANGELOG.md",
+  "README.md",
+  "docs/ci.md",
+  "docs/media-gallery.md",
+  "docs/media-spec-v1.2.md",
+  "docs/releasing.md",
+  "docs/testing.md"
+]);
+export const RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS = Object.freeze([
+  "scripts/data-wrangler-comparison-report.mjs",
+  "scripts/run-installed-performance.mjs",
+  "scripts/strict-json.mjs",
+  "scripts/vsix-archive.mjs",
+  "scripts/vsix-contents.mjs"
+]);
+const RELEASE_INFRASTRUCTURE_PRIMARY_PATH_SET = new Set([
+  ...RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS,
+  ...RELEASE_INFRASTRUCTURE_TEST_PATHS
+]);
+const RELEASE_INFRASTRUCTURE_ALLOWED_PATH_SET = new Set([
+  ...RELEASE_INFRASTRUCTURE_PRIMARY_PATH_SET,
+  ...RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS
+]);
 
 function isCanonicalRepositoryPath(path) {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) return false;
@@ -71,6 +153,16 @@ export function isBenchmarkHarnessOnlyChangeSet({ eventName, changedPaths }) {
   );
 }
 
+export function isReleaseInfrastructureOnlyChangeSet({ eventName, changedPaths }) {
+  if (!Array.isArray(changedPaths)) throw new TypeError("changedPaths must be an array.");
+  if (eventName !== "pull_request") return false;
+  return (
+    changedPaths.length > 0 &&
+    changedPaths.some((path) => RELEASE_INFRASTRUCTURE_PRIMARY_PATH_SET.has(path)) &&
+    changedPaths.every((path) => isCanonicalRepositoryPath(path) && RELEASE_INFRASTRUCTURE_ALLOWED_PATH_SET.has(path))
+  );
+}
+
 export function parsePullRequestDraft({ eventName, value }) {
   if (eventName === "pull_request") {
     if (value === "true") return true;
@@ -89,15 +181,27 @@ export function classifyCiChange({ eventName, changedPaths, pullRequestDraft }) 
   const documentationOnly = isDocumentationOnlyChangeSet({ eventName, changedPaths });
   const packageOnly = isPackageOnlyChangeSet({ eventName, changedPaths });
   const dependencyLockOnly = isDependencyLockOnlyChangeSet({ eventName, changedPaths });
+  const releaseInfrastructureOnly =
+    !draftPullRequest &&
+    !documentationOnly &&
+    !packageOnly &&
+    !dependencyLockOnly &&
+    isReleaseInfrastructureOnlyChangeSet({ eventName, changedPaths });
   const benchmarkHarnessOnly =
     !draftPullRequest &&
     !documentationOnly &&
     !packageOnly &&
     !dependencyLockOnly &&
+    !releaseInfrastructureOnly &&
     isBenchmarkHarnessOnlyChangeSet({ eventName, changedPaths });
   const lightweightOnly = documentationOnly || draftPullRequest;
   const fullMatrixRequired =
-    !benchmarkHarnessOnly && !documentationOnly && !packageOnly && !dependencyLockOnly && !draftPullRequest;
+    !benchmarkHarnessOnly &&
+    !documentationOnly &&
+    !packageOnly &&
+    !dependencyLockOnly &&
+    !releaseInfrastructureOnly &&
+    !draftPullRequest;
   return {
     benchmarkHarnessOnly,
     dependencyLockOnly,
@@ -105,6 +209,7 @@ export function classifyCiChange({ eventName, changedPaths, pullRequestDraft }) 
     draftPullRequest,
     lightweightOnly,
     packageOnly,
+    releaseInfrastructureOnly,
     fullMatrixRequired
   };
 }
@@ -168,6 +273,7 @@ function main(environment) {
       `draft_pull_request=${classification.draftPullRequest}`,
       `lightweight_only=${classification.lightweightOnly}`,
       `package_only=${classification.packageOnly}`,
+      `release_infrastructure_only=${classification.releaseInfrastructureOnly}`,
       `full_matrix_required=${classification.fullMatrixRequired}`,
       ""
     ].join("\n"),

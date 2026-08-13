@@ -26,6 +26,7 @@ jobs:
       draft_pull_request: ${{ steps.classify.outputs.draft_pull_request }}
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
       package_only: ${{ steps.classify.outputs.package_only }}
+      release_infrastructure_only: ${{ steps.classify.outputs.release_infrastructure_only }}
       full_matrix_required: ${{ steps.classify.outputs.full_matrix_required }}
     steps:
       - uses: actions/checkout@v6
@@ -270,6 +271,54 @@ jobs:
         run: npm audit
       - name: TypeScript and webview unit tests
         run: npm run test:ts -- --exclude src/test/notebookVariableDiscovery.python.test.ts
+
+  release-infrastructure:
+    name: Release infrastructure contracts
+    needs: [classify, fast-feedback]
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event_name == 'pull_request' &&
+        needs.classify.result == 'success' &&
+        needs.fast-feedback.result == 'success' &&
+        needs.classify.outputs.release_infrastructure_only == 'true' &&
+        needs.classify.outputs.draft_pull_request == 'false'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Release transaction contracts
+        run: >-
+          node --test --test-concurrency=4
+          scripts/candidate-acceptance-workflow.test.mjs
+          scripts/create-canonical-release-artifact.test.mjs
+          scripts/download-canonical-github-release.test.mjs
+          scripts/editor-acceptance-artifact.test.mjs
+          scripts/marketplace-identity-profile.test.mjs
+          scripts/marketplace-promotion-workflow.test.mjs
+          scripts/marketplace-release-intake.test.mjs
+          scripts/open-vsx-promotion-workflow.test.mjs
+          scripts/package-current-channel.test.mjs
+          scripts/prepare-stable-candidate-tag.test.mjs
+          scripts/public-repository-metadata.test.mjs
+          scripts/publish-github-stable-release.test.mjs
+          scripts/push-stable-release-tag.test.mjs
+          scripts/registry-release-source.test.mjs
+          scripts/release-readiness.test.mjs
+          scripts/remote-jupyter-lock.test.mjs
+          scripts/stable-release-workflow.test.mjs
+          scripts/verify-canonical-release-artifact.test.mjs
+          scripts/verify-marketplace-publication.test.mjs
+          scripts/verify-open-vsx-release.test.mjs
+          scripts/verify-registry-release-artifact.test.mjs
+      - name: Immutable release-media contracts
+        run: npm run test:scripts:media
 
   linux-packaged-editor:
     name: Packaged VS Code (Linux)
@@ -615,6 +664,7 @@ jobs:
       - visual-accessibility
       - production-audits
       - dependency-lock-validation
+      - release-infrastructure
       - canonical-vsix
       - linux-packaged-editor
       - coverage
@@ -639,6 +689,7 @@ jobs:
           DRAFT_PULL_REQUEST: ${{ needs.classify.outputs.draft_pull_request }}
           LIGHTWEIGHT_ONLY: ${{ needs.classify.outputs.lightweight_only }}
           PACKAGE_ONLY: ${{ needs.classify.outputs.package_only }}
+          RELEASE_INFRASTRUCTURE_ONLY: ${{ needs.classify.outputs.release_infrastructure_only }}
           FULL_MATRIX_REQUIRED: ${{ needs.classify.outputs.full_matrix_required }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           FAST_FEEDBACK_RESULT: ${{ needs.fast-feedback.result }}
@@ -647,6 +698,7 @@ jobs:
           VISUAL_ACCESSIBILITY_RESULT: ${{ needs.visual-accessibility.result }}
           PRODUCTION_AUDITS_RESULT: ${{ needs.production-audits.result }}
           DEPENDENCY_LOCK_VALIDATION_RESULT: ${{ needs.dependency-lock-validation.result }}
+          RELEASE_INFRASTRUCTURE_RESULT: ${{ needs.release-infrastructure.result }}
           CANONICAL_VSIX_RESULT: ${{ needs.canonical-vsix.result }}
           LINUX_PACKAGED_EDITOR_RESULT: ${{ needs.linux-packaged-editor.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
