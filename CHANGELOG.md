@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.5] - 2026-08-13
+
 ### Changed
 
 - Preview and stable candidate acceptance now runs Python, local R, and remote R Jupyter in three parallel cells.
@@ -11,7 +13,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   kernel, native R/Quarto tooling, and the local Cursor journey stay in the local cell. Candidate matrices no longer
   cancel sibling cells after a failure, so each editor and Docker owner can finish cleanup and publish its available
   diagnostics. This removes the remote R journey from the local R cell's serial path without removing any acceptance
-  phase; the next candidate run will provide the hosted timing result.
+  phase.
 - Ready pull requests limited to registered release scripts, their focused tests, and reviewed adjunct documentation
   now run a fail-closed release-infrastructure tier: fast feedback, canonical VSIX
   verification, fixed release/media contracts, and real JavaScript/TypeScript CodeQL. Unlisted, mixed, classifier,
