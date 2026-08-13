@@ -692,6 +692,8 @@ export async function createCanonicalReleaseArtifact({
     packagedPythonVersionFile: packaged.packagedPythonVersionFile,
     packagedReadme: packaged.packagedReadme,
     trackedEvidencePaths: sourceBefore.trackedPaths,
+    performanceReportFiles: sourceBefore.files,
+    candidateSha256: snapshot.sha256,
     vsixManifest: packaged.vsixManifest
   });
   if (problems.length > 0) {
