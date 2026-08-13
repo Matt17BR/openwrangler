@@ -4,6 +4,7 @@ import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mj
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const DOWNLOAD = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
+const SETUP_R_DEPENDENCIES = "r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const CALL_PATH = "./.github/workflows/candidate-acceptance.yml";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
 const EVENT_SHA = "${{ github.sha }}";
@@ -17,6 +18,16 @@ const MATRIX = [
   { name: "Installed performance", lane: "performance", os: "ubuntu-24.04", python: "3.12" },
   { name: "Released Jupyter", lane: "jupyter", os: "ubuntu-24.04", python: "3.12" }
 ];
+const R_CONTRACT_EXTRA_PACKAGES = [
+  "any::jsonlite",
+  "any::tibble",
+  "any::readr",
+  "any::dplyr",
+  "any::data.table",
+  "any::bit64",
+  "any::collapse",
+  "any::nanoparquet"
+].join("\n");
 
 function record(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -409,8 +420,17 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   const jupyterSteps = steps(workflow.jobs.jupyter);
   const setupJava = jupyterSteps.find((step) => step?.uses?.startsWith("actions/setup-java@"));
   const setupR = jupyterSteps.find((step) => step?.uses?.startsWith("r-lib/actions/setup-r@"));
+  const setupRDependencies = Object.values(workflow.jobs).flatMap((job) =>
+    steps(job).filter((step) => step?.uses?.startsWith("r-lib/actions/setup-r-dependencies@"))
+  );
+  const rDependencies = setupRDependencies[0];
+  const jupyterRDependencies = jupyterSteps.filter((step) =>
+    step?.uses?.startsWith("r-lib/actions/setup-r-dependencies@")
+  );
   const rscript = jupyterSteps.find((step) => step?.id === "rscript");
-  const rContract = jupyterSteps.find((step) => command(step?.run) === "npm run test:r-contract");
+  const rContracts = jupyterSteps.filter((step) => command(step?.run) === "npm run test:r-contract");
+  const rContract = rContracts[0];
+  const npmCi = jupyterSteps.find((step) => command(step?.run) === "npm ci");
   const remoteLockCheck = jupyterSteps.find((step) => command(step?.run) === "npm run lock:remote-jupyter:check");
   const remoteAudit = jupyterSteps.find((step) => command(step?.run) === "npm run audit:remote-jupyter");
   if (
@@ -441,6 +461,40 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     )
   ) {
     problems.push("jupyter must run separate fail-fast Python and R cells with full local and remote acceptance.");
+  }
+  if (
+    setupRDependencies.length !== 1 ||
+    jupyterRDependencies.length !== 1 ||
+    rDependencies !== jupyterRDependencies[0] ||
+    !exactKeys(rDependencies, ["name", "if", "uses", "with"]) ||
+    rDependencies?.name !== "Resolve R contract packages" ||
+    rDependencies?.if !== "${{ matrix.phase == 'r' }}" ||
+    rDependencies?.uses !== SETUP_R_DEPENDENCIES ||
+    !exactKeys(rDependencies?.with, [
+      "packages",
+      "extra-packages",
+      "dependencies",
+      "cache",
+      "cache-version",
+      "install-pandoc",
+      "install-quarto"
+    ]) ||
+    rDependencies.with.packages !== "" ||
+    rDependencies.with["extra-packages"] !== R_CONTRACT_EXTRA_PACKAGES ||
+    rDependencies.with.dependencies !== '"hard"' ||
+    rDependencies.with.cache !== true ||
+    rDependencies.with["cache-version"] !== "native-r-contract-v1" ||
+    rDependencies.with["install-pandoc"] !== false ||
+    rDependencies.with["install-quarto"] !== false ||
+    rContracts.length !== 1 ||
+    !exactKeys(rContract, ["run", "if", "env"]) ||
+    !exactKeys(rContract?.env, ["RSCRIPT"]) ||
+    rContract.env.RSCRIPT !== "${{ steps.rscript.outputs.executable }}" ||
+    jupyterSteps.indexOf(rDependencies) !== jupyterSteps.indexOf(npmCi) + 1 ||
+    jupyterSteps.indexOf(rContract) !== jupyterSteps.indexOf(rDependencies) + 1 ||
+    jupyterSteps.some((step) => /\binstall\.packages\s*\(/u.test(command(step?.run)))
+  ) {
+    problems.push("jupyter R must resolve the exact contract dependencies before its unchanged contract run.");
   }
   inspectPackagedRunner(
     "jupyter",

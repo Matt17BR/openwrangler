@@ -5,6 +5,8 @@ import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { inspectCandidateAcceptanceWorkflow } from "./candidate-acceptance-workflow.mjs";
 
 const source = readFileSync(new URL("../.github/workflows/candidate-acceptance.yml", import.meta.url), "utf8");
+const findRDependencies = (workflow) =>
+  workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r-dependencies@"));
 
 test("candidate acceptance shares one fail-closed artifact contract across release channels", () => {
   assert.deepEqual(inspectCandidateAcceptanceWorkflow(source), []);
@@ -54,6 +56,49 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
     (workflow) => {
       workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).if =
         "${{ matrix.phase == 'python' }}";
+    },
+    (workflow) => {
+      findRDependencies(workflow).uses = "r-lib/actions/setup-r-dependencies@0000000000000000000000000000000000000000";
+    },
+    (workflow) => {
+      findRDependencies(workflow).with.packages = "any::jsonlite";
+    },
+    (workflow) => {
+      findRDependencies(workflow).with["extra-packages"] = findRDependencies(workflow).with["extra-packages"].replace(
+        "any::nanoparquet",
+        "any::arrow"
+      );
+    },
+    (workflow) => {
+      findRDependencies(workflow).with.dependencies = '"all"';
+    },
+    (workflow) => {
+      findRDependencies(workflow).with.cache = false;
+    },
+    (workflow) => {
+      findRDependencies(workflow).with["cache-version"] = "native-r-contract-v2";
+    },
+    (workflow) => {
+      findRDependencies(workflow).with["install-pandoc"] = true;
+    },
+    (workflow) => {
+      findRDependencies(workflow).with["install-quarto"] = true;
+    },
+    (workflow) => {
+      findRDependencies(workflow).if = "${{ matrix.phase == 'python' }}";
+    },
+    (workflow) => {
+      workflow.jobs.platform.steps.push(structuredClone(findRDependencies(workflow)));
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.run === "npm run test:r-contract").env.RSCRIPT = "Rscript";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.push({
+        name: "Legacy R package installer",
+        if: "${{ matrix.phase == 'r' }}",
+        run: "Rscript --vanilla -e 'utils::install.packages (\"jsonlite\")'"
+      });
     },
     (workflow) => {
       workflow.jobs.platform.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).uses =
