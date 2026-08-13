@@ -176,6 +176,193 @@ test("an exhausted API 403 remains a pending-class failure without downloading a
   assert.deepEqual(readdirSync(parent), []);
 });
 
+test("retries one rejected metadata request before a response and then downloads the exact release", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-metadata-transport-retry-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  const output = join(parent, "canonical-release");
+  const secret = "https://signed.invalid/metadata?token=must-not-survive";
+  const success = successfulFetch();
+  let metadataCalls = 0;
+  let sleeps = 0;
+
+  await downloadCanonicalGithubRelease({
+    attempts: 2,
+    delayMs: 1,
+    fetchImpl: (...args) => {
+      if (args[0].startsWith("https://api.github.com/") && metadataCalls++ === 0) {
+        return Promise.reject(new Error(secret));
+      }
+      return success(...args);
+    },
+    outputDirectory: output,
+    prerelease: false,
+    releaseTag,
+    sleep: async () => {
+      sleeps += 1;
+      assert.deepEqual(readdirSync(parent), []);
+    }
+  });
+
+  assert.equal(metadataCalls, 2);
+  assert.equal(sleeps, 1);
+  assert.deepEqual(readdirSync(output).sort(), [...CANONICAL_RELEASE_FILES].sort());
+});
+
+test("restarts the anonymous read transaction after an asset request rejects before a response", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-asset-transport-retry-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  const output = join(parent, "canonical-release");
+  const requests = [];
+  const success = successfulFetch();
+  let rejectProvenance = true;
+  let sleeps = 0;
+
+  await downloadCanonicalGithubRelease({
+    attempts: 2,
+    delayMs: 1,
+    fetchImpl: (...args) => {
+      const url = args[0];
+      requests.push(url);
+      if (url.endsWith("/openwrangler.vsix.provenance.json") && rejectProvenance) {
+        rejectProvenance = false;
+        return Promise.reject(new Error("https://signed.invalid/asset?credential=must-not-survive"));
+      }
+      return success(...args);
+    },
+    outputDirectory: output,
+    prerelease: false,
+    releaseTag,
+    sleep: async () => {
+      sleeps += 1;
+      assert.deepEqual(readdirSync(parent), []);
+    }
+  });
+
+  assert.equal(sleeps, 1);
+  assert.equal(requests.filter((url) => url.startsWith("https://api.github.com/")).length, 2);
+  assert.equal(requests.filter((url) => url.endsWith("/openwrangler.vsix")).length, 2);
+  assert.equal(requests.filter((url) => url.endsWith("/openwrangler.vsix.provenance.json")).length, 2);
+  assert.equal(requests.filter((url) => url.endsWith("/openwrangler.vsix.sha256")).length, 1);
+  assert.deepEqual(readdirSync(output).sort(), [...CANONICAL_RELEASE_FILES].sort());
+});
+
+test("exhausts rejected pre-response requests with a fixed redacted failure and no output", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-transport-exhausted-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  const secret = "https://signed.invalid/release?credential=must-not-survive";
+  let calls = 0;
+  let sleeps = 0;
+
+  await assert.rejects(
+    downloadCanonicalGithubRelease({
+      attempts: 3,
+      delayMs: 1,
+      fetchImpl: () => {
+        calls += 1;
+        return Promise.reject(new Error(secret));
+      },
+      outputDirectory: join(parent, "canonical-release"),
+      prerelease: false,
+      releaseTag,
+      sleep: async () => {
+        sleeps += 1;
+        assert.deepEqual(readdirSync(parent), []);
+      }
+    }),
+    (error) => {
+      assert.equal(error instanceof GithubReleasePendingError, true);
+      assert.equal(error.message, "GitHub release transport failed before a response was received.");
+      assert.equal(Object.hasOwn(error, "cause"), false);
+      assert.equal(String(error.stack).includes(secret), false);
+      return true;
+    }
+  );
+
+  assert.equal(calls, 3);
+  assert.equal(sleeps, 2);
+  assert.deepEqual(readdirSync(parent), []);
+});
+
+test("does not retry a direct synchronous metadata or asset fetch failure", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-sync-fetch-failure-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  const success = successfulFetch();
+
+  for (const stage of ["metadata", "asset"]) {
+    const sentinel = new Error(`direct synchronous ${stage} fetch failure`);
+    let metadataCalls = 0;
+    let assetCalls = 0;
+    await assert.rejects(
+      downloadCanonicalGithubRelease({
+        attempts: 3,
+        fetchImpl: (...args) => {
+          if (args[0].startsWith("https://api.github.com/")) {
+            metadataCalls += 1;
+            if (stage === "metadata") {
+              throw sentinel;
+            }
+            return success(...args);
+          }
+          assetCalls += 1;
+          throw sentinel;
+        },
+        outputDirectory: join(parent, `canonical-release-${stage}`),
+        prerelease: false,
+        releaseTag,
+        sleep: async () => assert.fail("a synchronous fetch failure must not be retried")
+      }),
+      (error) => error === sentinel
+    );
+    assert.equal(metadataCalls, 1);
+    assert.equal(assetCalls, stage === "asset" ? 1 : 0);
+  }
+
+  assert.deepEqual(readdirSync(parent), []);
+});
+
+test("does not retry metadata or asset body failure after an HTTP response is acquired", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-response-body-failure-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  const success = successfulFetch();
+
+  for (const stage of ["metadata", "asset"]) {
+    const sentinel = new Error(`accepted ${stage} response body failed`);
+    let metadataCalls = 0;
+    let assetCalls = 0;
+    const failingResponse = () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(sentinel);
+          }
+        }),
+        { status: 200 }
+      );
+    await assert.rejects(
+      downloadCanonicalGithubRelease({
+        attempts: 3,
+        fetchImpl: (...args) => {
+          if (args[0].startsWith("https://api.github.com/")) {
+            metadataCalls += 1;
+            return stage === "metadata" ? failingResponse() : success(...args);
+          }
+          assetCalls += 1;
+          return failingResponse();
+        },
+        outputDirectory: join(parent, `canonical-release-${stage}`),
+        prerelease: false,
+        releaseTag,
+        sleep: async () => assert.fail("an acquired response-body failure must not be retried")
+      }),
+      (error) => error === sentinel
+    );
+    assert.equal(metadataCalls, 1);
+    assert.equal(assetCalls, stage === "asset" ? 1 : 0);
+  }
+
+  assert.deepEqual(readdirSync(parent), []);
+});
+
 test("non-pending API 4xx failures remain fatal and are not retried", async (context) => {
   const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-fatal-4xx-")));
   context.after(() => rmSync(parent, { force: true, recursive: true }));

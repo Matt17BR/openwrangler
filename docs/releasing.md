@@ -282,7 +282,15 @@ metadata, publisher, checksum, download, and gallery icon. Stable and preview pu
 `openwrangler-release-publication` queue, so releases are not displaced by newer runs. If Open VSX is unavailable,
 the exact GitHub release remains available for the recovery workflow; nothing is rebuilt or replaced.
 
-The real lightweight-tag push starts `azure-pipelines-marketplace.yml` before GitHub Release creation. The Azure pipeline waits for that release to become public, downloads the same three assets, and may publish only the accepted VSIX to Microsoft Marketplace. Creating only a GitHub Release through the API is not accepted as a substitute for this Git protocol event.
+The real lightweight-tag push starts `azure-pipelines-marketplace.yml` before GitHub Release creation. The Azure
+pipeline waits for that release to become public, downloads the same three assets, and may publish only the accepted
+VSIX to Microsoft Marketplace. Anonymous metadata and asset requests that reject before returning an HTTP response
+reuse this existing bounded poll with a fixed URL- and cause-free diagnostic. A direct synchronous fetch failure or
+any response-body, inventory, URL, byte-bound, or filesystem failure remains terminal and is never retried. This does
+not change the downloader's existing explicit pending classifications for selected HTTP statuses and incomplete
+release observations. The complete anonymous read transaction finishes before its exclusive output directory is
+created; authentication and publication still occur later and are never part of this poll. Creating only a GitHub
+Release through the API is not accepted as a substitute for this Git protocol event.
 
 Microsoft can accept a VSIX while `vsce publish` still returns a nonzero status. The pipeline records that result as
 an ambiguous submission and continues to the exact public-package check. Missing or conflicting public bytes still
