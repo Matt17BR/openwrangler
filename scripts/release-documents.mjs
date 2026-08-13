@@ -1,4 +1,5 @@
 import MarkdownIt from "markdown-it";
+import { JSDOM } from "jsdom";
 import { posix as posixPath } from "node:path";
 
 const markdown = new MarkdownIt({
@@ -62,8 +63,25 @@ const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
 const EVIDENCE_REFERENCE = /\b(test|workflow|record):([A-Za-z0-9.][A-Za-z0-9._/-]*)(?:#[A-Za-z0-9._:-]+)?\b/gu;
 const EVIDENCE_REFERENCE_PREFIX = /\b(?:test|workflow|record):/gu;
+const STABLE_R_EVIDENCE_REFERENCE =
+  /\b(test|workflow|record):([A-Za-z0-9.][A-Za-z0-9._/-]*)(?:#[A-Za-z0-9._:-]+)?(?=$|[\s;,)\]])/gu;
 const FUTURE_EVIDENCE =
   /\b(?:TODO|TBD|pending|planned|future|later|will (?:add|capture|record|run|test|verify)|to be (?:added|captured|recorded|run|tested|verified))\b/iu;
+const STABLE_R_COMPLETION_TEXT = "Exact stable acceptance passed and is recorded";
+const LEGACY_PREVIEW_VERSION = /(?<![\d.])v?1\.99(?:\.(?:x|\d+))?(?:(?=previews?\b)|(?![\p{L}\p{N}]|\.[\p{L}\p{N}]))/iu;
+
+function containsUnsupportedTextControl(value) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0);
+    return (
+      (codePoint >= 0 && codePoint <= 8) ||
+      codePoint === 11 ||
+      codePoint === 12 ||
+      (codePoint >= 14 && codePoint <= 31) ||
+      (codePoint >= 127 && codePoint <= 159)
+    );
+  });
+}
 
 export const PREVIEW_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
@@ -135,6 +153,9 @@ function visibleInlineText(token) {
       if (child.type === "text" || child.type === "code_inline") {
         return child.content;
       }
+      if (child.type === "image") {
+        return child.content;
+      }
       return child.type === "softbreak" || child.type === "hardbreak" ? " " : "";
     })
     .join("");
@@ -145,10 +166,17 @@ function inlineText(tokens, index) {
   return token?.type === "inline" ? visibleInlineText(token).trim() : undefined;
 }
 
+function normalizedHeadingText(value) {
+  return value
+    ?.normalize("NFKC")
+    .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+    .trim();
+}
+
 function topLevelHeadings(tokens, tag) {
   return tokens.flatMap((token, index) =>
     token.type === "heading_open" && token.level === 0 && token.tag === tag
-      ? [{ index, map: token.map, text: inlineText(tokens, index) }]
+      ? [{ index, map: token.map, markup: token.markup, text: normalizedHeadingText(inlineText(tokens, index)) }]
       : []
   );
 }
@@ -178,6 +206,30 @@ function extractTable(tokens, tableIndex) {
     }
   }
   return undefined;
+}
+
+function rawTableCellMarkdown(contents, tableStartLine, rowIndex, columnIndex) {
+  const line = contents.replace(/\r\n?/gu, "\n").split("\n")[tableStartLine + 2 + rowIndex];
+  if (line === undefined) {
+    return undefined;
+  }
+  const cells = line
+    .split(/(?<!\\)\|/u)
+    .slice(1, -1)
+    .map((cell) => cell.trim());
+  return cells[columnIndex];
+}
+
+function previewSurfaceMarkdown(surface) {
+  const replacements = new Map([
+    ["Base data.frame, tibble, and data.table", "Base `data.frame`, tibble, and `data.table`"],
+    ["Cursor-owned .Rmd and .qmd R/Python chunk", "Cursor-owned `.Rmd` and `.qmd` R/Python chunk"],
+    ["Owned .R source process", "Owned `.R` source process"],
+    ["Owned .Rmd and .qmd cell process", "Owned `.Rmd` and `.qmd` cell process"],
+    ["Insert generated R into its source .R file", "Insert generated R into its source `.R` file"],
+    ["Insert generated R into .Rmd and .qmd", "Insert generated R into `.Rmd` and `.qmd`"]
+  ]);
+  return replacements.get(surface) ?? surface;
 }
 
 function isPortableTrackedPath(value) {
@@ -226,6 +278,345 @@ function inspectEvidence(evidence, trackedEvidencePaths) {
     const path = reference[2];
     return kind !== undefined && path !== undefined && validateEvidenceReference(kind, path, trackedEvidencePaths);
   });
+}
+
+function matchingTables(tokens, expectedHeader) {
+  return tokens.flatMap((token, index) => {
+    if (token.type !== "table_open" || token.level !== 0) {
+      return [];
+    }
+    const rows = extractTable(tokens, index);
+    return rows?.[0]?.length === expectedHeader.length &&
+      rows[0].every((cell, cellIndex) => cell === expectedHeader[cellIndex])
+      ? [{ index, rows }]
+      : [];
+  });
+}
+
+function topLevelH2Section(tokens, heading, label) {
+  const headings = topLevelHeadings(tokens, "h2");
+  const matches = headings.filter((candidate) => candidate.text === heading);
+  if (matches.length !== 1) {
+    return {
+      problem: `${label} must contain exactly one active top-level "## ${heading}" section; found ${matches.length}.`
+    };
+  }
+  const start = matches[0].index;
+  const headingInline = tokens[start + 1];
+  if (
+    matches[0].markup !== "##" ||
+    headingInline?.type !== "inline" ||
+    headingInline.content !== heading ||
+    !Array.isArray(headingInline.children) ||
+    headingInline.children.some((child) => child.type !== "text")
+  ) {
+    return {
+      problem: `${label} must use one unformatted active top-level "## ${heading}" heading.`
+    };
+  }
+  const next = headings.find((candidate) => candidate.index > start);
+  return { end: next?.index ?? tokens.length, problem: undefined, start };
+}
+
+function nativeRHeadings(tokens) {
+  return topLevelHeadings(tokens, "h2").filter((heading) => /^Native R\b/iu.test(heading.text ?? ""));
+}
+
+function containsActiveRawHtml(tokens, start, end) {
+  for (let index = start + 1; index < end; index += 1) {
+    const token = tokens[index];
+    const htmlTokens = [token, ...(Array.isArray(token?.children) ? token.children : [])].filter(
+      (candidate) => candidate?.type === "html_block" || candidate?.type === "html_inline"
+    );
+    if (htmlTokens.length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function tablePrecedesNestedSections(tokens, tableIndex, sectionStart, sectionEnd) {
+  const nestedHeading = tokens.findIndex(
+    (token, index) =>
+      index > sectionStart &&
+      index < sectionEnd &&
+      token.type === "heading_open" &&
+      token.level === 0 &&
+      token.tag !== "h2"
+  );
+  return nestedHeading === -1 || tableIndex < nestedHeading;
+}
+
+function sectionContainsOnlyCanonicalTable(tokens, sectionStart, sectionEnd, tableIndex) {
+  const tableEnd = tokens.findIndex(
+    (token, index) => index > tableIndex && index < sectionEnd && token.type === "table_close" && token.level === 0
+  );
+  return tableIndex === sectionStart + 3 && tableEnd === sectionEnd - 1;
+}
+
+function tableHasDisallowedInlineMarkup(tokens, tableIndex, allowedCodeColumns = new Set()) {
+  let column = -1;
+  let isBodyCell = false;
+  for (let index = tableIndex + 1; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token?.type === "table_close" && token.level === 0) {
+      return false;
+    }
+    if (token?.type === "tr_open") {
+      column = -1;
+      continue;
+    }
+    if (token?.type === "th_open" || token?.type === "td_open") {
+      column += 1;
+      isBodyCell = token.type === "td_open";
+      continue;
+    }
+    if (
+      Array.isArray(token?.children) &&
+      token.children.some(
+        (child) =>
+          child.type !== "text" &&
+          !(child.type === "code_inline" && isBodyCell && allowedCodeColumns.has(column)) &&
+          child.type !== "softbreak" &&
+          child.type !== "hardbreak"
+      )
+    ) {
+      return true;
+    }
+  }
+  return true;
+}
+
+function stableREvidenceHumanText(evidence) {
+  return evidence
+    .replace(STABLE_R_EVIDENCE_REFERENCE, "")
+    .replace(/[`*_~()[\]\u2014\u2013:;,.]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function inspectExactRStableEvidence(evidence, expectedReferences, trackedEvidencePaths) {
+  const references = [...evidence.matchAll(STABLE_R_EVIDENCE_REFERENCE)];
+  const referencePrefixes = [...evidence.matchAll(EVIDENCE_REFERENCE_PREFIX)];
+  if (
+    references.length === 0 ||
+    references.length !== referencePrefixes.length ||
+    stableREvidenceHumanText(evidence) !== STABLE_R_COMPLETION_TEXT
+  ) {
+    return false;
+  }
+  const actual = references.map((reference) => reference[0]).sort();
+  const expected = [...expectedReferences].sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((reference, index) => reference !== expected[index]) ||
+    new Set(actual).size !== actual.length
+  ) {
+    return false;
+  }
+  return references.every((reference) => {
+    const path = reference[2];
+    return path !== undefined && trackedEvidencePaths.has(path) && isPortableTrackedPath(path);
+  });
+}
+
+export function inspectPreviewRParityMatrix(contents, expectedScope) {
+  const parsed = parseMarkdown(contents, "docs/feature-parity.md");
+  if (parsed.problem !== undefined || parsed.tokens === undefined) {
+    return [parsed.problem];
+  }
+  const tokens = parsed.tokens;
+  const section = topLevelH2Section(tokens, "Native R preview", "docs/feature-parity.md");
+  if (section.problem !== undefined || section.start === undefined || section.end === undefined) {
+    return [section.problem];
+  }
+
+  const expectedHeader = ["Surface", "Availability", "Status", "Current checks", "Release check"];
+  if (nativeRHeadings(tokens).length !== 1) {
+    return ["Preview documentation must contain Native R preview as its only active top-level Native R section."];
+  }
+  const sectionTables = tokens
+    .map((token, index) => ({ index, token }))
+    .filter(
+      ({ index, token }) =>
+        token.type === "table_open" && token.level === 0 && index > section.start && index < section.end
+    );
+  const allCanonicalTables = matchingTables(tokens, expectedHeader);
+  const tables = allCanonicalTables.filter(({ index }) => index > section.start && index < section.end);
+  if (
+    sectionTables.length !== 1 ||
+    tables.length !== 1 ||
+    allCanonicalTables.length !== 1 ||
+    containsActiveRawHtml(tokens, -1, tokens.length) ||
+    !tablePrecedesNestedSections(tokens, tables[0]?.index ?? section.end, section.start, section.end) ||
+    tableHasDisallowedInlineMarkup(tokens, tables[0]?.index ?? section.end, new Set([0]))
+  ) {
+    return [
+      "docs/feature-parity.md must contain exactly one active top-level canonical Native R preview table inside its Native R preview section."
+    ];
+  }
+
+  const problems = [];
+  const rows = tables[0].rows.slice(1);
+  if (rows.length !== expectedScope.length) {
+    problems.push(
+      `The Native R preview table must contain exactly ${expectedScope.length} ordered rows; found ${rows.length}.`
+    );
+  }
+  const comparisonLength = Math.max(rows.length, expectedScope.length);
+  for (let index = 0; index < comparisonLength; index += 1) {
+    const actual = rows[index];
+    const expected = expectedScope[index];
+    if (expected === undefined) {
+      problems.push(`Unexpected Native R preview row "${actual?.[0] ?? ""}" at position ${index + 1}.`);
+      continue;
+    }
+    if (actual === undefined) {
+      problems.push(`Missing Native R preview row "${expected[0]}" at position ${index + 1}.`);
+      continue;
+    }
+    if (actual.length !== expectedHeader.length || actual.some((cell) => cell.length === 0)) {
+      problems.push(`The Native R preview table has an empty or malformed row at position ${index + 1}.`);
+      continue;
+    }
+    const [surface, availability, status, currentChecks, releaseCheck] = actual;
+    const rawSurface = rawTableCellMarkdown(contents, tokens[tables[0].index]?.map?.[0] ?? -1, index, 0);
+    if (surface !== expected[0] || availability !== expected[1] || releaseCheck !== "Preview release") {
+      problems.push(`Native R preview row ${index + 1} must be "${expected[0]}" (${expected[1]}/Preview release).`);
+    }
+    if (status !== expected[2]) {
+      problems.push(`Native R preview row "${surface}" must remain ${expected[2]}; received ${status}.`);
+    }
+    if (status === "Done" && currentChecks !== expected[3]) {
+      problems.push(`Native R preview row "${surface}" must retain its exact reviewed completion evidence.`);
+    }
+    if (rawSurface !== previewSurfaceMarkdown(expected[0])) {
+      problems.push(`Native R preview row "${surface}" must retain its exact reviewed surface markup.`);
+    }
+    if (
+      currentChecks.length < 8 ||
+      !/[\p{L}\p{N}]/u.test(currentChecks) ||
+      (status === "Done" && FUTURE_EVIDENCE.test(currentChecks))
+    ) {
+      problems.push(`Native R preview row "${surface}" must describe its current checks.`);
+    }
+  }
+  return problems;
+}
+
+export function inspectStableRParityMatrix(contents, expectedScope, trackedEvidencePaths) {
+  if (!(trackedEvidencePaths instanceof Set)) {
+    return ["Stable Native R evidence paths must be supplied as one tracked-path set."];
+  }
+  const parsed = parseMarkdown(contents, "docs/feature-parity.md");
+  if (parsed.problem !== undefined || parsed.tokens === undefined) {
+    return [parsed.problem];
+  }
+  const tokens = parsed.tokens;
+  if (tokens.some((token) => Array.isArray(token.children) && token.children.some((child) => child.type === "image"))) {
+    return ["Stable feature-parity documentation must not contain active images."];
+  }
+  const activeInlineText = tokens
+    .filter((token) => token.type === "inline")
+    .map((token) => visibleInlineText(token))
+    .join(" ");
+  if (containsUnsupportedTextControl(activeInlineText)) {
+    return ["Stable feature-parity documentation must not contain unsupported control characters."];
+  }
+  if (/\p{Bidi_Control}/u.test(activeInlineText)) {
+    return ["Stable feature-parity documentation must not contain bidirectional text controls."];
+  }
+  if (/\p{Cf}/u.test(activeInlineText)) {
+    return ["Stable feature-parity documentation must not contain Unicode format characters."];
+  }
+  if (/\p{Default_Ignorable_Code_Point}/u.test(activeInlineText)) {
+    return ["Stable feature-parity documentation must not contain default-ignorable text characters."];
+  }
+  const documentVisibleText = activeInlineText
+    .normalize("NFKC")
+    .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+    .replace(/\s+/gu, " ");
+  if (
+    LEGACY_PREVIEW_VERSION.test(documentVisibleText) ||
+    /\b(?:other cleaning operations are not available in R yet|before a 2\.0 tag can be published|Open Wrangler 2\.0 previews?)\b/iu.test(
+      documentVisibleText
+    )
+  ) {
+    return ["Stable feature-parity documentation must not contain active preview-era Native R copy."];
+  }
+  const section = topLevelH2Section(tokens, "Native R support", "docs/feature-parity.md");
+  if (section.problem !== undefined || section.start === undefined || section.end === undefined) {
+    return [section.problem];
+  }
+
+  const expectedHeader = ["Surface", "Availability", "Status", "Required evidence", "Release gate"];
+  if (nativeRHeadings(tokens).length !== 1) {
+    return ["Stable documentation must contain Native R support as its only active top-level Native R section."];
+  }
+  const sectionTables = tokens
+    .map((token, index) => ({ index, token }))
+    .filter(
+      ({ index, token }) =>
+        token.type === "table_open" && token.level === 0 && index > section.start && index < section.end
+    );
+  const allCanonicalTables = matchingTables(tokens, expectedHeader);
+  const tables = allCanonicalTables.filter(({ index }) => index > section.start && index < section.end);
+  if (
+    sectionTables.length !== 1 ||
+    tables.length !== 1 ||
+    allCanonicalTables.length !== 1 ||
+    containsActiveRawHtml(tokens, -1, tokens.length) ||
+    !sectionContainsOnlyCanonicalTable(tokens, section.start, section.end, tables[0]?.index ?? section.end) ||
+    !tablePrecedesNestedSections(tokens, tables[0]?.index ?? section.end, section.start, section.end) ||
+    tableHasDisallowedInlineMarkup(tokens, tables[0]?.index ?? section.end)
+  ) {
+    return [
+      "docs/feature-parity.md must contain exactly one active top-level canonical stable Native R table inside its Native R support section."
+    ];
+  }
+
+  const problems = [];
+  const rows = tables[0].rows.slice(1);
+  if (rows.length !== expectedScope.length) {
+    problems.push(
+      `The stable Native R table must contain exactly ${expectedScope.length} ordered release rows; found ${rows.length}.`
+    );
+  }
+  const comparisonLength = Math.max(rows.length, expectedScope.length);
+  for (let index = 0; index < comparisonLength; index += 1) {
+    const actual = rows[index];
+    const expected = expectedScope[index];
+    if (expected === undefined) {
+      problems.push(`Unexpected stable Native R row "${actual?.[0] ?? ""}" at position ${index + 1}.`);
+      continue;
+    }
+    if (actual === undefined) {
+      problems.push(`Missing stable Native R row "${expected.surface}" at position ${index + 1}.`);
+      continue;
+    }
+    if (actual.length !== expectedHeader.length || actual.some((cell) => cell.length === 0)) {
+      problems.push(`The stable Native R table has an empty or malformed row at position ${index + 1}.`);
+      continue;
+    }
+    const [surface, availability, status, evidence, releaseGate] = actual;
+    const rawSurface = rawTableCellMarkdown(contents, tokens[tables[0].index]?.map?.[0] ?? -1, index, 0);
+    if (surface !== expected.surface || availability !== expected.availability || releaseGate !== "Stable release") {
+      problems.push(
+        `Stable Native R row ${index + 1} must be "${expected.surface}" (${expected.availability}/Stable release).`
+      );
+    }
+    if (rawSurface !== expected.surface) {
+      problems.push(`Stable Native R row "${surface}" must retain its exact reviewed surface markup.`);
+    }
+    if (status !== "Done") {
+      problems.push(`Stable Native R row "${surface}" is ${status}, not Done.`);
+    } else if (!inspectExactRStableEvidence(evidence, expected.evidence, trackedEvidencePaths)) {
+      problems.push(
+        `Stable Native R row "${surface}" must say "${STABLE_R_COMPLETION_TEXT}" and contain exactly its reviewed tracked evidence references.`
+      );
+    }
+  }
+  return problems;
 }
 
 export function inspectPrimaryParityMatrix(
@@ -467,18 +858,110 @@ export function inspectPreviewReadme(contents, label = "README.md") {
 }
 
 export function inspectStablePublicCopy(contents, label = "Public documentation") {
-  if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > DOCUMENT_MAX_BYTES) {
-    return [`${label} must be bounded UTF-8 Markdown.`];
+  const parsed = parseMarkdown(contents, label);
+  if (parsed.problem !== undefined || parsed.tokens === undefined) {
+    return [parsed.problem];
   }
-  return /\b1\.99 previews?\b/iu.test(contents)
+  const rendered = markdown.renderer.render(
+    parsed.tokens.filter((token) => token.type !== "fence" && token.type !== "code_block"),
+    markdown.options,
+    {}
+  );
+  const fragment = JSDOM.fragment(rendered);
+  const allowedElements = new Map([
+    ["A", new Set(["href"])],
+    ["BLOCKQUOTE", new Set()],
+    ["CODE", new Set()],
+    ["EM", new Set()],
+    ["H1", new Set(["align"])],
+    ["H2", new Set()],
+    ["IMG", new Set(["alt", "height", "src", "width"])],
+    ["LI", new Set()],
+    ["P", new Set(["align"])],
+    ["STRONG", new Set()],
+    ["TABLE", new Set()],
+    ["TBODY", new Set()],
+    ["TD", new Set(["width"])],
+    ["TH", new Set()],
+    ["THEAD", new Set()],
+    ["TR", new Set()],
+    ["UL", new Set()]
+  ]);
+  const unsupportedElement = [...fragment.querySelectorAll("*")].find((element) => {
+    const allowedAttributes = allowedElements.get(element.tagName);
+    return (
+      allowedAttributes === undefined ||
+      [...element.attributes].some((attribute) => !allowedAttributes.has(attribute.name))
+    );
+  });
+  if (unsupportedElement !== undefined) {
+    return [`${label} contains unsupported active HTML that can obscure its stable release copy.`];
+  }
+  const blockElements = new Set([
+    "BLOCKQUOTE",
+    "H1",
+    "H2",
+    "LI",
+    "P",
+    "TABLE",
+    "TBODY",
+    "TD",
+    "TH",
+    "THEAD",
+    "TR",
+    "UL"
+  ]);
+  const renderedText = (node, includeImageAlt) => {
+    if (node.nodeType === 3) {
+      return node.nodeValue ?? "";
+    }
+    if (node.nodeType !== 1 && node.nodeType !== 11) {
+      return "";
+    }
+    if (node.nodeType === 1 && node.nodeName === "IMG") {
+      return includeImageAlt ? (node.getAttribute("alt") ?? "") : "";
+    }
+    const text = [...node.childNodes].map((child) => renderedText(child, includeImageAlt)).join("");
+    return node.nodeType === 1 && blockElements.has(node.nodeName) ? `${text}\n` : text;
+  };
+  const renderedTexts = [true, false].map((includeImageAlt) => renderedText(fragment, includeImageAlt));
+  if (renderedTexts.some((renderedCopy) => containsUnsupportedTextControl(renderedCopy))) {
+    return [`${label} contains unsupported control characters in its stable release copy.`];
+  }
+  if (renderedTexts.some((renderedCopy) => /\p{Bidi_Control}/u.test(renderedCopy))) {
+    return [`${label} contains unsupported bidirectional text controls in its stable release copy.`];
+  }
+  if (renderedTexts.some((renderedCopy) => /\p{Cf}/u.test(renderedCopy))) {
+    return [`${label} contains unsupported Unicode format characters in its stable release copy.`];
+  }
+  if (renderedTexts.some((renderedCopy) => /\p{Default_Ignorable_Code_Point}/u.test(renderedCopy))) {
+    return [`${label} contains unsupported default-ignorable characters in its stable release copy.`];
+  }
+  const visibleTexts = renderedTexts.map((renderedCopy) =>
+    renderedCopy
+      .normalize("NFKC")
+      .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+      .replace(/\s+/gu, " ")
+  );
+  return visibleTexts.some((visibleText) => LEGACY_PREVIEW_VERSION.test(visibleText))
     ? [`${label} still contains a 1.99 preview label. Remove it before the stable version 2 release.`]
     : [];
 }
 
 export function inspectStableReadme(contents, label = "README.md") {
+  const normalizedContents = typeof contents === "string" ? contents.replace(/\r\n?/gu, "\n") : contents;
+  const releaseRegionProblems = inspectReadmeReleaseRegion(
+    normalizedContents,
+    label,
+    STABLE_README_RELEASE_SECTION,
+    "stable"
+  );
+  if (typeof normalizedContents !== "string") {
+    return releaseRegionProblems;
+  }
   return [
-    ...inspectReadmeReleaseRegion(contents, label, STABLE_README_RELEASE_SECTION, "stable"),
-    ...inspectStablePublicCopy(contents, label)
+    ...releaseRegionProblems,
+    ...inspectStablePublicCopy(normalizedContents.replace(STABLE_README_RELEASE_SECTION, ""), label)
   ];
 }
 
