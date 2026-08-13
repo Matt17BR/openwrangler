@@ -6,6 +6,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Preview and stable Remote SSH jobs now start from the packaged artifact in parallel with the candidate
+  matrix, saving about three minutes of successful release wall time. Publication still requires the package, every
+  matrix lane, and Remote SSH, so no evidence was removed. On a candidate failure, Remote SSH may finish to preserve
+  its deterministic editor and namespace cleanup.
 - Release-candidate R acceptance now uses the same commit-pinned dependency action, explicit package set, and
   resolved-lock/binary-package policy as the pull-request R matrix. Later candidate dispatches may reuse a compatible
   cache created on `main`; the first matching `main` dispatch installs the full set before the existing contract and

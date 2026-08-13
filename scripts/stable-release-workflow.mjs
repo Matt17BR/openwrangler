@@ -428,13 +428,8 @@ export function inspectStableReleaseWorkflow(source) {
   problems.push(...inspectCandidateMatrixCaller(workflow, "stable"));
 
   const remoteDependency = workflow.jobs["remote-ssh"]?.needs;
-  if (
-    !Array.isArray(remoteDependency) ||
-    remoteDependency.length !== 2 ||
-    !remoteDependency.includes("package") ||
-    !remoteDependency.includes("candidate-acceptance")
-  ) {
-    problems.push("remote-ssh must start only after the package and candidate matrix succeed.");
+  if (remoteDependency !== "package") {
+    problems.push("remote-ssh must start from only the package artifact, in parallel with the candidate matrix.");
   }
   inspectCheckout(workflow.jobs["remote-ssh"], "remote-ssh", problems);
   inspectDownloadAndVerification(

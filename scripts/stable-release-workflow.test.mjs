@@ -39,13 +39,19 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       workflow.jobs["candidate-acceptance"].with.channel = "preview";
     },
     (workflow) => {
-      workflow.jobs["remote-ssh"].needs = ["package"];
+      workflow.jobs["remote-ssh"].needs = ["package", "candidate-acceptance"];
     },
     (workflow) => {
       workflow.jobs["remote-ssh"].steps.find((step) => step.id === "remote_workspace").run = "echo skipped";
     },
     (workflow) => {
       workflow.jobs.release.needs = ["package", "candidate-acceptance"];
+    },
+    (workflow) => {
+      workflow.jobs.release.needs = ["package", "remote-ssh"];
+    },
+    (workflow) => {
+      workflow.jobs.release.needs = ["candidate-acceptance", "remote-ssh"];
     },
     (workflow) => {
       workflow.jobs.release.if = "${{ inputs.publish != false }}";

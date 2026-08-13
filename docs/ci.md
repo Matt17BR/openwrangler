@@ -49,6 +49,12 @@ The release tier adds the expensive product checks that no longer run on every p
 
 A release cannot publish until every candidate job passes. GitHub, Open VSX, and the Visual Studio Marketplace receive the accepted VSIX; none of them rebuild it.
 
+Remote SSH starts from the packaged artifact alongside the candidate matrix instead of waiting behind it. That
+overlap removes about three minutes from a successful release's wall time without removing any evidence: publication
+still requires the package, every matrix lane, and Remote SSH. If a matrix lane fails, the already-running Remote SSH
+job may finish anyway so its editor and namespace cleanup are not interrupted; the failed candidate still cannot
+publish.
+
 The Python and R Jupyter jobs start together and verify the same candidate VSIX. The R job completes its ordinary
 plain-document journey, reverifies the candidate, and starts the focused literate journey in a new editor process.
 Each invocation owns distinct failure evidence. If either job fails, its job names the affected runtime and GitHub
