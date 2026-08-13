@@ -206,6 +206,21 @@ installed-performance checks run against the exact release candidate before publ
 fast feedback only; publication remains restricted to `main`. [CI and release checks](ci.md) has the current map.
 Ready pull requests run `Fast feedback` and `Contract tests` before starting the heavier UI, engine, package, and
 editor jobs. An early preflight failure stops those jobs without removing any check from a green pull request.
+Changes confined to registered release scripts, focused tests, and exact adjunct documents use the narrower release
+contract lane instead of
+`Contract tests` and the unrelated product/runtime/editor matrix. They still build and verify the canonical VSIX,
+run the fixed release and media contract inventory, and perform JavaScript/TypeScript CodeQL analysis. Required
+platform and Python CodeQL names are preserved by carrier cells. At least one registered release production or test
+path is mandatory; exact adjunct release documents may accompany it, while any unlisted, shared-dependency,
+classifier, or mixed product path fails closed to full CI. This pull-request optimization does not weaken or replace
+the complete exact-artifact release-candidate matrix.
+The shared candidate-acceptance workflow itself also forces full CI until its inspector pins an exact per-job step
+inventory. The preview and stable release workflows also force full CI while their publication-permissioned jobs lack
+exact step inventories. Their parsers and candidate-boundary tests still execute in the focused lane.
+The Open VSX promotion workflow forces full CI until its inspector rejects unknown steps; its parser and focused tests
+still execute in the focused lane. The Azure Marketplace pipeline also forces full CI because its hash-owning
+inspector is an allowed release script; changing both files must not bless a new baseline in the narrow tier. No
+workflow or pipeline YAML is eligible until an exact inventory is independent of every allowlisted hash owner.
 
 Do not turn a release pull request into one oversized squash commit. Keep each independently reviewable product,
 runtime, test, media, and documentation slice in its own commit. If a pull request contains several such commits,

