@@ -1430,7 +1430,7 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("default R profiles keep a truthful core catalog while focused selectors own value and categorical coverage", async () => {
+test("default R profiles retain lifecycle coverage while focused selectors split editing and kernel restart", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const runStart = source.indexOf("export async function run(): Promise<void> {");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
@@ -1443,41 +1443,54 @@ test("default R profiles keep a truthful core catalog while focused selectors ow
 
   assert.match(
     preflight,
-    /testSelector === undefined \|\|[\s\S]*testSelector === "core-operations" \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "value-operations" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
+    /testSelector === undefined \|\|[\s\S]*testSelector === "core-operations" \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "value-operations" \|\|[\s\S]*testSelector === "kernel-restart" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
   );
   assert.match(
     preflight,
-    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "core-operations", "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents"/u
+    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "core-operations", "categorical-operations", "value-operations", "kernel-restart", "interactive-terminal", or "literate-documents"/u
   );
   assert.match(
     profiles,
-    /name: "categorical-operations" \| "value-operations" \| "comprehensive" \| "representative"/u
+    /name: "categorical-operations" \| "value-operations" \| "kernel-restart" \| "comprehensive" \| "representative"/u
   );
   assert.match(
     profiles,
-    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "core-catalog"[\s\S]*focusedEditing: "none"[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
+    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*coreJourney: true[\s\S]*kernelLifecycle: true[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "core-catalog"[\s\S]*focusedEditing: "none"[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
   );
   assert.match(
     profiles,
-    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*focusedEditing: "none"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
+    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*coreJourney: true[\s\S]*kernelLifecycle: true[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*focusedEditing: "none"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
   );
   assert.match(
     profiles,
-    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "categorical-operations"[\s\S]*focusedEditing: "categorical-operations"/u
+    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "categorical-operations"[\s\S]*kernelLifecycle: false[\s\S]*focusedEditing: "categorical-operations"/u
   );
   assert.match(
     profiles,
-    /RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "value-operations"[\s\S]*focusedEditing: "value-operations"/u
+    /RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "value-operations"[\s\S]*kernelLifecycle: false[\s\S]*focusedEditing: "value-operations"/u
+  );
+  assert.match(
+    profiles,
+    /RELEASED_R_KERNEL_RESTART_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "kernel-restart"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: true/u
   );
   assert.doesNotMatch(profiles, /documents:/u, "The default R coverage profiles must be structurally plain-only.");
   assert.match(
     profiles,
-    /function releasedRCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations"\) \{[\s\S]*return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "value-operations"\) \{[\s\S]*return RELEASED_R_VALUE_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "core-operations"\) \{[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);[\s\S]*\}[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
+    /function releasedRCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations"\) \{[\s\S]*return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "value-operations"\) \{[\s\S]*return RELEASED_R_VALUE_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "kernel-restart"\) \{[\s\S]*return RELEASED_R_KERNEL_RESTART_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "core-operations"\) \{[\s\S]*const coreCoverage = releasedRCoreAcceptanceCoverageProfile\(\);[\s\S]*process\.platform === "linux"[\s\S]*Object\.freeze\(\{ \.\.\.coreCoverage, kernelLifecycle: false \}\)[\s\S]*: coreCoverage;[\s\S]*\}[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
+  );
+  assert.doesNotMatch(
+    profiles,
+    /Object\.freeze\(\{ \.\.\.releasedRCoreAcceptanceCoverageProfile\(\), kernelLifecycle: false \}\)/u,
+    "The explicit core selector must route by platform before disabling restart coverage."
   );
   assert.doesNotMatch(
     journey,
     /OPEN_WRANGLER_TEST_EDITOR/u,
     "Editor-specific R coverage decisions belong in the named profile, not scattered through the journey."
+  );
+  assert.match(
+    journey,
+    /if \(!coverage\.coreJourney\) \{[\s\S]*exerciseReleasedRKernelRestartExtension\(testing, extension, phase, coverage\);[\s\S]*return;/u
   );
   assert.match(journey, /exerciseReleasedRGridJourney\(testing, workbench, base\.sessionId, coverage\.gridPaging\)/u);
   assert.match(
@@ -1503,6 +1516,36 @@ test("default R profiles keep a truthful core catalog while focused selectors ow
       journey,
       new RegExp(`recordReleasedRAcceptanceSection\\(phase, coverage, "${section}", "complete"\\)`, "u")
     );
+  }
+  assert.match(
+    journey,
+    /if \(coverage\.kernelLifecycle\) \{[\s\S]*exerciseReleasedRKernelLifecycle\(testing, workbench, notebook, setup, kernelTarget, phase\);/u
+  );
+  const minimalStart = journey.indexOf("async function exerciseReleasedRKernelRestartExtension(");
+  const lifecycleStart = journey.indexOf("async function exerciseReleasedRKernelLifecycle(", minimalStart);
+  assert.ok(minimalStart >= 0 && lifecycleStart > minimalStart);
+  const minimal = journey.slice(minimalStart, lifecycleStart);
+  const lifecycle = journey.slice(lifecycleStart);
+  assert.match(minimal, /assert\.equal\(phase, "jupyter-r"/u);
+  assert.match(minimal, /assert\.equal\(kernelTarget\.remote, undefined/u);
+  assert.doesNotMatch(
+    minimal,
+    /exerciseReleasedRGridJourney|exerciseReleasedREditingJourney|exerciseReleasedRRepresentativeEditingJourney/u
+  );
+  assert.equal((minimal.match(/exerciseReleasedRKernelLifecycle\(/gu) ?? []).length, 1);
+  assert.match(lifecycle, /restartReleasedJupyterKernelAndWait\(notebook, \(checkpoint\) =>/u);
+  for (const checkpoint of [
+    "notebook-show",
+    "variable-invoke",
+    "session-receipt",
+    "invalidation",
+    "replacement-show",
+    "replacement-setup",
+    "recovery-session",
+    "recovery-page",
+    "binding-cleanup-wait"
+  ]) {
+    assert.match(lifecycle, new RegExp(`"${checkpoint}:start"[\\s\\S]*"${checkpoint}:complete"`, "u"));
   }
   assert.doesNotMatch(
     journey,

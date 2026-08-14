@@ -1217,7 +1217,7 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
   assert.doesNotMatch(reveal, /JSON\.stringify\(expectedText\)|JSON\.stringify\(target\.code\)/u);
 });
 
-test("the focused R core selector preserves the unset editor-specific coverage profiles", async () => {
+test("focused R selectors split core work from the exclusive kernel restart profile", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const start = source.indexOf("function releasedRAcceptanceCoverageProfile()");
   const end = source.indexOf("function recordReleasedRAcceptanceSection(", start);
@@ -1227,7 +1227,18 @@ test("the focused R core selector preserves the unset editor-specific coverage p
 
   assert.match(
     profile,
-    /OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
+    /OPEN_WRANGLER_TEST_SELECTOR === "kernel-restart"[\s\S]*return RELEASED_R_KERNEL_RESTART_COVERAGE;[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*const coreCoverage = releasedRCoreAcceptanceCoverageProfile\(\);[\s\S]*process\.platform === "linux"[\s\S]*Object\.freeze\(\{ \.\.\.coreCoverage, kernelLifecycle: false \}\)[\s\S]*: coreCoverage;/u,
+    "Only the explicit Linux core selector may defer restart coverage to the dedicated kernel-restart phase."
+  );
+  assert.doesNotMatch(
+    profile,
+    /Object\.freeze\(\{ \.\.\.releasedRCoreAcceptanceCoverageProfile\(\), kernelLifecycle: false \}\)/u,
+    "The explicit core selector must not disable native restart coverage before routing by platform."
+  );
+  assert.equal(
+    (profile.match(/kernelLifecycle: false/gu) ?? []).length,
+    1,
+    "The explicit selector router may contain only the Linux-scoped lifecycle suppression."
   );
   assert.match(
     profile,
@@ -1237,9 +1248,76 @@ test("the focused R core selector preserves the unset editor-specific coverage p
   const coreStart = source.indexOf("function releasedRCoreAcceptanceCoverageProfile()");
   assert.notEqual(coreStart, -1);
   const core = source.slice(coreStart, start);
+  const definitionsStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
+  assert.notEqual(definitionsStart, -1);
+  const definitions = source.slice(definitionsStart, coreStart);
   assert.match(
     core,
     /OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
+  );
+  assert.match(definitions, /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*kernelLifecycle: true/u);
+  assert.match(definitions, /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*kernelLifecycle: true/u);
+  assert.match(
+    definitions,
+    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*kernelLifecycle: false[\s\S]*RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*kernelLifecycle: false/u
+  );
+  assert.match(
+    definitions,
+    /RELEASED_R_KERNEL_RESTART_COVERAGE[\s\S]*name: "kernel-restart"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: true/u
+  );
+
+  const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
+  const minimalStart = source.indexOf("async function exerciseReleasedRKernelRestartExtension(", journeyStart);
+  const lifecycleStart = source.indexOf("async function exerciseReleasedRKernelLifecycle(", minimalStart);
+  const interactiveStart = source.indexOf(
+    "async function exerciseReleasedRInteractiveTerminalJourney(",
+    lifecycleStart
+  );
+  assert.ok(
+    journeyStart >= 0 &&
+      minimalStart > journeyStart &&
+      lifecycleStart > minimalStart &&
+      interactiveStart > lifecycleStart
+  );
+  const journey = source.slice(journeyStart, minimalStart);
+  const minimal = source.slice(minimalStart, lifecycleStart);
+  const lifecycle = source.slice(lifecycleStart, interactiveStart);
+  assert.match(
+    journey,
+    /if \(!coverage\.coreJourney\) \{[\s\S]*exerciseReleasedRKernelRestartExtension\(testing, extension, phase, coverage\);[\s\S]*return;/u
+  );
+  assert.match(
+    journey,
+    /if \(coverage\.kernelLifecycle\) \{[\s\S]*exerciseReleasedRKernelLifecycle\(testing, workbench, notebook, setup, kernelTarget, phase\);/u
+  );
+  assert.match(minimal, /assert\.equal\(phase, "jupyter-r"/u);
+  assert.match(minimal, /OPEN_WRANGLER_TEST_SELECTOR[\s\S]*"kernel-restart"/u);
+  assert.match(minimal, /assert\.equal\(kernelTarget\.remote, undefined/u);
+  assert.doesNotMatch(minimal, /exerciseReleasedRGridJourney|exerciseReleasedREditingJourney|nativeFrameEditing/u);
+  assert.equal((minimal.match(/exerciseReleasedRKernelLifecycle\(/gu) ?? []).length, 1);
+  assert.equal((journey.match(/exerciseReleasedRKernelLifecycle\(/gu) ?? []).length, 1);
+  assert.equal((lifecycle.match(/restartReleasedJupyterKernelAndWait\(/gu) ?? []).length, 1);
+  for (const checkpoint of [
+    "notebook-show",
+    "variable-invoke",
+    "session-receipt",
+    "invalidation",
+    "replacement-show",
+    "replacement-setup",
+    "recovery-session",
+    "recovery-page",
+    "binding-cleanup-wait"
+  ]) {
+    assert.match(lifecycle, new RegExp(`"${checkpoint}:start"[\\s\\S]*"${checkpoint}:complete"`, "u"));
+  }
+  assert.match(lifecycle, /`restart-\$\{checkpoint\}`/u);
+  const restartWaitStart = source.indexOf("async function restartReleasedJupyterKernelAndWait(");
+  const restartWaitEnd = source.indexOf("async function closeReleasedJupyterSessionTabs(", restartWaitStart);
+  assert.ok(restartWaitStart >= 0 && restartWaitEnd > restartWaitStart);
+  const restartWait = source.slice(restartWaitStart, restartWaitEnd);
+  assert.match(
+    restartWait,
+    /checkpoint\?\.\("dispatch:start"\)[\s\S]*checkpoint\?\.\("dispatch:complete"\)[\s\S]*checkpoint\?\.\("idle:start"\)[\s\S]*checkpoint\?\.\("idle:complete"\)/u
   );
 });
 
@@ -4371,7 +4449,7 @@ test("editor phases validate and forward the focused R acceptance selector", asy
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset, "core-operations", "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents"/u
+      /test selector must be unset, "core-operations", "categorical-operations", "value-operations", "kernel-restart", "interactive-terminal", or "literate-documents"/u
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "categorical-operations" }, options),
@@ -4426,6 +4504,22 @@ test("editor phases validate and forward the focused R acceptance selector", asy
       }
     );
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "value-operations");
+
+    await runEditorAcceptancePhase(
+      { ...input, testSelector: "kernel-restart" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "kernel-restart");
 
     await runEditorAcceptancePhase(
       { ...input, testSelector: "interactive-terminal" },

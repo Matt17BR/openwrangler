@@ -17,10 +17,15 @@ import {
   runPackagedEditorOrchestration,
   runWithRetainedFailure
 } from "./packaged-editor-orchestration.mjs";
-import { CORE_R_JUPYTER_SELECTOR, resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
+import {
+  CORE_R_JUPYTER_SELECTOR,
+  KERNEL_RESTART_R_JUPYTER_SELECTOR,
+  resolvePackagedRJourneySelection
+} from "./packaged-r-journey.mjs";
 
 test("R journey selection keeps combined diagnostics by default and isolates remote-only acceptance", () => {
   assert.equal(CORE_R_JUPYTER_SELECTOR, "core-operations");
+  assert.equal(KERNEL_RESTART_R_JUPYTER_SELECTOR, "kernel-restart");
   const resolve = (overrides = {}) =>
     resolvePackagedRJourneySelection({
       acceptanceMode: "r-jupyter",
@@ -51,6 +56,7 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
     [CORE_R_JUPYTER_SELECTOR, false, false],
     ["categorical-operations", false, false],
     ["value-operations", false, false],
+    [KERNEL_RESTART_R_JUPYTER_SELECTOR, false, false],
     ["interactive-terminal", false, true],
     ["literate-documents", true, true]
   ]) {
@@ -106,6 +112,7 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
     [{ selector: CORE_R_JUPYTER_SELECTOR, remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ selector: "categorical-operations", remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ selector: "value-operations", remoteJupyterEnabled: true }, /cannot be combined/u],
+    [{ selector: KERNEL_RESTART_R_JUPYTER_SELECTOR, remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ remoteJupyterEnabled: true, requestedEditors: ["cursor"] }, /requires VS Code/u],
     [{ selector: "remote-r-jupyter", requestedEditors: ["vscode"] }, /requires real remote/u],
     [

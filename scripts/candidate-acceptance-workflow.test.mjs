@@ -135,9 +135,10 @@ test("r_local uses exactly two balanced, non-cancelling shards", () => {
   }, /two non-cancelling balanced shards/u);
 });
 
-test("core uses the explicit selector and all local phases keep VS Code then Cursor in one runner", () => {
+test("every local phase uses its explicit selector and keeps VS Code then Cursor in one runner", () => {
   for (const [id, journey] of [
     ["packaged_editor_r_core", "core-operations"],
+    ["packaged_editor_r_restart", "kernel-restart"],
     ["packaged_editor_r_interactive", "interactive-terminal"],
     ["packaged_editor_r_literate", "literate-documents"],
     ["packaged_editor_r_values", "value-operations"],
@@ -156,9 +157,20 @@ test("core uses the explicit selector and all local phases keep VS Code then Cur
 
 test("every local phase has an adjacent verifier and immediate exact failure upload", () => {
   expectRejected((value) => {
+    step(value.jobs.r_local, (entry) => entry.id === "canonical_r_restart").if =
+      "${{ always() && steps.packaged_editor_r_core.outcome == 'success' }}";
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    step(value.jobs.r_local, (entry) => entry.id === "packaged_editor_r_restart")["continue-on-error"] = false;
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
     const steps = value.jobs.r_local.steps;
     const runner = steps.findIndex((entry) => entry.id === "packaged_editor_r_interactive");
     steps.splice(runner, 0, { run: "true" });
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    const upload = step(value.jobs.r_local, (entry) => entry.name === "Upload R kernel restart failure diagnostics");
+    upload.with.name = "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}";
   }, /verifier.*packaged phase.*upload/u);
   expectRejected((value) => {
     const upload = step(value.jobs.r_local, (entry) => entry.name === "Upload value R-Jupyter failure diagnostics");
@@ -185,12 +197,22 @@ test("local shard order is lifecycle then editing with one deferred raw-outcome 
     );
   }, /balanced shard order|verifier.*packaged phase/u);
   expectRejected((value) => {
+    const steps = value.jobs.r_local.steps;
+    const restartVerifier = steps.findIndex((entry) => entry.id === "canonical_r_restart");
+    const restartTriple = steps.splice(restartVerifier, 3);
+    steps.splice(steps.findIndex((entry) => entry.id === "canonical_r_literate") + 3, 0, ...restartTriple);
+  }, /balanced shard order|verifier.*packaged phase/u);
+  expectRejected((value) => {
     step(value.jobs.r_local, (entry) => entry.name === "Require successful local R shard outcomes").if =
       "${{ success() }}";
   }, /literal raw-outcome verdict/u);
   expectRejected((value) => {
     step(value.jobs.r_local, (entry) => entry.name === "Require successful local R shard outcomes").run =
       'test "$CORE_OUTCOME" != "failure"';
+  }, /literal raw-outcome verdict/u);
+  expectRejected((value) => {
+    const verdict = step(value.jobs.r_local, (entry) => entry.name === "Require successful local R shard outcomes");
+    verdict.run = verdict.run.replace('test "$RESTART_OUTCOME" = "success"', "true");
   }, /literal raw-outcome verdict/u);
 });
 

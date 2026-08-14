@@ -3177,11 +3177,12 @@ export async function runEditorAcceptancePhase(
     testSelector !== "core-operations" &&
     testSelector !== "categorical-operations" &&
     testSelector !== "value-operations" &&
+    testSelector !== "kernel-restart" &&
     testSelector !== "interactive-terminal" &&
     testSelector !== "literate-documents"
   ) {
     throw new Error(
-      'An editor acceptance test selector must be unset, "core-operations", "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents".'
+      'An editor acceptance test selector must be unset, "core-operations", "categorical-operations", "value-operations", "kernel-restart", "interactive-terminal", or "literate-documents".'
     );
   }
   if (testSelector !== undefined && phase !== "jupyter-r") {

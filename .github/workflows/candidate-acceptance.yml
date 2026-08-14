@@ -786,6 +786,39 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - id: canonical_r_restart
+        name: Reverify the candidate for R kernel restart
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.r_local_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_restart
+        name: Test R kernel restart in fresh packaged editor phases
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_restart.outcome == 'success' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_restart.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: kernel-restart
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload R kernel restart failure diagnostics
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.packaged_editor_r_restart.outcome == 'failure' && steps.packaged_editor_r_restart.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-restart-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_restart.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
       - id: canonical_r_interactive
         name: Reverify the candidate for the active R terminal
         if: ${{ always() && matrix.shard == 'lifecycle' && steps.r_local_setup.outcome == 'success' }}
@@ -923,6 +956,7 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           CORE_OUTCOME: ${{ steps.packaged_editor_r_core.outcome }}
+          RESTART_OUTCOME: ${{ steps.packaged_editor_r_restart.outcome }}
           INTERACTIVE_OUTCOME: ${{ steps.packaged_editor_r_interactive.outcome }}
           LITERATE_OUTCOME: ${{ steps.packaged_editor_r_literate.outcome }}
           VALUES_OUTCOME: ${{ steps.packaged_editor_r_values.outcome }}
@@ -932,6 +966,7 @@ jobs:
           case "$SHARD" in
             lifecycle)
               test "$CORE_OUTCOME" = "success"
+              test "$RESTART_OUTCOME" = "success"
               test "$INTERACTIVE_OUTCOME" = "success"
               test "$LITERATE_OUTCOME" = "success"
               ;;
