@@ -1430,18 +1430,29 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("default R profiles stay plain-only while Cursor adds focused categorical coverage", async () => {
+test("default R profiles stay plain-only while a focused selector owns categorical coverage", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
+  const runStart = source.indexOf("export async function run(): Promise<void> {");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(", profileStart);
   const journeyEnd = source.indexOf("\nasync function exerciseReleasedRInteractiveTerminalJourney(", journeyStart);
-  assert.ok(profileStart >= 0 && journeyStart > profileStart && journeyEnd > journeyStart);
+  assert.ok(runStart >= 0 && profileStart > runStart && journeyStart > profileStart && journeyEnd > journeyStart);
+  const preflight = source.slice(runStart, profileStart);
   const profiles = source.slice(profileStart, journeyStart);
   const journey = source.slice(journeyStart, journeyEnd);
 
   assert.match(
+    preflight,
+    /testSelector === undefined \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
+  );
+  assert.match(
+    preflight,
+    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "categorical-operations", "interactive-terminal", or "literate-documents"/u
+  );
+  assert.match(profiles, /name: "categorical-operations" \| "comprehensive" \| "representative"/u);
+  assert.match(
     profiles,
-    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "all-operations"[\s\S]*focusedCategoricalEditing: false[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
+    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "catalog-without-categorical"[\s\S]*focusedCategoricalEditing: false[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
   );
   assert.match(
     profiles,
@@ -1449,12 +1460,12 @@ test("default R profiles stay plain-only while Cursor adds focused categorical c
   );
   assert.match(
     profiles,
-    /RELEASED_R_CURSOR_REPRESENTATIVE_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*focusedCategoricalEditing: true/u
+    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "categorical-operations"[\s\S]*focusedCategoricalEditing: true/u
   );
   assert.doesNotMatch(profiles, /documents:/u, "The default R coverage profiles must be structurally plain-only.");
   assert.match(
     profiles,
-    /if \(process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\) return RELEASED_R_CURSOR_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
+    /if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations"\) \{[\s\S]*return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\) return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
   );
   assert.doesNotMatch(
     journey,
@@ -1464,12 +1475,14 @@ test("default R profiles stay plain-only while Cursor adds focused categorical c
   assert.match(journey, /exerciseReleasedRGridJourney\(testing, workbench, base\.sessionId, coverage\.gridPaging\)/u);
   assert.match(
     journey,
-    /if \(coverage\.editing === "all-operations"\)[\s\S]*exerciseReleasedREditingJourney\([\s\S]*else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\(/u
+    /if \(coverage\.editing === "catalog-without-categorical"\)[\s\S]*exerciseReleasedREditingJourney\([\s\S]*else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\(/u
   );
   assert.match(
     journey,
     /exerciseReleasedRRepresentativeEditingJourney\(testing, workbench, base\.sessionId, phase\);[\s\S]*if \(phase === "jupyter-r" && coverage\.focusedCategoricalEditing\) \{[\s\S]*exerciseReleasedROneHotJourney\(testing, workbench, base\.sessionId\);[\s\S]*exerciseReleasedRMultiLabelJourney\(testing, workbench, base\.sessionId\);/u
   );
+  assert.equal((journey.match(/await exerciseReleasedROneHotJourney\(/gu) ?? []).length, 1);
+  assert.equal((journey.match(/await exerciseReleasedRMultiLabelJourney\(/gu) ?? []).length, 1);
   assert.doesNotMatch(journey, /coverage\.documents|exerciseReleasedRLiterateDocumentJourneys/u);
   assert.match(journey, /if \(coverage\.openCollapseSessions\)/u);
   assert.match(journey, /if \(coverage\.openNativeFramesInViewingMode\)/u);
@@ -1499,11 +1512,28 @@ test("default R profiles stay plain-only while Cursor adds focused categorical c
   const gridEnd = source.indexOf("\nasync function exerciseReleasedRPersistentRowsJourney(", gridStart);
   const representativeStart = source.indexOf("async function exerciseReleasedRRepresentativeEditingJourney(");
   const representativeEnd = source.indexOf("\nasync function exerciseReleasedREditingJourney(", representativeStart);
+  const comprehensiveStart = representativeEnd + 1;
+  const comprehensiveEnd = source.indexOf("\nasync function exerciseReleasedRFormulaJourney(", comprehensiveStart);
   assert.ok(
-    gridStart >= 0 && gridEnd > gridStart && representativeStart >= 0 && representativeEnd > representativeStart
+    gridStart >= 0 &&
+      gridEnd > gridStart &&
+      representativeStart >= 0 &&
+      representativeEnd > representativeStart &&
+      comprehensiveEnd > comprehensiveStart
   );
   const grid = source.slice(gridStart, gridEnd);
   const representative = source.slice(representativeStart, representativeEnd);
+  const comprehensive = source.slice(comprehensiveStart, comprehensiveEnd);
+  assert.doesNotMatch(
+    comprehensive,
+    /exerciseReleasedR(?:OneHot|MultiLabel)Journey/u,
+    "The ordinary comprehensive invocation must leave categorical operations to the fresh focused profile."
+  );
+  assert.match(
+    comprehensive,
+    /supportedOperations: RELEASED_R_SUPPORTED_OPERATIONS/u,
+    "The non-categorical acceptance route must still assert the complete advertised R capability catalog."
+  );
   assert.match(
     grid,
     /if \(paging === "all-blocks"\)[\s\S]*else \{[\s\S]*"the representative second R block"[\s\S]*"the representative restored R block"/u

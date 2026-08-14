@@ -35,6 +35,7 @@ import {
   requireCiResults,
   resultEnvironmentKey
 } from "./require-ci-results.mjs";
+import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mjs";
 
 const replaceablePullRequestWorkflows = [
   [".github/workflows/ci.yml", "ci-${{ github.event_name }}-${{ github.ref }}"],
@@ -1046,6 +1047,32 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     ),
     true
   );
+  const categoricalR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_categorical");
+  assert.equal(categoricalR?.if, "${{ matrix.phase == 'r-local' }}");
+  assert.equal(categoricalR?.["continue-on-error"], true);
+  assert.equal(
+    categoricalR?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_categorical.outputs.candidate_path }}"
+  );
+  assert.deepEqual(categoricalR?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "categorical-operations",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const categoricalRDiagnostics = releasedJupyter?.steps?.find(
+    (step) => step?.name === "Upload categorical R-Jupyter failure diagnostics"
+  );
+  assert.equal(
+    categoricalRDiagnostics?.with?.name,
+    "${{ inputs.channel }}-release-r-jupyter-categorical-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(categoricalRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_categorical.outputs.evidence_path }}");
   const interactiveR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_interactive");
   assert.equal(interactiveR?.if, "${{ matrix.phase == 'r-local' }}");
   assert.equal(
@@ -1088,6 +1115,10 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
     VSCODE_TEST_VERSION: "stable"
   });
+  assert.equal(
+    releasedJupyter?.steps?.find((step) => step?.name === "Fail after local R acceptance diagnostics")?.if,
+    "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}"
+  );
   const literateRDiagnostics = releasedJupyter?.steps?.find(
     (step) => step?.name === "Upload R Markdown and Quarto failure diagnostics"
   );
@@ -2364,6 +2395,10 @@ test("coverage provisions the exact PySpark runtime before enforcing the unchang
 test("standalone released-Jupyter acceptance is manual-only and self-packages", () => {
   const source = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
+  assert.deepEqual(
+    inspectDeferredDiagnosticFailures(workflow, "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f"),
+    []
+  );
   assert.deepEqual(Object.keys(workflow?.on ?? {}), ["workflow_dispatch"]);
   assert.equal(workflow?.on?.pull_request, undefined);
   assert.deepEqual(workflow?.on?.workflow_dispatch?.inputs?.target, {
@@ -2443,6 +2478,7 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
 
   const packagedR = job?.steps?.find((step) => step?.id === "packaged_editor_r");
   assert.equal(packagedR?.name, "Test released R Jupyter in packaged VS Code and Cursor");
+  assert.equal(packagedR?.["continue-on-error"], true);
   assert.equal(
     packagedR?.run,
     "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
@@ -2468,11 +2504,54 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
   );
   assert.equal(rDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
   const packagedRIndex = job?.steps?.indexOf(packagedR) ?? -1;
+  const rDiagnosticsIndex = job?.steps?.indexOf(rDiagnostics) ?? -1;
+  const categoricalRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_categorical");
+  const categoricalRRunner = job?.steps?.find((step) => step?.id === "packaged_editor_r_categorical");
+  const categoricalRDiagnostics = job?.steps?.find(
+    (step) => step?.name === "Upload categorical R-Jupyter failure diagnostics"
+  );
+  const categoricalRVerifierIndex = job?.steps?.indexOf(categoricalRVerifier) ?? -1;
+  const categoricalRRunnerIndex = job?.steps?.indexOf(categoricalRRunner) ?? -1;
+  const categoricalRDiagnosticsIndex = job?.steps?.indexOf(categoricalRDiagnostics) ?? -1;
+  assert.equal(
+    categoricalRVerifier?.run,
+    "npm run verify:vsix -- openwrangler.vsix",
+    "Focused categorical acceptance must freshly reverify the packaged VSIX."
+  );
+  assert.equal(rDiagnosticsIndex, packagedRIndex + 1);
+  assert.equal(categoricalRVerifierIndex, rDiagnosticsIndex + 1);
+  assert.equal(categoricalRRunnerIndex, categoricalRVerifierIndex + 1);
+  assert.equal(categoricalRDiagnosticsIndex, categoricalRRunnerIndex + 1);
+  assert.equal(categoricalRRunner?.["continue-on-error"], true);
+  assert.equal(
+    categoricalRRunner?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
+  );
+  assert.deepEqual(categoricalRRunner?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "categorical-operations",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  assert.equal(
+    categoricalRDiagnostics?.if,
+    "${{ always() && steps.packaged_editor_r_categorical.outcome == 'failure' && steps.packaged_editor_r_categorical.outputs.evidence_ready == 'true' }}"
+  );
+  assert.equal(
+    categoricalRDiagnostics?.with?.name,
+    "released-jupyter-r-categorical-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(categoricalRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_categorical.outputs.evidence_path }}");
   const interactiveRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_interactive");
   const interactiveRRunner = job?.steps?.find((step) => step?.id === "packaged_editor_r_interactive");
   const interactiveRVerifierIndex = job?.steps?.indexOf(interactiveRVerifier) ?? -1;
   const interactiveRRunnerIndex = job?.steps?.indexOf(interactiveRRunner) ?? -1;
-  assert.ok(interactiveRVerifierIndex > packagedRIndex, "Focused active-R acceptance must follow ordinary R.");
+  assert.equal(interactiveRVerifierIndex, categoricalRDiagnosticsIndex + 1);
   assert.equal(
     interactiveRVerifier?.run,
     "npm run verify:vsix -- openwrangler.vsix",
@@ -2487,6 +2566,7 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     interactiveRRunner?.run,
     "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
   );
+  assert.equal(interactiveRRunner?.["continue-on-error"], true);
   assert.deepEqual(interactiveRRunner?.env, {
     OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
     OPEN_WRANGLER_PACKAGED_R_JOURNEY: "interactive-terminal",
@@ -2510,10 +2590,18 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     "released-jupyter-r-interactive-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
   );
   assert.equal(interactiveDiagnostics?.with?.path, "${{ steps.packaged_editor_r_interactive.outputs.evidence_path }}");
+  assert.equal(job?.steps?.indexOf(interactiveDiagnostics), interactiveRRunnerIndex + 1);
+  const localRFailure = job?.steps?.find((step) => step?.name === "Fail after local R acceptance diagnostics");
+  assert.equal(
+    localRFailure?.if,
+    "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure') }}"
+  );
+  assert.equal(localRFailure?.run, "exit 1");
+  assert.equal(job?.steps?.indexOf(localRFailure), (job?.steps?.indexOf(interactiveDiagnostics) ?? -2) + 1);
   assert.equal(
     job?.steps?.filter((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@"))
       .length,
-    3
+    4
   );
 
   const macosR = workflow?.jobs?.["macos-r"];

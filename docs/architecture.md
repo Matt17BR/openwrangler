@@ -360,15 +360,16 @@ and the profile drawer still loads the selected column or dataset on request. Th
 checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
-frame, and final session cleanup. The packaged VS Code journey covers the full R catalog, including the visible forms
-for Find and replace, Formula, Uppercase, One-hot encode, Multi-label binarize, Min-max scale, Round, Floor, Ceiling,
-Format Datetime, and Group and aggregate. Cursor runs the representative editing profile and separately repeats the
-exact One-hot encode and Multi-label binarize forms, boundary values, generated calls, preview, apply, and undo. The
-base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
-applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,
-and undo. The run checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed
-data tables additionally cover editable open plus Rename and Drop preview/discard. The direct R suites cover all
-supported operations, plus class and key behavior for tibbles and data tables.
+frame, and final session cleanup. The ordinary packaged VS Code journey covers the R editing catalog except the two
+categorical operations, including the visible forms for Find and replace, Formula, Uppercase, Min-max scale, Round,
+Floor, Ceiling, Format Datetime, and Group and aggregate. Ordinary Cursor runs the representative editing profile. A
+separate fresh exact-candidate phase runs the exact One-hot encode and Multi-label binarize forms, boundary values,
+generated calls, preview, apply, and undo in both VS Code and Cursor. Across the packaged journeys, the base-data-frame
+sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is applied and undone.
+Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The run
+checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed data tables additionally
+cover editable open plus Rename and Drop preview/discard. The direct R suites cover all supported operations, plus
+class and key behavior for tibbles and data tables.
 An applied-step
 inspection uses separate bounded kernel responses for the plan code and each side of the page. The host adds the exact
 retained input and output schemas and calculates the public diff only after all three responses agree.

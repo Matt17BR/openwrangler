@@ -72,6 +72,7 @@ import {
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
   activateWithOnePreDispatchReacquisition,
+  computeCodePreviewScrollPlan,
   diagnoseThenReacquireAcceptanceAction,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
@@ -532,8 +533,11 @@ export async function run(): Promise<void> {
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
   const testSelector = process.env.OPEN_WRANGLER_TEST_SELECTOR;
   assert.ok(
-    testSelector === undefined || testSelector === "interactive-terminal" || testSelector === "literate-documents",
-    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "interactive-terminal", or "literate-documents".'
+    testSelector === undefined ||
+      testSelector === "categorical-operations" ||
+      testSelector === "interactive-terminal" ||
+      testSelector === "literate-documents",
+    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "categorical-operations", "interactive-terminal", or "literate-documents".'
   );
   assert.ok(
     testSelector === undefined || phase === "jupyter-r",
@@ -2217,9 +2221,9 @@ async function assertReleasedRRuntimeBinding(
 }
 
 type ReleasedRAcceptanceCoverageProfile = Readonly<{
-  name: "comprehensive" | "representative";
+  name: "categorical-operations" | "comprehensive" | "representative";
   gridPaging: "all-blocks" | "single-round-trip";
-  editing: "all-operations" | "rename-lifecycle";
+  editing: "catalog-without-categorical" | "rename-lifecycle";
   focusedCategoricalEditing: boolean;
   openCollapseSessions: boolean;
   openNativeFramesInViewingMode: boolean;
@@ -2229,7 +2233,7 @@ type ReleasedRAcceptanceCoverageProfile = Readonly<{
 const RELEASED_R_COMPREHENSIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
   name: "comprehensive",
   gridPaging: "all-blocks",
-  editing: "all-operations",
+  editing: "catalog-without-categorical",
   focusedCategoricalEditing: false,
   openCollapseSessions: true,
   openNativeFramesInViewingMode: true,
@@ -2246,13 +2250,17 @@ const RELEASED_R_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = O
   nativeFrameEditing: "one-operation-per-flavor"
 });
 
-const RELEASED_R_CURSOR_REPRESENTATIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
+const RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
   ...RELEASED_R_REPRESENTATIVE_COVERAGE,
+  name: "categorical-operations",
   focusedCategoricalEditing: true
 });
 
 function releasedRAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
-  if (process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor") return RELEASED_R_CURSOR_REPRESENTATIVE_COVERAGE;
+  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations") {
+    return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;
+  }
+  if (process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor") return RELEASED_R_REPRESENTATIVE_COVERAGE;
   return process.platform === "win32" ? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;
 }
 
@@ -2576,7 +2584,7 @@ async function exerciseReleasedRJupyterExtension(
       .getByRole("button", { name: "Close panel" })
       .click();
     recordReleasedRAcceptanceSection(phase, coverage, "editing", "start");
-    if (coverage.editing === "all-operations") {
+    if (coverage.editing === "catalog-without-categorical") {
       await exerciseReleasedREditingJourney(
         testing,
         workbench,
@@ -7742,8 +7750,6 @@ async function exerciseReleasedREditingJourney(
   if (phase === "jupyter-r") {
     await exerciseReleasedRFormulaJourney(testing, workbench, sessionId);
     await exerciseReleasedRFormatDatetimeJourney(testing, workbench, sessionId);
-    await exerciseReleasedROneHotJourney(testing, workbench, sessionId);
-    await exerciseReleasedRMultiLabelJourney(testing, workbench, sessionId);
 
     recordAcceptanceProgress(`${phase}:editing:min-max-scale-preview-apply-undo`);
     const minMaxBase = testing.activeSession();
@@ -9640,7 +9646,8 @@ async function previewReleasedRDrop(
   const stepId = active.metadata.draftStep.id;
   assertReleasedRDropGeneratedCode(active.code ?? "", sourceName, variableName);
   const codePreview = await waitForCodePreview(workbench, undefined, "R");
-  assertReleasedRDropGeneratedCode(await revealCodePreviewText(codePreview, sourceName), sourceName, variableName);
+  const exactCodePreview = await ensureCodePreviewHeight(workbench, codePreview, 180);
+  assertReleasedRDropGeneratedCode(await revealCodePreviewText(exactCodePreview, sourceName), sourceName, variableName);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -10102,8 +10109,8 @@ async function captureReleasedRNotebookGroupByDraft(
       .getByRole("tree", { name: /Cleaning Steps/u })
       .getByRole("treeitem", { name: /^Draft · Group and aggregate/u })
       .waitFor({ state: "visible", timeout: 10_000 });
-    await ensureCodePreviewHeight(workbench, 180);
-    await revealCodePreviewOperationLine(codePreview, ".ow_result <- .ow_group_by", "total_revenue");
+    const exactCodePreview = await ensureCodePreviewHeight(workbench, codePreview, 180);
+    await revealCodePreviewOperationLine(exactCodePreview, ".ow_result <- .ow_group_by", "total_revenue");
 
     app = await releasedRSessionApp(workbench, testing, sessionId, "the R editing screenshot");
     assert.equal((await app.locator('[data-session-badge="backend"]').innerText()).trim(), "R");
@@ -23226,120 +23233,675 @@ async function waitForCodePreview(
   throw new Error(`The generated code preview did not expose ${JSON.stringify(expectedCode)}.`);
 }
 
+type ExactCodePreviewHandle = ElementHandle<unknown>;
+
+interface ExactCodePreviewTarget {
+  readonly preview: ExactCodePreviewHandle;
+  readonly scroller: ExactCodePreviewHandle;
+  readonly code: string;
+}
+
+interface ExactCodePreviewIdentity {
+  readonly code: string | undefined;
+  readonly previewBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
+  readonly previewConnected: boolean;
+  readonly previewOwnsScroller: boolean;
+  readonly sameDocument: boolean;
+  readonly scrollerBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
+  readonly scrollerClass: string | null;
+  readonly scrollerConnected: boolean;
+  readonly scrollTop: number;
+  readonly scrollHeight: number;
+  readonly clientHeight: number;
+  readonly rendererViewport: Readonly<{ width: number; height: number }> | undefined;
+}
+
+interface ExactCodePreviewExposure {
+  readonly lineBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
+  readonly lineConnected: boolean;
+  readonly lineText: string;
+  readonly sameDocument: boolean;
+  readonly scrollerBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
+  readonly scrollerContainsLine: boolean;
+  readonly scrollTop: number;
+  readonly scrollHeight: number;
+  readonly clientHeight: number;
+  readonly rendererViewport: Readonly<{ width: number; height: number }> | undefined;
+}
+
+async function pinExactCodePreview(codePreview: Locator): Promise<ExactCodePreviewTarget> {
+  const preview = await codePreview.elementHandle({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+  assert.ok(preview, "The generated-code preview must expose one exact content element.");
+  let scroller: ExactCodePreviewHandle | undefined;
+  try {
+    scroller =
+      (await codePreview.locator("xpath=..").elementHandle({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS })) ?? undefined;
+    assert.ok(scroller, "The generated-code preview must expose one exact parent scroller element.");
+    const identity = await readExactCodePreviewIdentity(preview, scroller);
+    assertExactCodePreviewIdentity(identity);
+    if (typeof identity.code !== "string") {
+      assert.fail(`The generated-code preview must expose its CodeMirror document: ${JSON.stringify(identity)}.`);
+    }
+    return { preview, scroller, code: identity.code };
+  } catch (error) {
+    try {
+      await releaseExactCodePreview({ preview, scroller });
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Pinning the exact Code Preview and cleaning it up both failed.");
+    }
+    throw error;
+  }
+}
+
+async function readExactCodePreviewIdentity(
+  preview: ExactCodePreviewHandle,
+  scroller: ExactCodePreviewHandle
+): Promise<ExactCodePreviewIdentity> {
+  return preview.evaluate((element, exactScroller) => {
+    type Rectangle = { left: number; top: number; width: number; height: number };
+    type PreviewElement = {
+      readonly isConnected: boolean;
+      readonly parentElement: unknown;
+      readonly ownerDocument: {
+        readonly defaultView: null | { readonly innerWidth: number; readonly innerHeight: number };
+      };
+      getBoundingClientRect(): Rectangle;
+      cmTile?: { view?: { state: { doc: { toString(): string } } } };
+    };
+    type ScrollerElement = {
+      readonly isConnected: boolean;
+      readonly ownerDocument: unknown;
+      readonly scrollTop: number;
+      readonly scrollHeight: number;
+      readonly clientHeight: number;
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): Rectangle;
+    };
+    const content = element as unknown as PreviewElement;
+    const scrollerElement = exactScroller as unknown as ScrollerElement;
+    const previewBounds = content.getBoundingClientRect();
+    const scrollerBounds = scrollerElement.getBoundingClientRect();
+    const rendererWindow = content.ownerDocument.defaultView;
+    return {
+      code: content.cmTile?.view?.state.doc.toString(),
+      previewBounds: {
+        left: previewBounds.left,
+        top: previewBounds.top,
+        width: previewBounds.width,
+        height: previewBounds.height
+      },
+      previewConnected: content.isConnected,
+      previewOwnsScroller: content.parentElement === scrollerElement,
+      sameDocument: content.ownerDocument === scrollerElement.ownerDocument,
+      scrollerBounds: {
+        left: scrollerBounds.left,
+        top: scrollerBounds.top,
+        width: scrollerBounds.width,
+        height: scrollerBounds.height
+      },
+      scrollerClass: scrollerElement.getAttribute("class"),
+      scrollerConnected: scrollerElement.isConnected,
+      scrollTop: scrollerElement.scrollTop,
+      scrollHeight: scrollerElement.scrollHeight,
+      clientHeight: scrollerElement.clientHeight,
+      rendererViewport: rendererWindow
+        ? { width: rendererWindow.innerWidth, height: rendererWindow.innerHeight }
+        : undefined
+    };
+  }, scroller);
+}
+
+function assertExactCodePreviewIdentity(identity: ExactCodePreviewIdentity, expectedCode?: string): void {
+  const actual = JSON.stringify(identity);
+  assert.equal(identity.previewConnected, true, `The exact Code Preview content must remain connected: ${actual}.`);
+  assert.equal(identity.scrollerConnected, true, `The exact Code Preview scroller must remain connected: ${actual}.`);
+  assert.equal(
+    identity.previewOwnsScroller,
+    true,
+    `The exact Code Preview content must retain its exact parent scroller: ${actual}.`
+  );
+  assert.equal(
+    identity.sameDocument,
+    true,
+    `The exact Code Preview content and scroller must retain one renderer document: ${actual}.`
+  );
+  assert.ok(
+    identity.scrollerClass?.split(/\s+/u).includes("cm-scroller"),
+    `The generated-code preview must expose its exact CodeMirror scroller: ${actual}.`
+  );
+  assertFinitePositiveCodePreviewRectangle(identity.previewBounds, "content", actual);
+  assertFinitePositiveCodePreviewRectangle(identity.scrollerBounds, "scroller", actual);
+  assert.ok(
+    identity.rendererViewport &&
+      Number.isFinite(identity.rendererViewport.width) &&
+      identity.rendererViewport.width > 0 &&
+      Number.isFinite(identity.rendererViewport.height) &&
+      identity.rendererViewport.height > 0,
+    `The exact Code Preview must retain a finite positive renderer viewport: ${actual}.`
+  );
+  if (expectedCode === undefined) {
+    assert.equal(
+      typeof identity.code,
+      "string",
+      `The exact Code Preview must expose a CodeMirror document: ${actual}.`
+    );
+  } else {
+    assert.equal(identity.code, expectedCode, `The exact Code Preview document changed: ${actual}.`);
+  }
+}
+
+function assertFinitePositiveCodePreviewRectangle(
+  bounds: Readonly<{ left: number; top: number; width: number; height: number }>,
+  subject: string,
+  actual: string
+): void {
+  assert.ok(
+    Number.isFinite(bounds.left) &&
+      Number.isFinite(bounds.top) &&
+      Number.isFinite(bounds.width) &&
+      bounds.width > 0 &&
+      Number.isFinite(bounds.height) &&
+      bounds.height > 0,
+    `The exact Code Preview ${subject} must have finite positive geometry: ${actual}.`
+  );
+}
+
+function exactCodePreviewUsableScrollerHeight(identity: ExactCodePreviewIdentity, tolerance: number): number {
+  const actual = JSON.stringify(identity);
+  assert.ok(
+    Number.isFinite(identity.scrollTop) && identity.scrollTop >= 0,
+    `The exact Code Preview scroller must have a finite non-negative scrollTop: ${actual}.`
+  );
+  assert.ok(
+    Number.isFinite(identity.scrollHeight) && identity.scrollHeight > 0,
+    `The exact Code Preview scroller must have a finite positive scrollHeight: ${actual}.`
+  );
+  assert.ok(
+    Number.isFinite(identity.clientHeight) &&
+      identity.clientHeight > 0 &&
+      identity.clientHeight <= identity.scrollerBounds.height + tolerance,
+    `The exact Code Preview scroller must have a bounded finite positive clientHeight: ${actual}.`
+  );
+  const maximumScrollTop = identity.scrollHeight - identity.clientHeight;
+  assert.ok(
+    maximumScrollTop >= -tolerance && identity.scrollTop <= Math.max(0, maximumScrollTop) + tolerance,
+    `The exact Code Preview scroller must retain a valid bounded scroll range: ${actual}.`
+  );
+  assert.ok(
+    identity.rendererViewport &&
+      identity.scrollerBounds.left >= -tolerance &&
+      identity.scrollerBounds.top >= -tolerance &&
+      identity.scrollerBounds.left + identity.scrollerBounds.width <= identity.rendererViewport.width + tolerance &&
+      identity.scrollerBounds.top + identity.scrollerBounds.height <= identity.rendererViewport.height + tolerance,
+    `The exact Code Preview scroller must be fully exposed in its renderer viewport: ${actual}.`
+  );
+  return Math.min(identity.scrollerBounds.height, identity.clientHeight);
+}
+
+async function waitForExactCodePreviewAnimationFrames(scroller: ExactCodePreviewHandle): Promise<void> {
+  await scroller.evaluate((element) => {
+    const target = element as unknown as {
+      readonly ownerDocument: {
+        readonly defaultView: null | { requestAnimationFrame(callback: () => void): number };
+      };
+    };
+    const frameWindow = target.ownerDocument.defaultView;
+    if (!frameWindow) throw new Error("The exact Code Preview scroller has no owning renderer window.");
+    return new Promise<void>((resolve) => {
+      frameWindow.requestAnimationFrame(() => frameWindow.requestAnimationFrame(() => resolve()));
+    });
+  });
+}
+
+async function prepareExactCodePreviewLine(
+  target: ExactCodePreviewTarget,
+  expectedText: string,
+  occurrence: "first" | "last"
+): Promise<ExactCodePreviewHandle> {
+  const identity = await readExactCodePreviewIdentity(target.preview, target.scroller);
+  assertExactCodePreviewIdentity(identity, target.code);
+  const position = occurrence === "first" ? target.code.indexOf(expectedText) : target.code.lastIndexOf(expectedText);
+  assert.notEqual(position, -1, `The exact Code Preview document must contain ${JSON.stringify(expectedText)}.`);
+  const initialExposure = await target.preview.evaluate(
+    (element, options) => {
+      type Rectangle = { left: number; top: number; width: number; height: number };
+      const content = element as unknown as {
+        cmTile?: {
+          view?: {
+            readonly contentDOM: unknown;
+            readonly documentTop: number;
+            readonly scaleY: number;
+            readonly scrollDOM: unknown;
+            dispatch(spec: Readonly<{ selection: Readonly<{ anchor: number }> }>): void;
+            lineBlockAt(position: number): Readonly<{
+              from: number;
+              to: number;
+              top: number;
+              height: number;
+            }>;
+            state: { doc: { toString(): string } };
+          };
+        };
+        readonly ownerDocument: {
+          readonly defaultView: null | { readonly innerWidth: number; readonly innerHeight: number };
+        };
+        getBoundingClientRect(): Rectangle;
+      };
+      const exactScroller = options.exactScroller as unknown as {
+        readonly scrollTop: number;
+        readonly scrollHeight: number;
+        readonly clientHeight: number;
+        getBoundingClientRect(): Rectangle;
+      };
+      const view = content.cmTile?.view;
+      if (!view) throw new Error("The exact Code Preview lost its CodeMirror view.");
+      view.dispatch({ selection: { anchor: options.position } });
+      const block = view.lineBlockAt(options.position);
+      const contentBounds = content.getBoundingClientRect();
+      const scrollerBounds = exactScroller.getBoundingClientRect();
+      const rendererWindow = content.ownerDocument.defaultView;
+      return {
+        blockContainsPosition: block.from <= options.position && block.to >= options.position,
+        code: view.state.doc.toString(),
+        contentIsExact: view.contentDOM === content,
+        lineBounds: {
+          left: contentBounds.left,
+          top: view.documentTop + block.top * view.scaleY,
+          width: contentBounds.width,
+          height: block.height * view.scaleY
+        },
+        scaleY: view.scaleY,
+        scrollerBounds: {
+          left: scrollerBounds.left,
+          top: scrollerBounds.top,
+          width: scrollerBounds.width,
+          height: scrollerBounds.height
+        },
+        scrollerIsExact: view.scrollDOM === exactScroller,
+        scrollTop: exactScroller.scrollTop,
+        scrollHeight: exactScroller.scrollHeight,
+        clientHeight: exactScroller.clientHeight,
+        rendererViewport: rendererWindow
+          ? { width: rendererWindow.innerWidth, height: rendererWindow.innerHeight }
+          : undefined
+      };
+    },
+    { exactScroller: target.scroller, position }
+  );
+  const initialActual = JSON.stringify(initialExposure);
+  assert.equal(
+    initialExposure.code,
+    target.code,
+    `The exact Code Preview document changed before line materialization: ${initialActual}.`
+  );
+  assert.equal(
+    initialExposure.contentIsExact && initialExposure.scrollerIsExact && initialExposure.blockContainsPosition,
+    true,
+    `The exact Code Preview must bind its selected line block to the pinned content and scroller: ${initialActual}.`
+  );
+  assert.equal(
+    initialExposure.scaleY,
+    1,
+    `The exact Code Preview requires unscaled vertical geometry: ${initialActual}.`
+  );
+  let initialPlan: ReturnType<typeof computeCodePreviewScrollPlan>;
+  try {
+    initialPlan = computeCodePreviewScrollPlan({
+      lineBounds: initialExposure.lineBounds,
+      scrollerBounds: initialExposure.scrollerBounds,
+      scrollTop: initialExposure.scrollTop,
+      scrollHeight: initialExposure.scrollHeight,
+      clientHeight: initialExposure.clientHeight,
+      rendererViewport: initialExposure.rendererViewport,
+      tolerance: 1
+    });
+  } catch (error) {
+    throw new Error(`The exact Code Preview line-block geometry is invalid: ${initialActual}.`, { cause: error });
+  }
+  const initialScrollTop = await target.scroller.evaluate((element, scrollTop) => {
+    const exactScroller = element as unknown as { scrollTop: number };
+    exactScroller.scrollTop = scrollTop;
+    return exactScroller.scrollTop;
+  }, initialPlan.targetScrollTop);
+  assert.ok(
+    Number.isFinite(initialScrollTop) && Math.abs(initialScrollTop - initialPlan.targetScrollTop) <= 1,
+    `The exact Code Preview scroller did not accept its initial line-block target: ${JSON.stringify({ initialExposure, initialPlan, initialScrollTop })}.`
+  );
+  await waitForExactCodePreviewAnimationFrames(target.scroller);
+  const refreshedIdentity = await readExactCodePreviewIdentity(target.preview, target.scroller);
+  assertExactCodePreviewIdentity(refreshedIdentity, target.code);
+
+  const rawLine = await target.preview.evaluateHandle(
+    (element, options) => {
+      type LineElement = { readonly textContent: string | null };
+      const content = element as unknown as { querySelectorAll(selector: string): ArrayLike<LineElement> };
+      const matches = Array.from(content.querySelectorAll(".cm-line")).filter((line) =>
+        (line.textContent ?? "").includes(options.expectedText)
+      );
+      return options.occurrence === "first" ? (matches[0] ?? null) : (matches[matches.length - 1] ?? null);
+    },
+    { expectedText, occurrence }
+  );
+  const line = rawLine.asElement() as ExactCodePreviewHandle | null;
+  if (!line) {
+    await rawLine.dispose();
+    assert.fail(`The exact Code Preview did not render a line containing ${JSON.stringify(expectedText)}.`);
+  }
+  return line;
+}
+
+async function measureExactCodePreviewExposure(
+  target: ExactCodePreviewTarget,
+  line: ExactCodePreviewHandle
+): Promise<ExactCodePreviewExposure> {
+  return line.evaluate((element, exactScroller) => {
+    type Rectangle = { left: number; top: number; width: number; height: number };
+    type LineElement = {
+      readonly isConnected: boolean;
+      readonly ownerDocument: {
+        readonly defaultView: null | { readonly innerWidth: number; readonly innerHeight: number };
+      };
+      readonly innerText?: string;
+      readonly textContent: string | null;
+      getBoundingClientRect(): Rectangle;
+    };
+    type ScrollerElement = {
+      readonly ownerDocument: unknown;
+      readonly scrollTop: number;
+      readonly scrollHeight: number;
+      readonly clientHeight: number;
+      contains(candidate: unknown): boolean;
+      getBoundingClientRect(): Rectangle;
+    };
+    const lineElement = element as unknown as LineElement;
+    const scrollerElement = exactScroller as unknown as ScrollerElement;
+    const lineBounds = lineElement.getBoundingClientRect();
+    const scrollerBounds = scrollerElement.getBoundingClientRect();
+    const rendererWindow = lineElement.ownerDocument.defaultView;
+    return {
+      lineBounds: {
+        left: lineBounds.left,
+        top: lineBounds.top,
+        width: lineBounds.width,
+        height: lineBounds.height
+      },
+      lineConnected: lineElement.isConnected,
+      lineText: lineElement.innerText ?? lineElement.textContent ?? "",
+      sameDocument: lineElement.ownerDocument === scrollerElement.ownerDocument,
+      scrollerBounds: {
+        left: scrollerBounds.left,
+        top: scrollerBounds.top,
+        width: scrollerBounds.width,
+        height: scrollerBounds.height
+      },
+      scrollerContainsLine: scrollerElement.contains(lineElement),
+      scrollTop: scrollerElement.scrollTop,
+      scrollHeight: scrollerElement.scrollHeight,
+      clientHeight: scrollerElement.clientHeight,
+      rendererViewport: rendererWindow
+        ? { width: rendererWindow.innerWidth, height: rendererWindow.innerHeight }
+        : undefined
+    };
+  }, target.scroller);
+}
+
+async function settleExactCodePreviewLine(
+  target: ExactCodePreviewTarget,
+  expectedText: string,
+  occurrence: "first" | "last"
+): Promise<ExactCodePreviewHandle> {
+  const line = await prepareExactCodePreviewLine(target, expectedText, occurrence);
+  let transferred = false;
+  let failure: Readonly<{ error: unknown }> | undefined;
+  const maximumAttempts = 8;
+  const geometryTolerance = 1;
+  let previousVisibleExposure: ExactCodePreviewExposure | undefined;
+  let lastExposure: unknown;
+  try {
+    for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+      const identity = await readExactCodePreviewIdentity(target.preview, target.scroller);
+      assertExactCodePreviewIdentity(identity, target.code);
+      const exposure = await measureExactCodePreviewExposure(target, line);
+      lastExposure = { attempt, ...exposure };
+      assert.equal(
+        exposure.lineConnected && exposure.sameDocument && exposure.scrollerContainsLine,
+        true,
+        `The generated-code line must remain an exact descendant of its scroller: ${JSON.stringify(lastExposure)}.`
+      );
+      assert.ok(
+        exposure.lineText.includes(expectedText),
+        `The generated-code line must retain ${JSON.stringify(expectedText)}: ${JSON.stringify(lastExposure)}.`
+      );
+      let plan: ReturnType<typeof computeCodePreviewScrollPlan>;
+      try {
+        plan = computeCodePreviewScrollPlan({
+          lineBounds: exposure.lineBounds,
+          scrollerBounds: exposure.scrollerBounds,
+          scrollTop: exposure.scrollTop,
+          scrollHeight: exposure.scrollHeight,
+          clientHeight: exposure.clientHeight,
+          rendererViewport: exposure.rendererViewport,
+          tolerance: geometryTolerance
+        });
+      } catch (error) {
+        throw new Error(`The exact Code Preview exposure geometry is invalid: ${JSON.stringify(lastExposure)}.`, {
+          cause: error
+        });
+      }
+      const geometrySettled =
+        plan.currentFullyVisible &&
+        previousVisibleExposure !== undefined &&
+        Math.abs(previousVisibleExposure.lineBounds.top - exposure.lineBounds.top) <= geometryTolerance &&
+        Math.abs(previousVisibleExposure.lineBounds.height - exposure.lineBounds.height) <= geometryTolerance &&
+        Math.abs(previousVisibleExposure.scrollerBounds.top - exposure.scrollerBounds.top) <= geometryTolerance &&
+        Math.abs(previousVisibleExposure.scrollerBounds.height - exposure.scrollerBounds.height) <= geometryTolerance &&
+        Math.abs(previousVisibleExposure.scrollTop - exposure.scrollTop) <= geometryTolerance;
+      if (geometrySettled) {
+        transferred = true;
+        return line;
+      }
+      previousVisibleExposure = plan.currentFullyVisible ? exposure : undefined;
+      const appliedScrollTop = await target.scroller.evaluate((element, scrollTop) => {
+        const exactScroller = element as unknown as { scrollTop: number };
+        exactScroller.scrollTop = scrollTop;
+        return exactScroller.scrollTop;
+      }, plan.targetScrollTop);
+      lastExposure = { attempt, appliedScrollTop, plan, ...exposure };
+      assert.ok(
+        Number.isFinite(appliedScrollTop) && Math.abs(appliedScrollTop - plan.targetScrollTop) <= geometryTolerance,
+        `The exact Code Preview scroller did not accept its clamped center target: ${JSON.stringify(lastExposure)}.`
+      );
+      await waitForExactCodePreviewAnimationFrames(target.scroller);
+    }
+    throw new Error(
+      `The generated-code line did not settle fully visible in its exact CodeMirror scroller after ${maximumAttempts} attempts: ${JSON.stringify(lastExposure)}.`
+    );
+  } catch (error) {
+    failure = { error };
+    throw error;
+  } finally {
+    if (!transferred) {
+      await releaseExactCodePreviewHandlesAfterFailure(
+        [line],
+        failure,
+        "Revealing the exact Code Preview line and releasing its handle both failed."
+      );
+    }
+  }
+}
+
 async function revealCodePreviewOperationLine(
-  codePreview: Locator,
+  codePreview: Locator | ExactCodePreviewTarget,
   operationText: string,
   resultText: string
 ): Promise<void> {
-  const scroller = codePreview.locator("xpath=..");
-  assert.ok(
-    (await scroller.getAttribute("class"))?.split(/\s+/u).includes("cm-scroller"),
-    "The generated-code preview must expose its CodeMirror scroller."
-  );
-  await scroller.evaluate((element) => {
-    const target = element as unknown as { scrollHeight: number; scrollLeft: number; scrollTop: number };
-    target.scrollLeft = 0;
-    target.scrollTop = target.scrollHeight;
-  });
-  const operationLine = codePreview.locator(".cm-line").filter({ hasText: operationText }).last();
-  await operationLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  await operationLine.scrollIntoViewIfNeeded();
-  const resultLine = codePreview.locator(".cm-line").filter({ hasText: resultText }).last();
-  await resultLine.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  await resultLine.scrollIntoViewIfNeeded();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const [operationLineText, resultLineText, operationBounds, resultBounds, scrollerBounds] = await Promise.all([
-    operationLine.innerText(),
-    resultLine.innerText(),
-    operationLine.boundingBox(),
-    resultLine.boundingBox(),
-    scroller.boundingBox()
-  ]);
-  assert.ok(
-    operationLineText.includes(operationText),
-    "The visible generated-code line must contain the operation call."
-  );
-  assert.ok(resultLineText.includes(resultText), "The visible generated-code line must contain the operation result.");
-  assert.ok(operationBounds, "The generated-code operation line must have measurable geometry.");
-  assert.ok(resultBounds, "The generated-code result line must have measurable geometry.");
-  assert.ok(scrollerBounds, "The generated-code preview must have measurable geometry.");
-  for (const [subject, bounds] of [
-    ["operation", operationBounds],
-    ["result", resultBounds]
-  ] as const) {
-    assert.ok(
-      bounds.y >= scrollerBounds.y - 1 && bounds.y + bounds.height <= scrollerBounds.y + scrollerBounds.height + 1,
-      `The generated-code ${subject} line must be fully visible in the Code Preview panel.`
+  const target = await exactCodePreviewTarget(codePreview);
+  let operationLine: ExactCodePreviewHandle | undefined;
+  let resultLine: ExactCodePreviewHandle | undefined;
+  let failure: Readonly<{ error: unknown }> | undefined;
+  try {
+    resultLine = await settleExactCodePreviewLine(target, resultText, "last");
+    operationLine = await prepareExactCodePreviewLine(target, operationText, "last");
+    await waitForExactCodePreviewAnimationFrames(target.scroller);
+    const identity = await readExactCodePreviewIdentity(target.preview, target.scroller);
+    assertExactCodePreviewIdentity(identity, target.code);
+    const [operationExposure, resultExposure] = await Promise.all([
+      measureExactCodePreviewExposure(target, operationLine),
+      measureExactCodePreviewExposure(target, resultLine)
+    ]);
+    for (const [subject, text, exposure] of [
+      ["operation", operationText, operationExposure],
+      ["result", resultText, resultExposure]
+    ] as const) {
+      const actual = JSON.stringify(exposure);
+      assert.equal(
+        exposure.lineConnected && exposure.sameDocument && exposure.scrollerContainsLine,
+        true,
+        `The generated-code ${subject} line must remain in the exact scroller: ${actual}.`
+      );
+      assert.ok(
+        exposure.lineText.includes(text),
+        `The generated-code ${subject} line must retain ${JSON.stringify(text)}: ${actual}.`
+      );
+      const plan = computeCodePreviewScrollPlan({
+        lineBounds: exposure.lineBounds,
+        scrollerBounds: exposure.scrollerBounds,
+        scrollTop: exposure.scrollTop,
+        scrollHeight: exposure.scrollHeight,
+        clientHeight: exposure.clientHeight,
+        rendererViewport: exposure.rendererViewport,
+        tolerance: 1
+      });
+      assert.equal(
+        plan.currentFullyVisible,
+        true,
+        `The generated-code ${subject} line must be fully visible in the exact Code Preview scroller: ${actual}.`
+      );
+    }
+  } catch (error) {
+    failure = { error };
+    throw error;
+  } finally {
+    await releaseExactCodePreviewHandlesAfterFailure(
+      [operationLine, resultLine, target.preview, target.scroller],
+      failure,
+      "Revealing the generated-code operation and releasing its exact handles both failed."
     );
   }
 }
 
-async function revealCodePreviewText(codePreview: Locator, expectedText: string): Promise<string> {
-  const reveal = await codePreview.evaluate((element, text) => {
-    const content = element as unknown as {
-      cmTile?: {
-        view?: {
-          dispatch(spec: Readonly<{ selection: Readonly<{ anchor: number }>; scrollIntoView: boolean }>): void;
-          state: { doc: { toString(): string } };
-        };
-      };
-    };
-    const view = content.cmTile?.view;
-    if (!view) return { code: undefined, position: -1 };
-    const code = view.state.doc.toString();
-    const position = code.indexOf(text);
-    if (position >= 0) view.dispatch({ selection: { anchor: position }, scrollIntoView: true });
-    return { code, position };
-  }, expectedText);
-  assert.ok(reveal.code, "The generated-code preview must expose its CodeMirror document.");
-  assert.notEqual(reveal.position, -1, "The generated-code preview must contain the expected text.");
-
-  const line = codePreview.locator(".cm-line").filter({ hasText: expectedText }).first();
-  await line.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  await line.scrollIntoViewIfNeeded();
-  const [lineText, lineBounds, scrollerBounds] = await Promise.all([
-    line.innerText(),
-    line.boundingBox(),
-    codePreview.locator("xpath=..").boundingBox()
-  ]);
-  assert.ok(lineText.includes(expectedText), "The visible generated-code line must contain the expected text.");
-  assert.ok(lineBounds, "The generated-code line must have measurable geometry.");
-  assert.ok(scrollerBounds, "The generated-code preview must have measurable geometry.");
-  assert.ok(
-    lineBounds.y >= scrollerBounds.y - 1 &&
-      lineBounds.y + lineBounds.height <= scrollerBounds.y + scrollerBounds.height + 1,
-    "The generated-code line must be fully visible in the Code Preview panel."
-  );
-  return reveal.code;
+async function revealCodePreviewText(
+  codePreview: Locator | ExactCodePreviewTarget,
+  expectedText: string
+): Promise<string> {
+  const target = await exactCodePreviewTarget(codePreview);
+  let line: ExactCodePreviewHandle | undefined;
+  let failure: Readonly<{ error: unknown }> | undefined;
+  try {
+    line = await settleExactCodePreviewLine(target, expectedText, "first");
+    return target.code;
+  } catch (error) {
+    failure = { error };
+    throw error;
+  } finally {
+    await releaseExactCodePreviewHandlesAfterFailure(
+      [line, target.preview, target.scroller],
+      failure,
+      "Revealing generated-code text and releasing its exact handles both failed."
+    );
+  }
 }
 
-async function ensureCodePreviewHeight(workbench: Page, minimumHeight: number): Promise<void> {
+async function exactCodePreviewTarget(codePreview: Locator | ExactCodePreviewTarget): Promise<ExactCodePreviewTarget> {
+  return "preview" in codePreview && "scroller" in codePreview && "code" in codePreview
+    ? codePreview
+    : pinExactCodePreview(codePreview);
+}
+
+async function releaseExactCodePreview(target: {
+  readonly preview: ExactCodePreviewHandle;
+  readonly scroller: ExactCodePreviewHandle | undefined;
+}): Promise<void> {
+  await releaseExactCodePreviewHandles([target.preview, target.scroller]);
+}
+
+async function releaseExactCodePreviewHandles(handles: readonly (ExactCodePreviewHandle | undefined)[]): Promise<void> {
+  const results = await Promise.allSettled(
+    handles.filter((handle) => handle !== undefined).map((handle) => handle.dispose())
+  );
+  const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (failures.length > 0) throw new AggregateError(failures, "Releasing the exact Code Preview handles failed.");
+}
+
+async function releaseExactCodePreviewHandlesAfterFailure(
+  handles: readonly (ExactCodePreviewHandle | undefined)[],
+  failure: Readonly<{ error: unknown }> | undefined,
+  aggregateMessage: string
+): Promise<void> {
+  try {
+    await releaseExactCodePreviewHandles(handles);
+  } catch (cleanupError) {
+    if (failure) throw new AggregateError([failure.error, cleanupError], aggregateMessage);
+    throw cleanupError;
+  }
+}
+
+async function ensureCodePreviewHeight(
+  workbench: Page,
+  codePreview: Locator,
+  minimumHeight: number
+): Promise<ExactCodePreviewTarget> {
   assert.ok(
     Number.isFinite(minimumHeight) && minimumHeight >= 120,
     "The generated-code preview minimum height must be a useful finite CSS-pixel value."
   );
-  const panel = workbench.locator(".part.panel:visible").first();
-  await panel.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-  const commands = new Set(await vscode.commands.getCommands(true));
-  assert.ok(
-    commands.has("workbench.action.focusPanel") && commands.has("workbench.action.increaseViewSize"),
-    "The workbench must expose its native Code Preview focus and resize commands."
-  );
-  await vscode.commands.executeCommand("openWrangler.codePreview.focus");
-  await vscode.commands.executeCommand("workbench.action.focusPanel");
-  for (let attempt = 0; attempt < 24; attempt += 1) {
-    const bounds = await panel.boundingBox();
-    assert.ok(bounds, "The Code Preview panel must have measurable geometry.");
-    if (bounds.height >= minimumHeight) return;
-    await vscode.commands.executeCommand("workbench.action.increaseViewSize");
-    await workbench.waitForTimeout(100);
+  const target = await pinExactCodePreview(codePreview);
+  let transferred = false;
+  let lastIdentity: ExactCodePreviewIdentity | undefined;
+  let failure: Readonly<{ error: unknown }> | undefined;
+  try {
+    const commands = new Set(await vscode.commands.getCommands(true));
+    assert.ok(
+      commands.has("openWrangler.codePreview.focus") &&
+        commands.has("workbench.action.focusPanel") &&
+        commands.has("workbench.action.increaseViewSize"),
+      "The workbench must expose its exact Code Preview focus and resize commands."
+    );
+    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+    lastIdentity = await readExactCodePreviewIdentity(target.preview, target.scroller);
+    assertExactCodePreviewIdentity(lastIdentity, target.code);
+    await vscode.commands.executeCommand("workbench.action.focusPanel");
+    lastIdentity = await readExactCodePreviewIdentity(target.preview, target.scroller);
+    assertExactCodePreviewIdentity(lastIdentity, target.code);
+    const maximumResizeAttempts = 24;
+    for (let attempt = 0; attempt <= maximumResizeAttempts; attempt += 1) {
+      await waitForExactCodePreviewAnimationFrames(target.scroller);
+      lastIdentity = await readExactCodePreviewIdentity(target.preview, target.scroller);
+      assertExactCodePreviewIdentity(lastIdentity, target.code);
+      const usableHeight = exactCodePreviewUsableScrollerHeight(lastIdentity, 1);
+      if (usableHeight >= minimumHeight) {
+        transferred = true;
+        return target;
+      }
+      if (attempt === maximumResizeAttempts) break;
+      await vscode.commands.executeCommand("workbench.action.increaseViewSize");
+      await workbench.waitForTimeout(100);
+    }
+    throw new Error(
+      `The exact Code Preview scroller must be at least ${minimumHeight} CSS pixels high within its renderer viewport: ${JSON.stringify(lastIdentity)}.`
+    );
+  } catch (error) {
+    failure = { error };
+    throw error;
+  } finally {
+    if (!transferred) {
+      await releaseExactCodePreviewHandlesAfterFailure(
+        [target.preview, target.scroller],
+        failure,
+        "Sizing the exact Code Preview and releasing its handles both failed."
+      );
+    }
   }
-  const bounds = await panel.boundingBox();
-  assert.ok(bounds, "The enlarged Code Preview panel must have measurable geometry.");
-  assert.ok(
-    bounds.height >= minimumHeight,
-    `The Code Preview panel must be at least ${minimumHeight} CSS pixels high; received ${bounds.height}.`
-  );
 }
 
 async function closeVisibleWorkbenchPart(

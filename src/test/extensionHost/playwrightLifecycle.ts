@@ -70,6 +70,111 @@ interface ExactAcceptanceElement {
   evaluate<Result>(pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result>;
 }
 
+export interface CodePreviewRectangle {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface CodePreviewScrollGeometry {
+  readonly lineBounds: CodePreviewRectangle | null | undefined;
+  readonly scrollerBounds: CodePreviewRectangle | null | undefined;
+  readonly scrollTop: number | null | undefined;
+  readonly scrollHeight: number | null | undefined;
+  readonly clientHeight: number | null | undefined;
+  readonly rendererViewport: Readonly<{ width: number; height: number }> | null | undefined;
+  readonly tolerance: number;
+}
+
+export interface CodePreviewScrollPlan {
+  readonly currentFullyVisible: boolean;
+  readonly maximumScrollTop: number;
+  readonly targetScrollTop: number;
+}
+
+export function computeCodePreviewScrollPlan(geometry: CodePreviewScrollGeometry): CodePreviewScrollPlan {
+  const tolerance = finiteCodePreviewNumber(geometry.tolerance, "geometry tolerance");
+  if (tolerance < 0) throw new Error("Code Preview geometry tolerance must be non-negative.");
+  const lineBounds = codePreviewRectangle(geometry.lineBounds, "line");
+  const scrollerBounds = codePreviewRectangle(geometry.scrollerBounds, "scroller");
+  const rendererViewport = geometry.rendererViewport;
+  if (rendererViewport === null || rendererViewport === undefined) {
+    throw new Error("Code Preview renderer viewport geometry is required.");
+  }
+  const rendererWidth = finiteCodePreviewNumber(rendererViewport.width, "renderer viewport width");
+  const rendererHeight = finiteCodePreviewNumber(rendererViewport.height, "renderer viewport height");
+  if (rendererWidth <= 0 || rendererHeight <= 0) {
+    throw new Error("Code Preview renderer viewport dimensions must be positive.");
+  }
+  const scrollTop = finiteCodePreviewNumber(geometry.scrollTop, "scrollTop");
+  const scrollHeight = finiteCodePreviewNumber(geometry.scrollHeight, "scrollHeight");
+  const clientHeight = finiteCodePreviewNumber(geometry.clientHeight, "clientHeight");
+  if (scrollTop < 0) throw new Error("Code Preview scrollTop must be non-negative.");
+  if (scrollHeight <= 0 || clientHeight <= 0) {
+    throw new Error("Code Preview scrollHeight and clientHeight must be positive.");
+  }
+  if (clientHeight > scrollerBounds.height + tolerance) {
+    throw new Error("Code Preview clientHeight exceeds the exact scroller geometry.");
+  }
+  if (scrollHeight + tolerance < clientHeight) {
+    throw new Error("Code Preview scrollHeight is smaller than clientHeight.");
+  }
+
+  const maximumScrollTop = Math.max(0, scrollHeight - clientHeight);
+  if (scrollTop > maximumScrollTop + tolerance) {
+    throw new Error("Code Preview scrollTop exceeds the exact scroller range.");
+  }
+  if (
+    scrollerBounds.left < -tolerance ||
+    scrollerBounds.top < -tolerance ||
+    scrollerBounds.left + scrollerBounds.width > rendererWidth + tolerance ||
+    scrollerBounds.top + scrollerBounds.height > rendererHeight + tolerance
+  ) {
+    throw new Error("The exact Code Preview scroller is not fully exposed in its renderer viewport.");
+  }
+  if (lineBounds.height > clientHeight) {
+    throw new Error("The Code Preview line is too tall to reveal fully in the exact scroller.");
+  }
+
+  const boundedScrollTop = Math.min(scrollTop, maximumScrollTop);
+  const lineContentTop = lineBounds.top - scrollerBounds.top + boundedScrollTop;
+  if (lineContentTop < -tolerance || lineContentTop + lineBounds.height > scrollHeight + tolerance) {
+    throw new Error("The Code Preview line geometry falls outside the exact scroller content range.");
+  }
+  const targetScrollTop = Math.min(
+    maximumScrollTop,
+    Math.max(0, lineContentTop + lineBounds.height / 2 - clientHeight / 2)
+  );
+  return {
+    currentFullyVisible:
+      lineBounds.top >= scrollerBounds.top - tolerance &&
+      lineBounds.top + lineBounds.height <= scrollerBounds.top + clientHeight + tolerance,
+    maximumScrollTop,
+    targetScrollTop
+  };
+}
+
+function codePreviewRectangle(
+  value: CodePreviewRectangle | null | undefined,
+  subject: "line" | "scroller"
+): CodePreviewRectangle {
+  if (value === null || value === undefined) throw new Error(`Code Preview ${subject} geometry is required.`);
+  const left = finiteCodePreviewNumber(value.left, `${subject} left`);
+  const top = finiteCodePreviewNumber(value.top, `${subject} top`);
+  const width = finiteCodePreviewNumber(value.width, `${subject} width`);
+  const height = finiteCodePreviewNumber(value.height, `${subject} height`);
+  if (width <= 0 || height <= 0) throw new Error(`Code Preview ${subject} dimensions must be positive.`);
+  return { left, top, width, height };
+}
+
+function finiteCodePreviewNumber(value: number | null | undefined, subject: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Code Preview ${subject} must be finite.`);
+  }
+  return value;
+}
+
 export class IndeterminateAcceptanceActionError extends Error {
   constructor(description: string, cause: unknown) {
     super(`${description} may have been dispatched, but its one-shot user activation did not settle.`, { cause });

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { inspectCandidateAcceptanceWorkflow } from "./candidate-acceptance-workflow.mjs";
+import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mjs";
 
 const source = readFileSync(new URL("../.github/workflows/candidate-acceptance.yml", import.meta.url), "utf8");
 const findRDependencies = (workflow) =>
@@ -176,6 +177,33 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
     },
     (workflow) => {
       workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_categorical"
+      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "interactive-terminal";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
+        (step) => step.id === "packaged_editor_r_categorical"
+      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode";
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      steps.splice(
+        steps.findIndex((step) => step.id === "canonical_r_categorical"),
+        1
+      );
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      steps.splice(
+        steps.findIndex((step) => step.id === "packaged_editor_r_categorical"),
+        0,
+        {
+          run: "echo interposed"
+        }
+      );
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
         (step) => step.id === "packaged_editor_r_interactive"
       ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "literate-documents";
     },
@@ -263,6 +291,19 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
     },
     (workflow) => {
       workflow.jobs.jupyter.steps.find(
+        (step) => step.name === "Upload categorical R-Jupyter failure diagnostics"
+      ).with.name = "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}";
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      const upload = steps.splice(
+        steps.findIndex((step) => step.name === "Upload categorical R-Jupyter failure diagnostics"),
+        1
+      )[0];
+      steps.splice(steps.findIndex((step) => step.id === "canonical_r_interactive") + 1, 0, upload);
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find(
         (step) => step.name === "Upload R Markdown and Quarto failure diagnostics"
       ).with.name = "preview-release-r-jupyter";
     },
@@ -295,18 +336,45 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
       );
     },
     (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
+        "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}";
+    },
+    (workflow) => {
+      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
+        "${{ steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure' }}";
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      const failure = steps.splice(
+        steps.findIndex((step) => step.name === "Fail after local R acceptance diagnostics"),
+        1
+      )[0];
+      steps.splice(
+        steps.findIndex((step) => step.id === "canonical_r_literate"),
+        0,
+        failure
+      );
+    },
+    (workflow) => {
       const steps = workflow.jobs.jupyter.steps;
       const focusedStart = steps.findIndex((step) => step.id === "canonical_r_interactive");
-      const focused = steps.splice(focusedStart, 4);
+      const focused = steps.splice(focusedStart, 3);
       const ordinaryStart = steps.findIndex((step) => step.id === "canonical_r_jupyter");
       steps.splice(ordinaryStart, 0, ...focused);
     },
     (workflow) => {
       const steps = workflow.jobs.jupyter.steps;
       const focusedStart = steps.findIndex((step) => step.id === "canonical_r_literate");
-      const focused = steps.splice(focusedStart, 4);
+      const focused = steps.splice(focusedStart, 3);
       const ordinaryStart = steps.findIndex((step) => step.id === "canonical_r_jupyter");
       steps.splice(ordinaryStart, 0, ...focused);
+    },
+    (workflow) => {
+      const steps = workflow.jobs.jupyter.steps;
+      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_categorical");
+      const focused = steps.splice(focusedStart, 3);
+      const interactiveStart = steps.findIndex((step) => step.id === "canonical_r_interactive");
+      steps.splice(interactiveStart + 3, 0, ...focused);
     },
     (workflow) => {
       workflow.jobs.linux.steps.find((step) => step.id === "packaged_cursor").env.OPEN_WRANGLER_XVFB_EXECUTABLE =
@@ -320,4 +388,113 @@ test("candidate acceptance shares one fail-closed artifact contract across relea
       `candidate mutation ${index + 1} must fail closed`
     );
   }
+});
+
+const syntheticUploadAction = "actions/upload-artifact@frozen";
+
+function syntheticDeferredWorkflow() {
+  const runnerIds = ["ordinary", "categorical", "interactive"];
+  const steps = runnerIds.flatMap((runnerId) => [
+    { id: runnerId, "continue-on-error": true, run: `run ${runnerId}` },
+    {
+      if: `\${{ always() && steps.${runnerId}.outcome == 'failure' && steps.${runnerId}.outputs.evidence_ready == 'true' }}`,
+      uses: syntheticUploadAction,
+      with: { path: `\${{ steps.${runnerId}.outputs.evidence_path }}` }
+    }
+  ]);
+  steps.push({
+    if: `\${{ always() && (${runnerIds.map((runnerId) => `steps.${runnerId}.outcome == 'failure'`).join(" || ")}) }}`,
+    run: "exit 1"
+  });
+  return { jobs: { release: { steps } } };
+}
+
+test("deferred diagnostic fan-in rejects every incomplete or ambiguous aggregate", () => {
+  assert.deepEqual(inspectDeferredDiagnosticFailures(syntheticDeferredWorkflow(), syntheticUploadAction), []);
+
+  const cases = [
+    ["missing", (steps) => steps.pop()],
+    [
+      "duplicate clauses",
+      (steps) => {
+        steps.at(-1).if =
+          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.categorical.outcome == 'failure') }}";
+      }
+    ],
+    [
+      "reordered clauses",
+      (steps) => {
+        steps.at(-1).if =
+          "${{ always() && (steps.categorical.outcome == 'failure' || steps.ordinary.outcome == 'failure' || steps.interactive.outcome == 'failure') }}";
+      }
+    ],
+    [
+      "malformed clause",
+      (steps) => {
+        steps.at(-1).if =
+          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.categorical.result == 'failure' || steps.interactive.outcome == 'failure') }}";
+      }
+    ],
+    [
+      "extra malformed aggregate",
+      (steps) => {
+        steps.push({
+          if: "${{ always() && (steps.ordinary.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.result == 'failure') }}",
+          run: "exit 1"
+        });
+      }
+    ],
+    [
+      "premature aggregate",
+      (steps) => {
+        const aggregate = steps.pop();
+        steps.splice(4, 0, aggregate);
+      }
+    ],
+    [
+      "aggregate without deferred runners",
+      (steps) => {
+        for (const step of steps) delete step["continue-on-error"];
+      }
+    ],
+    [
+      "unguarded continue-on-error",
+      (steps) => {
+        steps.unshift({ id: "unguarded", "continue-on-error": true, run: "run unguarded" });
+      }
+    ]
+  ];
+
+  for (const [label, mutate] of cases) {
+    const workflow = syntheticDeferredWorkflow();
+    mutate(workflow.jobs.release.steps);
+    assert.notDeepEqual(
+      inspectDeferredDiagnosticFailures(workflow, syntheticUploadAction),
+      [],
+      `${label} must fail closed`
+    );
+  }
+});
+
+test("legacy fixed-directory diagnostics remain valid with an immediate failure step", () => {
+  const workflow = {
+    jobs: {
+      visual: {
+        steps: [
+          { id: "screenshots", "continue-on-error": true, run: "capture screenshots" },
+          {
+            if: "${{ always() && steps.screenshots.outcome == 'failure' }}",
+            uses: syntheticUploadAction,
+            with: { path: "tmp/webview-acceptance" }
+          },
+          {
+            if: "${{ always() && steps.screenshots.outcome == 'failure' }}",
+            run: "exit 1"
+          }
+        ]
+      }
+    }
+  };
+
+  assert.deepEqual(inspectDeferredDiagnosticFailures(workflow, syntheticUploadAction), []);
 });

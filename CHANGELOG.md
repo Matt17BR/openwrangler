@@ -8,6 +8,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Native R candidate acceptance now runs One-hot encode and Multi-label binarize in a separately verified focused
+  VS Code/Cursor invocation. The ordinary comprehensive notebook phase keeps the remaining catalog within its
+  unchanged 300-second hard and 180-second inactivity deadlines, and neither phase retries. Ordinary, categorical,
+  active-terminal, and literate failures retain distinct immediate diagnostic uploads before one final local-R
+  failure fan-in, so an earlier editor failure cannot suppress the later local journeys.
 - Open Wrangler now recovers a visible editor whose renderer disappears after **Change Import Options** even when
   Cursor reports the final host message as delivered. The confirmed session is replayed into a fresh renderer without
   reopening the source or repeating the import transaction.
