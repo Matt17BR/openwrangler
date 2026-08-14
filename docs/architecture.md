@@ -364,8 +364,8 @@ frame, and final session cleanup. Local packaged acceptance assigns disjoint tar
 and categorical editing profiles. Every local invocation retains an exact complete 26-operation capability assertion,
 including the nested interactive-terminal and literate-document journeys. Core's targeted slice owns Filter Rows,
 Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone
-Column, Convert type, Formula, Text Length, and Group and aggregate. The `value-operations` targeted slice owns exactly
-Find and replace, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
+Column, Convert type, Text Length, and Group and aggregate. The `value-operations` targeted slice owns exactly Find and
+replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The
 `categorical-operations` targeted slice owns exactly the One-hot encode and Multi-label binarize forms, boundary
 values, generated calls, preview, apply, and undo in both VS Code and Cursor. These invocations are not otherwise
@@ -565,6 +565,29 @@ Spark Connect failures are read from PySpark's public condition, message-paramet
 Every live notebook-variable open reports attempt-scoped kernel acquisition, runtime bootstrap, and variable-opening stages to its owning renderer, including automatic backend detection. Only an explicitly pinned PySpark open replaces the generic final stage with plain copy explaining that the first page loads without counting every row and that the exact total appears after the last page. Renderer recreation replays the current stage; terminal, stale, or disposed attempts cannot publish another update. There is no **Cancel opening** control because Jupyter cannot safely cancel only one Open Wrangler execution. Closing the view sends a host-only detach signal: the UI stops owning the attempt, no kernel token is cancelled, and exact late-session cleanup remains observed in the extension host.
 
 After dispatch, generated-code insertion observes the exact original document for at most 10 seconds and succeeds only when exactly one uniquely marked matching cell is present. A false edit result is rejected; an asynchronous failure or accepted edit whose exact-document result cannot be proved is indeterminate and is never retried or rolled back. Actionless status notifications are not awaited, while confirmations, pickers, and Save dialogs remain awaited.
+
+## Release-candidate acceptance topology
+
+Preview and stable releases produce one canonical candidate and call the shared candidate-acceptance workflow once
+through a non-matrix job. The reusable workflow, rather than either caller, owns the fixed parallel job graph. The R
+4.5.2 contract is an independent sibling, and local R uses exactly two non-cancelling shard cells: lifecycle executes
+`core-operations`, `interactive-terminal`, then `literate-documents`; editing executes `value-operations`, then
+`categorical-operations`. This partitions scheduling, not coverage: targeted ownership remains 12 core, 12 value, and two
+categorical operations, with the shared representative lifecycle scaffold and complete capability assertions intact.
+
+Each local-R shard performs dependency and editor setup once. Every phase nevertheless crosses a fresh trust boundary:
+it reverifies the exact candidate, launches fresh VS Code and Cursor processes with their own private roots, and is
+followed immediately by its sealed failure-evidence upload. The shard reports failure only after all of its raw phase
+outcomes and uploads have had a chance to complete. All editor phases retain independent 300-second hard and
+180-second changed-checkpoint inactivity deadlines and are never automatically retried.
+
+The shared workflow exports no acceptance result that a caller could reinterpret. Its terminal fan-in evaluates the
+literal result of every internal job and succeeds only when all are `success`. Publication separately depends on
+literal success from package production, the single candidate-workflow call, and Remote SSH. The manually dispatched
+Released Jupyter workflow is a serial, non-authoritative diagnostic and is intentionally not part of that release
+proof. Based on Preview run #73, the parallel graph is expected to move the wall time from roughly 33 minutes overall
+and 31 minutes for local R to roughly 21–22 minutes from release start and about 15 minutes for the R shards, with
+Windows/Python likely next on the critical path. This is a topology estimate until a fresh hosted Preview proves it.
 
 ## Persistence and identity
 

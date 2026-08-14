@@ -87,6 +87,7 @@ import {
   probeRendererButtonReadiness,
   runFailClosedCategoricalUndo,
   runReplaceableCodePreviewGeneration,
+  selectUniqueCodePreviewLogicalLine,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
@@ -539,11 +540,12 @@ export async function run(): Promise<void> {
   const testSelector = process.env.OPEN_WRANGLER_TEST_SELECTOR;
   assert.ok(
     testSelector === undefined ||
+      testSelector === "core-operations" ||
       testSelector === "categorical-operations" ||
       testSelector === "value-operations" ||
       testSelector === "interactive-terminal" ||
       testSelector === "literate-documents",
-    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents".'
+    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "core-operations", "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents".'
   );
   assert.ok(
     testSelector === undefined || phase === "jupyter-r",
@@ -2268,6 +2270,11 @@ const RELEASED_R_VALUE_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoverageProfile =
   focusedEditing: "value-operations"
 });
 
+function releasedRCoreAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
+  if (process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor") return RELEASED_R_REPRESENTATIVE_COVERAGE;
+  return process.platform === "win32" ? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;
+}
+
 function releasedRAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
   if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations") {
     return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;
@@ -2275,8 +2282,10 @@ function releasedRAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfil
   if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "value-operations") {
     return RELEASED_R_VALUE_OPERATIONS_COVERAGE;
   }
-  if (process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor") return RELEASED_R_REPRESENTATIVE_COVERAGE;
-  return process.platform === "win32" ? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;
+  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "core-operations") {
+    return releasedRCoreAcceptanceCoverageProfile();
+  }
+  return releasedRCoreAcceptanceCoverageProfile();
 }
 
 function recordReleasedRAcceptanceSection(
@@ -6649,8 +6658,9 @@ async function exerciseReleasedRRepresentativeEditingJourney(
 
 async function assertReleasedRValueOperationsCleanState(
   testing: TestApi,
+  workbench: Page,
   sessionId: string,
-  checkpoint: "entry" | "strip-discard-restored" | "split-discard-restored" | "exit"
+  checkpoint: "entry" | "formula-undo-restored" | "strip-discard-restored" | "split-discard-restored" | "exit"
 ): Promise<void> {
   const active = testing.activeSession();
   assert.equal(
@@ -6688,22 +6698,93 @@ async function assertReleasedRValueOperationsCleanState(
     expectedSchema,
     `The focused R value catalog must restore its exact source schema at ${checkpoint}.`
   );
+  const requiresRendererSettlement = checkpoint === "entry" || checkpoint === "formula-undo-restored";
+  if (requiresRendererSettlement) {
+    const rowIdColumn = active.metadata.schema[0];
+    assert.equal(rowIdColumn?.name, "row_id", `The focused R value catalog must retain row_id first at ${checkpoint}.`);
+    assert.ok(rowIdColumn, `The focused R value catalog requires its stable first column at ${checkpoint}.`);
+    let app = await releasedRSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      `the focused R value catalog restored grid at ${checkpoint}`
+    );
+    const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await columnSearch.waitFor({ state: "visible", timeout: 10_000 });
+    await columnSearch.fill(rowIdColumn.name);
+    await app
+      .getByRole("option", { name: /^row_id,/u })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await columnSearch.press("Enter");
+    await waitFor(
+      () => {
+        const current = testing.activeSession();
+        return current?.sessionId === sessionId && current.viewState.selectedColumnId === rowIdColumn.id;
+      },
+      10_000,
+      `the focused R value catalog to select its exact restored row_id column at ${checkpoint}`
+    );
+    app = await releasedRSessionApp(
+      workbench,
+      testing,
+      sessionId,
+      `the focused R value catalog selected row_id grid at ${checkpoint}`
+    );
+    const firstRestoredCell = app.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
+    await firstRestoredCell.getByText("1", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(
+      (await firstRestoredCell.textContent())?.trim(),
+      "1",
+      `The focused R value catalog must render its first restored cell at ${checkpoint}.`
+    );
+  }
+  await waitFor(
+    () => {
+      const scheduler = testing.sessionSchedulerState(sessionId);
+      return (
+        scheduler?.sessionId === sessionId &&
+        scheduler.activeForegroundOperation === false &&
+        scheduler.interactiveQueueLength === 0
+      );
+    },
+    10_000,
+    `the focused R value catalog foreground lane to settle at ${checkpoint}`,
+    () =>
+      JSON.stringify({
+        selectedColumnId: testing.activeSession()?.viewState.selectedColumnId,
+        scheduler: testing.sessionSchedulerState(sessionId),
+        panelReceipt: testing.panelSynchronizationReceipt(sessionId)
+      })
+  );
+  const restored = testing.activeSession();
+  assert.equal(restored?.sessionId, sessionId, `The focused R value catalog must remain active at ${checkpoint}.`);
+  assert.ok(restored, `The focused R value catalog requires its restored session at ${checkpoint}.`);
   const page = await testing.request({
     kind: "getPage",
     sessionId,
-    revision: active.metadata.revision,
+    revision: restored.metadata.revision,
     viewRequestId: `jupyter-r-value-${checkpoint}`,
     offset: 0,
     limit: 1,
-    filterModel: active.viewState.filterModel,
+    filterModel: restored.viewState.filterModel,
     columnOffset: 0,
     columnLimit: 4
   });
+  if (page.kind !== "page") {
+    const diagnostic = {
+      kind: page.kind,
+      code: page.kind === "error" ? page.code : null,
+      recoverable: page.kind === "error" ? page.recoverable : null,
+      viewRequestId: "viewRequestId" in page && typeof page.viewRequestId === "string" ? page.viewRequestId : null,
+      messageReceipt: page.kind === "error" ? codePreviewDocumentReceipt(page.message) : null
+    };
+    assert.fail(`The focused R value catalog page did not resolve at ${checkpoint}: ${JSON.stringify(diagnostic)}.`);
+  }
   assert.equal(page.kind, "page", `The focused R value catalog must return its restored page at ${checkpoint}.`);
-  if (page.kind !== "page") throw new Error(`The focused R value catalog page did not resolve at ${checkpoint}.`);
   assert.deepEqual(
     page.page.columnIds,
-    active.metadata.schema.slice(0, 4).map((column) => column.id)
+    restored.metadata.schema.slice(0, 4).map((column) => column.id)
   );
   assert.deepEqual(
     page.page.rows[0]?.values.map((value) => value.display),
@@ -6715,6 +6796,7 @@ async function assertReleasedRValueOperationsCleanState(
 function recordReleasedRValueOperationCheckpoint(
   operation:
     | "find-replace"
+    | "formula"
     | "format-datetime"
     | "min-max-scale"
     | "round"
@@ -6800,7 +6882,7 @@ async function exerciseReleasedREditingJourney(
   await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
 
   if (editingCatalog === "value-operations") {
-    await assertReleasedRValueOperationsCleanState(testing, sessionId, "entry");
+    await assertReleasedRValueOperationsCleanState(testing, workbench, sessionId, "entry");
   }
 
   let coreScreenshot: Readonly<{ insertedRCellIndex: number; generatedCode: string }> | undefined;
@@ -7949,8 +8031,11 @@ async function exerciseReleasedREditingJourney(
     });
   }
 
-  if (phase === "jupyter-r" && editingCatalog === "core-catalog") {
+  if (phase === "jupyter-r" && editingCatalog === "value-operations") {
+    recordReleasedRValueOperationCheckpoint("formula", "start");
     await exerciseReleasedRFormulaJourney(testing, workbench, sessionId);
+    await assertReleasedRValueOperationsCleanState(testing, workbench, sessionId, "formula-undo-restored");
+    recordReleasedRValueOperationCheckpoint("formula", "complete");
   }
   if (phase === "jupyter-r" && editingCatalog === "value-operations") {
     recordReleasedRValueOperationCheckpoint("format-datetime", "start");
@@ -8467,11 +8552,11 @@ async function exerciseReleasedREditingJourney(
 
     recordReleasedRValueOperationCheckpoint("strip", "start");
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "stripText");
-    await assertReleasedRValueOperationsCleanState(testing, sessionId, "strip-discard-restored");
+    await assertReleasedRValueOperationsCleanState(testing, workbench, sessionId, "strip-discard-restored");
     recordReleasedRValueOperationCheckpoint("strip", "complete");
     recordReleasedRValueOperationCheckpoint("split", "start");
     await previewAndDiscardReleasedRTextTool(testing, sessionId, labelColumn, "splitText");
-    await assertReleasedRValueOperationsCleanState(testing, sessionId, "split-discard-restored");
+    await assertReleasedRValueOperationsCleanState(testing, workbench, sessionId, "split-discard-restored");
     recordReleasedRValueOperationCheckpoint("split", "complete");
   }
 
@@ -8493,7 +8578,7 @@ async function exerciseReleasedREditingJourney(
   }
 
   if (editingCatalog === "value-operations") {
-    await assertReleasedRValueOperationsCleanState(testing, sessionId, "exit");
+    await assertReleasedRValueOperationsCleanState(testing, workbench, sessionId, "exit");
   }
 }
 
@@ -9965,7 +10050,12 @@ async function previewReleasedRDrop(
   const exactCodePreview = await ensureCodePreviewHeight(workbench, codePreview, 180);
   recordAcceptanceProgress(`${checkpointPrefix}:size-ready`);
   recordAcceptanceProgress(`${checkpointPrefix}:reveal-start`);
-  assertReleasedRDropGeneratedCode(await revealCodePreviewText(exactCodePreview, sourceName), sourceName, variableName);
+  const sourceLine = `  .ow_drop_names <- c(${JSON.stringify(sourceName)})`;
+  assertReleasedRDropGeneratedCode(
+    await revealCodePreviewExactLogicalLine(exactCodePreview, sourceLine),
+    sourceName,
+    variableName
+  );
   recordAcceptanceProgress(`${checkpointPrefix}:reveal-complete`);
   await requireFreshExactSessionPanelHydration(
     testing,
@@ -23557,6 +23647,7 @@ async function waitForCodePreview(
 }
 
 type ExactCodePreviewHandle = ElementHandle<unknown>;
+type ExactCodePreviewLineMatch = "contains" | "exact-logical-line";
 
 interface ExactCodePreviewTarget {
   readonly preview: ExactCodePreviewHandle;
@@ -23588,7 +23679,7 @@ interface ExactCodePreviewIdentity {
 interface ExactCodePreviewExposure {
   readonly lineBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
   readonly lineConnected: boolean;
-  readonly lineContainsExpectedText: boolean;
+  readonly lineMatchesExpectedText: boolean;
   readonly lineTextReceipt: ReturnType<typeof codePreviewDocumentReceipt>;
   readonly sameDocument: boolean;
   readonly scrollerBounds: Readonly<{ left: number; top: number; width: number; height: number }>;
@@ -23936,12 +24027,25 @@ async function waitForExactCodePreviewAnimationFrames(scroller: ExactCodePreview
 async function prepareExactCodePreviewLine(
   target: ExactCodePreviewTarget,
   expectedText: string,
-  occurrence: "first" | "last"
+  occurrence: "first" | "last",
+  match: ExactCodePreviewLineMatch = "contains"
 ): Promise<ExactCodePreviewHandle> {
   const identity = await readExactCodePreviewIdentity(target.preview, target.scroller);
   assertExactCodePreviewIdentity(identity, target.codeReceipt);
-  const position = occurrence === "first" ? target.code.indexOf(expectedText) : target.code.lastIndexOf(expectedText);
   const expectedTextReceipt = codePreviewReceiptDiagnostic(codePreviewDocumentReceipt(expectedText));
+  let position: number;
+  if (match === "exact-logical-line") {
+    const selection = selectUniqueCodePreviewLogicalLine(target.code, expectedText);
+    assertExactCodePreviewReceipt(selection.documentReceipt, target.codeReceipt, "The logical-line source document");
+    assertExactCodePreviewReceipt(
+      selection.lineReceipt,
+      codePreviewDocumentReceipt(expectedText),
+      "The selected logical line"
+    );
+    position = selection.position;
+  } else {
+    position = occurrence === "first" ? target.code.indexOf(expectedText) : target.code.lastIndexOf(expectedText);
+  }
   assert.notEqual(position, -1, `The exact Code Preview document must contain text ${expectedTextReceipt}.`);
   const rawInitialExposure = await target.preview.evaluate(
     (element, options) => {
@@ -24061,17 +24165,25 @@ async function prepareExactCodePreviewLine(
     (element, options) => {
       type LineElement = { readonly textContent: string | null };
       const content = element as unknown as { querySelectorAll(selector: string): ArrayLike<LineElement> };
-      const matches = Array.from(content.querySelectorAll(".cm-line")).filter((line) =>
-        (line.textContent ?? "").includes(options.expectedText)
-      );
+      const matches = Array.from(content.querySelectorAll(".cm-line")).filter((line) => {
+        const lineText = line.textContent ?? "";
+        return options.match === "exact-logical-line"
+          ? lineText === options.expectedText
+          : lineText.includes(options.expectedText);
+      });
+      if (options.match === "exact-logical-line") return matches.length === 1 ? matches[0] : null;
       return options.occurrence === "first" ? (matches[0] ?? null) : (matches[matches.length - 1] ?? null);
     },
-    { expectedText, occurrence }
+    { expectedText, occurrence, match }
   );
   const line = rawLine.asElement() as ExactCodePreviewHandle | null;
   if (!line) {
     await rawLine.dispose();
-    assert.fail(`The exact Code Preview did not render a line containing text ${expectedTextReceipt}.`);
+    assert.fail(
+      match === "exact-logical-line"
+        ? `The exact Code Preview did not render one exact logical line ${expectedTextReceipt}.`
+        : `The exact Code Preview did not render a line containing text ${expectedTextReceipt}.`
+    );
   }
   return line;
 }
@@ -24079,7 +24191,8 @@ async function prepareExactCodePreviewLine(
 async function measureExactCodePreviewExposure(
   target: ExactCodePreviewTarget,
   line: ExactCodePreviewHandle,
-  expectedText: string
+  expectedText: string,
+  match: ExactCodePreviewLineMatch = "contains"
 ): Promise<ExactCodePreviewExposure> {
   const raw = await line.evaluate(
     (element, options) => {
@@ -24106,6 +24219,10 @@ async function measureExactCodePreviewExposure(
       const lineBounds = lineElement.getBoundingClientRect();
       const scrollerBounds = scrollerElement.getBoundingClientRect();
       const rendererWindow = lineElement.ownerDocument.defaultView;
+      const lineText =
+        options.match === "exact-logical-line"
+          ? (lineElement.textContent ?? "")
+          : (lineElement.innerText ?? lineElement.textContent ?? "");
       return {
         lineBounds: {
           left: lineBounds.left,
@@ -24114,10 +24231,11 @@ async function measureExactCodePreviewExposure(
           height: lineBounds.height
         },
         lineConnected: lineElement.isConnected,
-        lineText: lineElement.innerText ?? lineElement.textContent ?? "",
-        lineContainsExpectedText: (lineElement.innerText ?? lineElement.textContent ?? "").includes(
-          options.expectedText
-        ),
+        lineText,
+        lineMatchesExpectedText:
+          options.match === "exact-logical-line"
+            ? lineText === options.expectedText
+            : lineText.includes(options.expectedText),
         sameDocument: lineElement.ownerDocument === scrollerElement.ownerDocument,
         scrollerBounds: {
           left: scrollerBounds.left,
@@ -24134,7 +24252,7 @@ async function measureExactCodePreviewExposure(
           : undefined
       };
     },
-    { exactScroller: target.scroller, expectedText }
+    { exactScroller: target.scroller, expectedText, match }
   );
   const { lineText, ...exposure } = raw;
   return { ...exposure, lineTextReceipt: codePreviewDocumentReceipt(lineText) };
@@ -24143,9 +24261,10 @@ async function measureExactCodePreviewExposure(
 async function settleExactCodePreviewLine(
   target: ExactCodePreviewTarget,
   expectedText: string,
-  occurrence: "first" | "last"
+  occurrence: "first" | "last",
+  match: ExactCodePreviewLineMatch = "contains"
 ): Promise<ExactCodePreviewHandle> {
-  const line = await prepareExactCodePreviewLine(target, expectedText, occurrence);
+  const line = await prepareExactCodePreviewLine(target, expectedText, occurrence, match);
   let transferred = false;
   let failure: Readonly<{ error: unknown }> | undefined;
   const maximumAttempts = 8;
@@ -24156,7 +24275,7 @@ async function settleExactCodePreviewLine(
     for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
       const identity = await readExactCodePreviewIdentity(target.preview, target.scroller);
       assertExactCodePreviewIdentity(identity, target.codeReceipt);
-      const exposure = await measureExactCodePreviewExposure(target, line, expectedText);
+      const exposure = await measureExactCodePreviewExposure(target, line, expectedText, match);
       lastExposure = { attempt, ...exposure };
       assert.equal(
         exposure.lineConnected && exposure.sameDocument && exposure.scrollerContainsLine,
@@ -24164,8 +24283,8 @@ async function settleExactCodePreviewLine(
         `The generated-code line must remain an exact descendant of its scroller: ${JSON.stringify(lastExposure)}.`
       );
       assert.ok(
-        exposure.lineContainsExpectedText,
-        `The generated-code line must retain text ${codePreviewReceiptDiagnostic(codePreviewDocumentReceipt(expectedText))}: ${JSON.stringify(lastExposure)}.`
+        exposure.lineMatchesExpectedText,
+        `The generated-code line must retain its ${match === "exact-logical-line" ? "exact logical-line identity" : "expected text"} ${codePreviewReceiptDiagnostic(codePreviewDocumentReceipt(expectedText))}: ${JSON.stringify(lastExposure)}.`
       );
       let plan: ReturnType<typeof computeCodePreviewScrollPlan>;
       try {
@@ -24256,7 +24375,7 @@ async function revealCodePreviewOperationLine(
           `The generated-code ${subject} line must remain in the exact scroller: ${actual}.`
         );
         assert.ok(
-          exposure.lineContainsExpectedText,
+          exposure.lineMatchesExpectedText,
           `The generated-code ${subject} line must retain text ${codePreviewReceiptDiagnostic(codePreviewDocumentReceipt(text))}: ${actual}.`
         );
         const plan = computeCodePreviewScrollPlan({
@@ -24306,6 +24425,30 @@ async function revealCodePreviewText(
         [line],
         failure,
         "Revealing generated-code text and releasing its line handle both failed."
+      );
+    }
+  });
+}
+
+async function revealCodePreviewExactLogicalLine(
+  codePreview: Locator | ExactCodePreviewTarget,
+  expectedLine: string
+): Promise<string> {
+  const initial = await exactCodePreviewTarget(codePreview);
+  return runExactCodePreviewGenerations(initial, "Revealing an exact generated-code logical line", async (target) => {
+    let line: ExactCodePreviewHandle | undefined;
+    let failure: Readonly<{ error: unknown }> | undefined;
+    try {
+      line = await settleExactCodePreviewLine(target, expectedLine, "first", "exact-logical-line");
+      return target.code;
+    } catch (error) {
+      failure = { error };
+      throw error;
+    } finally {
+      await releaseExactCodePreviewHandlesAfterFailure(
+        [line],
+        failure,
+        "Revealing an exact generated-code logical line and releasing its line handle both failed."
       );
     }
   });

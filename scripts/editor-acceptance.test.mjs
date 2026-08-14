@@ -1075,7 +1075,7 @@ test("long generated R programs reveal operation text through the complete CodeM
     assert.match(
       implementation,
       functionName === "previewReleasedRDrop"
-        ? /revealCodePreviewText\(exactCodePreview,/u
+        ? /revealCodePreviewExactLogicalLine\(exactCodePreview,/u
         : /revealCodePreviewText\(codePreview,/u,
       functionName
     );
@@ -1088,11 +1088,13 @@ test("long generated R programs reveal operation text through the complete CodeM
   const drop = source.slice(dropStart, dropEnd);
   const preview = drop.indexOf('waitForCodePreview(workbench, undefined, "R")');
   const resize = drop.indexOf("ensureCodePreviewHeight(workbench, codePreview, 180)");
-  const reveal = drop.indexOf("revealCodePreviewText(exactCodePreview, sourceName)");
+  const sourceLine = drop.indexOf("const sourceLine = `  .ow_drop_names <- c(${JSON.stringify(sourceName)})`;");
+  const reveal = drop.indexOf("revealCodePreviewExactLogicalLine(exactCodePreview, sourceLine)");
   assert.ok(
-    preview >= 0 && resize > preview && reveal > resize,
-    "Drop Columns must pin the exact Code Preview, establish a useful panel height, and only then reveal its code."
+    preview >= 0 && resize > preview && sourceLine > resize && reveal > sourceLine,
+    "Drop Columns must pin the exact Code Preview, establish a useful panel height, and only then reveal one complete source-binding line."
   );
+  assert.doesNotMatch(drop, /revealCodePreviewText\(exactCodePreview, sourceName\)/u);
   const dropGeneratedCodeStart = source.indexOf("function assertReleasedRDropGeneratedCode(");
   const dropGeneratedCodeEnd = source.indexOf(
     "\nfunction assertReleasedRTextLengthGeneratedCode(",
@@ -1133,6 +1135,22 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
   assert.match(reveal, /codePreviewDocumentReceipt\(code\)/u);
   assert.match(reveal, /codePreviewReceiptDiagnostic\(expectedCodeReceipt\)/u);
   assert.match(reveal, /computeCodePreviewScrollPlan\(\{/u);
+  assert.match(reveal, /const selection = selectUniqueCodePreviewLogicalLine\(target\.code, expectedText\)/u);
+  assert.match(
+    reveal,
+    /assertExactCodePreviewReceipt\(selection\.documentReceipt, target\.codeReceipt, "The logical-line source document"\)/u
+  );
+  assert.match(
+    reveal,
+    /options\.match === "exact-logical-line"[\s\S]*lineText === options\.expectedText/u,
+    "The exact logical-line path must use complete DOM-line equality."
+  );
+  assert.match(reveal, /settleExactCodePreviewLine\(target, expectedLine, "first", "exact-logical-line"\)/u);
+  assert.match(
+    reveal,
+    /async function revealCodePreviewExactLogicalLine\([\s\S]*const initial = await exactCodePreviewTarget\(codePreview\);[\s\S]*runExactCodePreviewGenerations\(initial,[\s\S]*settleExactCodePreviewLine\(target, expectedLine, "first", "exact-logical-line"\)/u,
+    "Exact logical-line reveal must retain exact-target pinning and bounded generation replacement."
+  );
   assert.match(
     reveal,
     /view\.dispatch\(\{ selection: \{ anchor: options\.position \} \}\)[\s\S]*view\.lineBlockAt\(options\.position\)[\s\S]*initialPlan\.targetScrollTop/u
@@ -1197,6 +1215,32 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
     /\.part\.panel:visible|scrollIntoView\s*:\s*true|scrollIntoViewIfNeeded|\.scrollIntoView\(/u
   );
   assert.doesNotMatch(reveal, /JSON\.stringify\(expectedText\)|JSON\.stringify\(target\.code\)/u);
+});
+
+test("the focused R core selector preserves the unset editor-specific coverage profiles", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const start = source.indexOf("function releasedRAcceptanceCoverageProfile()");
+  const end = source.indexOf("function recordReleasedRAcceptanceSection(", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const profile = source.slice(start, end);
+
+  assert.match(
+    profile,
+    /OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
+  );
+  assert.match(
+    profile,
+    /return releasedRCoreAcceptanceCoverageProfile\(\);\s*\}/u,
+    "The unset route must use the same editor- and platform-specific core profile resolver."
+  );
+  const coreStart = source.indexOf("function releasedRCoreAcceptanceCoverageProfile()");
+  assert.notEqual(coreStart, -1);
+  const core = source.slice(coreStart, start);
+  assert.match(
+    core,
+    /OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
+  );
 });
 
 test("packaged R categorical journeys prove exact generated calls and boundary values", async () => {
@@ -4327,7 +4371,7 @@ test("editor phases validate and forward the focused R acceptance selector", asy
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset, "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents"/u
+      /test selector must be unset, "core-operations", "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents"/u
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "categorical-operations" }, options),
@@ -4335,6 +4379,22 @@ test("editor phases validate and forward the focused R acceptance selector", asy
     );
 
     let launchedEnvironment;
+    await runEditorAcceptancePhase(
+      { ...input, testSelector: "core-operations" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "core-operations");
+
     await runEditorAcceptancePhase(
       { ...input, testSelector: "categorical-operations" },
       {

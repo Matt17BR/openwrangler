@@ -23,6 +23,7 @@ import {
   probeRendererButtonReadiness,
   runFailClosedCategoricalUndo,
   runReplaceableCodePreviewGeneration,
+  selectUniqueCodePreviewLogicalLine,
   withAcceptanceOperationDeadline
 } from "./extensionHost/playwrightLifecycle";
 
@@ -248,6 +249,48 @@ describe("extension-host Playwright lifecycle", () => {
     expect(completeDiagnostic.includes(code)).toBe(false);
   });
 
+  it("selects one complete logical line past an artifact-shaped substring decoy", () => {
+    const expectedLine = '  .ow_drop_names <- c("label")';
+    const artifactDecoy = `# open-wrangler-artifact={stage=drop-preview, detail=${expectedLine}, bytes=384}`;
+    const code = [artifactDecoy, "  .ow_drop_positions <- c(4L)", expectedLine, "  .ow_result"].join("\n");
+    const selection = selectUniqueCodePreviewLogicalLine(code, expectedLine);
+    expect(selection).toEqual({
+      position: artifactDecoy.length + "\n  .ow_drop_positions <- c(4L)\n".length,
+      documentReceipt: codePreviewDocumentReceipt(code),
+      lineReceipt: codePreviewDocumentReceipt(expectedLine)
+    });
+    expect(code.indexOf(expectedLine)).toBeLessThan(selection.position);
+  });
+
+  it.each([
+    ["empty", "prefix\nbody", ""],
+    ["multiline", "prefix\nbody", "DO-NOT-LEAK-LINE\nbody"],
+    ["missing", "prefix\nbody", "DO-NOT-LEAK-MISSING-LINE"],
+    ["duplicate", "DO-NOT-LEAK-DUPLICATE\nbody\nDO-NOT-LEAK-DUPLICATE", "DO-NOT-LEAK-DUPLICATE"]
+  ] as const)("rejects a %s logical-line selector without leaking source", (stage, code, expectedLine) => {
+    let failure: Error | undefined;
+    try {
+      selectUniqueCodePreviewLogicalLine(code, expectedLine);
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      failure = error as Error;
+    }
+    expect(failure).toBeDefined();
+    if (!failure) throw new Error("The exact logical-line selector must fail closed.");
+    expect(failure.message).toBe(
+      `Code Preview logical-line selection failed: ${JSON.stringify({
+        stage,
+        documentReceipt: codePreviewDocumentReceipt(code),
+        lineReceipt: codePreviewDocumentReceipt(expectedLine)
+      })}.`
+    );
+    const diagnostic = [failure.name, failure.message, failure.stack, String(failure.cause)].join("\n");
+    expect(Buffer.byteLength(diagnostic, "utf8")).toBeLessThan(16 * 1024);
+    expect(diagnostic).not.toContain("DO-NOT-LEAK");
+    expect(diagnostic).not.toContain(code);
+    if (expectedLine.length > 0) expect(diagnostic).not.toContain(expectedLine);
+  });
+
   it("restarts stable Code Preview sampling only after a proven retired generation", async () => {
     const generations = [{ id: 1 }, { id: 2 }];
     const samples: number[] = [];
@@ -327,6 +370,17 @@ describe("extension-host Playwright lifecycle", () => {
       maximumScrollTop: 900,
       targetScrollTop: expected
     });
+  });
+
+  it("keeps an exact logical-line anchor subject to the bounded scroller geometry plan", () => {
+    const expectedLine = '  .ow_drop_names <- c("label")';
+    const artifactDecoy = `# artifact detail=${expectedLine}`;
+    const code = `${artifactDecoy}\n${"helper <- 1\n".repeat(24)}${expectedLine}\n`;
+    const selection = selectUniqueCodePreviewLogicalLine(code, expectedLine);
+    expect(selection.position).toBeGreaterThan(code.indexOf(expectedLine));
+    expect(
+      computeCodePreviewScrollPlan(codePreviewGeometry({ lineBounds: { left: 120, top: 190, width: 280, height: 20 } }))
+    ).toEqual({ currentFullyVisible: false, maximumScrollTop: 900, targetScrollTop: 250 });
   });
 
   it("accepts only tolerance-bounded exposure and scroll-range overshoot", () => {

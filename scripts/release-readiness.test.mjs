@@ -2539,19 +2539,16 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       workflow.jobs["candidate-acceptance"].uses = "./.github/workflows/other.yml";
     },
     (workflow) => {
-      workflow.jobs["candidate-acceptance"].strategy["fail-fast"] = true;
+      workflow.jobs["candidate-acceptance"].strategy = { matrix: { lane: ["linux"] } };
     },
     (workflow) => {
-      workflow.jobs["candidate-acceptance"].strategy["max-parallel"] = 1;
+      workflow.jobs["candidate-acceptance"].with.lane = "linux";
     },
     (workflow) => {
-      workflow.jobs["candidate-acceptance"].strategy.matrix.exclude = [{ lane: "jupyter" }];
+      workflow.jobs["candidate-acceptance"].outputs = { accepted: "true" };
     },
     (workflow) => {
-      workflow.jobs["candidate-acceptance"].strategy.matrix.experimental = [false];
-    },
-    (workflow) => {
-      workflow.jobs["candidate-acceptance"].strategy.matrix.include.pop();
+      workflow.jobs["candidate-acceptance"].name = "Candidate acceptance (${{ matrix.name }})";
     },
     (workflow) => {
       workflow.jobs.package.steps.find((step) => String(step.uses ?? "").startsWith("actions/checkout@")).uses =
@@ -2613,6 +2610,14 @@ test("structurally gates the candidate-first preview workflow and exact artifact
     },
     (workflow) => {
       workflow.jobs.release.if = "${{ inputs.publish != false }}";
+    },
+    (workflow) => {
+      workflow.jobs.release.if =
+        "${{ inputs.publish == true && needs.package.result == 'success' && needs.candidate-acceptance.result == 'success' && needs.remote-ssh.result == 'success' }}";
+    },
+    (workflow) => {
+      workflow.jobs.release.if =
+        "${{ !cancelled() && inputs.publish == true && needs.package.result == 'success' && needs.candidate-acceptance.result == 'success' }}";
     },
     (workflow) => {
       workflow.jobs.release.environment = "unprotected";
