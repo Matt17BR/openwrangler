@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { delimiter, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import prettier from "prettier";
+import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
@@ -92,32 +93,26 @@ if (process.argv.includes("--check")) {
 }
 
 function loadOperationCatalog() {
-  const candidates = [
-    process.env.OPEN_WRANGLER_PYTHON,
-    process.platform === "win32"
-      ? resolve(root, ".venv", "Scripts", "python.exe")
-      : resolve(root, ".venv", "bin", "python"),
-    "python3",
-    "python"
-  ].filter(Boolean);
+  const executable = resolveAndPreflightAcceptancePython({
+    profile: "repository-command",
+    repositoryRoot: root,
+    environment: process.env,
+    platform: process.platform
+  });
   const command = [
     "-c",
     "import json; from openwrangler_runtime.operations import operation_catalog; print(json.dumps(operation_catalog()))"
   ];
-  for (const executable of candidates) {
-    const isPath = executable.includes("/") || executable.includes("\\");
-    if (isPath && !existsSync(executable)) continue;
-    const result = spawnSync(executable, command, {
-      cwd: root,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PYTHONPATH: [resolve(root, "python"), process.env.PYTHONPATH].filter(Boolean).join(delimiter)
-      }
-    });
-    if (result.status === 0) return JSON.parse(result.stdout);
+  const result = spawnSync(executable, command, {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, PYTHONPATH: resolve(root, "python") }
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error("The prepared Python interpreter could not load the operation registry.");
   }
-  throw new Error("Could not load the operation registry from a Python 3.10-3.14 interpreter.");
+  return JSON.parse(result.stdout);
 }
 
 function messageKinds(unionName) {

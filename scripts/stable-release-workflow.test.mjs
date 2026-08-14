@@ -27,6 +27,11 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       workflow.jobs.package.steps.find((step) => step.id === "canonical").run = "echo accepted";
     },
     (workflow) => {
+      workflow.jobs.package.steps.find(
+        (step) => step.run === "npm run verify:vsix -- openwrangler.candidate.vsix"
+      ).run = "npm run verify:vsix -- canonical-release/openwrangler.vsix";
+    },
+    (workflow) => {
       workflow.jobs["candidate-acceptance"].strategy = { matrix: { lane: ["linux"] } };
     },
     (workflow) => {
@@ -49,6 +54,14 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     },
     (workflow) => {
       workflow.jobs["remote-ssh"].steps.find((step) => step.id === "remote_workspace").run = "echo skipped";
+    },
+    (workflow) => {
+      workflow.jobs["remote-ssh"].steps.push({
+        run: "npm run verify:vsix -- canonical-release/openwrangler.vsix"
+      });
+    },
+    (workflow) => {
+      workflow.jobs["remote-ssh"].steps.find((step) => step.id === "canonical_remote").run = "echo accepted";
     },
     (workflow) => {
       workflow.jobs.release.needs = ["package", "candidate-acceptance"];
@@ -78,6 +91,14 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     },
     (workflow) => {
       workflow.jobs.release.concurrency.queue = "latest";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.push({
+        run: "npm run verify:vsix -- canonical-release/openwrangler.vsix"
+      });
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) => step.id === "canonical_release").run = "echo accepted";
     },
     (workflow) => {
       workflow.jobs.release.steps.find((step) => step.run === "node scripts/push-stable-release-tag.mjs").run =

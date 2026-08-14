@@ -11,29 +11,44 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Preview release run #72 published nothing after the ordinary local-R phase reached its 300-second hard deadline at
   numeric Round, Cursor lost the bounded Multi-label Undo acceptance wait, and macOS failed the Drop Columns Code Preview
   generation/diagnostic bound. Preview and stable release callers now invoke the shared candidate workflow once without
-  a caller matrix. That workflow fans out fixed acceptance jobs, runs the R contract as an independent sibling, and
-  balances local R across two matrix shards: lifecycle runs `core-operations`, `kernel-restart`,
-  `interactive-terminal`, then `literate-documents`; editing runs `value-operations`, then
-  `categorical-operations`. Setup is shared only within a shard. Every phase, including the dedicated restart phase,
-  still freshly verifies the exact candidate, starts a fresh VS Code-and-Cursor invocation with private roots, and
-  immediately uploads its own sealed failure evidence before the shard's deferred raw-outcome failure. One
-  output-free fan-in requires literal success from every acceptance job, and publication separately requires package,
-  candidate, and Remote SSH success. The manual Released Jupyter workflow remains its existing non-authoritative serial
-  diagnostic path. All editor phases retain their 300-second hard and 180-second inactivity deadlines and are never
-  retried.
-- Native R local acceptance now gives three editing profiles disjoint targeted-operation ownership. Every local
-  invocation still reaches an exact complete 26-capability assertion. Core's targeted slice owns the five row
+  a caller matrix. That workflow consumes only release-artifact or live external evidence; the protected pull-request
+  matrix remains the sole owner of the direct R contract. Candidate acceptance balances Linux local R across two
+  matrix shards: lifecycle runs `core-operations`, `kernel-restart`,
+  `interactive-terminal`, then `literate-documents`; editing runs `native-frames`, `value-operations`, then
+  `categorical-operations`, with the full value and categorical catalogs owned by VS Code instead of repeated in
+  Cursor. A separate macOS/Windows `r_platform` matrix runs freshly verified VS Code-only
+  `core-operations`, `native-frames`, then `kernel-restart` phases alongside the generic platform matrix, which no
+  longer performs R setup or a native-R tail. Setup is shared only within a shard or platform cell. Every phase still
+  freshly verifies the exact candidate, starts a fresh requested-editor invocation with private roots, and immediately
+  uploads its own sealed failure evidence before the cell's deferred raw-outcome failure. One output-free fan-in
+  requires literal success from every acceptance job, including `r_platform`, and publication separately requires
+  package, candidate, and Remote SSH success. The manual Released Jupyter workflow remains its existing
+  non-authoritative serial diagnostic path. All editor phases retain their 300-second hard and 180-second inactivity
+  deadlines and are never retried.
+- Native R local acceptance now gives three editing profiles disjoint targeted-operation ownership. Each
+  operation-targeted invocation still reaches an exact complete 26-capability assertion. Core's targeted slice owns the five row
   operations plus structural, type, Text Length, and Group and aggregate; the focused value slice owns exactly Find
   and replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip
   text, and Split text. This is a 12/12/2 targeted split with the focused categorical slice owning exactly One-hot
-  encode and Multi-label binarize. All
-  three invocations also retain the shared representative Rename and native-frame scaffold, with comprehensive core
-  expanding that lifecycle coverage. On Linux, explicit candidate core omits the embedded kernel restart because the
-  dedicated VS Code-and-Cursor `kernel-restart` phase owns restart/reopen acceptance with a fresh phase budget. The
-  explicit macOS and Windows core invocations retain their existing embedded restart, while the focused value and
-  categorical selectors continue to omit it. Default/unset core selection, including the manual Released Jupyter
-  workflow, and the remote R journey retain embedded restart coverage. This changes scheduling without reducing
-  restart coverage on any platform. The remote R journey also continues to exercise `lowerText` (Lowercase).
+  encode and Multi-label binarize. Explicit candidate `core-operations`, `value-operations`, and
+  `categorical-operations` omit the native-frame scaffold; the fresh `native-frames` selector makes Linux VS Code the
+  sole comprehensive collapse/viewing/Rename/Drop owner while macOS, Windows, and Cursor keep representative native
+  seams. Explicit candidate core also omits embedded restart on
+  Linux, macOS, and Windows because a fresh `kernel-restart` phase owns restart/reopen on each platform. Linux runs both
+  dedicated phases in VS Code and Cursor; macOS and Windows run them in VS Code. Default/unset core selection,
+  including the manual Released Jupyter workflow, and the remote R journey retain their embedded behavior. This
+  changes candidate scheduling while preserving a native-frame and restart compatibility seam on every platform. The remote R journey
+  also continues to exercise `lowerText` (Lowercase).
+- Release acceptance now follows a one-owner failure-signal rule. Linux VS Code is the sole comprehensive native-R
+  core catalog owner; Cursor, macOS, and Windows keep representative editor/platform seams, while focused native and
+  restart phases retain their distinct compatibility coverage. Candidate jobs no longer rerun source, coverage,
+  browser-baseline, workflow-contract, or extension-host harness suites that already blocked the protected-main merge.
+  Linux VS Code also owns the sole full generic packaged journey; Linux Cursor and both generic macOS/Windows editors
+  run the focused `platform-smoke` compatibility seam. The package producer owns the single full VSIX
+  inventory/content verification, while consumers retain immediate checksum, provenance, and archive-semantic
+  revalidation.
+  Prepared Python dependencies and private-browser launch are deterministic prerequisites that fail before product or
+  visual assertions, with no PATH interpreter fallback, retry, or deadline increase.
 - Preview release run [#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383) from protected `main`
   commit `c7e1635` also published nothing. macOS artifact `9223912246` proved that the Drop Columns reveal's bare
   `label` substring selected a generic 384-character `.ow_label` helper whose wrapped 210.0157-pixel line exceeded the
@@ -52,8 +67,20 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   hard deadline. The publication job was skipped, so no `v1.99.6` tag, release, or registry package was created. The
   follow-up extracts Linux restart/reopen into the dedicated lifecycle phase described above while leaving the
   existing macOS and Windows core restart journey in place, preserving the 180-second inactivity deadline and
-  no-retry rule while giving Linux restart a fresh 300-second phase budget. That remediation and its effect on the next
-  critical path have not yet passed a hosted candidate run.
+  no-retry rule while giving Linux restart a fresh 300-second phase budget. Preview run #75 exercised that remediation
+  as described below; run #74 itself remains failed evidence.
+- Preview release [run #75](https://github.com/Matt17BR/openwrangler/actions/runs/31834973654) from protected `main`
+  commit `917341a` also published nothing. It finished in 21m18s, 39 seconds faster than #74 and 11m57s faster than #73,
+  while consuming 134.07 positive-duration runner-minutes, 3.29 more than #74 and 14.32 more than #73. Its sole raw
+  candidate failure was Linux lifecycle core: VS Code 1.133.0 crossed the 300-second outer deadline at about
+  300.012 seconds after `jupyter-r:orders_table:editing-renderer-ready`, with no product/runtime exception. The fresh
+  Linux `kernel-restart` phase passed in both VS Code and Cursor, the value/categorical editing shard passed, and the
+  macOS and Windows native-R platform journeys, including their embedded restart coverage, passed. macOS nevertheless
+  consumed about 289.66 of its 300-second native-editor budget. The candidate fan-in therefore failed and publication
+  was skipped; no `v1.99.6` tag, GitHub prerelease, or registry package was created. The candidate-only
+  core/native/restart split above removes that remaining combined budget on all three hosted platforms and separates
+  cross-platform native R from the generic platform lane. It is projected to move release wall time toward 20 minutes,
+  but no hosted candidate has proved that estimate or the new graph; repeated private R setup may increase runner use.
 - Cursor's categorical Undo check now uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation
   completion bound, with no post-dispatch retry. Drop Columns Code Preview acceptance reacquires only a provably replaced
   renderer generation, reads one exact bounded code receipt, selects one unique complete logical line, scrolls only

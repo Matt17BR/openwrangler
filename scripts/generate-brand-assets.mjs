@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import pixelmatch from "pixelmatch";
 import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
+import { createWebviewBrowserIsolation, resolveWebviewBrowserExecutable } from "./webview-browser.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const assetsDirectory = resolve(root, "assets");
@@ -80,10 +81,26 @@ if (requestedCheck) {
 }
 
 async function renderBrandAssets() {
-  const temporaryDirectory = mkdtempSync(join(tmpdir(), "openwrangler-brand-"));
-  const browser = await chromium.launch({ headless: true });
+  const browserExecutable = resolveWebviewBrowserExecutable({ chromium });
+  const browserIsolation = createWebviewBrowserIsolation({
+    workspaceTmp: resolve(root, "tmp"),
+    rootPrefix: "brand-browser-",
+    aliasPrefix: "ow-brand-"
+  });
+  let temporaryDirectory;
+  let browserContext;
 
   try {
+    temporaryDirectory = mkdtempSync(join(tmpdir(), "openwrangler-brand-"));
+    browserContext = await chromium.launchPersistentContext(browserIsolation.createProfile("brand"), {
+      ...(browserExecutable.explicitOverride ? { executablePath: browserExecutable.executablePath } : {}),
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+      env: browserIsolation.childEnvironment,
+      timeout: 30_000
+    });
+    const browser = browserContext.browser();
+    if (!browser) throw new Error("The brand renderer did not retain its Playwright browser process.");
     const rendered = new Map();
     for (const [size, destination] of outputs) {
       const temporaryPath = resolve(temporaryDirectory, basename(destination));
@@ -148,8 +165,12 @@ async function renderBrandAssets() {
         : "Generated 128, 256, and 512 pixel brand PNG assets."
     );
   } finally {
-    await browser.close();
-    rmSync(temporaryDirectory, { force: true, recursive: true });
+    try {
+      await browserContext?.close();
+    } finally {
+      browserIsolation.cleanup();
+      if (temporaryDirectory) rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
   }
 }
 

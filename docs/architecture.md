@@ -361,20 +361,23 @@ checks a column's count, distinct values, minimum, and maximum, then checks data
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
 frame, and final session cleanup. Local packaged acceptance assigns disjoint targeted operations to fresh core, value,
-and categorical editing profiles. Every local invocation retains an exact complete 26-operation capability assertion,
-including the nested interactive-terminal and literate-document journeys. Core's targeted slice owns Filter Rows,
+and categorical editing profiles and moves candidate native-frame and restart work into dedicated selectors. Core,
+value, and categorical retain exact complete 26-operation capability assertions, including the nested
+interactive-terminal and literate-document journeys. Core's targeted slice owns Filter Rows,
 Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone
 Column, Convert type, Text Length, and Group and aggregate. The `value-operations` targeted slice owns exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The
 `categorical-operations` targeted slice owns exactly the One-hot encode and Multi-label binarize forms, boundary
-values, generated calls, preview, apply, and undo in both VS Code and Cursor. These invocations are not otherwise
-exclusive: all three retain the shared representative Rename and native-frame scaffold, while comprehensive core adds
-broader lifecycle coverage. In candidate acceptance, explicit Linux core omits its embedded restart/reopen journey
-because a separately verified Linux VS Code-and-Cursor `kernel-restart` phase owns it. Explicit macOS and Windows core
-retain their existing embedded journey, while the focused value and categorical selectors continue to omit it.
-Default/unset core and the remote R journey retain restart coverage. The routing changes scheduling without reducing
-restart coverage on any platform. Categorical Undo uses one
+values, generated calls, preview, apply, and undo in VS Code. Linux VS Code is the sole comprehensive core and focused
+catalog owner; macOS, Windows, and Cursor retain representative platform/editor seams. Candidate core, value, and categorical
+omit the former shared native-frame scaffold. `native-frames` makes Linux VS Code the comprehensive collapse/viewing
+and native tibble/data-table Rename/Drop owner; macOS, Windows, and Cursor retain representative Rename/Drop seams.
+`kernel-restart` owns restart/reopen. Explicit
+candidate core omits both on Linux, macOS, and Windows. Linux executes the dedicated selectors in VS Code and Cursor,
+while macOS and Windows execute them in VS Code. Default/unset core and the remote R journey retain their embedded
+behavior. The routing retains one native-frame and restart compatibility seam on every platform without repeating comprehensive proof.
+Categorical Undo uses one
 authoritative one-shot dispatch receipt
 and waits up to 75 seconds for that queued mutation to complete; crossing the dispatch boundary can never trigger a
 retry. The remote R Docker journey retains its independent `lowerText` (Lowercase) check. Across the packaged
@@ -574,35 +577,46 @@ After dispatch, generated-code insertion observes the exact original document fo
 ## Release-candidate acceptance topology
 
 Preview and stable releases produce one canonical candidate and call the shared candidate-acceptance workflow once
-through a non-matrix job. The reusable workflow, rather than either caller, owns the fixed parallel job graph. The R
-4.5.2 contract is an independent sibling, and local R uses exactly two non-cancelling shard cells: lifecycle executes
-`core-operations`, `kernel-restart`, `interactive-terminal`, then `literate-documents`; editing executes
-`value-operations`, then `categorical-operations`. This partitions scheduling, not coverage: targeted ownership remains
-12 core, 12 value, and two categorical operations, with the shared representative lifecycle scaffold and complete
+through a non-matrix job. The reusable workflow, rather than either caller, owns the fixed parallel job graph. Linux
+VS Code owns the one full generic packaged journey. Linux Cursor and the generic macOS/Windows VS Code/Cursor cells run
+the focused `platform-smoke` compatibility seam without rerunning extension-host suites or R setup. Separate
+`r_platform` cells prepare R once per OS and run freshly verified VS Code-only `core-operations`, `native-frames`, then
+`kernel-restart`. Protected pull-request CI solely owns the direct R 4.4/4.5 contract; candidate acceptance consumes
+installed-artifact or live external evidence. Linux local R uses exactly two non-cancelling shard cells: lifecycle
+executes `core-operations`, `kernel-restart`, `interactive-terminal`, then
+`literate-documents`; editing executes `native-frames`, `value-operations`, then `categorical-operations`. This
+partitions scheduling while keeping targeted ownership at 12 core, 12 value, and two categorical operations, one
+comprehensive Linux native-frame owner, representative native/restart seams on every hosted platform, and complete
 capability assertions intact.
 
-Each local-R shard performs dependency and editor setup once. Every phase, including `kernel-restart`, nevertheless
-crosses a fresh trust boundary: it reverifies the exact candidate, launches fresh VS Code and Cursor processes with
-their own private roots, and is followed immediately by its sealed failure-evidence upload. The shard reports failure
-only after all of its raw phase outcomes and uploads have had a chance to complete. All editor phases retain
-independent 300-second hard and 180-second changed-checkpoint inactivity deadlines and are never automatically retried.
+Each local-R shard or `r_platform` cell performs dependency and editor setup once. Every phase nevertheless crosses a
+fresh trust boundary: it reverifies the exact candidate, launches fresh requested-editor processes with their own
+private roots, and is followed immediately by its sealed failure-evidence upload. The cell reports failure only after
+all of its raw phase outcomes and uploads have had a chance to complete. All editor phases retain independent
+300-second hard and 180-second changed-checkpoint inactivity deadlines and are never automatically retried.
 
 The shared workflow exports no acceptance result that a caller could reinterpret. Its terminal fan-in evaluates the
 literal result of every internal job and succeeds only when all are `success`. Publication separately depends on
-literal success from package production, the single candidate-workflow call, and Remote SSH. Explicit Linux core
-skips embedded restart coverage because the dedicated Linux VS Code-and-Cursor phase owns it; explicit macOS and
-Windows core retain their existing embedded restart, while focused value and categorical selectors remain
-restart-free. Default/unset manual core and the remote R journey also retain restart coverage. No platform loses
-restart coverage. The manually dispatched Released Jupyter workflow therefore remains a serial,
+literal success from package production, the single candidate-workflow call, and Remote SSH. Candidate core omits
+embedded native-frame and restart work on all three hosted platforms because the dedicated selectors own it. Linux
+runs both in VS Code and Cursor; macOS and Windows run both in VS Code. Focused value and categorical selectors also
+omit native-frame work and remain restart-free. Default/unset manual core and the remote R journey retain their
+embedded behavior. Every hosted platform retains a native/restart seam, while only Linux repeats the comprehensive depth. The manually dispatched Released Jupyter workflow therefore remains a serial,
 backward-compatible, non-authoritative diagnostic and is intentionally not part of that release proof.
 
 Preview [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) measured the two-shard redesign at
 21m57s overall versus run #73's 33m15s (34% lower), with the slower R shard at 15m19s versus 31m15s (51% lower).
 Runner use increased from 119.75 to 130.78 minutes (9.2%), and macOS became the observed bottleneck at 19m54s. Every
 raw lane except lifecycle core passed; core reached `restart:start` and crossed its unchanged 300-second outer
-deadline. Publication was skipped, so no `v1.99.6` was created. Moving restart into its own fresh phase is intended to
-remove that elapsed-budget collision without changing the 300-second hard limit, 180-second inactivity limit, or
-no-retry rule. Run #74 does not prove the remediation or its next hosted critical path.
+deadline. Publication was skipped, so no `v1.99.6` was created.
+
+Preview [run #75](https://github.com/Matt17BR/openwrangler/actions/runs/31834973654) measured 21m18s and 134.07
+positive-duration runner-minutes. Dedicated Linux restart, value/categorical editing, and macOS/Windows native-R
+platform journeys passed. Linux core was the sole raw blocker: VS Code 1.133.0 crossed the outer deadline at about
+300.012 seconds after `jupyter-r:orders_table:editing-renderer-ready`, and macOS passed after consuming about 289.66 of
+its 300-second native-editor budget. Publication was again skipped. Splitting explicit candidate core, native-frame,
+and restart work on every hosted platform is projected to move wall time toward 20 minutes, but no hosted candidate has
+proved the new graph, estimate, or runner cost.
 
 ## Persistence and identity
 

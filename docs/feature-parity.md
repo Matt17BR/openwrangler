@@ -208,19 +208,20 @@ support and does not cover the editing claims below.
 
 The [product gallery](media-gallery.md#r-notebooks-and-documents-199-preview) shows the packaged IRkernel picker, viewing
 workbench, Rename Column draft, and generated R inserted into the originating notebook. Candidate local acceptance
-uses fresh exact-candidate/profile core, value, and categorical phases, each of which first asserts all 26 supported
-editing capabilities. Core's targeted slice owns the five row operations, Rename, Drop, Select, Clone, Convert type,
-Text Length, and Group and aggregate. The focused value targeted slice owns exactly Find and replace, Formula, Format
+uses fresh exact-candidate/profile core, native-frame, restart, value, and categorical phases. Core, value, and
+categorical retain their exact supported-operation capability assertions. Core's targeted slice owns the five row
+operations, Rename, Drop, Select, Clone, Convert type, Text Length, and Group and aggregate. The focused value targeted
+slice owns exactly Find and replace, Formula, Format
 Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 focused categorical targeted slice owns exactly One-hot encode and Multi-label binarize and checks their exact
-indicator values, generated calls, previews, apply, and undo in both VS Code and Cursor. The three invocations also
-share a representative Rename and native-frame scaffold; comprehensive core expands that lifecycle coverage, so
-selector ownership is not a claim that the whole invocation is exclusive. Explicit Linux core skips its embedded
-restart/reopen journey because a dedicated Linux VS Code-and-Cursor `kernel-restart` phase owns it. Explicit macOS and
-Windows core retain their existing embedded journey, while focused value and categorical selectors continue to skip
-it. Default/unset core and the remote R journey retain restart coverage. This routing does not reduce restart coverage
-on any platform. Categorical Undo
-uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation completion bound without a
+indicator values, generated calls, previews, apply, and undo in VS Code. Linux VS Code is the sole comprehensive core
+and focused-catalog owner; macOS, Windows, and Cursor retain representative platform/editor seams. Candidate core, value, and
+categorical omit the former shared native-frame scaffold. `native-frames` owns collapse/viewing and native
+tibble/data-table Rename/Drop at the original comprehensive or representative depth; `kernel-restart` owns
+restart/reopen. Explicit candidate core omits both pieces on Linux, macOS, and Windows. Linux executes the dedicated
+selectors in VS Code and Cursor, while macOS and Windows execute them in VS Code. Default/unset core and the remote R
+journey retain their embedded behavior. This routing does not reduce native-frame or restart coverage on any platform.
+Categorical Undo uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation completion bound without a
 post-boundary retry. The remote R Docker journey independently retains `lowerText` (Lowercase). Across the local
 slices, base-frame coverage includes preview, apply, inspection, discard, latest-step editing, and undo; Convert type
 is applied and undone, while Drop Missing Rows and Drop Duplicates each return from inspection before undo. The shared
@@ -252,34 +253,44 @@ explicit R-document command explains that no R code chunk was found. Packaged Li
 types through separate plain and focused literate phases. Cursor already runs the complete plain `.R` document path,
 including cleaned CSV export; the candidate workflow must also pass the focused literate formats in its own fresh
 installed-editor phase.
-The macOS preview and stable release cells retain the same plain `.R` subjourney in packaged VS Code, while the
-candidate's focused Linux VS Code and Cursor phases are required to own `.Rmd`, `.qmd`, and Python Quarto. Their Windows counterparts
-run the complete local IRkernel journey but skip direct documents. Local Windows hides the explicit
+The macOS preview and stable `r_platform` cells retain the same plain `.R` subjourney in packaged VS Code core, while
+the candidate's focused Linux VS Code and Cursor phases are required to own `.Rmd`, `.qmd`, and Python Quarto. The
+Windows `r_platform` phases collectively cover core, native frames, and restart but skip direct documents. Local
+Windows hides the explicit
 **Run R Document** Explorer and tab-menu actions; the stable title action can still open a dataframe from an active
 official R terminal. Remote-resource actions and the Command Palette remain reachable because static client keys
 cannot identify the extension-host platform. The runtime platform check is authoritative. Remote R-document execution is experimental
 and is not part of the release matrix. Direct document execution is disabled on a Windows extension host until the
 extension can own the complete spawned process tree. Other cleaning operations are not available in R yet.
 
-Before a 2.0 tag can be published, both release workflows must pass the local `r-jupyter` journey in packaged VS Code
-on hosted macOS and Windows. The freshly verified candidate VSIX is used directly; these jobs do not rebuild it or
-substitute a smaller R smoke test. The same candidate must also pass the separately verified focused value,
-categorical, active-terminal, and literate journeys in packaged Linux VS Code and Cursor. Candidate acceptance now
-keeps that complete evidence in two parallel local-R shards: lifecycle runs `core-operations`, `kernel-restart`,
-`interactive-terminal`, and `literate-documents`, while editing runs `value-operations` and
-`categorical-operations`. Every phase, including restart, gets a fresh exact-candidate verification, fresh VS
-Code-and-Cursor private roots, and its own immediate sealed failure upload; exact 12/12/2 targeted ownership and the
-300-second hard, 180-second inactivity, and no-retry contracts remain unchanged. Preview release runs #72,
+Before a 2.0 tag can be published, both release workflows must pass separate `r_platform` cells on hosted macOS and
+Windows. Each prepares R once, then runs freshly verified packaged VS Code-only `core-operations`, `native-frames`, and
+`kernel-restart`; the generic platform cells perform no R setup or native-R tail. The candidate VSIX is used directly;
+these jobs do not rebuild it or substitute a smaller R smoke test. The same candidate must also pass separately
+verified focused native-frame, restart, active-terminal, and literate seams in packaged Linux VS Code and Cursor,
+while VS Code alone owns the complete value and categorical catalogs. Candidate acceptance keeps the Linux evidence in two parallel local-R shards: lifecycle runs
+`core-operations`, `kernel-restart`, `interactive-terminal`, and `literate-documents`, while editing runs
+`native-frames`, `value-operations`, and `categorical-operations`. Every phase gets a fresh exact-candidate
+verification, fresh requested-editor private roots, and its own immediate sealed failure upload; exact 12/12/2
+targeted ownership, one comprehensive Linux native-frame owner, representative native/restart seams on every hosted
+platform, and the 300-second hard, 180-second inactivity, and
+no-retry contracts remain unchanged. Preview release runs #72,
 [#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383), and
-[#74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) are not all-green release evidence. Run #72
+[#74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129), and
+[#75](https://github.com/Matt17BR/openwrangler/actions/runs/31834973654) are not all-green release evidence. Run #72
 failed ordinary local R, categorical Cursor, and macOS; run #73's macOS Drop reveal selected a generic wrapped helper,
 while its Linux core reached correlated completion only about half a second before the outer 300-second deadline and
 did not settle in time to start Cursor. Run #74 measured the redesigned graph at 21m57s instead of 33m15s (34% lower)
 and its slower R shard at 15m19s instead of 31m15s (51% lower), while runner use increased from 119.75 to 130.78
 minutes (9.2%) and macOS became the observed 19m54s bottleneck. However, lifecycle core crossed its unchanged outer
 deadline after reaching `restart:start`; every other raw outcome was green, but the fan-in failed and publication was
-skipped, so no `v1.99.6` was created. The dedicated restart phase addresses that elapsed-budget collision, but has not
-yet passed in hosted candidate acceptance and does not make run #74 parity or release evidence.
+skipped. Run #75 finished in 21m18s and used 134.07 positive-duration runner-minutes. Its dedicated Linux restart,
+value/categorical editing, and macOS/Windows native-R platform journeys passed, but Linux core was the sole raw blocker:
+VS Code 1.133.0 crossed the outer deadline at about 300.012 seconds after
+`jupyter-r:orders_table:editing-renderer-ready`. macOS passed with only about 10.34 seconds of native-editor headroom.
+Publication was again skipped, so no `v1.99.6` was created. The explicit candidate core/native/restart split is
+projected to move wall time toward 20 minutes, but it has not passed hosted acceptance and neither failed run is parity
+or release evidence.
 
 | Surface                                       | Availability                    | Status  | Current checks                                                                                                            | Release check   |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------- | --------------- |
@@ -367,8 +378,10 @@ notebook jobs.
 Focused Classic and Connect tests cover projection, progressive paging, filters, ordered multi-column sorts,
 profiles, restart/rebind, reconnect, and cleanup without conversion through Pandas or Arrow. A 1,000,000-row,
 32-partition Classic regression proves the first page neither schedules every source partition nor creates a
-persistent RDD. The released-Jupyter package phase has also passed local Classic and Connect in VS Code and Cursor.
-Each release still reruns the package phase against the exact candidate VSIX.
+persistent RDD. The release-candidate gate assigns local Classic and Connect, restart, and cleanup to VS Code as the
+single comprehensive released-Jupyter owner. Cursor runs a focused compatibility seam through Variables, renderer
+open, one page, close, and zero-session cleanup; it does not duplicate the PySpark phase. Each release reruns that
+one-owner topology against the exact candidate VSIX.
 
 Run [30975727813](https://github.com/Matt17BR/openwrangler/actions/runs/30975727813) tested commit
 `2f2c3545ef049a2ddf23e338451bef0e91834316`. For its three
@@ -377,20 +390,20 @@ and 2.97 seconds in Connect; all-column profiling took 34.68 and 33.29 seconds. 
 13.0% lower than the preceding exact-main baseline. The selected-column differences were small enough to treat as
 run-to-run variation. These measurements are used to spot regressions; they are not a pass/fail speed target.
 
-| Surface                                        | v1.2 support       | Status       | Recorded evidence                                     | Boundary                                     |
-| ---------------------------------------------- | ------------------ | ------------ | ----------------------------------------------------- | -------------------------------------------- |
-| Local Classic DataFrame viewing                | Live notebook only | Done         | Version probe plus packaged VS Code/Cursor launch     | PySpark 4.2.x                                |
-| Local Spark Connect DataFrame viewing          | Live notebook only | Done         | Packaged VS Code/Cursor launch and page queries       | Local Connect only                           |
-| Progressive projected grid pages               | Viewing only       | Done         | Bounded blocks, lookahead, boundary checks, exact end | Sequential traversal                         |
-| Basic/advanced filters and multi-column sorts  | Viewing only       | Done         | Native expressions and packaged filtered/sorted pages | Unique final key needed for repeatable ties  |
-| Summaries, statistics, and distinct values     | Viewing only       | Done         | Native fixed-size aggregates and conversion guards    | Header profiles start off                    |
-| Session recovery and non-interrupting disposal | Viewing only       | Done         | Classic/Connect rebind, restart, reconnect, cleanup   | Running Spark jobs are not interrupted       |
-| VS Code/Cursor packaged acceptance             | Both editors       | Done         | Released Jupyter, restart, and cleanup phases         | Exact candidate rerun remains a release gate |
-| Cleaning operations and history                | No                 | Out of scope | Capabilities reject editing                           | No distributed transformation plan in v1.2   |
-| Script/notebook/data export                    | No                 | Out of scope | Capabilities reject export                            | No Spark export contract in v1.2             |
-| Saved-output MIME formatter                    | No                 | Out of scope | `notebookOutput` is not advertised                    | Live variables only                          |
-| File sessions and automatic backend selection  | No                 | Out of scope | `file` is not advertised                              | Notebook variables only                      |
-| External or authenticated clusters             | No                 | Out of scope | Local endpoints are the tested contract               | No authentication or provisioning in v1.2    |
+| Surface                                        | v1.2 support       | Status       | Recorded evidence                                      | Boundary                                      |
+| ---------------------------------------------- | ------------------ | ------------ | ------------------------------------------------------ | --------------------------------------------- |
+| Local Classic DataFrame viewing                | Live notebook only | Done         | Version probe plus comprehensive VS Code package phase | PySpark 4.2.x                                 |
+| Local Spark Connect DataFrame viewing          | Live notebook only | Done         | Comprehensive VS Code package launch and page queries  | Local Connect only                            |
+| Progressive projected grid pages               | Viewing only       | Done         | Bounded blocks, lookahead, boundary checks, exact end  | Sequential traversal                          |
+| Basic/advanced filters and multi-column sorts  | Viewing only       | Done         | Native expressions and packaged filtered/sorted pages  | Unique final key needed for repeatable ties   |
+| Summaries, statistics, and distinct values     | Viewing only       | Done         | Native fixed-size aggregates and conversion guards     | Header profiles start off                     |
+| Session recovery and non-interrupting disposal | Viewing only       | Done         | Classic/Connect rebind, restart, reconnect, cleanup    | Running Spark jobs are not interrupted        |
+| Released-Jupyter packaged acceptance           | One owner + seam   | Done         | VS Code full matrix; focused Cursor allow seam         | Exact candidate reruns the one-owner topology |
+| Cleaning operations and history                | No                 | Out of scope | Capabilities reject editing                            | No distributed transformation plan in v1.2    |
+| Script/notebook/data export                    | No                 | Out of scope | Capabilities reject export                             | No Spark export contract in v1.2              |
+| Saved-output MIME formatter                    | No                 | Out of scope | `notebookOutput` is not advertised                     | Live variables only                           |
+| File sessions and automatic backend selection  | No                 | Out of scope | `file` is not advertised                               | Notebook variables only                       |
+| External or authenticated clusters             | No                 | Out of scope | Local endpoints are the tested contract                | No authentication or provisioning in v1.2     |
 
 ## Recorded acceptance evidence
 

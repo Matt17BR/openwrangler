@@ -10,6 +10,7 @@ import {
   PUBLIC_MEDIA_MAX_DISPLAY_WIDTH,
   PUBLIC_MEDIA_RESPONSIVE_WIDTHS
 } from "./public-media-surface-contract.mjs";
+import { createWebviewBrowserIsolation, resolveWebviewBrowserExecutable } from "./webview-browser.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const documents = [
@@ -18,12 +19,31 @@ const documents = [
 ];
 const markdown = new MarkdownIt({ html: true, linkify: false, typographer: false });
 
-const prepared = documents.map(prepareDocument);
-const browser = await chromium.launch({ headless: true });
+const browserExecutable = resolveWebviewBrowserExecutable({ chromium });
+const browserIsolation = createWebviewBrowserIsolation({
+  workspaceTmp: resolve(root, "tmp"),
+  rootPrefix: "readme-browser-",
+  aliasPrefix: "ow-readme-"
+});
+let browserContext;
 try {
+  browserContext = await chromium.launchPersistentContext(browserIsolation.createProfile("responsive"), {
+    ...(browserExecutable.explicitOverride ? { executablePath: browserExecutable.executablePath } : {}),
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    env: browserIsolation.childEnvironment,
+    timeout: 30_000
+  });
+  const browser = browserContext.browser();
+  if (!browser) throw new Error("The README renderer did not retain its Playwright browser process.");
+  const prepared = documents.map(prepareDocument);
   for (const document of prepared) await verifyDocument(browser, document);
 } finally {
-  await browser.close();
+  try {
+    await browserContext?.close();
+  } finally {
+    browserIsolation.cleanup();
+  }
 }
 
 function prepareDocument(document) {

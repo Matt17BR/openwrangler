@@ -1,25 +1,14 @@
-import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { delimiter, resolve } from "node:path";
+import { resolve } from "node:path";
+import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const candidates = [
-  process.env.OPEN_WRANGLER_PYTHON,
-  process.platform === "win32"
-    ? resolve(root, ".venv", "Scripts", "python.exe")
-    : resolve(root, ".venv", "bin", "python"),
-  "python3",
-  "python"
-].filter(Boolean);
-
-const executable =
-  candidates.find((candidate) => {
-    if (!candidate) {
-      return false;
-    }
-    const isPath = candidate.includes("/") || candidate.includes("\\") || candidate.includes(delimiter);
-    return !isPath || existsSync(candidate);
-  }) ?? "python3";
+const executable = resolveAndPreflightAcceptancePython({
+  profile: "repository-command",
+  repositoryRoot: root,
+  environment: process.env,
+  platform: process.platform
+});
 const result = spawnSync(executable, process.argv.slice(2), {
   cwd: root,
   env: {

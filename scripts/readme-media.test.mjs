@@ -230,6 +230,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   const compositor = readFileSync(resolve(root, "scripts", "compose-readme-media.mjs"), "utf8");
   const captureScript = readFileSync(resolve(root, "scripts", "capture-screenshots.mjs"), "utf8");
+  const browserHelper = readFileSync(resolve(root, "scripts", "webview-browser.mjs"), "utf8");
   const editorAcceptance = readFileSync(resolve(root, "scripts", "editor-acceptance.mjs"), "utf8");
   const publicSurfaceVerifier = readFileSync(resolve(root, "scripts", "verify-public-media-surfaces.mjs"), "utf8");
   const publicSurfaceContract = readFileSync(resolve(root, "scripts", "public-media-surface-contract.mjs"), "utf8");
@@ -254,6 +255,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
   assert.equal(packageJson.scripts?.["verify:public-media-surfaces"], "node scripts/verify-public-media-surfaces.mjs");
   assert.equal(packageJson.scripts?.["test:webview-acceptance"], "npm run test:webview-acceptance:run");
+  assert.match(
+    packageJson.scripts?.["test:webview-acceptance:run"] ?? "",
+    /^node scripts\/packaged-python-preflight\.mjs visual && /u
+  );
   assert.match(packageJson.scripts?.["test:webview-acceptance:run"] ?? "", /npm run verify:readme-media/u);
   assert.match(packageJson.scripts?.["test:webview-acceptance:run"] ?? "", /npm run verify:readme-responsive-render/u);
   assert.equal(
@@ -292,7 +297,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(editorAcceptance, /--force-device-scale-factor=\$\{PUBLIC_MEDIA_PIXEL_RATIO\}/u);
   assert.match(editorAcceptance, /OPEN_WRANGLER_PUBLIC_MEDIA_PIXEL_RATIO/u);
   assert.match(captureScript, /pixelRatio = appearance\.pixelRatio \?\? 1/u);
-  assert.match(captureScript, /--force-device-scale-factor=\$\{pixelRatio\}/u);
+  assert.match(browserHelper, /--force-device-scale-factor=\$\{pixelRatio\}/u);
   assert.match(captureScript, /public-media-source\/v1\.2\/browser\/by-example-dialog\.png/u);
   assert.match(captureScript, /public-media-source\/v1\.2\/browser\/by-example-preview\.png/u);
   assert.match(captureScript, /public-media-source\/v1\.2\/browser\/duckdb-rich-parquet\.png/u);

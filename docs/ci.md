@@ -55,21 +55,56 @@ The `validate` job reads the result of every required job. Missing, cancelled, f
 
 Superseded pull-request runs are cancelled. Release jobs are never cancelled this way.
 
+## Failure-signal policy
+
+Red is useful only when it has one narrow owner. Every blocking failure must classify as a product regression, a real
+editor/runtime/platform compatibility regression, a violated package or release invariant, a deterministic
+prerequisite failure, or an explicitly identified external-infrastructure outage. Interpreter, dependency, browser,
+display, and private-profile prerequisites fail before an editor opens or a visual/product assertion begins. A phase
+timeout with no product exception is a harness-budget defect, not evidence against the extension.
+
+One comprehensive end-to-end owner proves each behavior. An additional editor, operating system, transport, or
+registry lane must name the distinct compatibility seam it owns; otherwise the duplicate proof is removed. Pull
+requests own source, coverage, workflow-contract, browser-baseline, and harness-adversarial suites. Release candidates
+own the immutable VSIX, installed-editor compatibility, external integrations, performance, cleanup, provenance, and
+publication invariants; they do not rerun source suites merely because release acceptance is stricter.
+
+Automatic retries and larger timeouts are not flake policy. Fix, isolate, replace, or delete a nondeterministic check.
+After a failed candidate, record only its first blocker, evidence owner, and one class: `product`, `release-invariant`,
+`dependency/platform`, or `harness/runner`, together with GitHub's wall time and summed runner-minutes. In the rolling
+last ten first-attempt candidate failures, at least nine must be product, genuine release-invariant, or real
+dependency/platform signals. A second failure from the same `harness/runner` cause blocks another release attempt
+until that gate is simplified or repaired; it must not grow another orchestration layer. This review uses the existing
+run record and release notes, not a new metrics service.
+
 ## Release candidates
 
 Preview and stable release workflows build the VSIX once. Every acceptance job downloads and verifies that same artifact.
 
 The release tier adds the expensive product checks that no longer run on every pull request:
 
-- packaged VS Code on macOS and Windows;
-- packaged Cursor on macOS and Windows;
-- released Jupyter in fixed parallel Python, local-R-shard, and remote-R jobs: local and remote Python kernels in VS
-  Code, local R in VS Code and Cursor, remote R in VS Code, and fresh focused Linux VS Code and Cursor invocations for
-  value and categorical operations, the active R terminal, and R Markdown/Quarto;
-- the native R contract in its own parallel sibling job;
+- focused packaged VS Code and Cursor `platform-smoke` compatibility on macOS and Windows, without native-R setup or
+  execution;
+- native-R platform acceptance in a separate macOS/Windows matrix, with fresh VS Code-only core, native-frame, and
+  kernel-restart phases;
+- released Jupyter in fixed parallel Python, Linux local-R-shard, and remote-R jobs: VS Code owns complete local and
+  remote Python coverage while Cursor keeps one allowed Variables/renderer/page/close seam; local R runs in VS Code
+  and Cursor, remote R in VS Code, and fresh focused Linux VS Code and Cursor invocations
+  for core, native-frame, restart, the active R terminal, and R Markdown/Quarto, with the complete value and
+  categorical catalogs owned once by Linux VS Code;
+- native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI remains the
+  sole direct R-contract owner;
 - Remote SSH;
 - installed performance in pinned VS Code and Cursor;
-- the complete source, platform, package, accessibility, and security checks.
+- one full generic packaged journey in Linux VS Code, a focused Linux Cursor `platform-smoke`, exact-artifact
+  platform/package checks, live public-metadata and security audits, and the strict runtime benchmark;
+  protected pull-request CI remains the sole owner of source, coverage, extension-host, browser-baseline, and
+  accessibility suites.
+
+Release prerequisites are explicit gates, not product evidence. Python resolution never searches PATH; browser work
+uses the lockfile-pinned Playwright executable or one absolute override, private child-only profiles, and one bounded
+preflight. A missing interpreter, dependency, browser, display, or profile capability therefore fails before editor or
+visual assertions with a prerequisite classification instead of becoming a late acceptance timeout.
 
 A release cannot publish until every candidate job passes. GitHub, Open VSX, and the Visual Studio Marketplace receive the accepted VSIX; none of them rebuild it.
 
@@ -85,30 +120,40 @@ still requires the package, the shared candidate call, and Remote SSH. If candid
 job may finish anyway so its editor and namespace cleanup are not interrupted; the failed candidate still cannot
 publish.
 
-Python, remote R, the R 4.5.2 contract, and the two local-R shard cells are independent siblings. Every artifact
-consumer verifies the same candidate VSIX; the R contract instead tests the exact source commit. The lifecycle shard
-runs `core-operations`, then `kernel-restart`, then `interactive-terminal`, then `literate-documents`; the editing
-shard runs `value-operations`, then `categorical-operations`. Dependency and editor setup happens once per shard, but
-every phase immediately reverifies the exact candidate and starts a fresh VS Code-and-Cursor runner with new private
-runtime, profile, result, progress, and log roots. Each runner is followed immediately by its own sealed
-failure-evidence upload. A deferred shard-local raw-outcome check runs only after every phase assigned to that shard, so
-an early failure cannot suppress later evidence or be overwritten by it. Core and value own 12 targeted operations
-each, categorical owns two, and their representative Rename, native-frame, and exact 26-capability checks remain
-intact. The dedicated restart phase owns Linux candidate kernel restart/reopen coverage under its own fresh phase
-budget; the macOS and Windows candidate core invocations retain their existing embedded coverage.
+Python, remote R, the generic platform matrix, the native-R `r_platform` matrix, and the two Linux local-R shard cells
+are independent siblings. Every candidate job proves the exact artifact or a live external release invariant; the
+direct R 4.4/4.5 source contract remains solely in protected pull-request CI. Generic macOS/Windows platform cells own
+only the packaged VS Code/Cursor `platform-smoke` compatibility seam without rerunning the pull request's extension-host
+suite or preparing R. Linux VS Code is the sole full generic packaged owner; Linux Cursor runs the same focused smoke
+rather than repeating that proof. Each `r_platform` cell prepares R once, then runs freshly
+verified VS Code-only `core-operations`, `native-frames`, and `kernel-restart` invocations in that order. Its deferred
+raw-outcome guard requires literal success from all three phases after their distinct immediate diagnostic uploads.
+
+Linux lifecycle runs `core-operations`, then `kernel-restart`, then `interactive-terminal`, then
+`literate-documents`; Linux editing runs `native-frames`, then `value-operations`, then `categorical-operations`.
+Dependency and editor setup happens once per shard, but every phase immediately reverifies the exact candidate and
+starts a fresh runner for its explicit editor set with new private runtime, profile, result, progress, and log roots. Each runner
+is followed immediately by its own sealed failure-evidence upload. A deferred shard-local raw-outcome check runs only
+after every phase assigned to that shard, so an early failure cannot suppress later evidence or be overwritten by it.
+Core and value own 12 targeted operations each and categorical owns two. Candidate core, value, and categorical no
+longer duplicate native-frame work: `native-frames` makes Linux VS Code the comprehensive collapse, viewing, Rename,
+and Drop owner, while `kernel-restart` owns restart/reopen under a fresh phase budget. Cursor, macOS, and Windows retain
+representative native-frame seams as well as representative core/editor/platform
+seams, and the value/categorical phase runners therefore request only VS Code.
 
 The remote R sibling runs only the packaged VS Code Docker journey and retains its embedded restart/reopen journey and
 `lowerText` (Lowercase) operation check; it does not install hosted R, local R packages, local kernel environments, or
 native R/Quarto tooling. Internal
-jobs and both shard matrix cells keep sibling cancellation disabled, so one failure cannot interrupt another owner's
-editor or Docker cleanup. Every native editor phase retains its own 300-second hard deadline and 180-second inactivity
-deadline without automatic retry. Explicit Linux core skips the embedded restart journey because `kernel-restart`
-owns it in fresh Linux VS Code and Cursor processes. Explicit macOS and Windows core retain their embedded restart;
-focused value and categorical selectors continue to skip it. Default/unset core retains that embedded journey, so the
-manually dispatched Released Jupyter workflow remains an intentionally separate, backward-compatible,
-non-authoritative diagnostic: its existing local-R core, value, categorical, and terminal phases are serial and use
-their existing exact four-way fan-in. This routing removes only duplicate Linux scheduling and does not reduce
-per-platform restart coverage. The manual workflow does not model or substitute for candidate acceptance.
+jobs, platform cells, and both local-R shard matrix cells keep sibling cancellation disabled, so one failure cannot
+interrupt another owner's editor or Docker cleanup. Every native editor phase retains its own 300-second hard deadline
+and 180-second inactivity deadline without automatic retry. Explicit candidate core skips embedded native-frame and
+restart work on Linux, macOS, and Windows because the dedicated selectors own both. Linux executes those selectors in
+VS Code and Cursor; macOS and Windows execute them in VS Code, preserving the candidate coverage previously embedded in
+their platform core. Focused value and categorical selectors also omit native-frame work and remain restart-free.
+Default/unset core retains its embedded behavior, so the manually dispatched Released Jupyter workflow remains an
+intentionally separate, backward-compatible, non-authoritative diagnostic: its existing local-R core, value,
+categorical, and terminal phases are serial and use their existing exact four-way fan-in. Remote R likewise retains
+its embedded behavior. The manual workflow does not model or substitute for candidate acceptance.
 
 Preview release run #72 reached the ordinary local-R 300-second deadline at numeric Round, lost Cursor's bounded
 Multi-label Undo wait, and failed macOS Drop Columns Code Preview generation/diagnostics. Publication was skipped. Those
@@ -130,19 +175,28 @@ versus the former 31m15s serial lane, a 51% reduction. Total runner use increase
 candidate lane except lifecycle core passed; core reached `restart:start` and then crossed the unchanged 300-second
 outer deadline. Publication was skipped and no `v1.99.6` was created.
 
-The dedicated `kernel-restart` phase is the next remediation: it removes restart/reopen only from explicit Linux core
-and gives that journey its own verifier, private VS Code/Cursor run, sealed upload, 300-second hard deadline, and
-180-second inactivity deadline before the lifecycle shard's deferred raw fan-in. Focused value and categorical
-selectors remain restart-free, while explicit macOS and Windows core, default/unset core, and remote R retain their
-existing restart coverage. It adds no retry or per-platform coverage reduction. Run #74 proves the prior topology's
-measured wall-time reduction, not that this remediation passes or what its next hosted critical path will be; macOS
-remains only the last observed bottleneck until a fresh candidate establishes otherwise.
+Preview release [run #75](https://github.com/Matt17BR/openwrangler/actions/runs/31834973654) from protected `main`
+commit `917341a` finished in 21m18s and consumed 134.07 positive-duration runner-minutes. That was 39 seconds faster
+and 3.29 runner-minutes more than #74, and 11m57s faster and 14.32 runner-minutes more than #73. Its sole raw candidate
+failure was Linux lifecycle core: VS Code 1.133.0 crossed the 300-second outer deadline at about 300.012 seconds after
+the last changed checkpoint `jupyter-r:orders_table:editing-renderer-ready`, with no product/runtime exception. The
+dedicated Linux restart phase passed in both VS Code and Cursor, value and categorical editing passed, and both native-R
+platform journeys passed with their then-embedded restart coverage. macOS nevertheless used about 289.66 of its
+300-second native-editor budget. Publication was skipped, so no `v1.99.6` tag, prerelease, or registry package was
+created.
 
-Each release local-R shard uses the same commit-pinned dependency action, explicit package set, and
+The candidate-only core/native/restart split removes the remaining native-frame and restart work from explicit core on
+all three hosted platforms, while the separate `r_platform` matrix prevents generic platform work from sharing the
+same serial cell. It keeps one representative native-frame and restart seam on every platform, one comprehensive Linux
+owner, all hard/inactivity deadlines, and the no-retry
+rule. The graph is projected to move wall time toward 20 minutes, but no hosted candidate has proved the new topology,
+that estimate, or its next critical path. Repeating private R setup in the new parallel cells may increase runner use.
+
+Each release local-R shard and `r_platform` cell uses the same commit-pinned dependency action, explicit package set, and
 resolved-lock/binary-package policy as the pull-request contract matrix. GitHub scopes pull-request caches to their
 merge refs, so a release dispatch cannot restore them. Later candidate dispatches may reuse a compatible cache created
-on `main`; the first matching `main` dispatch performs a valid cold install. The R contract is a separate parallel
-sibling rather than setup repeated inside either packaged-editor shard.
+on `main`; the first matching `main` dispatch performs a valid cold install. The source-only R contract stays in
+protected pull-request CI rather than running inside or beside either packaged-editor shard.
 
 Remote R fixture preparation also keeps those bounds local to the work being proved. `Dockerfile.r.base` builds the
 snapshot-pinned base, `Dockerfile.r` builds the R runtime from that exact owned image, and the existing

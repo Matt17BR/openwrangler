@@ -32,6 +32,7 @@ import {
   PINNED_REMOTE_VSCODE_COMMIT,
   PINNED_REMOTE_VSCODE_VERSION,
   PINNED_REMOTE_WORKSPACE_TARGETS,
+  resolveRemoteInspectionPython,
   validatePinnedRemoteTarget,
   validateTarManifest
 } from "./remote-workspace-acquisition.mjs";
@@ -68,6 +69,15 @@ test("Remote SSH acceptance pins one exact official VS Code artifact chain", () 
   assert.equal(PINNED_REMOTE_WORKSPACE_TARGETS.tommath.wireBytes, 56_448);
 });
 
+test("Remote archive inspection requires one explicit prepared Python interpreter", () => {
+  const source = readFileSync(new URL("./remote-workspace-acquisition.mjs", import.meta.url), "utf8");
+  assert.match(source, /inspectionPython = process\.env\.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON/u);
+  assert.match(source, /OW_REMOTE_INSPECTION_PYTHON_PREREQUISITE/u);
+  assert.doesNotMatch(source, /REMOTE_INSPECTION_PYTHON \?\? ["']python3["']/u);
+  assert.equal(resolveRemoteInspectionPython(process.execPath), process.execPath);
+  assert.throws(() => resolveRemoteInspectionPython("python3"), /OW_REMOTE_INSPECTION_PYTHON_PREREQUISITE/u);
+});
+
 test("Remote artifact targets reject moving, credentialed, query, format, and redirect drift", () => {
   const target = { ...PINNED_REMOTE_WORKSPACE_TARGETS.cli };
   for (const mutation of [
@@ -100,14 +110,29 @@ test("Remote acquisition root receipts retain identity while owned children chan
 linuxX64Test("Pinned VS Code client acquisition stages only the exact desktop artifact in a private root", async () => {
   const parent = privateRoot("openwrangler-vscode-client-parent-");
   try {
+    let prematureDownloads = 0;
+    await assert.rejects(
+      acquirePinnedVSCodeClient(parent, {
+        inspectionPython: null,
+        async downloadArtifact() {
+          prematureDownloads += 1;
+          throw new Error("download must not start without the inspection prerequisite");
+        }
+      }),
+      /OW_REMOTE_INSPECTION_PYTHON_PREREQUISITE/u
+    );
+    assert.equal(prematureDownloads, 0);
+
     const calls = [];
     const acquired = await acquirePinnedVSCodeClient(parent, {
+      inspectionPython: process.execPath,
       async downloadArtifact(target, rootReceipt) {
         calls.push(["download", target, rootReceipt.path]);
         return { path: join(rootReceipt.path, target.artifactName), target };
       },
       async extractTar(artifact, destination, options) {
         calls.push(["extract", artifact.target, destination, options.archiveRoot]);
+        assert.equal(options.inspectionPython, process.execPath);
         assert.equal(options.runCommand, undefined);
         mkdirSync(join(destination, "bin"), { recursive: true });
       },
@@ -238,9 +263,13 @@ test("Pinned tar extraction revalidates its artifact at both command boundaries"
     mkdirSync(destination, { mode: 0o700 });
     const labels = [];
     const extracted = await extractPinnedRemoteTar(receipt, destination, {
+      inspectionPython: process.execPath,
       async runCommand(command) {
         command.beforeSpawnCheck?.();
         labels.push(command.label);
+        if (command.label === "Pinned remote-workspace tar inspection") {
+          assert.equal(command.executable, process.execPath);
+        }
         return command.label === "Pinned remote-workspace tar inspection"
           ? {
               stdout: '{"name":"bin","type":"directory"}\n{"name":"bin/code","type":"file"}\n',
@@ -274,6 +303,7 @@ test("Pinned tar extraction rejects artifact mutation before or during either co
       const mutate = () => writeFileSync(receipt.path, Buffer.alloc(body.length, 0x78), { mode: 0o600 });
       await assert.rejects(
         extractPinnedRemoteTar(receipt, destination, {
+          inspectionPython: process.execPath,
           beforeArtifactSpawnForTest({ label }) {
             if (
               (stage === "inspection-pre" && label === "Pinned remote-workspace tar inspection") ||

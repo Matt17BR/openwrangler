@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  accessSync,
   chmodSync,
   closeSync,
   constants,
@@ -14,6 +15,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeSync
 } from "node:fs";
@@ -194,6 +196,7 @@ export async function acquirePinnedVSCodeClient(
   {
     downloadArtifact = downloadPinnedRemoteArtifact,
     extractTar = extractPinnedRemoteTar,
+    inspectionPython = process.env.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON,
     openResponse,
     runCommand,
     validateInstallation = validatePinnedVSCodeClientInstallation
@@ -211,6 +214,7 @@ export async function acquirePinnedVSCodeClient(
       "Pinned VS Code client acquisition requires bounded download, extraction, and validation functions."
     );
   }
+  const exactInspectionPython = resolveRemoteInspectionPython(inspectionPython);
   const parentReceipt = privateDirectoryReceipt(parent);
   const root = join(parentReceipt.path, `vscode-client-${randomUUID()}`);
   mkdirSync(root, { mode: 0o700 });
@@ -219,7 +223,11 @@ export async function acquirePinnedVSCodeClient(
   const artifact = await downloadArtifact(target, rootReceipt, { openResponse });
   const installationRoot = join(rootReceipt.path, "installation");
   mkdirSync(installationRoot, { mode: 0o700 });
-  await extractTar(artifact, installationRoot, { archiveRoot: target.archiveRoot, runCommand });
+  await extractTar(artifact, installationRoot, {
+    archiveRoot: target.archiveRoot,
+    inspectionPython: exactInspectionPython,
+    runCommand
+  });
   const editor = validateInstallation(installationRoot);
   return Object.freeze({
     editor: Object.freeze({
@@ -626,7 +634,12 @@ export async function validateRemoteSshVsix(path) {
 export async function extractPinnedRemoteTar(
   artifact,
   destination,
-  { archiveRoot = artifact?.target?.archiveRoot, runCommand = runBoundedEditorCommand, beforeArtifactSpawnForTest } = {}
+  {
+    archiveRoot = artifact?.target?.archiveRoot,
+    runCommand = runBoundedEditorCommand,
+    beforeArtifactSpawnForTest,
+    inspectionPython = process.env.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON
+  } = {}
 ) {
   if (!artifact?.path || artifact.target?.format !== "tar.gz") {
     throw new Error("Pinned remote extraction requires a validated tar artifact receipt.");
@@ -635,6 +648,7 @@ export async function extractPinnedRemoteTar(
   const destinationReceipt = privateDirectoryReceipt(destination);
   const listing = await inspectTarManifest(artifact.path, {
     archiveRoot,
+    inspectionPython: resolveRemoteInspectionPython(inspectionPython),
     runCommand,
     beforeSpawnCheck: pinnedRemoteArtifactPreSpawnCheck(
       artifact,
@@ -781,7 +795,7 @@ export function validatePinnedVSCodeClientInstallation(clientRoot) {
   });
 }
 
-async function inspectTarManifest(path, { archiveRoot, runCommand, beforeSpawnCheck }) {
+async function inspectTarManifest(path, { archiveRoot, inspectionPython, runCommand, beforeSpawnCheck }) {
   const script = [
     "import json,sys,tarfile",
     "p=sys.argv[1]",
@@ -794,7 +808,7 @@ async function inspectTarManifest(path, { archiveRoot, runCommand, beforeSpawnCh
   ].join("\n");
   const result = await runCommand(
     {
-      executable: process.env.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON ?? "python3",
+      executable: inspectionPython,
       args: ["-I", "-c", script, path],
       environment: createEditorAcceptanceEnvironment(),
       label: "Pinned remote-workspace tar inspection",
@@ -808,6 +822,23 @@ async function inspectTarManifest(path, { archiveRoot, runCommand, beforeSpawnCh
     .map((line) => JSON.parse(line));
   validateTarManifest(entries, { archiveRoot });
   return entries;
+}
+
+export function resolveRemoteInspectionPython(value = process.env.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON) {
+  if (typeof value !== "string" || !isAbsolute(value) || /[\0\r\n]/u.test(value)) {
+    throw new Error(
+      "OW_REMOTE_INSPECTION_PYTHON_PREREQUISITE: set OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON to one prepared absolute interpreter."
+    );
+  }
+  try {
+    if (!statSync(value).isFile()) throw new Error("not a file");
+    accessSync(value, constants.X_OK);
+  } catch {
+    throw new Error(
+      "OW_REMOTE_INSPECTION_PYTHON_PREREQUISITE: OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON must identify one executable file."
+    );
+  }
+  return value;
 }
 
 async function decodePinnedGzip(wirePath, decodedPath, target) {

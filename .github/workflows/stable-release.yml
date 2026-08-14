@@ -235,7 +235,6 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
       - id: canonical_remote
         name: Reverify the exact canonical stable artifact for Remote SSH
         env:
@@ -251,6 +250,7 @@ jobs:
           ${{ steps.canonical_remote.outputs.candidate_bytes }}
         env:
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
           OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
       # The Remote SSH runner intentionally exposes no artifact path yet. Uploading its private
       # workspace or raw output would violate the sealed, receipt-bound evidence contract.
@@ -290,7 +290,6 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
       - name: Recheck that the remote release tag is absent or exact
         env:
           EXPECTED_SHA: ${{ github.sha }}

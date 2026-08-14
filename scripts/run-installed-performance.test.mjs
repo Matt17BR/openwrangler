@@ -99,6 +99,11 @@ test("extension-test builds explicitly stage declaration-shadowed CommonJS runti
     installedPerformanceRunner,
     /for \(const phase of INSTALLED_PERFORMANCE_PHASES\) \{\s+verifyExtensionTestRuntimeAssets\(\);/u
   );
+  assert.match(
+    installedPerformanceRunner,
+    /function resolveTestPython\(environment\) \{[\s\S]*resolveAndPreflightAcceptancePython\(\{[\s\S]*profile: "editor"/u
+  );
+  assert.doesNotMatch(installedPerformanceRunner, /hosted && existsSync\(hosted\) \? hosted : local/u);
 
   const directory = await canonicalTemporaryDirectory("openwrangler-extension-test-assets-");
   try {
@@ -372,6 +377,7 @@ test("installed performance assigns unfocused release display modes per editor",
 test("stable canonical evidence resolves only freshly acquired pinned VS Code and Cursor installations", async () => {
   const environment = {
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/private/session-bus",
+    OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: process.execPath,
     OPEN_WRANGLER_VSCODE_EXECUTABLE: "/untrusted/code",
     OPEN_WRANGLER_CURSOR_EXECUTABLE: "/untrusted/cursor"
   };
@@ -420,8 +426,30 @@ test("stable canonical evidence resolves only freshly acquired pinned VS Code an
     /isolated D-Bus session/u
   );
 
+  let prerequisiteBypassCalls = 0;
+  await assert.rejects(
+    acquirePinnedInstalledPerformanceEditors(
+      "/private/root",
+      { DBUS_SESSION_BUS_ADDRESS: "unix:path=/private/session-bus" },
+      {
+        inspectionPython: null,
+        acquireVscode: async () => {
+          prerequisiteBypassCalls += 1;
+          assert.fail("VS Code acquisition must not start without the tar-inspection prerequisite");
+        },
+        acquireCursor: async () => {
+          prerequisiteBypassCalls += 1;
+          assert.fail("Cursor acquisition must not start without the tar-inspection prerequisite");
+        }
+      }
+    ),
+    /OW_REMOTE_INSPECTION_PYTHON_PREREQUISITE/u
+  );
+  assert.equal(prerequisiteBypassCalls, 0);
+
   const failedEnvironment = {
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/private/session-bus",
+    OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: process.execPath,
     OPEN_WRANGLER_VSCODE_EXECUTABLE: "/original/code"
   };
   let cursorSettled = false;

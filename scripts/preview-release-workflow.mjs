@@ -24,6 +24,7 @@ const CANONICAL_PATHS = [
   "canonical-release/openwrangler.vsix.sha256",
   "canonical-release/openwrangler.vsix.provenance.json"
 ];
+const FULL_VSIX_VERIFY_COMMAND = "npm run verify:vsix -- openwrangler.candidate.vsix";
 const PROTECTED_MAIN_SOURCE_RUN = `test "$EVENT_REF_TYPE" = "branch"
 test "$EVENT_REF" = "refs/heads/main"
 case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
@@ -197,6 +198,23 @@ function inspectPinnedActions(workflow, problems) {
   }
 }
 
+function inspectAdjacentCanonicalVerification(jobSteps, consumerStep, expectedId, expectedName, label, problems) {
+  const consumerIndex = jobSteps.indexOf(consumerStep);
+  const verifier = jobSteps[consumerIndex - 1];
+  if (
+    consumerIndex < 1 ||
+    !exactKeys(verifier, ["id", "name", "env", "run"]) ||
+    verifier.id !== expectedId ||
+    verifier.name !== expectedName ||
+    !exactKeys(verifier.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    verifier.env.EXPECTED_SHA !== EVENT_SHA ||
+    verifier.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(verifier.run) !== "node scripts/verify-preview-release-artifact.mjs canonical-release"
+  ) {
+    problems.push(`${label} must immediately follow a fresh verification of the exact canonical preview artifact.`);
+  }
+}
+
 export function inspectPreviewReleaseWorkflow(source) {
   if (typeof source !== "string" || Buffer.byteLength(source, "utf8") > MAX_WORKFLOW_BYTES) {
     return ["release.yml must be bounded YAML text."];
@@ -255,6 +273,18 @@ export function inspectPreviewReleaseWorkflow(source) {
     }
   }
   const packaging = workflow.jobs.package;
+  const fullVsixVerifiers = Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
+    runs(job)
+      .filter((run) => run.includes("npm run verify:vsix"))
+      .map((run) => ({ jobName, run }))
+  );
+  if (
+    fullVsixVerifiers.length !== 1 ||
+    fullVsixVerifiers[0]?.jobName !== "package" ||
+    fullVsixVerifiers[0]?.run !== FULL_VSIX_VERIFY_COMMAND
+  ) {
+    problems.push("Only package may run the producer-owned full VSIX verifier against the candidate VSIX.");
+  }
   inspectCheckout(packaging, "package", problems);
   inspectPackageSourceBinding(packaging, problems);
   const packageSteps = steps(packaging);
@@ -329,6 +359,15 @@ export function inspectPreviewReleaseWorkflow(source) {
   }
   inspectCheckout(remote, "remote-ssh", problems);
   inspectCanonicalConsumer(remote, "remote-ssh", problems);
+  const remoteWorkspace = steps(remote).find((step) => step?.id === "remote_workspace");
+  inspectAdjacentCanonicalVerification(
+    steps(remote),
+    remoteWorkspace,
+    "canonical_remote",
+    "Reverify the exact canonical preview artifact for Remote SSH",
+    "remote-ssh",
+    problems
+  );
   if (
     runs(remote).some(
       (run) => /^npm run package(?:\s|$)/u.test(run) || run.includes("create-canonical-release-artifact.mjs")
@@ -366,6 +405,14 @@ export function inspectPreviewReleaseWorkflow(source) {
     problems.push("release must publish the tested candidate without rebuilding it.");
   }
   const tag = findRun(release, "node scripts/push-release-tag.mjs");
+  inspectAdjacentCanonicalVerification(
+    steps(release),
+    tag,
+    "canonical_release",
+    "Reverify the exact canonical artifact for final publication",
+    "release tag publication",
+    problems
+  );
   const localTagStep = steps(release).find(
     (step) => step?.name === "Prepare the exact local release tag for registry verification"
   );

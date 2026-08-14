@@ -53,6 +53,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - id: reference_python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
       - run: npm ci
       - name: Formatting
         run: npm run format:check
@@ -64,6 +68,8 @@ jobs:
         run: npm run protocol:check
       - name: Reference freshness
         run: npm run reference:check
+        env:
+          OPEN_WRANGLER_PYTHON: ${{ steps.reference_python.outputs.python-path }}
       - name: Documentation freshness
         run: npm run docs:check
       - name: Production license inventory
@@ -652,6 +658,7 @@ jobs:
           ${{ steps.candidate.outputs.size }}
         env:
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
           OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
 
   validate:
