@@ -588,9 +588,18 @@ test("packaged editor runner publishes a correlated checkpoint for every R tooli
   );
 
   const runnerSource = readFileSync(new URL("./run-packaged-editor-tests.mjs", import.meta.url), "utf8");
+  const toolingGuard = runnerSource.lastIndexOf(
+    "if (rJupyterSelection.nativeEditorTooling)",
+    runnerSource.indexOf("rEditorTooling = await prepareREditorAcceptanceTooling")
+  );
   const toolingCall = runnerSource.slice(
     runnerSource.indexOf("rEditorTooling = await prepareREditorAcceptanceTooling"),
     runnerSource.indexOf('"setup:r-jupyter-environment-ready"')
+  );
+  assert.ok(toolingGuard >= 0, "Only a focused native-editor selector may acquire R and Quarto tooling.");
+  assert.match(
+    runnerSource.slice(toolingGuard, runnerSource.indexOf("rEditorTooling = await prepareREditorAcceptanceTooling")),
+    /process\.platform !== "linux" \|\| process\.arch !== "x64"/u
   );
   assert.match(toolingCall, /onArtifactAttempt:\s*\(\{ key, fileName, attempt \}\)\s*=>/u);
   assert.match(
@@ -598,6 +607,11 @@ test("packaged editor runner publishes a correlated checkpoint for every R tooli
     /writeCorrelatedProgress\(\s*orchestrationProgressPath,\s*orchestrationRunId,\s*"setup",\s*`setup:fetch-r-editor-tooling-\$\{key\}-\$\{fileName\}-attempt-\$\{attempt\}`\s*\)/u
   );
   assert.doesNotMatch(toolingCall, /pin\.url|\$\{url\}/u);
+  const installGuard = runnerSource.indexOf(
+    'if (acceptanceMode === "r-jupyter" && rJupyterSelection.nativeEditorTooling)'
+  );
+  const installCall = runnerSource.indexOf("for (const target of rEditorTooling.extensionVsixes)", installGuard);
+  assert.ok(installGuard >= 0 && installCall > installGuard);
 });
 
 function exactResponse(payload = PAYLOAD) {

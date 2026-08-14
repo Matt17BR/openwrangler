@@ -114,15 +114,15 @@ matrix for release candidates or changes that cross all of its boundaries.
   carried a 100,000-row sample receipt. This generated-data result is evidence for the former refusal case, not a
   performance threshold or substitute for the focused R 4.4/4.5 matrix.
 
-  Linux and macOS VS Code run the complete installed R journey. Windows and Cursor use a named representative profile
-  within the same 300-second phase limit: real IRkernel discovery, one page round trip, profiles, filtering, Clear all,
+  Linux and macOS VS Code run the comprehensive installed R notebook journey. Windows and Cursor use a named
+  representative notebook profile within the same 300-second phase limit: real IRkernel discovery, one page round trip, profiles, filtering, Clear all,
   compound-sort priority through the row context menu, Viewing-to-Editing replay, the Rename
   draft/apply/inspection/undo lifecycle, one native
-  tibble operation, one keyed `data.table` operation, kernel restart, and the official R terminal and Operations
-  sidebar. On Linux x64, the installed-tooling terminal journey also runs a selected `.R` block through vscode-R's
-  `r.runSelection`, waits for its named-column base frame and tibble to appear in Operations without Refresh, and opens
-  and profiles the base frame. Cursor also runs one plain `.R` document where the host supports it; Windows skips R
-  documents. The initial
+  tibble operation, one keyed `data.table` operation, and kernel restart. A fresh Linux installed-tooling invocation
+  separately owns the official R terminal and Operations sidebar. It seeds named-column base, tibble, and data-table
+  frames in that exact terminal, waits for them to appear in Operations without Refresh, and opens and profiles the
+  base frame. Linux plain `.R` moves to the separate literate-document invocation in both editors;
+  macOS retains it in the ordinary VS Code invocation, and Windows skips R documents. The initial
   picker still checks base, tibble, `data.table`, and supported `collapse` frames. Focused R runtime and webview tests
   cover the full R operation catalog and document matrix; the representative installed-editor passes check the integration
   seams without repeating that matrix. The profile does not raise either the 300-second hard deadline or the
@@ -231,9 +231,10 @@ The pull-request `canonical-vsix` job performs one clean production build, verif
 The heavyweight pull-request `Remote SSH acceptance` job is opt-in: a ready full-matrix pull request carrying the `acceptance:remote-ssh` label when its next supported pull-request activity starts makes an ephemeral Ubuntu 24.04 VM consume the same canonical artifact, enable and verify the kernel namespace primitive required by Bubblewrap, and run the existing zero-window Remote SSH gate once. A hosted runner image may expose trusted system ancestors with runner ownership or writable modes: the current static Podman extraction assigns the top-level `/usr` and `/etc` directories to the runner UID, while `/usr/share` is writable. After package installation, the job first requires `/usr` and `/etc` to be canonical real directories owned only by root or the current runner, restores exactly those two ancestors to `root:root` without traversing either tree, removes their group/other write bits, and revalidates `/`, `/usr`, and `/etc`. It then restores the root-owned `/usr/share` parent mode, removes group/other write access from only the seven fixed font, icon, MIME, GLib, X11, and timezone subtrees used by the namespace, and recursively verifies their root ownership, entry types, and non-writable file/directory modes before the harness accepts them. The harness independently requires every system-runtime root and ancestor to remain canonical, root-owned, and non-writable before each pathname-bound read-only mount. It copies the exact Node executable that launched it into a private receipt-bound file and mounts that staged executable through the immutable launch descriptor, so setup-node toolcache layouts need no distro-level Node installation or unleased host path. It is evidence for an intentional release candidate, not another default PR cost; merely applying a label does not restart the complete CI workflow. A complete workflow re-run replaces the earlier run-attempt artifact before consumers start; rerunning only a failed consumer reuses and revalidates the unchanged existing artifact. CI owns the complete Linux/Python 3.10 and 3.14 suites; cross-platform runtime adds only the distinct macOS/Python 3.12 and Windows/Python 3.14 suites plus focused native Windows dependency guards. CI, cross-platform runtime, and CodeQL cancel only superseded pull-request heads within their ref-scoped groups; scheduled and manual evidence is never cancelled, and a failed phase is never retried automatically. Protected-branch pushes run only the CI workflow's `Fast feedback` job. `scripts/ci-workflow.test.mjs` checks that ownership and result mapping. The manually dispatched Released Jupyter workflow builds a clean production bundle, packages it, verifies the VSIX, and then runs the Python journey in VS Code plus the local R journey in VS Code and Cursor; both remote fixtures stay limited to VS Code. It remains outside pull-request CI and does not repeat the full source suite. Performance history and experimental-editor smokes remain scheduled/manual. `npm run package:prepared` is CI-internal: the pull-request `canonical-vsix` producer, candidate-first release producers, and manually dispatched Released Jupyter lanes may use it only after a clean production build. Local development and workflows that do not build first must use `npm run package`; do not invoke its internal continuation directly.
 
 Preview and stable candidates dispatch Python, local R, and remote R Jupyter acceptance as separate matrix jobs. Each
-job downloads and verifies the same candidate VSIX. The local R job runs the ordinary notebook and plain `.R`
-journey, then reverifies the candidate and runs `.Rmd`, `.qmd`, and Python Quarto in fresh Linux VS Code and Cursor
-phases with separate sealed diagnostics. The remote R job uses only VS Code and the five-phase Docker fixture; it skips hosted R,
+job downloads and verifies the same candidate VSIX. The local R job runs the ordinary notebook, reverifies the
+candidate for a fresh active-terminal invocation, then reverifies it again before plain `.R`, `.Rmd`, `.qmd`, and
+Python Quarto run in fresh Linux VS Code and Cursor phases. All three local invocations retain separate sealed
+diagnostics. The remote R job uses only VS Code and the five-phase Docker fixture; it skips hosted R,
 the R contract packages, local kernel preparation, Cursor, and native R/Quarto tooling. A reported failure identifies
 the affected cell without cancelling sibling ownership or cleanup.
 
@@ -626,7 +627,7 @@ After a forced renderer synchronization, editor interaction binds to the host-ac
 
 In Cursor's remote-kernel phase, the harness restores the captured notebook once if focus moved before waiting for the Variables row action. It does not reopen the Variables view or repeat the action. Timeout output includes only bounded loading state and element counts; it excludes webview URLs and table text.
 
-For affected pull requests, the released-Jupyter CI job downloads and revalidates the same checksum-bound VSIX produced by `canonical-vsix`; it never rebuilds the extension. Documentation-only, package-only, and draft pull requests require that conditional job to be skipped. The draft aggregate still fails deliberately; every ready full-matrix pull request requires the job to succeed through the fail-closed `validate` aggregate. Protected-branch pushes run only `Fast feedback`, so neither this job nor the aggregate runs after merge. The standalone Released Jupyter workflow is manual and self-packages its selected source because it has no caller artifact. Preview and stable release jobs consume their canonical artifact in three jobs: `phase: python`, `phase: r-local`, and `phase: r-remote`. Every editor invocation repeats artifact verification immediately before it starts. The local R cell alone runs the exact R 4.5.2 contract, ordinary VS Code/Cursor journey, and focused literate VS Code/Cursor journey. The remote R cell retains the common Node and absolute hosted Python setup needed by the packaged harness, but performs no hosted pip install or local R setup before the existing VS Code Docker journey. Each native phase keeps the 300-second hard deadline and 180-second inactivity deadline enforced by the packaged-editor harness. The local R cell uses the pinned dependency action and explicit hard-dependency set. A candidate dispatch may restore only a compatible cache created by an earlier dispatch on `main`; pull-request merge-ref caches do not cross that boundary, so the first matching `main` dispatch performs the normal install before the same contract and editor acceptance commands. The packaged harness still creates a fresh private R library for every local run. Its cold dependency installation has a separate 20-minute setup-only bound so a source fallback cannot consume an unbounded orchestration process; this does not raise the editor-phase or inactivity deadlines, and no installed library is reused after cleanup.
+For affected pull requests, the released-Jupyter CI job downloads and revalidates the same checksum-bound VSIX produced by `canonical-vsix`; it never rebuilds the extension. Documentation-only, package-only, and draft pull requests require that conditional job to be skipped. The draft aggregate still fails deliberately; every ready full-matrix pull request requires the job to succeed through the fail-closed `validate` aggregate. Protected-branch pushes run only `Fast feedback`, so neither this job nor the aggregate runs after merge. The standalone Released Jupyter workflow is manual and self-packages its selected source because it has no caller artifact. Preview and stable release jobs consume their canonical artifact in three jobs: `phase: python`, `phase: r-local`, and `phase: r-remote`. Every editor invocation repeats artifact verification immediately before it starts. The local R cell alone runs the exact R 4.5.2 contract, ordinary VS Code/Cursor notebook journey, focused active-terminal VS Code/Cursor journey, and focused literate VS Code/Cursor journey. The remote R cell retains the common Node and absolute hosted Python setup needed by the packaged harness, but performs no hosted pip install or local R setup before the existing VS Code Docker journey. Each native phase keeps the 300-second hard deadline and 180-second inactivity deadline enforced by the packaged-editor harness. The local R cell uses the pinned dependency action and explicit hard-dependency set. A candidate dispatch may restore only a compatible cache created by an earlier dispatch on `main`; pull-request merge-ref caches do not cross that boundary, so the first matching `main` dispatch performs the normal install before the same contract and editor acceptance commands. The packaged harness still creates a fresh private R library for every local run. Its cold dependency installation has a separate 20-minute setup-only bound so a source fallback cannot consume an unbounded orchestration process; this does not raise the editor-phase or inactivity deadlines, and no installed library is reused after cleanup.
 
 The packaged Classic and Connect PySpark fixtures arm class-level `toPandas`, `toArrow`, `mapInPandas`, and
 `mapInArrow` traps before Open Wrangler launches. Any accidental dataframe conversion must therefore fail inside
@@ -654,9 +655,9 @@ R notebook acceptance opens real `data.frame`, tibble, and data.table variables 
 active notebook's base, tibble, data.table, `collapse::qDF()`, `qTBL()`, and `qDT()` variables appear in Operations,
 that unsupported grouped/indexed collapse objects do not, and that an Operations row opens through the exact kernel.
 The focused literate-document journey closes the exact R terminal it created before moving to Python Quarto.
-Every path uses R 4.5.2. Linux runs the ordinary local journey in VS Code and Cursor and the remote journey in VS Code.
-Preview and stable candidates additionally run the complete literate-document journey in its own fresh Linux VS Code
-and Cursor phases. Their macOS and Windows cross-platform jobs reuse the ordinary `r-jupyter` phase rather than a reduced smoke
+Every path uses R 4.5.2. Linux runs the ordinary local notebook journey in VS Code and Cursor and the remote journey in VS Code.
+Preview and stable candidates additionally run active-terminal acceptance and the complete literate-document journey
+in separate fresh Linux VS Code and Cursor phases. Their macOS and Windows cross-platform jobs reuse the ordinary `r-jupyter` phase rather than a reduced smoke
 test; macOS retains the plain `.R` journey, Windows skips direct documents, and neither job repeats the complete
 Python suite or standalone R contract suite.
 The allow phase also starts with a private cell-marked Python file and no Interactive Window. It clicks the visible
@@ -803,9 +804,9 @@ CSV header, representative values, unchanged notebook bytes and view state, and 
 artifacts. A local packaged run on 2026-08-07 passed the earlier CSV-only journey in VS Code
 1.132.0 and Cursor 3.14.7 on the pinned private Xvfb display.
 
-On macOS and Linux, the same local R editor launch also tests R documents without starting another editor process.
-VS Code covers `.R`, `.Rmd`, and `.qmd`; Cursor covers the representative plain `.R` journey. Windows skips that
-document subjourney. For local Windows files, the package manifest hides the explicit **Run R Document** Explorer and
+On macOS, the ordinary local R editor launch also tests plain `.R` without starting another editor process. On Linux,
+the focused literate invocation covers plain `.R`, `.Rmd`, and `.qmd` in both VS Code and Cursor. Windows skips that
+document coverage. For local Windows files, the package manifest hides the explicit **Run R Document** Explorer and
 tab-menu actions. The stable title action remains available so an active official R terminal can supply its
 dataframes. Remote-resource actions and the Command Palette stay available because the client
 cannot identify the extension-host platform through static menu keys. The existing `process.platform` check rejects
@@ -851,8 +852,9 @@ Markdown fence-length mismatches. Raw-string chunk options and special infix ope
 of being partially parsed. Open Wrangler
 still evaluates these cells in its own managed R process; Quarto rendering is a separate editor action.
 
-On Linux x64, the same isolated editor profile installs exact official releases of R Syntax 0.1.4, R 2.8.8, and
-Quarto 1.135.0. The runner downloads each VSIX from the Visual Studio Marketplace and Quarto CLI 1.10.18 from its
+On Linux x64, only the focused `interactive-terminal` and `literate-documents` invocations install exact official
+releases of R Syntax 0.1.4, R 2.8.8, and Quarto 1.135.0. The ordinary notebook and remote-only invocations neither
+prepare nor install that native editor tooling. The runner downloads each VSIX from the Visual Studio Marketplace and Quarto CLI 1.10.18 from its
 official GitHub release, then verifies the pinned byte count and SHA-256 before installation. The profile points the
 R extension at the test R executable and private package library. R Markdown uses the Pandoc bundled with that Quarto
 CLI, and the Quarto extension uses the same private installation. No extension or package is installed into the
@@ -922,7 +924,7 @@ A setup failure records only a fixed stage name; R errors and notebook output st
 macOS builds collapse from its pinned source package, while Linux and Windows use the pinned binary. Setup loads
 every pinned namespace and exercises all three supported constructors before the editor starts.
 
-Across the ordinary and focused invocations, local screenshot mode captures the supported IRkernel dataframe list in
+Across the ordinary notebook and focused literate invocations, local screenshot mode captures the supported IRkernel dataframe list in
 Operations, a generated 2,400-row orders dataframe in the viewing workbench, a Group and aggregate draft after
 switching that same session to Editing mode, the generated R inserted into its notebook, and the dataframe picker
 over a real Quarto document beside its rendered HTML preview.
@@ -947,9 +949,10 @@ The manual **Released Jupyter acceptance** workflow cancels an older run of the 
 diagnostic run is dispatched; its Linux, macOS, and Windows targets do not cancel one another. It has a `macos-r` lane
 for the packaged VS Code and local IRkernel notebook plus Open Wrangler's direct plain `.R` journey. Use it while
 diagnosing macOS-only R failures;
-the default `linux-all` lane also installs the pinned R and Quarto editor tooling and keeps the broader VS Code, Cursor,
-Python, active R terminal, plain `.R`, and remote-Jupyter coverage. The release-candidate workflow owns the separate
-Linux literate-document gate.
+the default `linux-all` lane keeps the broader VS Code, Cursor, Python, active R terminal, and remote-Jupyter
+coverage. After the ordinary R invocation, it freshly reverifies the built VSIX before a separate active-terminal
+invocation installs the pinned R and Quarto tooling. The release-candidate workflow additionally owns the separate
+Linux plain `.R` and literate-document gate.
 
 ```bash
 npm run build:test-extension &&
@@ -979,7 +982,8 @@ For a focused local rerun, add `OPEN_WRANGLER_PACKAGED_R_JOURNEY=interactive-ter
 CSV and Parquet export through the real Save-dialog flow, and cleanup. The second checks the packaged R Markdown
 document action and Quarto title actions, native Quarto preview, dataframe opening, editing, code insertion, the Python/Jupyter Quarto
 path, and cleanup in every requested editor; the candidate gate requests both VS Code and Cursor. Both selectors still
-verify the VSIX, editor, R packages, and pinned R and Quarto extensions. A third runner-only selector,
+verify the VSIX, editor, R packages, and pinned R and Quarto extensions. On Linux, the second selector begins with the
+plain `.R` journey that formerly ran in the ordinary notebook phase. A third runner-only selector,
 `OPEN_WRANGLER_PACKAGED_R_JOURNEY=remote-r-jupyter`, requires Linux, exactly VS Code, and
 `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=1`. It runs only the five existing remote R Docker phases and does not prepare
 hosted R, a local R or Python kernel environment, Cursor, or native R/Quarto tooling. The two local selectors cannot
@@ -1078,7 +1082,7 @@ Recorded first-class editor-platform evidence, 2026-07-27:
 
 This evidence closes the two first-class editor-platform rows only. The macOS/Windows Cursor jobs are bounded platform smokes backed by the deeper recorded Linux suite; the Remote SSH fixture covers one pinned loopback mechanism, not every remote host/provider. Virtual-grid and installed first-usable-grid timing remain open performance gates.
 
-Packaged notebook acceptance opens the real MIME-v2 renderer, explicitly reveals its output cell, exercises 10/20/50/100-row inline paging and every captured column, and checks same-group switching plus the split-editor provenance race. Action discovery accepts only one settled `iframe#active-frame`, rejects any wrapper that still owns a pending guest or multiple retained active guests, and never clicks a merely visible pending/retained representation. With notebook B active, one activation on notebook A's visible linked action must open A's complete current live variable, use only A's exact kernel, and return the live value rather than the captured row. The harness verifies that the retained button is connected, enabled, visible, and owns its center, then sends one trusted Playwright click with Playwright's native timeout. The forced option bypasses only Cursor's intermittent motion heuristic after that exact-element check; it does not dispatch a DOM event or use sampled coordinates. If the pinned button retires or fails readiness before that click boundary, the harness may find the exact button once more. The trusted click is never retried. Its exact live session is the authoritative receipt, and bounded activation-stage, button-ready, click-boundary, receipt, and pre-cleanup diagnostics distinguish a retired pre-click target from an indeterminate dispatch. A synthetic click, active-editor fallback, snapshot session, or request to B is not release evidence. The released-Jupyter fixture repeats this over a 100,000-row dataframe whose saved capture is deliberately smaller. Before restart acceptance injects widths, selection, and viewport, the real renderer must hydrate and acknowledge its default state; it must then acknowledge the injected state so a late default update cannot invalidate the recovery assertion. Renderer component acceptance covers the unlinked case: the inline table remains readable, there is no open button, and the rerun hint appears without a host message. Timeout diagnostics retain only bounded origin classifications, coordinator state, and A/B kernel counters, never dataframe values.
+Packaged notebook acceptance opens the real MIME-v2 renderer, explicitly reveals its output cell, exercises 10/20/50/100-row inline paging and every captured column, and checks same-group switching plus the split-editor provenance race. Action discovery accepts only one settled `iframe#active-frame`, rejects any wrapper that still owns a pending guest or multiple retained active guests, and never clicks a merely visible pending/retained representation. With notebook B active, the harness re-reveals notebook A's output after the split layout settles, then one activation on A's visible linked action must open A's complete current live variable, use only A's exact kernel, and return the live value rather than the captured row. Before crossing the click boundary, Playwright scrolls the retained exact element into the outer workbench viewport under the shared deadline and the harness rechecks that it is connected, enabled, visible, and owns its center. A failed scroll is therefore a proven pre-dispatch failure eligible for the same single exact-target reacquisition as a retired element. The harness then sends one trusted Playwright click with Playwright's native timeout. The forced option bypasses only Cursor's intermittent motion heuristic after that exact-element check; it does not dispatch a DOM event or use sampled coordinates. If the pinned button retires or fails readiness before that click boundary, the harness may find the exact button once more. The trusted click is never retried. Its exact live session is the authoritative receipt, and bounded activation-stage, button-ready, click-boundary, receipt, and pre-cleanup diagnostics distinguish a retired pre-click target from an indeterminate dispatch. A synthetic click, active-editor fallback, snapshot session, or request to B is not release evidence. The released-Jupyter fixture repeats this over a 100,000-row dataframe whose saved capture is deliberately smaller. Before restart acceptance injects widths, selection, and viewport, the real renderer must hydrate and acknowledge its default state; it must then acknowledge the injected state so a late default update cannot invalidate the recovery assertion. Renderer component acceptance covers the unlinked case: the inline table remains readable, there is no open button, and the rerun hint appears without a host message. Timeout diagnostics retain only bounded origin classifications, coordinator state, and A/B kernel counters, never dataframe values.
 
 Released-Jupyter product media uses the same public notebook state that the extension sees. Before capture, the
 fixture's setup, restart-probe, and runtime-transfer cells are selected and collapsed through built-in notebook

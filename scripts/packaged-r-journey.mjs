@@ -23,7 +23,8 @@ export function resolvePackagedRJourneySelection({
       remote: false,
       remoteOnly: false,
       requiresHostR: false,
-      literateDocuments: false
+      literateDocuments: false,
+      nativeEditorTooling: false
     });
   }
   if (
@@ -53,7 +54,8 @@ export function resolvePackagedRJourneySelection({
       remote: true,
       remoteOnly: true,
       requiresHostR: false,
-      literateDocuments: false
+      literateDocuments: false,
+      nativeEditorTooling: false
     });
   }
   if (selector !== undefined && remoteJupyterEnabled) {
@@ -69,6 +71,7 @@ export function resolvePackagedRJourneySelection({
     remote: remoteJupyterEnabled,
     remoteOnly: false,
     requiresHostR: true,
-    literateDocuments: selector === "literate-documents"
+    literateDocuments: selector === "literate-documents",
+    nativeEditorTooling: selector === "interactive-terminal" || selector === "literate-documents"
   });
 }

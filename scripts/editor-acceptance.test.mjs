@@ -235,6 +235,20 @@ test("ordinary Quarto acceptance does not require a headless preview webview", a
   );
   assert.doesNotMatch(journey, /priorTabs|instanceof vscode\.TabInputWebview/u);
 
+  const renderedHtmlSnapshot = source.slice(
+    source.indexOf("function releasedRenderedHtmlSnapshot("),
+    source.indexOf("async function releasedQuartoPreviewLocator(")
+  );
+  const boundedFileGuard = renderedHtmlSnapshot.indexOf(
+    "if (!opened.isFile() || opened.nlink !== 1n || opened.size > 5n * 1024n * 1024n)"
+  );
+  const emptyFileRetry = renderedHtmlSnapshot.indexOf("if (opened.size === 0n) return undefined;");
+  const allocation = renderedHtmlSnapshot.indexOf("const bytes = Buffer.alloc(Number(opened.size));");
+  assert.ok(
+    boundedFileGuard >= 0 && emptyFileRetry > boundedFileGuard && allocation > emptyFileRetry,
+    "A transient empty Quarto output must remain retryable only after the regular-file, link-count, and size-cap guard."
+  );
+
   const mediaGeometry = source.slice(
     source.indexOf("async function assertReleasedRDocumentPickerMediaGeometry("),
     source.indexOf("async function invokeReleasedRDocumentVariable(")
@@ -963,6 +977,10 @@ test("native R tooling pins Quarto to an internal revealed preview", async () =>
     source.indexOf("if (isDataWranglerCoexistencePhase(phase))")
   );
   assert.match(focusedRoute, /phase === "jupyter-r" && testSelector === "interactive-terminal"/u);
+  assert.match(
+    focusedRoute,
+    /recordAcceptanceProgress\("jupyter-r:interactive:tooling-start"\)[\s\S]*await assertReleasedNativeREditorTooling\(\)[\s\S]*recordAcceptanceProgress\("jupyter-r:interactive:tooling-ready"\)[\s\S]*await exerciseReleasedRInteractiveTerminalJourney\(/u
+  );
   assert.match(focusedRoute, /assert\.equal\(\s*await assertReleasedNativeREditorTooling\(\),\s*true,/u);
   assert.match(focusedRoute, /await exerciseReleasedRInteractiveTerminalJourney\(/u);
   assert.match(focusedRoute, /testSelector === "literate-documents"/u);
@@ -989,8 +1007,44 @@ test("native R tooling pins Quarto to an internal revealed preview", async () =>
     capturedFailure >= 0 && cleanup > capturedFailure && restoredFailure > cleanup,
     "Released R failures must restore their last work checkpoint after cleanup diagnostics finish."
   );
-  assert.match(notebookJourney, /if \(phase === "jupyter-r" && \(await assertReleasedNativeREditorTooling\(\)\)\) \{/u);
+  assert.doesNotMatch(
+    notebookJourney,
+    /assertReleasedNativeREditorTooling|exerciseReleasedRInteractiveTerminalJourney/u
+  );
   assert.doesNotMatch(notebookJourney, /assert\.equal\(\s*await assertReleasedNativeREditorTooling\(\),\s*true/u);
+  assert.match(notebookJourney, /if \(phase === "jupyter-r" && process\.platform === "darwin"\)/u);
+  assert.equal(
+    (notebookJourney.match(/exerciseReleasedRDocumentJourney\(/gu) ?? []).length,
+    1,
+    "The ordinary notebook route must retain only its macOS plain-R journey."
+  );
+  const literateJourney = source.slice(
+    source.indexOf("async function exerciseReleasedRLiterateDocumentJourneys("),
+    source.indexOf("async function exerciseReleasedPythonQuartoDocumentJourney(")
+  );
+  assert.match(
+    literateJourney,
+    /if \(process\.platform === "linux"\) \{[\s\S]*await exerciseReleasedRDocumentJourney\(testing, workbench, directory\)[\s\S]*jupyter-r:document:plain:complete/u,
+    "Linux plain-R acceptance must run only inside the focused literate invocation."
+  );
+  const interactiveJourney = source.slice(
+    source.indexOf("async function exerciseReleasedRInteractiveTerminalJourney("),
+    source.indexOf("async function invokeReleasedRInteractiveTitleAction(")
+  );
+  for (const checkpoint of [
+    "first-terminal:seeded",
+    "first-terminal:discovery-complete",
+    "replacement-terminal:seeded",
+    "session-opened"
+  ]) {
+    assert.match(interactiveJourney, new RegExp(`jupyter-r:interactive:${checkpoint}`, "u"));
+  }
+  const interactiveProfile = source.slice(
+    source.indexOf("async function assertReleasedRInteractiveProfileEditingAndExport("),
+    source.indexOf("function releasedRInteractiveMailboxRoots(")
+  );
+  assert.match(interactiveProfile, /jupyter-r:interactive:profile-complete/u);
+  assert.match(interactiveProfile, /jupyter-r:interactive:editing-ready/u);
   const tooling = source.slice(
     source.indexOf("async function assertReleasedNativeREditorTooling("),
     source.indexOf("async function openReleasedNativeQuartoPreview(")
@@ -6684,3 +6738,52 @@ function fakeDisplayChild() {
   child.kill = () => true;
   return child;
 }
+
+test("notebook renderer provenance enters the outer viewport before its one-shot click boundary", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const provenance = source.slice(
+    source.indexOf("async function exercisePackagedRendererProvenance("),
+    source.indexOf("function rendererProvenanceDiagnostics(")
+  );
+  const shownB = provenance.indexOf('recordAcceptanceProgress("verify:notebook-renderer:shown-b")');
+  const revealCheckpoint = provenance.indexOf(
+    'recordAcceptanceProgress("verify:notebook-renderer:reveal-a-after-split")',
+    shownB
+  );
+  const revealA = provenance.indexOf(
+    "originEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter)",
+    revealCheckpoint
+  );
+  const activeB = provenance.indexOf("vscode.window.activeNotebookEditor?.notebook,", revealA);
+  const acquireButton = provenance.indexOf(
+    'waitForNotebookRendererButton(workbench, "renderer provenance A", "Open in Open Wrangler")',
+    activeB
+  );
+  const clickBoundary = provenance.indexOf(
+    'recordAcceptanceProgress("verify:notebook-renderer:click-boundary")',
+    acquireButton
+  );
+  assert.ok(
+    shownB >= 0 &&
+      revealCheckpoint > shownB &&
+      revealA > revealCheckpoint &&
+      activeB > revealA &&
+      acquireButton > activeB &&
+      clickBoundary > acquireButton,
+    "The split provenance journey must re-reveal notebook A, retain active notebook B, and only then acquire its one-shot action."
+  );
+
+  const lifecycleSource = await readFile(resolve("src/test/extensionHost/playwrightLifecycle.ts"), "utf8");
+  const activation = lifecycleSource.slice(
+    lifecycleSource.indexOf("export async function activateExactAcceptanceElementOnce("),
+    lifecycleSource.indexOf("async function observeAcceptanceActionReceipt")
+  );
+  const scroll = activation.indexOf("target.scrollIntoViewIfNeeded(");
+  const readiness = activation.indexOf("target.evaluate(", scroll);
+  const boundary = activation.indexOf("immediatelyBeforeClick?.()", readiness);
+  const click = activation.indexOf("await target.click(", boundary);
+  assert.ok(
+    scroll >= 0 && readiness > scroll && boundary > readiness && click > boundary,
+    "Outer-viewport placement and exact readiness must remain pre-dispatch; the trusted click must remain after the boundary."
+  );
+});

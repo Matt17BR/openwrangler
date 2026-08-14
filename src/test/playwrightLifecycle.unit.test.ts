@@ -71,6 +71,8 @@ function exactAcceptanceTarget(
     readonly ariaDisabled?: boolean;
     readonly trusted?: boolean;
     readonly clickError?: Error;
+    readonly scrollError?: Error;
+    readonly stalledScroll?: boolean;
     readonly stalledEvaluation?: 1 | 2;
   } = {}
 ) {
@@ -92,6 +94,10 @@ function exactAcceptanceTarget(
     getBoundingClientRect: () => ({ left: 10, top: 20, width: 80, height: 30 })
   };
   const target = {
+    scrollIntoViewIfNeeded: vi.fn(async (_scrollOptions: { readonly timeout: number }) => {
+      if (options.stalledScroll) return new Promise<void>(() => undefined);
+      if (options.scrollError) throw options.scrollError;
+    }),
     click: vi.fn(async (_clickOptions: { readonly force: true; readonly timeout: number }) => {
       if (options.clickError) throw options.clickError;
       listener?.({ isTrusted: options.trusted ?? true });
@@ -403,6 +409,7 @@ describe("extension-host Playwright lifecycle", () => {
 
     expect(boundary).toHaveBeenCalledOnce();
     expect(evaluateCalls()).toBe(2);
+    expect(target.scrollIntoViewIfNeeded).toHaveBeenCalledOnce();
     expect(target.click).toHaveBeenCalledOnce();
     const clickOptions = target.click.mock.calls[0]?.[0];
     expect(clickOptions?.force).toBe(true);
@@ -465,6 +472,29 @@ describe("extension-host Playwright lifecycle", () => {
     expect(dispose).toHaveBeenCalledTimes(2);
     expect(dispose).toHaveBeenNthCalledWith(1, first.target);
     expect(dispose).toHaveBeenNthCalledWith(2, second.target);
+  });
+
+  it("reacquires one renderer target that cannot enter the outer viewport before the click boundary", async () => {
+    const viewportFailure = new Error("Element is outside of the viewport");
+    const first = exactAcceptanceTarget({ scrollError: viewportFailure });
+    const second = exactAcceptanceTarget();
+    const acquire = vi.fn().mockResolvedValueOnce(first.target).mockResolvedValueOnce(second.target);
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const boundary = vi.fn();
+
+    await activateWithOnePreDispatchReacquisition({
+      acquire,
+      activate: (target) => activateExactAcceptanceElementOnce(target, 10_000, boundary),
+      dispose
+    });
+
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(first.target.scrollIntoViewIfNeeded).toHaveBeenCalledOnce();
+    expect(first.target.click).not.toHaveBeenCalled();
+    expect(second.target.scrollIntoViewIfNeeded).toHaveBeenCalledOnce();
+    expect(second.target.click).toHaveBeenCalledOnce();
+    expect(boundary).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledTimes(2);
   });
 
   it("classifies an initial target-acquisition failure before the click boundary", async () => {
@@ -603,6 +633,27 @@ describe("extension-host Playwright lifecycle", () => {
     expect(replacement.target.click).not.toHaveBeenCalled();
     expect(dispose).toHaveBeenCalledOnce();
     expect(dispose).toHaveBeenCalledWith(first.target);
+  });
+
+  it("bounds stalled outer-viewport placement before any click", async () => {
+    vi.useFakeTimers();
+    try {
+      const { evaluateCalls, target } = exactAcceptanceTarget({ stalledScroll: true });
+      const outcome = activateExactAcceptanceElementOnce(target, 10_000);
+      const assertion = expect(outcome).rejects.toMatchObject({
+        name: "AcceptanceActionNotDispatchedError",
+        cause: expect.objectContaining({
+          message: "Timed out waiting for the exact acceptance element outer-viewport placement after 10000 ms."
+        })
+      });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+      expect(target.click).not.toHaveBeenCalled();
+      expect(evaluateCalls()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("bounds a stalled exact-element readiness check before any click", async () => {

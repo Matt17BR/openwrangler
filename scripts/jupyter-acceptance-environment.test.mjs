@@ -1325,7 +1325,17 @@ test("the remote-only R selector bypasses every local runtime owner while retain
   assert.match(source, /const localRJupyterEnabled = rJupyterSelection\.local/u);
   assert.match(source, /const remoteRJupyterEnabled = rJupyterSelection\.remote && editor\.key === "vscode"/u);
   assert.equal((source.match(/rJupyterSelection\.literateDocuments/gu) ?? []).length, 2);
+  assert.equal(
+    (source.match(/rJupyterSelection\.nativeEditorTooling/gu) ?? []).length,
+    4,
+    "Only the focused native-editor selectors may prepare, configure, install, and verify R/Quarto tooling."
+  );
+  assert.match(
+    localSetupSource,
+    /if \(rJupyterSelection\.nativeEditorTooling\) \{[\s\S]*rEditorTooling = await prepareREditorAcceptanceTooling\(/u
+  );
   assert.doesNotMatch(source, /rJourneySelector\s*===\s*"literate-documents"/u);
+  assert.doesNotMatch(source, /rJourneySelector\s*===\s*"interactive-terminal"/u);
   assert.match(source, /\.\.\.\(localRJupyterEnabled \? \{ "jupyter-r": resolve/u);
   assert.match(source, /\.\.\.\(localRJupyterEnabled \? \{ "jupyter-r": randomUUID\(\) \} : \{\}\)/u);
   assert.match(source, /\.\.\.\(localRJupyterEnabled \? \[jupyterRWorkspace\] : \[\]\)/u);
@@ -1420,7 +1430,7 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("default R profiles stay plain-only while Cursor and Windows use representative coverage", async () => {
+test("default R profiles end after notebook coverage while Cursor and Windows stay representative", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(", profileStart);
@@ -1466,10 +1476,15 @@ test("default R profiles stay plain-only while Cursor and Windows use representa
       new RegExp(`recordReleasedRAcceptanceSection\\(phase, coverage, "${section}", "complete"\\)`, "u")
     );
   }
+  assert.doesNotMatch(
+    journey,
+    /assertReleasedNativeREditorTooling|exerciseReleasedRInteractiveTerminalJourney/u,
+    "The ordinary notebook invocation must not acquire native tooling or append active-terminal work."
+  );
   assert.match(
     journey,
-    /await exerciseReleasedRInteractiveTerminalJourney\(testing, await connectToEditorWorkbench\(\)\)/u,
-    "The local Cursor profile must still exercise the official R terminal and Operations sidebar."
+    /if \(phase === "jupyter-r" && process\.platform === "darwin"\)[\s\S]*exerciseReleasedRDocumentJourney/u,
+    "macOS must retain plain-R coverage in its ordinary invocation."
   );
 
   const gridStart = source.indexOf("async function exerciseReleasedRGridJourney(");

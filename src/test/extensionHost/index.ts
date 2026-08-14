@@ -920,11 +920,13 @@ export async function run(): Promise<void> {
   recordAcceptanceProgress("preflight:complete");
   if (phase === "jupyter-r" && testSelector === "interactive-terminal") {
     assert.ok(testPython, "Focused active R acceptance requires the runner-selected host Python environment.");
+    recordAcceptanceProgress("jupyter-r:interactive:tooling-start");
     assert.equal(
       await assertReleasedNativeREditorTooling(),
       true,
       "Focused active R acceptance requires the pinned official R and Quarto editor tooling."
     );
+    recordAcceptanceProgress("jupyter-r:interactive:tooling-ready");
     await exerciseReleasedRInteractiveTerminalJourney(testing, await connectToEditorWorkbench());
     console.log("Open Wrangler active R terminal acceptance passed.");
     return;
@@ -2276,7 +2278,6 @@ async function exerciseReleasedRJupyterExtension(
     phase === "jupyter-r" && process.platform === "linux"
       ? process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
       : undefined;
-  let ranRDocumentJourney = false;
   writeReleasedRNotebook(notebookPath, phase);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
@@ -2479,14 +2480,6 @@ async function exerciseReleasedRJupyterExtension(
       await assertReleasedRRuntimeBinding(notebook, true, `${phase}:media-source-after-capture`);
       await disposePackagedSessionPanel(testing, mediaSession.sessionId, "the representative R orders session");
 
-      if (supportsRDocumentExecution(process.platform)) {
-        recordReleasedRAcceptanceSection(phase, coverage, "document", "start");
-        await exerciseReleasedRDocumentJourney(testing, workbench, directory);
-        ranRDocumentJourney = true;
-        assert.equal(testing.diagnostics().sessionCount, 0, "The R document journey must release its processes.");
-        recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
-      }
-
       await showExactReleasedNotebook(notebook);
       await invokeReleasedNotebookToolbarVariable(workbench, notebook, "orders_frame");
       base = await waitForReleasedVariableSession(
@@ -2638,7 +2631,12 @@ async function exerciseReleasedRJupyterExtension(
       recordReleasedRAcceptanceSection(phase, coverage, "collapse-open", "complete");
     }
 
-    if (phase === "jupyter-r" && supportsRDocumentExecution(process.platform) && !ranRDocumentJourney) {
+    if (phase === "jupyter-r" && process.platform === "darwin") {
+      assert.equal(
+        supportsRDocumentExecution(process.platform),
+        true,
+        "The ordinary macOS R gate requires the product's direct-document transport."
+      );
       recordReleasedRAcceptanceSection(phase, coverage, "document", "start");
       await exerciseReleasedRDocumentJourney(testing, workbench, directory);
       assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
@@ -2893,9 +2891,6 @@ async function exerciseReleasedRJupyterExtension(
   }
   if (acceptanceError) throw acceptanceError.value;
   recordReleasedRAcceptanceSection(phase, coverage, "notebook", "complete");
-  if (phase === "jupyter-r" && (await assertReleasedNativeREditorTooling())) {
-    await exerciseReleasedRInteractiveTerminalJourney(testing, await connectToEditorWorkbench());
-  }
 }
 
 async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, workbench: Page): Promise<void> {
@@ -2929,6 +2924,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     sourceTerminal = await createReleasedOfficialRTerminal("the first active R session");
     await assertReleasedWorkbenchHasNoBlockingDialog(workbench, "after starting the first active R terminal");
     await seedReleasedRInteractiveFrames(sourceTerminal, directory, 2_400_001, "first");
+    recordAcceptanceProgress("jupyter-r:interactive:first-terminal:seeded");
     assert.equal(vscode.window.activeTerminal, sourceTerminal, "Discovery must stay on the exact active R terminal.");
     let sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
     let operations = sidebar.getByRole("tree", { name: /Operations/u }).first();
@@ -2947,6 +2943,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
       initialMailboxes,
       "A later user expression must still update Operations without an Open Wrangler terminal bootstrap."
     );
+    recordAcceptanceProgress("jupyter-r:interactive:first-terminal:discovery-complete");
 
     recordAcceptanceProgress("jupyter-r:interactive:first-terminal-close");
     sourceTerminal.dispose();
@@ -2973,6 +2970,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     recordAcceptanceProgress("jupyter-r:interactive:replacement-terminal");
     replacementTerminal = await createReleasedOfficialRTerminal("the replacement active R session");
     await seedReleasedRInteractiveFrames(replacementTerminal, directory, 3_400_001, "replacement");
+    recordAcceptanceProgress("jupyter-r:interactive:replacement-terminal:seeded");
     assert.equal(vscode.window.activeTerminal, replacementTerminal, "The replacement R terminal must be active.");
 
     sidebar = await arrangePackagedProductSidebar(workbench, "operation-catalog");
@@ -3007,6 +3005,7 @@ async function exerciseReleasedRInteractiveTerminalJourney(testing: TestApi, wor
     assert.deepEqual(opened.metadata.shape, { rows: 240, columns: 5 });
     assert.equal(opened.metadata.capabilities.notebookInsert, false);
     assert.notEqual(opened.metadata.capabilities.documentInsert, true);
+    recordAcceptanceProgress("jupyter-r:interactive:session-opened");
     await assertReleasedSessionPage(testing, opened, "3400001", "jupyter-r-interactive-page");
     await assertReleasedRInteractiveProfileEditingAndExport(testing, workbench, opened.sessionId, directory);
 
@@ -3365,6 +3364,7 @@ async function assertReleasedRInteractiveProfileEditingAndExport(
   await assertReleasedProfileStat(profile, "Min", "100.5");
   await assertReleasedProfileStat(profile, "Max", "399.25");
   await drawer.getByRole("button", { name: "Close panel", exact: true }).click();
+  recordAcceptanceProgress("jupyter-r:interactive:profile-complete");
 
   app = await releasedRSessionApp(workbench, testing, sessionId, "the profiled active R terminal session");
   const beforeRevision = testing.activeSession()?.metadata.revision;
@@ -3397,6 +3397,7 @@ async function assertReleasedRInteractiveProfileEditingAndExport(
   assert.equal(active.metadata.capabilities.exportCsv, true);
   assert.equal(active.metadata.capabilities.exportParquet, true);
   assert.deepEqual(active.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
+  recordAcceptanceProgress("jupyter-r:interactive:editing-ready");
 
   recordAcceptanceProgress("jupyter-r:interactive:export-csv");
   const csvPath = path.join(directory, "base-orders.cleaned.csv");
@@ -3828,6 +3829,17 @@ async function exerciseReleasedRLiterateDocumentJourneys(
     await configuration.update("rscriptPath", exactRscript, vscode.ConfigurationTarget.Workspace);
     if (resolvedAutoSave !== "off") {
       await filesConfiguration.update("autoSave", "off", vscode.ConfigurationTarget.Workspace);
+    }
+    if (process.platform === "linux") {
+      assert.equal(
+        supportsRDocumentExecution(process.platform),
+        true,
+        "The focused Linux literate gate requires the product's direct-document transport."
+      );
+      recordAcceptanceProgress("jupyter-r:document:plain:start");
+      await exerciseReleasedRDocumentJourney(testing, workbench, directory);
+      assert.equal(testing.diagnostics().sessionCount, 0, "The plain R journey must release its private processes.");
+      recordAcceptanceProgress("jupyter-r:document:plain:complete");
     }
     for (const fixture of fixtures) {
       const officialRTerminalsBeforeFixture = new Set(vscode.window.terminals.filter(isReleasedOfficialRTerminal));
@@ -4661,9 +4673,10 @@ function releasedRenderedHtmlSnapshot(
 
   try {
     const opened = fstatSync(descriptor, { bigint: true });
-    if (!opened.isFile() || opened.nlink !== 1n || opened.size <= 0n || opened.size > 5n * 1024n * 1024n) {
+    if (!opened.isFile() || opened.nlink !== 1n || opened.size > 5n * 1024n * 1024n) {
       throw new Error("The native R document render did not produce one bounded regular HTML file.");
     }
+    if (opened.size === 0n) return undefined;
 
     const bytes = Buffer.alloc(Number(opened.size));
     let offset = 0;
@@ -28545,6 +28558,8 @@ async function exercisePackagedRendererProvenance(
       preview: false
     });
     recordAcceptanceProgress("verify:notebook-renderer:shown-b");
+    recordAcceptanceProgress("verify:notebook-renderer:reveal-a-after-split");
+    originEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
     const originKernelBaseline = jupyter.testing.stats(originNotebook.uri);
     const secondKernelBaseline = jupyter.testing.stats(openedSecondNotebook.uri);
     assert.equal(
@@ -28811,6 +28826,7 @@ interface NotebookRendererLoadObserver {
 interface NotebookRendererButton {
   readonly page: Page;
   readonly frame: Frame;
+  scrollIntoViewIfNeeded(options?: { readonly timeout?: number }): Promise<void>;
   click(options?: { readonly force?: boolean; readonly timeout?: number }): Promise<void>;
   boundingBox(): Promise<{
     readonly x: number;
@@ -29086,6 +29102,7 @@ async function resolveNestedNotebookRendererButton(
   return {
     page: frame.page(),
     frame,
+    scrollIntoViewIfNeeded: (options) => element.scrollIntoViewIfNeeded(options),
     click: (options) => element.click(options),
     boundingBox: () => element.boundingBox(),
     evaluate: <Result>(pageFunction: (candidate: unknown) => Result | Promise<Result>) =>

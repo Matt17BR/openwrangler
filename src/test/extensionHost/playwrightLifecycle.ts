@@ -65,6 +65,7 @@ interface ReplaceableAcceptanceLocator {
 }
 
 interface ExactAcceptanceElement {
+  scrollIntoViewIfNeeded(options: { readonly timeout: number }): Promise<void>;
   click(options: { readonly force: true; readonly timeout: number }): Promise<void>;
   evaluate<Result>(pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result>;
 }
@@ -201,6 +202,18 @@ export async function activateExactAcceptanceElementOnce(
     }
     return remainingMs;
   };
+
+  const viewportDescription = "the exact acceptance element outer-viewport placement";
+  try {
+    const viewportTimeoutMs = remaining(viewportDescription);
+    await withAcceptanceOperationDeadline(
+      target.scrollIntoViewIfNeeded({ timeout: viewportTimeoutMs }),
+      viewportTimeoutMs,
+      viewportDescription
+    );
+  } catch (error) {
+    throw new AcceptanceActionNotDispatchedError("The exact acceptance element", error);
+  }
 
   const readinessDescription = "the exact acceptance element readiness";
   let readiness: string;
