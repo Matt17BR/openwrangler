@@ -76,6 +76,7 @@ import {
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
+  observeExactRendererRetirement,
   pollAcceptanceCondition,
   probeAcceptanceBeforeDeadline,
   pressKeyboardKeyPairWithoutTransitionGap,
@@ -148,6 +149,7 @@ interface TestApi {
   panelSynchronizationReceipt(
     sessionId: string
   ): Readonly<{ syncId: string; sessionId: string; revision: number; layoutTransitionPending: boolean }> | undefined;
+  retirePanelRenderer(sessionId: string): boolean;
   sessionSchedulerState(sessionId: string): SessionSchedulerState | undefined;
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
@@ -17257,8 +17259,29 @@ async function waitForExactSessionWebviewButton(
   testing: TestApi,
   expectedSessionId: string,
   name: string,
-  requireEnabled = false
+  requireEnabled = false,
+  expectedRendererSynchronizationReceipt?: Readonly<{ syncId: string; sessionId: string; revision: number }>
 ): Promise<Locator> {
+  return (
+    await waitForExactSessionWebviewAction(
+      workbench,
+      testing,
+      expectedSessionId,
+      name,
+      requireEnabled,
+      expectedRendererSynchronizationReceipt
+    )
+  ).action;
+}
+
+async function waitForExactSessionWebviewAction(
+  workbench: Page,
+  testing: TestApi,
+  expectedSessionId: string,
+  name: string,
+  requireEnabled = false,
+  expectedRendererSynchronizationReceipt?: Readonly<{ syncId: string; sessionId: string; revision: number }>
+): Promise<{ target: OpenWranglerWebviewTarget; action: Locator }> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   do {
     const browser = workbench.context().browser();
@@ -17266,14 +17289,27 @@ async function waitForExactSessionWebviewButton(
     for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
       if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
       try {
-        const app = await exactSessionApp(target.frame, expectedSessionId);
+        const app = await exactSessionApp(
+          target.frame,
+          expectedSessionId,
+          expectedRendererSynchronizationReceipt?.syncId
+        );
         if (!app) continue;
         const grid = app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first();
         if ((await grid.count()) === 0 || !(await grid.isVisible())) continue;
         const button = app.getByRole("button", { name, exact: true }).first();
         if ((await button.count()) === 0 || !(await button.isVisible())) continue;
         if (requireEnabled && !(await button.isEnabled())) continue;
-        return button;
+        if (
+          expectedRendererSynchronizationReceipt &&
+          !sameRendererSynchronizationReceipt(
+            expectedRendererSynchronizationReceipt,
+            testing.panelSynchronizationReceipt(expectedSessionId)
+          )
+        ) {
+          continue;
+        }
+        return { target, action: button };
       } catch (error) {
         ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
       }
@@ -17289,6 +17325,7 @@ async function waitForExactSessionWebviewButton(
       `State: ${JSON.stringify({
         expectedSessionId,
         requireEnabled,
+        expectedRendererSynchronizationReceipt,
         activeSession: testing.activeSession()?.sessionId,
         coordinator: testing.diagnostics(),
         panelHydrated: testing.panelHydrated(expectedSessionId),
@@ -17303,7 +17340,10 @@ async function focusAndSynchronizeExactSessionPanel(
   testing: TestApi,
   expectedSessionId: string,
   expectedSourceLabel: string
-): Promise<Locator> {
+): Promise<{
+  action: Locator;
+  receipt: Readonly<{ syncId: string; sessionId: string; revision: number; layoutTransitionPending: boolean }>;
+}> {
   const expectedTabLabel = `Open Wrangler: ${expectedSourceLabel}`;
   await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
   await waitFor(
@@ -17345,7 +17385,22 @@ async function focusAndSynchronizeExactSessionPanel(
     true,
     "The focused import-reconfigured renderer must acknowledge one authoritative synchronization."
   );
-  return waitForExactSessionWebviewButton(workbench, testing, expectedSessionId, "Import options", true);
+  const receipt = testing.panelSynchronizationReceipt(expectedSessionId);
+  assert.ok(receipt, "The focused import-reconfigured renderer must retain its exact synchronization receipt.");
+  const action = await waitForExactSessionWebviewButton(
+    workbench,
+    testing,
+    expectedSessionId,
+    "Import options",
+    true,
+    receipt
+  );
+  assert.equal(
+    sameRendererSynchronizationReceipt(receipt, testing.panelSynchronizationReceipt(expectedSessionId)),
+    true,
+    "The focused import-reconfigured renderer receipt must remain current through physical discovery."
+  );
+  return { action, receipt };
 }
 
 async function exercisePackagedBackendSwitchJourney(
@@ -31384,14 +31439,17 @@ async function exerciseLiveImportReconfiguration(
     "The acceptance view-state injection must commit through the real renderer before native import actions."
   );
   recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:retained-synchronized");
-  const synchronizedGridAction = await waitForExactSessionWebviewButton(
+  const retainedRendererReceipt = testing.panelSynchronizationReceipt(stableSessionId);
+  assert.ok(retainedRendererReceipt, "The retained import view must own an acknowledged renderer receipt.");
+  const synchronizedGridTarget = await waitForExactSessionWebviewAction(
     page,
     testing,
     stableSessionId,
     "Import options",
-    true
+    true,
+    retainedRendererReceipt
   );
-  const physicalViewport = await waitForOpenWranglerGridViewport(synchronizedGridAction, {
+  const physicalViewport = await waitForOpenWranglerGridViewport(synchronizedGridTarget.action, {
     scrollTop: 29,
     scrollLeft: 23
   });
@@ -31431,6 +31489,96 @@ async function exerciseLiveImportReconfiguration(
       })
   );
   recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:persisted");
+
+  const snapshotBeforeRendererRetirement = stableImportReconfigurationSnapshot(testing.activeSession());
+  const diagnosticsBeforeRendererRetirement = stableImportDiagnostics(testing.diagnostics());
+  assert.equal(
+    testing.retirePanelRenderer(stableSessionId),
+    true,
+    "Acceptance must physically retire the exact visible hydrated import renderer."
+  );
+  await observeExactRendererRetirement(
+    page,
+    page.context().browser(),
+    synchronizedGridTarget.target.page,
+    synchronizedGridTarget.target.frame,
+    () =>
+      withAcceptanceOperationDeadline(
+        synchronizedGridTarget.action.waitFor({
+          state: "detached",
+          timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
+        }),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        "the exact acknowledged import renderer to retire physically"
+      )
+  );
+  assert.equal(
+    testing.panelHydrated(stableSessionId),
+    true,
+    "Physical retirement must remain initially invisible to the host renderer receipt."
+  );
+  assert.equal(
+    sameRendererSynchronizationReceipt(retainedRendererReceipt, testing.panelSynchronizationReceipt(stableSessionId)),
+    true,
+    "Physical retirement must not mutate the host's acknowledged receipt."
+  );
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:renderer-retired");
+
+  assert.equal(
+    await testing.synchronizePanel(stableSessionId),
+    false,
+    "The inert retired document must accept publication without acknowledging its synchronization marker."
+  );
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:renderer-watchdog-fired");
+  const recoveredRenderer = await focusAndSynchronizeExactSessionPanel(
+    page,
+    testing,
+    stableSessionId,
+    path.basename(configured.fsPath)
+  );
+  assert.notEqual(
+    recoveredRenderer.receipt.syncId,
+    retainedRendererReceipt.syncId,
+    "Renderer recovery must acknowledge a physically new document."
+  );
+  assert.equal(recoveredRenderer.receipt.sessionId, stableSessionId);
+  assert.equal(recoveredRenderer.receipt.revision, changed.metadata.revision);
+  assert.deepEqual(
+    stableImportReconfigurationSnapshot(testing.activeSession()),
+    snapshotBeforeRendererRetirement,
+    "Renderer recovery must retain the exact confirmed session snapshot."
+  );
+  assert.deepEqual(
+    stableImportDiagnostics(testing.diagnostics()),
+    diagnosticsBeforeRendererRetirement,
+    "Renderer recovery must retain the same public and private runtime ownership."
+  );
+  assertExactBytes(
+    readFileSync(configured.fsPath),
+    configuredBytes,
+    "Renderer recovery must leave the configured source byte-identical."
+  );
+  const recoveredPhysicalViewport = await waitForOpenWranglerGridViewport(recoveredRenderer.action, {
+    scrollTop: 29,
+    scrollLeft: 23
+  });
+  assert.ok(
+    recoveredPhysicalViewport.scrollHeight > recoveredPhysicalViewport.clientHeight,
+    "The recovered import renderer must retain vertical grid overflow."
+  );
+  assert.ok(
+    recoveredPhysicalViewport.scrollWidth > recoveredPhysicalViewport.clientWidth,
+    "The recovered import renderer must retain horizontal grid overflow."
+  );
+  assert.ok(
+    Math.abs(recoveredPhysicalViewport.scrollTop - 29) <= 1,
+    "The recovered renderer must restore the confirmed first visible row physically."
+  );
+  assert.ok(
+    Math.abs(recoveredPhysicalViewport.scrollLeft - 23) <= 1,
+    "The recovered renderer must restore the confirmed horizontal viewport physically."
+  );
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:renderer-recovered");
 
   const activeTab = page
     .locator(".part.editor .editor-group-container.active .tabs-container .tab.active")

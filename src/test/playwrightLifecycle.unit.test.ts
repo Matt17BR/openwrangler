@@ -11,6 +11,7 @@ import {
   invokeAcceptanceActionOnce,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
+  observeExactRendererRetirement,
   pollAcceptanceCondition,
   probeAcceptanceBeforeDeadline,
   pressKeyboardKeyPairWithoutTransitionGap,
@@ -1145,5 +1146,111 @@ describe("extension-host Playwright lifecycle", () => {
     expect(() =>
       ignoreRetiredRendererProbeFailure(workbench, connectedBrowser, auxiliary, auxiliaryMain, error)
     ).toThrow(error);
+  });
+
+  it("accepts normal locator detachment without requiring the containing frame to retire", async () => {
+    const workbenchMain = frame();
+    const workbench = page(workbenchMain);
+
+    await expect(
+      observeExactRendererRetirement(workbench, connectedBrowser, workbench, workbenchMain, async () => undefined)
+    ).resolves.toBeUndefined();
+  });
+
+  it("accepts only the exact whole-frame-detached locator rejection from a proven retired target", async () => {
+    const workbench = page(frame());
+    const rendererFrame = frame(true);
+
+    await expect(
+      observeExactRendererRetirement(workbench, connectedBrowser, workbench, rendererFrame, async () => {
+        throw new Error("locator.waitFor: Frame was detached\nCall log:\n  - waiting for locator");
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    new Error("locator.waitFor: Timeout 10000ms exceeded."),
+    new Error("locator.waitFor: Target page, context or browser has been closed"),
+    new Error("locator.count: Frame was detached"),
+    "locator.waitFor: Frame was detached"
+  ])("rethrows a non-retirement locator outcome from a retired target", async (error) => {
+    const workbench = page(frame());
+    const rendererFrame = frame(true);
+
+    await expect(
+      observeExactRendererRetirement(workbench, connectedBrowser, workbench, rendererFrame, async () => {
+        throw error;
+      })
+    ).rejects.toBe(error);
+  });
+
+  it("rethrows the exact detached-frame error when the stored target remains live", async () => {
+    const workbench = page(frame());
+    const rendererFrame = frame();
+    const error = new Error("locator.waitFor: Frame was detached");
+
+    await expect(
+      observeExactRendererRetirement(workbench, connectedBrowser, workbench, rendererFrame, async () => {
+        throw error;
+      })
+    ).rejects.toBe(error);
+  });
+
+  it("rethrows a detached-frame error when the workbench closes or browser disconnects during observation", async () => {
+    const rendererFrame = frame(true);
+    const workbenchMain = frame();
+    let workbenchClosed = false;
+    const workbench = {
+      isClosed: () => workbenchClosed,
+      mainFrame: () => workbenchMain
+    };
+    const closedError = new Error("locator.waitFor: Frame was detached");
+    await expect(
+      observeExactRendererRetirement(workbench, connectedBrowser, workbench, rendererFrame, async () => {
+        workbenchClosed = true;
+        throw closedError;
+      })
+    ).rejects.toBe(closedError);
+
+    workbenchClosed = false;
+    let browserConnected = true;
+    const disconnectedError = new Error("locator.waitFor: Frame was detached");
+    await expect(
+      observeExactRendererRetirement(
+        workbench,
+        { isConnected: () => browserConnected },
+        workbench,
+        rendererFrame,
+        async () => {
+          browserConnected = false;
+          throw disconnectedError;
+        }
+      )
+    ).rejects.toBe(disconnectedError);
+  });
+
+  it("requires a live workbench and connected browser before and after a normally resolved retirement wait", async () => {
+    const main = frame();
+    const observe = vi.fn(async () => undefined);
+    await expect(
+      observeExactRendererRetirement(page(main, true), connectedBrowser, page(main), main, observe)
+    ).rejects.toThrow("The editor workbench closed while observing exact renderer retirement.");
+    expect(observe).not.toHaveBeenCalled();
+
+    await expect(
+      observeExactRendererRetirement(page(main), { isConnected: () => false }, page(main), main, observe)
+    ).rejects.toThrow("The editor CDP browser disconnected while observing exact renderer retirement.");
+    expect(observe).not.toHaveBeenCalled();
+
+    let closed = false;
+    const workbench = {
+      isClosed: () => closed,
+      mainFrame: () => main
+    };
+    await expect(
+      observeExactRendererRetirement(workbench, connectedBrowser, workbench, main, async () => {
+        closed = true;
+      })
+    ).rejects.toThrow("The editor workbench closed while observing exact renderer retirement.");
   });
 });

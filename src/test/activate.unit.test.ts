@@ -37,6 +37,10 @@ const lifecycle = vi.hoisted(() => ({
     start: vi.fn(),
     dispose: vi.fn(),
     diagnosticsForTesting: vi.fn()
+  },
+  panels: {
+    disposePanelForSession: vi.fn(),
+    retireRendererForSessionForTesting: vi.fn()
   }
 }));
 
@@ -82,7 +86,7 @@ vi.mock("../extension/r/rInteractiveCommands", () => ({
 }));
 vi.mock("../extension/nativeViews", () => ({ registerNativeViews: vi.fn(() => ({})) }));
 vi.mock("../extension/webviewPanel", () => ({
-  OpenWranglerPanel: { disposePanelForSession: vi.fn() }
+  OpenWranglerPanel: lifecycle.panels
 }));
 
 import { activate, deactivate, isCursorAppName } from "../extension/activate";
@@ -109,6 +113,7 @@ describe("extension deactivation", () => {
     lifecycle.notebookCellResults.diagnosticsForTesting.mockReset();
     lifecycle.pythonVariables.diagnosticsForTesting.mockReset();
     lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReset();
+    lifecycle.panels.retireRendererForSessionForTesting.mockReset();
     lifecycle.coordinatedBridge.request.mockReset();
     lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
     lifecycle.coordinator.createBridge.mockReset().mockReturnValue(lifecycle.coordinatedBridge);
@@ -242,6 +247,21 @@ describe("extension deactivation", () => {
     api?.testing?.cancelViewRequests("session-a", ["profile-a"]);
 
     expect(lifecycle.coordinatedBridge.cancelViewRequests).toHaveBeenCalledWith("session-a", ["profile-a"]);
+  });
+
+  it("exposes exact renderer retirement only through the environment-gated test API", async () => {
+    await deactivate();
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+    lifecycle.panels.retireRendererForSessionForTesting.mockReturnValue(true);
+
+    const api = await activate({
+      subscriptions: [],
+      workspaceState: {}
+    } as unknown as vscode.ExtensionContext);
+
+    expect(api?.testing?.retirePanelRenderer("session-a")).toBe(true);
+    expect(lifecycle.panels.retireRendererForSessionForTesting).toHaveBeenCalledOnce();
+    expect(lifecycle.panels.retireRendererForSessionForTesting).toHaveBeenCalledWith("session-a");
   });
 
   it("exposes exact scheduler and notebook-result diagnostics only through the environment-gated test API", async () => {
