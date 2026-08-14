@@ -3172,9 +3172,14 @@ export async function runEditorAcceptancePhase(
   if (typeof requiresWorkbenchCdp !== "boolean") {
     throw new Error("An editor acceptance phase requiresWorkbenchCdp value must be a boolean.");
   }
-  if (testSelector !== undefined && testSelector !== "interactive-terminal" && testSelector !== "literate-documents") {
+  if (
+    testSelector !== undefined &&
+    testSelector !== "categorical-operations" &&
+    testSelector !== "interactive-terminal" &&
+    testSelector !== "literate-documents"
+  ) {
     throw new Error(
-      'An editor acceptance test selector must be unset, "interactive-terminal", or "literate-documents".'
+      'An editor acceptance test selector must be unset, "categorical-operations", "interactive-terminal", or "literate-documents".'
     );
   }
   if (testSelector !== undefined && phase !== "jupyter-r") {

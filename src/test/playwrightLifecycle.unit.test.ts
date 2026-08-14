@@ -5,6 +5,7 @@ import {
   activateExactAcceptanceElementOnce,
   activateReplaceableAcceptanceLocator,
   activateWithOnePreDispatchReacquisition,
+  computeCodePreviewScrollPlan,
   diagnoseThenReacquireAcceptanceAction,
   IndeterminateAcceptanceActionError,
   ignoreRetiredRendererProbeFailure,
@@ -40,6 +41,19 @@ function page(mainFrame: FakeFrame, closed = false): FakePage {
 }
 
 const connectedBrowser = { isConnected: () => true };
+
+const codePreviewGeometry = (
+  overrides: Partial<Parameters<typeof computeCodePreviewScrollPlan>[0]> = {}
+): Parameters<typeof computeCodePreviewScrollPlan>[0] => ({
+  lineBounds: { left: 120, top: 130, width: 280, height: 20 },
+  scrollerBounds: { left: 100, top: 100, width: 400, height: 100 },
+  scrollTop: 200,
+  scrollHeight: 1_000,
+  clientHeight: 100,
+  rendererViewport: { width: 800, height: 600 },
+  tolerance: 1,
+  ...overrides
+});
 
 interface FakeExactAcceptanceElement {
   readonly isConnected: boolean;
@@ -112,6 +126,82 @@ function exactAcceptanceTarget(
 }
 
 describe("extension-host Playwright lifecycle", () => {
+  it.each([
+    ["top", { lineBounds: { left: 120, top: 80, width: 280, height: 20 } }, 140],
+    ["bottom", { lineBounds: { left: 120, top: 190, width: 280, height: 20 } }, 250]
+  ] as const)("centers a valid line clipped at the %s of the exact scroller", (_edge, overrides, expected) => {
+    expect(computeCodePreviewScrollPlan(codePreviewGeometry(overrides))).toEqual({
+      currentFullyVisible: false,
+      maximumScrollTop: 900,
+      targetScrollTop: expected
+    });
+  });
+
+  it("accepts only tolerance-bounded exposure and scroll-range overshoot", () => {
+    expect(
+      computeCodePreviewScrollPlan(
+        codePreviewGeometry({
+          lineBounds: { left: 120, top: 100.5, width: 280, height: 100 },
+          scrollTop: 900.5
+        })
+      )
+    ).toEqual({ currentFullyVisible: true, maximumScrollTop: 900, targetScrollTop: 900 });
+  });
+
+  it.each([
+    ["top", { lineBounds: { left: 120, top: 105, width: 280, height: 20 }, scrollTop: 0 }, 0],
+    ["bottom", { lineBounds: { left: 120, top: 175, width: 280, height: 20 }, scrollTop: 900 }, 900]
+  ] as const)("clamps a centered %s target to the exact scroll range", (_edge, overrides, expected) => {
+    expect(computeCodePreviewScrollPlan(codePreviewGeometry(overrides)).targetScrollTop).toBe(expected);
+  });
+
+  it("rejects scroll-range overshoot beyond tolerance", () => {
+    expect(() => computeCodePreviewScrollPlan(codePreviewGeometry({ scrollTop: 901.01 }))).toThrow(
+      "Code Preview scrollTop exceeds the exact scroller range."
+    );
+  });
+
+  it.each([
+    ["missing line", { lineBounds: undefined }, "line geometry is required"],
+    [
+      "non-finite line",
+      { lineBounds: { left: 120, top: 130, width: 280, height: Number.NaN } },
+      "line height must be finite"
+    ],
+    [
+      "negative line size",
+      { lineBounds: { left: 120, top: 130, width: -1, height: 20 } },
+      "line dimensions must be positive"
+    ],
+    [
+      "non-finite viewport",
+      { rendererViewport: { width: 800, height: Number.POSITIVE_INFINITY } },
+      "renderer viewport height must be finite"
+    ],
+    ["negative scroll", { scrollTop: -1 }, "scrollTop must be non-negative"],
+    ["negative tolerance", { tolerance: -1 }, "geometry tolerance must be non-negative"]
+  ] as const)("rejects %s geometry", (_case, overrides, expected) => {
+    expect(() => computeCodePreviewScrollPlan(codePreviewGeometry(overrides))).toThrow(expected);
+  });
+
+  it("rejects a line taller than the exact scroller viewport", () => {
+    expect(() =>
+      computeCodePreviewScrollPlan(
+        codePreviewGeometry({ lineBounds: { left: 120, top: 100, width: 280, height: 100.01 } })
+      )
+    ).toThrow("The Code Preview line is too tall to reveal fully in the exact scroller.");
+  });
+
+  it.each([
+    ["top", { left: 100, top: -1.01, width: 400, height: 100 }],
+    ["right", { left: 401.01, top: 100, width: 400, height: 100 }],
+    ["bottom", { left: 100, top: 501.01, width: 400, height: 100 }]
+  ] as const)("rejects an exact scroller outside the renderer %s edge", (_edge, scrollerBounds) => {
+    expect(() => computeCodePreviewScrollPlan(codePreviewGeometry({ scrollerBounds }))).toThrow(
+      "The exact Code Preview scroller is not fully exposed in its renderer viewport."
+    );
+  });
+
   it("invokes an acceptance action once and treats its receipt as completion", async () => {
     const events: string[] = [];
     const result = await invokeAcceptanceActionOnce({

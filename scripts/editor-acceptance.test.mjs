@@ -1072,9 +1072,83 @@ test("long generated R programs reveal operation text through the complete CodeM
     const end = Math.min(...[nextAsync, nextSync].filter((position) => position >= 0));
     const implementation = source.slice(start, end);
     assert.match(implementation, /waitForCodePreview\(workbench, undefined, "R"\)/u, functionName);
-    assert.match(implementation, /revealCodePreviewText\(codePreview,/u, functionName);
+    assert.match(
+      implementation,
+      functionName === "previewReleasedRDrop"
+        ? /revealCodePreviewText\(exactCodePreview,/u
+        : /revealCodePreviewText\(codePreview,/u,
+      functionName
+    );
     assert.doesNotMatch(implementation, /waitForCodePreview\(workbench, (?!undefined)[^,]+, "R"\)/u, functionName);
   }
+
+  const dropStart = source.indexOf("async function previewReleasedRDrop(");
+  const dropEnd = source.indexOf("\nasync function previewReleasedRRename(", dropStart);
+  assert.ok(dropStart >= 0 && dropEnd > dropStart);
+  const drop = source.slice(dropStart, dropEnd);
+  const preview = drop.indexOf('waitForCodePreview(workbench, undefined, "R")');
+  const resize = drop.indexOf("ensureCodePreviewHeight(workbench, codePreview, 180)");
+  const reveal = drop.indexOf("revealCodePreviewText(exactCodePreview, sourceName)");
+  assert.ok(
+    preview >= 0 && resize > preview && reveal > resize,
+    "Drop Columns must pin the exact Code Preview, establish a useful panel height, and only then reveal its code."
+  );
+});
+
+test("generated-code reveal settles a centered line inside the exact CodeMirror scroller", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const start = source.indexOf("type ExactCodePreviewHandle =");
+  const end = source.indexOf("\nasync function closeVisibleWorkbenchPart(", start);
+  assert.ok(start >= 0 && end > start);
+  const reveal = source.slice(start, end);
+
+  assert.match(reveal, /codePreview\.elementHandle\(\{ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS \}\)/u);
+  assert.match(reveal, /codePreview\.locator\("xpath=\.\."\)\.elementHandle/u);
+  assert.match(reveal, /content\.parentElement === scrollerElement/u);
+  assert.match(reveal, /scrollerClass\?\.split\(\/\\s\+\/u\)\.includes\("cm-scroller"\)/u);
+  assert.match(reveal, /assertExactCodePreviewIdentity\(lastIdentity, target\.code\)/u);
+  assert.match(reveal, /computeCodePreviewScrollPlan\(\{/u);
+  assert.match(
+    reveal,
+    /view\.dispatch\(\{ selection: \{ anchor: options\.position \} \}\)[\s\S]*view\.lineBlockAt\(options\.position\)[\s\S]*initialPlan\.targetScrollTop/u
+  );
+  assert.match(reveal, /exactScroller\.scrollTop = scrollTop/u);
+  assert.match(
+    reveal,
+    /frameWindow\.requestAnimationFrame\(\(\) => frameWindow\.requestAnimationFrame\(\(\) => resolve\(\)\)\)/u
+  );
+  assert.match(
+    reveal,
+    /const maximumAttempts = 8;[\s\S]*for \(let attempt = 1; attempt <= maximumAttempts; attempt \+= 1\)/u
+  );
+  assert.match(
+    reveal,
+    /plan\.currentFullyVisible &&[\s\S]*previousVisibleExposure !== undefined[\s\S]*previousVisibleExposure\.scrollTop/u
+  );
+  assert.match(
+    reveal,
+    /did not settle fully visible in its exact CodeMirror scroller after \$\{maximumAttempts\} attempts: \$\{JSON\.stringify\(lastExposure\)\}/u
+  );
+  assert.match(
+    reveal,
+    /ensureCodePreviewHeight\([\s\S]*codePreview: Locator[\s\S]*pinExactCodePreview\(codePreview\)[\s\S]*const maximumResizeAttempts = 24;[\s\S]*for \(let attempt = 0; attempt <= maximumResizeAttempts; attempt \+= 1\)[\s\S]*exactCodePreviewUsableScrollerHeight\(lastIdentity, 1\)[\s\S]*if \(attempt === maximumResizeAttempts\) break;/u
+  );
+  assert.match(
+    reveal,
+    /executeCommand\("openWrangler\.codePreview\.focus"\)[\s\S]*readExactCodePreviewIdentity\(target\.preview, target\.scroller\)[\s\S]*executeCommand\("workbench\.action\.focusPanel"\)[\s\S]*readExactCodePreviewIdentity\(target\.preview, target\.scroller\)/u
+  );
+  assert.match(
+    reveal,
+    /let transferred = false;[\s\S]*failure = \{ error \};[\s\S]*if \(!transferred\) \{[\s\S]*releaseExactCodePreviewHandlesAfterFailure/u
+  );
+  assert.match(
+    reveal,
+    /Promise\.allSettled\([\s\S]*Releasing the exact Code Preview handles failed[\s\S]*new AggregateError\(\[failure\.error, cleanupError\], aggregateMessage\)/u
+  );
+  assert.doesNotMatch(
+    reveal,
+    /\.part\.panel:visible|scrollIntoView\s*:\s*true|scrollIntoViewIfNeeded|\.scrollIntoView\(/u
+  );
 });
 
 test("packaged R categorical journeys prove exact generated calls and boundary values", async () => {
@@ -4190,14 +4264,30 @@ test("editor phases validate and forward the focused R acceptance selector", asy
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset, "interactive-terminal", or "literate-documents"/u
+      /test selector must be unset, "categorical-operations", "interactive-terminal", or "literate-documents"/u
     );
     await assert.rejects(
-      runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "interactive-terminal" }, options),
+      runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "categorical-operations" }, options),
       /requires the "jupyter-r" phase/u
     );
 
     let launchedEnvironment;
+    await runEditorAcceptancePhase(
+      { ...input, testSelector: "categorical-operations" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "categorical-operations");
+
     await runEditorAcceptancePhase(
       { ...input, testSelector: "interactive-terminal" },
       {
