@@ -9,6 +9,8 @@ import type {
   DataDiff,
   DatasetStats,
   FillMissingValuesTransformStep,
+  FormulaTransformStep,
+  FormatDatetimeTransformStep,
   FloorNumberTransformStep,
   GroupByTransformStep,
   MinMaxScaleTransformStep,
@@ -2459,6 +2461,7 @@ describe("canonical R kernel bridge", () => {
             "renameColumn",
             "cloneColumn",
             "castColumn",
+            "formula",
             "textLength",
             "findReplace",
             "stripText",
@@ -2470,6 +2473,7 @@ describe("canonical R kernel bridge", () => {
             "roundNumber",
             "floorNumber",
             "ceilNumber",
+            "formatDatetime",
             "groupBy"
           ]
         }
@@ -4944,23 +4948,657 @@ describe("canonical R kernel bridge", () => {
     expect(transport.previewStep).not.toHaveBeenCalled();
   });
 
+  it("publishes native R Formula scalar and right-column drafts with exact generated payloads", async () => {
+    const source = castContract(
+      castContract(frameContract(), "r:c:0", "integer", "integer", rCell("integer", "12", "12"), false),
+      "r:c:1",
+      "integer",
+      "integer",
+      rCell("integer", "4", "4"),
+      true
+    );
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const scalarStep: FormulaTransformStep = {
+      id: "r-formula-scalar",
+      kind: "formula",
+      params: {
+        leftColumn: { id: "r:c:0", name: "value" },
+        operator: "divide",
+        value: 2,
+        newColumn: "value_half"
+      }
+    };
+    const scalarOutput = formulaContract(source, scalarStep, "double", "float", false);
+    const scalarCode =
+      "open_wrangler_result <- open_wrangler_formula_column_at(orders, 1L, 'value', 'divide', 'value_half', right_value = 2)";
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: scalarOutput,
+      diff: cloneDiff("value_half"),
+      code: scalarCode
+    });
+
+    const scalarPreview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step: scalarStep,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+
+    expect(transport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      0,
+      {
+        id: "r-formula-scalar",
+        kind: "formula",
+        params: {
+          leftColumn: { id: "r:c:0", name: "value" },
+          operator: "divide",
+          value: 2,
+          newColumn: "value_half"
+        }
+      },
+      expect.any(Object),
+      expect.any(Array),
+      undefined,
+      expect.any(Object)
+    );
+    const dispatchedScalar = transport.previewStep.mock.calls.at(-1)?.[2];
+    expect(Object.isFrozen(dispatchedScalar)).toBe(true);
+    expect(Object.isFrozen(dispatchedScalar?.params)).toBe(true);
+    expect(scalarPreview).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      code: scalarCode,
+      metadata: {
+        shape: { rows: 1, columns: 9 },
+        schema: expect.arrayContaining([
+          {
+            id: "c:step:r-formula-scalar:0",
+            name: "value_half",
+            position: 8,
+            rawType: "double",
+            type: "float",
+            nullable: false
+          }
+        ]),
+        draftStep: scalarStep
+      },
+      diff: { addedColumns: ["value_half"], removedColumns: [], changedCells: 0, cells: [] }
+    });
+    scalarStep.params.value = 99;
+    expect(scalarPreview).toMatchObject({ metadata: { draftStep: { params: { value: 2 } } } });
+
+    transport.discardDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "discard",
+      revision: 2,
+      page: source,
+      code: ""
+    });
+    await expect(bridge.request(planRequest("discardDraft", 1))).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "discard",
+      revision: 2,
+      metadata: { shape: { columns: 8 }, steps: [] }
+    });
+
+    const columnStep: FormulaTransformStep = {
+      id: "r-formula-columns",
+      kind: "formula",
+      params: {
+        leftColumn: { id: "r:c:0", name: "value" },
+        operator: "multiply",
+        rightColumn: { id: "r:c:1", name: "count" },
+        newColumn: "value_times_count"
+      }
+    };
+    const columnOutput = formulaContract(source, columnStep, "integer", "integer", true);
+    const columnCode =
+      "open_wrangler_result <- open_wrangler_formula_column_at(orders, 1L, 'value', 'multiply', 'value_times_count', 2L, 'count')";
+    transport.queuePreview({
+      sessionId,
+      revision: 3,
+      page: columnOutput,
+      diff: cloneDiff("value_times_count"),
+      code: columnCode
+    });
+    const columnPreview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 2,
+      step: columnStep,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+
+    expect(transport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      2,
+      {
+        id: "r-formula-columns",
+        kind: "formula",
+        params: {
+          leftColumn: { id: "r:c:0", name: "value" },
+          operator: "multiply",
+          rightColumn: { id: "r:c:1", name: "count" },
+          newColumn: "value_times_count"
+        }
+      },
+      expect.any(Object),
+      expect.any(Array),
+      undefined,
+      expect.any(Object)
+    );
+    expect(columnPreview).toMatchObject({
+      kind: "stepPreview",
+      code: columnCode,
+      metadata: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({
+            id: "c:step:r-formula-columns:0",
+            name: "value_times_count",
+            rawType: "integer",
+            type: "integer",
+            nullable: true
+          })
+        ])
+      },
+      diff: cloneDiff("value_times_count")
+    });
+
+    transport.applyDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "apply",
+      revision: 4,
+      page: columnOutput,
+      code: columnCode
+    });
+    await expect(bridge.request(planRequest("applyDraft", 3))).resolves.toMatchObject({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 4,
+      code: columnCode,
+      metadata: {
+        steps: [
+          {
+            id: "r-formula-columns",
+            kind: "formula",
+            params: {
+              rightColumn: { id: "r:c:1", name: "count" },
+              newColumn: "value_times_count"
+            }
+          }
+        ],
+        latestStepInputSchema: expect.arrayContaining([
+          expect.objectContaining({ id: "r:c:0", name: "value", rawType: "integer" })
+        ])
+      }
+    });
+  });
+
+  it("rejects stale, nonnumeric, colliding, and non-finite native R Formula requests before dispatch", async () => {
+    const source = frameContract();
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    const leftColumn = { id: "r:c:0", name: "value" } as const;
+    const invalidSteps = [
+      {
+        id: "r-formula-stale-left",
+        kind: "formula",
+        params: { leftColumn: { id: "r:c:0", name: "stale" }, operator: "add", value: 1, newColumn: "sum" }
+      },
+      {
+        id: "r-formula-stale-right",
+        kind: "formula",
+        params: {
+          leftColumn,
+          operator: "subtract",
+          rightColumn: { id: "r:c:7", name: "stale" },
+          newColumn: "difference"
+        }
+      },
+      {
+        id: "r-formula-date",
+        kind: "formula",
+        params: {
+          leftColumn: { id: "r:c:2", name: "date" },
+          operator: "add",
+          value: 1,
+          newColumn: "tomorrow"
+        }
+      },
+      {
+        id: "r-formula-collision",
+        kind: "formula",
+        params: { leftColumn, operator: "multiply", value: 2, newColumn: "count" }
+      },
+      {
+        id: "r-formula-infinite",
+        kind: "formula",
+        params: { leftColumn, operator: "divide", value: Number.POSITIVE_INFINITY, newColumn: "ratio" }
+      },
+      {
+        id: "r-formula-nan",
+        kind: "formula",
+        params: { leftColumn, operator: "power", value: Number.NaN, newColumn: "power" }
+      },
+      {
+        id: "r-formula-both-operands",
+        kind: "formula",
+        params: {
+          leftColumn,
+          operator: "add",
+          rightColumn: { id: "r:c:7", name: "infinite" },
+          value: 1,
+          newColumn: "ambiguous"
+        }
+      },
+      {
+        id: "r-formula-no-operand",
+        kind: "formula",
+        params: { leftColumn, operator: "add", newColumn: "missing_operand" }
+      },
+      {
+        id: "r-formula-private-output",
+        kind: "formula",
+        params: {
+          leftColumn,
+          operator: "add",
+          value: 1,
+          newColumn: "__OPEN_WRANGLER_INTERNAL_ROW_ID_formula"
+        }
+      }
+    ] satisfies FormulaTransformStep[];
+
+    for (const step of invalidSteps) {
+      let response;
+      try {
+        response = await bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        });
+      } catch (error) {
+        throw new Error(`Formula case ${step.id} unexpectedly reached transport.`, { cause: error });
+      }
+      expect(response, step.id).toMatchObject({ kind: "error", code: "invalid_request" });
+    }
+    expect(transport.previewStep).not.toHaveBeenCalled();
+  });
+
+  it("requires exact integer64 and widening schemas for native R Formula", async () => {
+    const integer64Value = rCell("integer", "9007199254740993", "9007199254740993");
+    const source = castContract(
+      castContract(frameContract(), "r:c:0", "integer64", "integer", integer64Value, false),
+      "r:c:1",
+      "integer64",
+      "integer",
+      rCell("integer", "2", "2"),
+      false
+    );
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+
+    const exactStep: FormulaTransformStep = {
+      id: "r-formula-integer64-exact",
+      kind: "formula",
+      params: {
+        leftColumn: { id: "r:c:0", name: "value" },
+        operator: "add",
+        rightColumn: { id: "r:c:1", name: "count" },
+        newColumn: "exact_sum"
+      }
+    };
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: formulaContract(source, exactStep, "integer64", "integer", false),
+      diff: cloneDiff("exact_sum"),
+      code: "open_wrangler_result <- exact_sum"
+    });
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: exactStep,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({
+            id: "c:step:r-formula-integer64-exact:0",
+            rawType: "integer64",
+            type: "integer"
+          })
+        ])
+      }
+    });
+
+    transport.discardDraft.mockResolvedValueOnce({
+      sessionId,
+      action: "discard",
+      revision: 2,
+      page: source,
+      code: ""
+    });
+    await bridge.request(planRequest("discardDraft", 1));
+
+    let revision = 2;
+    for (const [id, operator, value] of [
+      ["r-formula-integer64-divide", "divide", 2],
+      ["r-formula-integer64-double", "add", 0.5],
+      ["r-formula-integer64-power", "power", 2]
+    ] as const) {
+      const step: FormulaTransformStep = {
+        id,
+        kind: "formula",
+        params: {
+          leftColumn: { id: "r:c:0", name: "value" },
+          operator,
+          value,
+          newColumn: `${operator}_result`
+        }
+      };
+      transport.queuePreview({
+        sessionId,
+        revision: revision + 1,
+        page: formulaContract(source, step, "double", "float", false),
+        diff: cloneDiff(`${operator}_result`),
+        code: `open_wrangler_result <- ${operator}_result`
+      });
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({
+        kind: "stepPreview",
+        metadata: {
+          schema: expect.arrayContaining([
+            expect.objectContaining({ id: `c:step:${id}:0`, rawType: "double", type: "float" })
+          ])
+        }
+      });
+      transport.discardDraft.mockResolvedValueOnce({
+        sessionId,
+        action: "discard",
+        revision: revision + 2,
+        page: source,
+        code: ""
+      });
+      await bridge.request(planRequest("discardDraft", revision + 1));
+      revision += 2;
+    }
+  });
+
+  it("formats native R Date and POSIXct columns in place or under a stable appended identity", async () => {
+    const source = frameContract();
+    const formattedDate: RFrameCell = {
+      kind: "string",
+      raw: "05 Aug 2026",
+      display: "05 Aug 2026",
+      isNull: false,
+      isNaN: false
+    };
+    const inPlace = castContract(source, "r:c:2", "character", "string", formattedDate, true);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    const inPlaceStep: FormatDatetimeTransformStep = {
+      id: "r-format-date-in-place",
+      kind: "formatDatetime",
+      params: { column: { id: "r:c:2", name: "date" }, format: "%d %b %Y" }
+    };
+    const inPlaceCode =
+      "open_wrangler_result <- open_wrangler_format_datetime_column_at(orders, 3L, 'date', '%d %b %Y')";
+    transport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: inPlace,
+      diff: castDiff("r:c:2", "date", source.page.rows[0]?.values[2] as RFrameCell, formattedDate),
+      code: inPlaceCode
+    });
+
+    const inPlacePreview = await bridge.request({
+      kind: "previewStep",
+      sessionId,
+      revision: 0,
+      step: inPlaceStep,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 8
+    });
+    expect(transport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      0,
+      {
+        id: "r-format-date-in-place",
+        kind: "formatDatetime",
+        params: { column: { id: "r:c:2", name: "date" }, format: "%d %b %Y" }
+      },
+      expect.any(Object),
+      expect.any(Array),
+      undefined,
+      expect.any(Object)
+    );
+    expect(inPlacePreview).toMatchObject({
+      kind: "stepPreview",
+      code: inPlaceCode,
+      metadata: {
+        schema: expect.arrayContaining([
+          expect.objectContaining({ id: "r:c:2", name: "date", rawType: "character", type: "string" })
+        ])
+      },
+      diff: {
+        addedColumns: [],
+        changedCells: 1,
+        cells: [
+          expect.objectContaining({
+            columnId: "r:c:2",
+            column: "date",
+            after: expect.objectContaining({ raw: "05 Aug 2026" })
+          })
+        ]
+      }
+    });
+
+    const keyedSource = dataTableContract(source, ["r:c:3"]);
+    const keyedTransport = fakeTransport(keyedSource);
+    const keyedBridge = createBridge(keyedTransport);
+    await keyedBridge.request(openRequest("editing"));
+    const appendedStep: FormatDatetimeTransformStep = {
+      id: "r-format-datetime-appended",
+      kind: "formatDatetime",
+      params: {
+        column: { id: "r:c:3", name: "when" },
+        format: "%Y-%m-%d %H:%M",
+        newColumn: "when_label"
+      }
+    };
+    const appended = formattedDatetimeContract(keyedSource, appendedStep);
+    keyedTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: appended,
+      diff: cloneDiff("when_label"),
+      code: "open_wrangler_result <- open_wrangler_format_datetime_column_at(orders, 4L, 'when', '%Y-%m-%d %H:%M', 'when_label')"
+    });
+    await expect(
+      keyedBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step: appendedStep,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).resolves.toMatchObject({
+      kind: "stepPreview",
+      metadata: {
+        schema: expect.arrayContaining([
+          {
+            id: "c:step:r-format-datetime-appended:0",
+            name: "when_label",
+            position: 8,
+            rawType: "character",
+            type: "string",
+            nullable: true
+          }
+        ])
+      },
+      diff: { addedColumns: ["when_label"], changedCells: 0, cells: [] }
+    });
+    expect(keyedTransport.previewStep).toHaveBeenLastCalledWith(
+      sessionId,
+      0,
+      appendedStep,
+      expect.any(Object),
+      expect.any(Array),
+      undefined,
+      expect.any(Object)
+    );
+  });
+
+  it("rejects unsafe native R Format Datetime inputs and malformed diffs", async () => {
+    const source = dataTableContract(frameContract(), ["r:c:2"]);
+    const transport = fakeTransport(source);
+    const bridge = createBridge(transport);
+    await bridge.request(openRequest("editing"));
+    const invalidSteps = [
+      {
+        id: "r-format-stale",
+        kind: "formatDatetime",
+        params: { column: { id: "r:c:2", name: "stale" }, format: "%Y" }
+      },
+      {
+        id: "r-format-number",
+        kind: "formatDatetime",
+        params: { column: { id: "r:c:0", name: "value" }, format: "%Y" }
+      },
+      {
+        id: "r-format-empty",
+        kind: "formatDatetime",
+        params: { column: { id: "r:c:3", name: "when" }, format: "" }
+      },
+      {
+        id: "r-format-oversized",
+        kind: "formatDatetime",
+        params: {
+          column: { id: "r:c:3", name: "when" },
+          format: "x".repeat(R_FRAME_CONTRACT_LIMITS.textBytes + 1)
+        }
+      },
+      {
+        id: "r-format-collision",
+        kind: "formatDatetime",
+        params: { column: { id: "r:c:3", name: "when" }, format: "%Y", newColumn: "count" }
+      },
+      {
+        id: "r-format-private",
+        kind: "formatDatetime",
+        params: {
+          column: { id: "r:c:3", name: "when" },
+          format: "%Y",
+          newColumn: "__OPEN_WRANGLER_INTERNAL_ROW_ID_date"
+        }
+      },
+      {
+        id: "r-format-key-in-place",
+        kind: "formatDatetime",
+        params: { column: { id: "r:c:2", name: "date" }, format: "%Y-%m-%d" }
+      }
+    ] satisfies FormatDatetimeTransformStep[];
+
+    for (const step of invalidSteps) {
+      await expect(
+        bridge.request({
+          kind: "previewStep",
+          sessionId,
+          revision: 0,
+          step,
+          offset: 0,
+          limit: 20,
+          columnOffset: 0,
+          columnLimit: 8
+        })
+      ).resolves.toMatchObject({ kind: "error", code: "invalid_request" });
+    }
+    expect(transport.previewStep).not.toHaveBeenCalled();
+
+    const diffSource = frameContract();
+    const diffTransport = fakeTransport(diffSource);
+    const diffBridge = createBridge(diffTransport);
+    await diffBridge.request(openRequest("editing"));
+    const step: FormatDatetimeTransformStep = {
+      id: "r-format-bad-diff",
+      kind: "formatDatetime",
+      params: { column: { id: "r:c:3", name: "when" }, format: "%Y", newColumn: "year" }
+    };
+    diffTransport.queuePreview({
+      sessionId,
+      revision: 1,
+      page: formattedDatetimeContract(diffSource, step),
+      diff: cloneDiff("wrong_name"),
+      code: "open_wrangler_result <- orders"
+    });
+    await expect(
+      diffBridge.request({
+        kind: "previewStep",
+        sessionId,
+        revision: 0,
+        step,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 8
+      })
+    ).rejects.toThrow("mutation diff");
+  });
+
   it("keeps the remaining unsupported cleaning operations out of native R sessions", async () => {
     const transport = fakeTransport(frameContract());
     const bridge = createBridge(transport);
     await bridge.request(openRequest("editing"));
     const column = { id: "r:c:0", name: "value" } as const;
     const steps = [
-      { id: "r-formula", kind: "formula", params: { leftColumn: column, operator: "add", value: 1, newColumn: "sum" } },
       { id: "r-one-hot", kind: "oneHotEncode", params: { columns: [column] } },
       {
         id: "r-multi-label",
         kind: "multiLabelBinarize",
         params: { column, delimiter: ",", dropOriginal: false }
-      },
-      {
-        id: "r-format-date",
-        kind: "formatDatetime",
-        params: { column: { id: "r:c:2", name: "date" }, format: "%Y-%m-%d" }
       },
       {
         id: "r-by-example",
@@ -6861,6 +7499,81 @@ function minMaxScaleContract(
   };
 }
 
+function formulaContract(
+  source: RFramePageContract,
+  step: FormulaTransformStep,
+  rawType: "integer" | "double" | "integer64",
+  type: "integer" | "float",
+  nullable: boolean
+): RFramePageContract {
+  const outputId = `c:step:${step.id}:0`;
+  return {
+    ...source,
+    shape: { ...source.shape, columns: source.schema.length + 1 },
+    frameSemantics: { ...source.frameSemantics, keyColumnIds: [...source.frameSemantics.keyColumnIds] },
+    schema: [
+      ...source.schema.map((column) => ({ ...column })),
+      {
+        id: outputId,
+        name: step.params.newColumn,
+        position: source.schema.length,
+        rawType,
+        type,
+        nullable,
+        semantics:
+          rawType === "integer"
+            ? { kind: "integer", storageMode: "integer", classes: ["integer"] }
+            : rawType === "integer64"
+              ? { kind: "integer64", storageMode: "double", classes: ["integer64"] }
+              : { kind: "double", storageMode: "double", classes: ["numeric"] }
+      }
+    ],
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((value) => ({ ...value }))
+      }))
+    }
+  };
+}
+
+function formattedDatetimeContract(source: RFramePageContract, step: FormatDatetimeTransformStep): RFramePageContract {
+  const sourceColumn = source.schema.find(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (!sourceColumn) throw new Error("Unknown fake R datetime-format column.");
+  if (step.params.newColumn === undefined || step.params.newColumn === sourceColumn.name) {
+    throw new Error("The fake appended datetime-format contract requires a distinct output name.");
+  }
+  return {
+    ...source,
+    shape: { ...source.shape, columns: source.schema.length + 1 },
+    frameSemantics: { ...source.frameSemantics, keyColumnIds: [...source.frameSemantics.keyColumnIds] },
+    schema: [
+      ...source.schema.map((column) => ({ ...column })),
+      {
+        id: `c:step:${step.id}:0`,
+        name: step.params.newColumn,
+        position: source.schema.length,
+        rawType: "character",
+        type: "string",
+        nullable: sourceColumn.nullable,
+        semantics: { kind: "character", storageMode: "character", classes: ["character"] }
+      }
+    ],
+    page: {
+      ...source.page,
+      columnIds: [...source.page.columnIds],
+      rows: source.page.rows.map((row) => ({
+        ...row,
+        values: row.values.map((value) => ({ ...value }))
+      }))
+    }
+  };
+}
+
 function textLengthContract(
   source: RFramePageContract,
   columnId: string,
@@ -6944,15 +7657,17 @@ function castContract(
   const semantics: RColumnSchema["semantics"] =
     rawType === "integer"
       ? { kind: "integer", storageMode: "integer", classes: ["integer"] }
-      : rawType === "double"
-        ? { kind: "double", storageMode: "double", classes: ["numeric"] }
-        : rawType === "logical"
-          ? { kind: "logical", storageMode: "logical", classes: ["logical"] }
-          : rawType === "Date"
-            ? { kind: "date", storageMode: "double", classes: ["Date"] }
-            : rawType === "POSIXct"
-              ? { kind: "datetime", storageMode: "double", classes: ["POSIXct", "POSIXt"], timezone: "UTC" }
-              : { kind: "character", storageMode: "character", classes: ["character"] };
+      : rawType === "integer64"
+        ? { kind: "integer64", storageMode: "double", classes: ["integer64"] }
+        : rawType === "double"
+          ? { kind: "double", storageMode: "double", classes: ["numeric"] }
+          : rawType === "logical"
+            ? { kind: "logical", storageMode: "logical", classes: ["logical"] }
+            : rawType === "Date"
+              ? { kind: "date", storageMode: "double", classes: ["Date"] }
+              : rawType === "POSIXct"
+                ? { kind: "datetime", storageMode: "double", classes: ["POSIXct", "POSIXt"], timezone: "UTC" }
+                : { kind: "character", storageMode: "character", classes: ["character"] };
   const pagePosition = source.page.columnIds.indexOf(columnId);
   if (pagePosition < 0) throw new Error(`Fake R cast page does not contain ${columnId}.`);
   return {
@@ -7376,6 +8091,7 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "renameColumn",
       "cloneColumn",
       "castColumn",
+      "formula",
       "textLength",
       "findReplace",
       "stripText",
@@ -7387,6 +8103,7 @@ function rCapabilities(bridge = false): SourceCapabilities {
       "roundNumber",
       "floorNumber",
       "ceilNumber",
+      "formatDatetime",
       "groupBy"
     ]
   };

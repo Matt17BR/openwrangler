@@ -241,6 +241,13 @@ Convert type replaces one column while retaining its name, position, and stable 
 double, logical, Date, or UTC POSIXct output, and factors convert through their labels. An `integer64` source stays
 `integer64` when the target is integer. A supported value that cannot be parsed becomes `NA`; conversions that would
 lose units or `integer64` precision fail. Active data-table key columns must be cloned before conversion.
+Formula appends one numeric column from an exact left-column reference and either an exact right-column reference or
+a finite scalar. It supports addition, subtraction, multiplication, division, modulo, and power. Ordinary R integer
+and double arithmetic follows R's native widening rules, while exact `integer64` addition, subtraction,
+multiplication, and modulo stay `integer64` when both operands are integral. Division, power, and any mixed
+`integer64`/double operation produce doubles. `NA` propagates; existing `NaN` and infinities follow R arithmetic,
+while a newly introduced overflow, `NaN`, or infinity fails before publication. Live execution and generated R use
+the same positional bindings and result rules.
 Min-max scale accepts integer, double, and `integer64` columns and returns doubles from 0 to 1. A constant finite
 range becomes zero. Missing values and non-finite doubles produce missing output. Wide `integer64` values are scaled
 without first converting the source column to doubles. A keyed `data.table` column must use a new output column.
@@ -248,6 +255,12 @@ Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` colum
 outputs are R doubles. `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and `-Inf`,
 and Round follows R's ties-to-even rule. An in-place change to an active `data.table` key is rejected; writing to a
 new output column is allowed and leaves the key alone.
+Format Datetime accepts an exact `Date` or `POSIXct` column and a non-empty bounded R format string. It can replace
+the source column or append a new character column. POSIXct formatting uses the column's declared time zone and
+uses UTC when none is declared. Every formatted UTF-8 value remains bounded, and replacing an active `data.table`
+key is rejected. Formatting runs in 1,024-row chunks and the retained character-vector slots plus UTF-8 bytes may
+not exceed 64 MiB, so a valid but highly expansive format cannot allocate an unbounded result. Generated R repeats
+the same type, name, time-zone, key, per-value, and aggregate-output checks.
 Group and aggregate binds every key and input by stable ID and name. It keeps groups in first-seen order, treats
 `NA` and `NaN` keys as the same missing group, and supports sum, mean, median, minimum, maximum, count, distinct
 count, first, and last. The result stays a base data frame, tibble, or data table to match its input. A data-table
@@ -312,8 +325,19 @@ the `Rscript` used for an Open Wrangler-managed document. Notebook, active-termi
 native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
 Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate. Other operations are not
-supported in R yet.
+Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format Datetime, and Group and
+aggregate. Other operations are not supported in R yet.
+Executable generated R evaluates its implementation in a fresh environment whose parent is `baseenv()`, while an
+explicit private binding identifies only the caller environment from which the exact source variable is copied.
+The shared source preflight and the Formula and Format Datetime implementation helpers avoid caller-defined operator,
+S3-method, and helper-name lookup; this is not a blanket claim for every older generated operation. Generated code rejects an
+active output binding before source evaluation, after a delayed source promise settles, and again immediately before
+publication. It normally publishes `open_wrangler_result`; when that is the source variable, it preserves the source
+and publishes `open_wrangler_result_2`. Live capture rejects malformed
+row-name structures and unequal ordinary column lengths before its isolated snapshot; its ordinary inspection then
+rejects unsupported column classes or attributes and frames beyond the 2,048-column bound. Generated replay performs
+all of those checks before copying its source or running a step, and keeps aggregate factor-level validation within the
+shared metadata budget.
 Generated R can be inserted into the exact IRkernel notebook or exact in-memory R document that opened the session.
 Notebook insertion creates and proves one `r` cell. Source insertion applies one `WorkspaceEdit` and proves the
 complete resulting document text; R Markdown and Quarto insert a new top-level `{r}` cell, and R Markdown rejects
@@ -325,7 +349,8 @@ checks a column's count, distinct values, minimum, and maximum, then checks data
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
 frame, and final session cleanup. The packaged VS Code journey covers the full R catalog, including the visible forms
-for Find and replace, Uppercase, Min-max scale, Round, Floor, Ceiling, and Group and aggregate. Cursor runs the
+for Find and replace, Formula, Uppercase, Min-max scale, Round, Floor, Ceiling, Format Datetime, and Group and
+aggregate. Cursor runs the
 representative editing profile. The
 base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
 applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,

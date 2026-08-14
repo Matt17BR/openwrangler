@@ -910,7 +910,14 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
           </select>
         </label>
         {formulaOperandMode === "value" ? (
-          <TextField name="value" label="Numeric value" type="number" step="any" defaultValue={param("value", "0")} />
+          <TextField
+            name="value"
+            label="Numeric value"
+            type="number"
+            step="any"
+            defaultValue={param("value", "0")}
+            required
+          />
         ) : (
           <ColumnReferenceSelect
             name="rightColumn"
@@ -1092,7 +1099,16 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
           defaultValue={initialColumnReference("column", datetimeColumns[0]?.id)}
           emptyMessage="No date or datetime columns are available. Cast a column first."
         />
-        <TextField name="format" label="strftime format" defaultValue={param("format", "%Y-%m-%d")} required />
+        <TextField
+          name="format"
+          label="strftime format"
+          defaultValue={param("format", "%Y-%m-%d")}
+          required
+          maxUtf8Bytes={metadata.backend === "r" ? 8_192 : undefined}
+          description={
+            metadata.backend === "r" ? "Native R datetime formats can use up to 8,192 UTF-8 bytes." : undefined
+          }
+        />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
       </>
     );
@@ -2075,15 +2091,20 @@ function buildParams(
     return { column: columnReference("column"), newName: value("newName") };
   }
   if (kind === "castColumn") return { column: columnReference("column"), dtype: value("dtype") };
-  if (kind === "formula")
+  if (kind === "formula") {
+    const scalar = value("value").trim();
+    if (value("operandMode") !== "column" && (scalar === "" || !Number.isFinite(Number(scalar)))) {
+      throw new Error("Formula requires one finite numeric value or a right column.");
+    }
     return {
       leftColumn: columnReference("leftColumn"),
       operator: value("operator"),
       newColumn: value("newColumn"),
       ...(value("operandMode") === "column"
         ? { rightColumn: columnReference("rightColumn") }
-        : { value: Number(value("value")) })
+        : { value: Number(scalar) })
     };
+  }
   if (kind === "textLength") return { column: columnReference("column"), newColumn: value("newColumn") };
   if (kind === "multiLabelBinarize") {
     const params: Record<string, unknown> = {

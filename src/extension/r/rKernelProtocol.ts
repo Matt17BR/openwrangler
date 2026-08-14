@@ -20,7 +20,7 @@ import type {
 } from "../../shared/protocol";
 import { isOpenWranglerResponse } from "../../shared/protocolValidation";
 
-export const R_KERNEL_TRANSPORT_VERSION = 10 as const;
+export const R_KERNEL_TRANSPORT_VERSION = 11 as const;
 export const R_KERNEL_MAX_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const R_KERNEL_MAX_RESPONSE_BYTES = 17 * 1_024 * 1_024;
 export const R_KERNEL_EXPORT_CHUNK_BYTES = 1 * 1_024 * 1_024;
@@ -127,6 +127,18 @@ export interface RKernelCastColumnStep {
   readonly params: Readonly<{
     column: RKernelColumnReference;
     dtype: RKernelCastDtype;
+  }>;
+}
+
+export interface RKernelFormulaStep {
+  readonly id: string;
+  readonly kind: "formula";
+  readonly params: Readonly<{
+    leftColumn: RKernelColumnReference;
+    operator: "add" | "subtract" | "multiply" | "divide" | "modulo" | "power";
+    newColumn: string;
+    rightColumn?: RKernelColumnReference;
+    value?: number;
   }>;
 }
 
@@ -274,6 +286,16 @@ export interface RKernelMinMaxScaleStep {
   }>;
 }
 
+export interface RKernelFormatDatetimeStep {
+  readonly id: string;
+  readonly kind: "formatDatetime";
+  readonly params: Readonly<{
+    column: RKernelColumnReference;
+    format: string;
+    readonly newColumn?: string;
+  }>;
+}
+
 export interface RKernelDropColumnsStep {
   readonly id: string;
   readonly kind: "dropColumns";
@@ -356,6 +378,7 @@ export type RKernelTransformStep =
   | RKernelRenameColumnStep
   | RKernelCloneColumnStep
   | RKernelCastColumnStep
+  | RKernelFormulaStep
   | RKernelTextLengthStep
   | RKernelLowerTextStep
   | RKernelUpperTextStep
@@ -368,6 +391,7 @@ export type RKernelTransformStep =
   | RKernelRoundNumberStep
   | RKernelFloorNumberStep
   | RKernelCeilNumberStep
+  | RKernelFormatDatetimeStep
   | RKernelDropColumnsStep
   | RKernelSelectColumnsStep;
 
@@ -1209,6 +1233,37 @@ function validateTransformStep(value: unknown): void {
     validateFillMissingReplacement(params.replacement, column.id);
     return;
   }
+  if (step.kind === "formula") {
+    const params = exactRecord(
+      step.params,
+      ["leftColumn", "operator", "newColumn"],
+      ["rightColumn", "value"],
+      "R kernel formula parameters"
+    );
+    validateColumnReference(params.leftColumn, "request.payload.step.params.leftColumn");
+    if (
+      params.operator !== "add" &&
+      params.operator !== "subtract" &&
+      params.operator !== "multiply" &&
+      params.operator !== "divide" &&
+      params.operator !== "modulo" &&
+      params.operator !== "power"
+    ) {
+      fail("R kernel formula parameters contain an unsupported operator.");
+    }
+    const hasRightColumn = params.rightColumn !== undefined;
+    const hasValue = params.value !== undefined;
+    if (hasRightColumn === hasValue) {
+      fail("R kernel formula parameters require exactly one right column or numeric value.");
+    }
+    if (hasRightColumn) {
+      validateColumnReference(params.rightColumn, "request.payload.step.params.rightColumn");
+    } else if (typeof params.value !== "number" || !Number.isFinite(params.value)) {
+      fail("R kernel formula value must be finite.");
+    }
+    boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    return;
+  }
   if (
     step.kind === "minMaxScale" ||
     step.kind === "roundNumber" ||
@@ -1225,6 +1280,15 @@ function validateTransformStep(value: unknown): void {
     if (params.decimals !== undefined) {
       boundedSignedInteger(params.decimals, "request.payload.step.params.decimals", 2_147_483_647);
     }
+    if (params.newColumn !== undefined) {
+      boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
+    }
+    return;
+  }
+  if (step.kind === "formatDatetime") {
+    const params = exactRecord(step.params, ["column", "format"], ["newColumn"], "R kernel datetime-format parameters");
+    validateColumnReference(params.column, "request.payload.step.params.column");
+    boundedText(params.format, "request.payload.step.params.format", R_FRAME_CONTRACT_LIMITS.textBytes, false);
     if (params.newColumn !== undefined) {
       boundedText(params.newColumn, "request.payload.step.params.newColumn", maximumVariableNameBytes, false);
     }

@@ -119,7 +119,7 @@ the packaged extension-host, candidate-workflow, and testing-record references. 
 document, insertion, and export journeys; a release-candidate R performance record; and first-class VS Code/Cursor
 acceptance. The active R-terminal transport and export rows claim Linux only, matching the platform where the
 candidate installs and exercises the native R editor tooling. The Cursor literate row likewise claims Linux and
-distinguishes the R Markdown document command from the Quarto R/Python title actions. The existing 22-operation R
+distinguishes the R Markdown document command from the Quarto R/Python title actions. The existing 24-operation R
 suites cannot satisfy either all-28 catalog row: dedicated complete-catalog runtime/generated-code and code-export
 tests must be tracked before those rows can become Done. `GRP_df`, `indexed_frame`, Windows direct-document execution,
 and remote R documents remain outside that table. Successful candidate jobs do not change a documentation row to Done by themselves: the exact tracked record

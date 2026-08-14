@@ -725,6 +725,440 @@ cat("generated-ok\\n")
     expect(generated.stdout.trim()).toBe("generated-ok");
   });
 
+  it("round-trips scalar and right-column Formula steps through the real R transport", () => {
+    const editingSessionId = "19000000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "19000000-0000-4000-8000-000000000002",
+      scalarPreview: "19000000-0000-4000-8000-000000000003",
+      scalarApply: "19000000-0000-4000-8000-000000000004",
+      columnPreview: "19000000-0000-4000-8000-000000000005",
+      columnApply: "19000000-0000-4000-8000-000000000006",
+      close: "19000000-0000-4000-8000-000000000007"
+    } as const;
+    const scalarStepId = "formula-scalar-cross";
+    const columnStepId = "formula-column-cross";
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const scalarPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.scalarPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: scalarStepId,
+          kind: "formula",
+          params: {
+            leftColumn: { id: "r:c:0", name: "left" },
+            operator: "add",
+            newColumn: "scalar result",
+            value: 0.5
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const scalarApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.scalarApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const columnPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.columnPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 2,
+        step: {
+          id: columnStepId,
+          kind: "formula",
+          params: {
+            leftColumn: { id: "r:c:0", name: "left" },
+            operator: "divide",
+            newColumn: "column result",
+            rightColumn: { id: "r:c:1", name: "right" }
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const columnApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.columnApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+
+    const result = runR(`
+frame <- data.frame(
+  left = c(8, -8, NA_real_, 2),
+  right = c(2, 4, 5, NA_real_),
+  label = c("first", "second", "missing left", "missing right"),
+  row.names = paste0("formula-cross-", seq_len(4L)),
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${scalarPreview.code}
+${scalarApply.code}
+${columnPreview.code}
+${columnApply.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
+    if (opened.kind !== "page") throw new Error("Expected an opened native R Formula session.");
+    expect(opened.page.schema.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "r:c:0", name: "left" },
+      { id: "r:c:1", name: "right" },
+      { id: "r:c:2", name: "label" }
+    ]);
+
+    const scalarPreviewed = decodeRKernelResponseJson(marked(result.stdout, scalarPreview.marker), ids.scalarPreview, {
+      inputSchema: opened.page.schema
+    });
+    expect(scalarPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: ["scalar result"],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      }
+    });
+    if (scalarPreviewed.kind !== "stepPreview") throw new Error("Expected a scalar native R Formula preview.");
+    expect(scalarPreviewed.page.schema.at(-1)).toMatchObject({
+      id: `c:step:${scalarStepId}:0`,
+      name: "scalar result",
+      rawType: "double",
+      type: "float",
+      nullable: true
+    });
+    expect(scalarPreviewed.page.page.rows.map((row) => row.values.at(-1))).toMatchObject([
+      { kind: "number", raw: "8.5", isNull: false },
+      { kind: "number", raw: "-7.5", isNull: false },
+      { kind: "null", raw: null, isNull: true },
+      { kind: "number", raw: "2.5", isNull: false }
+    ]);
+
+    const scalarApplied = decodeRKernelResponseJson(marked(result.stdout, scalarApply.marker), ids.scalarApply);
+    expect(scalarApplied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (scalarApplied.kind !== "planUpdated") throw new Error("Expected an applied scalar native R Formula.");
+    expect(scalarApplied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+
+    const columnPreviewed = decodeRKernelResponseJson(marked(result.stdout, columnPreview.marker), ids.columnPreview, {
+      inputSchema: scalarApplied.page.schema
+    });
+    expect(columnPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 3,
+      diff: {
+        addedColumns: ["column result"],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      }
+    });
+    if (columnPreviewed.kind !== "stepPreview") {
+      throw new Error("Expected a right-column native R Formula preview.");
+    }
+    expect(columnPreviewed.page.schema.at(-1)).toMatchObject({
+      id: `c:step:${columnStepId}:0`,
+      name: "column result",
+      rawType: "double",
+      type: "float",
+      nullable: true
+    });
+    expect(columnPreviewed.page.page.rows.map((row) => row.values.at(-1))).toMatchObject([
+      { kind: "number", raw: "4", isNull: false },
+      { kind: "number", raw: "-2", isNull: false },
+      { kind: "null", raw: null, isNull: true },
+      { kind: "null", raw: null, isNull: true }
+    ]);
+
+    const columnApplied = decodeRKernelResponseJson(marked(result.stdout, columnApply.marker), ids.columnApply);
+    expect(columnApplied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 4 });
+    if (columnApplied.kind !== "planUpdated") throw new Error("Expected an applied right-column native R Formula.");
+    expect(columnApplied.page.schema.map((column) => column.id)).toEqual([
+      "r:c:0",
+      "r:c:1",
+      "r:c:2",
+      `c:step:${scalarStepId}:0`,
+      `c:step:${columnStepId}:0`
+    ]);
+    expect(columnApplied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toEqual({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+
+    const generated = runR(`
+frame <- data.frame(
+  left = c(8, -8, NA_real_, 2),
+  right = c(2, 4, 5, NA_real_),
+  label = c("first", "second", "missing left", "missing right"),
+  row.names = paste0("formula-cross-", seq_len(4L)),
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${columnApplied.code}
+stopifnot(identical(open_wrangler_result$\`scalar result\`, c(8.5, -7.5, NA_real_, 2.5)))
+stopifnot(identical(open_wrangler_result$\`column result\`, c(4, -2, NA_real_, NA_real_)))
+stopifnot(identical(row.names(open_wrangler_result), row.names(frame)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+  });
+
+  it("round-trips appended Date and in-place POSIXct formatting through the real R transport", () => {
+    const editingSessionId = "19100000-0000-4000-8000-000000000001";
+    const ids = {
+      open: "19100000-0000-4000-8000-000000000002",
+      datePreview: "19100000-0000-4000-8000-000000000003",
+      dateApply: "19100000-0000-4000-8000-000000000004",
+      momentPreview: "19100000-0000-4000-8000-000000000005",
+      momentApply: "19100000-0000-4000-8000-000000000006",
+      close: "19100000-0000-4000-8000-000000000007"
+    } as const;
+    const dateStepId = "format-date-cross";
+    const momentStepId = "format-moment-cross";
+    const bootstrap = buildRKernelBootstrapCode(readRRuntimeFiles(resolve(root, "r")));
+    const open = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.open,
+      kind: "openSession",
+      payload: { sessionId: editingSessionId, variableName: "frame", page: pageWindow() }
+    });
+    const datePreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.datePreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 0,
+        step: {
+          id: dateStepId,
+          kind: "formatDatetime",
+          params: {
+            column: { id: "r:c:0", name: "day" },
+            format: "%Y-%j",
+            newColumn: "day of year"
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const dateApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.dateApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 1, page: pageWindow() }
+    });
+    const momentPreview = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.momentPreview,
+      kind: "previewStep",
+      payload: {
+        sessionId: editingSessionId,
+        revision: 2,
+        step: {
+          id: momentStepId,
+          kind: "formatDatetime",
+          params: {
+            column: { id: "r:c:1", name: "moment" },
+            format: "%Y-%m-%d %H:%M %Z"
+          }
+        },
+        page: pageWindow()
+      }
+    });
+    const momentApply = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.momentApply,
+      kind: "applyDraft",
+      payload: { sessionId: editingSessionId, revision: 3, page: pageWindow() }
+    });
+    const close = requestCode({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closeSession",
+      payload: { sessionId: editingSessionId }
+    });
+
+    const result = runR(`
+frame <- data.frame(
+  day = as.Date(c("2024-02-29", "2025-01-02", NA)),
+  moment = as.POSIXct(c("2024-03-31 00:30:00", "2024-03-31 03:30:00", NA), tz = "Europe/Berlin"),
+  label = c("leap", "ordinary", "missing"),
+  row.names = c("datetime-cross-a", "datetime-cross-b", "datetime-cross-c"),
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${bootstrap}
+${open.code}
+${datePreview.code}
+${dateApply.code}
+${momentPreview.code}
+${momentApply.code}
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+${close.code}
+`);
+
+    const opened = decodeRKernelResponseJson(marked(result.stdout, open.marker), ids.open, {
+      expectExportFormats: true
+    });
+    if (opened.kind !== "page") throw new Error("Expected an opened native R Format Datetime session.");
+    expect(opened.page.schema).toMatchObject([
+      { id: "r:c:0", name: "day", rawType: "Date", type: "date" },
+      { id: "r:c:1", name: "moment", rawType: "POSIXct", type: "datetime" },
+      { id: "r:c:2", name: "label", rawType: "character", type: "string" }
+    ]);
+
+    const datePreviewed = decodeRKernelResponseJson(marked(result.stdout, datePreview.marker), ids.datePreview, {
+      inputSchema: opened.page.schema
+    });
+    expect(datePreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 1,
+      diff: {
+        addedColumns: ["day of year"],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      }
+    });
+    if (datePreviewed.kind !== "stepPreview") throw new Error("Expected an appended native R Date preview.");
+    expect(datePreviewed.page.schema.at(-1)).toMatchObject({
+      id: `c:step:${dateStepId}:0`,
+      name: "day of year",
+      rawType: "character",
+      type: "string",
+      nullable: true
+    });
+    expect(datePreviewed.page.page.rows.map((row) => row.values.at(-1))).toMatchObject([
+      { kind: "string", raw: "2024-060", isNull: false },
+      { kind: "string", raw: "2025-002", isNull: false },
+      { kind: "null", raw: null, isNull: true }
+    ]);
+
+    const dateApplied = decodeRKernelResponseJson(marked(result.stdout, dateApply.marker), ids.dateApply);
+    expect(dateApplied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 2 });
+    if (dateApplied.kind !== "planUpdated") throw new Error("Expected an applied native R Date format.");
+
+    const momentPreviewed = decodeRKernelResponseJson(marked(result.stdout, momentPreview.marker), ids.momentPreview, {
+      inputSchema: dateApplied.page.schema
+    });
+    expect(momentPreviewed).toMatchObject({
+      kind: "stepPreview",
+      revision: 3,
+      diff: {
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 2,
+        truncated: false
+      }
+    });
+    if (momentPreviewed.kind !== "stepPreview") {
+      throw new Error("Expected an in-place native R POSIXct preview.");
+    }
+    expect(momentPreviewed.page.schema[1]).toMatchObject({
+      id: "r:c:1",
+      name: "moment",
+      rawType: "character",
+      type: "string",
+      nullable: true
+    });
+    expect(momentPreviewed.page.page.rows.map((row) => row.values[1])).toMatchObject([
+      { kind: "string", raw: "2024-03-31 00:30 CET", isNull: false },
+      { kind: "string", raw: "2024-03-31 03:30 CEST", isNull: false },
+      { kind: "null", raw: null, isNull: true }
+    ]);
+    expect(
+      momentPreviewed.diff.cells.map(({ rowNumber, columnId, column }) => ({ rowNumber, columnId, column }))
+    ).toEqual([
+      { rowNumber: 0, columnId: "r:c:1", column: "moment" },
+      { rowNumber: 1, columnId: "r:c:1", column: "moment" }
+    ]);
+
+    const momentApplied = decodeRKernelResponseJson(marked(result.stdout, momentApply.marker), ids.momentApply);
+    expect(momentApplied).toMatchObject({ kind: "planUpdated", action: "apply", revision: 4 });
+    if (momentApplied.kind !== "planUpdated") throw new Error("Expected an applied native R POSIXct format.");
+    expect(momentApplied.page.schema.map((column) => column.id)).toEqual([
+      "r:c:0",
+      "r:c:1",
+      "r:c:2",
+      `c:step:${dateStepId}:0`
+    ]);
+    expect(momentApplied.code).not.toMatch(/\b(?:pandas|polars|python)\b/iu);
+    expect(decodeRKernelResponseJson(marked(result.stdout, close.marker), ids.close)).toEqual({
+      transportVersion: R_KERNEL_TRANSPORT_VERSION,
+      requestId: ids.close,
+      kind: "closed",
+      sessionId: editingSessionId
+    });
+
+    const generated = runR(`
+frame <- data.frame(
+  day = as.Date(c("2024-02-29", "2025-01-02", NA)),
+  moment = as.POSIXct(c("2024-03-31 00:30:00", "2024-03-31 03:30:00", NA), tz = "Europe/Berlin"),
+  label = c("leap", "ordinary", "missing"),
+  row.names = c("datetime-cross-a", "datetime-cross-b", "datetime-cross-c"),
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${momentApplied.code}
+stopifnot(identical(open_wrangler_result$\`day of year\`, c("2024-060", "2025-002", NA_character_)))
+stopifnot(identical(open_wrangler_result$moment, c("2024-03-31 00:30 CET", "2024-03-31 03:30 CEST", NA_character_)))
+stopifnot(identical(row.names(open_wrangler_result), row.names(frame)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-ok\\n")
+`);
+    expect(generated.stdout.trim()).toBe("generated-ok");
+
+    const generatedUtc = runR(`
+frame <- data.frame(
+  day = as.Date(c("2024-02-29", "2025-01-02", NA)),
+  moment = as.POSIXct(c("2024-03-31 00:30:00", "2024-03-31 03:30:00", NA), tz = "UTC"),
+  label = c("leap", "ordinary", "missing"),
+  row.names = c("datetime-cross-a", "datetime-cross-b", "datetime-cross-c"),
+  check.names = FALSE
+)
+frame_before <- serialize(frame, NULL, version = 3L)
+${momentApplied.code}
+stopifnot(identical(open_wrangler_result$moment, c("2024-03-31 00:30 UTC", "2024-03-31 03:30 UTC", NA_character_)))
+stopifnot(identical(serialize(frame, NULL, version = 3L), frame_before))
+cat("generated-utc-ok\\n")
+`);
+    expect(generatedUtc.stdout.trim()).toBe("generated-utc-ok");
+  });
+
   it("runs a native R Drop Columns then Rename Column plan with stable identities", () => {
     const editingSessionId = "20000000-0000-4000-8000-000000000001";
     const ids = {

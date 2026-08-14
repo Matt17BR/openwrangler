@@ -1775,6 +1775,68 @@ describe("OperationBuilder", () => {
     );
   });
 
+  it("rejects an empty or non-finite Formula scalar before preview", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="formula"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const value = screen.getByLabelText("Numeric value");
+    expect(value).toBeRequired();
+    fireEvent.change(screen.getByLabelText("New column"), { target: { value: "formula_result" } });
+    fireEvent.change(value, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+
+    fireEvent.change(value, { target: { value: "1e309" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Preview changes" }).closest("form") as HTMLFormElement);
+    expect(onPreview).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Formula requires one finite numeric value or a right column.");
+  });
+
+  it("shows and enforces the native R datetime-format limit before preview", () => {
+    const onPreview = vi.fn();
+    const dateColumn = {
+      ...metadata.schema[0],
+      id: "c:date",
+      name: "event_date",
+      type: "date" as const,
+      rawType: "Date"
+    };
+    render(
+      <OperationBuilder
+        metadata={{
+          ...metadata,
+          backend: "r",
+          rDataframeFlavor: "r.data.frame",
+          schema: [dateColumn]
+        }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="formatDatetime"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const format = screen.getByLabelText("strftime format");
+    expect(format).toHaveAccessibleDescription("Native R datetime formats can use up to 8,192 UTF-8 bytes.");
+    fireEvent.input(format, { target: { value: "🙂".repeat(3_000) } });
+    expect(format).toBeInvalid();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+
+    fireEvent.input(format, { target: { value: "%Y-%m-%d" } });
+    expect(format).toBeValid();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["selectColumns", "Columns to keep"],
     ["dropColumns", "Columns to drop"]

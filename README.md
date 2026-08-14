@@ -269,8 +269,12 @@ The R workbench supports paging, filters, multi-column sorts, value search, prof
 columns, text, numbers, missing values, and grouped summaries. Missing values can use a typed value, median, mean,
 mode, a fallback column, ordered forward or backward fill, grouped statistics, or numeric interpolation when the
 column type supports it. Numeric columns can also be scaled to 0–1 or transformed with Round, Floor, and Ceiling.
+Formula creates a numeric column from another column and either a second column or a finite scalar. Date and datetime
+columns can be formatted in place or into a new text column. POSIXct values use their declared time zone, or UTC
+when none is declared.
 Every draft shows the changed data and generated R before it is applied. Applied steps can be inspected, edited, or
-undone. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
+undone. A generated script publishes `open_wrangler_result`; if the source already uses that name, it preserves the
+source and publishes `open_wrangler_result_2`. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md#transformation-operations)
 lists the operation parameters; the workbench shows only the operations supported by the active dataframe.
 
 Large R frames are profiled in chunks. Row and missing-value counts, common numeric and text statistics, and date ranges

@@ -108,7 +108,8 @@ term. These memory bounds do not imply that IRkernel can interrupt work already 
 
 Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
 Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate. The first draft takes
+Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format Datetime, and Group and
+aggregate. The first draft takes
 an isolated original: base data frames and tibbles use R serialization, while data tables use `data.table::copy()`.
 The runtime keeps committed and draft results separate, resolves every target by stable ID and captured name, and
 advances the session revision for preview, apply, discard, latest-step replacement, and undo. Applied-step inspection
@@ -212,7 +213,13 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
   Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
-  Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate with generated R code. Generated R can be
+  Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format Datetime, and Group and aggregate with
+  generated R code. Generated plans run in a fresh `baseenv()`-parented implementation environment and revalidate the
+  supported source-frame shape before copying it. Formula and Format Datetime additionally avoid caller-defined
+  operator or S3-method lookup while validating and executing their emitted helpers.
+  Result publication rejects active bindings before and after source evaluation and immediately before assignment; a
+  source already named `open_wrangler_result` is preserved and its cleaned result uses `open_wrangler_result_2`.
+  Generated R can be
   inserted into the originating IRkernel notebook or R document. R notebook, active-terminal, and local R document
   sessions opened in Editing mode can export their committed result as CSV or, when `nanoparquet` 0.5.1 or newer is
   installed, Parquet. Active-terminal export is not a release claim until its packaged-editor journey passes. The

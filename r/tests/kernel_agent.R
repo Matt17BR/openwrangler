@@ -85,6 +85,24 @@ group_by_export_id <- "64646464-6464-4464-8464-646464646464"
 group_by_tibble_session_id <- "65656565-6565-4565-8565-656565656565"
 group_by_table_session_id <- "67676767-6767-4767-8767-676767676767"
 profile_scale_session_id <- "68686868-6868-4868-8868-686868686868"
+formula_session_id <- "80808080-8080-4080-8080-808080808080"
+formula_failure_session_id <- "81818181-8181-4181-8181-818181818181"
+formula_integer64_session_id <- "91919191-9191-4191-8191-919191919191"
+formula_nullability_session_id <- "92929292-9292-4292-8292-929292929292"
+formula_nonfinite_session_id <- "93939393-9393-4393-8393-939393939393"
+datetime_session_id <- "82828282-8282-4282-8282-828282828282"
+datetime_table_session_id <- "83838383-8383-4383-8383-838383838383"
+datetime_output_budget_session_id <- "96969696-9696-4696-8696-969696969696"
+datetime_output_oversize_session_id <- "97979797-9797-4797-8797-979797979797"
+datetime_replay_session_id <- "98989898-9898-4898-8898-989898989898"
+formula_datetime_base_session_id <- "84848484-8484-4484-8484-848484848484"
+formula_datetime_tibble_session_id <- "85858585-8585-4585-8585-858585858585"
+formula_datetime_table_session_id <- "86868686-8686-4686-8686-868686868686"
+formula_datetime_collapse_frame_session_id <- "87878787-8787-4787-8787-878787878787"
+formula_datetime_collapse_tibble_session_id <- "89898989-8989-4989-8989-898989898989"
+formula_datetime_collapse_table_session_id <- "90909090-9090-4090-8090-909090909090"
+formula_datetime_named_session_id <- "94949494-9494-4494-8494-949494949494"
+formula_datetime_readr_session_id <- "95959595-9595-4595-8595-959595959595"
 
 source_environment <- new.env(parent = emptyenv())
 source_environment$frame <- data.frame(
@@ -144,7 +162,7 @@ empty_view <- function() list(filters = I(list()), sorts = I(list()))
 
 dispatch_with <- function(target_agent, kind, payload, id = request_id) {
   encoded <- jsonlite::toJSON(
-    list(transportVersion = 10L, requestId = id, kind = kind, payload = payload),
+    list(transportVersion = 11L, requestId = id, kind = kind, payload = payload),
     auto_unbox = TRUE,
     null = "null",
     na = "null"
@@ -719,7 +737,14 @@ unsupported_step <- dispatch(
   list(
     sessionId = rename_session_id,
     revision = 7L,
-    step = rename_step("duplicate", "ignored", kind = "formula"),
+    step = list(
+      id = "unsupported-step",
+      kind = "oneHotEncode",
+      params = list(
+        column = list(id = "r:c:1", name = "duplicate"),
+        prefix = "ignored"
+      )
+    ),
     page = page_window()
   )
 )
@@ -4866,8 +4891,18 @@ row_active_apply <- dispatch(
   "applyDraft",
   list(sessionId = row_active_view_session_id, revision = 1L, page = row_active_page)
 )
-row_active_code_lines <- strsplit(sub("\n$", "", row_active_apply$code), "\n", fixed = TRUE)[[1L]]
-if (length(row_active_code_lines) > 28L || nchar(row_active_apply$code, type = "bytes") > 1800L) {
+row_active_code_offset <- regexpr("  # Filter rows", row_active_apply$code, fixed = TRUE)[[1L]]
+row_active_operation_code <- substring(row_active_apply$code, row_active_code_offset)
+row_active_code_end <- regexpr("\n  .ow_result\n", row_active_operation_code, fixed = TRUE)[[1L]]
+if (row_active_code_end > 0L) {
+  row_active_operation_code <- substring(row_active_operation_code, 1L, row_active_code_end - 1L)
+}
+row_active_code_lines <- strsplit(sub("\n$", "", row_active_operation_code), "\n", fixed = TRUE)[[1L]]
+if (
+  row_active_code_offset < 1L ||
+    length(row_active_code_lines) > 16L ||
+    nchar(row_active_operation_code, type = "bytes") > 1000L
+) {
   stop("generated R filter code is no longer concise", call. = FALSE)
 }
 if (
@@ -5011,8 +5046,18 @@ row_tibble_result <- assert_native_row_sort_isolated(
   row_tibble_before,
   "score"
 )
-row_tibble_code_lines <- strsplit(sub("\n$", "", row_tibble_result$applied$code), "\n", fixed = TRUE)[[1L]]
-if (length(row_tibble_code_lines) > 32L || nchar(row_tibble_result$applied$code, type = "bytes") > 2250L) {
+row_tibble_code_offset <- regexpr("  # Sort rows", row_tibble_result$applied$code, fixed = TRUE)[[1L]]
+row_tibble_operation_code <- substring(row_tibble_result$applied$code, row_tibble_code_offset)
+row_tibble_code_end <- regexpr("\n  .ow_result\n", row_tibble_operation_code, fixed = TRUE)[[1L]]
+if (row_tibble_code_end > 0L) {
+  row_tibble_operation_code <- substring(row_tibble_operation_code, 1L, row_tibble_code_end - 1L)
+}
+row_tibble_code_lines <- strsplit(sub("\n$", "", row_tibble_operation_code), "\n", fixed = TRUE)[[1L]]
+if (
+  row_tibble_code_offset < 1L ||
+    length(row_tibble_code_lines) > 20L ||
+    nchar(row_tibble_operation_code, type = "bytes") > 1250L
+) {
   stop("generated R sort code is no longer concise", call. = FALSE)
 }
 if (
@@ -6355,6 +6400,3023 @@ assert_generated_scale_flavor(
   collapse::qDT(scale_flavor_source)
 )
 
+formula_step <- function(
+  id,
+  operator,
+  new_column,
+  left_position = 1L,
+  left_name = "left",
+  right_position = NULL,
+  right_name = NULL,
+  value = NULL
+) {
+  params <- list(
+    leftColumn = list(id = sprintf("r:c:%d", left_position - 1L), name = left_name),
+    operator = operator,
+    newColumn = new_column
+  )
+  if (!is.null(right_position)) {
+    params$rightColumn <- list(id = sprintf("r:c:%d", right_position - 1L), name = right_name)
+  }
+  if (!is.null(value)) params$value <- value
+  list(id = id, kind = "formula", params = params)
+}
+
+datetime_format_step <- function(id, position, name, format, new_column = NULL) {
+  params <- list(
+    column = list(id = sprintf("r:c:%d", position - 1L), name = name),
+    format = format
+  )
+  if (!is.null(new_column)) params$newColumn <- new_column
+  list(id = id, kind = "formatDatetime", params = params)
+}
+
+page_column_position <- function(response, name) {
+  match(name, vapply(response$page$schema, `[[`, character(1L), "name", USE.NAMES = FALSE))
+}
+
+numeric_page_values <- function(response, name) {
+  position <- page_column_position(response, name)
+  if (is.na(position)) stop(sprintf("page omitted numeric column %s", name), call. = FALSE)
+  vapply(response$page$page$rows, function(row) {
+    cell <- row$values[[position]]
+    if (identical(cell$kind, "null")) NA_real_ else as.double(cell$raw)
+  }, double(1L), USE.NAMES = FALSE)
+}
+
+text_page_values <- function(response, name) {
+  position <- page_column_position(response, name)
+  if (is.na(position)) stop(sprintf("page omitted text column %s", name), call. = FALSE)
+  vapply(response$page$page$rows, function(row) {
+    cell <- row$values[[position]]
+    if (identical(cell$kind, "null")) NA_character_ else as.character(cell$raw)
+  }, character(1L), USE.NAMES = FALSE)
+}
+
+source_environment$formula_frame <- data.frame(
+  left = c(8, -8, 9, NA_real_, 2),
+  right = c(2, 2, 3, 4, NA_real_),
+  whole = c(4L, -4L, 6L, NA_integer_, 2L),
+  text = c("a", "b", "c", "d", "e"),
+  row.names = paste0("formula-", seq_len(5L)),
+  check.names = FALSE
+)
+formula_before <- unserialize(serialize(source_environment$formula_frame, NULL, version = 3L))
+formula_open <- dispatch(
+  "openSession",
+  list(sessionId = formula_session_id, variableName = "formula_frame", page = page_window())
+)
+assert_identical(formula_open$kind, "page", "the R Formula session did not open")
+
+formula_extra_step <- formula_step("formula-extra", "add", "extra", right_position = 2L, right_name = "right")
+formula_extra_step$params$extra <- TRUE
+formula_extra <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = formula_extra_step,
+    page = page_window()
+  )
+)
+assert_identical(formula_extra$kind, "error", "R Formula accepted an unknown parameter")
+assert_identical(formula_extra$code, "invalid_request", "the R Formula exact-record diagnostic changed")
+
+formula_missing_operand <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = list(
+      id = "formula-missing-operand",
+      kind = "formula",
+      params = list(
+        leftColumn = list(id = "r:c:0", name = "left"),
+        operator = "add",
+        newColumn = "missing operand"
+      )
+    ),
+    page = page_window()
+  )
+)
+assert_identical(formula_missing_operand$kind, "error", "R Formula accepted no right operand")
+assert_identical(formula_missing_operand$code, "invalid_request", "the missing R Formula operand diagnostic changed")
+
+formula_both_operands_step <- formula_step(
+  "formula-both-operands",
+  "add",
+  "both operands",
+  right_position = 2L,
+  right_name = "right"
+)
+formula_both_operands_step$params$value <- 2
+formula_both_operands <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = formula_both_operands_step,
+    page = page_window()
+  )
+)
+assert_identical(formula_both_operands$kind, "error", "R Formula accepted both right operands")
+assert_identical(formula_both_operands$code, "invalid_request", "the ambiguous R Formula operand diagnostic changed")
+
+formula_bad_operator <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = formula_step("formula-bad-operator", "log", "bad operator", value = 2),
+    page = page_window()
+  )
+)
+assert_identical(formula_bad_operator$kind, "error", "R Formula accepted an unknown operator")
+assert_identical(formula_bad_operator$code, "invalid_request", "the R Formula operator diagnostic changed")
+
+formula_bad_scalar <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = formula_step("formula-bad-scalar", "add", "bad scalar", value = "2"),
+    page = page_window()
+  )
+)
+assert_identical(formula_bad_scalar$kind, "error", "R Formula accepted a non-numeric scalar")
+assert_identical(formula_bad_scalar$code, "invalid_request", "the R Formula scalar diagnostic changed")
+
+formula_legacy_step <- formula_step("formula-legacy", "add", "legacy", value = 2)
+formula_legacy_step$params$leftColumn <- "left"
+formula_legacy <- dispatch(
+  "previewStep",
+  list(sessionId = formula_session_id, revision = 0L, step = formula_legacy_step, page = page_window())
+)
+assert_identical(formula_legacy$kind, "error", "R Formula accepted a legacy string column")
+assert_identical(formula_legacy$code, "invalid_request", "the R Formula legacy-column diagnostic changed")
+
+formula_stale <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = formula_step(
+      "formula-stale",
+      "add",
+      "stale",
+      left_position = 2L,
+      left_name = "left",
+      value = 2
+    ),
+    page = page_window()
+  )
+)
+assert_identical(formula_stale$kind, "error", "R Formula accepted an ID/name mismatch")
+assert_identical(formula_stale$code, "stale_column", "the R Formula stale-column diagnostic changed")
+
+formula_text <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = formula_step(
+      "formula-text",
+      "add",
+      "text result",
+      left_position = 4L,
+      left_name = "text",
+      value = 2
+    ),
+    page = page_window()
+  )
+)
+assert_identical(formula_text$kind, "error", "R Formula accepted a text operand")
+assert_identical(formula_text$code, "invalid_request", "the R Formula type diagnostic changed")
+
+formula_collision <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = formula_step("formula-collision", "add", "right", value = 2),
+    page = page_window()
+  )
+)
+assert_identical(formula_collision$kind, "error", "R Formula overwrote an existing column")
+assert_identical(formula_collision$code, "invalid_request", "the R Formula collision diagnostic changed")
+
+formula_private <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = formula_step(
+      "formula-private",
+      "add",
+      "__OPEN_WRANGLER_INTERNAL_ROW_ID_public",
+      value = 2
+    ),
+    page = page_window()
+  )
+)
+assert_identical(formula_private$kind, "error", "R Formula exposed the private row-identity namespace")
+assert_identical(formula_private$code, "invalid_request", "the R Formula private-name diagnostic changed")
+
+formula_discard_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = 0L,
+    step = formula_step("formula-discard", "add", "discarded", value = 0.5),
+    page = page_window()
+  )
+)
+assert_identical(formula_discard_preview$kind, "stepPreview", "a scalar R Formula did not preview")
+assert_identical(formula_discard_preview$diff$addedColumns, list("discarded"), "the scalar R Formula diff changed")
+assert_identical(formula_discard_preview$diff$changedCells, 0L, "an appended R Formula reported changed cells")
+discarded_schema <- formula_discard_preview$page$schema[[5L]]
+assert_identical(discarded_schema$id, "c:step:formula-discard:0", "the R Formula output identity changed")
+assert_identical(discarded_schema$name, "discarded", "the R Formula output name changed")
+assert_identical(discarded_schema$rawType, "double", "the scalar R Formula output was not a double")
+assert_identical(discarded_schema$type, "float", "the scalar R Formula output type changed")
+assert_identical(discarded_schema$nullable, TRUE, "the scalar R Formula output was not conservatively nullable")
+assert_identical(
+  numeric_page_values(formula_discard_preview, "discarded"),
+  c(8.5, -7.5, 9.5, NA_real_, 2.5),
+  "live scalar R Formula values changed"
+)
+formula_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = formula_session_id, revision = formula_discard_preview$revision, page = page_window())
+)
+assert_identical(formula_discard$action, "discard", "the scalar R Formula draft did not discard")
+assert_identical(formula_discard$code, "", "discarding the only R Formula retained generated code")
+assert_identical(
+  any(vapply(formula_discard$page$schema, function(column) identical(column$name, "discarded"), logical(1L))),
+  FALSE,
+  "discarding R Formula retained its output column"
+)
+assert_identical(source_environment$formula_frame, formula_before, "discarding R Formula mutated its source")
+
+formula_operator_cases <- list(
+  list(operator = "add", expected = c(10, -6, 12, NA_real_, NA_real_)),
+  list(operator = "subtract", expected = c(6, -10, 6, NA_real_, NA_real_)),
+  list(operator = "multiply", expected = c(16, -16, 27, NA_real_, NA_real_)),
+  list(operator = "divide", expected = c(4, -4, 3, NA_real_, NA_real_)),
+  list(operator = "modulo", expected = c(0, 0, 0, NA_real_, NA_real_)),
+  list(operator = "power", expected = c(64, 64, 729, NA_real_, NA_real_))
+)
+formula_revision <- formula_discard$revision
+formula_last_apply <- NULL
+for (formula_case in formula_operator_cases) {
+  formula_step_id <- paste0("formula-", formula_case$operator)
+  formula_output_name <- paste0(formula_case$operator, " result")
+  formula_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = formula_session_id,
+      revision = formula_revision,
+      step = formula_step(
+        formula_step_id,
+        formula_case$operator,
+        formula_output_name,
+        right_position = 2L,
+        right_name = "right"
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(
+    formula_preview$kind,
+    "stepPreview",
+    sprintf("R Formula %s did not preview", formula_case$operator)
+  )
+  assert_identical(
+    formula_preview$diff$addedColumns,
+    list(formula_output_name),
+    sprintf("R Formula %s returned the wrong added-column diff", formula_case$operator)
+  )
+  formula_output_schema <- formula_preview$page$schema[[length(formula_preview$page$schema)]]
+  assert_identical(
+    formula_output_schema$id,
+    paste0("c:step:", formula_step_id, ":0"),
+    sprintf("R Formula %s returned the wrong stable identity", formula_case$operator)
+  )
+  assert_identical(
+    formula_output_schema$rawType,
+    "double",
+    sprintf("R Formula %s did not publish a double output", formula_case$operator)
+  )
+  assert_identical(
+    formula_output_schema$nullable,
+    TRUE,
+    sprintf("R Formula %s did not publish nullable output", formula_case$operator)
+  )
+  assert_identical(
+    numeric_page_values(formula_preview, formula_output_name),
+    formula_case$expected,
+    sprintf("live R Formula %s values changed", formula_case$operator)
+  )
+  formula_revision <- formula_preview$revision
+  formula_last_apply <- dispatch(
+    "applyDraft",
+    list(sessionId = formula_session_id, revision = formula_revision, page = page_window())
+  )
+  assert_identical(
+    formula_last_apply$action,
+    "apply",
+    sprintf("R Formula %s did not apply", formula_case$operator)
+  )
+  formula_revision <- formula_last_apply$revision
+}
+
+formula_scalar_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_session_id,
+    revision = formula_revision,
+    step = formula_step("formula-scalar", "subtract", "scalar result", value = 0.5),
+    page = page_window()
+  )
+)
+assert_identical(formula_scalar_preview$kind, "stepPreview", "the applied scalar R Formula did not preview")
+formula_revision <- formula_scalar_preview$revision
+formula_scalar_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_session_id, revision = formula_revision, page = page_window())
+)
+assert_identical(formula_scalar_apply$action, "apply", "the scalar R Formula did not apply")
+formula_revision <- formula_scalar_apply$revision
+
+formula_inspection <- inspect_step(
+  formula_session_id,
+  formula_revision,
+  "formula-power",
+  page_window()
+)
+assert_identical(formula_inspection$diff$changedCells, 0L, "R Formula history reported changed source cells")
+assert_identical(
+  setdiff(
+    unlist(formula_inspection$outputPage$page$columnIds, use.names = FALSE),
+    unlist(formula_inspection$inputPage$page$columnIds, use.names = FALSE)
+  ),
+  "c:step:formula-power:0",
+  "R Formula history lost its stable output identity"
+)
+assert_schema_less_inspection(formula_inspection, "R Formula inspection")
+
+assign("formula_frame", source_environment$formula_frame, envir = .GlobalEnv)
+eval(parse(text = formula_scalar_apply$code), envir = .GlobalEnv)
+formula_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+for (formula_case in formula_operator_cases) {
+  output_name <- paste0(formula_case$operator, " result")
+  assert_identical(
+    formula_generated[[output_name]],
+    formula_case$expected,
+    sprintf("generated R Formula %s values changed", formula_case$operator)
+  )
+}
+assert_identical(
+  formula_generated$`scalar result`,
+  c(7.5, -8.5, 8.5, NA_real_, 1.5),
+  "generated scalar R Formula values changed"
+)
+assert_identical(row.names(formula_generated), row.names(formula_before), "generated R Formula changed row names")
+assert_identical(get("formula_frame", envir = .GlobalEnv), formula_before, "generated R Formula mutated its source")
+assert_identical(source_environment$formula_frame, formula_before, "the R Formula lifecycle mutated its source")
+rm("formula_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+formula_global_override <- function(...) {
+  base::stop("a global generated-code override was evaluated", call. = FALSE)
+}
+formula_global_override_names <- c(
+  "+",
+  "get",
+  "local",
+  "evalq",
+  "list2env",
+  "environment",
+  "baseenv",
+  "is.data.frame",
+  "class",
+  "attributes",
+  "names",
+  "length",
+  "serialize",
+  "unserialize",
+  "inherits",
+  "requireNamespace",
+  "format.Date"
+)
+formula_global_helper_names <- c(
+  ".ow_source_environment",
+  ".ow_source",
+  ".ow_result",
+  ".ow_source_column_count",
+  ".ow_source_names",
+  ".ow_formula_left",
+  ".ow_formula_right",
+  ".ow_formula_values"
+)
+base::assign("formula_frame", formula_before, envir = .GlobalEnv)
+for (override_name in formula_global_override_names) {
+  base::assign(override_name, formula_global_override, envir = .GlobalEnv)
+}
+for (helper_name in formula_global_helper_names) {
+  base::assign(helper_name, "caller helper collision", envir = .GlobalEnv)
+}
+base::eval(base::parse(text = formula_scalar_apply$code), envir = .GlobalEnv)
+formula_hijack_generated <- base::get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+formula_hijack_source <- base::get("formula_frame", envir = .GlobalEnv, inherits = FALSE)
+base::rm(
+  list = c(
+    formula_global_override_names,
+    formula_global_helper_names,
+    "formula_frame",
+    "open_wrangler_result"
+  ),
+  envir = .GlobalEnv
+)
+assert_identical(
+  formula_hijack_generated$`add result`,
+  c(10, -6, 12, NA_real_, NA_real_),
+  "generated R Formula used a global + override"
+)
+assert_identical(
+  formula_hijack_generated$`scalar result`,
+  c(7.5, -8.5, 8.5, NA_real_, 1.5),
+  "generated scalar R Formula used a caller override"
+)
+assert_identical(formula_hijack_source, formula_before, "caller-isolated generated R Formula mutated its source")
+
+formula_subclass_source <- formula_before
+base::class(formula_subclass_source) <- c("evil_frame", "data.frame")
+formula_subclass_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_subclass_source, envir = formula_subclass_environment)
+formula_subclass_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_subclass_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_subclass_error),
+  "Open Wrangler generated R supports only a base data.frame, tibble, or data.table without subclasses",
+  "generated R Formula accepted an unsupported dataframe subclass"
+)
+assert_identical(
+  base::exists("open_wrangler_result", envir = formula_subclass_environment, inherits = FALSE),
+  FALSE,
+  "a rejected dataframe subclass published a generated R result"
+)
+
+formula_attribute_source <- formula_before
+base::attr(formula_attribute_source, "evil") <- "unsupported"
+formula_attribute_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_attribute_source, envir = formula_attribute_environment)
+formula_attribute_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_attribute_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_attribute_error),
+  "Open Wrangler generated R received unsupported dataframe attributes: evil",
+  "generated R Formula accepted unsupported dataframe attributes"
+)
+assert_identical(
+  base::exists("open_wrangler_result", envir = formula_attribute_environment, inherits = FALSE),
+  FALSE,
+  "rejected dataframe attributes published a generated R result"
+)
+
+formula_name_source <- formula_before
+base::names(formula_name_source)[[3L]] <- NA_character_
+formula_name_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_name_source, envir = formula_name_environment)
+formula_name_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_name_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_name_error),
+  "Open Wrangler generated R requires non-missing UTF-8 source column names",
+  "generated R Formula accepted an invalid source column name"
+)
+assert_identical(
+  base::exists("open_wrangler_result", envir = formula_name_environment, inherits = FALSE),
+  FALSE,
+  "an invalid source column name published a generated R result"
+)
+
+formula_active_environment <- new.env(parent = baseenv())
+formula_active_binding_called <- FALSE
+makeActiveBinding(
+  "formula_frame",
+  function(value) {
+    formula_active_binding_called <<- TRUE
+    formula_before
+  },
+  formula_active_environment
+)
+formula_active_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_active_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_active_error),
+  "Open Wrangler generated R does not accept an active source binding",
+  "generated R Formula evaluated an active source binding"
+)
+assert_identical(formula_active_binding_called, FALSE, "generated R Formula executed an active source binding")
+assert_identical(
+  base::exists("open_wrangler_result", envir = formula_active_environment, inherits = FALSE),
+  FALSE,
+  "an active source binding published a generated R result"
+)
+
+formula_active_result_environment <- new.env(parent = baseenv())
+formula_active_result_called <- FALSE
+base::assign("formula_frame", formula_before, envir = formula_active_result_environment)
+makeActiveBinding(
+  "open_wrangler_result",
+  function(value) {
+    if (missing(value)) return(NULL)
+    formula_active_result_called <<- TRUE
+    base::assign("formula_frame", data.frame(left = 999), envir = formula_active_result_environment)
+    invisible(NULL)
+  },
+  formula_active_result_environment
+)
+formula_active_result_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_active_result_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_active_result_error),
+  "Open Wrangler generated R does not accept an active result binding",
+  "generated R Formula evaluated an active result binding"
+)
+assert_identical(formula_active_result_called, FALSE, "generated R Formula executed an active result binding")
+assert_identical(
+  base::get("formula_frame", envir = formula_active_result_environment, inherits = FALSE),
+  formula_before,
+  "an active result binding mutated the generated R source"
+)
+
+formula_delayed_result_environment <- new.env(parent = baseenv())
+formula_delayed_result_called <- FALSE
+formula_delayed_result_stolen <- NULL
+base::delayedAssign(
+  "formula_frame",
+  {
+    base::makeActiveBinding(
+      "open_wrangler_result",
+      function(value) {
+        if (missing(value)) return(NULL)
+        formula_delayed_result_called <<- TRUE
+        formula_delayed_result_stolen <<- value
+        invisible(NULL)
+      },
+      formula_delayed_result_environment
+    )
+    formula_before
+  },
+  eval.env = .GlobalEnv,
+  assign.env = formula_delayed_result_environment
+)
+formula_delayed_result_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_delayed_result_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_delayed_result_error),
+  "Open Wrangler generated R does not accept an active result binding",
+  "a delayed source promise installed an active generated-result binding"
+)
+assert_identical(formula_delayed_result_called, FALSE, "generated R leaked its result to a delayed active binding")
+assert_identical(formula_delayed_result_stolen, NULL, "a delayed active binding captured the generated R result")
+assert_identical(
+  base::get("formula_frame", envir = formula_delayed_result_environment, inherits = FALSE),
+  formula_before,
+  "a delayed source promise changed the generated R source"
+)
+base::rm("open_wrangler_result", envir = formula_delayed_result_environment)
+
+formula_result_name_session_id <- "aaaabbbb-cccc-4ddd-8eee-ffff00001111"
+source_environment$open_wrangler_result <- formula_before
+formula_result_name_before <- serialize(source_environment$open_wrangler_result, NULL, version = 3L)
+formula_result_name_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = formula_result_name_session_id,
+    variableName = "open_wrangler_result",
+    page = page_window()
+  )
+)
+assert_identical(formula_result_name_open$kind, "page", "the same-name Formula session did not open")
+formula_result_name_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_result_name_session_id,
+    revision = 0L,
+    step = formula_step("formula-result-name", "add", "same-name result", value = 1),
+    page = page_window()
+  )
+)
+assert_identical(formula_result_name_preview$kind, "stepPreview", "the same-name Formula did not preview")
+formula_result_name_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_result_name_session_id, revision = 1L, page = page_window())
+)
+assert_identical(formula_result_name_apply$kind, "planUpdated", "the same-name Formula did not apply")
+formula_result_name_environment <- new.env(parent = baseenv())
+base::assign("open_wrangler_result", formula_before, envir = formula_result_name_environment)
+base::eval(base::parse(text = formula_result_name_apply$code), envir = formula_result_name_environment)
+assert_identical(
+  serialize(base::get("open_wrangler_result", envir = formula_result_name_environment), NULL, version = 3L),
+  formula_result_name_before,
+  "generated R overwrote a source named open_wrangler_result"
+)
+assert_identical(
+  base::get("open_wrangler_result_2", envir = formula_result_name_environment)$`same-name result`,
+  c(9, -7, 10, NA_real_, 3),
+  "generated R did not publish the same-name source result separately"
+)
+if (!grepl('.ow_publication_name <- "open_wrangler_result_2"', formula_result_name_apply$code, fixed = TRUE)) {
+  stop("generated R did not declare its alternate same-name result binding", call. = FALSE)
+}
+formula_result_name_active_environment <- new.env(parent = baseenv())
+formula_result_name_active_called <- FALSE
+base::assign("open_wrangler_result", formula_before, envir = formula_result_name_active_environment)
+base::makeActiveBinding(
+  "open_wrangler_result_2",
+  function(value) {
+    if (missing(value)) return(NULL)
+    formula_result_name_active_called <<- TRUE
+    invisible(NULL)
+  },
+  formula_result_name_active_environment
+)
+formula_result_name_active_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_result_name_apply$code), envir = formula_result_name_active_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_result_name_active_error),
+  "Open Wrangler generated R does not accept an active result binding",
+  "generated R accepted an active alternate result binding"
+)
+assert_identical(formula_result_name_active_called, FALSE, "the alternate active result setter was invoked")
+assert_identical(
+  base::get("open_wrangler_result", envir = formula_result_name_active_environment),
+  formula_before,
+  "an alternate active result binding changed the same-name source"
+)
+invisible(dispatch("closeSession", list(sessionId = formula_result_name_session_id)))
+
+formula_column_attribute_source <- formula_before
+base::attr(formula_column_attribute_source$text, "evil") <- "unsupported"
+formula_column_attribute_before <- serialize(formula_column_attribute_source, NULL, version = 3L)
+formula_column_attribute_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_column_attribute_source, envir = formula_column_attribute_environment)
+formula_column_attribute_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_column_attribute_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_column_attribute_error),
+  "Open Wrangler generated R received unsupported attributes on source column 4: evil",
+  "generated R Formula accepted unsupported attributes on an untouched source column"
+)
+assert_identical(
+  serialize(base::get("formula_frame", envir = formula_column_attribute_environment), NULL, version = 3L),
+  formula_column_attribute_before,
+  "a rejected source-column attribute mutated the generated R source"
+)
+assert_identical(
+  base::exists("open_wrangler_result", envir = formula_column_attribute_environment, inherits = FALSE),
+  FALSE,
+  "rejected source-column attributes published a generated R result"
+)
+
+formula_column_class_source <- formula_before
+base::class(formula_column_class_source$text) <- c("evil_character", "character")
+formula_column_class_before <- serialize(formula_column_class_source, NULL, version = 3L)
+formula_column_class_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_column_class_source, envir = formula_column_class_environment)
+formula_column_class_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_column_class_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_column_class_error),
+  "Open Wrangler generated R received an unsupported type or class on source column 4",
+  "generated R Formula accepted an unsupported class on an untouched source column"
+)
+assert_identical(
+  serialize(base::get("formula_frame", envir = formula_column_class_environment), NULL, version = 3L),
+  formula_column_class_before,
+  "a rejected source-column class mutated the generated R source"
+)
+
+formula_column_type_source <- formula_before
+formula_column_type_source$text <- as.list(formula_column_type_source$text)
+formula_column_type_before <- serialize(formula_column_type_source, NULL, version = 3L)
+formula_column_type_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_column_type_source, envir = formula_column_type_environment)
+formula_column_type_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_column_type_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_column_type_error),
+  "Open Wrangler generated R received an unsupported type or class on source column 4",
+  "generated R Formula accepted an unsupported list source column"
+)
+assert_identical(
+  serialize(base::get("formula_frame", envir = formula_column_type_environment), NULL, version = 3L),
+  formula_column_type_before,
+  "a rejected source-column type mutated the generated R source"
+)
+
+for (formula_bad_row_names in list(
+  rep("duplicate", nrow(formula_before)),
+  c(paste0("row-", seq_len(nrow(formula_before) - 1L)), NA_character_)
+)) {
+  formula_row_name_source <- formula_before
+  base::attr(formula_row_name_source, "row.names") <- formula_bad_row_names
+  formula_row_name_before <- serialize(formula_row_name_source, NULL, version = 3L)
+  formula_row_name_environment <- new.env(parent = baseenv())
+  base::assign("formula_frame", formula_row_name_source, envir = formula_row_name_environment)
+  formula_row_name_error <- tryCatch(
+    {
+      base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_row_name_environment)
+      NULL
+    },
+    error = identity
+  )
+  assert_identical(
+    conditionMessage(formula_row_name_error),
+    "Open Wrangler generated R received malformed row names",
+    "generated R Formula accepted malformed row names"
+  )
+  assert_identical(
+    serialize(base::get("formula_frame", envir = formula_row_name_environment), NULL, version = 3L),
+    formula_row_name_before,
+    "rejected generated R row names mutated their source"
+  )
+  assert_identical(
+    base::exists("open_wrangler_result", envir = formula_row_name_environment, inherits = FALSE),
+    FALSE,
+    "malformed row names published a generated R result"
+  )
+}
+
+formula_empty_row_name_source <- formula_before
+row.names(formula_empty_row_name_source) <- c("", paste0("explicit-", seq_len(nrow(formula_before) - 1L)))
+formula_empty_row_name_before <- serialize(formula_empty_row_name_source, NULL, version = 3L)
+formula_empty_row_name_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_empty_row_name_source, envir = formula_empty_row_name_environment)
+base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_empty_row_name_environment)
+formula_empty_row_name_generated <- base::get(
+  "open_wrangler_result",
+  envir = formula_empty_row_name_environment,
+  inherits = FALSE
+)
+assert_identical(
+  row.names(formula_empty_row_name_generated),
+  row.names(formula_empty_row_name_source),
+  "generated R Formula rejected or changed a valid explicit empty row name"
+)
+assert_identical(
+  serialize(base::get("formula_frame", envir = formula_empty_row_name_environment), NULL, version = 3L),
+  formula_empty_row_name_before,
+  "generated R Formula mutated a source with an explicit empty row name"
+)
+
+formula_explicit_sequence_source <- formula_before
+base::attr(
+  formula_explicit_sequence_source,
+  "row.names"
+) <- c(NA_integer_, nrow(formula_explicit_sequence_source))
+formula_explicit_sequence_before <- serialize(formula_explicit_sequence_source, NULL, version = 3L)
+formula_explicit_sequence_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_explicit_sequence_source, envir = formula_explicit_sequence_environment)
+base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_explicit_sequence_environment)
+formula_explicit_sequence_generated <- base::get(
+  "open_wrangler_result",
+  envir = formula_explicit_sequence_environment,
+  inherits = FALSE
+)
+assert_identical(
+  row.names(formula_explicit_sequence_generated),
+  row.names(formula_explicit_sequence_source),
+  "generated R Formula rejected valid explicit sequential integer row names"
+)
+assert_identical(
+  serialize(base::get("formula_frame", envir = formula_explicit_sequence_environment), NULL, version = 3L),
+  formula_explicit_sequence_before,
+  "generated R Formula mutated explicit sequential integer row names"
+)
+
+formula_attributed_names_source <- formula_before
+base::attr(
+  formula_attributed_names_source,
+  "names"
+) <- base::structure(base::names(formula_attributed_names_source), class = "accepted_frame_names")
+base::attr(
+  formula_attributed_names_source,
+  "row.names"
+) <- base::structure(base::row.names(formula_attributed_names_source), class = "accepted_row_names")
+formula_attributed_names_before <- serialize(formula_attributed_names_source, NULL, version = 3L)
+formula_attributed_names_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_attributed_names_source, envir = formula_attributed_names_environment)
+base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_attributed_names_environment)
+formula_attributed_names_generated <- base::get(
+  "open_wrangler_result",
+  envir = formula_attributed_names_environment,
+  inherits = FALSE
+)
+assert_identical(
+  formula_attributed_names_generated$`scalar result`,
+  c(7.5, -8.5, 8.5, NA_real_, 1.5),
+  "generated R Formula rejected live-supported attributed frame or row names"
+)
+assert_identical(
+  serialize(base::get("formula_frame", envir = formula_attributed_names_environment), NULL, version = 3L),
+  formula_attributed_names_before,
+  "generated R Formula mutated a source with attributed frame or row names"
+)
+
+formula_factor_payload_budget <- 16L * 1024L * 1024L
+formula_factor_level_bytes <- 8190L
+formula_factor_boundary_count <- 2047L
+formula_factor_levels <- paste0(
+  sprintf("%04d", seq_len(formula_factor_boundary_count + 1L)),
+  strrep("x", formula_factor_level_bytes - 4L)
+)
+formula_factor_metadata_base <- 1024L + 5L * 512L
+assert_identical(
+  formula_factor_metadata_base +
+    formula_factor_boundary_count * (formula_factor_level_bytes + 3L) <= formula_factor_payload_budget,
+  TRUE,
+  "the generated factor-metadata boundary fixture no longer fits the payload budget"
+)
+assert_identical(
+  formula_factor_metadata_base +
+    (formula_factor_boundary_count + 1L) * (formula_factor_level_bytes + 3L) > formula_factor_payload_budget,
+  TRUE,
+  "the oversized generated factor-metadata fixture no longer exceeds the payload budget"
+)
+formula_factor_boundary_source <- formula_before
+formula_factor_boundary_source$factor <- base::structure(
+  seq_len(nrow(formula_factor_boundary_source)),
+  levels = formula_factor_levels[seq_len(formula_factor_boundary_count)],
+  class = "factor"
+)
+formula_factor_boundary_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_factor_boundary_source, envir = formula_factor_boundary_environment)
+base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_factor_boundary_environment)
+formula_factor_boundary_generated <- base::get(
+  "open_wrangler_result",
+  envir = formula_factor_boundary_environment,
+  inherits = FALSE
+)
+assert_identical(
+  levels(formula_factor_boundary_generated$factor),
+  levels(formula_factor_boundary_source$factor),
+  "generated R Formula rejected factor metadata below its aggregate payload budget"
+)
+assert_identical(
+  base::get("formula_frame", envir = formula_factor_boundary_environment, inherits = FALSE),
+  formula_factor_boundary_source,
+  "generated R Formula mutated factor metadata at the aggregate payload boundary"
+)
+
+formula_factor_oversized_source <- formula_factor_boundary_source
+base::attr(formula_factor_oversized_source$factor, "levels") <- formula_factor_levels
+formula_factor_oversized_environment <- new.env(parent = baseenv())
+base::assign("formula_frame", formula_factor_oversized_source, envir = formula_factor_oversized_environment)
+formula_factor_oversized_error <- tryCatch(
+  {
+    base::eval(base::parse(text = formula_scalar_apply$code), envir = formula_factor_oversized_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(formula_factor_oversized_error),
+  "Open Wrangler generated R received factor metadata above the 16777216-byte payload budget",
+  "generated R Formula accepted factor metadata above its aggregate payload budget"
+)
+assert_identical(
+  base::get("formula_frame", envir = formula_factor_oversized_environment, inherits = FALSE),
+  formula_factor_oversized_source,
+  "rejected oversized factor metadata mutated the generated R source"
+)
+assert_identical(
+  base::exists("open_wrangler_result", envir = formula_factor_oversized_environment, inherits = FALSE),
+  FALSE,
+  "oversized factor metadata published a generated R result"
+)
+rm(
+  formula_factor_levels,
+  formula_factor_boundary_source,
+  formula_factor_boundary_environment,
+  formula_factor_boundary_generated,
+  formula_factor_oversized_source,
+  formula_factor_oversized_environment
+)
+
+formula_undo <- dispatch(
+  "undoStep",
+  list(sessionId = formula_session_id, revision = formula_revision, page = page_window())
+)
+assert_identical(formula_undo$action, "undo", "the scalar R Formula did not undo")
+assert_identical(
+  any(vapply(formula_undo$page$schema, function(column) identical(column$name, "scalar result"), logical(1L))),
+  FALSE,
+  "undo retained the scalar R Formula output"
+)
+assert_identical(
+  any(vapply(formula_undo$page$schema, function(column) identical(column$name, "power result"), logical(1L))),
+  TRUE,
+  "undo removed more than the latest R Formula step"
+)
+invisible(dispatch("closeSession", list(sessionId = formula_session_id)))
+
+source_environment$formula_integer64_frame <- data.frame(
+  wide = bit64::as.integer64(c("9007199254740993", "-9007199254740993", NA)),
+  delta = bit64::as.integer64(c("2", "3", "4")),
+  check.names = FALSE
+)
+class(source_environment$formula_integer64_frame) <- NULL
+attr(source_environment$formula_integer64_frame$wide, "names") <- c("wide-a", "wide-b", "wide-c")
+attr(source_environment$formula_integer64_frame$delta, "names") <- c("wide-a", "wide-b", "wide-c")
+class(source_environment$formula_integer64_frame) <- "data.frame"
+formula_integer64_before <- unserialize(serialize(
+  source_environment$formula_integer64_frame,
+  NULL,
+  version = 3L
+))
+formula_integer64_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = formula_integer64_session_id,
+    variableName = "formula_integer64_frame",
+    page = page_window()
+  )
+)
+assert_identical(formula_integer64_open$kind, "page", "the integer64 R Formula session did not open")
+formula_integer64_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_integer64_session_id,
+    revision = 0L,
+    step = formula_step(
+      "formula-integer64-add",
+      "add",
+      "exact sum",
+      left_name = "wide",
+      right_position = 2L,
+      right_name = "delta"
+    ),
+    page = page_window()
+  )
+)
+assert_identical(formula_integer64_preview$kind, "stepPreview", "integer64 R Formula did not preview")
+assert_identical(
+  formula_integer64_preview$diff$addedColumns,
+  list("exact sum"),
+  "integer64 R Formula returned the wrong diff"
+)
+formula_integer64_schema <- formula_integer64_preview$page$schema[[3L]]
+assert_identical(formula_integer64_schema$id, "c:step:formula-integer64-add:0", "integer64 R Formula changed its output identity")
+assert_identical(formula_integer64_schema$rawType, "integer64", "integer64 R Formula narrowed its output")
+assert_identical(formula_integer64_schema$nullable, TRUE, "integer64 R Formula lost output nullability")
+formula_integer64_preview_values <- vapply(
+  formula_integer64_preview$page$page$rows,
+  function(row) {
+    cell <- row$values[[3L]]
+    if (identical(cell$kind, "null")) NA_character_ else as.character(cell$raw)
+  },
+  character(1L),
+  USE.NAMES = FALSE
+)
+assert_identical(
+  formula_integer64_preview_values,
+  c("9007199254740995", "-9007199254740990", NA_character_),
+  "live integer64 R Formula lost exact values"
+)
+formula_integer64_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_integer64_session_id, revision = 1L, page = page_window())
+)
+assert_identical(formula_integer64_apply$action, "apply", "integer64 R Formula did not apply")
+assert_identical(
+  vapply(
+    formula_integer64_apply$page$page$rows,
+    function(row) {
+      cell <- row$values[[3L]]
+      if (identical(cell$kind, "null")) NA_character_ else as.character(cell$raw)
+    },
+    character(1L),
+    USE.NAMES = FALSE
+  ),
+  formula_integer64_preview_values,
+  "applied integer64 R Formula disagreed with its preview"
+)
+formula_integer64_s3_ops <- c("+", "-", "*", "%%", "/", "^", "[<-")
+formula_integer64_s3_methods <- list(
+  ops = setNames(lapply(formula_integer64_s3_ops, getS3method, class = "integer64"), formula_integer64_s3_ops),
+  as_double = getS3method("as.double", "integer64"),
+  is_na = getS3method("is.na", "integer64")
+)
+on.exit({
+  for (generic in formula_integer64_s3_ops) {
+    registerS3method(generic, "integer64", formula_integer64_s3_methods$ops[[generic]], envir = .GlobalEnv)
+  }
+  registerS3method("as.double", "integer64", formula_integer64_s3_methods$as_double, envir = .GlobalEnv)
+  registerS3method("is.na", "integer64", formula_integer64_s3_methods$is_na, envir = .GlobalEnv)
+}, add = TRUE)
+for (generic in formula_integer64_s3_ops) {
+  registerS3method(
+    generic,
+    "integer64",
+    function(...) stop("poisoned registered integer64 operation", call. = FALSE),
+    envir = .GlobalEnv
+  )
+}
+registerS3method(
+  "as.double",
+  "integer64",
+  function(x, ...) stop("poisoned registered integer64 conversion", call. = FALSE),
+  envir = .GlobalEnv
+)
+registerS3method("is.na", "integer64", function(x) rep.int(FALSE, length(x)), envir = .GlobalEnv)
+formula_integer64_safe_character <- get(
+  "as.character.integer64",
+  envir = asNamespace("bit64"),
+  inherits = FALSE
+)
+formula_integer64_poisoned_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_integer64_session_id,
+    revision = 2L,
+    step = formula_step(
+      "formula-integer64-poisoned-add",
+      "add",
+      "poison-proof sum",
+      left_name = "wide",
+      right_position = 2L,
+      right_name = "delta"
+    ),
+    page = page_window()
+  )
+)
+assert_identical(
+  formula_integer64_poisoned_preview$kind,
+  "stepPreview",
+  "live integer64 R Formula used poisoned registered S3 methods"
+)
+assert_identical(
+  vapply(
+    formula_integer64_poisoned_preview$page$page$rows,
+    function(row) {
+      cell <- row$values[[4L]]
+      if (identical(cell$kind, "null")) NA_character_ else as.character(cell$raw)
+    },
+    character(1L),
+    USE.NAMES = FALSE
+  ),
+  formula_integer64_preview_values,
+  "live integer64 R Formula changed under registered S3 poisoning"
+)
+formula_integer64_poisoned_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_integer64_session_id, revision = 3L, page = page_window())
+)
+assert_identical(
+  formula_integer64_poisoned_apply$action,
+  "apply",
+  "live integer64 R Formula could not apply under registered S3 poisoning"
+)
+formula_integer64_divide_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_integer64_session_id,
+    revision = 4L,
+    step = formula_step(
+      "formula-integer64-poisoned-divide",
+      "divide",
+      "poison-proof division",
+      left_name = "wide",
+      value = 2L
+    ),
+    page = page_window()
+  )
+)
+assert_identical(
+  numeric_page_values(formula_integer64_divide_preview, "poison-proof division"),
+  c(4503599627370496, -4503599627370496, NA_real_),
+  "live integer64 R Formula used poisoned registered conversion"
+)
+formula_integer64_divide_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_integer64_session_id, revision = 5L, page = page_window())
+)
+assert_identical(
+  formula_integer64_divide_apply$action,
+  "apply",
+  "integer64 division could not apply under registered S3 poisoning"
+)
+formula_integer64_power_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_integer64_session_id,
+    revision = 6L,
+    step = formula_step(
+      "formula-integer64-named-power",
+      "power",
+      "named power",
+      left_position = 2L,
+      left_name = "delta",
+      value = 2L
+    ),
+    page = page_window()
+  )
+)
+assert_identical(
+  formula_integer64_power_preview$kind,
+  "stepPreview",
+  "live named integer64 power did not preview"
+)
+formula_integer64_power_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_integer64_session_id, revision = 7L, page = page_window())
+)
+assert_identical(formula_integer64_power_apply$action, "apply", "named integer64 power did not apply")
+formula_integer64_mixed_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_integer64_session_id,
+    revision = 8L,
+    step = formula_step(
+      "formula-integer64-named-mixed",
+      "add",
+      "named mixed",
+      left_name = "wide",
+      value = 0.5
+    ),
+    page = page_window()
+  )
+)
+assert_identical(
+  numeric_page_values(formula_integer64_mixed_preview, "named mixed"),
+  c(9007199254740992, -9007199254740992, NA_real_),
+  "live named mixed-double Formula changed values"
+)
+formula_integer64_mixed_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_integer64_session_id, revision = 9L, page = page_window())
+)
+assert_identical(formula_integer64_mixed_apply$action, "apply", "named mixed-double Formula did not apply")
+assign("formula_integer64_frame", source_environment$formula_integer64_frame, envir = .GlobalEnv)
+eval(parse(text = formula_integer64_mixed_apply$code), envir = .GlobalEnv)
+formula_integer64_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(class(formula_integer64_generated$`exact sum`), "integer64", "generated integer64 R Formula changed type")
+assert_identical(
+  unname(formula_integer64_safe_character(formula_integer64_generated$`exact sum`)),
+  formula_integer64_preview_values,
+  "generated integer64 R Formula disagreed with live execution"
+)
+assert_identical(
+  unname(formula_integer64_safe_character(formula_integer64_generated$`exact sum`)),
+  formula_integer64_preview_values,
+  "generated integer64 R Formula used poisoned registered S3 methods"
+)
+assert_identical(
+  attr(formula_integer64_generated$`exact sum`, "names", exact = TRUE),
+  c("wide-a", "wide-b", "wide-c"),
+  "generated integer64 R Formula did not preserve aligned names"
+)
+assert_identical(
+  unname(formula_integer64_generated$`poison-proof division`),
+  c(4503599627370496, -4503599627370496, NA_real_),
+  "generated integer64 R Formula used poisoned registered conversion"
+)
+assert_identical(attr(formula_integer64_generated$`poison-proof division`, "names", exact = TRUE), c("wide-a", "wide-b", "wide-c"), "generated division lost aligned names")
+assert_identical(unname(formula_integer64_generated$`named power`), c(4, 9, 16), "generated integer64 power changed values")
+assert_identical(attr(formula_integer64_generated$`named power`, "names", exact = TRUE), c("wide-a", "wide-b", "wide-c"), "generated integer64 power lost aligned names")
+assert_identical(unname(formula_integer64_generated$`named mixed`), c(9007199254740992, -9007199254740992, NA_real_), "generated mixed-double Formula changed values")
+assert_identical(attr(formula_integer64_generated$`named mixed`, "names", exact = TRUE), c("wide-a", "wide-b", "wide-c"), "generated mixed-double Formula lost aligned names")
+formula_integer64_child_bundle <- tempfile(fileext = ".rds")
+formula_integer64_child_script <- tempfile(fileext = ".R")
+saveRDS(
+  list(frame = source_environment$formula_integer64_frame, code = formula_integer64_mixed_apply$code),
+  formula_integer64_child_bundle,
+  version = 3L
+)
+writeLines(c(
+  "local({",
+  "  arguments <- commandArgs(trailingOnly = TRUE)",
+  "  if (isNamespaceLoaded(\"bit64\")) stop(\"bit64 was already loaded in the cold generated-Formula child\", call. = FALSE)",
+  "  bundle <- readRDS(arguments[[1L]])",
+  "  if (isNamespaceLoaded(\"bit64\")) stop(\"readRDS unexpectedly loaded bit64 in the generated-Formula child\", call. = FALSE)",
+  "  assign(\"formula_integer64_frame\", bundle$frame, envir = .GlobalEnv)",
+  "  eval(parse(text = bundle$code), envir = .GlobalEnv)",
+  "  cold <- get(\"open_wrangler_result\", envir = .GlobalEnv, inherits = FALSE)",
+  "  safe_character <- get(\"as.character.integer64\", envir = asNamespace(\"bit64\"), inherits = FALSE)",
+  "  if (!identical(unname(safe_character(cold$`exact sum`)), c(\"9007199254740995\", \"-9007199254740990\", NA_character_)) || !identical(unname(cold$`poison-proof division`), c(4503599627370496, -4503599627370496, NA_real_)) || !identical(attr(cold$`poison-proof division`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\")) || !identical(unname(cold$`named power`), c(4, 9, 16)) || !identical(attr(cold$`named power`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\")) || !identical(unname(cold$`named mixed`), c(9007199254740992, -9007199254740992, NA_real_)) || !identical(attr(cold$`named mixed`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\"))) stop(\"cold generated integer64 Formula changed values or names\", call. = FALSE)",
+  "  rm(\"open_wrangler_result\", envir = .GlobalEnv)",
+  "  unloadNamespace(\"bit64\")",
+  "  requireNamespace(\"bit64\", quietly = TRUE)",
+  "  generics <- c(\"+\", \"-\", \"*\", \"%%\", \"/\", \"^\", \"[<-\")",
+  "  methods <- setNames(lapply(generics, getS3method, class = \"integer64\"), generics)",
+  "  conversion <- getS3method(\"as.double\", \"integer64\")",
+  "  missingness <- getS3method(\"is.na\", \"integer64\")",
+  "  on.exit({ for (generic in generics) registerS3method(generic, \"integer64\", methods[[generic]], envir = .GlobalEnv); registerS3method(\"as.double\", \"integer64\", conversion, envir = .GlobalEnv); registerS3method(\"is.na\", \"integer64\", missingness, envir = .GlobalEnv) }, add = TRUE)",
+  "  for (generic in generics) registerS3method(generic, \"integer64\", function(...) stop(\"poisoned integer64 S3 method\", call. = FALSE), envir = .GlobalEnv)",
+  "  registerS3method(\"as.double\", \"integer64\", function(...) stop(\"poisoned integer64 conversion\", call. = FALSE), envir = .GlobalEnv)",
+  "  registerS3method(\"is.na\", \"integer64\", function(x) rep.int(FALSE, length(x)), envir = .GlobalEnv)",
+  "  eval(parse(text = bundle$code), envir = .GlobalEnv)",
+  "  poisoned <- get(\"open_wrangler_result\", envir = .GlobalEnv, inherits = FALSE)",
+  "  safe_character <- get(\"as.character.integer64\", envir = asNamespace(\"bit64\"), inherits = FALSE)",
+  "  if (!identical(unname(safe_character(poisoned$`exact sum`)), c(\"9007199254740995\", \"-9007199254740990\", NA_character_)) || !identical(attr(poisoned$`exact sum`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\")) || !identical(unname(poisoned$`poison-proof division`), c(4503599627370496, -4503599627370496, NA_real_)) || !identical(attr(poisoned$`poison-proof division`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\")) || !identical(unname(poisoned$`named power`), c(4, 9, 16)) || !identical(attr(poisoned$`named power`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\")) || !identical(unname(poisoned$`named mixed`), c(9007199254740992, -9007199254740992, NA_real_)) || !identical(attr(poisoned$`named mixed`, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\"))) stop(\"generated integer64 Formula used poisoned S3 methods or lost names\", call. = FALSE)",
+  "})"
+), formula_integer64_child_script, useBytes = TRUE)
+formula_integer64_child_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c("--vanilla", formula_integer64_child_script, formula_integer64_child_bundle),
+  stdout = TRUE,
+  stderr = TRUE
+)
+formula_integer64_child_status <- attr(formula_integer64_child_output, "status", exact = TRUE)
+if (!is.null(formula_integer64_child_status) && formula_integer64_child_status != 0L) {
+  stop(paste(c("cold or poisoned generated integer64 Formula child failed", formula_integer64_child_output), collapse = "\n"), call. = FALSE)
+}
+unlink(c(formula_integer64_child_script, formula_integer64_child_bundle))
+assert_identical(
+  get("formula_integer64_frame", envir = .GlobalEnv),
+  formula_integer64_before,
+  "generated integer64 R Formula mutated its source"
+)
+assert_identical(
+  source_environment$formula_integer64_frame,
+  formula_integer64_before,
+  "live integer64 R Formula mutated its source"
+)
+rm("formula_integer64_frame", "open_wrangler_result", envir = .GlobalEnv)
+for (generic in formula_integer64_s3_ops) {
+  registerS3method(generic, "integer64", formula_integer64_s3_methods$ops[[generic]], envir = .GlobalEnv)
+}
+registerS3method("as.double", "integer64", formula_integer64_s3_methods$as_double, envir = .GlobalEnv)
+registerS3method("is.na", "integer64", formula_integer64_s3_methods$is_na, envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = formula_integer64_session_id)))
+
+source_environment$formula_nullability_frame <- data.frame(
+  left = c(1, NA_real_, 3),
+  right = c(10, 20, 30),
+  check.names = FALSE
+)
+formula_nullability_before <- unserialize(serialize(
+  source_environment$formula_nullability_frame,
+  NULL,
+  version = 3L
+))
+formula_nullability_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = formula_nullability_session_id,
+    variableName = "formula_nullability_frame",
+    page = page_window()
+  )
+)
+assert_identical(formula_nullability_open$kind, "page", "the chained R Formula session did not open")
+assert_identical(
+  vapply(formula_nullability_open$page$schema, `[[`, logical(1L), "nullable", USE.NAMES = FALSE),
+  c(TRUE, TRUE),
+  "the chained R Formula source did not start conservatively nullable"
+)
+formula_nullability_fill_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_nullability_session_id,
+    revision = 0L,
+    step = fill_step("formula-nullability-fill", "r:c:0", "left", list(kind = "mean")),
+    page = page_window()
+  )
+)
+assert_identical(
+  formula_nullability_fill_preview$kind,
+  "stepPreview",
+  "the chained R Formula fill did not preview"
+)
+assert_identical(
+  vapply(
+    formula_nullability_fill_preview$page$schema,
+    `[[`,
+    logical(1L),
+    "nullable",
+    USE.NAMES = FALSE
+  ),
+  c(FALSE, TRUE),
+  "Fill Missing did not separate left and right nullability"
+)
+formula_nullability_fill_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_nullability_session_id, revision = 1L, page = page_window())
+)
+assert_identical(formula_nullability_fill_apply$action, "apply", "the chained R Formula fill did not apply")
+formula_nullability_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_nullability_session_id,
+    revision = 2L,
+    step = formula_step(
+      "formula-nullability-add",
+      "add",
+      "sum",
+      right_position = 2L,
+      right_name = "right"
+    ),
+    page = page_window()
+  )
+)
+assert_identical(formula_nullability_preview$kind, "stepPreview", "the chained R Formula did not preview")
+assert_identical(
+  formula_nullability_preview$page$schema[[1L]]$nullable,
+  FALSE,
+  "the chained R Formula changed filled-left nullability"
+)
+assert_identical(
+  formula_nullability_preview$page$schema[[2L]]$nullable,
+  TRUE,
+  "the chained R Formula changed conservative right nullability"
+)
+assert_identical(
+  formula_nullability_preview$page$schema[[3L]]$nullable,
+  TRUE,
+  "R Formula ignored conservative right-operand nullability"
+)
+assert_identical(
+  numeric_page_values(formula_nullability_preview, "sum"),
+  c(11, 22, 33),
+  "the chained live R Formula changed values"
+)
+formula_nullability_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_nullability_session_id, revision = 3L, page = page_window())
+)
+assert_identical(formula_nullability_apply$action, "apply", "the chained R Formula did not apply")
+assert_identical(
+  formula_nullability_apply$page$schema[[3L]]$nullable,
+  TRUE,
+  "applying R Formula lost conservative right-operand nullability"
+)
+assign(
+  "formula_nullability_frame",
+  source_environment$formula_nullability_frame,
+  envir = .GlobalEnv
+)
+eval(parse(text = formula_nullability_apply$code), envir = .GlobalEnv)
+formula_nullability_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  formula_nullability_generated$left,
+  c(1, 2, 3),
+  "generated chained Fill Missing changed values"
+)
+assert_identical(
+  formula_nullability_generated$sum,
+  c(11, 22, 33),
+  "generated chained R Formula disagreed with live execution"
+)
+assert_identical(
+  get("formula_nullability_frame", envir = .GlobalEnv),
+  formula_nullability_before,
+  "generated chained R Formula mutated its source"
+)
+assert_identical(
+  source_environment$formula_nullability_frame,
+  formula_nullability_before,
+  "live chained R Formula mutated its source"
+)
+rm("formula_nullability_frame", "open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = formula_nullability_session_id)))
+
+source_environment$formula_nonfinite_frame <- data.frame(
+  value = c(NaN, Inf, -Inf, 1),
+  check.names = FALSE
+)
+formula_nonfinite_before <- unserialize(serialize(
+  source_environment$formula_nonfinite_frame,
+  NULL,
+  version = 3L
+))
+formula_nonfinite_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = formula_nonfinite_session_id,
+    variableName = "formula_nonfinite_frame",
+    page = page_window()
+  )
+)
+assert_identical(formula_nonfinite_open$kind, "page", "the non-finite R Formula session did not open")
+formula_nonfinite_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_nonfinite_session_id,
+    revision = 0L,
+    step = formula_step("formula-nonfinite", "add", "shifted", value = 1, left_name = "value"),
+    page = page_window()
+  )
+)
+assert_identical(
+  formula_nonfinite_preview$kind,
+  "stepPreview",
+  sprintf(
+    "R Formula rejected source NaN or infinity: %s",
+    if (identical(formula_nonfinite_preview$kind, "error")) {
+      paste(formula_nonfinite_preview$error$code, formula_nonfinite_preview$error$message, sep = ": ")
+    } else {
+      format(formula_nonfinite_preview)
+    }
+  )
+)
+assert_identical(
+  vapply(
+    formula_nonfinite_preview$page$page$rows,
+    function(row) row$values[[2L]]$kind,
+    character(1L),
+    USE.NAMES = FALSE
+  ),
+  c("nan", "infinity", "infinity", "number"),
+  "live R Formula changed typed source non-finite values"
+)
+formula_nonfinite_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_nonfinite_session_id, revision = 1L, page = page_window())
+)
+assert_identical(formula_nonfinite_apply$action, "apply", "the non-finite R Formula did not apply")
+assign("formula_nonfinite_frame", source_environment$formula_nonfinite_frame, envir = .GlobalEnv)
+eval(parse(text = formula_nonfinite_apply$code), envir = .GlobalEnv)
+formula_nonfinite_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  formula_nonfinite_generated$shifted,
+  c(NaN, Inf, -Inf, 2),
+  "generated R Formula changed source NaN or infinity"
+)
+assert_identical(
+  get("formula_nonfinite_frame", envir = .GlobalEnv),
+  formula_nonfinite_before,
+  "generated non-finite R Formula mutated its source"
+)
+assert_identical(
+  source_environment$formula_nonfinite_frame,
+  formula_nonfinite_before,
+  "live non-finite R Formula mutated its source"
+)
+rm("formula_nonfinite_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+formula_missing_power_source <- data.frame(
+  left = c(NA_real_, 1, NaN, Inf),
+  right = c(0, NA_real_, 0, 0),
+  check.names = FALSE
+)
+source_environment$formula_missing_power_frame <- formula_missing_power_source
+formula_missing_power_session_id <- "a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1"
+formula_missing_power_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = formula_missing_power_session_id,
+    variableName = "formula_missing_power_frame",
+    page = page_window()
+  )
+)
+assert_identical(formula_missing_power_open$kind, "page", "the missing-power R Formula session did not open")
+formula_missing_power_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = formula_missing_power_session_id,
+    revision = 0L,
+    step = formula_step(
+      "formula-missing-power",
+      "power",
+      "missing power",
+      left_name = "left",
+      right_position = 2L,
+      right_name = "right"
+    ),
+    page = page_window()
+  )
+)
+assert_identical(
+  vapply(
+    formula_missing_power_preview$page$page$rows,
+    function(row) row$values[[3L]]$kind,
+    character(1L),
+    USE.NAMES = FALSE
+  ),
+  c("null", "null", "number", "number"),
+  "live R Formula changed missing, NaN, or infinity power semantics"
+)
+formula_missing_power_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = formula_missing_power_session_id, revision = 1L, page = page_window())
+)
+assign("formula_missing_power_frame", formula_missing_power_source, envir = .GlobalEnv)
+eval(parse(text = formula_missing_power_apply$code), envir = .GlobalEnv)
+assert_identical(
+  get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)$`missing power`,
+  c(NA_real_, NA_real_, 1, 1),
+  "generated R Formula changed missing, NaN, or infinity power semantics"
+)
+rm("formula_missing_power_frame", "open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = formula_missing_power_session_id)))
+
+formula_s3_frame <- data.frame(value = structure(c(1, 2), class = c("evil", "numeric")), check.names = FALSE)
+formula_s3_before <- serialize(formula_s3_frame, NULL, version = 3L)
+assign("formula_nonfinite_frame", formula_s3_frame, envir = .GlobalEnv)
+assign("+.evil", function(e1, e2) rep.int(999, length(e1)), envir = .GlobalEnv)
+formula_s3_error <- tryCatch(
+  {
+    eval(parse(text = formula_nonfinite_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(formula_s3_error, "error"),
+  TRUE,
+  "generated R Formula accepted a custom numeric S3 class"
+)
+assert_identical(
+  serialize(get("formula_nonfinite_frame", envir = .GlobalEnv), NULL, version = 3L),
+  formula_s3_before,
+  "a rejected generated R Formula mutated its custom-class source"
+)
+rm("formula_nonfinite_frame", "+.evil", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = formula_nonfinite_session_id)))
+
+source_environment$formula_failure_frame <- data.frame(
+  unsafe_double = c(1, .Machine$double.xmax),
+  zero_or_two = c(0, 2),
+  unsafe_integer = c(.Machine$integer.max, 1L),
+  check.names = FALSE
+)
+formula_failure_before <- unserialize(serialize(source_environment$formula_failure_frame, NULL, version = 3L))
+formula_failure_open <- dispatch(
+  "openSession",
+  list(sessionId = formula_failure_session_id, variableName = "formula_failure_frame", page = page_window())
+)
+assert_identical(formula_failure_open$kind, "page", "the failing R Formula session did not open")
+formula_failure_cases <- list(
+  formula_step(
+    "formula-divide-zero",
+    "divide",
+    "divide zero",
+    left_name = "unsafe_double",
+    right_position = 2L,
+    right_name = "zero_or_two"
+  ),
+  formula_step(
+    "formula-modulo-zero",
+    "modulo",
+    "modulo zero",
+    left_name = "unsafe_double",
+    right_position = 2L,
+    right_name = "zero_or_two"
+  ),
+  formula_step(
+    "formula-power-overflow",
+    "power",
+    "power overflow",
+    left_name = "unsafe_double",
+    value = 2
+  ),
+  formula_step(
+    "formula-integer-overflow",
+    "add",
+    "integer overflow",
+    left_position = 3L,
+    left_name = "unsafe_integer",
+    value = 1L
+  )
+)
+for (formula_failure_step in formula_failure_cases) {
+  formula_failure <- dispatch(
+    "previewStep",
+    list(
+      sessionId = formula_failure_session_id,
+      revision = 0L,
+      step = formula_failure_step,
+      page = page_window()
+    )
+  )
+  assert_identical(
+    formula_failure$kind,
+    "error",
+    sprintf("%s did not reject non-finite or overflowing output", formula_failure_step$id)
+  )
+  assert_identical(
+    formula_failure$code,
+    "invalid_request",
+    sprintf("%s returned the wrong failure code", formula_failure_step$id)
+  )
+}
+formula_failure_page <- dispatch(
+  "getPage",
+  list(sessionId = formula_failure_session_id, page = page_window())
+)
+assert_identical(formula_failure_page$kind, "page", "a failed R Formula left its session unusable")
+assert_identical(formula_failure_page$page$shape$columns, 3L, "a failed R Formula retained a draft column")
+assert_identical(
+  source_environment$formula_failure_frame,
+  formula_failure_before,
+  "a failed R Formula mutated its source"
+)
+invisible(dispatch("closeSession", list(sessionId = formula_failure_session_id)))
+
+source_environment$datetime_frame <- data.frame(
+  day = as.Date(c("2024-02-29", "2025-01-02", NA)),
+  moment = as.POSIXct(
+    c("2024-03-31 00:30:00", "2024-03-31 03:30:00", NA),
+    tz = "Europe/Berlin"
+  ),
+  label = c("leap", "new year", "missing"),
+  row.names = c("datetime-a", "datetime-b", "datetime-c"),
+  check.names = FALSE
+)
+datetime_before <- unserialize(serialize(source_environment$datetime_frame, NULL, version = 3L))
+datetime_open <- dispatch(
+  "openSession",
+  list(sessionId = datetime_session_id, variableName = "datetime_frame", page = page_window())
+)
+assert_identical(datetime_open$kind, "page", "the R Format Datetime session did not open")
+
+datetime_extra_step <- datetime_format_step("datetime-extra", 1L, "day", "%Y")
+datetime_extra_step$params$extra <- TRUE
+datetime_extra <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_session_id,
+    revision = 0L,
+    step = datetime_extra_step,
+    page = page_window()
+  )
+)
+assert_identical(datetime_extra$kind, "error", "R Format Datetime accepted an unknown parameter")
+assert_identical(datetime_extra$code, "invalid_request", "the R Format Datetime exact-record diagnostic changed")
+
+datetime_empty_format <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_session_id,
+    revision = 0L,
+    step = datetime_format_step("datetime-empty-format", 1L, "day", ""),
+    page = page_window()
+  )
+)
+assert_identical(datetime_empty_format$kind, "error", "R Format Datetime accepted an empty format")
+assert_identical(datetime_empty_format$code, "invalid_request", "the empty R datetime-format diagnostic changed")
+
+datetime_legacy_step <- datetime_format_step("datetime-legacy", 1L, "day", "%Y")
+datetime_legacy_step$params$column <- "day"
+datetime_legacy <- dispatch(
+  "previewStep",
+  list(sessionId = datetime_session_id, revision = 0L, step = datetime_legacy_step, page = page_window())
+)
+assert_identical(datetime_legacy$kind, "error", "R Format Datetime accepted a legacy string column")
+assert_identical(datetime_legacy$code, "invalid_request", "the R Format Datetime legacy-column diagnostic changed")
+
+datetime_stale <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_session_id,
+    revision = 0L,
+    step = datetime_format_step("datetime-stale", 2L, "day", "%Y"),
+    page = page_window()
+  )
+)
+assert_identical(datetime_stale$kind, "error", "R Format Datetime accepted an ID/name mismatch")
+assert_identical(datetime_stale$code, "stale_column", "the R Format Datetime stale-column diagnostic changed")
+
+datetime_text <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_session_id,
+    revision = 0L,
+    step = datetime_format_step("datetime-text", 3L, "label", "%Y"),
+    page = page_window()
+  )
+)
+assert_identical(datetime_text$kind, "error", "R Format Datetime accepted a text column")
+assert_identical(datetime_text$code, "invalid_request", "the R Format Datetime type diagnostic changed")
+
+datetime_fractional_session_id <- "83838383-8383-4383-8383-838383838383"
+source_environment$datetime_fractional_frame <- data.frame(
+  day = structure(c(0, 0.5, 1), class = "Date"),
+  check.names = FALSE
+)
+datetime_fractional_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = datetime_fractional_session_id,
+    variableName = "datetime_fractional_frame",
+    page = page_window(row_offset = 0L, row_limit = 1L)
+  )
+)
+assert_identical(datetime_fractional_open$kind, "page", "the bounded fractional Date session did not open")
+datetime_fractional <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_fractional_session_id,
+    revision = 0L,
+    step = datetime_format_step("datetime-fractional", 1L, "day", "%Y-%m-%d", "formatted day"),
+    page = page_window(row_offset = 0L, row_limit = 1L)
+  )
+)
+assert_identical(datetime_fractional$kind, "error", "R Format Datetime laundered an unseen fractional Date")
+assert_identical(datetime_fractional$code, "unsupported_frame", "the fractional Date diagnostic changed")
+invisible(dispatch("closeSession", list(sessionId = datetime_fractional_session_id)))
+
+datetime_collision <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_session_id,
+    revision = 0L,
+    step = datetime_format_step("datetime-collision", 1L, "day", "%Y", "label"),
+    page = page_window()
+  )
+)
+assert_identical(datetime_collision$kind, "error", "R Format Datetime overwrote another column")
+assert_identical(datetime_collision$code, "invalid_request", "the R Format Datetime collision diagnostic changed")
+
+datetime_private <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_session_id,
+    revision = 0L,
+    step = datetime_format_step(
+      "datetime-private",
+      1L,
+      "day",
+      "%Y",
+      "__OPEN_WRANGLER_INTERNAL_ROW_ID_public"
+    ),
+    page = page_window()
+  )
+)
+assert_identical(datetime_private$kind, "error", "R Format Datetime exposed the private row-identity namespace")
+assert_identical(datetime_private$code, "invalid_request", "the R Format Datetime private-name diagnostic changed")
+
+datetime_discard_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_session_id,
+    revision = 0L,
+    step = datetime_format_step("datetime-discard", 1L, "day", "%Y/%m/%d", "discarded day"),
+    page = page_window()
+  )
+)
+assert_identical(datetime_discard_preview$kind, "stepPreview", "appended R Format Datetime did not preview")
+assert_identical(
+  datetime_discard_preview$diff$addedColumns,
+  list("discarded day"),
+  "the appended R Format Datetime diff changed"
+)
+assert_identical(datetime_discard_preview$diff$changedCells, 0L, "appended R Format Datetime reported changed cells")
+datetime_discard_schema <- datetime_discard_preview$page$schema[[4L]]
+assert_identical(
+  datetime_discard_schema$id,
+  "c:step:datetime-discard:0",
+  "the appended R Format Datetime identity changed"
+)
+assert_identical(datetime_discard_schema$rawType, "character", "R Format Datetime did not publish character output")
+assert_identical(datetime_discard_schema$type, "string", "R Format Datetime did not publish string output")
+assert_identical(datetime_discard_schema$nullable, TRUE, "R Format Datetime did not retain nullability")
+assert_identical(
+  text_page_values(datetime_discard_preview, "discarded day"),
+  c("2024/02/29", "2025/01/02", NA_character_),
+  "live Date formatting values changed"
+)
+datetime_discard <- dispatch(
+  "discardDraft",
+  list(sessionId = datetime_session_id, revision = datetime_discard_preview$revision, page = page_window())
+)
+assert_identical(datetime_discard$action, "discard", "the R Format Datetime draft did not discard")
+assert_identical(datetime_discard$code, "", "discarding R Format Datetime retained generated code")
+assert_identical(source_environment$datetime_frame, datetime_before, "discarding R Format Datetime mutated its source")
+
+datetime_date_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_session_id,
+    revision = datetime_discard$revision,
+    step = datetime_format_step("datetime-date", 1L, "day", "%Y-%j", "day of year"),
+    page = page_window()
+  )
+)
+assert_identical(datetime_date_preview$kind, "stepPreview", "appended Date formatting did not preview")
+assert_identical(
+  text_page_values(datetime_date_preview, "day of year"),
+  c("2024-060", "2025-002", NA_character_),
+  "live Date formatting changed leap-year semantics"
+)
+datetime_revision <- datetime_date_preview$revision
+datetime_date_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = datetime_session_id, revision = datetime_revision, page = page_window())
+)
+assert_identical(datetime_date_apply$action, "apply", "appended Date formatting did not apply")
+datetime_revision <- datetime_date_apply$revision
+
+datetime_moment_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_session_id,
+    revision = datetime_revision,
+    step = datetime_format_step("datetime-moment", 2L, "moment", "%Y-%m-%d %H:%M %Z"),
+    page = page_window()
+  )
+)
+assert_identical(datetime_moment_preview$kind, "stepPreview", "in-place POSIXct formatting did not preview")
+assert_identical(datetime_moment_preview$diff$addedColumns, list(), "in-place R Format Datetime reported an added column")
+assert_identical(datetime_moment_preview$diff$changedCells, 2L, "in-place R Format Datetime returned the wrong changed-cell count")
+assert_identical(
+  text_page_values(datetime_moment_preview, "moment"),
+  c("2024-03-31 00:30 CET", "2024-03-31 03:30 CEST", NA_character_),
+  "live POSIXct formatting changed source-timezone or DST semantics"
+)
+datetime_moment_schema <- datetime_moment_preview$page$schema[[2L]]
+assert_identical(datetime_moment_schema$id, "r:c:1", "in-place R Format Datetime changed its stable identity")
+assert_identical(datetime_moment_schema$rawType, "character", "in-place R Format Datetime did not change raw type")
+assert_identical(datetime_moment_schema$type, "string", "in-place R Format Datetime did not change public type")
+assert_identical(datetime_moment_schema$nullable, TRUE, "in-place R Format Datetime lost nullability")
+datetime_revision <- datetime_moment_preview$revision
+datetime_moment_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = datetime_session_id, revision = datetime_revision, page = page_window())
+)
+assert_identical(datetime_moment_apply$action, "apply", "in-place POSIXct formatting did not apply")
+datetime_revision <- datetime_moment_apply$revision
+
+datetime_inspection <- inspect_step(
+  datetime_session_id,
+  datetime_revision,
+  "datetime-moment",
+  page_window()
+)
+assert_identical(datetime_inspection$diff$changedCells, 2L, "R Format Datetime history returned the wrong diff")
+assert_identical(
+  unlist(datetime_inspection$inputPage$page$columnIds, use.names = FALSE),
+  unlist(datetime_inspection$outputPage$page$columnIds, use.names = FALSE),
+  "in-place R Format Datetime history changed column identities"
+)
+assert_schema_less_inspection(datetime_inspection, "R Format Datetime inspection")
+
+assign("datetime_frame", source_environment$datetime_frame, envir = .GlobalEnv)
+eval(parse(text = datetime_moment_apply$code), envir = .GlobalEnv)
+datetime_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  datetime_generated$`day of year`,
+  c("2024-060", "2025-002", NA_character_),
+  "generated Date formatting values changed"
+)
+assert_identical(
+  datetime_generated$moment,
+  c("2024-03-31 00:30 CET", "2024-03-31 03:30 CEST", NA_character_),
+  "generated POSIXct formatting changed timezone semantics"
+)
+assert_identical(row.names(datetime_generated), row.names(datetime_before), "generated R Format Datetime changed row names")
+assert_identical(get("datetime_frame", envir = .GlobalEnv), datetime_before, "generated R Format Datetime mutated its source")
+assert_identical(source_environment$datetime_frame, datetime_before, "the R Format Datetime lifecycle mutated its source")
+rm("datetime_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+datetime_utc_replay <- datetime_before
+datetime_utc_replay$moment <- as.POSIXct(
+  c("2024-03-31 00:30:00", "2024-03-31 03:30:00", NA),
+  tz = "UTC"
+)
+assign("datetime_frame", datetime_utc_replay, envir = .GlobalEnv)
+eval(parse(text = datetime_moment_apply$code), envir = .GlobalEnv)
+datetime_utc_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  datetime_utc_generated$moment,
+  c("2024-03-31 00:30 UTC", "2024-03-31 03:30 UTC", NA_character_),
+  "generated POSIXct formatting reused a stale captured timezone"
+)
+assert_identical(
+  get("datetime_frame", envir = .GlobalEnv),
+  datetime_utc_replay,
+  "generated POSIXct timezone replay mutated its source"
+)
+rm("datetime_frame", "open_wrangler_result", envir = .GlobalEnv)
+
+datetime_bad_timezone <- datetime_utc_replay
+attr(datetime_bad_timezone$moment, "tzone") <- strrep("x", 1025L)
+datetime_bad_timezone_before <- serialize(datetime_bad_timezone, NULL, version = 3L)
+assign("datetime_frame", datetime_bad_timezone, envir = .GlobalEnv)
+datetime_bad_timezone_error <- tryCatch(
+  {
+    eval(parse(text = datetime_moment_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(datetime_bad_timezone_error, "error"),
+  TRUE,
+  "generated R Format Datetime accepted an oversized POSIXct timezone"
+)
+assert_identical(
+  serialize(get("datetime_frame", envir = .GlobalEnv), NULL, version = 3L),
+  datetime_bad_timezone_before,
+  "a rejected generated R Format Datetime mutated its source"
+)
+rm("datetime_frame", envir = .GlobalEnv)
+
+datetime_undo <- dispatch(
+  "undoStep",
+  list(sessionId = datetime_session_id, revision = datetime_revision, page = page_window())
+)
+assert_identical(datetime_undo$action, "undo", "in-place R Format Datetime did not undo")
+assert_identical(datetime_undo$page$schema[[2L]]$rawType, "POSIXct", "undo did not restore the POSIXct schema")
+assert_identical(datetime_undo$page$schema[[2L]]$id, "r:c:1", "undo changed the restored POSIXct identity")
+invisible(dispatch("closeSession", list(sessionId = datetime_session_id)))
+
+source_environment$datetime_replay_frame <- data.frame(
+  day = as.Date(c("2024-02-29", "2025-01-02", NA)),
+  row.names = c("replay-a", "replay-b", "replay-c"),
+  check.names = FALSE
+)
+datetime_replay_before <- unserialize(serialize(
+  source_environment$datetime_replay_frame,
+  NULL,
+  version = 3L
+))
+datetime_replay_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = datetime_replay_session_id,
+    variableName = "datetime_replay_frame",
+    page = page_window()
+  )
+)
+assert_identical(datetime_replay_open$kind, "page", "the generated datetime replay-bound session did not open")
+datetime_replay_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_replay_session_id,
+    revision = 0L,
+    step = datetime_format_step("datetime-replay-in-place", 1L, "day", "%Y%m%d"),
+    page = page_window()
+  )
+)
+assert_identical(datetime_replay_preview$kind, "stepPreview", "the generated in-place datetime replay did not preview")
+datetime_replay_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = datetime_replay_session_id,
+    revision = datetime_replay_preview$revision,
+    page = page_window()
+  )
+)
+assert_identical(datetime_replay_apply$action, "apply", "the generated in-place datetime replay did not apply")
+datetime_replay_guard_offset <- regexpr(
+  ".ow_source_column_count <-",
+  datetime_replay_apply$code,
+  fixed = TRUE
+)[[1L]]
+datetime_replay_step_offset <- regexpr(
+  ".ow_datetime_position <-",
+  datetime_replay_apply$code,
+  fixed = TRUE
+)[[1L]]
+assert_identical(
+  datetime_replay_guard_offset > 0L && datetime_replay_guard_offset < datetime_replay_step_offset,
+  TRUE,
+  "generated R did not validate replay width before its in-place Format Datetime step"
+)
+
+datetime_replay_parent <- new.env(parent = baseenv())
+base::assign(
+  "datetime_replay_frame",
+  data.frame(day = as.Date("1900-01-01"), check.names = FALSE),
+  envir = datetime_replay_parent
+)
+datetime_replay_environment <- new.env(parent = datetime_replay_parent)
+base::assign("datetime_replay_frame", datetime_replay_before, envir = datetime_replay_environment)
+datetime_caller_override <- function(...) {
+  base::stop("a caller generated-code override was evaluated", call. = FALSE)
+}
+datetime_caller_override_names <- c(
+  "format.Date",
+  "format",
+  "get",
+  "local",
+  "evalq",
+  "list2env",
+  "environment",
+  "baseenv",
+  "is.data.frame",
+  "class",
+  "attributes",
+  "names",
+  "length",
+  "serialize",
+  "unserialize",
+  "inherits",
+  "requireNamespace"
+)
+for (override_name in datetime_caller_override_names) {
+  base::assign(override_name, datetime_caller_override, envir = datetime_replay_environment)
+}
+for (helper_name in c(
+  ".ow_source_environment",
+  ".ow_source",
+  ".ow_result",
+  ".ow_source_column_count",
+  ".ow_source_names",
+  ".ow_datetime_source",
+  ".ow_datetime_values"
+)) {
+  base::assign(helper_name, "caller helper collision", envir = datetime_replay_environment)
+}
+base::eval(base::parse(text = datetime_replay_apply$code), envir = datetime_replay_environment)
+datetime_replay_generated <- base::get(
+  "open_wrangler_result",
+  envir = datetime_replay_environment,
+  inherits = FALSE
+)
+assert_identical(
+  datetime_replay_generated$day,
+  c("20240229", "20250102", NA_character_),
+  "generated R Format Datetime used a caller format.Date override"
+)
+assert_identical(
+  base::get("datetime_replay_frame", envir = datetime_replay_environment, inherits = FALSE),
+  datetime_replay_before,
+  "caller-isolated generated R Format Datetime mutated its exact source"
+)
+
+datetime_replay_maximum <- datetime_replay_before[seq_len(2L), , drop = FALSE]
+datetime_replay_maximum[paste0("extra_", seq_len(2047L))] <- rep(
+  list(c(1L, 2L)),
+  2047L
+)
+datetime_replay_maximum_before <- serialize(datetime_replay_maximum, NULL, version = 3L)
+datetime_replay_maximum_environment <- new.env(parent = baseenv())
+base::assign(
+  "datetime_replay_frame",
+  datetime_replay_maximum,
+  envir = datetime_replay_maximum_environment
+)
+base::eval(base::parse(text = datetime_replay_apply$code), envir = datetime_replay_maximum_environment)
+datetime_replay_maximum_generated <- base::get(
+  "open_wrangler_result",
+  envir = datetime_replay_maximum_environment,
+  inherits = FALSE
+)
+assert_identical(
+  ncol(datetime_replay_maximum_generated),
+  2048L,
+  "generated in-place Format Datetime rejected the maximum supported replay width"
+)
+assert_identical(
+  datetime_replay_maximum_generated$day,
+  c("20240229", "20250102"),
+  "generated in-place Format Datetime changed values at the maximum replay width"
+)
+assert_identical(
+  serialize(
+    base::get("datetime_replay_frame", envir = datetime_replay_maximum_environment, inherits = FALSE),
+    NULL,
+    version = 3L
+  ),
+  datetime_replay_maximum_before,
+  "maximum-width generated in-place Format Datetime mutated its source"
+)
+
+datetime_replay_empty_environment <- new.env(parent = baseenv())
+base::assign(
+  "datetime_replay_frame",
+  data.frame(row.names = c("empty-a", "empty-b")),
+  envir = datetime_replay_empty_environment
+)
+datetime_replay_empty_error <- tryCatch(
+  {
+    base::eval(base::parse(text = datetime_replay_apply$code), envir = datetime_replay_empty_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(datetime_replay_empty_error),
+  "Open Wrangler generated R requires between 1 and 2048 source columns",
+  "generated in-place Format Datetime accepted a zero-column replay"
+)
+assert_identical(
+  base::exists("open_wrangler_result", envir = datetime_replay_empty_environment, inherits = FALSE),
+  FALSE,
+  "a zero-column replay published a generated R result"
+)
+
+datetime_replay_oversized <- datetime_replay_maximum
+datetime_replay_oversized[["extra_2048"]] <- c(1L, 2L)
+datetime_replay_oversized_before <- serialize(datetime_replay_oversized, NULL, version = 3L)
+datetime_replay_oversized_environment <- new.env(parent = baseenv())
+base::assign(
+  "datetime_replay_frame",
+  datetime_replay_oversized,
+  envir = datetime_replay_oversized_environment
+)
+datetime_replay_oversized_error <- tryCatch(
+  {
+    base::eval(base::parse(text = datetime_replay_apply$code), envir = datetime_replay_oversized_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(datetime_replay_oversized_error),
+  "Open Wrangler generated R requires between 1 and 2048 source columns",
+  "generated in-place Format Datetime accepted a 2049-column replay"
+)
+assert_identical(
+  serialize(
+    base::get("datetime_replay_frame", envir = datetime_replay_oversized_environment, inherits = FALSE),
+    NULL,
+    version = 3L
+  ),
+  datetime_replay_oversized_before,
+  "a rejected oversized generated replay mutated its source"
+)
+assert_identical(
+  base::exists("open_wrangler_result", envir = datetime_replay_oversized_environment, inherits = FALSE),
+  FALSE,
+  "a 2049-column replay published a generated R result"
+)
+
+datetime_replay_malformed <- base::structure(
+  list(
+    day = as.Date(c("2024-02-29", "2025-01-02")),
+    short = 1L
+  ),
+  names = c("day", "short"),
+  class = "data.frame",
+  row.names = c("malformed-a", "malformed-b")
+)
+datetime_replay_malformed_before <- serialize(datetime_replay_malformed, NULL, version = 3L)
+datetime_replay_malformed_environment <- new.env(parent = baseenv())
+base::assign(
+  "datetime_replay_frame",
+  datetime_replay_malformed,
+  envir = datetime_replay_malformed_environment
+)
+datetime_replay_malformed_error <- tryCatch(
+  {
+    base::eval(base::parse(text = datetime_replay_apply$code), envir = datetime_replay_malformed_environment)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  conditionMessage(datetime_replay_malformed_error),
+  "Open Wrangler generated R received a source column whose length does not match its row count: source column 2",
+  "generated in-place Format Datetime accepted unequal source-column lengths"
+)
+assert_identical(
+  serialize(
+    base::get("datetime_replay_frame", envir = datetime_replay_malformed_environment, inherits = FALSE),
+    NULL,
+    version = 3L
+  ),
+  datetime_replay_malformed_before,
+  "a rejected unequal-length generated replay mutated its source"
+)
+assert_identical(
+  base::exists("open_wrangler_result", envir = datetime_replay_malformed_environment, inherits = FALSE),
+  FALSE,
+  "an unequal-length generated replay published a result"
+)
+
+datetime_replay_zero <- data.frame(day = as.Date(character()), check.names = FALSE)
+datetime_replay_zero_before <- serialize(datetime_replay_zero, NULL, version = 3L)
+datetime_replay_zero_environment <- new.env(parent = baseenv())
+base::assign("datetime_replay_frame", datetime_replay_zero, envir = datetime_replay_zero_environment)
+base::eval(base::parse(text = datetime_replay_apply$code), envir = datetime_replay_zero_environment)
+datetime_replay_zero_generated <- base::get(
+  "open_wrangler_result",
+  envir = datetime_replay_zero_environment,
+  inherits = FALSE
+)
+assert_identical(nrow(datetime_replay_zero_generated), 0L, "generated Format Datetime rejected a zero-row frame")
+assert_identical(
+  datetime_replay_zero_generated$day,
+  character(),
+  "generated Format Datetime changed a zero-row Date column incorrectly"
+)
+assert_identical(
+  serialize(base::get("datetime_replay_frame", envir = datetime_replay_zero_environment), NULL, version = 3L),
+  datetime_replay_zero_before,
+  "generated Format Datetime mutated a zero-row source"
+)
+invisible(dispatch("closeSession", list(sessionId = datetime_replay_session_id)))
+rm("datetime_replay_frame", envir = source_environment)
+
+datetime_output_budget <- 64L * 1024L * 1024L
+datetime_output_slot_bytes <- 8L
+datetime_output_format <- paste(rep("%Y%m%d", 127L), collapse = "")
+datetime_output_text_bytes <- nchar(
+  format(as.Date("2026-01-01"), format = datetime_output_format),
+  type = "bytes"
+)
+datetime_output_boundary_rows <- 65536L
+assert_identical(
+  datetime_output_boundary_rows * (datetime_output_slot_bytes + datetime_output_text_bytes),
+  datetime_output_budget,
+  "the kernel Format Datetime aggregate-output boundary fixture changed"
+)
+source_environment$datetime_output_budget_frame <- data.frame(
+  day = rep(as.Date("2026-01-01"), datetime_output_boundary_rows),
+  check.names = FALSE
+)
+datetime_output_budget_before <- serialize(
+  source_environment$datetime_output_budget_frame,
+  NULL,
+  version = 3L
+)
+datetime_output_budget_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = datetime_output_budget_session_id,
+    variableName = "datetime_output_budget_frame",
+    page = page_window(row_limit = 1L)
+  )
+)
+assert_identical(datetime_output_budget_open$kind, "page", "the exact datetime output-budget session did not open")
+datetime_output_budget_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_output_budget_session_id,
+    revision = 0L,
+    step = datetime_format_step(
+      "datetime-output-budget",
+      1L,
+      "day",
+      datetime_output_format,
+      "formatted"
+    ),
+    page = page_window(row_limit = 1L)
+  )
+)
+assert_identical(
+  datetime_output_budget_preview$kind,
+  "stepPreview",
+  "live R Format Datetime rejected the exact 64 MiB aggregate-output boundary"
+)
+assert_identical(
+  nchar(text_page_values(datetime_output_budget_preview, "formatted")[[1L]], type = "bytes"),
+  datetime_output_text_bytes,
+  "live R Format Datetime truncated output at the aggregate boundary"
+)
+datetime_output_budget_apply <- dispatch(
+  "applyDraft",
+  list(
+    sessionId = datetime_output_budget_session_id,
+    revision = 1L,
+    page = page_window(row_limit = 1L)
+  )
+)
+assert_identical(datetime_output_budget_apply$action, "apply", "the exact datetime output-budget draft did not apply")
+assert_identical(
+  grepl(".ow_datetime_chunk_source", datetime_output_budget_apply$code, fixed = TRUE),
+  TRUE,
+  "generated R Format Datetime no longer formats bounded source chunks"
+)
+assign(
+  "datetime_output_budget_frame",
+  source_environment$datetime_output_budget_frame,
+  envir = .GlobalEnv
+)
+eval(parse(text = datetime_output_budget_apply$code), envir = .GlobalEnv)
+datetime_output_budget_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(
+  length(datetime_output_budget_generated$formatted),
+  datetime_output_boundary_rows,
+  "generated R Format Datetime rejected the exact aggregate-output boundary"
+)
+assert_identical(
+  nchar(datetime_output_budget_generated$formatted[[datetime_output_boundary_rows]], type = "bytes"),
+  datetime_output_text_bytes,
+  "generated R Format Datetime truncated output at the aggregate boundary"
+)
+assert_identical(
+  serialize(get("datetime_output_budget_frame", envir = .GlobalEnv), NULL, version = 3L),
+  datetime_output_budget_before,
+  "generated aggregate-boundary formatting mutated its source"
+)
+assert_identical(
+  serialize(source_environment$datetime_output_budget_frame, NULL, version = 3L),
+  datetime_output_budget_before,
+  "live aggregate-boundary formatting mutated its source"
+)
+rm("open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = datetime_output_budget_session_id)))
+
+source_environment$datetime_output_oversize_frame <- data.frame(
+  day = rep(as.Date("2026-01-01"), datetime_output_boundary_rows + 1L),
+  check.names = FALSE
+)
+datetime_output_oversize_before <- serialize(
+  source_environment$datetime_output_oversize_frame,
+  NULL,
+  version = 3L
+)
+datetime_output_oversize_open <- dispatch(
+  "openSession",
+  list(
+    sessionId = datetime_output_oversize_session_id,
+    variableName = "datetime_output_oversize_frame",
+    page = page_window(row_limit = 1L)
+  )
+)
+assert_identical(datetime_output_oversize_open$kind, "page", "the oversized datetime output session did not open")
+datetime_output_oversize_preview <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_output_oversize_session_id,
+    revision = 0L,
+    step = datetime_format_step(
+      "datetime-output-oversize",
+      1L,
+      "day",
+      datetime_output_format,
+      "formatted"
+    ),
+    page = page_window(row_limit = 1L)
+  )
+)
+assert_identical(datetime_output_oversize_preview$kind, "error", "live R Format Datetime exceeded 64 MiB")
+assert_identical(datetime_output_oversize_preview$code, "invalid_request", "the aggregate-output diagnostic changed")
+assert_identical(
+  grepl("67108864-byte aggregate output budget", datetime_output_oversize_preview$message, fixed = TRUE),
+  TRUE,
+  "the live aggregate-output diagnostic lost its exact budget"
+)
+assert_identical(
+  serialize(source_environment$datetime_output_oversize_frame, NULL, version = 3L),
+  datetime_output_oversize_before,
+  "rejected live aggregate-output formatting mutated its source"
+)
+invisible(dispatch("closeSession", list(sessionId = datetime_output_oversize_session_id)))
+
+assign(
+  "datetime_output_budget_frame",
+  source_environment$datetime_output_oversize_frame,
+  envir = .GlobalEnv
+)
+datetime_output_generated_oversize_error <- tryCatch(
+  {
+    eval(parse(text = datetime_output_budget_apply$code), envir = .GlobalEnv)
+    NULL
+  },
+  error = identity
+)
+assert_identical(
+  inherits(datetime_output_generated_oversize_error, "error"),
+  TRUE,
+  "generated R Format Datetime exceeded its 64 MiB aggregate-output budget"
+)
+assert_identical(
+  grepl(
+    "67108864-byte aggregate output budget",
+    conditionMessage(datetime_output_generated_oversize_error),
+    fixed = TRUE
+  ),
+  TRUE,
+  "the generated aggregate-output diagnostic lost its exact budget"
+)
+assert_identical(
+  serialize(get("datetime_output_budget_frame", envir = .GlobalEnv), NULL, version = 3L),
+  datetime_output_oversize_before,
+  "rejected generated aggregate-output formatting mutated its source"
+)
+rm("datetime_output_budget_frame", envir = .GlobalEnv)
+
+source_environment$datetime_table <- data.table::data.table(
+  key_time = as.POSIXct(c("2024-01-02 12:00:00", "2024-01-01 12:00:00"), tz = "UTC"),
+  marker = c("second", "first")
+)
+data.table::setkey(source_environment$datetime_table, key_time)
+datetime_table_before <- data.table::copy(source_environment$datetime_table)
+datetime_table_open <- dispatch(
+  "openSession",
+  list(sessionId = datetime_table_session_id, variableName = "datetime_table", page = page_window())
+)
+assert_identical(datetime_table_open$kind, "page", "the keyed R Format Datetime session did not open")
+datetime_key_error <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_table_session_id,
+    revision = 0L,
+    step = datetime_format_step("datetime-key", 1L, "key_time", "%Y-%m-%d"),
+    page = page_window()
+  )
+)
+assert_identical(datetime_key_error$kind, "error", "R Format Datetime replaced a data.table key in place")
+assert_identical(datetime_key_error$code, "invalid_request", "the R Format Datetime key diagnostic changed")
+datetime_key_copy <- dispatch(
+  "previewStep",
+  list(
+    sessionId = datetime_table_session_id,
+    revision = 0L,
+    step = datetime_format_step("datetime-key-copy", 1L, "key_time", "%Y-%m-%d", "formatted key"),
+    page = page_window()
+  )
+)
+assert_identical(datetime_key_copy$kind, "stepPreview", "R Format Datetime could not read a key into a new column")
+assert_identical(datetime_key_copy$page$frameSemantics$keyColumnIds, list("r:c:0"), "derived R Format Datetime lost the key identity")
+datetime_key_apply <- dispatch(
+  "applyDraft",
+  list(sessionId = datetime_table_session_id, revision = 1L, page = page_window())
+)
+assign("datetime_table", source_environment$datetime_table, envir = .GlobalEnv)
+eval(parse(text = datetime_key_apply$code), envir = .GlobalEnv)
+datetime_table_generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+assert_identical(class(datetime_table_generated), c("data.table", "data.frame"), "generated datetime key copy changed data.table flavor")
+assert_identical(data.table::key(datetime_table_generated), "key_time", "generated datetime key copy lost the data.table key")
+assert_identical(datetime_table_generated$`formatted key`, c("2024-01-01", "2024-01-02"), "generated datetime key copy changed values")
+assert_identical(datetime_table_generated$marker, datetime_table_before$marker, "generated datetime key copy changed keyed row order")
+assert_identical(get("datetime_table", envir = .GlobalEnv), datetime_table_before, "generated datetime key copy mutated its source")
+assert_identical(source_environment$datetime_table, datetime_table_before, "live datetime key copy mutated its source")
+rm("datetime_table", "open_wrangler_result", envir = .GlobalEnv)
+invisible(dispatch("closeSession", list(sessionId = datetime_table_session_id)))
+
+assert_generated_formula_datetime_flavor <- function(case_session_id, variable_name, source) {
+  source_bytes_before <- serialize(source, NULL, version = 3L)
+  before <- if (inherits(source, "data.table")) {
+    data.table::copy(source)
+  } else {
+    unserialize(serialize(source, NULL, version = 3L))
+  }
+  is_readr_source <- identical(class(source), c("spec_tbl_df", "tbl_df", "tbl", "data.frame"))
+  expected_class <- if (is_readr_source) {
+    c("tbl_df", "tbl", "data.frame")
+  } else {
+    class(source)
+  }
+  assign(variable_name, source, envir = source_environment)
+  opened <- dispatch(
+    "openSession",
+    list(sessionId = case_session_id, variableName = variable_name, page = page_window())
+  )
+  assert_identical(opened$kind, "page", sprintf("%s did not open for Formula/Datetime", variable_name))
+  assert_identical(
+    opened$page$frameSemantics$classes,
+    as.list(expected_class),
+    sprintf("live %s did not publish its canonical dataframe flavor", variable_name)
+  )
+  formula_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = case_session_id,
+      revision = 0L,
+      step = formula_step(
+        paste0(variable_name, "-formula"),
+        "multiply",
+        "product",
+        right_position = 2L,
+        right_name = "right"
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(formula_preview$kind, "stepPreview", sprintf("%s Formula did not preview", variable_name))
+  formula_applied <- dispatch(
+    "applyDraft",
+    list(sessionId = case_session_id, revision = 1L, page = page_window())
+  )
+  assert_identical(formula_applied$action, "apply", sprintf("%s Formula did not apply", variable_name))
+  datetime_preview <- dispatch(
+    "previewStep",
+    list(
+      sessionId = case_session_id,
+      revision = 2L,
+      step = datetime_format_step(
+        paste0(variable_name, "-datetime"),
+        3L,
+        "when",
+        "%Y%m%d",
+        "formatted"
+      ),
+      page = page_window()
+    )
+  )
+  assert_identical(datetime_preview$kind, "stepPreview", sprintf("%s Format Datetime did not preview", variable_name))
+  applied <- dispatch(
+    "applyDraft",
+    list(sessionId = case_session_id, revision = 3L, page = page_window())
+  )
+  assert_identical(applied$action, "apply", sprintf("%s Format Datetime did not apply", variable_name))
+  assert_identical(
+    applied$page$frameSemantics$classes,
+    as.list(expected_class),
+    sprintf("live %s Formula/Datetime changed dataframe flavor", variable_name)
+  )
+  assign(variable_name, source, envir = .GlobalEnv)
+  eval(parse(text = applied$code), envir = .GlobalEnv)
+  generated <- get("open_wrangler_result", envir = .GlobalEnv, inherits = FALSE)
+  assert_identical(class(generated), expected_class, sprintf("generated %s changed dataframe flavor", variable_name))
+  if (is_readr_source) {
+    assert_identical(attr(generated, "spec", exact = TRUE), NULL, "generated readr Formula/Datetime retained parser spec")
+    assert_identical(attr(generated, "problems", exact = TRUE), NULL, "generated readr Formula/Datetime retained parser problems")
+  }
+  assert_identical(
+    unname(generated$product),
+    c(10, -6, NA_real_),
+    sprintf("generated %s Formula changed values", variable_name)
+  )
+  if (identical(variable_name, "formula_datetime_named")) {
+    assert_identical(
+      attr(generated$product, "names", exact = TRUE),
+      row.names(source),
+      "generated named Formula did not preserve aligned value names"
+    )
+  }
+  assert_identical(generated$formatted, c("20240229", "20250102", NA_character_), sprintf("generated %s Format Datetime changed values", variable_name))
+  if (inherits(source, "data.table")) {
+    assert_identical(data.table::key(generated), data.table::key(source), sprintf("generated %s lost its key", variable_name))
+  }
+  if (is_readr_source) {
+    assert_identical(
+      serialize(get(variable_name, envir = .GlobalEnv), NULL, version = 3L),
+      source_bytes_before,
+      sprintf("generated %s mutated its readr source", variable_name)
+    )
+    assert_identical(
+      serialize(source_environment[[variable_name]], NULL, version = 3L),
+      source_bytes_before,
+      sprintf("live %s mutated its readr source", variable_name)
+    )
+  } else {
+    assert_identical(get(variable_name, envir = .GlobalEnv), before, sprintf("generated %s mutated its source", variable_name))
+    assert_identical(source_environment[[variable_name]], before, sprintf("live %s mutated its source", variable_name))
+  }
+  rm(list = c(variable_name, "open_wrangler_result"), envir = .GlobalEnv)
+  invisible(dispatch("closeSession", list(sessionId = case_session_id)))
+  rm(list = variable_name, envir = source_environment)
+}
+
+formula_datetime_flavor_source <- data.frame(
+  left = c(5, -2, NA_real_),
+  right = c(2, 3, 4),
+  when = as.Date(c("2024-02-29", "2025-01-02", NA)),
+  marker = c("a", "b", "c"),
+  check.names = FALSE
+)
+assert_generated_formula_datetime_flavor(
+  formula_datetime_base_session_id,
+  "formula_datetime_base",
+  formula_datetime_flavor_source
+)
+formula_datetime_named_rows <- c("named-a", "named-b", "named-c")
+formula_datetime_named_source <- structure(
+  list(
+    left = structure(c(5, -2, NA_real_), names = formula_datetime_named_rows),
+    right = structure(c(2, 3, 4), names = formula_datetime_named_rows),
+    when = structure(
+      as.Date(c("2024-02-29", "2025-01-02", NA)),
+      names = formula_datetime_named_rows
+    ),
+    marker = c("a", "b", "c")
+  ),
+  class = "data.frame",
+  row.names = formula_datetime_named_rows
+)
+assert_generated_formula_datetime_flavor(
+  formula_datetime_named_session_id,
+  "formula_datetime_named",
+  formula_datetime_named_source
+)
+formula_datetime_readr_source <- readr::read_csv(
+  I(paste0(
+    "left,right,when,marker\n",
+    "5,2,2024-02-29,a\n",
+    "-2,3,2025-01-02,b\n",
+    "NA,4,NA,c\n"
+  )),
+  col_types = readr::cols(
+    left = readr::col_double(),
+    right = readr::col_double(),
+    when = readr::col_date(),
+    marker = readr::col_character()
+  ),
+  na = "NA",
+  show_col_types = FALSE
+)
+assert_identical(
+  class(formula_datetime_readr_source),
+  c("spec_tbl_df", "tbl_df", "tbl", "data.frame"),
+  "the readr Formula/Datetime fixture lost its parser class"
+)
+assert_identical(
+  is.null(attr(formula_datetime_readr_source, "spec", exact = TRUE)),
+  FALSE,
+  "the readr Formula/Datetime fixture lost its parser spec"
+)
+assert_generated_formula_datetime_flavor(
+  formula_datetime_readr_session_id,
+  "formula_datetime_readr",
+  formula_datetime_readr_source
+)
+assert_generated_formula_datetime_flavor(
+  formula_datetime_tibble_session_id,
+  "formula_datetime_tibble",
+  tibble::as_tibble(formula_datetime_flavor_source, .name_repair = "minimal")
+)
+formula_datetime_table_source <- data.table::as.data.table(formula_datetime_flavor_source)
+data.table::setkey(formula_datetime_table_source, marker)
+assert_generated_formula_datetime_flavor(
+  formula_datetime_table_session_id,
+  "formula_datetime_table",
+  formula_datetime_table_source
+)
+assert_generated_formula_datetime_flavor(
+  formula_datetime_collapse_frame_session_id,
+  "formula_datetime_collapse_frame",
+  collapse::qDF(formula_datetime_flavor_source)
+)
+assert_generated_formula_datetime_flavor(
+  formula_datetime_collapse_tibble_session_id,
+  "formula_datetime_collapse_tibble",
+  collapse::qTBL(formula_datetime_flavor_source)
+)
+assert_generated_formula_datetime_flavor(
+  formula_datetime_collapse_table_session_id,
+  "formula_datetime_collapse_table",
+  collapse::qDT(formula_datetime_flavor_source)
+)
+
+formula_datetime_s3_isolation_child <- function(frame_contract_path, kernel_agent_path) {
+  sys.source(frame_contract_path, envir = .GlobalEnv, keep.source = FALSE)
+  sys.source(kernel_agent_path, envir = .GlobalEnv, keep.source = FALSE)
+  if (!requireNamespace("data.table", quietly = TRUE) || !requireNamespace("jsonlite", quietly = TRUE)) {
+    stop("the Formula/Datetime S3-isolation child requires data.table and jsonlite", call. = FALSE)
+  }
+
+  assert_child <- function(condition, message) {
+    if (!isTRUE(condition)) stop(message, call. = FALSE)
+  }
+  source_environment <- new.env(parent = emptyenv())
+  source_environment$formula_base <- data.frame(x = c(1, 2), check.names = FALSE, row.names = c("a", "b"))
+  source_environment$datetime_base <- data.frame(
+    day = as.Date(c("2026-01-01", NA)),
+    check.names = FALSE,
+    row.names = c("a", "b")
+  )
+  source_environment$formula_table <- data.table::data.table(x = c(1, 2))
+  source_environment$datetime_table <- data.table::data.table(day = as.Date(c("2026-01-01", NA)))
+  source_bytes <- lapply(
+    c("formula_base", "datetime_base", "formula_table", "datetime_table"),
+    function(variable_name) serialize(source_environment[[variable_name]], NULL, version = 3L)
+  )
+  names(source_bytes) <- c("formula_base", "datetime_base", "formula_table", "datetime_table")
+
+  agent <- openwrangler_r_kernel_agent$new_agent(openwrangler_r_frame_contract, source_environment)
+  on.exit(agent$dispose(), add = TRUE)
+  request_number <- 0L
+  page <- list(
+    rowOffset = 0L,
+    rowLimit = 10L,
+    columnOffset = 0L,
+    columnLimit = 10L,
+    view = list(filters = I(list()), sorts = I(list()))
+  )
+  dispatch <- function(kind, payload) {
+    request_number <<- request_number + 1L
+    encoded <- jsonlite::toJSON(
+      list(
+        transportVersion = 11L,
+        requestId = sprintf("11111111-1111-4111-8111-%012d", request_number),
+        kind = kind,
+        payload = payload
+      ),
+      auto_unbox = TRUE,
+      null = "null",
+      na = "null"
+    )
+    jsonlite::fromJSON(agent$dispatch_json(as.character(encoded)), simplifyVector = FALSE)
+  }
+  formula_step <- function(id) {
+    list(
+      id = id,
+      kind = "formula",
+      params = list(
+        leftColumn = list(id = "r:c:0", name = "x"),
+        operator = "add",
+        value = 2,
+        newColumn = "y"
+      )
+    )
+  }
+  datetime_step <- function(id) {
+    list(
+      id = id,
+      kind = "formatDatetime",
+      params = list(
+        column = list(id = "r:c:0", name = "day"),
+        format = "%d/%m/%Y",
+        newColumn = "formatted"
+      )
+    )
+  }
+  prepare_case <- function(variable_name, session_id, step) {
+    opened <- dispatch("openSession", list(sessionId = session_id, variableName = variable_name, page = page))
+    assert_child(identical(opened$kind, "page"), sprintf("could not open S3-isolation case %s", variable_name))
+    previewed <- dispatch(
+      "previewStep",
+      list(sessionId = session_id, revision = 0L, step = step, page = page)
+    )
+    assert_child(
+      identical(previewed$kind, "stepPreview"),
+      sprintf("could not prepare S3-isolation case %s", variable_name)
+    )
+    applied <- dispatch(
+      "applyDraft",
+      list(sessionId = session_id, revision = previewed$revision, page = page)
+    )
+    assert_child(
+      identical(applied$kind, "planUpdated"),
+      sprintf("could not compile S3-isolation case %s", variable_name)
+    )
+    undone <- dispatch(
+      "undoStep",
+      list(sessionId = session_id, revision = applied$revision, page = page)
+    )
+    assert_child(
+      identical(undone$kind, "planUpdated"),
+      sprintf("could not reset S3-isolation case %s", variable_name)
+    )
+    list(
+      variableName = variable_name,
+      sessionId = session_id,
+      revision = undone$revision,
+      step = step,
+      code = applied$code,
+      outputName = if (identical(step$kind, "formula")) "y" else "formatted"
+    )
+  }
+  cases <- list(
+    formula_base = prepare_case(
+      "formula_base",
+      "11111111-1111-4111-8111-111111111111",
+      formula_step("formula-base")
+    ),
+    datetime_base = prepare_case(
+      "datetime_base",
+      "22222222-2222-4222-8222-222222222222",
+      datetime_step("datetime-base")
+    ),
+    formula_table = prepare_case(
+      "formula_table",
+      "33333333-3333-4333-8333-333333333333",
+      formula_step("formula-table")
+    ),
+    datetime_table = prepare_case(
+      "datetime_table",
+      "44444444-4444-4444-8444-444444444444",
+      datetime_step("datetime-table")
+    )
+  )
+  for (variable_name in names(source_bytes)) {
+    assert_child(
+      identical(serialize(source_environment[[variable_name]], NULL, version = 3L), source_bytes[[variable_name]]),
+      sprintf("preparing %s mutated its source", variable_name)
+    )
+  }
+
+  method_keys <- c(
+    "names.data.frame",
+    "names<-.data.frame",
+    "length.data.frame",
+    "length.Date",
+    "is.na.Date",
+    "names.data.table",
+    "names.CallRoutine",
+    "[[.CallRoutine",
+    "[[.DLLInfo",
+    "[[.DLLInfoReference",
+    "[[.DLLRegisteredRoutines",
+    "[[.NativeRoutineList"
+  )
+  calls <- new.env(parent = emptyenv())
+  for (method_key in method_keys) calls[[method_key]] <- 0L
+  poison_method <- function(method_key) {
+    force(method_key)
+    function(...) {
+      calls[[method_key]] <- calls[[method_key]] + 1L
+      stop(sprintf("caller S3 poison dispatched through %s", method_key), call. = FALSE)
+    }
+  }
+  registrations <- list(
+    c("names", "data.frame", "names.data.frame"),
+    c("names<-", "data.frame", "names<-.data.frame"),
+    c("length", "data.frame", "length.data.frame"),
+    c("length", "Date", "length.Date"),
+    c("is.na", "Date", "is.na.Date"),
+    c("names", "data.table", "names.data.table"),
+    c("names", "CallRoutine", "names.CallRoutine"),
+    c("[[", "CallRoutine", "[[.CallRoutine"),
+    c("[[", "DLLInfo", "[[.DLLInfo"),
+    c("[[", "DLLInfoReference", "[[.DLLInfoReference"),
+    c("[[", "DLLRegisteredRoutines", "[[.DLLRegisteredRoutines"),
+    c("[[", "NativeRoutineList", "[[.NativeRoutineList")
+  )
+  for (registration in registrations) {
+    registerS3method(
+      registration[[1L]],
+      registration[[2L]],
+      poison_method(registration[[3L]]),
+      envir = .GlobalEnv
+    )
+  }
+  reset_calls <- function() {
+    for (method_key in method_keys) calls[[method_key]] <- 0L
+  }
+  assert_no_calls <- function(label) {
+    observed <- vapply(method_keys, function(method_key) calls[[method_key]], integer(1L), USE.NAMES = TRUE)
+    if (any(observed != 0L)) {
+      dispatched <- observed[observed != 0L]
+      stop(
+        sprintf(
+          "%s dispatched caller S3 methods: %s",
+          label,
+          paste(sprintf("%s=%d", names(dispatched), dispatched), collapse = ", ")
+        ),
+        call. = FALSE
+      )
+    }
+  }
+  live_values <- function(response, output_name, formula) {
+    position <- match(
+      output_name,
+      vapply(response$page$schema, function(column) base::.subset2(column, "name"), character(1L))
+    )
+    assert_child(!is.na(position), sprintf("live S3-isolation page omitted %s", output_name))
+    if (formula) {
+      vapply(response$page$page$rows, function(row) {
+        cell <- base::.subset2(base::.subset2(row, "values"), position)
+        if (identical(base::.subset2(cell, "kind"), "null")) NA_real_ else as.double(base::.subset2(cell, "raw"))
+      }, double(1L), USE.NAMES = FALSE)
+    } else {
+      vapply(response$page$page$rows, function(row) {
+        cell <- base::.subset2(base::.subset2(row, "values"), position)
+        if (identical(base::.subset2(cell, "kind"), "null")) NA_character_ else as.character(base::.subset2(cell, "raw"))
+      }, character(1L), USE.NAMES = FALSE)
+    }
+  }
+
+  reset_calls()
+  for (case_name in names(cases)) {
+    case <- cases[[case_name]]
+    is_formula <- identical(case$step$kind, "formula")
+    expected <- if (is_formula) c(3, 4) else c("01/01/2026", NA_character_)
+    reset_calls()
+    previewed <- dispatch(
+      "previewStep",
+      list(
+        sessionId = case$sessionId,
+        revision = case$revision,
+        step = case$step,
+        page = page
+      )
+    )
+    assert_child(
+      identical(previewed$kind, "stepPreview"),
+      sprintf("live %s failed under caller S3 poisoning", case_name)
+    )
+    assert_child(
+      identical(live_values(previewed, case$outputName, is_formula), expected),
+      sprintf("live %s changed values under caller S3 poisoning", case_name)
+    )
+    assert_child(
+      identical(
+        serialize(source_environment[[case$variableName]], NULL, version = 3L),
+        source_bytes[[case$variableName]]
+      ),
+      sprintf("live %s mutated its source under caller S3 poisoning", case_name)
+    )
+    assert_no_calls(sprintf("live %s", case_name))
+
+    reset_calls()
+    evaluation_environment <- new.env(parent = baseenv())
+    assign(
+      case$variableName,
+      unserialize(source_bytes[[case$variableName]]),
+      envir = evaluation_environment
+    )
+    eval(parse(text = case$code), envir = evaluation_environment)
+    generated <- get("open_wrangler_result", envir = evaluation_environment, inherits = FALSE)
+    assert_child(
+      identical(unname(base::.subset2(generated, case$outputName)), expected),
+      sprintf("generated %s changed values under caller S3 poisoning", case_name)
+    )
+    assert_child(
+      identical(
+        serialize(
+          get(case$variableName, envir = evaluation_environment, inherits = FALSE),
+          NULL,
+          version = 3L
+        ),
+        source_bytes[[case$variableName]]
+      ),
+      sprintf("generated %s mutated its source under caller S3 poisoning", case_name)
+    )
+    if (grepl("table", case_name, fixed = TRUE)) {
+      assert_child(
+        identical(data.table:::selfrefok(generated), 1L),
+        sprintf("generated %s retained an invalid data.table self-reference", case_name)
+      )
+    }
+    assert_no_calls(sprintf("generated %s", case_name))
+  }
+}
+
+formula_datetime_s3_isolation_script <- tempfile(fileext = ".R")
+writeLines(
+  c(
+    "formula_datetime_s3_isolation_child <-",
+    deparse(formula_datetime_s3_isolation_child, width.cutoff = 500L),
+    paste0(
+      "formula_datetime_s3_isolation_child(",
+      "commandArgs(trailingOnly = TRUE)[[1L]], ",
+      "commandArgs(trailingOnly = TRUE)[[2L]])"
+    )
+  ),
+  formula_datetime_s3_isolation_script,
+  useBytes = TRUE
+)
+formula_datetime_s3_isolation_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c(
+    "--vanilla",
+    formula_datetime_s3_isolation_script,
+    normalizePath("r/openwrangler_runtime/frame_contract.R"),
+    normalizePath("r/openwrangler_runtime/kernel_agent.R")
+  ),
+  stdout = TRUE,
+  stderr = TRUE
+)
+formula_datetime_s3_isolation_status <- attr(
+  formula_datetime_s3_isolation_output,
+  "status",
+  exact = TRUE
+)
+if (!is.null(formula_datetime_s3_isolation_status) && formula_datetime_s3_isolation_status != 0L) {
+  stop(
+    paste(
+      c(
+        "Formula/Datetime caller-S3-isolation child failed",
+        formula_datetime_s3_isolation_output
+      ),
+      collapse = "\n"
+    ),
+    call. = FALSE
+  )
+}
+unlink(formula_datetime_s3_isolation_script)
+
 source_environment$wide <- as.data.frame(
   setNames(replicate(256L, seq_len(401L), simplify = FALSE), sprintf("column_%03d", seq_len(256L))),
   optional = TRUE
@@ -6384,6 +9446,7 @@ missing_package_contract <- list(
   rename_column = function(...) stop("unexpected rename", call. = FALSE),
   rename_column_at = function(...) stop("unexpected rename", call. = FALSE),
   clone_column_at = function(...) stop("unexpected clone", call. = FALSE),
+  formula_column_at = function(...) stop("unexpected formula", call. = FALSE),
   text_length_column_at = function(...) stop("unexpected text length", call. = FALSE),
   lower_text_column_at = function(...) stop("unexpected lowercase", call. = FALSE),
   upper_text_column_at = function(...) stop("unexpected uppercase", call. = FALSE),
@@ -6395,6 +9458,7 @@ missing_package_contract <- list(
   min_max_scale_column_at = function(...) stop("unexpected Min-max scale", call. = FALSE),
   floor_number_column_at = function(...) stop("unexpected floor", call. = FALSE),
   ceil_number_column_at = function(...) stop("unexpected ceiling", call. = FALSE),
+  format_datetime_column_at = function(...) stop("unexpected datetime format", call. = FALSE),
   fill_missing_column_at = function(...) stop("unexpected fill missing", call. = FALSE),
   fill_missing_from_fallback_columns_at = function(...) stop("unexpected fallback fill", call. = FALSE),
   fill_missing_directional_at = function(...) stop("unexpected directional fill", call. = FALSE),
