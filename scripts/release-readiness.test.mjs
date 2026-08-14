@@ -2586,6 +2586,11 @@ test("structurally gates the candidate-first preview workflow and exact artifact
         "node scripts/verify-canonical-release-artifact.mjs canonical-release";
     },
     (workflow) => {
+      workflow.jobs.package.steps.find(
+        (step) => step.run === "npm run verify:vsix -- openwrangler.candidate.vsix"
+      ).run = "npm run verify:vsix -- canonical-release/openwrangler.vsix";
+    },
+    (workflow) => {
       workflow.jobs["candidate-acceptance"].with.channel = "stable";
     },
     (workflow) => {
@@ -2598,6 +2603,14 @@ test("structurally gates the candidate-first preview workflow and exact artifact
       workflow.jobs["remote-ssh"].steps.find((step) =>
         String(step.run ?? "").includes("npm run test:remote-workspace --")
       ).run = "echo skipped";
+    },
+    (workflow) => {
+      workflow.jobs["remote-ssh"].steps.push({
+        run: "npm run verify:vsix -- canonical-release/openwrangler.vsix"
+      });
+    },
+    (workflow) => {
+      workflow.jobs["remote-ssh"].steps.find((step) => step.id === "canonical_remote").run = "echo accepted";
     },
     (workflow) => {
       workflow.jobs.release.needs = ["package", "candidate-acceptance"];
@@ -2624,6 +2637,14 @@ test("structurally gates the candidate-first preview workflow and exact artifact
     },
     (workflow) => {
       workflow.jobs.release.concurrency.queue = "latest";
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.push({
+        run: "npm run verify:vsix -- canonical-release/openwrangler.vsix"
+      });
+    },
+    (workflow) => {
+      workflow.jobs.release.steps.find((step) => step.id === "canonical_release").run = "echo accepted";
     },
     (workflow) => {
       workflow.jobs.release.steps.find(

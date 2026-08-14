@@ -30,6 +30,22 @@ test("accepts the fixed parallel candidate acceptance topology", () => {
   assert.deepEqual(inspectCandidateAcceptanceWorkflow(source), []);
 });
 
+test("released Python Jupyter uses the fixed candidate one-owner profile", () => {
+  const value = workflow();
+  const runner = step(value.jobs.jupyter, (entry) => entry.id === "packaged_editor");
+  assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE, "candidate-one-owner");
+  expectRejected((mutated) => {
+    delete step(mutated.jobs.jupyter, (entry) => entry.id === "packaged_editor").env
+      .OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE;
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((mutated) => {
+    step(
+      mutated.jobs.jupyter,
+      (entry) => entry.id === "packaged_editor"
+    ).env.OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE = "other";
+  }, /verifier.*packaged phase.*upload/u);
+});
+
 test("rejects invalid or oversized workflow text", () => {
   assert.match(inspectCandidateAcceptanceWorkflow("not: [yaml")[0], /valid YAML/u);
   assert.match(inspectCandidateAcceptanceWorkflow("x".repeat(2 * 1024 * 1024 + 1))[0], /bounded YAML/u);
@@ -71,6 +87,153 @@ test("platform owns the exact two-cell macOS and Windows matrix", () => {
   }, /fixed runner|macOS and Windows/u);
 });
 
+test("generic platform editors run only their exact platform smoke seam", () => {
+  const value = workflow();
+  for (const runnerId of ["packaged_editor", "cursor_smoke"]) {
+    assert.equal(
+      step(value.jobs.platform, (entry) => entry.id === runnerId).env.OPEN_WRANGLER_PACKAGED_MODE,
+      "platform-smoke"
+    );
+    expectRejected((mutated) => {
+      delete step(mutated.jobs.platform, (entry) => entry.id === runnerId).env.OPEN_WRANGLER_PACKAGED_MODE;
+    }, /verifier.*packaged phase.*upload/u);
+    expectRejected((mutated) => {
+      step(mutated.jobs.platform, (entry) => entry.id === runnerId).env.OPEN_WRANGLER_PACKAGED_MODE = "full";
+    }, /verifier.*packaged phase.*upload/u);
+  }
+});
+
+test("generic platform acceptance contains no hosted-R setup or R-Jupyter tail", () => {
+  expectRejected((value) => {
+    value.jobs.platform.steps.push({
+      uses: "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6",
+      with: { "r-version": "4.5.2", "use-public-rspm": true }
+    });
+  }, /must stay generic/u);
+  expectRejected((value) => {
+    value.jobs.platform.steps.push({
+      id: "packaged_editor_r_platform",
+      env: { OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter" },
+      run: "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
+    });
+  }, /must stay generic/u);
+});
+
+test("generic platform acceptance does not rerun pull-request source or harness suites", () => {
+  for (const run of ["npm run test:python-environment-smoke", "npm run test:extension-host"]) {
+    expectRejected((value) => {
+      value.jobs.platform.steps.push({ run });
+    }, /artifact-focused.*source or harness suites/u);
+  }
+});
+
+test("r_platform owns the exact non-cancelling macOS and Windows matrix", () => {
+  expectRejected((value) => {
+    value.jobs.r_platform.strategy["fail-fast"] = true;
+  }, /hosted-R macOS and Windows matrix/u);
+  expectRejected((value) => {
+    value.jobs.r_platform.strategy["max-parallel"] = 1;
+  }, /hosted-R macOS and Windows matrix/u);
+  expectRejected((value) => {
+    value.jobs.r_platform.strategy.matrix.include[0].python = "3.14";
+  }, /hosted-R macOS and Windows matrix/u);
+  expectRejected((value) => {
+    value.jobs.r_platform["runs-on"] = "ubuntu-24.04";
+  }, /fixed runner|hosted-R macOS and Windows/u);
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.id === "rscript").shell = "bash";
+  }, /hosted-R macOS and Windows matrix/u);
+});
+
+test("r_platform uses exact focused selectors in one VS Code runner per operating system", () => {
+  for (const [id, journey] of [
+    ["packaged_editor_r_core", "core-operations"],
+    ["packaged_editor_r_native", "native-frames"],
+    ["packaged_editor_r_restart", "kernel-restart"]
+  ]) {
+    const value = workflow();
+    const runner = step(value.jobs.r_platform, (entry) => entry.id === id);
+    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY, journey);
+    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, "vscode");
+  }
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.id === "packaged_editor_r_native").env[
+      "OPEN_WRANGLER_PACKAGED_R_JOURNEY"
+    ] = "core-operations";
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.id === "packaged_editor_r_restart").env[
+      "OPEN_WRANGLER_PACKAGED_EDITORS"
+    ] = "vscode,cursor";
+  }, /verifier.*packaged phase.*upload/u);
+});
+
+test("every r_platform phase has an independent verifier and unique immediate failure upload", () => {
+  expectRejected((value) => {
+    value.jobs.r_platform.steps = value.jobs.r_platform.steps.filter((entry) => entry.id !== "r_platform_setup");
+  }, /shared setup boundary/u);
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.id === "r_platform_setup").shell = "pwsh";
+  }, /shared setup boundary/u);
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.id === "canonical_r_native").if =
+      "${{ always() && steps.packaged_editor_r_core.outcome == 'success' }}";
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.id === "packaged_editor_r_restart")["continue-on-error"] = false;
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    const steps = value.jobs.r_platform.steps;
+    const runner = steps.findIndex((entry) => entry.id === "packaged_editor_r_native");
+    steps.splice(runner, 0, { run: "true" });
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.name === "Upload platform native R frame failure diagnostics").with[
+      "name"
+    ] = "${{ inputs.channel }}-release-r-jupyter-platform-core-${{ runner.os }}-${{ github.run_attempt }}";
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.name === "Upload platform R kernel restart failure diagnostics").if =
+      "${{ success() }}";
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    value.jobs.r_platform.steps.splice(-1, 0, { id: "rogue", "continue-on-error": true, run: "true" });
+  }, /bounded order/u);
+});
+
+test("r_platform orders all phases and defers one literal three-outcome verdict", () => {
+  expectRejected((value) => {
+    const steps = value.jobs.r_platform.steps;
+    const nativeVerifier = steps.findIndex((entry) => entry.id === "canonical_r_native");
+    const nativeTriple = steps.splice(nativeVerifier, 3);
+    steps.splice(steps.findIndex((entry) => entry.id === "canonical_r_restart") + 3, 0, ...nativeTriple);
+  }, /bounded order|verifier.*packaged phase/u);
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.name === "Require successful platform R outcomes").if =
+      "${{ success() }}";
+  }, /literal raw-outcome verdict/u);
+  expectRejected((value) => {
+    step(value.jobs.r_platform, (entry) => entry.name === "Require successful platform R outcomes").shell = "pwsh";
+  }, /literal raw-outcome verdict/u);
+  expectRejected((value) => {
+    const verdict = step(value.jobs.r_platform, (entry) => entry.name === "Require successful platform R outcomes");
+    verdict.run = verdict.run.replace('test "$NATIVE_OUTCOME" = "success"', "true");
+  }, /literal raw-outcome verdict/u);
+  expectRejected((value) => {
+    const verdict = step(value.jobs.r_platform, (entry) => entry.name === "Require successful platform R outcomes");
+    verdict.env.RESTART_OUTCOME = "${{ steps.packaged_editor_r_core.outcome }}";
+  }, /literal raw-outcome verdict/u);
+  expectRejected((value) => {
+    const steps = value.jobs.r_platform.steps;
+    const upload = steps.findIndex((entry) => entry.name === "Upload platform R core failure diagnostics");
+    steps.splice(upload + 1, 0, {
+      name: "Fail after platform R core diagnostics",
+      if: "${{ always() && steps.packaged_editor_r_core.outcome == 'failure' }}",
+      run: "exit 1"
+    });
+  }, /literal raw-outcome verdict/u);
+});
+
 test("linux and performance remain fixed parallel siblings", () => {
   expectRejected((value) => {
     value.jobs.linux.needs = ["contract", "platform"];
@@ -79,8 +242,128 @@ test("linux and performance remain fixed parallel siblings", () => {
     value.jobs.performance["runs-on"] = "${{ inputs.runner_os }}";
   }, /fixed runner and direct dependency/u);
   expectRejected((value) => {
-    step(value.jobs.linux, (entry) => entry.run === "npm run test:coverage").run = "true";
-  }, /source, webview, coverage/u);
+    step(value.jobs.linux, (entry) => entry.run === "npm run benchmark:runtime").run = "true";
+  }, /canonical artifact verification, live repository metadata, audits, quick benchmark/u);
+  expectRejected((value) => {
+    step(value.jobs.linux, (entry) => entry.run === "npm run repository:check-live").run = "true";
+  }, /canonical artifact verification, live repository metadata, audits, quick benchmark/u);
+});
+
+test("performance prepares one authoritative remote tar-inspection interpreter before pinned editor acquisition", () => {
+  const value = workflow();
+  const setup = step(value.jobs.performance, (entry) => entry.id === "inspection_python");
+  const runner = step(value.jobs.performance, (entry) => entry.id === "installed_performance");
+  assert.equal(runner.env.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON, "${{ steps.inspection_python.outputs.python-path }}");
+  assert.ok(value.jobs.performance.steps.indexOf(setup) < value.jobs.performance.steps.indexOf(runner));
+
+  expectRejected((mutated) => {
+    delete step(mutated.jobs.performance, (entry) => entry.id === "installed_performance").env
+      .OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON;
+  }, /remote tar inspector.*PATH fallbacks/u);
+  expectRejected((mutated) => {
+    step(
+      mutated.jobs.performance,
+      (entry) => entry.id === "installed_performance"
+    ).env.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON = "python3";
+  }, /remote tar inspector.*PATH fallbacks/u);
+  expectRejected((mutated) => {
+    step(mutated.jobs.performance, (entry) => entry.id === "inspection_python").uses = "actions/setup-python@v6";
+  }, /pinned setup-python.*remote tar inspector/u);
+  expectRejected((mutated) => {
+    const steps = mutated.jobs.performance.steps;
+    const setupIndex = steps.findIndex((entry) => entry.id === "inspection_python");
+    const [lateSetup] = steps.splice(setupIndex, 1);
+    const runnerIndex = steps.findIndex((entry) => entry.id === "installed_performance");
+    steps.splice(runnerIndex + 1, 0, lateSetup);
+  }, /before editor acquisition/u);
+  expectRejected((mutated) => {
+    const setupIndex = mutated.jobs.performance.steps.findIndex((entry) => entry.id === "inspection_python");
+    mutated.jobs.performance.steps.splice(setupIndex + 1, 0, {
+      uses: "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+      with: { "python-version": "3.12", cache: "pip" }
+    });
+  }, /one pinned setup-python/u);
+});
+
+test("linux acceptance does not rerun pull-request suites or their private setup", () => {
+  const value = workflow();
+  assert.equal(
+    value.jobs.linux.steps.some((entry) => entry.uses?.startsWith("actions/setup-java@")),
+    false
+  );
+  for (const run of [
+    "npm run check",
+    "npm run test:scripts",
+    "npm run test:webview-acceptance",
+    "npm run test:coverage",
+    "npx playwright-core install --with-deps chromium",
+    'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"',
+    'python -m pip install --no-deps "https://files.pythonhosted.org/packages/uv-0.11.32-py3-none-manylinux.whl"'
+  ]) {
+    expectRejected((value) => {
+      value.jobs.linux.steps.push({ run });
+    }, /artifact-focused.*source suites, harness setup/u);
+  }
+  expectRejected((value) => {
+    value.jobs.linux.steps.push({ name: "Verify exact coverage runtimes", run: "true" });
+  }, /artifact-focused.*source suites, harness setup/u);
+  expectRejected((mutated) => {
+    mutated.jobs.linux.steps.splice(3, 0, {
+      uses: "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e",
+      with: { distribution: "temurin", "java-version": "17" }
+    });
+  }, /artifact-focused.*Jupyter-owned Java/u);
+});
+
+test("Linux VS Code is the sole full generic owner and Cursor is a pinned compatibility seam", () => {
+  const value = workflow();
+  const vscode = step(value.jobs.linux, (entry) => entry.id === "packaged_vscode");
+  const cursor = step(value.jobs.linux, (entry) => entry.id === "packaged_cursor");
+  const cursorIndex = value.jobs.linux.steps.indexOf(cursor);
+  assert.equal(vscode.env.OPEN_WRANGLER_PACKAGED_MODE, undefined);
+  assert.equal(cursor.env.OPEN_WRANGLER_PACKAGED_MODE, "platform-smoke");
+  assert.equal(cursor.name, "Test the pinned Cursor compatibility smoke seam");
+  assert.equal(value.jobs.linux.steps[cursorIndex + 1].name, "Upload pinned Cursor compatibility failure diagnostics");
+  assert.equal(value.jobs.linux.steps[cursorIndex + 2].name, "Fail after pinned Cursor compatibility diagnostics");
+  expectRejected((mutated) => {
+    delete step(mutated.jobs.linux, (entry) => entry.id === "packaged_cursor").env.OPEN_WRANGLER_PACKAGED_MODE;
+  }, /sole full generic editor owner.*every other generic editor consumer.*platform-smoke/u);
+  expectRejected((mutated) => {
+    step(mutated.jobs.linux, (entry) => entry.id === "packaged_cursor").env.OPEN_WRANGLER_PACKAGED_MODE = "full";
+  }, /sole full generic editor owner.*every other generic editor consumer.*platform-smoke/u);
+  expectRejected((mutated) => {
+    step(mutated.jobs.linux, (entry) => entry.id === "packaged_vscode").env.OPEN_WRANGLER_PACKAGED_MODE =
+      "platform-smoke";
+  }, /sole full generic editor owner/u);
+  expectRejected((mutated) => {
+    step(mutated.jobs.linux, (entry) => entry.id === "packaged_cursor").name =
+      "Test the full package in private-display Cursor";
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((mutated) => {
+    step(mutated.jobs.linux, (entry) => entry.name === "Upload pinned Cursor compatibility failure diagnostics").name =
+      "Upload Cursor failure diagnostics";
+  }, /verifier.*packaged phase.*upload/u);
+});
+
+test("candidate consumers rely on canonical reverification without repeating full VSIX verification", () => {
+  const value = workflow();
+  assert.equal(
+    Object.values(value.jobs).some((job) =>
+      job.steps.some((entry) => entry.run === "npm run verify:vsix -- canonical-release/openwrangler.vsix")
+    ),
+    false
+  );
+  for (const [jobName, job] of Object.entries(value.jobs)) {
+    for (const [index, runner] of job.steps.entries()) {
+      if (!runner.id?.startsWith("packaged_")) continue;
+      assert.match(job.steps[index - 1]?.id ?? "", /^canonical/u, `${jobName}/${runner.id} must retain its verifier.`);
+    }
+  }
+  for (const jobName of ["platform", "r_platform", "linux", "jupyter", "r_local"]) {
+    expectRejected((mutated) => {
+      mutated.jobs[jobName].steps.push({ run: "npm run verify:vsix -- canonical-release/openwrangler.vsix" });
+    }, /canonical checksum\/provenance verifier.*producer-owned full VSIX verification/u);
+  }
 });
 
 test("jupyter contains only independent Python and remote-R cells", () => {
@@ -95,32 +378,57 @@ test("jupyter contains only independent Python and remote-R cells", () => {
   }, /local R belongs to its shards/u);
 });
 
-test("r_contract and r_local depend only on contract and run as siblings", () => {
-  expectRejected((value) => {
-    value.jobs.r_contract.needs = "jupyter";
-  }, /fixed runner|artifact-independent sibling/u);
-  expectRejected((value) => {
-    value.jobs.r_local.needs = ["contract", "r_contract"];
-  }, /fixed runner|beside r_contract/u);
-  expectRejected((value) => {
-    value.jobs.r_contract.steps.push({
-      uses: "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
-    });
-  }, /artifact-independent sibling/u);
+test("jupyter consumes the producer-validated remote lock without rebuilding its proof", () => {
+  const value = workflow();
+  for (const duplicate of [
+    "npm run lock:remote-jupyter:check",
+    "npm run audit:remote-jupyter",
+    "uv-0.11.32-py3-none-manylinux"
+  ]) {
+    assert.equal(
+      value.jobs.jupyter.steps.some((entry) => entry.run?.includes(duplicate)),
+      false,
+      `${duplicate} must remain producer-owned.`
+    );
+    expectRejected((mutated) => {
+      mutated.jobs.jupyter.steps.push({
+        run: duplicate === "uv-0.11.32-py3-none-manylinux" ? `python -m pip install ${duplicate}` : duplicate,
+        if: "${{ matrix.phase == 'python' }}"
+      });
+    }, /producer-validated remote lock.*reinstalling uv.*repeating lock/u);
+  }
 });
 
-test("r_contract owns the exact hosted R dependency contract once", () => {
+test("candidate acceptance omits the protected-PR native R contract owner", () => {
+  const value = workflow();
+  assert.equal(value.jobs.r_contract, undefined);
+  assert.equal(
+    Object.values(value.jobs).some((job) => job.steps.some((entry) => entry.run === "npm run test:r-contract")),
+    false
+  );
+  expectRejected((mutated) => {
+    mutated.jobs.r_contract = {
+      name: "Native R contract",
+      needs: "contract",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 30,
+      steps: [{ run: "npm run test:r-contract" }]
+    };
+  }, /must not reintroduce.*source-only native R contract.*protected PR CI/u);
+  expectRejected((mutated) => {
+    mutated.jobs.performance.steps.push({ run: "npm run test:r-contract" });
+  }, /must not reintroduce.*source-only native R contract.*protected PR CI/u);
+});
+
+test("r_local remains a direct artifact-backed sibling of the other candidate lanes", () => {
   expectRejected((value) => {
-    step(value.jobs.r_contract, (entry) => entry.uses?.startsWith("r-lib/actions/setup-r-dependencies@")).with[
-      "extra-packages"
-    ] += "\nany::IRkernel";
-  }, /exact hosted R 4\.5\.2 package contract/u);
+    value.jobs.r_local.needs = ["contract", "jupyter"];
+  }, /fixed runner|shards backed by the artifact/u);
   expectRejected((value) => {
-    step(value.jobs.r_contract, (entry) => entry.run === "npm run test:r-contract").env.RSCRIPT = "Rscript";
-  }, /native contract once/u);
-  expectRejected((value) => {
-    value.jobs.r_contract.steps.push({ run: 'Rscript -e "install.packages("jsonlite")"' });
-  }, /exact hosted R/u);
+    value.jobs.r_local.steps.push({
+      run: "npm run test:r-contract"
+    });
+  }, /must not reintroduce.*native R contract/u);
 });
 
 test("r_local uses exactly two balanced, non-cancelling shards", () => {
@@ -135,24 +443,30 @@ test("r_local uses exactly two balanced, non-cancelling shards", () => {
   }, /two non-cancelling balanced shards/u);
 });
 
-test("every local phase uses its explicit selector and keeps VS Code then Cursor in one runner", () => {
-  for (const [id, journey] of [
-    ["packaged_editor_r_core", "core-operations"],
-    ["packaged_editor_r_restart", "kernel-restart"],
-    ["packaged_editor_r_interactive", "interactive-terminal"],
-    ["packaged_editor_r_literate", "literate-documents"],
-    ["packaged_editor_r_values", "value-operations"],
-    ["packaged_editor_r_categorical", "categorical-operations"]
+test("every local phase uses its explicit selector and exact editor ownership", () => {
+  for (const [id, journey, editors] of [
+    ["packaged_editor_r_core", "core-operations", "vscode,cursor"],
+    ["packaged_editor_r_restart", "kernel-restart", "vscode,cursor"],
+    ["packaged_editor_r_interactive", "interactive-terminal", "vscode,cursor"],
+    ["packaged_editor_r_literate", "literate-documents", "vscode,cursor"],
+    ["packaged_editor_r_native", "native-frames", "vscode,cursor"],
+    ["packaged_editor_r_values", "value-operations", "vscode"],
+    ["packaged_editor_r_categorical", "categorical-operations", "vscode"]
   ]) {
     const value = workflow();
     const runner = step(value.jobs.r_local, (entry) => entry.id === id);
     assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY, journey);
-    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, "vscode,cursor");
+    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, editors);
   }
   expectRejected((value) => {
     step(value.jobs.r_local, (entry) => entry.id === "packaged_editor_r_core").env.OPEN_WRANGLER_PACKAGED_R_JOURNEY =
       "value-operations";
   }, /verifier.*packaged phase.*upload/u);
+  for (const id of ["packaged_editor_r_values", "packaged_editor_r_categorical"]) {
+    expectRejected((value) => {
+      step(value.jobs.r_local, (entry) => entry.id === id).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode,cursor";
+    }, /verifier.*packaged phase.*upload/u);
+  }
 });
 
 test("every local phase has an adjacent verifier and immediate exact failure upload", () => {
@@ -183,6 +497,9 @@ test("every local phase has an adjacent verifier and immediate exact failure upl
     );
     upload.if = "${{ always() }}";
   }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    value.jobs.r_local.steps.splice(-1, 0, { id: "rogue", "continue-on-error": true, run: "true" });
+  }, /balanced shard order/u);
 });
 
 test("local shard order is lifecycle then editing with one deferred raw-outcome verdict", () => {
@@ -214,6 +531,19 @@ test("local shard order is lifecycle then editing with one deferred raw-outcome 
     const verdict = step(value.jobs.r_local, (entry) => entry.name === "Require successful local R shard outcomes");
     verdict.run = verdict.run.replace('test "$RESTART_OUTCOME" = "success"', "true");
   }, /literal raw-outcome verdict/u);
+  expectRejected((value) => {
+    const verdict = step(value.jobs.r_local, (entry) => entry.name === "Require successful local R shard outcomes");
+    verdict.run = verdict.run.replace('test "$NATIVE_OUTCOME" = "success"', "true");
+  }, /literal raw-outcome verdict/u);
+  expectRejected((value) => {
+    const steps = value.jobs.r_local.steps;
+    const upload = steps.findIndex((entry) => entry.name === "Upload native R frame failure diagnostics");
+    steps.splice(upload + 1, 0, {
+      name: "Fail after native R frame diagnostics",
+      if: "${{ always() && steps.packaged_editor_r_native.outcome == 'failure' }}",
+      run: "exit 1"
+    });
+  }, /literal raw-outcome verdict/u);
 });
 
 test("fan-in always needs every job and accepts only literal success", () => {
@@ -225,6 +555,15 @@ test("fan-in always needs every job and accepts only literal success", () => {
   }, /always fan in every direct job/u);
   expectRejected((value) => {
     value.jobs.acceptance.steps[0].run = 'test "$PLATFORM_RESULT" != "failure"';
+  }, /literal success result/u);
+  expectRejected((value) => {
+    value.jobs.acceptance.needs = value.jobs.acceptance.needs.filter((name) => name !== "r_platform");
+  }, /always fan in every direct job/u);
+  expectRejected((value) => {
+    value.jobs.acceptance.steps[0].run = value.jobs.acceptance.steps[0].run.replace(
+      'test "$R_PLATFORM_RESULT" = "success"',
+      "true"
+    );
   }, /literal success result/u);
 });
 

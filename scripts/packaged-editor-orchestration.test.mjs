@@ -18,14 +18,89 @@ import {
   runWithRetainedFailure
 } from "./packaged-editor-orchestration.mjs";
 import {
+  CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
+  CANDIDATE_PYTHON_JUPYTER_PROFILE,
+  packagedPythonJupyterEditorPlan,
+  resolvePackagedPythonJupyterProfile
+} from "./packaged-python-jupyter.mjs";
+import {
   CORE_R_JUPYTER_SELECTOR,
   KERNEL_RESTART_R_JUPYTER_SELECTOR,
+  NATIVE_FRAMES_R_JUPYTER_SELECTOR,
   resolvePackagedRJourneySelection
 } from "./packaged-r-journey.mjs";
+
+test("candidate Python Jupyter gives comprehensive evidence to VS Code and one compatibility seam to Cursor", () => {
+  assert.equal(CANDIDATE_PYTHON_JUPYTER_PROFILE, "candidate-one-owner");
+  assert.equal(CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR, "candidate-compatibility-seam");
+  const candidate = resolvePackagedPythonJupyterProfile({
+    value: CANDIDATE_PYTHON_JUPYTER_PROFILE,
+    acceptanceMode: "full",
+    jupyterExtensionEnabled: true,
+    dataWranglerCoexistenceEnabled: false,
+    remoteJupyterEnabled: true,
+    requestedEditors: ["vscode", "cursor"]
+  });
+  assert.deepEqual(packagedPythonJupyterEditorPlan(candidate, "vscode", true), {
+    phases: ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"],
+    remote: true,
+    allowSelector: undefined,
+    integrationOnly: true
+  });
+  assert.deepEqual(packagedPythonJupyterEditorPlan(candidate, "cursor", true), {
+    phases: ["jupyter-allow"],
+    remote: false,
+    allowSelector: CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR,
+    integrationOnly: true
+  });
+});
+
+test("unset Python Jupyter profile preserves complete manual coverage in both editors", () => {
+  const profile = resolvePackagedPythonJupyterProfile({
+    value: undefined,
+    acceptanceMode: "full",
+    jupyterExtensionEnabled: true,
+    dataWranglerCoexistenceEnabled: false,
+    remoteJupyterEnabled: true,
+    requestedEditors: ["vscode", "cursor"]
+  });
+  for (const editor of ["vscode", "cursor"]) {
+    assert.deepEqual(packagedPythonJupyterEditorPlan(profile, editor, true), {
+      phases: ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"],
+      remote: true,
+      allowSelector: undefined,
+      integrationOnly: false
+    });
+  }
+});
+
+test("candidate Python Jupyter profile rejects every non-candidate context", () => {
+  const base = {
+    value: CANDIDATE_PYTHON_JUPYTER_PROFILE,
+    acceptanceMode: "full",
+    jupyterExtensionEnabled: true,
+    dataWranglerCoexistenceEnabled: false,
+    remoteJupyterEnabled: true,
+    requestedEditors: ["vscode", "cursor"]
+  };
+  for (const overrides of [
+    { value: "other" },
+    { acceptanceMode: "platform-smoke" },
+    { acceptanceMode: "r-jupyter" },
+    { jupyterExtensionEnabled: false },
+    { dataWranglerCoexistenceEnabled: true },
+    { remoteJupyterEnabled: false },
+    { requestedEditors: ["vscode"] },
+    { requestedEditors: ["cursor", "vscode"] }
+  ]) {
+    assert.throws(() => resolvePackagedPythonJupyterProfile({ ...base, ...overrides }), /must be unset|valid only/u);
+  }
+});
 
 test("R journey selection keeps combined diagnostics by default and isolates remote-only acceptance", () => {
   assert.equal(CORE_R_JUPYTER_SELECTOR, "core-operations");
   assert.equal(KERNEL_RESTART_R_JUPYTER_SELECTOR, "kernel-restart");
+  assert.equal(NATIVE_FRAMES_R_JUPYTER_SELECTOR, "native-frames");
   const resolve = (overrides = {}) =>
     resolvePackagedRJourneySelection({
       acceptanceMode: "r-jupyter",
@@ -57,6 +132,7 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
     ["categorical-operations", false, false],
     ["value-operations", false, false],
     [KERNEL_RESTART_R_JUPYTER_SELECTOR, false, false],
+    [NATIVE_FRAMES_R_JUPYTER_SELECTOR, false, false],
     ["interactive-terminal", false, true],
     ["literate-documents", true, true]
   ]) {
@@ -113,6 +189,7 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
     [{ selector: "categorical-operations", remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ selector: "value-operations", remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ selector: KERNEL_RESTART_R_JUPYTER_SELECTOR, remoteJupyterEnabled: true }, /cannot be combined/u],
+    [{ selector: NATIVE_FRAMES_R_JUPYTER_SELECTOR, remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ remoteJupyterEnabled: true, requestedEditors: ["cursor"] }, /requires VS Code/u],
     [{ selector: "remote-r-jupyter", requestedEditors: ["vscode"] }, /requires real remote/u],
     [

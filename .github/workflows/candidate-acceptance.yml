@@ -67,25 +67,6 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        with:
-          r-version: "4.5.2"
-          use-public-rspm: true
-      - id: rscript
-        name: Locate hosted Rscript
-        shell: Rscript {0}
-        run: |
-          version <- as.character(getRversion())
-          if (!identical(version, "4.5.2")) stop("Expected hosted R 4.5.2, got ", version, ".")
-          executable <- normalizePath(
-            file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript"),
-            winslash = "/",
-            mustWork = TRUE
-          )
-          if (!nzchar(executable) || grepl("[\r\n]", executable)) stop("Rscript resolved to an unsafe path.")
-          output <- Sys.getenv("GITHUB_OUTPUT")
-          if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
-          cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
@@ -101,11 +82,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
-      - run: npm run test:python-environment-smoke
-      - run: npm run test:extension-host
-        env:
-          VSCODE_TEST_VERSION: stable
       - run: npm run build:test-extension
       - id: canonical_vscode
         name: Reverify the candidate for cross-platform VS Code
@@ -120,6 +96,7 @@ jobs:
         run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
           VSCODE_TEST_VERSION: stable
       - name: Upload VS Code failure diagnostics
         if: ${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
@@ -161,17 +138,87 @@ jobs:
       - name: Fail after Cursor diagnostics
         if: ${{ always() && steps.cursor_smoke.outcome == 'failure' }}
         run: exit 1
-      - id: canonical_r_jupyter_platform
-        name: Reverify the candidate for cross-platform R Jupyter
+
+  r_platform:
+    name: Native R platform acceptance (${{ matrix.os }})
+    needs: contract
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - os: macos-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.14"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: "4.5.2"
+          use-public-rspm: true
+      - id: rscript
+        name: Locate hosted Rscript
+        shell: Rscript {0}
+        run: |
+          version <- as.character(getRversion())
+          if (!identical(version, "4.5.2")) stop("Expected hosted R 4.5.2, got ", version, ".")
+          executable <- normalizePath(
+            file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript"),
+            winslash = "/",
+            mustWork = TRUE
+          )
+          if (!nzchar(executable) || grepl("[\r\n]", executable)) stop("Rscript resolved to an unsafe path.")
+          output <- Sys.getenv("GITHUB_OUTPUT")
+          if (!nzchar(output)) stop("GITHUB_OUTPUT is not available.")
+          cat(sprintf("executable=%s\nversion=%s\n", executable, version), file = output, append = TRUE)
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: canonical-release
+          merge-multiple: true
+      - id: canonical
+        name: Verify the exact canonical candidate artifact
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - id: packaged_editor_r_platform
-        name: Test local R Jupyter in packaged VS Code
+      - run: npm run build:test-extension
+      - id: r_platform_setup
+        name: Confirm native R platform setup
+        shell: bash
+        run: "true"
+      - id: canonical_r_core
+        name: Reverify the candidate for platform R core operations
+        if: ${{ always() && steps.r_platform_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_core
+        name: Test platform R core operations in a fresh packaged editor phase
+        if: ${{ always() && steps.canonical_r_core.outcome == 'success' }}
         continue-on-error: true
-        run: node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}
+        run: node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_core.outputs.candidate_path }}
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
           OPEN_WRANGLER_PACKAGED_R_JOURNEY: core-operations
@@ -180,19 +227,90 @@ jobs:
           OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
           OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
           VSCODE_TEST_VERSION: stable
-      - name: Upload cross-platform R-Jupyter failure diagnostics
-        if: ${{ always() && steps.packaged_editor_r_platform.outcome == 'failure' && steps.packaged_editor_r_platform.outputs.evidence_ready == 'true' }}
+      - name: Upload platform R core failure diagnostics
+        if: ${{ always() && steps.packaged_editor_r_core.outcome == 'failure' && steps.packaged_editor_r_core.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ inputs.channel }}-release-r-jupyter-platform-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor_r_platform.outputs.evidence_path }}
+          name: ${{ inputs.channel }}-release-r-jupyter-platform-core-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_core.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
-      - name: Fail after cross-platform R-Jupyter diagnostics
-        if: ${{ always() && steps.packaged_editor_r_platform.outcome == 'failure' }}
-        run: exit 1
+      - id: canonical_r_native
+        name: Reverify the candidate for platform native R frames
+        if: ${{ always() && steps.r_platform_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_native
+        name: Test platform native R frames in a fresh packaged editor phase
+        if: ${{ always() && steps.canonical_r_native.outcome == 'success' }}
+        continue-on-error: true
+        run: node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_native.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: native-frames
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload platform native R frame failure diagnostics
+        if: ${{ always() && steps.packaged_editor_r_native.outcome == 'failure' && steps.packaged_editor_r_native.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-platform-native-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_native.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - id: canonical_r_restart
+        name: Reverify the candidate for platform R kernel restart
+        if: ${{ always() && steps.r_platform_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_restart
+        name: Test platform R kernel restart in a fresh packaged editor phase
+        if: ${{ always() && steps.canonical_r_restart.outcome == 'success' }}
+        continue-on-error: true
+        run: node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_restart.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: kernel-restart
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload platform R kernel restart failure diagnostics
+        if: ${{ always() && steps.packaged_editor_r_restart.outcome == 'failure' && steps.packaged_editor_r_restart.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-platform-restart-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_restart.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - name: Require successful platform R outcomes
+        if: ${{ always() }}
+        shell: bash
+        env:
+          CORE_OUTCOME: ${{ steps.packaged_editor_r_core.outcome }}
+          NATIVE_OUTCOME: ${{ steps.packaged_editor_r_native.outcome }}
+          RESTART_OUTCOME: ${{ steps.packaged_editor_r_restart.outcome }}
+        run: |
+          set -euo pipefail
+          test "$CORE_OUTCOME" = "success"
+          test "$NATIVE_OUTCOME" = "success"
+          test "$RESTART_OUTCOME" = "success"
 
   linux:
     name: Linux release acceptance
@@ -213,28 +331,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
-        with:
-          distribution: temurin
-          java-version: "17"
       - run: npm ci
-      - run: npx playwright-core install --with-deps chromium
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - run: python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"
-      - name: Verify exact coverage runtimes
-        run: |
-          python - <<'PY'
-          import pandas
-          import pyspark
-          from packaging.version import Version
-
-          assert pyspark.__version__ == "4.2.0", pyspark.__version__
-          assert Version("2.2") <= Version(pandas.__version__) < Version("3"), pandas.__version__
-          PY
-          java -XshowSettings:properties -version 2>&1 |
-            grep -Eq '^[[:space:]]*java\.specification\.version = 17$'
-      - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ inputs.artifact_id }}
@@ -247,30 +346,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
-      - run: npm run check
       - name: Verify live repository metadata
         run: npm run repository:check-live
-      - run: npm run test:scripts
-      - id: webview_acceptance
-        continue-on-error: true
-        run: npm run test:webview-acceptance
-      - name: Upload webview failure diagnostics
-        if: ${{ always() && steps.webview_acceptance.outcome == 'failure' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ inputs.channel }}-release-webview-${{ github.run_attempt }}
-          path: |
-            tmp/screenshots-actual/
-            tmp/screenshots-diff/
-          if-no-files-found: ignore
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-      - name: Fail after webview diagnostics
-        if: ${{ always() && steps.webview_acceptance.outcome == 'failure' }}
-        run: exit 1
-      - run: npm run test:coverage
       - run: npm audit --omit=dev
       - run: npm run audit:python
       - run: npm run benchmark:runtime
@@ -328,22 +405,23 @@ jobs:
           accessSync(executable, X_OK);
           appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
       - id: canonical_cursor
-        name: Reverify the candidate for Cursor
+        name: Reverify the candidate for pinned Cursor compatibility
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
       - id: packaged_cursor
-        name: Test the full package in private-display Cursor
+        name: Test the pinned Cursor compatibility smoke seam
         continue-on-error: true
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: cursor
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_cursor_xvfb.outputs.executable }}
+          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
           VSCODE_TEST_VERSION: stable
-      - name: Upload Cursor failure diagnostics
+      - name: Upload pinned Cursor compatibility failure diagnostics
         if: ${{ always() && steps.packaged_cursor.outcome == 'failure' && steps.packaged_cursor.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -353,7 +431,7 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
-      - name: Fail after full Cursor diagnostics
+      - name: Fail after pinned Cursor compatibility diagnostics
         if: ${{ always() && steps.packaged_cursor.outcome == 'failure' }}
         run: exit 1
 
@@ -372,7 +450,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - id: inspection_python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
@@ -402,6 +481,7 @@ jobs:
         continue-on-error: true
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON: ${{ steps.inspection_python.outputs.python-path }}
           PREVIEW_FLAG: ${{ inputs.channel == 'preview' && '--preview-release' || '' }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
@@ -470,12 +550,6 @@ jobs:
         if: ${{ matrix.phase == 'python' }}
       - run: python -m pip install -e "python[dev]"
         if: ${{ matrix.phase == 'python' }}
-      - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
-        if: ${{ matrix.phase == 'python' }}
-      - run: npm run lock:remote-jupyter:check
-        if: ${{ matrix.phase == 'python' }}
-      - run: npm run audit:remote-jupyter
-        if: ${{ matrix.phase == 'python' }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ inputs.artifact_id }}
@@ -488,7 +562,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
       - run: npm run build:test-extension
       - id: prepare_xvfb
         name: Prepare pinned private Xvfb
@@ -530,6 +603,7 @@ jobs:
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_PYTHON_JUPYTER_PROFILE: candidate-one-owner
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -583,66 +657,6 @@ jobs:
       - name: Fail after remote R-Jupyter diagnostics
         if: ${{ always() && steps.packaged_editor_r_remote.outcome == 'failure' }}
         run: exit 1
-
-  r_contract:
-    name: Native R contract
-    needs: contract
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ inputs.expected_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version: 22
-          cache: npm
-      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        with:
-          r-version: "4.5.2"
-          use-public-rspm: true
-      - id: rscript
-        name: Locate hosted Rscript
-        shell: bash
-        run: |
-          set -euo pipefail
-          rscript="$(command -v Rscript)"
-          if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
-            echo "Rscript did not resolve to an absolute executable." >&2
-            exit 1
-          fi
-          r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
-          if [[ "$r_version" != "4.5.2" ]]; then
-            echo "Expected hosted R 4.5.2, got $r_version." >&2
-            exit 1
-          fi
-          printf 'executable=%s\n' "$rscript" >> "$GITHUB_OUTPUT"
-          printf 'version=%s\n' "$r_version" >> "$GITHUB_OUTPUT"
-          printf 'Hosted R: %s\n' "$r_version"
-      - run: npm ci
-      - name: Resolve R contract packages
-        uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        with:
-          packages: ""
-          extra-packages: |-
-            any::jsonlite
-            any::tibble
-            any::readr
-            any::dplyr
-            any::data.table
-            any::bit64
-            any::collapse
-            any::nanoparquet
-          dependencies: '"hard"'
-          cache: true
-          cache-version: native-r-contract-v1
-          install-pandoc: false
-          install-quarto: false
-      - run: npm run test:r-contract
-        env:
-          RSCRIPT: ${{ steps.rscript.outputs.executable }}
 
   r_local:
     name: Local R acceptance (${{ matrix.shard }})
@@ -723,7 +737,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: >-
           node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
       - run: npm run build:test-extension
       - id: prepare_xvfb
         name: Prepare pinned private Xvfb
@@ -885,6 +898,39 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - id: canonical_r_native
+        name: Reverify the candidate for native R frames
+        if: ${{ always() && matrix.shard == 'editing' && steps.r_local_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_native
+        name: Test native R frames in fresh packaged editor phases
+        if: ${{ always() && matrix.shard == 'editing' && steps.canonical_r_native.outcome == 'success' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_native.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: native-frames
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload native R frame failure diagnostics
+        if: ${{ always() && matrix.shard == 'editing' && steps.packaged_editor_r_native.outcome == 'failure' && steps.packaged_editor_r_native.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-native-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_native.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
       - id: canonical_r_values
         name: Reverify the candidate for value R operations
         if: ${{ always() && matrix.shard == 'editing' && steps.r_local_setup.outcome == 'success' }}
@@ -901,7 +947,7 @@ jobs:
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
           OPEN_WRANGLER_PACKAGED_R_JOURNEY: value-operations
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -934,7 +980,7 @@ jobs:
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
           OPEN_WRANGLER_PACKAGED_R_JOURNEY: categorical-operations
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
@@ -959,6 +1005,7 @@ jobs:
           RESTART_OUTCOME: ${{ steps.packaged_editor_r_restart.outcome }}
           INTERACTIVE_OUTCOME: ${{ steps.packaged_editor_r_interactive.outcome }}
           LITERATE_OUTCOME: ${{ steps.packaged_editor_r_literate.outcome }}
+          NATIVE_OUTCOME: ${{ steps.packaged_editor_r_native.outcome }}
           VALUES_OUTCOME: ${{ steps.packaged_editor_r_values.outcome }}
           CATEGORICAL_OUTCOME: ${{ steps.packaged_editor_r_categorical.outcome }}
         run: |
@@ -971,6 +1018,7 @@ jobs:
               test "$LITERATE_OUTCOME" = "success"
               ;;
             editing)
+              test "$NATIVE_OUTCOME" = "success"
               test "$VALUES_OUTCOME" = "success"
               test "$CATEGORICAL_OUTCOME" = "success"
               ;;
@@ -980,7 +1028,7 @@ jobs:
   acceptance:
     name: Candidate acceptance
     if: ${{ always() }}
-    needs: [contract, platform, linux, performance, jupyter, r_contract, r_local]
+    needs: [contract, platform, r_platform, linux, performance, jupyter, r_local]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -988,17 +1036,17 @@ jobs:
         env:
           CONTRACT_RESULT: ${{ needs.contract.result }}
           PLATFORM_RESULT: ${{ needs.platform.result }}
+          R_PLATFORM_RESULT: ${{ needs.r_platform.result }}
           LINUX_RESULT: ${{ needs.linux.result }}
           PERFORMANCE_RESULT: ${{ needs.performance.result }}
           JUPYTER_RESULT: ${{ needs.jupyter.result }}
-          R_CONTRACT_RESULT: ${{ needs.r_contract.result }}
           R_LOCAL_RESULT: ${{ needs.r_local.result }}
         run: |
           set -euo pipefail
           test "$CONTRACT_RESULT" = "success"
           test "$PLATFORM_RESULT" = "success"
+          test "$R_PLATFORM_RESULT" = "success"
           test "$LINUX_RESULT" = "success"
           test "$PERFORMANCE_RESULT" = "success"
           test "$JUPYTER_RESULT" = "success"
-          test "$R_CONTRACT_RESULT" = "success"
           test "$R_LOCAL_RESULT" = "success"

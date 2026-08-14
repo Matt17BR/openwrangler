@@ -117,6 +117,47 @@ test("released-Jupyter Variables acceptance targets the canonical orders showcas
   );
   assert.match(source, /"orders_df = pd\.DataFrame\(\{"/u);
 
+  assert.match(
+    source,
+    /testSelector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR[\s\S]*phase === "jupyter-allow" && process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"/u
+  );
+  assert.match(source, /const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam"/u);
+  const candidateSeam = source.slice(
+    source.indexOf("async function exerciseReleasedJupyterAllowCompatibilitySeam("),
+    source.indexOf("async function exerciseReleasedPythonFileEntrypoint(")
+  );
+  assert.match(candidateSeam, /vscode\.commands\.executeCommand\("jupyter\.openVariableView"\)/u);
+  assert.match(candidateSeam, /dispatchReleasedJupyterVariableAction\(/u);
+  assert.equal((candidateSeam.match(/assertReleasedSessionPage\(/gu) ?? []).length, 2);
+  assert.equal((candidateSeam.match(/disposePackagedSessionPanel\(/gu) ?? []).length, 2);
+  assert.match(candidateSeam, /waitForNotebookRendererButton\(/u);
+  assert.match(candidateSeam, /openReleasedRendererVariableSession\(/u);
+  assert.doesNotMatch(
+    candidateSeam,
+    /assertReleasedNotebookCodeInsertion|duckdb|PySpark|exerciseReleasedJupyterRestartReplay|exerciseReleasedPython/u
+  );
+  const releasedJupyterJourney = source.slice(
+    source.indexOf("async function exerciseReleasedJupyterExtension("),
+    source.indexOf("async function exerciseReleasedJupyterAllowCompatibilitySeam(")
+  );
+  assert.match(
+    releasedJupyterJourney,
+    /if \(!candidateCompatibilitySeam\) \{\s*await exerciseFormatterDisabledFirstNotebookResult\(/u
+  );
+  assert.match(
+    releasedJupyterJourney,
+    /if \(phase !== "jupyter-allow" \|\| candidateCompatibilitySeam\) \{[\s\S]*await consent\.allow\.click\(\)/u
+  );
+  const candidateDispatch = source.indexOf(
+    "await exerciseReleasedJupyterAllowCompatibilitySeam(",
+    source.indexOf("async function exerciseReleasedJupyterExtension(")
+  );
+  const overlappingCoverage = source.indexOf(
+    "recordAcceptanceProgress(`${phase}:temporary-result-mime-v2`)",
+    candidateDispatch
+  );
+  assert.ok(candidateDispatch >= 0 && overlappingCoverage > candidateDispatch);
+
   const cursorRemoteRestore = source.slice(
     source.indexOf("async function restoreCursorRemoteReleasedJupyterNotebook("),
     source.indexOf("async function waitForReleasedJupyterVariableActionReceipt(")
@@ -1217,9 +1258,9 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
   assert.doesNotMatch(reveal, /JSON\.stringify\(expectedText\)|JSON\.stringify\(target\.code\)/u);
 });
 
-test("focused R selectors split core work from the exclusive kernel restart profile", async () => {
+test("focused R selectors split core, native-frame, and kernel restart ownership", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
-  const start = source.indexOf("function releasedRAcceptanceCoverageProfile()");
+  const start = source.indexOf("function releasedRAcceptanceCoverageProfile(");
   const end = source.indexOf("function recordReleasedRAcceptanceSection(", start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
@@ -1227,23 +1268,13 @@ test("focused R selectors split core work from the exclusive kernel restart prof
 
   assert.match(
     profile,
-    /OPEN_WRANGLER_TEST_SELECTOR === "kernel-restart"[\s\S]*return RELEASED_R_KERNEL_RESTART_COVERAGE;[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*const coreCoverage = releasedRCoreAcceptanceCoverageProfile\(\);[\s\S]*process\.platform === "linux"[\s\S]*Object\.freeze\(\{ \.\.\.coreCoverage, kernelLifecycle: false \}\)[\s\S]*: coreCoverage;/u,
-    "Only the explicit Linux core selector may defer restart coverage to the dedicated kernel-restart phase."
-  );
-  assert.doesNotMatch(
-    profile,
-    /Object\.freeze\(\{ \.\.\.releasedRCoreAcceptanceCoverageProfile\(\), kernelLifecycle: false \}\)/u,
-    "The explicit core selector must not disable native restart coverage before routing by platform."
-  );
-  assert.equal(
-    (profile.match(/kernelLifecycle: false/gu) ?? []).length,
-    1,
-    "The explicit selector router may contain only the Linux-scoped lifecycle suppression."
+    /OPEN_WRANGLER_TEST_SELECTOR === "kernel-restart"[\s\S]*return RELEASED_R_KERNEL_RESTART_COVERAGE;[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "native-frames"[\s\S]*return releasedRNativeFramesAcceptanceCoverageProfile\(\);[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*Object\.freeze\(\{[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\),[\s\S]*kernelLifecycle: false,[\s\S]*openCollapseSessions: false,[\s\S]*openNativeFramesInViewingMode: false,[\s\S]*nativeFrameEditing: "none"/u,
+    "Every explicit candidate core must use the single-owner catalog profile and defer native-frame and restart coverage."
   );
   assert.match(
     profile,
-    /return releasedRCoreAcceptanceCoverageProfile\(\);\s*\}/u,
-    "The unset route must use the same editor- and platform-specific core profile resolver."
+    /phase === "jupyter-r-remote"\) return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);\s*\}/u,
+    "Remote transport must stay representative, while the unset local route uses the editor/platform core resolver."
   );
   const coreStart = source.indexOf("function releasedRCoreAcceptanceCoverageProfile()");
   assert.notEqual(coreStart, -1);
@@ -1255,18 +1286,35 @@ test("focused R selectors split core work from the exclusive kernel restart prof
     core,
     /OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
   );
+  assert.match(
+    core,
+    /function releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*process\.platform === "linux" \? RELEASED_R_COMPREHENSIVE_COVERAGE : RELEASED_R_REPRESENTATIVE_COVERAGE/u,
+    "Linux VS Code must be the only comprehensive candidate core owner; every other editor/platform proves a representative seam."
+  );
   assert.match(definitions, /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*kernelLifecycle: true/u);
   assert.match(definitions, /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*kernelLifecycle: true/u);
   assert.match(
     definitions,
-    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*kernelLifecycle: false[\s\S]*RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*kernelLifecycle: false/u
+    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*kernelLifecycle: false[\s\S]*nativeFrameEditing: "none"[\s\S]*RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*kernelLifecycle: false[\s\S]*nativeFrameEditing: "none"/u
   );
   assert.match(
     definitions,
     /RELEASED_R_KERNEL_RESTART_COVERAGE[\s\S]*name: "kernel-restart"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: true/u
   );
+  assert.match(
+    core,
+    /function releasedRNativeFramesAcceptanceCoverageProfile\(\)[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*name: "native-frames"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: false/u,
+    "Linux VS Code must be the sole comprehensive native-frame owner; every other editor/platform proves a representative seam."
+  );
 
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
+  const sharedStart = source.indexOf("const RELEASED_R_COLLAPSE_FRAMES =", journeyStart);
+  const collapseStart = source.indexOf("async function exerciseReleasedRCollapseFrameSessions(", sharedStart);
+  const nativeSessionsStart = source.indexOf("async function exerciseReleasedRNativeFrameSessions(", collapseStart);
+  const nativeFocusedStart = source.indexOf(
+    "async function exerciseReleasedRNativeFramesExtension(",
+    nativeSessionsStart
+  );
   const minimalStart = source.indexOf("async function exerciseReleasedRKernelRestartExtension(", journeyStart);
   const lifecycleStart = source.indexOf("async function exerciseReleasedRKernelLifecycle(", minimalStart);
   const interactiveStart = source.indexOf(
@@ -1275,17 +1323,28 @@ test("focused R selectors split core work from the exclusive kernel restart prof
   );
   assert.ok(
     journeyStart >= 0 &&
+      sharedStart > journeyStart &&
+      collapseStart > sharedStart &&
+      nativeSessionsStart > collapseStart &&
+      nativeFocusedStart > nativeSessionsStart &&
       minimalStart > journeyStart &&
       lifecycleStart > minimalStart &&
       interactiveStart > lifecycleStart
   );
-  const journey = source.slice(journeyStart, minimalStart);
+  const journey = source.slice(journeyStart, sharedStart);
+  const sharedCollapse = source.slice(collapseStart, nativeSessionsStart);
+  const sharedNative = source.slice(nativeSessionsStart, nativeFocusedStart);
+  const nativeFocused = source.slice(nativeFocusedStart, minimalStart);
   const minimal = source.slice(minimalStart, lifecycleStart);
   const lifecycle = source.slice(lifecycleStart, interactiveStart);
   assert.match(
     journey,
-    /if \(!coverage\.coreJourney\) \{[\s\S]*exerciseReleasedRKernelRestartExtension\(testing, extension, phase, coverage\);[\s\S]*return;/u
+    /coverage\.name === "kernel-restart"[\s\S]*exerciseReleasedRKernelRestartExtension\(testing, extension, phase, coverage\)[\s\S]*coverage\.name === "native-frames"[\s\S]*exerciseReleasedRNativeFramesExtension\(testing, extension, phase, coverage\)/u
   );
+  assert.doesNotMatch(journey, /if \(!coverage\.coreJourney\)/u);
+  assert.match(journey, /assert\.equal\(coverage\.coreJourney, true/u);
+  assert.equal((journey.match(/exerciseReleasedRCollapseFrameSessions\(/gu) ?? []).length, 1);
+  assert.equal((journey.match(/exerciseReleasedRNativeFrameSessions\(/gu) ?? []).length, 1);
   assert.match(
     journey,
     /if \(coverage\.kernelLifecycle\) \{[\s\S]*exerciseReleasedRKernelLifecycle\(testing, workbench, notebook, setup, kernelTarget, phase\);/u
@@ -1294,6 +1353,32 @@ test("focused R selectors split core work from the exclusive kernel restart prof
   assert.match(minimal, /OPEN_WRANGLER_TEST_SELECTOR[\s\S]*"kernel-restart"/u);
   assert.match(minimal, /assert\.equal\(kernelTarget\.remote, undefined/u);
   assert.doesNotMatch(minimal, /exerciseReleasedRGridJourney|exerciseReleasedREditingJourney|nativeFrameEditing/u);
+  assert.match(nativeFocused, /OPEN_WRANGLER_TEST_SELECTOR[\s\S]*"native-frames"/u);
+  assert.match(nativeFocused, /assert\.equal\(kernelTarget\.remote, undefined/u);
+  assert.equal((nativeFocused.match(/exerciseReleasedRCollapseFrameSessions\(/gu) ?? []).length, 1);
+  assert.equal((nativeFocused.match(/exerciseReleasedRNativeFrameSessions\(/gu) ?? []).length, 1);
+  assert.doesNotMatch(
+    nativeFocused,
+    /exerciseReleasedRGridJourney|exerciseReleasedREditingJourney|exerciseReleasedRKernelLifecycle/u
+  );
+  assert.match(sharedCollapse, /if \(!coverage\.openCollapseSessions\) return;/u);
+  assert.match(sharedNative, /if \(coverage\.openNativeFramesInViewingMode\)/u);
+  assert.match(sharedNative, /if \(coverage\.nativeFrameEditing === "none"\) return;/u);
+  assert.match(sharedNative, /coverage\.nativeFrameEditing === "rename-and-drop"/u);
+  for (const checkpoint of [
+    "view-open:start",
+    "view-page:complete",
+    "editing-open:start",
+    "editing-renderer:complete",
+    "rename-preview:start",
+    "rename-discard:complete",
+    "drop-preview:start",
+    "drop-discard:complete",
+    "source-binding:complete",
+    "editing-cleanup:complete"
+  ]) {
+    assert.match(source.slice(sharedStart, minimalStart), new RegExp(JSON.stringify(checkpoint), "u"));
+  }
   assert.equal((minimal.match(/exerciseReleasedRKernelLifecycle\(/gu) ?? []).length, 1);
   assert.equal((journey.match(/exerciseReleasedRKernelLifecycle\(/gu) ?? []).length, 1);
   assert.equal((lifecycle.match(/restartReleasedJupyterKernelAndWait\(/gu) ?? []).length, 1);
@@ -1550,6 +1635,27 @@ test("focused literate acceptance owns and probes its exact private Python kerne
     /python:\s*rJupyterSelection\.literateDocuments\s*\? quartoKernelPython\s*:\s*acceptancePythonForPhase\("jupyter-r", testPython, jupyterKernelPython\)/u,
     "The focused phase must receive the same exact interpreter registered by its kernelspec."
   );
+});
+
+test("extension-host acceptance preflights exact Python before editor acquisition and its fake kernel has no fallback", async () => {
+  const runner = await readFile(resolve("scripts/run-extension-tests.mjs"), "utf8");
+  const acceptance = await readFile(resolve("scripts/editor-acceptance.mjs"), "utf8");
+  const preflight = runner.indexOf("resolveAndPreflightAcceptancePython({");
+  const temporaryRoot = runner.indexOf("temporaryRoot = mkdtempSync(", preflight);
+  const editorDownload = runner.indexOf("await downloadEditorWithRetry(", temporaryRoot);
+  assert.ok(
+    preflight >= 0 && temporaryRoot > preflight && editorDownload > temporaryRoot,
+    "Python prerequisites must fail before the extension-host runner creates or downloads an editor environment."
+  );
+  assert.doesNotMatch(runner, /\?\s*"python"\s*:\s*"python3"/u);
+
+  const fakeJupyter = acceptance.indexOf("export function writeFakeJupyterExtension(");
+  const fakeJupyterEnd = acceptance.indexOf("export function createAcceptanceProgressEnvelope(", fakeJupyter);
+  assert.ok(fakeJupyter >= 0 && fakeJupyterEnd > fakeJupyter);
+  const fakeJupyterSource = acceptance.slice(fakeJupyter, fakeJupyterEnd);
+  assert.match(fakeJupyterSource, /const executable = process\.env\.OPEN_WRANGLER_TEST_PYTHON;/u);
+  assert.match(fakeJupyterSource, /if \(!executable\) throw new Error/u);
+  assert.doesNotMatch(fakeJupyterSource, /\|\|\s*["']python3["']/u);
 });
 
 async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
@@ -4428,7 +4534,7 @@ test("editor phases pass only runner-owned test values through the environment",
   }
 });
 
-test("editor phases validate and forward the focused R acceptance selector", async () => {
+test("editor phases validate and forward exact R and candidate compatibility selectors", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-selector-"));
   const resultPath = join(directory, "result.json");
   const input = {
@@ -4449,14 +4555,56 @@ test("editor phases validate and forward the focused R acceptance selector", asy
   try {
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, testSelector: "not-a-journey" }, options),
-      /test selector must be unset, "core-operations", "categorical-operations", "value-operations", "kernel-restart", "interactive-terminal", or "literate-documents"/u
+      /test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents"/u
     );
     await assert.rejects(
       runEditorAcceptancePhase({ ...input, phase: "verify", testSelector: "categorical-operations" }, options),
       /requires the "jupyter-r" phase/u
     );
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          ...input,
+          editor: { name: "Cursor", key: "cursor", version: "3.15.19", executable: "fake-editor" },
+          phase: "jupyter-deny",
+          testSelector: "candidate-compatibility-seam"
+        },
+        options
+      ),
+      /requires the "jupyter-allow" phase in the Cursor editor/u
+    );
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        { ...input, phase: "jupyter-allow", testSelector: "candidate-compatibility-seam" },
+        options
+      ),
+      /requires the "jupyter-allow" phase in the Cursor editor/u
+    );
 
     let launchedEnvironment;
+    await runEditorAcceptancePhase(
+      {
+        ...input,
+        editor: { name: "Cursor", key: "cursor", version: "3.15.19", executable: "fake-editor" },
+        phase: "jupyter-allow",
+        testSelector: "candidate-compatibility-seam"
+      },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "candidate-compatibility-seam");
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_PHASE, "jupyter-allow");
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_EDITOR, "cursor");
+
     await runEditorAcceptancePhase(
       { ...input, testSelector: "core-operations" },
       {
@@ -4520,6 +4668,22 @@ test("editor phases validate and forward the focused R acceptance selector", asy
       }
     );
     assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "kernel-restart");
+
+    await runEditorAcceptancePhase(
+      { ...input, testSelector: "native-frames" },
+      {
+        ...options,
+        spawnProcess(_executable, _arguments, spawnOptions) {
+          launchedEnvironment = spawnOptions.env;
+          return fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(spawnOptions.env, { ok: true })
+          });
+        }
+      }
+    );
+    assert.equal(launchedEnvironment.OPEN_WRANGLER_TEST_SELECTOR, "native-frames");
 
     await runEditorAcceptancePhase(
       { ...input, testSelector: "interactive-terminal" },

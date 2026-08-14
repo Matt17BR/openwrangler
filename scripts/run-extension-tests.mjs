@@ -22,6 +22,7 @@ import {
   createEditorAcceptancePrivateRootReceipt,
   removeEditorAcceptancePrivateRoot
 } from "./packaged-editor-orchestration.mjs";
+import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const privateDiagnosticPaths = collectEditorAcceptancePrivateDiagnosticPaths();
@@ -34,23 +35,12 @@ let runError;
 
 try {
   validateEditorAcceptancePrivatePathOverrides();
-  const hostedPython = process.env.pythonLocation
-    ? process.platform === "win32"
-      ? resolve(process.env.pythonLocation, "python.exe")
-      : resolve(process.env.pythonLocation, "bin", "python")
-    : undefined;
-  const localPython =
-    process.platform === "win32"
-      ? resolve(root, ".venv", "Scripts", "python.exe")
-      : resolve(root, ".venv", "bin", "python");
-  process.env.OPEN_WRANGLER_TEST_PYTHON ??=
-    hostedPython && existsSync(hostedPython)
-      ? hostedPython
-      : existsSync(localPython)
-        ? localPython
-        : process.platform === "win32"
-          ? "python"
-          : "python3";
+  process.env.OPEN_WRANGLER_TEST_PYTHON = resolveAndPreflightAcceptancePython({
+    profile: "editor",
+    repositoryRoot: root,
+    environment: process.env,
+    platform: process.platform
+  });
   process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
   const temporaryParent = resolve(root, "tmp", "ow");
   mkdirSync(temporaryParent, { recursive: true, mode: 0o700 });

@@ -1198,13 +1198,22 @@ test("packaged-editor R acceptance wires the private R environment to local edit
   assert.match(source, /for \(const phase of Object\.keys\(resultPaths\)\) userDataForPhase\(phase\)/u);
   assert.match(source, /logRoot: resolve\(userDataForPhase\(activePhase\), "logs"\)/u);
   assert.doesNotMatch(source, /userDataByPhase\.get\(activePhase\)\s*\?\?/u);
-  const pythonGuard = source.indexOf("(!isAbsolute(testPython) || !existsSync(testPython))");
-  assert.ok(pythonGuard >= 0);
-  assert.doesNotMatch(
-    source.slice(source.lastIndexOf("if (", pythonGuard), pythonGuard),
-    /acceptanceMode !== "r-jupyter"/u,
-    "R Jupyter must reject a PATH-only Python before the private-kernel preflight."
+  const pythonProfile = source.indexOf("const pythonPreflightProfile = packagedEditorPythonPreflightProfile({");
+  const pythonPreflight = source.indexOf("const testPython = resolveAndPreflightAcceptancePython({", pythonProfile);
+  const editorDiscovery = source.indexOf("let candidates = [", pythonPreflight);
+  const editorDownload = source.indexOf("await downloadEditorWithRetry(", editorDiscovery);
+  assert.ok(
+    pythonProfile >= 0 &&
+      pythonPreflight > pythonProfile &&
+      editorDiscovery > pythonPreflight &&
+      editorDownload > editorDiscovery,
+    "Every packaged mode must classify Python prerequisites before editor discovery or download."
   );
+  assert.match(
+    source.slice(pythonProfile, pythonPreflight),
+    /acceptanceMode,[\s\S]*jupyterExtensionEnabled: Boolean\(jupyterExtensionInstallTarget\),[\s\S]*remoteOnly: remoteRJourneyOnly,[\s\S]*literateDocuments: rJupyterSelection\.literateDocuments/u
+  );
+  assert.doesNotMatch(source, /process\.platform === "win32"\s*\?\s*"python"\s*:\s*"python3"/u);
 
   const setup = source.indexOf("rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(");
   const display = source.indexOf("editorDisplay = await startIsolatedEditorDisplay()");
@@ -1251,6 +1260,46 @@ test("packaged-editor R acceptance wires the private R environment to local edit
   assert.match(rPhase, /\[error, bootstrapStageError\]/u);
   assert.doesNotMatch(rPhase, /RProfileStartupStage|profileStageError/u);
   assert.equal((source.match(/await runRemoteJupyterPhase\(\{/gu) ?? []).length, 2);
+});
+
+test("packaged-editor candidate Python Jupyter resolves one owner before editor discovery and scopes every phase", async () => {
+  const source = await readFile(new URL("./run-packaged-editor-tests.mjs", import.meta.url), "utf8");
+  const profile = source.indexOf("const pythonJupyterProfile = resolvePackagedPythonJupyterProfile({");
+  const preflight = source.indexOf("const pythonPreflightProfile = packagedEditorPythonPreflightProfile({", profile);
+  const editorDiscovery = source.indexOf("let candidates = [", preflight);
+  assert.ok(
+    profile >= 0 && preflight > profile && editorDiscovery > preflight,
+    "The candidate Python-Jupyter contract must reject misuse before dependency checks or editor discovery."
+  );
+  assert.match(
+    source.slice(profile, preflight),
+    /value: process\.env\[PACKAGED_PYTHON_JUPYTER_PROFILE_ENV\],[\s\S]*acceptanceMode,[\s\S]*jupyterExtensionEnabled: Boolean\(jupyterExtensionInstallTarget\),[\s\S]*dataWranglerCoexistenceEnabled: Boolean\(dataWranglerExtensionInstallTarget\),[\s\S]*remoteJupyterEnabled,[\s\S]*requestedEditors: requested/u
+  );
+  assert.match(
+    source,
+    /const pythonJupyterPlan = packagedPythonJupyterEditorPlan\(\s*pythonJupyterProfile,\s*editor\.key,\s*remoteJupyterEnabled\s*\)/u
+  );
+  assert.match(source, /const genericPackagedPhasesEnabled = !pythonJupyterPlan\.integrationOnly/u);
+  assert.match(
+    source,
+    /acceptanceMode === "full" && genericPackagedPhasesEnabled[\s\S]*restricted: resolve\(profile, "restricted-result\.json"\),[\s\S]*seed: resolve\(profile, "seed-result\.json"\),[\s\S]*verify: resolve\(profile, "verify-result\.json"\)/u
+  );
+  assert.match(
+    source,
+    /acceptanceMode === "full" && pythonExtensionInstallTarget && genericPackagedPhasesEnabled[\s\S]*phase: "python-environment"/u
+  );
+  assert.match(
+    source,
+    /if \(genericPackagedPhasesEnabled\) \{[\s\S]*"setup:install-extension"[\s\S]*"setup:install-acceptance-harness"/u
+  );
+  assert.match(
+    source,
+    /if \(acceptanceMode === "full" && genericPackagedPhasesEnabled\) \{\s*for \(const phase of \["seed", "verify"\]\)/u
+  );
+  assert.match(source, /for \(const phase of pythonJupyterPlan\.phases\)/u);
+  assert.match(source, /testSelector: phase === "jupyter-allow" \? pythonJupyterPlan\.allowSelector : undefined/u);
+  assert.match(source, /if \(pythonJupyterPlan\.remote\) \{[\s\S]*fixtureKind: "python"/u);
+  assert.doesNotMatch(source, /for \(const phase of \["jupyter-deny", "jupyter-allow", "jupyter-pyspark"\]\)/u);
 });
 
 test("the remote-only R selector bypasses every local runtime owner while retaining the five remote phases", async () => {
@@ -1324,7 +1373,11 @@ test("the remote-only R selector bypasses every local runtime owner while retain
 
   assert.match(source, /const localRJupyterEnabled = rJupyterSelection\.local/u);
   assert.match(source, /const remoteRJupyterEnabled = rJupyterSelection\.remote && editor\.key === "vscode"/u);
-  assert.equal((source.match(/rJupyterSelection\.literateDocuments/gu) ?? []).length, 2);
+  assert.equal(
+    (source.match(/rJupyterSelection\.literateDocuments/gu) ?? []).length,
+    3,
+    "Literate selection must choose its Python profile, prepare its kernel, and forward that kernel to the phase."
+  );
   assert.equal(
     (source.match(/rJupyterSelection\.nativeEditorTooling/gu) ?? []).length,
     4,
@@ -1430,7 +1483,7 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("default R profiles retain lifecycle coverage while focused selectors split editing and kernel restart", async () => {
+test("default R profiles retain embedded coverage while focused selectors split candidate work", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const runStart = source.indexOf("export async function run(): Promise<void> {");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
@@ -1443,15 +1496,15 @@ test("default R profiles retain lifecycle coverage while focused selectors split
 
   assert.match(
     preflight,
-    /testSelector === undefined \|\|[\s\S]*testSelector === "core-operations" \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "value-operations" \|\|[\s\S]*testSelector === "kernel-restart" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
+    /testSelector === undefined \|\|[\s\S]*testSelector === "core-operations" \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "value-operations" \|\|[\s\S]*testSelector === "kernel-restart" \|\|[\s\S]*testSelector === "native-frames" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
   );
   assert.match(
     preflight,
-    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "core-operations", "categorical-operations", "value-operations", "kernel-restart", "interactive-terminal", or "literate-documents"/u
+    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents"/u
   );
   assert.match(
     profiles,
-    /name: "categorical-operations" \| "value-operations" \| "kernel-restart" \| "comprehensive" \| "representative"/u
+    /\| "categorical-operations"[\s\S]*\| "value-operations"[\s\S]*\| "kernel-restart"[\s\S]*\| "native-frames"[\s\S]*\| "comprehensive"[\s\S]*\| "representative"/u
   );
   assert.match(
     profiles,
@@ -1463,11 +1516,11 @@ test("default R profiles retain lifecycle coverage while focused selectors split
   );
   assert.match(
     profiles,
-    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "categorical-operations"[\s\S]*kernelLifecycle: false[\s\S]*focusedEditing: "categorical-operations"/u
+    /RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "categorical-operations"[\s\S]*kernelLifecycle: false[\s\S]*focusedEditing: "categorical-operations"[\s\S]*nativeFrameEditing: "none"/u
   );
   assert.match(
     profiles,
-    /RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "value-operations"[\s\S]*kernelLifecycle: false[\s\S]*focusedEditing: "value-operations"/u
+    /RELEASED_R_VALUE_OPERATIONS_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "value-operations"[\s\S]*kernelLifecycle: false[\s\S]*focusedEditing: "value-operations"[\s\S]*nativeFrameEditing: "none"/u
   );
   assert.match(
     profiles,
@@ -1476,12 +1529,7 @@ test("default R profiles retain lifecycle coverage while focused selectors split
   assert.doesNotMatch(profiles, /documents:/u, "The default R coverage profiles must be structurally plain-only.");
   assert.match(
     profiles,
-    /function releasedRCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations"\) \{[\s\S]*return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "value-operations"\) \{[\s\S]*return RELEASED_R_VALUE_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "kernel-restart"\) \{[\s\S]*return RELEASED_R_KERNEL_RESTART_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "core-operations"\) \{[\s\S]*const coreCoverage = releasedRCoreAcceptanceCoverageProfile\(\);[\s\S]*process\.platform === "linux"[\s\S]*Object\.freeze\(\{ \.\.\.coreCoverage, kernelLifecycle: false \}\)[\s\S]*: coreCoverage;[\s\S]*\}[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
-  );
-  assert.doesNotMatch(
-    profiles,
-    /Object\.freeze\(\{ \.\.\.releasedRCoreAcceptanceCoverageProfile\(\), kernelLifecycle: false \}\)/u,
-    "The explicit core selector must route by platform before disabling restart coverage."
+    /function releasedRCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;[\s\S]*function releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*process\.platform === "linux" \? RELEASED_R_COMPREHENSIVE_COVERAGE : RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*function releasedRNativeFramesAcceptanceCoverageProfile\(\)[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*name: "native-frames"[\s\S]*coreJourney: false[\s\S]*kernelLifecycle: false[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "native-frames"[\s\S]*return releasedRNativeFramesAcceptanceCoverageProfile\(\);[\s\S]*OPEN_WRANGLER_TEST_SELECTOR === "core-operations"[\s\S]*\.\.\.releasedRCandidateCoreAcceptanceCoverageProfile\(\)[\s\S]*kernelLifecycle: false[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "none"[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
   );
   assert.doesNotMatch(
     journey,
@@ -1490,8 +1538,9 @@ test("default R profiles retain lifecycle coverage while focused selectors split
   );
   assert.match(
     journey,
-    /if \(!coverage\.coreJourney\) \{[\s\S]*exerciseReleasedRKernelRestartExtension\(testing, extension, phase, coverage\);[\s\S]*return;/u
+    /coverage\.name === "kernel-restart"[\s\S]*exerciseReleasedRKernelRestartExtension\(testing, extension, phase, coverage\)[\s\S]*coverage\.name === "native-frames"[\s\S]*exerciseReleasedRNativeFramesExtension\(testing, extension, phase, coverage\)/u
   );
+  assert.doesNotMatch(journey, /if \(!coverage\.coreJourney\)/u);
   assert.match(journey, /exerciseReleasedRGridJourney\(testing, workbench, base\.sessionId, coverage\.gridPaging\)/u);
   assert.match(
     journey,
@@ -1504,9 +1553,24 @@ test("default R profiles retain lifecycle coverage while focused selectors split
   assert.equal((journey.match(/await exerciseReleasedROneHotJourney\(/gu) ?? []).length, 1);
   assert.equal((journey.match(/await exerciseReleasedRMultiLabelJourney\(/gu) ?? []).length, 1);
   assert.doesNotMatch(journey, /coverage\.documents|exerciseReleasedRLiterateDocumentJourneys/u);
-  assert.match(journey, /if \(coverage\.openCollapseSessions\)/u);
+  assert.match(journey, /if \(!coverage\.openCollapseSessions\) return;/u);
   assert.match(journey, /if \(coverage\.openNativeFramesInViewingMode\)/u);
+  assert.match(journey, /if \(coverage\.nativeFrameEditing === "none"\) return;/u);
   assert.match(journey, /coverage\.nativeFrameEditing === "rename-and-drop"/u);
+  const ordinaryEnd = journey.indexOf("const RELEASED_R_COLLAPSE_FRAMES =");
+  const nativeFocusedStart = journey.indexOf("async function exerciseReleasedRNativeFramesExtension(");
+  const restartFocusedStart = journey.indexOf("async function exerciseReleasedRKernelRestartExtension(");
+  assert.ok(ordinaryEnd > 0 && nativeFocusedStart > ordinaryEnd && restartFocusedStart > nativeFocusedStart);
+  const ordinary = journey.slice(0, ordinaryEnd);
+  const nativeFocused = journey.slice(nativeFocusedStart, restartFocusedStart);
+  assert.equal((ordinary.match(/exerciseReleasedRCollapseFrameSessions\(/gu) ?? []).length, 1);
+  assert.equal((ordinary.match(/exerciseReleasedRNativeFrameSessions\(/gu) ?? []).length, 1);
+  assert.equal((nativeFocused.match(/exerciseReleasedRCollapseFrameSessions\(/gu) ?? []).length, 1);
+  assert.equal((nativeFocused.match(/exerciseReleasedRNativeFrameSessions\(/gu) ?? []).length, 1);
+  assert.doesNotMatch(
+    nativeFocused,
+    /exerciseReleasedRGridJourney|exerciseReleasedREditingJourney|exerciseReleasedRKernelLifecycle/u
+  );
   for (const section of ["variable-discovery", "grid", "editing", "native-editing", "restart"]) {
     assert.match(
       journey,
@@ -2109,20 +2173,21 @@ test("packaged Python editor loops stop on the product's terminal diagnostic", a
 
 test("R native-frame editing waits for its visible renderer before notebook probes", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
-  const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(");
-  const journeyEnd = source.indexOf("\nasync function exerciseReleasedRDocumentJourney(", journeyStart);
+  const journeyStart = source.indexOf("async function exerciseReleasedRNativeFrameSessions(");
+  const journeyEnd = source.indexOf("\nasync function exerciseReleasedRNativeFramesExtension(", journeyStart);
   assert.ok(journeyStart >= 0 && journeyEnd > journeyStart);
   const journey = source.slice(journeyStart, journeyEnd);
 
-  const frames = journey.indexOf("const additionalRFrames = [");
+  assert.match(source, /const RELEASED_R_ADDITIONAL_NATIVE_FRAMES = \[/u);
+  const frames = journey.indexOf("RELEASED_R_ADDITIONAL_NATIVE_FRAMES");
   const editingMode = journey.indexOf(
     'await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);',
     frames
   );
-  const loop = journey.indexOf("for (const expected of additionalRFrames)", editingMode);
-  const sessionReceipt = journey.indexOf(":editing-session-received`);", loop);
+  const loop = journey.indexOf("for (const expected of RELEASED_R_ADDITIONAL_NATIVE_FRAMES)", editingMode);
+  const sessionReceipt = journey.indexOf('"editing-session:complete"', loop);
   const rendererReceipt = journey.indexOf("let app = await releasedRSessionApp(", sessionReceipt);
-  const rendererCheckpoint = journey.indexOf(":editing-renderer-ready`);", rendererReceipt);
+  const rendererCheckpoint = journey.indexOf('"editing-renderer:complete"', rendererReceipt);
   const renamePreview = journey.indexOf("const previewed = await previewReleasedRRename(", rendererCheckpoint);
   const sourceProbe = journey.indexOf(":after-native-edit`);", renamePreview);
   const loopEnd = journey.indexOf('await configuration.update("notebookStartMode", "viewing"', loop);
@@ -2149,9 +2214,9 @@ test("R native-frame editing waits for its visible renderer before notebook prob
     /source-before-(?:filter|editing)-journey|media-source-before-capture/u,
     "The R journey must not execute notebook probes between opening a panel and completing its UI work."
   );
-  assert.match(journey, /source-after-filter-journey/u);
-  assert.match(journey, /source-after-editing-journey/u);
-  assert.match(journey, /media-source-after-capture/u);
+  assert.match(source, /source-after-filter-journey/u);
+  assert.match(source, /source-after-editing-journey/u);
+  assert.match(source, /media-source-after-capture/u);
   assert.match(journey, /:after-native-edit/u);
 
   const editingJourneyStart = source.indexOf("async function exerciseReleasedREditingJourney(");

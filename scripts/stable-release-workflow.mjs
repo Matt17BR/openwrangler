@@ -55,6 +55,7 @@ const CANONICAL_PATHS = [
   "canonical-release/openwrangler.vsix.sha256",
   "canonical-release/openwrangler.vsix.provenance.json"
 ];
+const FULL_VSIX_VERIFY_COMMAND = "npm run verify:vsix -- openwrangler.candidate.vsix";
 const RECOGNIZED_RELEASE_SOURCE_RUN = `test "$EVENT_REF_TYPE" = "branch"
 test "$EVENT_REF" = "refs/heads/main"
 case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
@@ -344,6 +345,18 @@ export function inspectStableReleaseWorkflow(source) {
   inspectPinnedActions(workflow, problems);
 
   const allRuns = Object.values(workflow.jobs).flatMap((job) => steps(job).map((step) => command(step?.run)));
+  const fullVsixVerifiers = Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
+    allRunsFor(job)
+      .filter((run) => run.includes("npm run verify:vsix"))
+      .map((run) => ({ jobName, run }))
+  );
+  if (
+    fullVsixVerifiers.length !== 1 ||
+    fullVsixVerifiers[0]?.jobName !== "package" ||
+    fullVsixVerifiers[0]?.run !== FULL_VSIX_VERIFY_COMMAND
+  ) {
+    problems.push("Only package may run the producer-owned full VSIX verifier against the candidate VSIX.");
+  }
   const packageRuns = allRuns.filter((run) => run.includes("npm run package:prepared"));
   if (packageRuns.length !== 1 || packageRuns[0] !== STABLE_PACKAGE_COMMAND) {
     problems.push(
@@ -458,8 +471,13 @@ export function inspectStableReleaseWorkflow(source) {
   if (
     !exactKeys(remoteStep, ["id", "name", "run", "env"]) ||
     remoteStep.name !== "Test packaged VS Code over Remote SSH" ||
-    !exactKeys(remoteStep.env, ["OPEN_WRANGLER_EDITOR_DISPLAY", "OPEN_WRANGLER_REMOTE_PYTHON"]) ||
+    !exactKeys(remoteStep.env, [
+      "OPEN_WRANGLER_EDITOR_DISPLAY",
+      "OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON",
+      "OPEN_WRANGLER_REMOTE_PYTHON"
+    ]) ||
     remoteStep.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
+    remoteStep.env.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON !== "${{ github.workspace }}/.remote-venv/bin/python" ||
     remoteStep.env.OPEN_WRANGLER_REMOTE_PYTHON !== "${{ github.workspace }}/.remote-venv/bin/python" ||
     remoteRun !==
       "npm run test:remote-workspace -- ${{ steps.canonical_remote.outputs.candidate_path }} ${{ steps.canonical_remote.outputs.candidate_sha256 }} ${{ steps.canonical_remote.outputs.candidate_bytes }}"

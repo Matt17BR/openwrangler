@@ -1,33 +1,34 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pixelmatch from "pixelmatch";
 import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
+import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 import { PUBLIC_MEDIA_PIXEL_RATIO } from "./public-media-contract.mjs";
+import { captureWebviewScreenshot, preflightWebviewBrowser } from "./webview-browser.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmpDir = resolve(root, "tmp", "screenshots");
 const actualDir = resolve(root, "tmp", "screenshots-actual");
 const diffDir = resolve(root, "tmp", "screenshots-diff");
 const docsDir = resolve(root, "docs", "images");
-const hostedPython = process.env.pythonLocation
-  ? process.platform === "win32"
-    ? resolve(process.env.pythonLocation, "python.exe")
-    : resolve(process.env.pythonLocation, "bin", "python")
-  : undefined;
-const localPython =
-  process.platform === "win32"
-    ? resolve(root, ".venv", "Scripts", "python.exe")
-    : resolve(root, ".venv", "bin", "python");
-const python =
-  [process.env.OPEN_WRANGLER_PYTHON, hostedPython, localPython].find(
-    (candidate) => candidate && existsSync(candidate)
-  ) ?? (process.platform === "win32" ? "python" : "python3");
-const chrome = process.env.CHROME_BIN ?? chromium.executablePath();
+const python = resolveAndPreflightAcceptancePython({
+  profile: "visual",
+  repositoryRoot: root,
+  environment: process.env,
+  platform: process.platform
+});
 const verify = process.argv.includes("--verify");
+const browserIsolation = Object.freeze({
+  workspaceTmp: resolve(root, "tmp"),
+  rootPrefix: "screenshot-browser-",
+  aliasPrefix: "ow-capture-"
+});
+const browser = await preflightWebviewBrowser({ chromium, cwd: root, workspaceTmp: browserIsolation.workspaceTmp });
+let screenshotQueue = Promise.resolve();
 
 rmSync(tmpDir, { recursive: true, force: true });
 mkdirSync(tmpDir, { recursive: true });
@@ -895,6 +896,8 @@ for (const zoom of [0.8, 1.5, 2]) {
   );
 }
 
+await screenshotQueue;
+
 function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName, suppliedPages = {}, appearance = {}) {
   const htmlPath = resolve(tmpDir, fileName);
   const outputPath = screenshotOutput(outputName);
@@ -1185,36 +1188,35 @@ function screenshot(htmlPath, outputPath, width = 1280, height = 760, pixelRatio
     throw new TypeError("A browser screenshot pixel ratio must be ordinary 1x or the shared public-media ratio.");
   }
   mkdirSync(dirname(outputPath), { recursive: true });
-  const result = spawnSync(
-    chrome,
-    [
-      "--headless=new",
-      "--disable-gpu",
-      "--no-sandbox",
-      "--allow-file-access-from-files",
-      `--window-size=${width},${height}`,
-      ...(pixelRatio === 1 ? [] : [`--force-device-scale-factor=${pixelRatio}`]),
-      "--virtual-time-budget=2500",
-      `--screenshot=${outputPath}`,
-      pathToFileURL(htmlPath).href
-    ],
-    { cwd: root, encoding: "utf8" }
-  );
-
-  if (result.status !== 0) {
-    throw new Error(`Chrome screenshot failed for ${htmlPath}\n${result.stderr}\n${result.stdout}`);
-  }
-  const portable = addSrgbChunk(readFileSync(outputPath));
-  const image = PNG.sync.read(portable);
-  if (image.width !== width * pixelRatio || image.height !== height * pixelRatio) {
-    throw new Error(
-      `Chrome screenshot produced ${image.width}x${image.height}; expected ${width * pixelRatio}x${height * pixelRatio}.`
-    );
-  }
-  writeFileSync(outputPath, portable);
-  const size = portable.byteLength;
-  console.log(`Captured ${outputPath} (${size} bytes)`);
-  if (verify) compareScreenshot(outputPath);
+  screenshotQueue = screenshotQueue.then(async () => {
+    try {
+      await captureWebviewScreenshot({
+        chromium,
+        browser,
+        isolation: browserIsolation,
+        label: "capture",
+        url: pathToFileURL(htmlPath).href,
+        outputPath,
+        width,
+        height,
+        pixelRatio,
+        virtualTime: 2500
+      });
+    } catch (error) {
+      throw new Error(`Chrome screenshot failed for ${htmlPath}.`, { cause: error });
+    }
+    const portable = addSrgbChunk(readFileSync(outputPath));
+    const image = PNG.sync.read(portable);
+    if (image.width !== width * pixelRatio || image.height !== height * pixelRatio) {
+      throw new Error(
+        `Chrome screenshot produced ${image.width}x${image.height}; expected ${width * pixelRatio}x${height * pixelRatio}.`
+      );
+    }
+    writeFileSync(outputPath, portable);
+    const size = portable.byteLength;
+    console.log(`Captured ${outputPath} (${size} bytes)`);
+    if (verify) compareScreenshot(outputPath);
+  });
 }
 
 function screenshotOutput(outputName) {

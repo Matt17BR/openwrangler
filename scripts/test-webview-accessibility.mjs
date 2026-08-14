@@ -1,14 +1,15 @@
 import { createRequire } from "node:module";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium } from "playwright-core";
+import { createWebviewBrowserIsolation, resolveWebviewBrowserExecutable } from "./webview-browser.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const harnessDir = resolve(root, "tmp", "screenshots");
 const require = createRequire(import.meta.url);
 const axePath = require.resolve("axe-core/axe.min.js");
-const executablePath = process.env.CHROME_BIN;
+const browserExecutable = resolveWebviewBrowserExecutable({ chromium });
 const harnesses = readdirSync(harnessDir)
   .filter((file) => file.endsWith(".html"))
   .sort();
@@ -18,52 +19,20 @@ if (harnesses.length === 0) {
 }
 
 const workspaceTmp = resolve(root, "tmp");
-mkdirSync(workspaceTmp, { recursive: true });
-const browserRoot = mkdtempSync(join(workspaceTmp, "accessibility-browser-"));
-chmodSync(browserRoot, 0o700);
-const browserTemp = join(browserRoot, "temp");
-mkdirSync(browserTemp, { recursive: true, mode: 0o700 });
-// Chrome places its process-singleton socket below TMPDIR on POSIX. A long
-// checkout path can exceed the Unix-domain socket limit, so expose the private
-// workspace directory through a short, disposable alias without moving browser
-// data into the shared system temp area.
-const socketAliasRoot = process.platform === "win32" ? undefined : mkdtempSync("/tmp/ow-a11y-");
-const browserTempPath = socketAliasRoot ? join(socketAliasRoot, "t") : browserTemp;
-if (socketAliasRoot) {
-  chmodSync(socketAliasRoot, 0o700);
-  symlinkSync(browserTemp, browserTempPath, "dir");
-}
-const browserEnvironment = {
-  ...process.env,
-  HOME: join(browserRoot, "home"),
-  XDG_CACHE_HOME: join(browserRoot, "cache"),
-  XDG_CONFIG_HOME: join(browserRoot, "config"),
-  XDG_DATA_HOME: join(browserRoot, "data"),
-  XDG_RUNTIME_DIR: join(browserRoot, "runtime"),
-  TEMP: browserTempPath,
-  TMP: browserTempPath,
-  TMPDIR: browserTempPath
-};
-for (const directory of Object.values(browserEnvironment).filter(
-  (value) => typeof value === "string" && value.startsWith(browserRoot)
-)) {
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-}
+const browserIsolation = createWebviewBrowserIsolation({
+  workspaceTmp,
+  rootPrefix: "accessibility-browser-",
+  aliasPrefix: "ow-a11y-"
+});
 let browser;
 const failures = [];
 
 try {
-  if (
-    process.platform !== "win32" &&
-    Buffer.byteLength(join(browserTempPath, "com.google.Chrome.XXXXXX", "SingletonSocket"), "utf8") >= 104
-  ) {
-    throw new Error("The private Chrome temp alias is too long for a POSIX process-singleton socket.");
-  }
-  browser = await chromium.launchPersistentContext(join(browserRoot, "profile"), {
-    ...(executablePath ? { executablePath } : {}),
+  browser = await chromium.launchPersistentContext(browserIsolation.createProfile("accessibility"), {
+    ...(browserExecutable.explicitOverride ? { executablePath: browserExecutable.executablePath } : {}),
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--allow-file-access-from-files"],
-    env: browserEnvironment,
+    env: browserIsolation.childEnvironment,
     timeout: 30_000
   });
   for (const harness of harnesses) {
@@ -114,13 +83,7 @@ try {
   try {
     await browser?.close();
   } finally {
-    try {
-      if (socketAliasRoot) {
-        rmSync(socketAliasRoot, { recursive: true, force: true });
-      }
-    } finally {
-      rmSync(browserRoot, { recursive: true, force: true });
-    }
+    browserIsolation.cleanup();
   }
 }
 

@@ -66,6 +66,8 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
 ]);
 const SETUP_R_ACTION = "r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
 const SETUP_R_DEPENDENCIES_ACTION = "r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6";
+const PINNED_SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+const REFERENCE_PYTHON_OUTPUT = "${{ steps.reference_python.outputs.python-path }}";
 const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "media", "native"]);
 const CANONICAL_CI_IF =
   "${{ !cancelled() && github.event_name == 'pull_request' && needs.fast-feedback.result == 'success' && (needs.classify.result != 'success' || (needs.classify.outputs.lightweight_only != 'true' && needs.classify.outputs.benchmark_harness_only != 'true')) }}";
@@ -132,6 +134,49 @@ const RELEASE_INFRASTRUCTURE_EXTRA_FOCUSED_TEST_PATHS = Object.freeze([
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
+}
+
+function exactObjectKeys(value, expected) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function inspectFastFeedbackReferencePython(workflow) {
+  const problems = [];
+  const steps = workflow?.jobs?.["fast-feedback"]?.steps;
+  if (!Array.isArray(steps)) return ["Fast feedback must expose an ordered reference prerequisite."];
+  const pythonSetups = steps.filter(
+    (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-python@")
+  );
+  const setup = pythonSetups[0];
+  const references = steps.filter((step) => step?.name === "Reference freshness");
+  const reference = references[0];
+  if (
+    pythonSetups.length !== 1 ||
+    !exactObjectKeys(setup, ["id", "uses", "with"]) ||
+    setup?.id !== "reference_python" ||
+    setup?.uses !== PINNED_SETUP_PYTHON_ACTION ||
+    !exactObjectKeys(setup?.with, ["python-version"]) ||
+    setup?.with?.["python-version"] !== "3.12" ||
+    steps.indexOf(setup) < 0 ||
+    steps.indexOf(reference) < 0 ||
+    steps.indexOf(setup) >= steps.indexOf(reference)
+  ) {
+    problems.push("Reference freshness requires one pinned setup-python prerequisite ordered before generation.");
+  }
+  if (
+    references.length !== 1 ||
+    reference?.run !== "npm run reference:check" ||
+    !exactObjectKeys(reference?.env, ["OPEN_WRANGLER_PYTHON"]) ||
+    reference?.env?.OPEN_WRANGLER_PYTHON !== REFERENCE_PYTHON_OUTPUT
+  ) {
+    problems.push(
+      "Reference freshness must pass setup-python's authoritative absolute python-path to OPEN_WRANGLER_PYTHON."
+    );
+  }
+  return problems;
 }
 
 function assertStandaloneReleasedJupyterRTriples(workflow) {
@@ -1063,6 +1108,32 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
         release_tag: "${{ inputs.release_tag }}"
       }
     });
+    const producerRuns = workflow.jobs.package.steps.map((step) => step.run).filter((run) => typeof run === "string");
+    assert.equal(
+      producerRuns.filter((run) => run === "npm run lock:remote-jupyter:check").length,
+      1,
+      `${relativePath} must retain the producer-owned remote-lock proof.`
+    );
+    assert.equal(
+      producerRuns.filter((run) => run.includes("uv-0.11.32-py3-none-manylinux")).length,
+      1,
+      `${relativePath} must retain the uv prerequisite for its remote-lock proof.`
+    );
+    assert.equal(
+      producerRuns.filter((run) => run === "npm run verify:vsix -- openwrangler.candidate.vsix").length,
+      1,
+      `${relativePath} must retain the producer-owned full VSIX verification.`
+    );
+    for (const consumerJob of ["remote-ssh", "release"]) {
+      const consumerRuns = workflow.jobs[consumerJob].steps
+        .map((step) => step.run)
+        .filter((run) => typeof run === "string");
+      assert.equal(
+        consumerRuns.some((run) => run.includes("npm run verify:vsix")),
+        false,
+        `${relativePath} ${consumerJob} must use canonical semantic verification instead of repeating the full VSIX verifier.`
+      );
+    }
   }
 
   const acceptance = parseYaml(
@@ -1078,13 +1149,29 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
   assert.deepEqual(Object.keys(acceptance.jobs), [
     "contract",
     "platform",
+    "r_platform",
     "linux",
     "performance",
     "jupyter",
-    "r_contract",
     "r_local",
     "acceptance"
   ]);
+  const candidateSteps = Object.values(acceptance.jobs).flatMap((job) => job.steps ?? []);
+  assert.equal(
+    candidateSteps.some((step) => step.run === "npm run verify:vsix -- canonical-release/openwrangler.vsix"),
+    false,
+    "Candidate consumers must not repeat the producer-owned full VSIX verification."
+  );
+  for (const [jobName, job] of Object.entries(acceptance.jobs)) {
+    for (const [index, runner] of (job.steps ?? []).entries()) {
+      if (!runner.id?.startsWith("packaged_")) continue;
+      assert.match(
+        job.steps[index - 1]?.id ?? "",
+        /^canonical/u,
+        `${jobName}/${runner.id} must retain its canonical checksum/provenance verifier.`
+      );
+    }
+  }
 
   const platform = acceptance.jobs.platform;
   assert.deepEqual(platform.strategy, {
@@ -1098,6 +1185,132 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     }
   });
   assert.equal(platform["runs-on"], "${{ matrix.os }}");
+  for (const runnerId of ["packaged_editor", "cursor_smoke"]) {
+    const runner = platform.steps.find((step) => step.id === runnerId);
+    assert.equal(
+      runner.env.OPEN_WRANGLER_PACKAGED_MODE,
+      "platform-smoke",
+      `${runnerId} must stay on the unique cross-platform integration seam.`
+    );
+  }
+  assert.equal(
+    platform.steps.some(
+      (step) =>
+        step.uses?.startsWith("r-lib/actions/setup-r@") ||
+        step.env?.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter" ||
+        step.env?.OPEN_WRANGLER_PACKAGED_R_JOURNEY !== undefined
+    ),
+    false
+  );
+  for (const omitted of ["npm run test:python-environment-smoke", "npm run test:extension-host"]) {
+    assert.equal(
+      platform.steps.some((step) => step.run?.includes(omitted)),
+      false,
+      `${omitted} must stay in pull-request CI instead of generic candidate acceptance.`
+    );
+  }
+
+  const linux = acceptance.jobs.linux;
+  for (const retained of [
+    "npm run repository:check-live",
+    "npm audit --omit=dev",
+    "npm run audit:python",
+    "npm run benchmark:runtime",
+    "npm run build:test-extension"
+  ]) {
+    assert.equal(
+      linux.steps.some((step) => step.run === retained),
+      true,
+      `${retained} must remain release-candidate evidence.`
+    );
+  }
+  for (const omitted of [
+    "npm run check",
+    "npm run test:scripts",
+    "npm run test:webview-acceptance",
+    "npm run test:coverage",
+    "npx playwright-core install --with-deps chromium",
+    'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"',
+    "uv-0.11.32-py3-none-manylinux"
+  ]) {
+    assert.equal(
+      linux.steps.some((step) => step.run?.includes(omitted)),
+      false,
+      `${omitted} must stay in pull-request CI instead of Linux candidate acceptance.`
+    );
+  }
+  assert.equal(
+    linux.steps.some((step) => step.name === "Verify exact coverage runtimes"),
+    false,
+    "Linux candidate acceptance must not retain coverage-only runtime setup."
+  );
+  assert.equal(
+    linux.steps.some((step) => step.uses?.startsWith("actions/setup-java@")),
+    false,
+    "Linux candidate acceptance must not repeat the Jupyter-owned Java prerequisite."
+  );
+  const linuxVscode = linux.steps.find((step) => step.id === "packaged_vscode");
+  const linuxCursor = linux.steps.find((step) => step.id === "packaged_cursor");
+  assert.equal(linuxVscode.env.OPEN_WRANGLER_PACKAGED_MODE, undefined);
+  assert.equal(linuxCursor.env.OPEN_WRANGLER_PACKAGED_MODE, "platform-smoke");
+  assert.equal(linuxCursor.name, "Test the pinned Cursor compatibility smoke seam");
+  const linuxCursorIndex = linux.steps.indexOf(linuxCursor);
+  assert.equal(linux.steps[linuxCursorIndex + 1].name, "Upload pinned Cursor compatibility failure diagnostics");
+  assert.equal(linux.steps[linuxCursorIndex + 2].name, "Fail after pinned Cursor compatibility diagnostics");
+  const genericEditorRunners = [
+    ...platform.steps.map((step) => ({ jobName: "platform", step })),
+    ...linux.steps.map((step) => ({ jobName: "linux", step }))
+  ].filter(({ step }) =>
+    step.run?.includes("node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix")
+  );
+  assert.equal(genericEditorRunners.length, 4);
+  assert.deepEqual(
+    genericEditorRunners
+      .filter(({ step }) => step.env?.OPEN_WRANGLER_PACKAGED_MODE === undefined)
+      .map(({ jobName, step }) => [jobName, step.id]),
+    [["linux", "packaged_vscode"]]
+  );
+  assert.equal(
+    genericEditorRunners
+      .filter(({ jobName, step }) => jobName !== "linux" || step.id !== "packaged_vscode")
+      .every(({ step }) => step.env.OPEN_WRANGLER_PACKAGED_MODE === "platform-smoke"),
+    true
+  );
+
+  const rPlatform = acceptance.jobs.r_platform;
+  assert.deepEqual(rPlatform.strategy, {
+    "fail-fast": false,
+    "max-parallel": 2,
+    matrix: {
+      include: [
+        { os: "macos-latest", python: "3.12" },
+        { os: "windows-latest", python: "3.14" }
+      ]
+    }
+  });
+  assert.equal(rPlatform["runs-on"], "${{ matrix.os }}");
+  assert.deepEqual(
+    rPlatform.steps
+      .filter((step) => step.id?.startsWith("packaged_editor_r_"))
+      .map((step) => [step.id, step.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY]),
+    [
+      ["packaged_editor_r_core", "core-operations"],
+      ["packaged_editor_r_native", "native-frames"],
+      ["packaged_editor_r_restart", "kernel-restart"]
+    ]
+  );
+  for (const runner of rPlatform.steps.filter((step) => step.id?.startsWith("packaged_editor_r_"))) {
+    assert.equal(runner["continue-on-error"], true);
+    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, "vscode");
+    const index = rPlatform.steps.indexOf(runner);
+    assert.match(rPlatform.steps[index - 1].id, /^canonical_r_/u);
+    assert.equal(rPlatform.steps[index + 1].uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
+  }
+  assert.equal(rPlatform.steps.at(-1).name, "Require successful platform R outcomes");
+  assert.equal(rPlatform.steps.at(-1).if, "${{ always() }}");
+  assert.equal(rPlatform.steps.at(-1).shell, "bash");
+  assert.equal(rPlatform.steps.at(-1).env.NATIVE_OUTCOME, "${{ steps.packaged_editor_r_native.outcome }}");
+  assert.match(rPlatform.steps.at(-1).run, /test "\$NATIVE_OUTCOME" = "success"/u);
 
   const releasedJupyter = acceptance.jobs.jupyter;
   assert.deepEqual(releasedJupyter.strategy, {
@@ -1109,19 +1322,32 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     releasedJupyter.steps.some((step) => step.run === "npm run test:r-contract"),
     false
   );
+  for (const producerOwned of [
+    "npm run lock:remote-jupyter:check",
+    "npm run audit:remote-jupyter",
+    "uv-0.11.32-py3-none-manylinux"
+  ]) {
+    assert.equal(
+      releasedJupyter.steps.some((step) => step.run?.includes(producerOwned)),
+      false,
+      `${producerOwned} must stay out of candidate Jupyter acceptance.`
+    );
+  }
   assert.equal(
     releasedJupyter.steps.find((step) => step.id === "packaged_editor_r_remote")?.env?.OPEN_WRANGLER_PACKAGED_R_JOURNEY,
     "remote-r-jupyter"
   );
 
-  const rContract = acceptance.jobs.r_contract;
   const rLocal = acceptance.jobs.r_local;
-  assert.equal(rContract.needs, "contract");
-  assert.equal(rLocal.needs, "contract");
+  assert.equal(acceptance.jobs.r_contract, undefined);
   assert.equal(
-    rContract.steps.some((step) => step.run === "npm run test:r-contract"),
-    true
+    Object.values(acceptance.jobs).some((job) =>
+      (job.steps ?? []).some((step) => step.run === "npm run test:r-contract")
+    ),
+    false,
+    "Protected PR CI must remain the only source-level native R contract owner."
   );
+  assert.equal(rLocal.needs, "contract");
   assert.deepEqual(rLocal.strategy, {
     "fail-fast": false,
     "max-parallel": 2,
@@ -1136,13 +1362,23 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
       ["packaged_editor_r_restart", "kernel-restart"],
       ["packaged_editor_r_interactive", "interactive-terminal"],
       ["packaged_editor_r_literate", "literate-documents"],
+      ["packaged_editor_r_native", "native-frames"],
       ["packaged_editor_r_values", "value-operations"],
       ["packaged_editor_r_categorical", "categorical-operations"]
     ]
   );
+  const localEditors = new Map([
+    ["packaged_editor_r_core", "vscode,cursor"],
+    ["packaged_editor_r_restart", "vscode,cursor"],
+    ["packaged_editor_r_interactive", "vscode,cursor"],
+    ["packaged_editor_r_literate", "vscode,cursor"],
+    ["packaged_editor_r_native", "vscode,cursor"],
+    ["packaged_editor_r_values", "vscode"],
+    ["packaged_editor_r_categorical", "vscode"]
+  ]);
   for (const runner of rLocal.steps.filter((step) => step.id?.startsWith("packaged_editor_r_"))) {
     assert.equal(runner["continue-on-error"], true);
-    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, "vscode,cursor");
+    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, localEditors.get(runner.id));
     const index = rLocal.steps.indexOf(runner);
     assert.match(rLocal.steps[index - 1].id, /^canonical_r_/u);
     assert.equal(rLocal.steps[index + 1].uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
@@ -1150,15 +1386,17 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
   assert.equal(rLocal.steps.at(-1).name, "Require successful local R shard outcomes");
   assert.equal(rLocal.steps.at(-1).if, "${{ always() }}");
   assert.equal(rLocal.steps.at(-1).env.RESTART_OUTCOME, "${{ steps.packaged_editor_r_restart.outcome }}");
+  assert.equal(rLocal.steps.at(-1).env.NATIVE_OUTCOME, "${{ steps.packaged_editor_r_native.outcome }}");
   assert.match(rLocal.steps.at(-1).run, /test "\$RESTART_OUTCOME" = "success"/u);
+  assert.match(rLocal.steps.at(-1).run, /test "\$NATIVE_OUTCOME" = "success"/u);
 
   assert.deepEqual(acceptance.jobs.acceptance.needs, [
     "contract",
     "platform",
+    "r_platform",
     "linux",
     "performance",
     "jupyter",
-    "r_contract",
     "r_local"
   ]);
   assert.equal(acceptance.jobs.acceptance.if, "${{ always() }}");
@@ -1182,18 +1420,28 @@ test("PR CI gates expensive work behind bounded preflight lanes without removing
         uses: "actions/setup-node@v6",
         with: { "node-version": 22, cache: "npm" }
       },
+      {
+        id: "reference_python",
+        uses: PINNED_SETUP_PYTHON_ACTION,
+        with: { "python-version": "3.12" }
+      },
       { run: "npm ci" },
       { name: "Formatting", run: "npm run format:check" },
       { name: "ESLint", run: "npm run lint" },
       { name: "Strict TypeScript", run: "npm run typecheck" },
       { name: "Protocol freshness", run: "npm run protocol:check" },
-      { name: "Reference freshness", run: "npm run reference:check" },
+      {
+        name: "Reference freshness",
+        run: "npm run reference:check",
+        env: { OPEN_WRANGLER_PYTHON: REFERENCE_PYTHON_OUTPUT }
+      },
       { name: "Documentation freshness", run: "npm run docs:check" },
       { name: "Production license inventory", run: "npm run license:check" },
       { name: "Workflow contracts", run: "npm run test:scripts:workflow" }
     ],
-    "The early lane must remain source-only, named, and independently attributable."
+    "The early lane must remain bounded source validation, named, and independently attributable."
   );
+  assert.deepEqual(inspectFastFeedbackReferencePython(workflow), []);
 
   const contractSteps = workflow?.jobs?.["contract-tests"]?.steps;
   assert.ok(Array.isArray(contractSteps));
@@ -1220,6 +1468,41 @@ test("PR CI gates expensive work behind bounded preflight lanes without removing
   assert.deepEqual(workflow?.jobs?.["canonical-vsix"]?.needs, ["classify", "fast-feedback"]);
   assert.deepEqual(workflow?.jobs?.["contract-tests"]?.needs, ["classify", "fast-feedback"]);
   assert.equal(workflow?.jobs?.["contract-tests"]?.if, CONTRACT_CI_IF);
+});
+
+test("PR reference freshness rejects ambient, unpinned, duplicated, and late interpreter authority", () => {
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const base = parseYaml(source);
+  const expectReferencePrerequisiteRejected = (mutate, pattern) => {
+    const workflow = structuredClone(base);
+    mutate(workflow.jobs["fast-feedback"].steps);
+    const problems = inspectFastFeedbackReferencePython(workflow);
+    assert.ok(problems.length > 0, "The adversarial reference prerequisite must be rejected.");
+    assert.match(problems.join("\n"), pattern);
+  };
+
+  expectReferencePrerequisiteRejected((steps) => {
+    const setup = steps.find((step) => step.id === "reference_python");
+    setup.uses = "actions/setup-python@v6";
+  }, /pinned setup-python prerequisite/u);
+  expectReferencePrerequisiteRejected((steps) => {
+    const reference = steps.find((step) => step.name === "Reference freshness");
+    reference.env.OPEN_WRANGLER_PYTHON = "python3";
+  }, /authoritative absolute python-path/u);
+  expectReferencePrerequisiteRejected((steps) => {
+    const reference = steps.find((step) => step.name === "Reference freshness");
+    delete reference.env;
+  }, /authoritative absolute python-path/u);
+  expectReferencePrerequisiteRejected((steps) => {
+    const setupIndex = steps.findIndex((step) => step.id === "reference_python");
+    const [setup] = steps.splice(setupIndex, 1);
+    const referenceIndex = steps.findIndex((step) => step.name === "Reference freshness");
+    steps.splice(referenceIndex + 1, 0, setup);
+  }, /ordered before generation/u);
+  expectReferencePrerequisiteRejected((steps) => {
+    const setupIndex = steps.findIndex((step) => step.id === "reference_python");
+    steps.splice(setupIndex + 1, 0, structuredClone(steps[setupIndex]));
+  }, /one pinned setup-python prerequisite/u);
 });
 
 test("benchmark-only PRs run one focused harness lane without launching the benchmark", () => {
@@ -2155,6 +2438,10 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
   assert.match(acceptance?.run ?? "", /^npm run test:remote-workspace --/u);
   assert.match(acceptance?.run ?? "", /steps\.candidate\.outputs\.path/u);
   assert.equal(acceptance?.env?.OPEN_WRANGLER_EDITOR_DISPLAY, "xvfb");
+  assert.equal(
+    acceptance?.env?.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON,
+    "${{ github.workspace }}/.remote-venv/bin/python"
+  );
   assert.equal(acceptance?.env?.OPEN_WRANGLER_REMOTE_PYTHON, "${{ github.workspace }}/.remote-venv/bin/python");
   assert.equal(steps.filter((step) => String(step?.run ?? "").includes("npm run test:remote-workspace --")).length, 1);
 });

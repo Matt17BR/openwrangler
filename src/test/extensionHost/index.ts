@@ -540,17 +540,22 @@ export async function run(): Promise<void> {
   const testSelector = process.env.OPEN_WRANGLER_TEST_SELECTOR;
   assert.ok(
     testSelector === undefined ||
+      testSelector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR ||
       testSelector === "core-operations" ||
       testSelector === "categorical-operations" ||
       testSelector === "value-operations" ||
       testSelector === "kernel-restart" ||
+      testSelector === "native-frames" ||
       testSelector === "interactive-terminal" ||
       testSelector === "literate-documents",
-    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "core-operations", "categorical-operations", "value-operations", "kernel-restart", "interactive-terminal", or "literate-documents".'
+    'OPEN_WRANGLER_TEST_SELECTOR must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".'
   );
   assert.ok(
-    testSelector === undefined || phase === "jupyter-r",
-    "An OPEN_WRANGLER_TEST_SELECTOR value requires the jupyter-r phase."
+    testSelector === undefined ||
+      (testSelector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR
+        ? phase === "jupyter-allow" && process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor"
+        : phase === "jupyter-r"),
+    "candidate-compatibility-seam requires jupyter-allow in Cursor; every R selector requires jupyter-r."
   );
   if (testPython && phase !== "python-environment" && phase !== "remote-workspace") {
     await vscode.workspace
@@ -1277,6 +1282,8 @@ type DataWranglerCoexistencePhase =
   | "jupyter-coexist-open-restart"
   | "jupyter-coexist-data-select"
   | "jupyter-coexist-data-restart";
+
+const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
 
 type ReleasedJupyterPhase =
   | "jupyter-deny"
@@ -2230,7 +2237,13 @@ async function assertReleasedRRuntimeBinding(
 }
 
 type ReleasedRAcceptanceCoverageProfile = Readonly<{
-  name: "categorical-operations" | "value-operations" | "kernel-restart" | "comprehensive" | "representative";
+  name:
+    | "categorical-operations"
+    | "value-operations"
+    | "kernel-restart"
+    | "native-frames"
+    | "comprehensive"
+    | "representative";
   coreJourney: boolean;
   kernelLifecycle: boolean;
   gridPaging: "all-blocks" | "single-round-trip";
@@ -2238,7 +2251,7 @@ type ReleasedRAcceptanceCoverageProfile = Readonly<{
   focusedEditing: "none" | "categorical-operations" | "value-operations";
   openCollapseSessions: boolean;
   openNativeFramesInViewingMode: boolean;
-  nativeFrameEditing: "rename-and-drop" | "one-operation-per-flavor";
+  nativeFrameEditing: "none" | "rename-and-drop" | "one-operation-per-flavor";
 }>;
 
 const RELEASED_R_COMPREHENSIVE_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
@@ -2269,14 +2282,16 @@ const RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoveragePro
   ...RELEASED_R_REPRESENTATIVE_COVERAGE,
   name: "categorical-operations",
   kernelLifecycle: false,
-  focusedEditing: "categorical-operations"
+  focusedEditing: "categorical-operations",
+  nativeFrameEditing: "none"
 });
 
 const RELEASED_R_VALUE_OPERATIONS_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
   ...RELEASED_R_REPRESENTATIVE_COVERAGE,
   name: "value-operations",
   kernelLifecycle: false,
-  focusedEditing: "value-operations"
+  focusedEditing: "value-operations",
+  nativeFrameEditing: "none"
 });
 
 const RELEASED_R_KERNEL_RESTART_COVERAGE: ReleasedRAcceptanceCoverageProfile = Object.freeze({
@@ -2291,7 +2306,23 @@ function releasedRCoreAcceptanceCoverageProfile(): ReleasedRAcceptanceCoveragePr
   return process.platform === "win32" ? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;
 }
 
-function releasedRAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
+function releasedRCandidateCoreAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
+  if (process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor") return RELEASED_R_REPRESENTATIVE_COVERAGE;
+  return process.platform === "linux" ? RELEASED_R_COMPREHENSIVE_COVERAGE : RELEASED_R_REPRESENTATIVE_COVERAGE;
+}
+
+function releasedRNativeFramesAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfile {
+  return Object.freeze({
+    ...releasedRCandidateCoreAcceptanceCoverageProfile(),
+    name: "native-frames",
+    coreJourney: false,
+    kernelLifecycle: false
+  });
+}
+
+function releasedRAcceptanceCoverageProfile(
+  phase: "jupyter-r" | "jupyter-r-remote"
+): ReleasedRAcceptanceCoverageProfile {
   if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations") {
     return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;
   }
@@ -2301,10 +2332,19 @@ function releasedRAcceptanceCoverageProfile(): ReleasedRAcceptanceCoverageProfil
   if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "kernel-restart") {
     return RELEASED_R_KERNEL_RESTART_COVERAGE;
   }
-  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "core-operations") {
-    const coreCoverage = releasedRCoreAcceptanceCoverageProfile();
-    return process.platform === "linux" ? Object.freeze({ ...coreCoverage, kernelLifecycle: false }) : coreCoverage;
+  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "native-frames") {
+    return releasedRNativeFramesAcceptanceCoverageProfile();
   }
+  if (process.env.OPEN_WRANGLER_TEST_SELECTOR === "core-operations") {
+    return Object.freeze({
+      ...releasedRCandidateCoreAcceptanceCoverageProfile(),
+      kernelLifecycle: false,
+      openCollapseSessions: false,
+      openNativeFramesInViewingMode: false,
+      nativeFrameEditing: "none"
+    });
+  }
+  if (phase === "jupyter-r-remote") return RELEASED_R_REPRESENTATIVE_COVERAGE;
   return releasedRCoreAcceptanceCoverageProfile();
 }
 
@@ -2322,11 +2362,16 @@ async function exerciseReleasedRJupyterExtension(
   extension: vscode.Extension<ExtensionApi>,
   phase: "jupyter-r" | "jupyter-r-remote"
 ): Promise<void> {
-  const coverage = releasedRAcceptanceCoverageProfile();
-  if (!coverage.coreJourney) {
+  const coverage = releasedRAcceptanceCoverageProfile(phase);
+  if (coverage.name === "kernel-restart") {
     await exerciseReleasedRKernelRestartExtension(testing, extension, phase, coverage);
     return;
   }
+  if (coverage.name === "native-frames") {
+    await exerciseReleasedRNativeFramesExtension(testing, extension, phase, coverage);
+    return;
+  }
+  assert.equal(coverage.coreJourney, true, "The ordinary R notebook journey requires a core coverage profile.");
   recordReleasedRAcceptanceSection(phase, coverage, "notebook", "start");
   assert.equal(testing.diagnostics().sessionCount, 0);
   const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
@@ -2666,53 +2711,7 @@ async function exerciseReleasedRJupyterExtension(
     await assertReleasedRRuntimeBinding(notebook, true, `${phase}:source-after-editing-journey`);
     await disposePackagedSessionPanel(testing, base.sessionId, "the editable orders R data.frame session");
 
-    const collapseFrames = [
-      {
-        name: "collapse_frame",
-        factory: "qDF",
-        type: "data.frame",
-        backend: "r" as const,
-        rDataframeFlavor: "r.data.frame" as const,
-        firstValue: "1",
-        notebookInsert: true
-      },
-      {
-        name: "collapse_tibble",
-        factory: "qTBL",
-        type: "tbl_df",
-        backend: "r" as const,
-        rDataframeFlavor: "r.tibble" as const,
-        firstValue: "1",
-        notebookInsert: true
-      },
-      {
-        name: "collapse_table",
-        factory: "qDT",
-        type: "data.table",
-        backend: "r" as const,
-        rDataframeFlavor: "r.data.table" as const,
-        firstValue: "1",
-        notebookInsert: true
-      }
-    ] as const;
-    if (coverage.openCollapseSessions) {
-      recordReleasedRAcceptanceSection(phase, coverage, "collapse-open", "start");
-      for (const expected of collapseFrames) {
-        await showExactReleasedNotebook(notebook);
-        await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
-        const session = await waitForReleasedVariableSession(
-          workbench,
-          testing,
-          notebook,
-          expected,
-          `the collapse::${expected.factory}() session`
-        );
-        assert.deepEqual(session.metadata.shape, { rows: 1_205, columns: 25 });
-        await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
-        await disposePackagedSessionPanel(testing, session.sessionId, `the collapse::${expected.factory}() session`);
-      }
-      recordReleasedRAcceptanceSection(phase, coverage, "collapse-open", "complete");
-    }
+    await exerciseReleasedRCollapseFrameSessions(testing, workbench, notebook, phase, coverage);
 
     if (phase === "jupyter-r" && process.platform === "darwin") {
       assert.equal(
@@ -2726,137 +2725,7 @@ async function exerciseReleasedRJupyterExtension(
       recordReleasedRAcceptanceSection(phase, coverage, "document", "complete");
     }
 
-    const additionalRFrames = [
-      {
-        name: "orders_tibble",
-        type: "tbl_df",
-        backend: "r" as const,
-        rDataframeFlavor: "r.tibble" as const,
-        firstValue: "1",
-        notebookInsert: true
-      },
-      {
-        name: "orders_table",
-        type: "data.table",
-        backend: "r" as const,
-        rDataframeFlavor: "r.data.table" as const,
-        firstValue: "1",
-        notebookInsert: true
-      }
-    ] as const;
-    if (coverage.openNativeFramesInViewingMode) {
-      recordReleasedRAcceptanceSection(phase, coverage, "native-viewing", "start");
-      for (const expected of additionalRFrames) {
-        await showExactReleasedNotebook(notebook);
-        await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
-        const session = await waitForReleasedVariableSession(
-          workbench,
-          testing,
-          notebook,
-          expected,
-          `the native ${expected.rDataframeFlavor} session`
-        );
-        await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
-        await disposePackagedSessionPanel(
-          testing,
-          session.sessionId,
-          `the native ${expected.rDataframeFlavor} session`
-        );
-      }
-      recordReleasedRAcceptanceSection(phase, coverage, "native-viewing", "complete");
-    }
-
-    recordReleasedRAcceptanceSection(phase, coverage, "native-editing", "start");
-    await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
-    for (const expected of additionalRFrames) {
-      await showExactReleasedNotebook(notebook);
-      await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
-      const session = await waitForReleasedVariableSession(
-        workbench,
-        testing,
-        notebook,
-        expected,
-        `the editable native ${expected.rDataframeFlavor} session`
-      );
-      assert.equal(session.metadata.mode, "editing");
-      assert.deepEqual(session.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
-      recordAcceptanceProgress(`${phase}:${expected.name}:editing-session-received`);
-      let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
-      recordAcceptanceProgress(`${phase}:${expected.name}:editing-renderer-ready`);
-      const checkRename = coverage.nativeFrameEditing === "rename-and-drop" || expected.rDataframeFlavor === "r.tibble";
-      if (checkRename) {
-        const previewed = await previewReleasedRRename(
-          testing,
-          workbench,
-          app,
-          session.sessionId,
-          "row_id",
-          "record_id",
-          undefined,
-          expected.name
-        );
-        app = previewed.app;
-        assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
-        await app
-          .getByRole("region", { name: "Draft review" })
-          .getByRole("button", { name: "Discard", exact: true })
-          .click();
-        await waitFor(
-          () => {
-            const active = testing.activeSession();
-            return (
-              active?.sessionId === session.sessionId &&
-              active.metadata.draftStep === undefined &&
-              active.metadata.steps.length === 0 &&
-              active.metadata.schema[0]?.name === "row_id"
-            );
-          },
-          30_000,
-          `discarding the native ${expected.rDataframeFlavor} rename preview`
-        );
-      }
-      const checkDrop =
-        coverage.nativeFrameEditing === "rename-and-drop" || expected.rDataframeFlavor === "r.data.table";
-      if (checkDrop) {
-        app = await releasedRSessionApp(workbench, testing, session.sessionId, `the restored ${expected.name}`);
-        const droppedColumn = expected.rDataframeFlavor === "r.data.table" ? "row_id" : "label";
-        const dropPreview = await previewReleasedRDrop(
-          testing,
-          workbench,
-          session.sessionId,
-          droppedColumn,
-          expected.name,
-          `${phase}:${expected.name}:editing:drop-code-preview`
-        );
-        app = dropPreview.app;
-        assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
-        await app
-          .getByRole("region", { name: "Draft review" })
-          .getByRole("button", { name: "Discard", exact: true })
-          .click();
-        await waitFor(
-          () => {
-            const active = testing.activeSession();
-            return (
-              active?.sessionId === session.sessionId &&
-              active.metadata.draftStep === undefined &&
-              active.metadata.steps.length === 0 &&
-              active.metadata.schema.some((column) => column.name === droppedColumn)
-            );
-          },
-          30_000,
-          `discarding the native ${expected.rDataframeFlavor} Drop Columns preview`
-        );
-      }
-      await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:after-native-edit`);
-      await disposePackagedSessionPanel(
-        testing,
-        session.sessionId,
-        `the editable native ${expected.rDataframeFlavor} session`
-      );
-    }
-    await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
-    recordReleasedRAcceptanceSection(phase, coverage, "native-editing", "complete");
+    await exerciseReleasedRNativeFrameSessions(testing, workbench, notebook, configuration, phase, coverage);
 
     if (coverage.kernelLifecycle) {
       recordReleasedRAcceptanceSection(phase, coverage, "restart", "start");
@@ -2884,6 +2753,354 @@ async function exerciseReleasedRJupyterExtension(
     }
     try {
       remoteServerCollection?.dispose();
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+    try {
+      cleanupAcceptanceTemporaryDirectory(directory);
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+    if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint);
+  }
+  if (acceptanceError) throw acceptanceError.value;
+  recordReleasedRAcceptanceSection(phase, coverage, "notebook", "complete");
+}
+
+const RELEASED_R_COLLAPSE_FRAMES = [
+  {
+    name: "collapse_frame",
+    factory: "qDF",
+    type: "data.frame",
+    backend: "r" as const,
+    rDataframeFlavor: "r.data.frame" as const,
+    firstValue: "1",
+    notebookInsert: true
+  },
+  {
+    name: "collapse_tibble",
+    factory: "qTBL",
+    type: "tbl_df",
+    backend: "r" as const,
+    rDataframeFlavor: "r.tibble" as const,
+    firstValue: "1",
+    notebookInsert: true
+  },
+  {
+    name: "collapse_table",
+    factory: "qDT",
+    type: "data.table",
+    backend: "r" as const,
+    rDataframeFlavor: "r.data.table" as const,
+    firstValue: "1",
+    notebookInsert: true
+  }
+] as const;
+
+const RELEASED_R_ADDITIONAL_NATIVE_FRAMES = [
+  {
+    name: "orders_tibble",
+    type: "tbl_df",
+    backend: "r" as const,
+    rDataframeFlavor: "r.tibble" as const,
+    firstValue: "1",
+    notebookInsert: true
+  },
+  {
+    name: "orders_table",
+    type: "data.table",
+    backend: "r" as const,
+    rDataframeFlavor: "r.data.table" as const,
+    firstValue: "1",
+    notebookInsert: true
+  }
+] as const;
+
+function recordReleasedRNativeFrameCheckpoint(
+  phase: "jupyter-r" | "jupyter-r-remote",
+  coverage: ReleasedRAcceptanceCoverageProfile,
+  frame: string,
+  checkpoint: string
+): void {
+  recordAcceptanceProgress(`${phase}:coverage:${coverage.name}:native-frame:${frame}:${checkpoint}`);
+}
+
+async function exerciseReleasedRCollapseFrameSessions(
+  testing: TestApi,
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  phase: "jupyter-r" | "jupyter-r-remote",
+  coverage: ReleasedRAcceptanceCoverageProfile
+): Promise<void> {
+  if (!coverage.openCollapseSessions) return;
+  recordReleasedRAcceptanceSection(phase, coverage, "collapse-open", "start");
+  for (const expected of RELEASED_R_COLLAPSE_FRAMES) {
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-open:start");
+    await showExactReleasedNotebook(notebook);
+    await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+    const session = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      expected,
+      `the collapse::${expected.factory}() session`
+    );
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-open:complete");
+    assert.deepEqual(session.metadata.shape, { rows: 1_205, columns: 25 });
+    await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-page:complete");
+    await disposePackagedSessionPanel(testing, session.sessionId, `the collapse::${expected.factory}() session`);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-cleanup:complete");
+  }
+  recordReleasedRAcceptanceSection(phase, coverage, "collapse-open", "complete");
+}
+
+async function exerciseReleasedRNativeFrameSessions(
+  testing: TestApi,
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  configuration: vscode.WorkspaceConfiguration,
+  phase: "jupyter-r" | "jupyter-r-remote",
+  coverage: ReleasedRAcceptanceCoverageProfile
+): Promise<void> {
+  if (coverage.openNativeFramesInViewingMode) {
+    recordReleasedRAcceptanceSection(phase, coverage, "native-viewing", "start");
+    for (const expected of RELEASED_R_ADDITIONAL_NATIVE_FRAMES) {
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-open:start");
+      await showExactReleasedNotebook(notebook);
+      await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+      const session = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        expected,
+        `the native ${expected.rDataframeFlavor} session`
+      );
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-open:complete");
+      await assertReleasedSessionPage(testing, session, "1", `${phase}-${expected.name}-page`);
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-page:complete");
+      await disposePackagedSessionPanel(testing, session.sessionId, `the native ${expected.rDataframeFlavor} session`);
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "view-cleanup:complete");
+    }
+    recordReleasedRAcceptanceSection(phase, coverage, "native-viewing", "complete");
+  }
+
+  if (coverage.nativeFrameEditing === "none") return;
+  recordReleasedRAcceptanceSection(phase, coverage, "native-editing", "start");
+  await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
+  for (const expected of RELEASED_R_ADDITIONAL_NATIVE_FRAMES) {
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "editing-open:start");
+    await showExactReleasedNotebook(notebook);
+    await invokeReleasedNotebookToolbarVariable(workbench, notebook, expected.name);
+    const session = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      expected,
+      `the editable native ${expected.rDataframeFlavor} session`
+    );
+    assert.equal(session.metadata.mode, "editing");
+    assert.deepEqual(session.metadata.capabilities.supportedOperations, RELEASED_R_SUPPORTED_OPERATIONS);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "editing-session:complete");
+    let app = await releasedRSessionApp(workbench, testing, session.sessionId, `the editable ${expected.name}`);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "editing-renderer:complete");
+    const checkRename = coverage.nativeFrameEditing === "rename-and-drop" || expected.rDataframeFlavor === "r.tibble";
+    if (checkRename) {
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "rename-preview:start");
+      const previewed = await previewReleasedRRename(
+        testing,
+        workbench,
+        app,
+        session.sessionId,
+        "row_id",
+        "record_id",
+        undefined,
+        expected.name
+      );
+      app = previewed.app;
+      assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "rename-preview:complete");
+      await app
+        .getByRole("region", { name: "Draft review" })
+        .getByRole("button", { name: "Discard", exact: true })
+        .click();
+      await waitFor(
+        () => {
+          const active = testing.activeSession();
+          return (
+            active?.sessionId === session.sessionId &&
+            active.metadata.draftStep === undefined &&
+            active.metadata.steps.length === 0 &&
+            active.metadata.schema[0]?.name === "row_id"
+          );
+        },
+        30_000,
+        `discarding the native ${expected.rDataframeFlavor} rename preview`
+      );
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "rename-discard:complete");
+    }
+    const checkDrop = coverage.nativeFrameEditing === "rename-and-drop" || expected.rDataframeFlavor === "r.data.table";
+    if (checkDrop) {
+      app = await releasedRSessionApp(workbench, testing, session.sessionId, `the restored ${expected.name}`);
+      const droppedColumn = expected.rDataframeFlavor === "r.data.table" ? "row_id" : "label";
+      const dropCheckpoint = `${phase}:coverage:${coverage.name}:native-frame:${expected.name}:drop-code-preview`;
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "drop-preview:start");
+      const dropPreview = await previewReleasedRDrop(
+        testing,
+        workbench,
+        session.sessionId,
+        droppedColumn,
+        expected.name,
+        dropCheckpoint
+      );
+      app = dropPreview.app;
+      assert.equal(testing.activeSession()?.metadata.rDataframeFlavor, expected.rDataframeFlavor);
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "drop-preview:complete");
+      await app
+        .getByRole("region", { name: "Draft review" })
+        .getByRole("button", { name: "Discard", exact: true })
+        .click();
+      await waitFor(
+        () => {
+          const active = testing.activeSession();
+          return (
+            active?.sessionId === session.sessionId &&
+            active.metadata.draftStep === undefined &&
+            active.metadata.steps.length === 0 &&
+            active.metadata.schema.some((column) => column.name === droppedColumn)
+          );
+        },
+        30_000,
+        `discarding the native ${expected.rDataframeFlavor} Drop Columns preview`
+      );
+      recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "drop-discard:complete");
+    }
+    await assertReleasedRRuntimeBinding(notebook, true, `${phase}:${expected.name}:after-native-edit`);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "source-binding:complete");
+    await disposePackagedSessionPanel(
+      testing,
+      session.sessionId,
+      `the editable native ${expected.rDataframeFlavor} session`
+    );
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, expected.name, "editing-cleanup:complete");
+  }
+  await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
+  recordReleasedRAcceptanceSection(phase, coverage, "native-editing", "complete");
+}
+
+async function exerciseReleasedRNativeFramesExtension(
+  testing: TestApi,
+  extension: vscode.Extension<ExtensionApi>,
+  phase: "jupyter-r" | "jupyter-r-remote",
+  coverage: ReleasedRAcceptanceCoverageProfile
+): Promise<void> {
+  assert.equal(phase, "jupyter-r", "The focused native R-frame journey must use the local Jupyter phase.");
+  assert.equal(
+    process.env.OPEN_WRANGLER_TEST_SELECTOR,
+    "native-frames",
+    "The native R-frame coverage profile must be selected explicitly."
+  );
+  assert.equal(coverage.name, "native-frames");
+  assert.equal(coverage.coreJourney, false);
+  assert.equal(coverage.kernelLifecycle, false);
+  assert.notEqual(coverage.nativeFrameEditing, "none");
+  recordReleasedRAcceptanceSection(phase, coverage, "notebook", "start");
+  assert.equal(testing.diagnostics().sessionCount, 0);
+  const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+  assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
+  assert.equal(jupyterExtension.packageJSON.version, RELEASED_JUPYTER_EXTENSION_VERSION);
+  assert.ok(
+    !((extension.packageJSON.extensionDependencies as string[] | undefined) ?? []).includes("ms-toolsai.jupyter"),
+    "Native R notebook support must not make Jupyter a hard dependency."
+  );
+
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-released-jupyter-r-native-frames-"));
+  const notebookPath = path.join(directory, "r-native-frames.ipynb");
+  const notebookUri = vscode.Uri.file(notebookPath);
+  const kernelTarget = releasedJupyterKernelTarget(phase);
+  assert.equal(kernelTarget.remote, undefined, "The focused native R-frame journey must use hosted R.");
+  writeReleasedRNotebook(notebookPath, phase);
+  const configuration = vscode.workspace.getConfiguration("openWrangler");
+  const originalProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
+    "notebookPreviewProvider"
+  )?.workspaceValue;
+  const originalNotebookStartMode = configuration.inspect<"viewing" | "editing">("notebookStartMode")?.workspaceValue;
+  let notebook: vscode.NotebookDocument | undefined;
+  let acceptanceError: { readonly value: unknown } | undefined;
+  let failureCheckpoint: string | undefined;
+  try {
+    await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
+    await configuration.update("notebookStartMode", "viewing", vscode.ConfigurationTarget.Workspace);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "open:start");
+    notebook = await vscode.workspace.openNotebookDocument(notebookUri);
+    const notebookEditor = await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "open:complete");
+    const workbench = await connectToEditorWorkbench();
+    await jupyterExtension.activate();
+    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "kernel-probe:start");
+    await executeReleasedNotebookCell(
+      notebook,
+      RELEASED_JUPYTER_R_KERNEL_CELL,
+      RELEASED_JUPYTER_R_KERNEL_RESULT,
+      `${phase}:native-frames:kernel-probe`,
+      notebookEditor
+    );
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "kernel-probe:complete");
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "setup:start");
+    await executeReleasedNotebookCell(
+      notebook,
+      RELEASED_JUPYTER_R_SETUP_CELL,
+      [RELEASED_JUPYTER_R_SETUP_RESULT, RELEASED_NOTEBOOK_R_SETUP_FAILURE_PREFIX],
+      `${phase}:native-frames:setup`,
+      notebookEditor,
+      "r-setup"
+    );
+    const setupCell = notebook.cellAt(RELEASED_JUPYTER_R_SETUP_CELL);
+    const setupFailureStage = releasedNotebookRSetupFailureStage(setupCell.outputs);
+    if (setupFailureStage !== undefined) {
+      throw new Error(`Released-Jupyter R setup failed at stage ${setupFailureStage}.`);
+    }
+    if (!notebookCellOutputText(setupCell).includes(RELEASED_JUPYTER_R_SETUP_RESULT)) {
+      throw new Error("Released-Jupyter R setup returned a malformed fixed diagnostic.");
+    }
+    const setup = releasedNotebookJsonResult(setupCell, RELEASED_JUPYTER_R_SETUP_RESULT, "native R-frame setup");
+    assert.deepEqual({ rows: setup.rows, columns: setup.columns }, { rows: 1_205, columns: 25 });
+    assertReleasedRVersion(setup, kernelTarget, "native R-frame setup");
+    assertReleasedRPrivateLibrary(setup, "native R-frame setup");
+    assert.equal(setup.collapseVersion, "2.1.7");
+    assert.ok(Number.isSafeInteger(Number(setup.pid)) && Number(setup.pid) > 0);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "setup:complete");
+
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "consent:start");
+    const consent = await waitForReleasedJupyterConsent(workbench, testing);
+    await consent.allow.click();
+    await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "consent:complete");
+
+    await exerciseReleasedRCollapseFrameSessions(testing, workbench, notebook, phase, coverage);
+    await exerciseReleasedRNativeFrameSessions(testing, workbench, notebook, configuration, phase, coverage);
+    assert.equal(testing.diagnostics().sessionCount, 0, "The focused native R-frame journey must close every session.");
+    const cleanupEditor = await showExactReleasedNotebook(notebook);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "binding-cleanup:start");
+    await waitForReleasedRRuntimeBindingCleanup(notebook, cleanupEditor, phase);
+    recordReleasedRNativeFrameCheckpoint(phase, coverage, "fixture", "binding-cleanup:complete");
+  } catch (error) {
+    failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint);
+    acceptanceError = { value: error };
+  } finally {
+    try {
+      await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+    try {
+      await configuration.update("notebookPreviewProvider", originalProvider, vscode.ConfigurationTarget.Workspace);
+    } catch (error) {
+      acceptanceError ??= { value: error };
+    }
+    try {
+      await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
     } catch (error) {
       acceptanceError ??= { value: error };
     }
@@ -11313,6 +11530,8 @@ async function exerciseReleasedJupyterExtension(
     !((extension.packageJSON.extensionDependencies as string[] | undefined) ?? []).includes("ms-toolsai.jupyter"),
     "File-backed Open Wrangler use must not acquire a hard Jupyter extension dependency."
   );
+  const candidateCompatibilitySeam =
+    process.env.OPEN_WRANGLER_TEST_SELECTOR === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR;
 
   const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
   assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
@@ -11413,13 +11632,15 @@ async function exerciseReleasedJupyterExtension(
       );
       assert.equal(initialKernelBeforeFormatter.setup, setupMarker);
       assert.equal(initialKernelBeforeFormatter.duckdbConversionGuards, true);
-      await exerciseFormatterDisabledFirstNotebookResult(
-        workbench,
-        testing,
-        notebook,
-        variableNotebookEditor,
-        jupyterApi
-      );
+      if (!candidateCompatibilitySeam) {
+        await exerciseFormatterDisabledFirstNotebookResult(
+          workbench,
+          testing,
+          notebook,
+          variableNotebookEditor,
+          jupyterApi
+        );
+      }
     }
 
     assert.equal(
@@ -11469,7 +11690,7 @@ async function exerciseReleasedJupyterExtension(
       return;
     }
 
-    if (phase !== "jupyter-allow") {
+    if (phase !== "jupyter-allow" || candidateCompatibilitySeam) {
       const consent = await waitForReleasedJupyterConsent(workbench, testing);
       assertExactOpenNotebookDocument(notebook, "while proactive formatter consent belongs to the fixture notebook");
       recordAcceptanceProgress(`${phase}:consent`);
@@ -11574,6 +11795,18 @@ async function exerciseReleasedJupyterExtension(
       0,
       "Producing an automatic notebook preview must not implicitly open a dataframe session."
     );
+    if (candidateCompatibilitySeam) {
+      await exerciseReleasedJupyterAllowCompatibilitySeam(
+        testing,
+        workbench,
+        notebook,
+        variableNotebookEditor,
+        rendererLoadObserver,
+        renderedCell,
+        capturedShowcaseFirstValue
+      );
+      return;
+    }
 
     recordAcceptanceProgress(`${phase}:temporary-result-mime-v2`);
     const temporaryResultKernel = await jupyterApi.kernels.getKernel(notebook.uri);
@@ -12373,6 +12606,94 @@ async function exerciseReleasedJupyterExtension(
       if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint);
     }
   }
+}
+
+async function exerciseReleasedJupyterAllowCompatibilitySeam(
+  testing: TestApi,
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  rendererLoadObserver: NotebookRendererLoadObserver,
+  renderedCell: vscode.NotebookRange,
+  firstValue: string
+): Promise<void> {
+  recordAcceptanceProgress("jupyter-allow:candidate-seam:variables");
+  await showExactReleasedNotebook(notebook);
+  assertExactVisibleReleasedNotebookEditor(
+    notebook,
+    notebookEditor,
+    "before opening the candidate Cursor Jupyter Variables seam"
+  );
+  await vscode.commands.executeCommand("jupyter.openVariableView");
+  assertExactOpenNotebookDocument(notebook, "after opening the candidate Cursor Jupyter Variables seam");
+  await dispatchReleasedJupyterVariableAction(
+    workbench,
+    notebook,
+    RELEASED_JUPYTER_VARIABLES_PANDAS.name,
+    "jupyter-allow:candidate-seam:variables"
+  );
+  const variablesSession = await waitForReleasedVariableSession(
+    workbench,
+    testing,
+    notebook,
+    RELEASED_JUPYTER_VARIABLES_PANDAS,
+    "the canonical orders_df opened through the candidate Cursor Jupyter Variables seam"
+  );
+  try {
+    await assertReleasedSessionPage(
+      testing,
+      variablesSession,
+      RELEASED_JUPYTER_VARIABLES_PANDAS.firstValue,
+      "jupyter-allow-candidate-variables-page"
+    );
+  } finally {
+    await disposePackagedSessionPanel(
+      testing,
+      variablesSession.sessionId,
+      "the candidate Cursor Jupyter Variables session"
+    );
+  }
+
+  recordAcceptanceProgress("jupyter-allow:candidate-seam:renderer");
+  const rendererEditor = await showExactReleasedNotebook(notebook);
+  rendererEditor.selection = renderedCell;
+  rendererEditor.selections = [renderedCell];
+  rendererEditor.revealRange(renderedCell, vscode.NotebookEditorRevealType.InCenter);
+  let rendererButton: NotebookRendererButton;
+  try {
+    rendererButton = await waitForNotebookRendererButton(workbench, "orders_preview_df", "Open in Open Wrangler");
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} Host: ${JSON.stringify(
+        releasedNotebookRendererHostDiagnostics(notebook, 1)
+      )} Browser: ${JSON.stringify(rendererLoadObserver.snapshot())}`
+    );
+  }
+  let rendererSession: NonNullable<ReturnType<TestApi["activeSession"]>>;
+  try {
+    rendererSession = await openReleasedRendererVariableSession(
+      rendererButton,
+      workbench,
+      testing,
+      notebook,
+      { name: "orders_preview_df", type: "DataFrame", backend: "pandas", firstValue },
+      "the live orders_preview_df opened through the candidate Cursor renderer seam",
+      "jupyter-allow:candidate-seam:renderer"
+    );
+  } finally {
+    await rendererButton.dispose();
+  }
+  try {
+    assert.deepEqual(rendererSession.metadata.shape, { rows: 100_000, columns: 12 });
+    await assertReleasedSessionPage(testing, rendererSession, firstValue, "jupyter-allow-candidate-renderer-page");
+  } finally {
+    await disposePackagedSessionPanel(
+      testing,
+      rendererSession.sessionId,
+      "the candidate Cursor Jupyter renderer session"
+    );
+  }
+  assert.equal(testing.diagnostics().sessionCount, 0);
 }
 
 async function exerciseReleasedPythonFileEntrypoint(

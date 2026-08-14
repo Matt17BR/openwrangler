@@ -95,14 +95,17 @@ test("the lock compiler accepts only the exact resolver version output", () => {
   assert.equal(isRemoteJupyterLockToolVersionOutput("uv 0.11.32 (x86_64-unknown-linux-gnu)\nextra\n"), false);
 });
 
-test("ordinary and released audit workflows cannot omit the fixture lock", async () => {
-  const [packageText, ci, candidateAcceptance, releasedJupyter, vscodeIgnore] = await Promise.all([
-    readFile(resolve(REPOSITORY_ROOT, "package.json"), "utf8"),
-    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
-    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "candidate-acceptance.yml"), "utf8"),
-    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "released-jupyter.yml"), "utf8"),
-    readFile(resolve(REPOSITORY_ROOT, ".vscodeignore"), "utf8")
-  ]);
+test("source and release producers own the fixture lock without candidate duplication", async () => {
+  const [packageText, ci, candidateAcceptance, previewRelease, stableRelease, releasedJupyter, vscodeIgnore] =
+    await Promise.all([
+      readFile(resolve(REPOSITORY_ROOT, "package.json"), "utf8"),
+      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
+      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "candidate-acceptance.yml"), "utf8"),
+      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "release.yml"), "utf8"),
+      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "stable-release.yml"), "utf8"),
+      readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "released-jupyter.yml"), "utf8"),
+      readFile(resolve(REPOSITORY_ROOT, ".vscodeignore"), "utf8")
+    ]);
   const packageJson = JSON.parse(packageText);
   assert.match(packageJson.scripts["audit:python"], /audit:remote-jupyter/u);
   assert.match(packageJson.scripts["audit:remote-jupyter"], /scripts\/remote-jupyter\/requirements\.txt/u);
@@ -113,15 +116,16 @@ test("ordinary and released audit workflows cannot omit the fixture lock", async
   assert.match(packageJson.scripts.check, /check:remote-jupyter-lock/u);
   const uvBootstrap =
     /python -m pip install --no-deps "https:\/\/files\.pythonhosted\.org\/[^"]+\/uv-0\.11\.32-py3-none-manylinux_2_17_x86_64\.manylinux2014_x86_64\.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"/u;
-  assert.match(ci, uvBootstrap);
-  assert.match(ci, /run: npm run lock:remote-jupyter:check/u);
+  for (const owner of [ci, previewRelease, stableRelease, releasedJupyter]) {
+    assert.match(owner, uvBootstrap);
+    assert.match(owner, /run: npm run lock:remote-jupyter:check/u);
+  }
   assert.match(ci, /run: npm run audit:python/u);
-  assert.match(candidateAcceptance, uvBootstrap);
-  assert.match(candidateAcceptance, /run: npm run lock:remote-jupyter:check/u);
-  assert.match(candidateAcceptance, /run: npm run audit:python/u);
-  assert.match(releasedJupyter, uvBootstrap);
-  assert.match(releasedJupyter, /run: npm run lock:remote-jupyter:check/u);
   assert.match(releasedJupyter, /run: npm run audit:remote-jupyter/u);
+  assert.equal((candidateAcceptance.match(/run: npm run audit:python/gu) ?? []).length, 1);
+  assert.doesNotMatch(candidateAcceptance, uvBootstrap);
+  assert.doesNotMatch(candidateAcceptance, /run: npm run lock:remote-jupyter:check/u);
+  assert.doesNotMatch(candidateAcceptance, /run: npm run audit:remote-jupyter/u);
   assert.match(vscodeIgnore, /^scripts\/\*\*$/mu);
 });
 

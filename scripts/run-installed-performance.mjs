@@ -61,8 +61,9 @@ import {
   readInstalledStorageProvenance
 } from "./installed-performance-system.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
+import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
-import { acquirePinnedVSCodeClient } from "./remote-workspace-acquisition.mjs";
+import { acquirePinnedVSCodeClient, resolveRemoteInspectionPython } from "./remote-workspace-acquisition.mjs";
 import { verifyExtensionTestRuntimeAssets } from "./copy-extension-test-runtime-assets.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
@@ -1254,8 +1255,9 @@ export async function acquirePinnedInstalledPerformanceEditors(
   privateRoot,
   environment,
   {
-    acquireVscode = acquirePinnedVSCodeClient,
-    acquireCursor = (root) => acquirePinnedCursor(root, { platform: "linux", architecture: "x64" })
+    acquireVscode = (root, options) => acquirePinnedVSCodeClient(root, options),
+    acquireCursor = (root) => acquirePinnedCursor(root, { platform: "linux", architecture: "x64" }),
+    inspectionPython = environment?.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON
   } = {}
 ) {
   if (
@@ -1273,7 +1275,11 @@ export async function acquirePinnedInstalledPerformanceEditors(
       "Pinned Cursor performance requires one isolated D-Bus session; run the canonical benchmark through dbus-run-session."
     );
   }
-  const acquisitions = await Promise.allSettled([acquireVscode(privateRoot), acquireCursor(privateRoot)]);
+  const exactInspectionPython = resolveRemoteInspectionPython(inspectionPython);
+  const acquisitions = await Promise.allSettled([
+    acquireVscode(privateRoot, { inspectionPython: exactInspectionPython }),
+    acquireCursor(privateRoot)
+  ]);
   const failures = acquisitions.filter((result) => result.status === "rejected").map((result) => result.reason);
   if (failures.length > 0) {
     throw failures.length === 1
@@ -1309,6 +1315,9 @@ export async function runInstalledPerformance(options, environment = process.env
   if (options?.mode !== "consume" && options?.pinnedEditors === true) {
     throw new Error("Pinned editor acquisition is reserved for canonical candidate consumption.");
   }
+  const inspectionPython = options?.pinnedEditors
+    ? resolveRemoteInspectionPython(environment.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON)
+    : undefined;
   const artifactKind = options?.artifactKind ?? STABLE_RELEASE_ARTIFACT_KIND;
   if (
     artifactKind !== STABLE_RELEASE_ARTIFACT_KIND &&
@@ -1376,7 +1385,9 @@ export async function runInstalledPerformance(options, environment = process.env
     );
     const fixtureManifest = validateInstalledFixtureManifest(readBoundedJson(fixtureManifestPath, 64 * 1024));
 
-    if (options.pinnedEditors) await acquirePinnedInstalledPerformanceEditors(privateRoot, environment);
+    if (options.pinnedEditors) {
+      await acquirePinnedInstalledPerformanceEditors(privateRoot, environment, { inspectionPython });
+    }
 
     const editors = await resolveInstalledPerformanceEditors(options.editors, environment, {
       mode: options.mode
@@ -2053,20 +2064,12 @@ export async function resolveInstalledPerformanceEditors(
 }
 
 function resolveTestPython(environment) {
-  const hosted = environment.pythonLocation
-    ? process.platform === "win32"
-      ? resolve(environment.pythonLocation, "python.exe")
-      : resolve(environment.pythonLocation, "bin", "python")
-    : undefined;
-  const local =
-    process.platform === "win32"
-      ? resolve(root, ".venv", "Scripts", "python.exe")
-      : resolve(root, ".venv", "bin", "python");
-  const python = environment.OPEN_WRANGLER_TEST_PYTHON ?? (hosted && existsSync(hosted) ? hosted : local);
-  if (!isAbsolute(python) || !existsSync(python)) {
-    throw new Error("Installed performance requires an existing absolute OPEN_WRANGLER_TEST_PYTHON.");
-  }
-  return python;
+  return resolveAndPreflightAcceptancePython({
+    profile: "editor",
+    repositoryRoot: root,
+    environment,
+    platform: process.platform
+  });
 }
 
 async function readEditorVersion(editor, userData, extensions, sandboxArgs, environment) {

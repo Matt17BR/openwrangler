@@ -71,7 +71,15 @@ import {
   writeRemoteJupyterAcceptanceEnvironment
 } from "./jupyter-acceptance-environment.mjs";
 import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
-import { preflightPackagedEditorPython } from "./packaged-python-preflight.mjs";
+import {
+  packagedEditorPythonPreflightProfile,
+  resolveAndPreflightAcceptancePython
+} from "./packaged-python-preflight.mjs";
+import {
+  PACKAGED_PYTHON_JUPYTER_PROFILE_ENV,
+  packagedPythonJupyterEditorPlan,
+  resolvePackagedPythonJupyterProfile
+} from "./packaged-python-jupyter.mjs";
 import { resolvePackagedRJourneySelection } from "./packaged-r-journey.mjs";
 import { prepareREditorAcceptanceTooling, R_EDITOR_ACCEPTANCE_TOOLING } from "./r-editor-acceptance-tooling.mjs";
 import {
@@ -232,6 +240,14 @@ try {
               `OPEN_WRANGLER_PACKAGED_MODE=${JSON.stringify(acceptanceMode)} requires exactly one supported editor in OPEN_WRANGLER_PACKAGED_EDITORS.`
             );
           }
+          const pythonJupyterProfile = resolvePackagedPythonJupyterProfile({
+            value: process.env[PACKAGED_PYTHON_JUPYTER_PROFILE_ENV],
+            acceptanceMode,
+            jupyterExtensionEnabled: Boolean(jupyterExtensionInstallTarget),
+            dataWranglerCoexistenceEnabled: Boolean(dataWranglerExtensionInstallTarget),
+            remoteJupyterEnabled,
+            requestedEditors: requested
+          });
           const rJupyterSelection = resolvePackagedRJourneySelection({
             acceptanceMode,
             selector: rJourneySelector,
@@ -276,6 +292,24 @@ try {
               'The packaged editor selection contains an unsupported value; allowed values are "vscode" and "cursor".'
             );
           }
+
+          writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:resolve-python");
+          const pythonPreflightProfile = packagedEditorPythonPreflightProfile({
+            acceptanceMode,
+            jupyterExtensionEnabled: Boolean(jupyterExtensionInstallTarget),
+            remoteOnly: remoteRJourneyOnly,
+            literateDocuments: rJupyterSelection.literateDocuments
+          });
+          writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:preflight-python");
+          const testPython = resolveAndPreflightAcceptancePython({
+            profile: pythonPreflightProfile,
+            repositoryRoot: root,
+            environment: process.env,
+            platform: process.platform
+          });
+          process.env.OPEN_WRANGLER_TEST_PYTHON = testPython;
+          process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+
           let candidates = [
             {
               name: "VS Code",
@@ -350,35 +384,6 @@ try {
             );
           }
 
-          writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:resolve-python");
-          const hostedPython = process.env.pythonLocation
-            ? process.platform === "win32"
-              ? resolve(process.env.pythonLocation, "python.exe")
-              : resolve(process.env.pythonLocation, "bin", "python")
-            : undefined;
-          const localPython =
-            process.platform === "win32"
-              ? resolve(root, ".venv", "Scripts", "python.exe")
-              : resolve(root, ".venv", "bin", "python");
-          const testPython =
-            process.env.OPEN_WRANGLER_TEST_PYTHON ??
-            (hostedPython && existsSync(hostedPython)
-              ? hostedPython
-              : existsSync(localPython)
-                ? localPython
-                : process.platform === "win32"
-                  ? "python"
-                  : "python3");
-          process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-          if (jupyterExtensionInstallTarget && (!isAbsolute(testPython) || !existsSync(testPython))) {
-            throw new Error(
-              "Real Jupyter-extension acceptance requires OPEN_WRANGLER_TEST_PYTHON to resolve to an existing absolute interpreter with jupyter_client."
-            );
-          }
-          if (acceptanceMode !== "data-wrangler-coexistence" && acceptanceMode !== "r-jupyter") {
-            writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:preflight-python");
-            preflightPackagedEditorPython(testPython);
-          }
           let jupyterKernelPython;
           let quartoKernelPython;
           let rAcceptanceEnvironment;
@@ -541,6 +546,13 @@ try {
               dataWranglerExtensionInstallTarget !== undefined && editor.key === "vscode";
             const localRJupyterEnabled = rJupyterSelection.local;
             const remoteRJupyterEnabled = rJupyterSelection.remote && editor.key === "vscode";
+            const pythonJupyterPlan = packagedPythonJupyterEditorPlan(
+              pythonJupyterProfile,
+              editor.key,
+              remoteJupyterEnabled
+            );
+            const pythonJupyterPhaseSet = new Set(pythonJupyterPlan.phases);
+            const genericPackagedPhasesEnabled = !pythonJupyterPlan.integrationOnly;
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
@@ -587,7 +599,7 @@ try {
             const acceptanceHarnessVsix = resolve(profile, "openwrangler-packaged-test-harness.vsix");
             const resultPaths = {
               setup: resolve(profile, "setup-result.json"),
-              ...(acceptanceMode === "full"
+              ...(acceptanceMode === "full" && genericPackagedPhasesEnabled
                 ? {
                     restricted: resolve(profile, "restricted-result.json"),
                     seed: resolve(profile, "seed-result.json"),
@@ -597,7 +609,7 @@ try {
                   ? { "platform-smoke": resolve(profile, "platform-smoke-result.json") }
                   : {}),
               ...(pythonExtensionInstallTarget
-                ? acceptanceMode === "full"
+                ? acceptanceMode === "full" && genericPackagedPhasesEnabled
                   ? { "python-environment": resolve(profile, "python-environment-result.json") }
                   : {}
                 : {}),
@@ -619,10 +631,10 @@ try {
                         : {})
                     }
                   : {
-                      "jupyter-deny": resolve(profile, "jupyter-deny-result.json"),
-                      "jupyter-allow": resolve(profile, "jupyter-allow-result.json"),
-                      "jupyter-pyspark": resolve(profile, "jupyter-pyspark-result.json"),
-                      ...(remoteJupyterEnabled
+                      ...Object.fromEntries(
+                        pythonJupyterPlan.phases.map((phase) => [phase, resolve(profile, `${phase}-result.json`)])
+                      ),
+                      ...(pythonJupyterPlan.remote
                         ? {
                             "jupyter-remote-setup": resolve(profile, "jupyter-remote-setup-result.json"),
                             "jupyter-remote": resolve(profile, "jupyter-remote-result.json"),
@@ -642,12 +654,12 @@ try {
             };
             const runIds = {
               setup: randomUUID(),
-              ...(acceptanceMode === "full"
+              ...(acceptanceMode === "full" && genericPackagedPhasesEnabled
                 ? { restricted: randomUUID(), seed: randomUUID(), verify: randomUUID() }
                 : acceptanceMode === "platform-smoke"
                   ? { "platform-smoke": randomUUID() }
                   : {}),
-              ...(pythonExtensionInstallTarget && acceptanceMode === "full"
+              ...(pythonExtensionInstallTarget && acceptanceMode === "full" && genericPackagedPhasesEnabled
                 ? { "python-environment": randomUUID() }
                 : {}),
               ...(jupyterExtensionInstallTarget
@@ -665,10 +677,8 @@ try {
                         : {})
                     }
                   : {
-                      "jupyter-deny": randomUUID(),
-                      "jupyter-allow": randomUUID(),
-                      "jupyter-pyspark": randomUUID(),
-                      ...(remoteJupyterEnabled
+                      ...Object.fromEntries(pythonJupyterPlan.phases.map((phase) => [phase, randomUUID()])),
+                      ...(pythonJupyterPlan.remote
                         ? {
                             "jupyter-remote-setup": randomUUID(),
                             "jupyter-remote": randomUUID(),
@@ -744,8 +754,10 @@ try {
 
             await runWithRetainedFailure({
               run: async () => {
-                mkdirSync(workspace, { recursive: true });
-                cpSync(resolve(root, "fixtures"), resolve(workspace, "fixtures"), { recursive: true });
+                if (genericPackagedPhasesEnabled) {
+                  mkdirSync(workspace, { recursive: true });
+                  cpSync(resolve(root, "fixtures"), resolve(workspace, "fixtures"), { recursive: true });
+                }
                 if (jupyterExtensionInstallTarget) {
                   const jupyterWorkspaces =
                     acceptanceMode === "r-jupyter"
@@ -754,10 +766,10 @@ try {
                           ...(remoteRJupyterEnabled ? [jupyterRemoteRWorkspace] : [])
                         ]
                       : [
-                          jupyterAllowWorkspace,
-                          jupyterDenyWorkspace,
-                          jupyterPySparkWorkspace,
-                          ...(remoteJupyterEnabled ? [jupyterRemoteWorkspace] : []),
+                          ...(pythonJupyterPhaseSet.has("jupyter-allow") ? [jupyterAllowWorkspace] : []),
+                          ...(pythonJupyterPhaseSet.has("jupyter-deny") ? [jupyterDenyWorkspace] : []),
+                          ...(pythonJupyterPhaseSet.has("jupyter-pyspark") ? [jupyterPySparkWorkspace] : []),
+                          ...(pythonJupyterPlan.remote ? [jupyterRemoteWorkspace] : []),
                           ...(dataWranglerCoexistenceEnabled ? [coexistOpenWorkspace, coexistDataWorkspace] : [])
                         ];
                   for (const jupyterWorkspace of jupyterWorkspaces) {
@@ -782,7 +794,7 @@ try {
                   "window.menuStyle": "custom",
                   "files.simpleDialog.enable": true
                 });
-                if (acceptanceMode === "full" && pythonExtensionInstallTarget) {
+                if (acceptanceMode === "full" && pythonExtensionInstallTarget && genericPackagedPhasesEnabled) {
                   writeEditorSettings(pythonEnvironmentUserData, {
                     "window.dialogStyle": "custom",
                     "window.menuStyle": "custom",
@@ -804,18 +816,24 @@ try {
                       ...(remoteRJupyterEnabled ? [jupyterRemoteRUserData] : [])
                     ];
                   } else {
-                    jupyterAllowEnvironment = writeJupyterAcceptanceEnvironment(
-                      resolve(profile, "ka"),
-                      jupyterKernelPython
-                    );
-                    jupyterDenyEnvironment = writeJupyterAcceptanceEnvironment(
-                      resolve(profile, "kd"),
-                      jupyterKernelPython
-                    );
-                    jupyterPySparkEnvironment = writeJupyterAcceptanceEnvironment(
-                      resolve(profile, "ks"),
-                      jupyterKernelPython
-                    );
+                    if (pythonJupyterPhaseSet.has("jupyter-allow")) {
+                      jupyterAllowEnvironment = writeJupyterAcceptanceEnvironment(
+                        resolve(profile, "ka"),
+                        jupyterKernelPython
+                      );
+                    }
+                    if (pythonJupyterPhaseSet.has("jupyter-deny")) {
+                      jupyterDenyEnvironment = writeJupyterAcceptanceEnvironment(
+                        resolve(profile, "kd"),
+                        jupyterKernelPython
+                      );
+                    }
+                    if (pythonJupyterPhaseSet.has("jupyter-pyspark")) {
+                      jupyterPySparkEnvironment = writeJupyterAcceptanceEnvironment(
+                        resolve(profile, "ks"),
+                        jupyterKernelPython
+                      );
+                    }
                     if (dataWranglerCoexistenceEnabled) {
                       coexistOpenEnvironment = writeJupyterAcceptanceEnvironment(
                         resolve(profile, "ko"),
@@ -826,14 +844,14 @@ try {
                         jupyterKernelPython
                       );
                     }
-                    if (remoteJupyterEnabled) {
+                    if (pythonJupyterPlan.remote) {
                       jupyterRemoteEnvironment = writeRemoteJupyterAcceptanceEnvironment(resolve(profile, "kr"));
                     }
                     jupyterUserData = [
-                      jupyterAllowUserData,
-                      jupyterDenyUserData,
-                      jupyterPySparkUserData,
-                      ...(remoteJupyterEnabled ? [jupyterRemoteUserData] : []),
+                      ...(pythonJupyterPhaseSet.has("jupyter-allow") ? [jupyterAllowUserData] : []),
+                      ...(pythonJupyterPhaseSet.has("jupyter-deny") ? [jupyterDenyUserData] : []),
+                      ...(pythonJupyterPhaseSet.has("jupyter-pyspark") ? [jupyterPySparkUserData] : []),
+                      ...(pythonJupyterPlan.remote ? [jupyterRemoteUserData] : []),
                       ...(dataWranglerCoexistenceEnabled ? [coexistOpenUserData, coexistDataUserData] : [])
                     ];
                   }
@@ -872,17 +890,19 @@ try {
                     });
                   }
                 }
-                writeEditorSettings(restrictedUserData, {
-                  "window.dialogStyle": "custom",
-                  "window.menuStyle": "custom",
-                  "files.simpleDialog.enable": true,
-                  "security.workspace.trust.enabled": true,
-                  "security.workspace.trust.startupPrompt": "never",
-                  "security.workspace.trust.banner": "never",
-                  "security.workspace.trust.emptyWindow": false
-                });
+                if (genericPackagedPhasesEnabled) {
+                  writeEditorSettings(restrictedUserData, {
+                    "window.dialogStyle": "custom",
+                    "window.menuStyle": "custom",
+                    "files.simpleDialog.enable": true,
+                    "security.workspace.trust.enabled": true,
+                    "security.workspace.trust.startupPrompt": "never",
+                    "security.workspace.trust.banner": "never",
+                    "security.workspace.trust.emptyWindow": false
+                  });
+                }
                 const fakeJupyter = resolve(profile, "fake-jupyter");
-                writeFakeJupyterExtension(fakeJupyter);
+                if (genericPackagedPhasesEnabled) writeFakeJupyterExtension(fakeJupyter);
                 const sandboxArgs = [
                   ...(process.platform === "linux" ? ["--no-sandbox"] : []),
                   ...editorDisplayLaunchArgs()
@@ -893,45 +913,52 @@ try {
                   ...editor,
                   version: await readEditorVersion(editor, userData, extensions, sandboxArgs, editorEnvironment)
                 };
-                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-extension");
-                await runBoundedEditorCliCommand(
-                  {
-                    editor,
-                    args: [
-                      "--user-data-dir",
-                      userData,
-                      "--extensions-dir",
-                      extensions,
-                      "--install-extension",
-                      vsix,
-                      "--force",
-                      ...sandboxArgs
-                    ],
-                    environment: editorEnvironment,
-                    label: `${editor.name} extension installation`
-                  },
-                  { timeoutMs: 60_000 }
-                );
-                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-acceptance-harness");
-                await runBoundedEditorCliCommand(
-                  {
-                    editor,
-                    args: [
-                      "--user-data-dir",
-                      userData,
-                      "--extensions-dir",
-                      extensions,
-                      "--install-extension",
-                      acceptanceHarnessVsix,
-                      "--force",
-                      ...sandboxArgs
-                    ],
-                    environment: editorEnvironment,
-                    label: `${editor.name} acceptance-harness installation`
-                  },
-                  { timeoutMs: 60_000 }
-                );
-                if (acceptanceMode === "full" && pythonExtensionInstallTarget) {
+                if (genericPackagedPhasesEnabled) {
+                  writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-extension");
+                  await runBoundedEditorCliCommand(
+                    {
+                      editor,
+                      args: [
+                        "--user-data-dir",
+                        userData,
+                        "--extensions-dir",
+                        extensions,
+                        "--install-extension",
+                        vsix,
+                        "--force",
+                        ...sandboxArgs
+                      ],
+                      environment: editorEnvironment,
+                      label: `${editor.name} extension installation`
+                    },
+                    { timeoutMs: 60_000 }
+                  );
+                  writeCorrelatedProgress(
+                    progressPaths.setup,
+                    runIds.setup,
+                    "setup",
+                    "setup:install-acceptance-harness"
+                  );
+                  await runBoundedEditorCliCommand(
+                    {
+                      editor,
+                      args: [
+                        "--user-data-dir",
+                        userData,
+                        "--extensions-dir",
+                        extensions,
+                        "--install-extension",
+                        acceptanceHarnessVsix,
+                        "--force",
+                        ...sandboxArgs
+                      ],
+                      environment: editorEnvironment,
+                      label: `${editor.name} acceptance-harness installation`
+                    },
+                    { timeoutMs: 60_000 }
+                  );
+                }
+                if (acceptanceMode === "full" && pythonExtensionInstallTarget && genericPackagedPhasesEnabled) {
                   writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-python-extension");
                   await runBoundedEditorCliCommand(
                     {
@@ -1116,45 +1143,47 @@ try {
                     { timeoutMs: 180_000 }
                   );
                 }
-                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:verify-installation");
-                const { stdout: installed } = await runBoundedEditorCliCommand(
-                  {
-                    editor,
-                    args: [
-                      "--user-data-dir",
-                      userData,
-                      "--extensions-dir",
-                      extensions,
-                      "--list-extensions",
-                      "--show-versions",
-                      ...sandboxArgs
-                    ],
-                    environment: editorEnvironment,
-                    label: `${editor.name} installed-extension query`
-                  },
-                  { timeoutMs: 60_000 }
-                );
-                if (!installed.toLowerCase().includes(expectedExtension)) {
-                  throw new Error(
-                    `${editor.name} did not report the installed Open Wrangler package. Output: ${installed}`
+                if (genericPackagedPhasesEnabled) {
+                  writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:verify-installation");
+                  const { stdout: installed } = await runBoundedEditorCliCommand(
+                    {
+                      editor,
+                      args: [
+                        "--user-data-dir",
+                        userData,
+                        "--extensions-dir",
+                        extensions,
+                        "--list-extensions",
+                        "--show-versions",
+                        ...sandboxArgs
+                      ],
+                      environment: editorEnvironment,
+                      label: `${editor.name} installed-extension query`
+                    },
+                    { timeoutMs: 60_000 }
                   );
-                }
-                if (!installed.toLowerCase().includes(EXPECTED_ACCEPTANCE_HARNESS)) {
-                  throw new Error(
-                    `${editor.name} did not report the installed acceptance harness. Output: ${installed}`
-                  );
-                }
-                if (
-                  acceptanceMode === "full" &&
-                  pythonExtensionInstallTarget &&
-                  !installed
-                    .split(/\r?\n/u)
-                    .map((line) => line.trim().toLowerCase())
-                    .includes(PINNED_PYTHON_EXTENSION_ID)
-                ) {
-                  throw new Error(
-                    `${editor.name} did not report the pinned ${PINNED_PYTHON_EXTENSION_ID} package. Output: ${installed}`
-                  );
+                  if (!installed.toLowerCase().includes(expectedExtension)) {
+                    throw new Error(
+                      `${editor.name} did not report the installed Open Wrangler package. Output: ${installed}`
+                    );
+                  }
+                  if (!installed.toLowerCase().includes(EXPECTED_ACCEPTANCE_HARNESS)) {
+                    throw new Error(
+                      `${editor.name} did not report the installed acceptance harness. Output: ${installed}`
+                    );
+                  }
+                  if (
+                    acceptanceMode === "full" &&
+                    pythonExtensionInstallTarget &&
+                    !installed
+                      .split(/\r?\n/u)
+                      .map((line) => line.trim().toLowerCase())
+                      .includes(PINNED_PYTHON_EXTENSION_ID)
+                  ) {
+                    throw new Error(
+                      `${editor.name} did not report the pinned ${PINNED_PYTHON_EXTENSION_ID} package. Output: ${installed}`
+                    );
+                  }
                 }
                 if (jupyterExtensionInstallTarget) {
                   const jupyterInstallUserData =
@@ -1412,7 +1441,7 @@ try {
                     progressPath: progressPaths["platform-smoke"],
                     requiresWorkbenchCdp: true
                   });
-                } else if (acceptanceMode === "full") {
+                } else if (acceptanceMode === "full" && genericPackagedPhasesEnabled) {
                   activePhase = "restricted";
                   await runEditorAcceptancePhase({
                     editor: identifiedEditor,
@@ -1430,7 +1459,7 @@ try {
                   });
                 }
 
-                if (acceptanceMode === "full" && pythonExtensionInstallTarget) {
+                if (acceptanceMode === "full" && pythonExtensionInstallTarget && genericPackagedPhasesEnabled) {
                   activePhase = "python-environment";
                   await runEditorAcceptancePhase({
                     editor: identifiedEditor,
@@ -1500,7 +1529,7 @@ try {
                     });
                   }
                 } else if (jupyterExtensionInstallTarget && acceptanceMode !== "data-wrangler-coexistence") {
-                  for (const phase of ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"]) {
+                  for (const phase of pythonJupyterPlan.phases) {
                     const phaseWorkspace =
                       phase === "jupyter-deny"
                         ? jupyterDenyWorkspace
@@ -1529,6 +1558,7 @@ try {
                       testModule,
                       python: acceptancePythonForPhase(phase, testPython, jupyterKernelPython),
                       phase,
+                      testSelector: phase === "jupyter-allow" ? pythonJupyterPlan.allowSelector : undefined,
                       resultPath: resultPaths[phase],
                       runId: runIds[phase],
                       progressPath: progressPaths[phase],
@@ -1536,7 +1566,7 @@ try {
                       jupyterEnvironment: phaseJupyterEnvironment
                     });
                   }
-                  if (remoteJupyterEnabled) {
+                  if (pythonJupyterPlan.remote) {
                     await runRemoteJupyterPhase({
                       phaseNames: {
                         setup: "jupyter-remote-setup",
@@ -1578,7 +1608,7 @@ try {
                     });
                   }
                 }
-                if (acceptanceMode === "full") {
+                if (acceptanceMode === "full" && genericPackagedPhasesEnabled) {
                   for (const phase of ["seed", "verify"]) {
                     activePhase = phase;
                     await runEditorAcceptancePhase({

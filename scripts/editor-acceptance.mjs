@@ -44,6 +44,7 @@ const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
 const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
 const TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
 const PYTHON_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_PYTHON_EXTENSION_VSIX";
+const CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR = "candidate-compatibility-seam";
 export const REAL_JUPYTER_EXTENSION_ENV = "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION";
 export const JUPYTER_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX";
 export const REAL_DATA_WRANGLER_EXTENSION_ENV = "OPEN_WRANGLER_REAL_DATA_WRANGLER";
@@ -2821,7 +2822,8 @@ class AcceptanceKernel {
 
   ensureProcess() {
     if (this.process) return this.process;
-    const executable = process.env.OPEN_WRANGLER_TEST_PYTHON || "python3";
+    const executable = process.env.OPEN_WRANGLER_TEST_PYTHON;
+    if (!executable) throw new Error("The acceptance kernel requires its exact prepared Python interpreter.");
     const child = spawn(executable, [path.join(__dirname, "kernel_server.py")], {
       cwd: __dirname,
       env: { ...process.env, PYTHONPATH: "" }
@@ -3174,18 +3176,26 @@ export async function runEditorAcceptancePhase(
   }
   if (
     testSelector !== undefined &&
+    testSelector !== CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR &&
     testSelector !== "core-operations" &&
     testSelector !== "categorical-operations" &&
     testSelector !== "value-operations" &&
     testSelector !== "kernel-restart" &&
+    testSelector !== "native-frames" &&
     testSelector !== "interactive-terminal" &&
     testSelector !== "literate-documents"
   ) {
     throw new Error(
-      'An editor acceptance test selector must be unset, "core-operations", "categorical-operations", "value-operations", "kernel-restart", "interactive-terminal", or "literate-documents".'
+      'An editor acceptance test selector must be unset, "candidate-compatibility-seam", "core-operations", "categorical-operations", "value-operations", "kernel-restart", "native-frames", "interactive-terminal", or "literate-documents".'
     );
   }
-  if (testSelector !== undefined && phase !== "jupyter-r") {
+  if (
+    testSelector === CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR &&
+    (phase !== "jupyter-allow" || editor?.key !== "cursor")
+  ) {
+    throw new Error('The candidate compatibility selector requires the "jupyter-allow" phase in the Cursor editor.');
+  }
+  if (testSelector !== undefined && testSelector !== CANDIDATE_PYTHON_JUPYTER_ALLOW_SELECTOR && phase !== "jupyter-r") {
     throw new Error('An R editor acceptance selector requires the "jupyter-r" phase.');
   }
   if (

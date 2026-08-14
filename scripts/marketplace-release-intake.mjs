@@ -36,6 +36,7 @@ export const MARKETPLACE_RECOVERY_PATHS = Object.freeze([
   "scripts/marketplace-identity-profile.mjs",
   "scripts/marketplace-release-intake.mjs",
   "scripts/packaged-editor-orchestration.mjs",
+  "scripts/packaged-python-preflight.mjs",
   "scripts/prepare-xvfb.mjs",
   "scripts/public-media-contract.mjs",
   "scripts/public-media-inventory.mjs",
