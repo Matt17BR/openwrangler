@@ -8,6 +8,32 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Installed-editor performance no longer samples or gates on whole `/proc` editor-process-tree and Open Wrangler
+  runtime RSS. That observation was coupled to hosted Electron helper timing and could turn successful product,
+  responsiveness, cache, cancellation, and cleanup evidence red for a harness-only reason. The v10 release, v5
+  evidence-only, and v6 smoke envelopes remove the RSS field while retaining exact platform/storage provenance,
+  every numeric threshold, aligned `mincore` cache proof, outstanding filter/sort/profile responsiveness,
+  authoritative cancellation, terminal runtime/session cleanup, and editor ownership uncertainty. The direct-runtime
+  RSS benchmark and the comparison study's Linux process-tree PSS sampler are unchanged. No workflow topology,
+  300-second hard deadline, 180-second inactivity deadline, or retry policy changed.
+- Preview release [run #76](https://github.com/Matt17BR/openwrangler/actions/runs/31847608802) from protected `main`
+  commit `ab6c5815` also published nothing. It finished in 19m19s and used 95m20s of positive-duration runner time; its
+  first raw red arrived at 9m57s. The package job and canonical triple were sound: artifact `9236475759` retained the
+  exact 1,131,460-byte VSIX with SHA-256
+  `b3e321e28439957f3cd404f998316e1f06668c8735c1ec4c4474df6daf04648d`, checksum, and provenance. Every raw lane
+  passed except installed performance, which stopped on auxiliary Linux process enumeration rather than a numeric
+  product gate, and Linux Cursor literate acceptance, whose exact generated-R document was present while its connected
+  CodeMirror scroller and renderer viewport transiently reported 0×0 geometry. The fan-in failed, publication was
+  skipped, and no `v1.99.6` tag, GitHub prerelease, Marketplace package, or Open VSX package was created.
+- Native R literate acceptance now dispatches the Quarto preview command exactly once, settles that one promise within
+  its existing bound, and freezes the exact preview tab, tab group, and owned terminal. Ordinary acceptance closes the
+  preview and proves both tab and terminal absent before invoking the Open Wrangler title action; only screenshot mode
+  retains it through capture. Generated-R Rename acceptance waits for the exact post-draft session/revision hydration,
+  rechecks the bounded host code receipt, and then requires one connected same-generation CodeMirror layout with full
+  positive geometry stable across two animation-frame observations. It neither focuses, resizes, reloads, retries, nor
+  dispatches another editor action. These fixes are locally frozen and covered, but no hosted candidate has proved
+  them; a fresh exact candidate is required under the unchanged 300-second hard deadline, 180-second inactivity
+  deadline, and no-retry policy.
 - Preview release run #72 published nothing after the ordinary local-R phase reached its 300-second hard deadline at
   numeric Round, Cursor lost the bounded Multi-label Undo acceptance wait, and macOS failed the Drop Columns Code Preview
   generation/diagnostic bound. Preview and stable release callers now invoke the shared candidate workflow once without
@@ -79,8 +105,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   consumed about 289.66 of its 300-second native-editor budget. The candidate fan-in therefore failed and publication
   was skipped; no `v1.99.6` tag, GitHub prerelease, or registry package was created. The candidate-only
   core/native/restart split above removes that remaining combined budget on all three hosted platforms and separates
-  cross-platform native R from the generic platform lane. It is projected to move release wall time toward 20 minutes,
-  but no hosted candidate has proved that estimate or the new graph; repeated private R setup may increase runner use.
+  cross-platform native R from the generic platform lane. At that point it was projected to move release wall time
+  toward 20 minutes; run #76 exercised the graph at 19m19s but remained failed evidence because of the two harness
+  blockers recorded above.
 - Cursor's categorical Undo check now uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation
   completion bound, with no post-dispatch retry. Drop Columns Code Preview acceptance reacquires only a provably replaced
   renderer generation, reads one exact bounded code receipt, selects one unique complete logical line, scrolls only

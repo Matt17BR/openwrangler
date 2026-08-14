@@ -55,11 +55,7 @@ import {
   validateInstalledPerformancePhase,
   writeInstalledPerformanceReport
 } from "./installed-performance-report.mjs";
-import {
-  createInstalledResourceSampler,
-  readInstalledPlatformProvenance,
-  readInstalledStorageProvenance
-} from "./installed-performance-system.mjs";
+import { readInstalledPlatformProvenance, readInstalledStorageProvenance } from "./installed-performance-system.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 import { resolveAndPreflightAcceptancePython } from "./packaged-python-preflight.mjs";
 import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
@@ -81,7 +77,7 @@ import {
 } from "./vsix-contents.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v5";
+const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v6";
 const INSTALLED_PERFORMANCE_PHASES = [
   "perf-csv-cold",
   "perf-csv-warm",
@@ -1693,52 +1689,6 @@ async function runEditorPerformanceWithIsolatedDisplay(options) {
   return result;
 }
 
-export async function runInstalledMeasuredEditorPhase({
-  phase,
-  sampler,
-  runPhase,
-  spawnOwned = spawnOwnedEditorProcess
-}) {
-  if (typeof runPhase !== "function" || typeof spawnOwned !== "function") {
-    throw new TypeError("Installed performance requires callable phase and process launchers.");
-  }
-  let phaseError;
-  let samplerStartError;
-  let samplerEndError;
-  let samplerStarted = false;
-  let phaseResult;
-  const measuredSpawn = (...arguments_) => {
-    const child = spawnOwned(...arguments_);
-    try {
-      sampler.begin(phase, child.pid);
-      samplerStarted = true;
-    } catch (error) {
-      samplerStartError = error;
-    }
-    return child;
-  };
-  try {
-    phaseResult = await runPhase(measuredSpawn);
-  } catch (error) {
-    phaseError = error;
-  }
-  if (samplerStarted) {
-    try {
-      sampler.end();
-    } catch (error) {
-      samplerEndError = error;
-    }
-  } else if (!phaseError && !samplerStartError) {
-    samplerEndError = new Error("Installed performance completed an editor phase without attaching RSS sampling.");
-  }
-  const failures = [phaseError, samplerStartError, samplerEndError].filter((error) => error !== undefined);
-  if (failures.length === 1) throw failures[0];
-  if (failures.length > 1) {
-    throw new AggregateError(failures, "Installed performance editor phase or RSS sampling failed.");
-  }
-  return phaseResult;
-}
-
 export async function installInstalledPerformanceCandidate({
   editor,
   candidateReceipt,
@@ -1913,35 +1863,29 @@ async function runEditorPerformancePhases({
     throw new Error(`${identifiedEditor.name} did not report the exact installed candidate and harness.`);
   }
 
-  const sampler = createInstalledResourceSampler();
   const phases = [];
   for (const phase of INSTALLED_PERFORMANCE_PHASES) {
     verifyExtensionTestRuntimeAssets();
     const runId = randomUUID();
     const resultPath = resolve(profile, `${phase}-result.json`);
-    const artifactReceipt = await runInstalledMeasuredEditorPhase({
-      phase,
-      sampler,
-      runPhase: (spawnProcess) =>
-        runEditorAcceptancePhase(
-          {
-            editor: identifiedEditor,
-            workspace,
-            userData,
-            extensions,
-            developmentPaths: [],
-            testModule: resolve(root, "dist-test", "test", "extensionHost", "installedPerformance.js"),
-            python,
-            phase,
-            resultPath,
-            editorProductVersion: identifiedEditor.version,
-            runId,
-            progressPath: editorAcceptanceProgressPath(resultPath, runId, phase),
-            requiresWorkbenchCdp: true
-          },
-          { environment, spawnProcess }
-        )
-    });
+    const artifactReceipt = await runEditorAcceptancePhase(
+      {
+        editor: identifiedEditor,
+        workspace,
+        userData,
+        extensions,
+        developmentPaths: [],
+        testModule: resolve(root, "dist-test", "test", "extensionHost", "installedPerformance.js"),
+        python,
+        phase,
+        resultPath,
+        editorProductVersion: identifiedEditor.version,
+        runId,
+        progressPath: editorAcceptanceProgressPath(resultPath, runId, phase),
+        requiresWorkbenchCdp: true
+      },
+      { environment }
+    );
     const fragment = validateInstalledPerformancePhase(
       readInstalledPerformanceFragment(
         resolve(workspace, "results", `${phase}.json`),
@@ -1976,7 +1920,6 @@ async function runEditorPerformancePhases({
       platform: readInstalledPlatformProvenance({ editorDisplayMode }),
       storage: readInstalledStorageProvenance(fixtureRoot)
     },
-    resources: sampler.finish(),
     phases
   };
 }

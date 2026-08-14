@@ -145,8 +145,9 @@ hard deadline, 180-second changed-checkpoint inactivity deadline, and no-retry r
 overall and 134.07 positive-duration runner-minutes. Its sole raw blocker was Linux core's outer timeout at
 `jupyter-r:orders_table:editing-renderer-ready`; dedicated Linux restart, value/categorical editing, and both native-R
 platform journeys passed. macOS used about 289.66 of its 300-second native-editor budget. Those measurements describe
-the failed #75 topology, not hosted proof of the new cross-platform split. The new graph is projected to move wall time
-toward 20 minutes, but a fresh candidate must establish its result and runner cost. The manual
+the failed #75 topology. Preview #76 exercised the cross-platform split at 19m19s and 95m20s of runner time, but its
+auxiliary process-enumeration and Cursor literate-layout harness failures still blocked the fan-in. It therefore proves
+neither an all-green candidate nor the frozen follow-up fixes; a fresh candidate must establish both. The manual
 `.github/workflows/released-jupyter.yml` path remains its existing serial, non-authoritative diagnostic workflow and is
 not a substitute for this fan-out. Its default/unset core and the remote R journey retain embedded native-frame and
 restart behavior.
@@ -292,6 +293,15 @@ Stable intake builds only the acceptance harness and revalidates the candidate, 
 
 For each VS Code and Cursor CSV/Parquet first-grid case, all ten timing samples retain a corresponding path-free cache proof. The resident case requires a complete sequential read followed by `mincore` proof that every file page is resident. The page-cache-evicted case synchronizes the descriptor, issues exactly one `POSIX_FADV_DONTNEED`, and requires immediate `mincore` proof of zero resident file pages. Unsupported proof, residual pages, identity drift, or any cache-control fault fails without retry. Release-sized cached scrolling uses exactly 200 real row transitions. Uncached-grid and renderer-heartbeat p95 each use 40 interactions. All measured samples are retained, with no trimming or automatic retry. The non-gating 5,000-row smoke uses ten interactions so every deterministic unseen-row target remains inside its fixture. After both cached rows are primed and the first row is restored, every editor performs a fixed sequence of ten untimed alternating row transitions before the independent measurement window. This warms the repeated renderer/compositor path rather than admitting its startup into a steady-state cached-scroll metric; initial-grid startup remains covered by the separate first-grid phases. Warmup values are never retried, substituted for measured values, or included in the report, and every measured scroll still proves its transition. Continuous scrolling trailing-debounces view-state persistence so the latest state is written after quiescence rather than on every interaction. First-grid p95 stays below 3s/5s. Cached scrolling fails when 16 or more of its 200 transitions take at least 100ms. The cutoff uses a 5%-slow reference rate; for independent transitions, the binomial chance of seeing 16 or more is 4.44%. Uncached-grid p95 and outstanding foreground pages stay below 500ms; renderer-heartbeat p95 and outstanding renderer heartbeats stay below 100ms. The hosted path does not reinterpret a failed threshold. This evidence is a Linux file-page-cache checkpoint only and must never be described as physical cold-disk or cold-storage performance.
 
+The installed-editor report deliberately excludes whole-editor-process-tree and runtime RSS sampling from its release
+gate. `/proc` membership and sampling races describe the hosted harness and Electron helper topology, not a product or
+package invariant. Report protocols `openwrangler-installed-performance-report-v10` and
+`openwrangler-installed-performance-evidence-report-v5`, plus the non-gating smoke envelope
+`openwrangler-installed-performance-run-v6`, retain platform/storage provenance and every timing, cache,
+responsiveness, cancellation, and terminal runtime/session/editor cleanup gate. Editor ownership uncertainty remains
+terminal and withholds private-root cleanup. The separate direct-runtime benchmark keeps its bounded-process RSS
+evidence, and the Data Wrangler comparison study keeps its independent Linux process-tree PSS sampler.
+
 The workflow retains a passing path-free report for 90 days. If and only if the complete validated report fails exclusively on numeric thresholds, the runner rejects every absolute, home-relative, drive-relative, environment-relative, percent-encoded, or ambiguously path-shaped unstructured value, revalidates the candidate set before and inside the sealed report's final descriptor snapshot, and then emits the exact report path, SHA-256, and byte size without another candidate read opening a receipt race; a distinct failure-only upload retains that one report for seven days. This is deliberately fail-closed: an unusual but harmless platform string that looks like a path makes evidence unavailable instead of being uploaded. Structural, mixed, cleanup, ownership, candidate, report, output, or privacy uncertainty emits no failure path, and neither upload can include candidate bytes.
 
 The retired v1.0 evidence bridge completed on [run 30320866354](https://github.com/Matt17BR/openwrangler/actions/runs/30320866354) for source `cfc30e4fdb77711f9007b598bb9ad099dfcf5ca6`. Artifact `8674099196` contains the accepted 92,583-byte report with SHA-256 `46d7519df26890c44e5168be7d417da5c52713450cba4f5579e3b7673e3fcdee`; its exact measurements are recorded in `docs/testing.md` and `docs/feature-parity.md`. The measured candidate was 609,032 bytes with SHA-256 `59994b2b46cfb7c9ec28089122d4ba83301f59b9c4cc0145ce8c1793e960140f`. Those bytes remain historical evidence and are not release inputs.
@@ -376,12 +386,28 @@ native-R platform journeys passed with their then-embedded restart coverage. mac
 of its 300-second native-editor budget. The fan-in failed and publication was skipped, so no `v1.99.6` tag, GitHub
 prerelease, or registry package was created.
 
-The next candidate separates explicit core, native-frame, and restart work on Linux, macOS, and Windows, and moves
-cross-platform native R out of generic platform acceptance into the parallel `r_platform` matrix described above.
-Every phase keeps a fresh exact verifier, private editor invocation, immediate sealed upload, 300-second hard deadline,
-180-second changed-checkpoint inactivity deadline, and no-retry policy. The graph is projected to approach 20 minutes,
-but this is a reviewed scheduling estimate rather than hosted success. Only a fresh exact-candidate run can establish
-its result, critical path, and runner cost; repeated private R setup may raise runner-minutes.
+Preview release [run #76](https://github.com/Matt17BR/openwrangler/actions/runs/31847608802) from exact protected
+`main` commit `ab6c5815` also produced no publication. It completed in 19m19s, used 95m20s of positive-duration runner
+time, and first became red at 9m57s. The 2m04s package job authored canonical artifact `9236475759`: its exact
+1,131,460-byte VSIX has SHA-256 `b3e321e28439957f3cd404f998316e1f06668c8735c1ec4c4474df6daf04648d`, and the
+checksum and preview-v1 provenance revalidated. Every raw lane passed except installed performance, which stopped on
+the auxiliary Linux process enumerator, and Linux Cursor literate acceptance, which retained the expected generated-R
+document receipt but observed a connected CodeMirror scroller and renderer viewport at 0×0 before layout settled. The
+fan-in failed and the publication job was skipped; no `v1.99.6` tag, GitHub prerelease, Marketplace package, or Open
+VSX package was created.
+
+The next candidate keeps the exact core/native/restart graph measured by #76. Installed performance removes only the
+auxiliary whole-editor-process-tree and Open Wrangler runtime RSS sampler and advances its release/evidence/smoke
+envelopes to v10/v5/v6; first-grid, cache-residency, scrolling, outstanding-work responsiveness, authoritative
+cancellation, terminal runtime/session cleanup, editor ownership, storage provenance, and every numeric threshold stay
+gating. Literate acceptance dispatches the Quarto command once and settles that exact promise within its existing
+bound, freezes one semantic preview tab with its exact group and one owned terminal, and proves ordinary cleanup leaves
+both absent before the Open Wrangler title action. Only media mode may retain the preview, and only through capture.
+Generated-R Rename first proves exact post-draft session/revision hydration and the matching bounded host receipt, then
+requires the same connected CodeMirror generation to expose complete positive geometry stable across two
+animation-frame observations. No focus, resize, reload, second dispatch, automatic retry, or larger timeout is added.
+The 300-second hard and 180-second changed-checkpoint inactivity deadlines remain exact. These frozen fixes are not yet
+hosted release evidence; a fresh exact-candidate run must prove them before publication.
 
 The internal fixed jobs and two-cell local-R shard matrix keep sibling cancellation disabled. Once a cell reports a
 failure, sibling editor, Docker, performance, and Remote SSH owners may finish their bounded work and

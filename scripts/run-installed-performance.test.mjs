@@ -51,7 +51,6 @@ import {
   revalidatePerformanceEvidenceProvenance,
   revalidateInstalledPerformanceVsix,
   resolveInstalledPerformanceEditors,
-  runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
   validateInstalledPerformanceProvenance,
   validatePreviewReleaseProvenance,
@@ -104,6 +103,8 @@ test("extension-test builds explicitly stage declaration-shadowed CommonJS runti
     /function resolveTestPython\(environment\) \{[\s\S]*resolveAndPreflightAcceptancePython\(\{[\s\S]*profile: "editor"/u
   );
   assert.doesNotMatch(installedPerformanceRunner, /hosted && existsSync\(hosted\) \? hosted : local/u);
+  assert.match(installedPerformanceRunner, /openwrangler-installed-performance-run-v6/u);
+  assert.doesNotMatch(installedPerformanceRunner, /createInstalledResourceSampler|runInstalledMeasuredEditorPhase/u);
 
   const directory = await canonicalTemporaryDirectory("openwrangler-extension-test-assets-");
   try {
@@ -2966,65 +2967,4 @@ test("the installed performance result writer replaces only a regular destinatio
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-});
-
-test("measured editor phases attach after spawn and sample only after verified phase cleanup", async () => {
-  const events = [];
-  const child = { pid: 4812 };
-  const artifactReceipt = { protocol: "receipt" };
-  const returned = await runInstalledMeasuredEditorPhase({
-    phase: "perf-parquet-warm",
-    sampler: {
-      begin(phase, processGroupId) {
-        events.push(["begin", phase, processGroupId]);
-      },
-      end() {
-        events.push(["end"]);
-      }
-    },
-    spawnOwned() {
-      events.push(["spawn"]);
-      return child;
-    },
-    async runPhase(spawnProcess) {
-      assert.equal(spawnProcess("editor", [], {}), child);
-      events.push(["phase-clean"]);
-      return artifactReceipt;
-    }
-  });
-  assert.equal(returned, artifactReceipt);
-  assert.deepEqual(events, [["spawn"], ["begin", "perf-parquet-warm", 4812], ["phase-clean"], ["end"]]);
-});
-
-test("RSS attachment faults never interrupt editor cleanup and aggregate with phase faults", async () => {
-  const phaseError = new Error("phase cleanup failed");
-  const samplerError = new Error("sampler attach failed");
-  let phaseContinued = false;
-  await assert.rejects(
-    runInstalledMeasuredEditorPhase({
-      phase: "perf-csv-cold",
-      sampler: {
-        begin() {
-          throw samplerError;
-        },
-        end() {
-          assert.fail("a sampler that never attached must not be ended");
-        }
-      },
-      spawnOwned() {
-        return { pid: 912 };
-      },
-      async runPhase(spawnProcess) {
-        spawnProcess("editor", [], {});
-        phaseContinued = true;
-        throw phaseError;
-      }
-    }),
-    (error) =>
-      error instanceof AggregateError &&
-      error.errors.length === 2 &&
-      error.errors.includes(phaseError) &&
-      error.errors.includes(samplerError)
-  );
-  assert.equal(phaseContinued, true);
 });

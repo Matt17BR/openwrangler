@@ -219,7 +219,7 @@ test("released R Markdown fixture includes a real dataframe preview chunk", asyn
   );
 });
 
-test("ordinary Quarto acceptance does not require a headless preview webview", async () => {
+test("Quarto acceptance pins and closes one exact preview lifecycle before ordinary title actions", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const journey = source.slice(
     source.indexOf("async function openReleasedNativeQuartoPreview("),
@@ -227,24 +227,38 @@ test("ordinary Quarto acceptance does not require a headless preview webview", a
   );
   assert.match(
     journey,
-    /previewTerminals\.length >= 1 && renderedHtmlReady && \(!requireVisiblePreview \|\| visiblePreviewReady\)/u
+    /ownership\.tabActive && ownership\.terminalReady && renderedHtmlReady && visiblePreviewReady/u
   );
   assert.match(journey, /if \(requireVisiblePreview\) \{/u);
-  assert.match(journey, /Quarto media capture must open one new internal preview tab/u);
   assert.match(journey, /releasedQuartoPreviewTabs\(\)/u);
   assert.match(journey, /input\?\.viewType === "quarto\.previewView"/u);
+  assert.doesNotMatch(journey, /tab\.label === "Quarto Preview"/u);
+  assert.match(journey, /previewTabGroup\?\.activeTab === previewTab/u);
+  assert.match(journey, /Quarto Preview must retain its first exact internal preview tab/u);
+  assert.match(journey, /assert\.equal\(tabs\[0\], previewTab,/u);
+  assert.match(journey, /Quarto Preview must retain its first exact owned terminal/u);
+  assert.match(journey, /assert\.equal\(\s*terminals\[0\],\s*previewTerminal,/u);
+  assert.match(journey, /Quarto Preview must retain the first exact tab-group identity/u);
+  assert.match(journey, /assert\.equal\(\s*frozenTabs\[0\],\s*previewTab,/u);
+  assert.match(journey, /assert\.equal\(\s*frozenTerminals\[0\],\s*previewTerminal,/u);
+  assert.match(journey, /assertFrozenOwnership\(\)/u);
   const previewStart = journey.indexOf('recordAcceptanceProgress("jupyter-r:quarto:preview")');
   const previewDispatch = journey.indexOf('vscode.commands.executeCommand("quarto.preview")', previewStart);
   const previewCommandReturned = journey.indexOf(
     'recordAcceptanceProgress("jupyter-r:quarto:preview-command-returned")',
     previewDispatch
   );
+  const previewCommandAwaited = journey.indexOf("await withBoundedAcceptancePromise(", previewCommandReturned);
+  const previewCommandSettled = journey.indexOf(
+    'recordAcceptanceProgress("jupyter-r:quarto:preview-command-settled")',
+    previewCommandAwaited
+  );
   const previewProbeSkipped = journey.indexOf(
     'recordAcceptanceProgress("jupyter-r:quarto:preview-probe-skipped")',
-    previewCommandReturned
+    previewCommandSettled
   );
   const previewProbeGuard = journey.indexOf("if (requireVisiblePreview) {", previewProbeSkipped);
-  const previewProbe = journey.indexOf("releasedQuartoPreviewLocator(workbench)", previewCommandReturned);
+  const previewProbe = journey.indexOf("releasedQuartoPreviewLocator(workbench)", previewCommandSettled);
   const previewProbeReturned = journey.indexOf(
     'recordAcceptanceProgress("jupyter-r:quarto:preview-probe-returned")',
     previewProbe
@@ -253,11 +267,22 @@ test("ordinary Quarto acceptance does not require a headless preview webview", a
     previewStart >= 0 &&
       previewDispatch > previewStart &&
       previewCommandReturned > previewDispatch &&
-      previewProbeSkipped > previewCommandReturned &&
+      previewCommandAwaited > previewCommandReturned &&
+      previewCommandSettled > previewCommandAwaited &&
+      previewProbeSkipped > previewCommandSettled &&
       previewProbeGuard > previewProbeSkipped &&
       previewProbe > previewProbeGuard &&
       previewProbeReturned > previewProbe,
-    "The native Quarto preview must distinguish command entry, command return, a skipped ordinary UI probe, and its first bounded media probe."
+    "The native Quarto preview must settle its sole command before exact ownership and any optional media probe."
+  );
+  assert.equal(
+    (journey.match(/vscode\.commands\.executeCommand\("quarto\.preview"\)/gu) ?? []).length,
+    1,
+    "Native Quarto preview acceptance must dispatch its editor action exactly once."
+  );
+  assert.match(
+    journey,
+    /withBoundedAcceptancePromise\(\s*previewCommand,\s*commandRemainingMs,\s*"the exact Quarto preview command to settle"\s*\)/u
   );
   assert.match(
     journey,
@@ -269,12 +294,43 @@ test("ordinary Quarto acceptance does not require a headless preview webview", a
     /withBoundedAcceptancePromise\(\s*vscode\.window\.tabGroups\.close\(openTabs, true\),\s*WORKBENCH_OPERATION_TIMEOUT_MS,\s*"the owned Quarto preview tabs to close"\s*\)/u,
     "Native Quarto preview cleanup must not let a Cursor tab close mask the render result."
   );
+  assert.match(journey, /Quarto preview cleanup must leave zero preview tabs/u);
+  assert.match(journey, /Quarto preview cleanup must leave zero owned terminals/u);
+  const cleanupSettle = journey.indexOf("setTimeout(resolve, 250)");
+  const zeroTabs = journey.indexOf("Quarto preview cleanup must leave zero preview tabs", cleanupSettle);
+  const zeroTerminals = journey.indexOf("Quarto preview cleanup must leave zero owned terminals", cleanupSettle);
+  assert.ok(
+    cleanupSettle >= 0 && zeroTabs > cleanupSettle && zeroTerminals > cleanupSettle,
+    "Quarto cleanup must re-prove exact preview absence after the asynchronous reveal window."
+  );
   assert.doesNotMatch(
     journey,
     /workbench\.waitForTimeout/u,
     "Native Quarto preview polling and cleanup must use local timers rather than unbounded Playwright waits."
   );
   assert.doesNotMatch(journey, /priorTabs|instanceof vscode\.TabInputWebview/u);
+  assert.doesNotMatch(
+    journey,
+    /workbench\.action\.(?:focusPanel|increaseViewSize)|openWrangler\.codePreview\.focus|\.reload\(|\.retry/u
+  );
+
+  const literateJourney = source.slice(
+    source.indexOf("async function exerciseReleasedRLiterateDocumentJourneys("),
+    source.indexOf("async function exerciseReleasedPythonQuartoDocumentJourney(")
+  );
+  const retainDecision = literateJourney.indexOf("const retainPreviewForMedia =");
+  const previewOpen = literateJourney.indexOf("await openReleasedNativeQuartoPreview(", retainDecision);
+  const ordinaryClose = literateJourney.indexOf("if (!retainPreviewForMedia) await closePreview();", previewOpen);
+  const titleAction = literateJourney.indexOf("await invokeReleasedRDocumentTitleAction(", ordinaryClose);
+  const mediaClose = literateJourney.indexOf("await closePreview();", titleAction);
+  assert.ok(
+    retainDecision >= 0 &&
+      previewOpen > retainDecision &&
+      ordinaryClose > previewOpen &&
+      titleAction > ordinaryClose &&
+      mediaClose > titleAction,
+    "Ordinary Quarto acceptance must prove preview absence before Open Wrangler; media may close only after its shot."
+  );
 
   const renderedHtmlSnapshot = source.slice(
     source.indexOf("function releasedRenderedHtmlSnapshot("),
@@ -1112,16 +1168,56 @@ test("long generated R programs reveal operation text through the complete CodeM
     const nextSync = source.indexOf("\nfunction ", start + 1);
     const end = Math.min(...[nextAsync, nextSync].filter((position) => position >= 0));
     const implementation = source.slice(start, end);
-    assert.match(implementation, /waitForCodePreview\(workbench, undefined, "R"\)/u, functionName);
-    assert.match(
-      implementation,
-      functionName === "previewReleasedRDrop"
-        ? /revealCodePreviewExactLogicalLine\(exactCodePreview,/u
-        : /revealCodePreviewText\(codePreview,/u,
-      functionName
-    );
+    if (functionName === "previewReleasedRRename") {
+      assert.match(implementation, /acquireCurrentExactCodePreviewGeneration\(/u, functionName);
+      assert.match(implementation, /revealCodePreviewText\(exactCodePreview,/u, functionName);
+      assert.doesNotMatch(implementation, /waitForCodePreview\(/u, functionName);
+    } else {
+      assert.match(implementation, /waitForCodePreview\(workbench, undefined, "R"\)/u, functionName);
+      assert.match(
+        implementation,
+        functionName === "previewReleasedRDrop"
+          ? /revealCodePreviewExactLogicalLine\(exactCodePreview,/u
+          : /revealCodePreviewText\(codePreview,/u,
+        functionName
+      );
+    }
     assert.doesNotMatch(implementation, /waitForCodePreview\(workbench, (?!undefined)[^,]+, "R"\)/u, functionName);
   }
+
+  const renameStart = source.indexOf("async function previewReleasedRRename(");
+  const renameEnd = source.indexOf("\nfunction assertReleasedRGeneratedCode(", renameStart);
+  assert.ok(renameStart >= 0 && renameEnd > renameStart);
+  const rename = source.slice(renameStart, renameEnd);
+  const activeCode = rename.indexOf('const expectedCode = active.code ?? "";');
+  const hostReceipt = rename.indexOf(
+    "const expectedCodeReceipt = codePreviewDocumentReceipt(expectedCode);",
+    activeCode
+  );
+  const hydration = rename.indexOf("await requireFreshExactSessionPanelHydration(", hostReceipt);
+  const acknowledgedReceipt = rename.indexOf('"The acknowledged R rename host document"', hydration);
+  const acquisition = rename.indexOf("await acquireCurrentExactCodePreviewGeneration(", acknowledgedReceipt);
+  const acquisitionReceipt = rename.indexOf("expectedCodeReceipt", acquisition);
+  const revealRename = rename.indexOf("revealCodePreviewText(exactCodePreview, newName)", acquisitionReceipt);
+  assert.ok(
+    activeCode >= 0 &&
+      hostReceipt > activeCode &&
+      hydration > hostReceipt &&
+      acknowledgedReceipt > hydration &&
+      acquisition > acknowledgedReceipt &&
+      acquisitionReceipt > acquisition &&
+      revealRename > acquisitionReceipt,
+    "R rename preview must acknowledge its exact host revision before receipt-bound current-generation layout and reveal."
+  );
+  assert.equal(
+    (rename.match(/getByRole\("button", \{ name: "Preview changes", exact: true \}\)\.click\(\)/gu) ?? []).length,
+    1
+  );
+  assert.doesNotMatch(
+    rename,
+    /workbench\.action\.(?:focusPanel|increaseViewSize)|openWrangler\.codePreview\.focus|scrollIntoView|\.reload\(|\.retry/u,
+    "R rename layout readiness must not focus, resize, reveal, reload, or retry an editor action."
+  );
 
   const dropStart = source.indexOf("async function previewReleasedRDrop(");
   const dropEnd = source.indexOf("\nasync function previewReleasedRRename(", dropStart);
@@ -1172,6 +1268,15 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
   assert.match(reveal, /scrollerClass\?\.split\(\/\\s\+\/u\)\.includes\("cm-scroller"\)/u);
   assert.match(reveal, /contentIsExact: view\?\.contentDOM === content/u);
   assert.match(reveal, /scrollerIsExact: view\?\.scrollDOM === scrollerElement/u);
+  assert.match(
+    reveal,
+    /waitForStableExactCodePreviewLayout\(\{[\s\S]*expectedCodeReceipt: pinnedCodeReceipt[\s\S]*sample: async \(\) => \{[\s\S]*readExactCodePreviewIdentity\(preview, scroller!\)[\s\S]*waitForAnimationFrames: \(\) => waitForExactCodePreviewAnimationFrames\(scroller!\)[\s\S]*timeoutMs: remainingMs/u
+  );
+  assert.match(
+    reveal,
+    /assertCurrentRendererFrame\("before a stable-layout sample"\)[\s\S]*assertCurrentRendererFrame\("after a stable-layout sample"\)[\s\S]*assertCurrentRendererFrame\("before stable-layout transfer"\)[\s\S]*assertCurrentRendererFrame\("after stable-layout transfer"\)/u,
+    "Stable Code Preview layout must reject a retired Playwright frame before, during, and after exact-handle sampling."
+  );
   assert.match(reveal, /assertExactCodePreviewIdentity\(lastIdentity, target\.codeReceipt\)/u);
   assert.match(reveal, /codePreviewDocumentReceipt\(code\)/u);
   assert.match(reveal, /codePreviewReceiptDiagnostic\(expectedCodeReceipt\)/u);
@@ -1227,7 +1332,7 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
   );
   assert.match(
     reveal,
-    /const remainingMs = deadline - Date\.now\(\);[\s\S]*pinExactCodePreview\(locator, \{ workbench, frame, language \}, remainingMs\)[\s\S]*waitForTimeout\(Math\.min\(50, remainingMs\)\)/u
+    /const remainingMs = deadline - Date\.now\(\);[\s\S]*pinExactCodePreview\(\s*locator,\s*\{ workbench, frame, language \},\s*remainingMs,\s*expectedCodeReceipt\s*\)[\s\S]*waitForTimeout\(Math\.min\(50, remainingMs\)\)/u
   );
   assert.match(
     reveal,
@@ -1254,6 +1359,15 @@ test("generated-code reveal settles a centered line inside the exact CodeMirror 
   assert.doesNotMatch(
     reveal,
     /\.part\.panel:visible|scrollIntoView\s*:\s*true|scrollIntoViewIfNeeded|\.scrollIntoView\(/u
+  );
+  const pinStart = reveal.indexOf("async function pinExactCodePreview(");
+  const pinEnd = reveal.indexOf("\nasync function acquireCurrentExactCodePreviewGeneration(", pinStart);
+  assert.ok(pinStart >= 0 && pinEnd > pinStart);
+  const pin = reveal.slice(pinStart, pinEnd);
+  assert.doesNotMatch(
+    pin,
+    /executeCommand\(|bringToFront\(|\.click\(|\.press\(|\.reload\(|\.retry/u,
+    "Exact Code Preview layout hydration must poll one pinned generation without another editor action."
   );
   assert.doesNotMatch(reveal, /JSON\.stringify\(expectedText\)|JSON\.stringify\(target\.code\)/u);
 });

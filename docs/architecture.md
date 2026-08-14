@@ -512,6 +512,14 @@ Scope eviction has no awaited boundary. It revalidates the exact slot and every 
 
 `python/benchmarks/runtime_performance.py` measures deterministic synthetic CSV/Parquet work at two Python boundaries: direct `SessionManager` calls and canonical protocol-v2 round trips through a standalone runtime process. `--backend` labels native Polars, DuckDB, or Pandas runs; the default and strict release thresholds remain Polars-only. Package/runtime/machine provenance and best-effort process RSS evidence make results reproducible, but they exclude the extension host, VS Code/Cursor, webview layout, and paint. They must not be reported as editor first-paint timings; packaged-editor interaction and visual acceptance are separate evidence.
 
+Installed-editor performance has a different boundary. It gates observable first-grid, virtual-grid, cache-residency,
+outstanding-work responsiveness, authoritative cancellation, and terminal cleanup behavior in owned VS Code/Cursor
+processes. It retains path-free platform and storage provenance but does not sample the whole Electron process group or
+infer a product memory invariant from mutable `/proc` membership. Editor-process ownership and tree-empty attestation
+remain part of the shared native-runner cleanup contract; removing incidental RSS measurement does not weaken those
+guards. The direct-runtime benchmark retains its bounded-process RSS evidence, while the separate Data Wrangler
+comparison study retains its Linux process-tree PSS sampler.
+
 PySpark summaries check and collect their ten displayed values in one Spark job. When their combined size exceeds the remaining allowance, Spark sends the lengths but substitutes null for the values. Oversized data stays out of Python, and an ordinary profile does not run the same grouped query twice.
 
 Optional `filter`, `sort`, `profile`, and `columnValues` wire flags can disable one viewing feature without hiding the others. Omitted flags keep the protocol-v2 behavior and mean supported.
@@ -538,7 +546,7 @@ The data grid is a custom readonly editor because opening and cleaning a source 
 
 The extension host keeps runtime language, dataframe flavor, and generated-code dialect as separate TypeScript values. It derives them only from the backend confirmed in an active session: Pandas, Polars, and DuckDB use their own Python dialect descriptors, the three R dataframe flavors share `r.base`, and viewing-only PySpark has no generated-code dialect. Code Preview receives this identity in its exact-key private host message and publishes it as deterministic root data attributes. Python code uses the Python parser; R code is currently plain text and is labeled **R**. The identity is not part of protocol v2, saved notebook MIME, session persistence, or the Python runtime contract.
 
-The default `onDraft` Code Preview behavior reveals the bottom panel for only the first acknowledged draft in a session. Later drafts update the registered provider in place; they do not focus or reopen a panel the user closed. `always` reveals once when each session first synchronizes, while `never` performs no automatic reveal. Automatic reveal invokes the native Code Preview focus command with `preserveFocus: true` only after the exact renderer marker is acknowledged. The panel therefore opens without transferring keyboard focus away from the dataframe editor, invalidating its hydration marker, assigning new webview HTML, or creating a second synchronization cycle. Packaged generated-R acceptance pins one bounded exact code receipt to the current CodeMirror renderer generation. It may reacquire only after proving that generation was replaced, then revalidates the replacement before any measurement. Revealing an operation line changes only the exact `.cm-scroller` scroll position and succeeds only after two stable, fully visible measurements from the same renderer/document/scroller generation; bounded diagnostics report geometry and generation state without retaining generated code. In a multi-column viewing sort, the grid exposes `aria-sort` only on the priority-one header as required by the ARIA grid model; each secondary sort remains explicit through its accessible label, clear action, and visible priority indicator.
+The default `onDraft` Code Preview behavior reveals the bottom panel for only the first acknowledged draft in a session. Later drafts update the registered provider in place; they do not focus or reopen a panel the user closed. `always` reveals once when each session first synchronizes, while `never` performs no automatic reveal. Automatic reveal invokes the native Code Preview focus command with `preserveFocus: true` only after the exact renderer marker is acknowledged. The panel therefore opens without transferring keyboard focus away from the dataframe editor, invalidating its hydration marker, assigning new webview HTML, or creating a second synchronization cycle. Packaged generated-R acceptance records the post-draft host code receipt, requires exact session/revision hydration, rechecks that same receipt from acknowledged host state, and only then pins the current CodeMirror renderer generation. It may reacquire only after proving that generation was replaced, then revalidates the replacement before any measurement. Initial 0×0 layout is treated as unsettled, not as missing product state: the pinned generation must retain its receipt and connected document/scroller identity while the renderer viewport and preview bounds become finite, positive, and stable, and the exact scroller becomes finite, positive, fully contained in that viewport, and unchanged across two animation-frame observations; its scroll offset must be finite and non-negative, with positive consistent extents. Revealing an operation line then changes only that exact `.cm-scroller` scroll position and succeeds only after two stable, fully visible measurements from the same renderer/document/scroller generation; bounded diagnostics report receipts and geometry/generation state without retaining generated code. In a multi-column viewing sort, the grid exposes `aria-sort` only on the priority-one header as required by the ARIA grid model; each secondary sort remains explicit through its accessible label, clear action, and visible priority indicator.
 
 Renderer synchronization requests are coalesced but drained before the host releases their single runner, including a request that arrives after the runner's final loop check. This guarantees that a committed mutation cannot lose its authoritative replay.
 
@@ -614,9 +622,14 @@ Preview [run #75](https://github.com/Matt17BR/openwrangler/actions/runs/31834973
 positive-duration runner-minutes. Dedicated Linux restart, value/categorical editing, and macOS/Windows native-R
 platform journeys passed. Linux core was the sole raw blocker: VS Code 1.133.0 crossed the outer deadline at about
 300.012 seconds after `jupyter-r:orders_table:editing-renderer-ready`, and macOS passed after consuming about 289.66 of
-its 300-second native-editor budget. Publication was again skipped. Splitting explicit candidate core, native-frame,
-and restart work on every hosted platform is projected to move wall time toward 20 minutes, but no hosted candidate has
-proved the new graph, estimate, or runner cost.
+its 300-second native-editor budget. Publication was again skipped.
+
+Preview [run #76](https://github.com/Matt17BR/openwrangler/actions/runs/31847608802) exercised the explicit
+core/native-frame/restart split at 19m19s and 95m20s of positive-duration runner time. Package and canonical artifact
+proof passed, as did every raw lane except auxiliary installed-performance process enumeration and Linux Cursor's
+literate generated-code 0×0 layout race. Both are harness/runner failures rather than product or release-invariant
+signals, but the fan-in and publication remained correctly blocked. The frozen RSS-boundary and literate-layout fixes
+described above have no hosted candidate proof; a fresh run is required.
 
 ## Persistence and identity
 
