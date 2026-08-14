@@ -44,6 +44,7 @@ export interface OpenWranglerTestApi {
   panelSynchronizationReceipt(
     sessionId: string
   ): Readonly<{ syncId: string; sessionId: string; revision: number; layoutTransitionPending: boolean }> | undefined;
+  retirePanelRenderer(sessionId: string): boolean;
   cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void;
   requestExecutionCheckpoint: SessionCoordinator["testingRequestExecutionCheckpoint"];
   sessionSchedulerState: SessionCoordinator["testingSessionSchedulerState"];
@@ -129,6 +130,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         panelHydrated: (sessionId) => OpenWranglerPanel.panelHydratedForSession(sessionId),
         panelSynchronizable: (sessionId) => OpenWranglerPanel.panelSynchronizableForSession(sessionId),
         panelSynchronizationReceipt: (sessionId) => OpenWranglerPanel.panelSynchronizationReceiptForSession(sessionId),
+        retirePanelRenderer: (sessionId) => OpenWranglerPanel.retireRendererForSessionForTesting(sessionId),
         cancelViewRequests: (sessionId, viewRequestIds) =>
           coordinatedBridge.cancelViewRequests?.(sessionId, viewRequestIds),
         requestExecutionCheckpoint: (sessionId, requestKind, viewRequestId) =>

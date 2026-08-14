@@ -25,6 +25,8 @@ const RENDERER_STARTUP_RECOVERY_TIMEOUT_MS = 5_000;
 const MAX_RENDERER_STARTUP_RECOVERY_ATTEMPTS = 2;
 const RENDERER_PUBLICATION_TIMEOUT_MS = 5_000;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
+const RETIRED_RENDERER_TEST_HTML =
+  '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\';"></head><body></body></html>';
 export const SESSION_BOUND_EXPORT_DATA_COMMAND = "openWrangler.internal.exportSessionData";
 
 export async function restoreEditorGroupAfterQuickPick(): Promise<void> {
@@ -198,6 +200,17 @@ export class OpenWranglerPanel {
       (panel) => !panel.disposed && panel.panel.visible && panel.sessionId === sessionId
     );
     return matches.length === 1 ? matches[0] : undefined;
+  }
+
+  static retireRendererForSessionForTesting(sessionId: string): boolean {
+    if (process.env.OPEN_WRANGLER_EXTENSION_TESTS !== "1") return false;
+    const target = OpenWranglerPanel.visiblePanelForSession(sessionId);
+    if (!target?.hasHydratedRenderer()) return false;
+    // Replace only the physical document. Keeping the host's renderer receipt,
+    // watchdog, session, and runtime untouched reproduces an editor that
+    // silently retires a hydrated webview after accepting a publication.
+    target.panel.webview.html = RETIRED_RENDERER_TEST_HTML;
+    return true;
   }
 
   static async disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined> {
@@ -1671,7 +1684,9 @@ export class OpenWranglerPanel {
       this.rendererSynchronizationRequested = true;
       return;
     }
-    await this.postRendererMessage({ kind: "rendererSynchronization", ...synchronization });
+    if (await this.postRendererMessage({ kind: "rendererSynchronization", ...synchronization })) {
+      this.scheduleRendererStartupRecovery();
+    }
   }
 
   private activate(): void {

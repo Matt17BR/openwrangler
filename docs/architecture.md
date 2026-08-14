@@ -492,6 +492,11 @@ exclusive.
 
 ## UI composition
 
+Every accepted renderer synchronization marker arms the acknowledgement watchdog, including a marker published after
+import reconfiguration, because message delivery alone cannot prove that the renderer document consumed it. An exact
+acknowledgement cancels that watchdog; an unacknowledged visible renderer receives the existing bounded HTML reload and
+authoritative session replay without reopening the runtime or repeating the mutation.
+
 When the selected-column drawer claims a summary that is still in the background queue, the webview asks the
 coordinator to move that same request into the interactive queue. An active summary is left alone, and the request ID
 does not change. This avoids repeating engine work while keeping the selected statistics ahead of unrelated queued

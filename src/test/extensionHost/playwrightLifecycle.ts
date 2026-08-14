@@ -470,6 +470,50 @@ export function ignoreRetiredRendererProbeFailure(
   }
 }
 
+export async function observeExactRendererRetirement(
+  workbench: PageLifecycle,
+  browser: BrowserLifecycle | null,
+  page: PageLifecycle,
+  frame: FrameLifecycle,
+  observe: () => PromiseLike<void>
+): Promise<void> {
+  assertRendererRetirementLifecycle(workbench, browser);
+  try {
+    await observe();
+  } catch (error) {
+    if (!rendererRetirementLifecycleIsLive(workbench, browser)) throw error;
+    const firstMessageLine = error instanceof Error ? error.message.split(/\r?\n/u, 1)[0] : undefined;
+    if (
+      firstMessageLine !== "locator.waitFor: Frame was detached" ||
+      !isRetiredRendererTarget(workbench, page, frame)
+    ) {
+      throw error;
+    }
+    if (!rendererRetirementLifecycleIsLive(workbench, browser)) throw error;
+    return;
+  }
+  assertRendererRetirementLifecycle(workbench, browser);
+}
+
+function rendererRetirementLifecycleIsLive(
+  workbench: PageLifecycle,
+  browser: BrowserLifecycle | null
+): browser is BrowserLifecycle {
+  return !workbench.isClosed() && browser !== null && browser.isConnected();
+}
+
+function assertRendererRetirementLifecycle(
+  workbench: PageLifecycle,
+  browser: BrowserLifecycle | null
+): asserts browser is BrowserLifecycle {
+  if (workbench.isClosed()) {
+    throw new Error("The editor workbench closed while observing exact renderer retirement.");
+  }
+  if (browser === null || !browser.isConnected()) {
+    throw new Error("The editor CDP browser disconnected while observing exact renderer retirement.");
+  }
+}
+
 function waitForPollInterval(durationMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, durationMs));
 }

@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Open Wrangler now recovers a visible editor whose renderer disappears after **Change Import Options** even when
+  Cursor reports the final host message as delivered. The confirmed session is replayed into a fresh renderer without
+  reopening the source or repeating the import transaction.
 - Native R editing now supports Formula and Format Datetime for supported R frames, including executable generated
   code. Formula accepts exact numeric columns or a finite scalar. Format Datetime accepts `Date` and `POSIXct`
   columns, formatting POSIXct values in their declared time zone or UTC when none is declared. Generated scripts also

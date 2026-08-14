@@ -507,6 +507,112 @@ test("packaged panel actions stay bound to the acknowledged renderer", async () 
   assert.doesNotMatch(firstUseJourney, /openSidePanel\("Column profiles"\)/u);
 });
 
+test("packaged import reconfiguration proves physical same-session renderer recovery", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  const exactButton = source.slice(
+    source.indexOf("async function waitForExactSessionWebviewButton("),
+    source.indexOf("async function focusAndSynchronizeExactSessionPanel(")
+  );
+  assert.match(exactButton, /expectedRendererSynchronizationReceipt\?\.syncId/u);
+  assert.match(exactButton, /sameRendererSynchronizationReceipt\(/u);
+  const focusedPanel = source.slice(
+    source.indexOf("async function focusAndSynchronizeExactSessionPanel("),
+    source.indexOf("async function exercisePackagedBackendSwitchJourney(")
+  );
+  assert.match(focusedPanel, /const receipt = testing\.panelSynchronizationReceipt\(expectedSessionId\)/u);
+  assert.match(
+    focusedPanel,
+    /waitForExactSessionWebviewButton\([\s\S]*receipt[\s\S]*sameRendererSynchronizationReceipt\(receipt/u
+  );
+
+  const journey = source.slice(
+    source.indexOf("async function exerciseLiveImportReconfiguration("),
+    source.indexOf("async function acceptDelimitedImportOptions(")
+  );
+  const retainedReceipt = journey.indexOf("const retainedRendererReceipt =");
+  const oldPhysicalTarget = journey.indexOf("const synchronizedGridTarget =", retainedReceipt);
+  const retirement = journey.indexOf("testing.retirePanelRenderer(stableSessionId)", oldPhysicalTarget);
+  const detached = journey.indexOf("observeExactRendererRetirement(", retirement);
+  const retainedHostReceipt = journey.indexOf("sameRendererSynchronizationReceipt(", detached);
+  const failedSynchronization = journey.indexOf("await testing.synchronizePanel(stableSessionId)", retainedHostReceipt);
+  const recovered = journey.indexOf(
+    "const recoveredRenderer = await focusAndSynchronizeExactSessionPanel(",
+    failedSynchronization
+  );
+  const newReceipt = journey.indexOf("recoveredRenderer.receipt.syncId", recovered);
+  const sameSnapshot = journey.indexOf("snapshotBeforeRendererRetirement", newReceipt);
+  const sameDiagnostics = journey.indexOf("diagnosticsBeforeRendererRetirement", sameSnapshot);
+  const sameSource = journey.indexOf(
+    "Renderer recovery must leave the configured source byte-identical.",
+    sameDiagnostics
+  );
+  const recoveredViewport = journey.indexOf("const recoveredPhysicalViewport =", sameSource);
+  assert.ok(
+    retainedReceipt >= 0 &&
+      oldPhysicalTarget > retainedReceipt &&
+      retirement > oldPhysicalTarget &&
+      detached > retirement &&
+      retainedHostReceipt > detached &&
+      failedSynchronization > retainedHostReceipt &&
+      recovered > failedSynchronization &&
+      newReceipt > recovered &&
+      sameSnapshot > newReceipt &&
+      sameDiagnostics > sameSnapshot &&
+      sameSource > sameDiagnostics &&
+      recoveredViewport > sameSource,
+    "Packaged recovery must retire an exact acknowledged renderer, observe the missing acknowledgement, then verify the replacement before its physical viewport."
+  );
+  assert.match(
+    journey.slice(failedSynchronization, recovered),
+    /false,[\s\S]*inert retired document must accept publication without acknowledging/u
+  );
+  assert.match(journey.slice(recovered, sameSnapshot), /assert\.notEqual\([\s\S]*\.syncId/u);
+  assert.match(journey.slice(recoveredViewport), /scrollTop - 29[\s\S]*scrollLeft - 23/u);
+  const retirementObservation = journey.slice(detached, retainedHostReceipt);
+  assert.match(retirementObservation, /synchronizedGridTarget\.target\.page/u);
+  assert.match(retirementObservation, /synchronizedGridTarget\.target\.frame/u);
+  assert.match(retirementObservation, /synchronizedGridTarget\.action\.waitFor\(\{[\s\S]*state: "detached"/u);
+
+  const panelSource = await readFile(resolve("src/extension/webviewPanel.ts"), "utf8");
+  const retirementHook = panelSource.slice(
+    panelSource.indexOf("static retireRendererForSessionForTesting("),
+    panelSource.indexOf("static async disposePanelForSession(")
+  );
+  assert.match(retirementHook, /OPEN_WRANGLER_EXTENSION_TESTS !== "1"/u);
+  assert.match(retirementHook, /visiblePanelForSession\(sessionId\)/u);
+  assert.match(retirementHook, /hasHydratedRenderer\(\)/u);
+  assert.match(retirementHook, /target\.panel\.webview\.html = RETIRED_RENDERER_TEST_HTML/u);
+  assert.doesNotMatch(
+    retirementHook,
+    /replaceRendererHtml|invalidateRendererSynchronization|scheduleRendererStartupRecovery|clearRendererStartupRecoveryTimer|bridge\./u,
+    "The retirement hook must remove only the physical document and leave host ownership and recovery state untouched."
+  );
+
+  const activation = await readFile(resolve("src/extension/activate.ts"), "utf8");
+  assert.match(
+    activation,
+    /if \(process\.env\.OPEN_WRANGLER_EXTENSION_TESTS === "1"\)[\s\S]*retirePanelRenderer: \(sessionId\) => OpenWranglerPanel\.retireRendererForSessionForTesting\(sessionId\)/u
+  );
+
+  const lifecycleSource = await readFile(resolve("src/test/extensionHost/playwrightLifecycle.ts"), "utf8");
+  const exactRetirementObserver = lifecycleSource.slice(
+    lifecycleSource.indexOf("export async function observeExactRendererRetirement("),
+    lifecycleSource.indexOf("function rendererRetirementLifecycleIsLive(")
+  );
+  assert.match(exactRetirementObserver, /assertRendererRetirementLifecycle\(workbench, browser\)/u);
+  assert.match(exactRetirementObserver, /error instanceof Error/u);
+  assert.match(
+    exactRetirementObserver,
+    /error\.message\.split\(\/\\r\?\\n\/u, 1\)\[0\][\s\S]*!== "locator\.waitFor: Frame was detached"/u
+  );
+  assert.match(exactRetirementObserver, /!isRetiredRendererTarget\(workbench, page, frame\)/u);
+  assert.ok(
+    (exactRetirementObserver.match(/throw error/gu)?.length ?? 0) >= 3,
+    "The exact retirement observer must rethrow lifecycle, message, and target-classification failures."
+  );
+  assert.doesNotMatch(exactRetirementObserver, /includes\(|startsWith\(|endsWith\(/u);
+});
+
 test("packaged webview actions accept a current replacement at the failure boundary", async () => {
   const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
   const finder = source.slice(

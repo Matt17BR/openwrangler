@@ -924,6 +924,85 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
 
+  it("retires only an exact visible hydrated renderer through the test environment without changing host ownership", async () => {
+    vi.useFakeTimers();
+    const previousExtensionTests = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    try {
+      process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (candidate.kind === "openSession") return openedResponse;
+        if (candidate.kind === "closeSession") {
+          return { kind: "sessionClosed", sessionId: candidate.sessionId };
+        }
+        throw new Error(`Unexpected request ${candidate.kind}`);
+      });
+      const harness = createPanelHarness({ request }, { delegateOpen: true });
+      await harness.open();
+
+      expect(OpenWranglerPanel.retireRendererForSessionForTesting("missing-session")).toBe(false);
+      expect(OpenWranglerPanel.retireRendererForSessionForTesting(openedResponse.metadata.sessionId)).toBe(false);
+      await harness.receive({ kind: "ready" });
+      const originalSynchronization = await acknowledgeLatestRendererSynchronization(harness);
+      const originalReceipt = OpenWranglerPanel.panelSynchronizationReceiptForSession(
+        openedResponse.metadata.sessionId
+      );
+      expect(originalReceipt?.syncId).toBe(originalSynchronization.syncId);
+      expect(harness.htmlAssignmentCount).toBe(1);
+
+      delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+      expect(OpenWranglerPanel.retireRendererForSessionForTesting(openedResponse.metadata.sessionId)).toBe(false);
+      process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+      harness.hide();
+      expect(OpenWranglerPanel.retireRendererForSessionForTesting(openedResponse.metadata.sessionId)).toBe(false);
+      harness.activate();
+
+      expect(OpenWranglerPanel.retireRendererForSessionForTesting(openedResponse.metadata.sessionId)).toBe(true);
+      expect(harness.htmlAssignmentCount).toBe(2);
+      expect(harness.html).toContain("default-src 'none'");
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+      expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(openedResponse.metadata.sessionId)).toEqual(
+        originalReceipt
+      );
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(0);
+
+      harness.posted.length = 0;
+      const stalledSynchronization = OpenWranglerPanel.synchronizePanelForSession(openedResponse.metadata.sessionId);
+      for (let attempt = 0; attempt < 20 && !harness.posted.some(isRendererSynchronizationMessage); attempt += 1) {
+        await Promise.resolve();
+      }
+      const unacknowledged = latestRendererSynchronization(harness.posted);
+      expect(unacknowledged.syncId).not.toBe(originalSynchronization.syncId);
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(harness.htmlAssignmentCount).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.htmlAssignmentCount).toBe(3);
+      await expect(stalledSynchronization).resolves.toBe(false);
+
+      await harness.receive({ kind: "ready" });
+      const recovered = latestRendererSynchronization(harness.posted);
+      expect(recovered.syncId).not.toBe(unacknowledged.syncId);
+      expect(recovered).toMatchObject({
+        sessionId: openedResponse.metadata.sessionId,
+        revision: openedResponse.metadata.revision
+      });
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: recovered.syncId,
+        sessionId: recovered.sessionId,
+        revision: recovered.revision
+      });
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(0);
+    } finally {
+      if (previousExtensionTests === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+      else process.env.OPEN_WRANGLER_EXTENSION_TESTS = previousExtensionTests;
+      vi.useRealTimers();
+    }
+  });
+
   it("gives an active renderer two bounded recovery reloads when its startup handshake never arrives", async () => {
     vi.useFakeTimers();
     try {
@@ -3395,6 +3474,104 @@ describe("OpenWranglerPanel retained view state", () => {
     panelPromptMocks.showInputBox.mockReset();
     await harness.receive({ kind: "changeImportOptions" });
     expect(promptPicksAt(0)[0]).toMatchObject({ value: ";", description: "Current" });
+  });
+
+  it("recovers a reconfigured renderer that accepts publication but never acknowledges its new snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      const source: SessionSource = {
+        kind: "file",
+        label: "sample.csv",
+        path: "/workspace/sample.csv",
+        uri: "file:///workspace/sample.csv",
+        importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      };
+      const initial = responseForSource(source, 2);
+      const nextOptions = {
+        delimiter: ";",
+        encoding: "windows-1252",
+        quoteChar: "'",
+        hasHeader: false
+      } as const;
+      const committed = responseForSource({ ...source, importOptions: nextOptions }, 7);
+      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (candidate.kind === "openSession") return initial;
+        if (candidate.kind === "closeSession") {
+          return { kind: "sessionClosed", sessionId: candidate.sessionId };
+        }
+        throw new Error(`Unexpected request ${candidate.kind}`);
+      });
+      const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => committed);
+      const harness = createPanelHarness(
+        { request, reconfigureFileSession },
+        { source, delegateOpen: true, backendPreference: "auto" }
+      );
+
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      const initialSynchronization = await acknowledgeLatestRendererSynchronization(harness);
+      expect(OpenWranglerPanel.panelHydratedForSession(initial.metadata.sessionId)).toBe(true);
+      expect(harness.htmlAssignmentCount).toBe(1);
+      harness.posted.length = 0;
+      configureDelimitedPrompts(nextOptions);
+
+      await harness.receive({ kind: "changeImportOptions" });
+
+      const unacknowledged = latestRendererSynchronization(harness.posted);
+      expect(unacknowledged).toMatchObject({
+        sessionId: committed.metadata.sessionId,
+        revision: committed.metadata.revision
+      });
+      expect(OpenWranglerPanel.panelHydratedForSession(committed.metadata.sessionId)).toBe(false);
+      expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(committed.metadata.sessionId)).toBeUndefined();
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: initialSynchronization.syncId,
+        sessionId: initialSynchronization.sessionId,
+        revision: initialSynchronization.revision
+      });
+      expect(OpenWranglerPanel.panelHydratedForSession(committed.metadata.sessionId)).toBe(false);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(harness.htmlAssignmentCount).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.htmlAssignmentCount).toBe(2);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(0);
+      expect(reconfigureFileSession).toHaveBeenCalledOnce();
+      const publicationsBeforeRecoveredReady = harness.posted.filter(isSessionOpenedResponse).length;
+      expect(publicationsBeforeRecoveredReady).toBe(2);
+
+      await harness.receive({ kind: "ready" });
+      const recovered = latestRendererSynchronization(harness.posted);
+      expect(recovered.syncId).not.toBe(unacknowledged.syncId);
+      expect(recovered).toMatchObject({
+        sessionId: committed.metadata.sessionId,
+        revision: committed.metadata.revision
+      });
+      expect(harness.posted.filter(isSessionOpenedResponse)).toHaveLength(publicationsBeforeRecoveredReady + 1);
+      expect(harness.posted.filter(isSessionOpenedResponse).at(-1)).toEqual(committed);
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: recovered.syncId,
+        sessionId: recovered.sessionId,
+        revision: recovered.revision
+      });
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      expect(OpenWranglerPanel.panelHydratedForSession(committed.metadata.sessionId)).toBe(true);
+      expect(OpenWranglerPanel.panelSynchronizationReceiptForSession(committed.metadata.sessionId)).toEqual({
+        syncId: recovered.syncId,
+        sessionId: recovered.sessionId,
+        revision: recovered.revision,
+        layoutTransitionPending: recovered.layoutTransitionPending
+      });
+      expect(harness.htmlAssignmentCount).toBe(2);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
+      expect(request.mock.calls.filter(([candidate]) => candidate.kind === "closeSession")).toHaveLength(0);
+      expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses live workbook sheet names for Excel reconfiguration without asking users to type one", async () => {
