@@ -18,8 +18,8 @@ import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = fixtureManifestContract.INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL;
 export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v7";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v9";
-export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v4";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v10";
+export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v5";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_CACHED_GRID_SAMPLE_COUNT = 200;
@@ -123,9 +123,8 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
   }
   const editorKeys = new Set();
   const editors = editorRuns.map((run) => {
-    exactKeys(run, ["provenance", "resources", "phases"], [], "editor performance run");
+    exactKeys(run, ["provenance", "phases"], [], "editor performance run");
     validateProvenance(run.provenance);
-    validateResources(run.resources);
     if (run.provenance.runtime.openWranglerRuntimeVersion !== candidate.extensionVersion) {
       throw new TypeError("Installed performance runtime version does not match its VSIX candidate.");
     }
@@ -157,7 +156,6 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
     }
     return {
       provenance: structuredClone(run.provenance),
-      resources: structuredClone(run.resources),
       results: groupEditorPhases(phases)
     };
   });
@@ -293,8 +291,8 @@ function assertInstalledPerformanceGate(
   const keys = report.editors.map((entry) => entry.provenance.editor.key);
   if (new Set(keys).size !== keys.length) throw new TypeError("Installed performance editors must be unique.");
   for (const editor of report.editors) {
+    exactKeys(editor, ["provenance", "results"], [], "installed performance editor result");
     validateProvenance(editor.provenance);
-    validateResources(editor.resources);
     validateGroupedResults(editor.results);
   }
   exactKeys(report[verdictKey], ["passed", "failures"], [], `${gateLabel}-gate verdict`);
@@ -781,35 +779,6 @@ function validateProvenance(provenance) {
   }
 }
 
-function validateResources(resources) {
-  exactKeys(
-    resources,
-    ["supported", "sampler", "peakEditorTreeRssBytes", "peakPythonRuntimeRssBytes", "samples"],
-    [],
-    "resource evidence"
-  );
-  assertBoolean(resources.supported, "resource sampler support");
-  assertBoundedString(resources.sampler, "resource sampler");
-  for (const key of ["peakEditorTreeRssBytes", "peakPythonRuntimeRssBytes"]) {
-    if (resources[key] !== null && !positiveInteger(resources[key])) {
-      throw new TypeError(`Resource ${key} must be positive or null.`);
-    }
-  }
-  if (!Array.isArray(resources.samples) || resources.samples.length === 0 || resources.samples.length > 1_024) {
-    throw new TypeError("Resource evidence requires between 1 and 1,024 samples.");
-  }
-  for (const sample of resources.samples) {
-    exactKeys(sample, ["stage", "editorTreeRssBytes", "pythonRuntimeRssBytes"], [], "resource sample");
-    assertBoundedString(sample.stage, "resource sample stage");
-    if (!positiveInteger(sample.editorTreeRssBytes)) {
-      throw new TypeError("Editor-tree RSS sample must be positive.");
-    }
-    if (sample.pythonRuntimeRssBytes !== null && !positiveInteger(sample.pythonRuntimeRssBytes)) {
-      throw new TypeError("Python-runtime RSS sample must be positive or null.");
-    }
-  }
-}
-
 function groupEditorPhases(phases) {
   const firstGrid = { csv: {}, parquet: {} };
   let gridInteraction;
@@ -966,14 +935,6 @@ function installedPerformanceFailureDetails(
     const expectedDisplayMode = label === "cursor" ? "xvfb" : "headless";
     if (requireLinuxReference && editor.provenance.platform.editorDisplayMode !== expectedDisplayMode) {
       structural(`${label} did not use the required ${expectedDisplayMode} editor display mode`);
-    }
-    if (
-      requireLinuxReference &&
-      (!editor.resources.supported ||
-        !positiveInteger(editor.resources.peakEditorTreeRssBytes) ||
-        !positiveInteger(editor.resources.peakPythonRuntimeRssBytes))
-    ) {
-      structural(`${label} RSS evidence is incomplete`);
     }
     for (const format of ["csv", "parquet"]) {
       const limit =

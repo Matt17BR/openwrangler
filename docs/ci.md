@@ -95,7 +95,8 @@ The release tier adds the expensive product checks that no longer run on every p
 - native-R installed-artifact compatibility in the local and platform cells; protected pull-request CI remains the
   sole direct R-contract owner;
 - Remote SSH;
-- installed performance in pinned VS Code and Cursor;
+- installed performance in pinned VS Code and Cursor, gated on first-grid timing, cache residency, scrolling,
+  outstanding-work responsiveness, cancellation, and cleanup rather than whole-process-tree RSS sampling;
 - one full generic packaged journey in Linux VS Code, a focused Linux Cursor `platform-smoke`, exact-artifact
   platform/package checks, live public-metadata and security audits, and the strict runtime benchmark;
   protected pull-request CI remains the sole owner of source, coverage, extension-host, browser-baseline, and
@@ -185,12 +186,22 @@ platform journeys passed with their then-embedded restart coverage. macOS nevert
 300-second native-editor budget. Publication was skipped, so no `v1.99.6` tag, prerelease, or registry package was
 created.
 
-The candidate-only core/native/restart split removes the remaining native-frame and restart work from explicit core on
-all three hosted platforms, while the separate `r_platform` matrix prevents generic platform work from sharing the
-same serial cell. It keeps one representative native-frame and restart seam on every platform, one comprehensive Linux
-owner, all hard/inactivity deadlines, and the no-retry
-rule. The graph is projected to move wall time toward 20 minutes, but no hosted candidate has proved the new topology,
-that estimate, or its next critical path. Repeating private R setup in the new parallel cells may increase runner use.
+Preview release [run #76](https://github.com/Matt17BR/openwrangler/actions/runs/31847608802) exercised that split from
+exact protected `main` commit `ab6c5815`. It finished in 19m19s and consumed 95m20s of positive-duration runner time;
+the first raw red arrived at 9m57s. Package production and canonical revalidation passed, and every raw lane was green
+except installed performance's auxiliary `/proc` process-enumeration harness and Linux Cursor literate acceptance's
+connected CodeMirror 0×0 layout race. Neither failure identified a numeric product regression, malformed package, or
+release-invariant breach; both are classified `harness/runner` under the actionable-red policy. The fan-in still
+failed, so publication was skipped and no `v1.99.6` tag, prerelease, or registry package was created.
+
+The frozen remediation removes whole-editor-tree and runtime RSS sampling from installed performance while retaining
+every timing, page-cache, responsiveness, cancellation, runtime/session cleanup, editor-ownership, and provenance
+gate. The literate harness dispatches and boundedly settles one Quarto command, pins its exact tab/group/terminal,
+proves ordinary preview cleanup and absence before the title action, and retains that preview only through media
+capture. Post-draft generated-R acceptance requires exact hydration plus the matching host receipt, then waits for one
+same-generation full geometry to remain stable across two animation-frame observations. No editor action is retried,
+and the 300-second hard and 180-second inactivity deadlines are unchanged. These fixes have local contract evidence but
+no hosted proof; only a fresh exact candidate can make them release evidence.
 
 Each release local-R shard and `r_platform` cell uses the same commit-pinned dependency action, explicit package set, and
 resolved-lock/binary-package policy as the pull-request contract matrix. GitHub scopes pull-request caches to their

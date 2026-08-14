@@ -88,6 +88,7 @@ import {
   runFailClosedCategoricalUndo,
   runReplaceableCodePreviewGeneration,
   selectUniqueCodePreviewLogicalLine,
+  waitForStableExactCodePreviewLayout,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
@@ -4332,13 +4333,11 @@ async function exerciseReleasedRLiterateDocumentJourneys(
       assert.equal(vscode.window.activeTextEditor?.document, document);
 
       if (fixture.kind === "quarto") {
+        const retainPreviewForMedia = screenshotOutput !== undefined && process.platform === "linux";
         const closePreview = nativeREditorTooling
-          ? await openReleasedNativeQuartoPreview(
-              workbench,
-              fixture.sourceUri,
-              screenshotOutput !== undefined && process.platform === "linux"
-            )
+          ? await openReleasedNativeQuartoPreview(workbench, fixture.sourceUri, retainPreviewForMedia)
           : async () => {};
+        if (!retainPreviewForMedia) await closePreview();
         try {
           await invokeReleasedRDocumentTitleAction(
             workbench,
@@ -5025,21 +5024,88 @@ async function openReleasedNativeQuartoPreview(
   assert.deepEqual(releasedQuartoPreviewTabs(), [], "The Quarto journey must start without an existing preview tab.");
   const priorTerminals = new Set(vscode.window.terminals);
   let cleaned = false;
-  let previewTabs: vscode.Tab[] = [];
-  let previewTerminals: vscode.Terminal[] = [];
-  let previewOwnershipFrozen = false;
+  let previewTab: vscode.Tab | undefined;
+  let previewTabGroup: vscode.TabGroup | undefined;
+  let previewTerminal: vscode.Terminal | undefined;
+  let previewOwnershipReady = false;
+  const ownedPreviewTerminals = () =>
+    vscode.window.terminals.filter((terminal) => !priorTerminals.has(terminal) && terminal.name === "Quarto Preview");
   const captureOwnedUi = () => {
-    if (previewOwnershipFrozen) return;
-    previewTabs = releasedQuartoPreviewTabs();
-    previewTerminals = vscode.window.terminals.filter(
-      (terminal) => !priorTerminals.has(terminal) && terminal.name === "Quarto Preview"
+    const tabs = releasedQuartoPreviewTabs();
+    const terminals = ownedPreviewTerminals();
+    assert.ok(tabs.length <= 1, "Quarto Preview must not create an additional internal preview tab.");
+    assert.ok(terminals.length <= 1, "Quarto Preview must not create an additional owned terminal.");
+    if (previewTab) {
+      assert.equal(tabs.length, 1, "Quarto Preview must retain its first exact internal preview tab.");
+      assert.equal(tabs[0], previewTab, "Quarto Preview must not replace its first exact internal preview tab.");
+    } else if (tabs[0]) {
+      previewTab = tabs[0];
+    }
+    if (previewTerminal) {
+      assert.equal(terminals.length, 1, "Quarto Preview must retain its first exact owned terminal.");
+      assert.equal(terminals[0], previewTerminal, "Quarto Preview must not replace its first exact owned terminal.");
+    } else if (terminals[0]) {
+      previewTerminal = terminals[0];
+    }
+    if (previewTab) {
+      const containingGroups = vscode.window.tabGroups.all.filter((group) => group.tabs.includes(previewTab!));
+      assert.equal(containingGroups.length, 1, "The exact Quarto preview tab must belong to one tab group.");
+      if (previewTabGroup) {
+        assert.equal(
+          containingGroups[0],
+          previewTabGroup,
+          "Quarto Preview must retain the first exact tab-group identity."
+        );
+      } else {
+        previewTabGroup = containingGroups[0];
+      }
+    }
+    return {
+      tabActive: previewTab !== undefined && previewTabGroup?.activeTab === previewTab,
+      terminalReady: previewTerminal !== undefined
+    };
+  };
+  const assertFrozenOwnership = () => {
+    assert.ok(previewTab, "Quarto Preview must retain its frozen internal preview tab.");
+    assert.ok(previewTabGroup, "Quarto Preview must retain its frozen tab group.");
+    assert.ok(previewTerminal, "Quarto Preview must retain its frozen owned terminal.");
+    const frozenTabs = releasedQuartoPreviewTabs();
+    const frozenTerminals = ownedPreviewTerminals();
+    assert.equal(frozenTabs.length, 1, "Quarto Preview must retain one frozen internal preview tab.");
+    assert.equal(
+      frozenTabs[0],
+      previewTab,
+      "Quarto Preview must not replace or add to its frozen internal preview tab."
+    );
+    assert.equal(
+      vscode.window.tabGroups.all.filter((group) => group.tabs.includes(previewTab!)).length,
+      1,
+      "The frozen Quarto preview tab must remain in one exact group."
+    );
+    assert.equal(
+      vscode.window.tabGroups.all.find((group) => group.tabs.includes(previewTab!)),
+      previewTabGroup,
+      "The frozen Quarto preview tab must retain its exact group."
+    );
+    assert.equal(frozenTerminals.length, 1, "Quarto Preview must retain one frozen owned terminal.");
+    assert.equal(
+      frozenTerminals[0],
+      previewTerminal,
+      "Quarto Preview must not replace or add to its frozen owned terminal."
     );
   };
   const cleanup = async () => {
     if (cleaned) return;
     cleaned = true;
-    captureOwnedUi();
-    const openTabs = previewTabs.filter((tab) => vscode.window.tabGroups.all.some((group) => group.tabs.includes(tab)));
+    let ownershipFailure: unknown;
+    if (previewOwnershipReady) {
+      try {
+        assertFrozenOwnership();
+      } catch (error) {
+        ownershipFailure = error;
+      }
+    }
+    const openTabs = releasedQuartoPreviewTabs();
     if (openTabs.length > 0) {
       assert.equal(
         await withBoundedAcceptancePromise(
@@ -5050,25 +5116,28 @@ async function openReleasedNativeQuartoPreview(
         true
       );
     }
-    for (const terminal of previewTerminals) terminal.dispose();
-    await waitFor(
-      () => previewTerminals.every((terminal) => !vscode.window.terminals.includes(terminal)),
-      10_000,
-      "the official Quarto preview terminal to close"
-    );
+    for (const terminal of ownedPreviewTerminals()) terminal.dispose();
+    await waitFor(() => ownedPreviewTerminals().length === 0, 10_000, "the official Quarto preview terminal to close");
     await new Promise<void>((resolve) => setTimeout(resolve, 250));
+    assert.deepEqual(releasedQuartoPreviewTabs(), [], "Quarto preview cleanup must leave zero preview tabs.");
+    assert.deepEqual(ownedPreviewTerminals(), [], "Quarto preview cleanup must leave zero owned terminals.");
     rmSync(outputPath, { force: true });
+    if (ownershipFailure) throw ownershipFailure;
   };
 
-  let previewFailure: unknown;
   try {
+    const deadline = Date.now() + 120_000;
     recordAcceptanceProgress("jupyter-r:quarto:preview");
     const previewCommand = vscode.commands.executeCommand("quarto.preview");
     recordAcceptanceProgress("jupyter-r:quarto:preview-command-returned");
-    void Promise.resolve(previewCommand).catch((error: unknown) => {
-      previewFailure = error;
-    });
-    const deadline = Date.now() + 120_000;
+    const commandRemainingMs = deadline - Date.now();
+    assert.ok(commandRemainingMs > 0, "The Quarto preview command exhausted its render deadline before settling.");
+    await withBoundedAcceptancePromise(
+      previewCommand,
+      commandRemainingMs,
+      "the exact Quarto preview command to settle"
+    );
+    recordAcceptanceProgress("jupyter-r:quarto:preview-command-settled");
     let previewLocator: Locator | undefined;
     let renderedHtmlReady = false;
     let previousHtmlSignature: string | undefined;
@@ -5078,8 +5147,7 @@ async function openReleasedNativeQuartoPreview(
       recordAcceptanceProgress("jupyter-r:quarto:preview-probe-skipped");
     }
     while (Date.now() < deadline) {
-      if (previewFailure) throw previewFailure;
-      captureOwnedUi();
+      const ownership = captureOwnedUi();
       if (requireVisiblePreview) {
         previewLocator = await probeAcceptanceBeforeDeadline(
           () => releasedQuartoPreviewLocator(workbench),
@@ -5099,17 +5167,19 @@ async function openReleasedNativeQuartoPreview(
         }
         renderedHtmlReady = stableHtmlObservations >= 2;
       }
-      const visiblePreviewReady = previewTabs.length === 1 && previewLocator !== undefined;
-      if (previewTerminals.length >= 1 && renderedHtmlReady && (!requireVisiblePreview || visiblePreviewReady)) break;
+      const visiblePreviewReady = !requireVisiblePreview || previewLocator !== undefined;
+      if (ownership.tabActive && ownership.terminalReady && renderedHtmlReady && visiblePreviewReady) break;
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
-    assert.ok(previewTerminals.length >= 1, "Quarto Preview must own a disposable terminal.");
+    const ownership = captureOwnedUi();
+    assert.equal(ownership.tabActive, true, "The exact Quarto preview tab must be active in its exact tab group.");
+    assert.equal(ownership.terminalReady, true, "Quarto Preview must own one exact disposable terminal.");
     assert.equal(renderedHtmlReady, true, "Quarto Preview must finish the expected HTML render.");
     if (requireVisiblePreview) {
-      assert.equal(previewTabs.length, 1, "Quarto media capture must open one new internal preview tab.");
       assert.ok(previewLocator, "The internal Quarto media preview must show the rendered R table.");
-      previewOwnershipFrozen = true;
     }
+    previewOwnershipReady = true;
+    assertFrozenOwnership();
     recordAcceptanceProgress("jupyter-r:quarto:preview-ready");
     return cleanup;
   } catch (error) {
@@ -5127,7 +5197,7 @@ function releasedQuartoPreviewTabs(): vscode.Tab[] {
     .flatMap((group) => group.tabs)
     .filter((tab) => {
       const input = tab.input as { readonly viewType?: unknown } | undefined;
-      return input?.viewType === "quarto.previewView" || tab.label === "Quarto Preview";
+      return input?.viewType === "quarto.previewView";
     });
 }
 
@@ -10537,14 +10607,28 @@ async function previewReleasedRRename(
   assert.ok(active?.metadata.draftStep, "The native R rename preview must retain its draft step.");
   const stepId = active.metadata.draftStep.id;
   if (replacement) assert.equal(stepId, replacement.replaceStepId);
-  assertReleasedRGeneratedCode(active.code ?? "", newName, variableName);
-  const codePreview = await waitForCodePreview(workbench, undefined, "R");
-  assertReleasedRGeneratedCode(await revealCodePreviewText(codePreview, newName), newName, variableName);
+  const expectedCode = active.code ?? "";
+  assertReleasedRGeneratedCode(expectedCode, newName, variableName);
+  const expectedCodeReceipt = codePreviewDocumentReceipt(expectedCode);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
     "The native R rename preview must be acknowledged by its exact renderer."
   );
+  const acknowledged = testing.activeSession();
+  assert.equal(acknowledged?.sessionId, sessionId, "The acknowledged R rename preview must retain its exact session.");
+  assertExactCodePreviewReceipt(
+    codePreviewDocumentReceipt(acknowledged?.code ?? ""),
+    expectedCodeReceipt,
+    "The acknowledged R rename host document"
+  );
+  const exactCodePreview = await acquireCurrentExactCodePreviewGeneration(
+    workbench,
+    "R",
+    expectedCodeReceipt,
+    Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
+  );
+  assertReleasedRGeneratedCode(await revealCodePreviewText(exactCodePreview, newName), newName, variableName);
   return {
     app: await releasedRSessionApp(workbench, testing, sessionId, "the native R rename preview"),
     stepId
@@ -24222,31 +24306,56 @@ class ExactCodePreviewDocumentMismatchError extends Error {
 async function pinExactCodePreview(
   codePreview: Locator,
   context?: Readonly<{ workbench: Page; frame: Frame; language: "Python" | "R" }>,
-  timeoutMs = WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
+  timeoutMs = WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+  expectedCodeReceipt?: ReturnType<typeof codePreviewDocumentReceipt>
 ): Promise<ExactCodePreviewTarget> {
   assert.ok(
     Number.isSafeInteger(timeoutMs) && timeoutMs > 0,
     "Pinning an exact Code Preview generation requires a positive bounded timeout."
   );
+  const deadline = Date.now() + timeoutMs;
   const preview = await codePreview.elementHandle({ timeout: timeoutMs });
   assert.ok(preview, "The generated-code preview must expose one exact content element.");
   let scroller: ExactCodePreviewHandle | undefined;
+  const assertCurrentRendererFrame = (stage: string) => {
+    if (context && isRetiredRendererTarget(context.workbench, context.frame.page(), context.frame)) {
+      throw new Error(`The exact Code Preview renderer frame retired ${stage}.`);
+    }
+  };
   try {
+    assertCurrentRendererFrame("before handle pinning");
     const parent = await preview.evaluateHandle(
       (element) => (element as { readonly parentElement: unknown }).parentElement
     );
     scroller = (parent.asElement() as ExactCodePreviewHandle | null) ?? undefined;
     if (!scroller) await parent.dispose();
     assert.ok(scroller, "The generated-code preview must expose one exact parent scroller element.");
-    const identity = await readExactCodePreviewIdentity(preview, scroller);
-    assertExactCodePreviewIdentity(identity);
+    const initialIdentity = await readExactCodePreviewIdentity(preview, scroller);
+    const pinnedCodeReceipt = expectedCodeReceipt ?? initialIdentity.codeReceipt;
+    assert.ok(pinnedCodeReceipt, "The generated-code preview must expose its bounded document receipt before layout.");
+    const remainingMs = deadline - Date.now();
+    assert.ok(remainingMs > 0, "The exact Code Preview layout deadline expired before renderer sampling.");
+    const identity = await waitForStableExactCodePreviewLayout({
+      expectedCodeReceipt: pinnedCodeReceipt,
+      sample: async () => {
+        assertCurrentRendererFrame("before a stable-layout sample");
+        const sample = await readExactCodePreviewIdentity(preview, scroller!);
+        assertCurrentRendererFrame("after a stable-layout sample");
+        return sample;
+      },
+      waitForAnimationFrames: () => waitForExactCodePreviewAnimationFrames(scroller!),
+      timeoutMs: remainingMs
+    });
+    assertCurrentRendererFrame("before stable-layout transfer");
+    assertExactCodePreviewIdentity(identity, pinnedCodeReceipt);
     const code = await preview.evaluate((element) => {
       const content = element as unknown as { cmTile?: { view?: { state: { doc: { toString(): string } } } } };
       return content.cmTile?.view?.state.doc.toString();
     });
     assert.ok(typeof code === "string", "The generated-code preview must expose its complete CodeMirror document.");
     const codeReceipt = codePreviewDocumentReceipt(code);
-    assertExactCodePreviewReceipt(identity.codeReceipt, codeReceipt, "The pinned Code Preview document");
+    assertExactCodePreviewReceipt(codeReceipt, pinnedCodeReceipt, "The pinned Code Preview document");
+    assertCurrentRendererFrame("after stable-layout transfer");
     return { preview, scroller, code, codeReceipt, ...context };
   } catch (error) {
     try {
@@ -24271,7 +24380,12 @@ async function acquireCurrentExactCodePreviewGeneration(
         if ((await locator.count()) !== 1 || !(await locator.isVisible())) continue;
         const remainingMs = deadline - Date.now();
         if (remainingMs < 1) break;
-        const target = await pinExactCodePreview(locator, { workbench, frame, language }, remainingMs);
+        const target = await pinExactCodePreview(
+          locator,
+          { workbench, frame, language },
+          remainingMs,
+          expectedCodeReceipt
+        );
         try {
           assertExactCodePreviewReceipt(
             target.codeReceipt,

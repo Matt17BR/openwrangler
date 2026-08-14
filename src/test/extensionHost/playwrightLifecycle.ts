@@ -153,6 +153,31 @@ export interface CodePreviewDocumentCheck {
   readonly passed: boolean;
 }
 
+export interface ExactCodePreviewLayoutSample {
+  readonly codeReceipt: CodePreviewDocumentReceipt | undefined;
+  readonly contentIsExact: boolean;
+  readonly previewBounds: CodePreviewRectangle;
+  readonly previewConnected: boolean;
+  readonly previewOwnsScroller: boolean;
+  readonly sameDocument: boolean;
+  readonly scrollerBounds: CodePreviewRectangle;
+  readonly scrollerClass: string | null;
+  readonly scrollerConnected: boolean;
+  readonly scrollerIsExact: boolean;
+  readonly scrollTop: number;
+  readonly scrollHeight: number;
+  readonly clientHeight: number;
+  readonly rendererViewport: Readonly<{ width: number; height: number }> | undefined;
+}
+
+interface StableExactCodePreviewLayoutOptions {
+  readonly expectedCodeReceipt: CodePreviewDocumentReceipt;
+  readonly sample: () => Promise<ExactCodePreviewLayoutSample>;
+  readonly waitForAnimationFrames: () => Promise<void>;
+  readonly timeoutMs: number;
+  readonly now?: () => number;
+}
+
 interface ReplaceableCodePreviewGenerationOptions<T, R> {
   readonly initial: T;
   readonly operate: (generation: T, generationNumber: number) => Promise<R>;
@@ -240,6 +265,167 @@ export function assertCodePreviewDocumentChecks(code: string, checks: readonly C
       throw new Error(`Code Preview document assertion failed: ${JSON.stringify({ stage: check.stage, ...receipt })}.`);
     }
   }
+}
+
+export async function waitForStableExactCodePreviewLayout({
+  expectedCodeReceipt,
+  sample,
+  waitForAnimationFrames,
+  timeoutMs,
+  now = Date.now
+}: StableExactCodePreviewLayoutOptions): Promise<ExactCodePreviewLayoutSample> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error("Stable Code Preview layout requires a positive safe-integer deadline.");
+  }
+  const expectedReceiptDiagnostic = codePreviewReceiptDiagnostic(expectedCodeReceipt);
+  const deadline = now() + timeoutMs;
+  let previousPositive: ExactCodePreviewLayoutSample | undefined;
+  let lastDiagnostic: ReturnType<typeof exactCodePreviewLayoutDiagnostic> | undefined;
+  while (now() < deadline) {
+    const current = await probeAcceptanceBeforeDeadline(sample, deadline, now);
+    if (current === undefined) break;
+    lastDiagnostic = exactCodePreviewLayoutDiagnostic(current);
+    if (!exactCodePreviewReceiptMatches(current.codeReceipt, expectedCodeReceipt)) {
+      throw new Error(
+        `The exact Code Preview layout changed from document ${expectedReceiptDiagnostic}: ${JSON.stringify(lastDiagnostic)}.`
+      );
+    }
+    if (
+      !current.previewConnected ||
+      !current.scrollerConnected ||
+      !current.previewOwnsScroller ||
+      !current.sameDocument ||
+      !current.contentIsExact ||
+      !current.scrollerIsExact ||
+      !current.scrollerClass?.split(/\s+/u).includes("cm-scroller")
+    ) {
+      throw new Error(
+        `The exact Code Preview layout lost its connected CodeMirror generation for document ${expectedReceiptDiagnostic}: ${JSON.stringify(lastDiagnostic)}.`
+      );
+    }
+    if (exactCodePreviewLayoutIsPositive(current)) {
+      if (previousPositive && exactCodePreviewLayoutIsStable(previousPositive, current)) return current;
+      previousPositive = current;
+    } else {
+      previousPositive = undefined;
+    }
+    const animationFramesCompleted = await probeAcceptanceBeforeDeadline(
+      async () => {
+        await waitForAnimationFrames();
+        return true;
+      },
+      deadline,
+      now
+    );
+    if (animationFramesCompleted !== true) break;
+  }
+  throw new Error(
+    `The exact Code Preview layout did not materialize within ${timeoutMs} ms for document ${expectedReceiptDiagnostic}. Last geometry: ${JSON.stringify(lastDiagnostic)}.`
+  );
+}
+
+function exactCodePreviewReceiptMatches(
+  actual: CodePreviewDocumentReceipt | undefined,
+  expected: CodePreviewDocumentReceipt
+): boolean {
+  return actual?.utf8Length === expected.utf8Length && actual.sha256 === expected.sha256;
+}
+
+function exactCodePreviewLayoutDiagnostic(sample: ExactCodePreviewLayoutSample): Readonly<{
+  codeReceipt: CodePreviewDocumentReceipt | undefined;
+  exactGeneration: Readonly<{
+    contentIsExact: boolean;
+    previewConnected: boolean;
+    previewOwnsScroller: boolean;
+    sameDocument: boolean;
+    scrollerClass: string | null;
+    scrollerConnected: boolean;
+    scrollerIsExact: boolean;
+  }>;
+  previewBounds: CodePreviewRectangle;
+  scrollerBounds: CodePreviewRectangle;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  rendererViewport: Readonly<{ width: number; height: number }> | undefined;
+}> {
+  return {
+    codeReceipt: sample.codeReceipt,
+    exactGeneration: {
+      contentIsExact: sample.contentIsExact,
+      previewConnected: sample.previewConnected,
+      previewOwnsScroller: sample.previewOwnsScroller,
+      sameDocument: sample.sameDocument,
+      scrollerClass: sample.scrollerClass,
+      scrollerConnected: sample.scrollerConnected,
+      scrollerIsExact: sample.scrollerIsExact
+    },
+    previewBounds: sample.previewBounds,
+    scrollerBounds: sample.scrollerBounds,
+    scrollTop: sample.scrollTop,
+    scrollHeight: sample.scrollHeight,
+    clientHeight: sample.clientHeight,
+    rendererViewport: sample.rendererViewport
+  };
+}
+
+function exactCodePreviewLayoutIsPositive(sample: ExactCodePreviewLayoutSample): boolean {
+  const viewport = sample.rendererViewport;
+  const previewBounds = sample.previewBounds;
+  const bounds = sample.scrollerBounds;
+  return (
+    viewport !== undefined &&
+    Number.isFinite(viewport.width) &&
+    viewport.width > 0 &&
+    Number.isFinite(viewport.height) &&
+    viewport.height > 0 &&
+    Number.isFinite(previewBounds.left) &&
+    Number.isFinite(previewBounds.top) &&
+    Number.isFinite(previewBounds.width) &&
+    previewBounds.width > 0 &&
+    Number.isFinite(previewBounds.height) &&
+    previewBounds.height > 0 &&
+    Number.isFinite(bounds.left) &&
+    Number.isFinite(bounds.top) &&
+    Number.isFinite(bounds.width) &&
+    bounds.width > 0 &&
+    Number.isFinite(bounds.height) &&
+    bounds.height > 0 &&
+    Number.isFinite(sample.scrollTop) &&
+    sample.scrollTop >= 0 &&
+    Number.isFinite(sample.scrollHeight) &&
+    sample.scrollHeight > 0 &&
+    Number.isFinite(sample.clientHeight) &&
+    sample.clientHeight > 0 &&
+    sample.clientHeight <= bounds.height + 1 &&
+    sample.scrollHeight + 1 >= sample.clientHeight &&
+    sample.scrollTop <= Math.max(0, sample.scrollHeight - sample.clientHeight) + 1 &&
+    bounds.left >= -1 &&
+    bounds.top >= -1 &&
+    bounds.left + bounds.width <= viewport.width + 1 &&
+    bounds.top + bounds.height <= viewport.height + 1
+  );
+}
+
+function exactCodePreviewLayoutIsStable(
+  previous: ExactCodePreviewLayoutSample,
+  current: ExactCodePreviewLayoutSample
+): boolean {
+  return (
+    previous.rendererViewport?.width === current.rendererViewport?.width &&
+    previous.rendererViewport?.height === current.rendererViewport?.height &&
+    previous.previewBounds.left === current.previewBounds.left &&
+    previous.previewBounds.top === current.previewBounds.top &&
+    previous.previewBounds.width === current.previewBounds.width &&
+    previous.previewBounds.height === current.previewBounds.height &&
+    previous.scrollerBounds.left === current.scrollerBounds.left &&
+    previous.scrollerBounds.top === current.scrollerBounds.top &&
+    previous.scrollerBounds.width === current.scrollerBounds.width &&
+    previous.scrollerBounds.height === current.scrollerBounds.height &&
+    previous.scrollTop === current.scrollTop &&
+    previous.scrollHeight === current.scrollHeight &&
+    previous.clientHeight === current.clientHeight
+  );
 }
 
 export async function runReplaceableCodePreviewGeneration<T, R>({

@@ -33,6 +33,23 @@ const sha = (digit) => digit.repeat(64);
 const sample = (value, count = INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT) =>
   Array.from({ length: count }, (_, index) => value + index / 100);
 
+test("report protocols reject the retired installed-editor RSS envelope", () => {
+  assert.equal(INSTALLED_PERFORMANCE_REPORT_PROTOCOL, "openwrangler-installed-performance-report-v10");
+  assert.equal(INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL, "openwrangler-installed-performance-evidence-report-v5");
+  const run = editorRun("vscode");
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({
+        generatedAtUtc: "2026-07-27T00:00:00.000Z",
+        candidate: candidate(),
+        source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+        fixtureManifest: fixtureManifest(),
+        editorRuns: [{ ...run, resources: { sampler: "retired" } }]
+      }),
+    /missing or unknown fields/u
+  );
+});
+
 test("duration summaries retain every sample and use nearest-rank p95", () => {
   const samples = [10, 1, 8, 3, 9, 2, 7, 4, 6, 5];
   assert.deepEqual(summarizeInstalledDurationSamples(samples), {
@@ -191,6 +208,16 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
   );
   assert.throws(
     () => assertInstalledPerformanceReleaseGate({ ...report, envelopeRevision: 2 }),
+    /missing or unknown fields/u
+  );
+  assert.throws(
+    () =>
+      assertInstalledPerformanceReleaseGate({
+        ...report,
+        editors: report.editors.map((editor, index) =>
+          index === 0 ? { ...editor, resources: { sampler: "retired" } } : editor
+        )
+      }),
     /missing or unknown fields/u
   );
 
@@ -1014,13 +1041,6 @@ function editorRun(key) {
         firmwareVersion: "1.0",
         rotational: false
       }
-    },
-    resources: {
-      supported: true,
-      sampler: "linux-proc-process-group",
-      peakEditorTreeRssBytes: 500_000_000,
-      peakPythonRuntimeRssBytes: 200_000_000,
-      samples: [{ stage: "peak", editorTreeRssBytes: 500_000_000, pythonRuntimeRssBytes: 200_000_000 }]
     },
     phases: [
       firstGridPhase(key, "csv", "cold", 100),

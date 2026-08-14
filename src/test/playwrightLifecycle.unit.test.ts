@@ -24,6 +24,8 @@ import {
   runFailClosedCategoricalUndo,
   runReplaceableCodePreviewGeneration,
   selectUniqueCodePreviewLogicalLine,
+  type ExactCodePreviewLayoutSample,
+  waitForStableExactCodePreviewLayout,
   withAcceptanceOperationDeadline
 } from "./extensionHost/playwrightLifecycle";
 
@@ -86,6 +88,27 @@ const codePreviewGeometry = (
   clientHeight: 100,
   rendererViewport: { width: 800, height: 600 },
   tolerance: 1,
+  ...overrides
+});
+
+const exactCodePreviewLayoutSample = (
+  code: string,
+  overrides: Partial<ExactCodePreviewLayoutSample> = {}
+): ExactCodePreviewLayoutSample => ({
+  codeReceipt: codePreviewDocumentReceipt(code),
+  contentIsExact: true,
+  previewBounds: { left: 112, top: 100, width: 376, height: 120 },
+  previewConnected: true,
+  previewOwnsScroller: true,
+  sameDocument: true,
+  scrollerBounds: { left: 100, top: 100, width: 400, height: 120 },
+  scrollerClass: "cm-editor cm-scroller",
+  scrollerConnected: true,
+  scrollerIsExact: true,
+  scrollTop: 0,
+  scrollHeight: 400,
+  clientHeight: 120,
+  rendererViewport: { width: 800, height: 600 },
   ...overrides
 });
 
@@ -247,6 +270,132 @@ describe("extension-host Playwright lifecycle", () => {
     expect(Buffer.byteLength(completeDiagnostic, "utf8")).toBeLessThan(16 * 1024);
     expect(completeDiagnostic.includes(sentinel)).toBe(false);
     expect(completeDiagnostic.includes(code)).toBe(false);
+  });
+
+  it("waits on one connected exact Code Preview generation from zero layout through two stable frame samples", async () => {
+    const code = "orders_frame <- orders_frame";
+    const zero = exactCodePreviewLayoutSample(code, {
+      previewBounds: { left: 0, top: 0, width: 16.44, height: 45_539.81 },
+      scrollerBounds: { left: 0, top: 0, width: 0, height: 0 },
+      scrollHeight: 0,
+      clientHeight: 0,
+      rendererViewport: { width: 0, height: 0 }
+    });
+    const positive = exactCodePreviewLayoutSample(code);
+    const samples = [zero, positive, positive];
+    let sampleIndex = 0;
+    let now = 0;
+    const sample = vi.fn(async () => samples[Math.min(sampleIndex++, samples.length - 1)]!);
+    const waitForAnimationFrames = vi.fn(async () => {
+      now += 16;
+    });
+
+    await expect(
+      waitForStableExactCodePreviewLayout({
+        expectedCodeReceipt: codePreviewDocumentReceipt(code),
+        sample,
+        waitForAnimationFrames,
+        timeoutMs: 100,
+        now: () => now
+      })
+    ).resolves.toEqual(positive);
+    expect(sample).toHaveBeenCalledTimes(3);
+    expect(waitForAnimationFrames).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps sampling one exact Code Preview generation until changing offscreen geometry stabilizes onscreen", async () => {
+    const code = "orders_frame <- transform(orders_frame)";
+    const first = exactCodePreviewLayoutSample(code, {
+      previewBounds: { left: 112, top: 100, width: 376, height: 100 },
+      scrollerBounds: { left: 900, top: 100, width: 400, height: 100 },
+      clientHeight: 100
+    });
+    const settled = exactCodePreviewLayoutSample(code);
+    const samples = [first, settled, settled];
+    let sampleIndex = 0;
+    let now = 0;
+    const waitForAnimationFrames = vi.fn(async () => {
+      now += 16;
+    });
+
+    await expect(
+      waitForStableExactCodePreviewLayout({
+        expectedCodeReceipt: codePreviewDocumentReceipt(code),
+        sample: vi.fn(async () => samples[Math.min(sampleIndex++, samples.length - 1)]!),
+        waitForAnimationFrames,
+        timeoutMs: 100,
+        now: () => now
+      })
+    ).resolves.toEqual(settled);
+    expect(waitForAnimationFrames).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails a permanently zero exact Code Preview layout with only its bounded receipt and last geometry", async () => {
+    const sentinel = "DO-NOT-LEAK-ZERO-LAYOUT";
+    const code = `${sentinel}\n${"x".repeat(2 * 1024 * 1024)}`;
+    const zero = exactCodePreviewLayoutSample(code, {
+      previewBounds: { left: 0, top: 0, width: 16.44, height: 45_539.81 },
+      scrollerBounds: { left: 0, top: 0, width: 0, height: 0 },
+      scrollHeight: 0,
+      clientHeight: 0,
+      rendererViewport: { width: 0, height: 0 }
+    });
+    let now = 0;
+    const waitForAnimationFrames = vi.fn(async () => {
+      now += 25;
+    });
+    let failure: Error | undefined;
+
+    try {
+      await waitForStableExactCodePreviewLayout({
+        expectedCodeReceipt: codePreviewDocumentReceipt(code),
+        sample: vi.fn(async () => zero),
+        waitForAnimationFrames,
+        timeoutMs: 100,
+        now: () => now
+      });
+    } catch (error) {
+      failure = error as Error;
+    }
+    expect(failure).toBeDefined();
+    if (!failure) throw new Error("A permanently zero Code Preview layout must fail closed.");
+    expect(failure.message).toContain("did not materialize within 100 ms");
+    expect(failure.message).toContain('"clientHeight":0');
+    expect(failure.message).toContain(codePreviewDocumentReceipt(code).sha256);
+    expect(failure.message).not.toContain(sentinel);
+    expect(failure.message).not.toContain(code);
+    expect(Buffer.byteLength(failure.message, "utf8")).toBeLessThan(16 * 1024);
+    expect(waitForAnimationFrames).toHaveBeenCalledTimes(4);
+  });
+
+  it("fails immediately when an exact Code Preview layout sample changes document receipt", async () => {
+    const expectedCode = "orders_frame <- orders_frame";
+    const waitForAnimationFrames = vi.fn(async () => undefined);
+
+    await expect(
+      waitForStableExactCodePreviewLayout({
+        expectedCodeReceipt: codePreviewDocumentReceipt(expectedCode),
+        sample: vi.fn(async () => exactCodePreviewLayoutSample("replacement <- orders_frame")),
+        waitForAnimationFrames,
+        timeoutMs: 100
+      })
+    ).rejects.toThrow("The exact Code Preview layout changed from document");
+    expect(waitForAnimationFrames).not.toHaveBeenCalled();
+  });
+
+  it("fails immediately when the pinned CodeMirror generation disconnects during layout", async () => {
+    const code = "orders_frame <- orders_frame";
+    const waitForAnimationFrames = vi.fn(async () => undefined);
+
+    await expect(
+      waitForStableExactCodePreviewLayout({
+        expectedCodeReceipt: codePreviewDocumentReceipt(code),
+        sample: vi.fn(async () => exactCodePreviewLayoutSample(code, { previewConnected: false })),
+        waitForAnimationFrames,
+        timeoutMs: 100
+      })
+    ).rejects.toThrow("lost its connected CodeMirror generation");
+    expect(waitForAnimationFrames).not.toHaveBeenCalled();
   });
 
   it("selects one complete logical line past an artifact-shaped substring decoy", () => {

@@ -896,11 +896,18 @@ source schema. Min-max scale, Round, Floor, and Ceiling use their visible forms 
 fractional inputs. The packaged sequence uses Column search to bring each result into the virtualized grid before checking it,
 including after undoing a step that added a far-right column.
 Generated-R assertions acquire one exact bounded receipt for the complete CodeMirror document, then reveal and
-measure the operation line without mistaking a line outside the rendered viewport for missing generated code. They
-retain the exact renderer, document, and `.cm-scroller` generation, reacquiring only when replacement of that
-generation is proved. Reveal changes only that exact scroller's `scrollTop`; success requires two stable, fully
-visible measurements from the same generation, and terminal diagnostics retain only bounded geometry/generation
-state rather than generated source.
+measure the operation line without mistaking a line outside the rendered viewport for missing generated code. Rename
+records the post-draft host code receipt, requires exact session/revision hydration, and rechecks the acknowledged host
+receipt before acquiring the current renderer. The pinned document, content node, and `.cm-scroller` must remain one
+connected generation while initially empty layout settles: renderer viewport and preview bounds must become finite,
+positive, and stable; scroller bounds must additionally be fully contained in that viewport; and `scrollHeight` and
+`clientHeight` must become finite, positive, and identical across two animation-frame observations while `scrollTop`
+remains finite, non-negative, and stable. A receipt or generation change fails
+immediately; an unchanged 0×0 layout exhausts only its existing bound with receipt-and-geometry diagnostics. Reveal
+changes only that exact scroller's `scrollTop`;
+success requires two stable, fully visible measurements from the same generation, and terminal diagnostics retain only
+bounded receipt/geometry/generation state rather than generated source. No focus, resize, reload, or editor-action
+retry is permitted.
 Across the base-data-frame sequence it covers preview, apply, inspection, discard, latest-step editing, and undo;
 Convert type is applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from
 step inspection, and undo. It copies and saves generated Rename code through the `.R` Save dialog, inserts the exact
@@ -985,10 +992,15 @@ fixed diagnostics, and timer cleanup. This acquisition retry happens before any 
 change its 300-second hard deadline, 180-second inactivity deadline, or no-automatic-retry rule.
 
 The packaged journey activates all three extensions, checks their exact versions and public current-cell/selection commands, and confirms
-that `.Rmd` and `.qmd` have the expected editor language modes. It asks the Quarto extension to render the real `.qmd`
-fixture and verifies the rendered table before invoking **Open in Open Wrangler** with the exact cursor in its R
-chunk. Open Wrangler asks Quarto to run only that chunk and presents dataframes from the official R session. The R
-Markdown fixture still exercises the explicit owned-process command. A second `.qmd` declares `jupyter: python3`.
+that `.Rmd` and `.qmd` have the expected editor language modes. It dispatches `quarto.preview` exactly once, retains
+that one promise, and settles it inside the existing render bound before accepting any preview state. The harness pins
+the first semantic `quarto.previewView` tab, its exact active tab group, and the first newly owned `Quarto Preview`
+terminal while requiring two identical rendered-HTML observations. Ordinary acceptance then closes the exact preview
+owners, waits through the asynchronous reveal window, and proves zero preview tabs and terminals before invoking
+**Open in Open Wrangler** with the exact cursor in its R chunk. Only Linux screenshot mode retains those owners through
+the preview capture, then performs the same cleanup. It never focuses, resizes, reloads, retries, or dispatches a second
+preview action. Open Wrangler asks Quarto to run only that chunk and presents dataframes from the official R session.
+The R Markdown fixture still exercises the explicit owned-process command. A second `.qmd` declares `jupyter: python3`.
 The title action runs only the cursor-owned Python chunk through a private kernelspec, opens its live Pandas
 dataframe, leaves the later sentinel chunk untouched, and keeps the source bytes unchanged. Screenshot mode also
 requires Quarto's internal preview to be visible. Offline runs may
@@ -1104,9 +1116,19 @@ Linux lifecycle core: VS Code 1.133.0 crossed the outer deadline at about 300.01
 `jupyter-r:orders_table:editing-renderer-ready`, with no product/runtime exception. The dedicated Linux restart phase
 passed in both VS Code and Cursor, value and categorical editing passed, and the macOS and Windows native-R platform
 journeys passed with their then-embedded restart coverage. macOS nevertheless used about 289.66 of its 300-second
-native-editor budget. The fan-in failed, publication was skipped, and no `v1.99.6` was created. The candidate-only
-core/native/restart split below is projected to move wall time toward 20 minutes, but it has no hosted success evidence
-and does not reinterpret #75.
+native-editor budget. The fan-in failed, publication was skipped, and no `v1.99.6` was created. It does not reinterpret
+#75.
+
+Preview release [run #76](https://github.com/Matt17BR/openwrangler/actions/runs/31847608802) exercised the
+core/native/restart split from exact protected `main` commit `ab6c5815`. It finished in 19m19s and used 95m20s of
+positive-duration runner time; the first raw red arrived at 9m57s. The canonical package triple was sound, and all raw
+lanes passed except installed performance's auxiliary `/proc` enumeration and Linux Cursor's literate phase. Cursor
+3.13.10 retained the exact 21,013-byte generated-R document receipt, connected CodeMirror content, and exact scroller,
+but the scroller bounds, `clientHeight`, and renderer viewport were still 0×0 at the single immediate layout read. That
+is a harness-settlement failure, not evidence that Rename generated incorrect code. The fan-in failed, publication was
+skipped, and no `v1.99.6` tag, GitHub prerelease, Marketplace package, or Open VSX package was created. The process-RSS,
+Quarto-ownership, and post-draft layout remediations documented above have focused local evidence only; a fresh hosted
+candidate must pass them under the unchanged 300-second/180-second/no-retry policy.
 
 ```bash
 npm run build:test-extension &&
@@ -1332,9 +1354,10 @@ Its lifecycle core nevertheless exceeded the unchanged outer deadline after `res
 21m18s and 134.07 runner-minutes. Dedicated Linux restart, value/categorical editing, and both native-R platform lanes
 passed, but Linux core was the sole raw blocker when VS Code crossed the outer deadline after
 `jupyter-r:orders_table:editing-renderer-ready`; macOS passed after using about 289.66 of its 300 seconds. Both runs
-skipped publication and created no `v1.99.6`. Contract tests establish only topology and policy: they do not claim that
-the new core/native/restart graph has passed hosted acceptance or that its projected roughly 20-minute wall time will
-be achieved.
+skipped publication and created no `v1.99.6`. Preview run #76 exercised the split graph in 19m19s with 95m20s of runner
+time, but auxiliary process enumeration and Cursor's 0×0 generated-code layout race still blocked its fan-in and
+publication. Contract tests establish topology and policy only: the frozen performance and literate remediations have
+not passed hosted candidate acceptance.
 Separate contracts require stable, preview, and reusable Open
 VSX public mutation owners to use the same non-cancelling `queue: max` publication group; the Open VSX call must be
 explicit for both channels and must select `--pre-release` only from verified public release metadata. These tests do
@@ -1431,7 +1454,7 @@ The report retains the intended channel with the exact source commit, candidate 
 
 Four independent phases retain ten page-cache-evicted and resident first-usable-grid samples for the release-sized CSV and Parquet fixtures, including every aligned `fdatasync`/advisory/`mincore` proof. A fifth Parquet phase drives the production virtual grid through cached and previously unseen row blocks and uses the real column menu and filter drawer for typed filter and sort operations. Release-sized cached scrolling uses exactly 200 observed row transitions. Uncached-grid and renderer-heartbeat p95 each use 40 interactions; the non-gating 5,000-row smoke retains ten interactions so all deterministic unseen-row targets fit its fixture. Before a CDP measurement begins, the harness gives the panel ten seconds to complete its normal production hydration, then waits within the same overall deadline until the exact panel reports that its renderer is ready for the current host snapshot. Its single fallback first adopts any matching automatic synchronization already in flight and publishes at most one replacement only after that exact acknowledgement fails; a renderer that never becomes ready consumes no fallback, and a newer automatic generation is never invalidated. The harness then observes that same generation through the overall deadline rather than repeatedly replacing a slow renderer snapshot. After priming both cached blocks and restoring the first row, the harness performs exactly ten untimed alternating row transitions in each editor before starting a fresh, identically ordered measurement window. This fixed warmup isolates steady-state cached scrolling from renderer/compositor startup; the separate first-grid phases continue to measure initial-grid startup. Warmup durations are neither report samples nor candidates for trimming, retry, or replacement. The first measured target therefore cannot be a no-op, and every timed scroll must prove that its requested row transition occurred. Each cached/uncached scroll sample is one renderer-local evaluation: its clock starts immediately before `scrollTop` assignment and settles only after two consecutive animation frames expose the exact non-busy ARIA shape, exact target text, and a nonzero target cell intersecting its scroller and viewport. Its physical target offset is derived from the production row height and bounded-canvas constants plus the live scroller height, so compressed million-row grids and ordinary grids measure the same requested logical row. The bounded timeout cancels any scheduled frame; CDP round trips are outside the measured interval. Production view-state writes are trailing-debounced during continuous scrolling, so only the latest presentation state is persisted after the interaction settles instead of adding workspace-storage work to every scroll. While each filter and sort UI operation is demonstrably outstanding, it starts a renderer animation-frame heartbeat and an interactive page request concurrently. The profiling probe retains the exact session, view-request ID, request kind, and scheduler lane for both the accepted active `getSummary` and queued `getDatasetStats` before probing responsiveness or cancelling the queued request. An unresolved request that has not entered the active lane is not accepted as profiling evidence.
 
-The installed-editor numeric gates remain exact: first usable grid stays below 3 seconds for the 100k×50 CSV and 5 seconds for the 1M×20 Parquet; cached scrolling fails at 16 or more samples taking at least 100ms out of 200; renderer heartbeats stay below 100ms; and uncached and foreground pages stay below 500ms. The cutoff uses a 5%-slow reference rate; for independent transitions, the binomial chance of seeing 16 or more is 4.44%. Uncached and heartbeat p95 use nearest rank over all 40 samples. No sample is trimmed, retried, or replaced. The hosted route does not loosen thresholds or reinterpret a failed gate. Queued cancellation must still come from the original request's correlated `cancelled` response. Every sample is retained, and a structurally valid report is atomically published before a failed numeric verdict is returned. The report also records medians, p95, maxima, both editors' public product/API-compatibility versions, bounded editor-tree and Open Wrangler runtime RSS peaks, and path-free display, OS, CPU, memory, filesystem, and block-device provenance. Process-tree uncertainty, missing runtime samples, unsupported cache/RSS proof, residual post-eviction pages, or an over-limit outstanding-operation probe remains a failure.
+The installed-editor numeric gates remain exact: first usable grid stays below 3 seconds for the 100k×50 CSV and 5 seconds for the 1M×20 Parquet; cached scrolling fails at 16 or more samples taking at least 100ms out of 200; renderer heartbeats stay below 100ms; and uncached and foreground pages stay below 500ms. The cutoff uses a 5%-slow reference rate; for independent transitions, the binomial chance of seeing 16 or more is 4.44%. Uncached and heartbeat p95 use nearest rank over all 40 samples. No sample is trimmed, retried, or replaced. The hosted route does not loosen thresholds or reinterpret a failed gate. Queued cancellation must still come from the original request's correlated `cancelled` response. Every sample is retained, and a structurally valid report is atomically published before a failed numeric verdict is returned. The report also records medians, p95, maxima, both editors' public product/API-compatibility versions, and path-free display, OS, CPU, memory, filesystem, and block-device provenance. Whole-editor-process-tree and runtime RSS are intentionally absent from the installed-editor report: mutable `/proc` sampling describes harness/Electron topology rather than a product or release invariant. Process-tree ownership uncertainty, unsupported cache proof, residual post-eviction pages, terminal runtime/session cleanup, or an over-limit outstanding-operation probe remains a failure. The release report is `openwrangler-installed-performance-report-v10`, the historical evidence-only form is `openwrangler-installed-performance-evidence-report-v5`, and the non-gating smoke envelope is `openwrangler-installed-performance-run-v6`. The direct-runtime benchmark above continues to own its bounded-process RSS evidence, while the Data Wrangler comparison study retains its independent Linux process-tree PSS sampler.
 
 After both editor runs and verified private-root cleanup complete, a failure consisting only of validated numeric thresholds may expose the report receipt through `evidence_ready`, `evidence_path`, `evidence_sha256`, and `evidence_size`. The runner revalidates the candidate set and the single-link report immediately before publishing those outputs. The workflow then uploads that exact non-glob report path under the distinct `stable-release-installed-performance-numeric-failure` name for seven days. Structural verdicts, incomplete runs, cleanup or process-ownership uncertainty, mixed structural/numeric failures, candidate drift, report drift, unsafe runner paths, and output-publication faults emit no failure-evidence output and therefore upload nothing. A passing report follows the separate 90-day success upload and never uses the failure artifact name.
 
