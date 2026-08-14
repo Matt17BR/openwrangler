@@ -24,6 +24,8 @@ import {
   type FillMissingValuesTransformStep,
   type FilterModel,
   type FilterRowsTransformStep,
+  type FormulaTransformStep,
+  type FormatDatetimeTransformStep,
   type FloorNumberTransformStep,
   type GridPage,
   type GroupByTransformStep,
@@ -106,6 +108,7 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "renameColumn",
   "cloneColumn",
   "castColumn",
+  "formula",
   "textLength",
   "findReplace",
   "stripText",
@@ -117,6 +120,7 @@ const R_SUPPORTED_OPERATIONS = Object.freeze([
   "roundNumber",
   "floorNumber",
   "ceilNumber",
+  "formatDatetime",
   "groupBy"
 ] as OperationKind[]) as OperationKind[];
 
@@ -129,6 +133,7 @@ type RTransformStep =
   | RenameColumnTransformStep
   | CloneColumnTransformStep
   | CastColumnTransformStep
+  | FormulaTransformStep
   | TextLengthTransformStep
   | FindReplaceTransformStep
   | StripTextTransformStep
@@ -140,6 +145,7 @@ type RTransformStep =
   | RoundNumberTransformStep
   | FloorNumberTransformStep
   | CeilNumberTransformStep
+  | FormatDatetimeTransformStep
   | GroupByTransformStep
   | DropColumnsTransformStep
   | SelectColumnsTransformStep;
@@ -712,6 +718,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "renameColumn" &&
       request.step.kind !== "cloneColumn" &&
       request.step.kind !== "castColumn" &&
+      request.step.kind !== "formula" &&
       request.step.kind !== "textLength" &&
       request.step.kind !== "findReplace" &&
       request.step.kind !== "stripText" &&
@@ -723,6 +730,7 @@ export class RKernelBridge implements OpenWranglerBridge {
       request.step.kind !== "roundNumber" &&
       request.step.kind !== "floorNumber" &&
       request.step.kind !== "ceilNumber" &&
+      request.step.kind !== "formatDatetime" &&
       request.step.kind !== "groupBy" &&
       request.step.kind !== "dropColumns" &&
       request.step.kind !== "selectColumns"
@@ -2223,10 +2231,12 @@ function schemaAfterRStep(
   if (step.kind === "dropColumns") return schemaAfterDrop(inputSchema, step);
   if (step.kind === "groupBy") return schemaAfterGroupBy(inputSchema, step);
   if (step.kind === "cloneColumn") return schemaAfterClone(inputSchema, step);
+  if (step.kind === "formula") return schemaAfterFormula(inputSchema, step);
   if (step.kind === "fillMissingValues") return schemaAfterFillMissing(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "castColumn") return schemaAfterCast(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "minMaxScale") return schemaAfterMinMaxScale(inputSchema, step, activeKeyColumnIds);
   if (isRNumericRoundingStep(step)) return schemaAfterNumericRounding(inputSchema, step, activeKeyColumnIds);
+  if (step.kind === "formatDatetime") return schemaAfterFormatDatetime(inputSchema, step, activeKeyColumnIds);
   if (step.kind === "textLength") return schemaAfterTextLength(inputSchema, step);
   if (
     step.kind === "findReplace" ||
@@ -2254,6 +2264,157 @@ function schemaAfterRStep(
       Object.freeze(column.id === target.id ? { ...column, name: step.params.newName } : { ...column })
     )
   );
+}
+
+function schemaAfterFormula(inputSchema: readonly ColumnSchema[], step: FormulaTransformStep): readonly ColumnSchema[] {
+  const resolveOperand = (reference: FormulaTransformStep["params"]["leftColumn"], label: string): ColumnSchema => {
+    const matches = inputSchema.filter((column) => column.id === reference.id && column.name === reference.name);
+    if (matches.length !== 1) {
+      throw new TypeError(`The ${label} formula column no longer matches the active R dataframe.`);
+    }
+    const column = matches[0] as ColumnSchema;
+    if (column.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+      throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+    }
+    if (column.rawType !== "integer" && column.rawType !== "double" && column.rawType !== "integer64") {
+      throw new TypeError("Formula requires an R integer, double, or integer64 column.");
+    }
+    return column;
+  };
+  const left = resolveOperand(step.params.leftColumn, "left");
+  const hasRight = step.params.rightColumn !== undefined;
+  const hasValue = step.params.value !== undefined;
+  if (hasRight === hasValue) {
+    throw new TypeError("Formula requires exactly one right column or numeric value.");
+  }
+  const right = step.params.rightColumn === undefined ? undefined : resolveOperand(step.params.rightColumn, "right");
+  if (step.params.value !== undefined && !Number.isFinite(step.params.value)) {
+    throw new TypeError("Formula requires a finite numeric value.");
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Formula exceeds the R frame contract column limit.");
+  }
+  const name = step.params.newColumn;
+  if (name.length === 0 || Buffer.byteLength(name, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The formula R column name is empty or exceeds the frame contract limit.");
+  }
+  if (name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The formula R column name uses Open Wrangler's reserved private row-identity prefix.");
+  }
+  if (inputSchema.some((column) => column.name === name)) {
+    throw new TypeError(`The R column name ${JSON.stringify(name)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (
+    Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes ||
+    inputSchema.some((column) => column.id === id)
+  ) {
+    throw new TypeError("The formula R column identity is invalid or already exists.");
+  }
+  const scalarRawType =
+    step.params.value !== undefined &&
+    Number.isInteger(step.params.value) &&
+    step.params.value >= -2_147_483_647 &&
+    step.params.value <= 2_147_483_647
+      ? "integer"
+      : "double";
+  const rightRawType = right?.rawType ?? scalarRawType;
+  const forceDouble =
+    step.params.operator === "divide" ||
+    step.params.operator === "power" ||
+    ((left.rawType === "integer64" || rightRawType === "integer64") &&
+      (left.rawType === "double" || rightRawType === "double"));
+  const rawType = forceDouble
+    ? "double"
+    : left.rawType === "integer64" || rightRawType === "integer64"
+      ? "integer64"
+      : left.rawType === "double" || rightRawType === "double"
+        ? "double"
+        : "integer";
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name,
+      position: inputSchema.length,
+      rawType,
+      type: rawType === "double" ? ("float" as const) : ("integer" as const),
+      nullable: left.nullable || (right?.nullable ?? false)
+    })
+  ]);
+}
+
+function schemaAfterFormatDatetime(
+  inputSchema: readonly ColumnSchema[],
+  step: FormatDatetimeTransformStep,
+  activeKeyColumnIds: readonly string[]
+): readonly ColumnSchema[] {
+  const matches = inputSchema.filter(
+    (column) => column.id === step.params.column.id && column.name === step.params.column.name
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The datetime-format column no longer matches the active R dataframe.");
+  }
+  const source = matches[0] as ColumnSchema;
+  if (source.name.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("Open Wrangler's reserved private row-identity column may not be transformed.");
+  }
+  if (source.rawType !== "Date" && source.rawType !== "POSIXct") {
+    throw new TypeError("Format Datetime requires an R Date or POSIXct column.");
+  }
+  if (
+    step.params.format.length === 0 ||
+    Buffer.byteLength(step.params.format, "utf8") > R_FRAME_CONTRACT_LIMITS.textBytes
+  ) {
+    throw new TypeError("Format Datetime requires a bounded non-empty format string.");
+  }
+  const outputName = step.params.newColumn;
+  const inPlace = outputName === undefined || outputName === source.name;
+  if (inPlace) {
+    if (activeKeyColumnIds.includes(source.id)) {
+      throw new TypeError("Format Datetime cannot replace a keyed data.table column in place.");
+    }
+    return Object.freeze(
+      inputSchema.map((column) =>
+        Object.freeze(
+          column.id === source.id ? { ...column, rawType: "character", type: "string" as const } : { ...column }
+        )
+      )
+    );
+  }
+  if (outputName === undefined || outputName.length === 0) {
+    throw new TypeError("Format Datetime requires a non-empty output column name.");
+  }
+  if (inputSchema.length >= R_FRAME_CONTRACT_LIMITS.columns) {
+    throw new TypeError("Format Datetime exceeds the R frame contract column limit.");
+  }
+  if (Buffer.byteLength(outputName, "utf8") > R_FRAME_CONTRACT_LIMITS.nameBytes) {
+    throw new TypeError("The datetime-format R column name exceeds the frame contract limit.");
+  }
+  if (outputName.toLowerCase().startsWith(R_PRIVATE_ROW_ID_PREFIX)) {
+    throw new TypeError("The datetime-format R column name uses Open Wrangler's reserved private row-identity prefix.");
+  }
+  if (inputSchema.some((column) => column.name === outputName)) {
+    throw new TypeError(`The R column name ${JSON.stringify(outputName)} already exists.`);
+  }
+  const id = `c:step:${step.id}:0`;
+  if (
+    Buffer.byteLength(id, "utf8") > R_FRAME_CONTRACT_LIMITS.columnIdBytes ||
+    inputSchema.some((column) => column.id === id)
+  ) {
+    throw new TypeError("The datetime-format R column identity is invalid or already exists.");
+  }
+  return Object.freeze([
+    ...inputSchema.map((column) => Object.freeze({ ...column })),
+    Object.freeze({
+      id,
+      name: outputName,
+      position: inputSchema.length,
+      rawType: "character",
+      type: "string" as const,
+      nullable: source.nullable
+    })
+  ]);
 }
 
 const rGroupScalarRawTypes = new Set([
@@ -2501,6 +2662,10 @@ function schemaAfterMinMaxScale(
 }
 
 function isRMinMaxScaleInPlace(step: MinMaxScaleTransformStep): boolean {
+  return step.params.newColumn === undefined || step.params.newColumn === step.params.column.name;
+}
+
+function isRFormatDatetimeInPlace(step: FormatDatetimeTransformStep): boolean {
   return step.params.newColumn === undefined || step.params.newColumn === step.params.column.name;
 }
 
@@ -3308,6 +3473,20 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       params: Object.freeze({ column: Object.freeze({ ...step.params.column }), dtype: step.params.dtype })
     });
   }
+  if (step.kind === "formula") {
+    return Object.freeze({
+      id: step.id,
+      kind: "formula" as const,
+      params: Object.freeze({
+        leftColumn: Object.freeze({ ...step.params.leftColumn }),
+        operator: step.params.operator,
+        newColumn: step.params.newColumn,
+        ...(step.params.rightColumn === undefined
+          ? { value: step.params.value as number }
+          : { rightColumn: Object.freeze({ ...step.params.rightColumn }) })
+      })
+    });
+  }
   if (step.kind === "textLength") {
     return Object.freeze({
       id: step.id,
@@ -3400,6 +3579,17 @@ function rTransformStep(step: RTransformStep, inputSchema: readonly ColumnSchema
       kind: "minMaxScale" as const,
       params: Object.freeze({
         column: Object.freeze({ ...step.params.column }),
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      })
+    });
+  }
+  if (step.kind === "formatDatetime") {
+    return Object.freeze({
+      id: step.id,
+      kind: "formatDatetime" as const,
+      params: Object.freeze({
+        column: Object.freeze({ ...step.params.column }),
+        format: step.params.format,
         ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
       })
     });
@@ -3542,6 +3732,20 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       params: { column: { ...step.params.column }, dtype: step.params.dtype }
     };
   }
+  if (step.kind === "formula") {
+    return {
+      id: step.id,
+      kind: "formula",
+      params: {
+        leftColumn: { ...step.params.leftColumn },
+        operator: step.params.operator,
+        newColumn: step.params.newColumn,
+        ...(step.params.rightColumn === undefined
+          ? { value: step.params.value as number }
+          : { rightColumn: { ...step.params.rightColumn } })
+      }
+    };
+  }
   if (step.kind === "textLength") {
     return {
       id: step.id,
@@ -3638,6 +3842,17 @@ function copyRTransformStep(step: RTransformStep): RTransformStep {
       }
     };
   }
+  if (step.kind === "formatDatetime") {
+    return {
+      id: step.id,
+      kind: "formatDatetime",
+      params: {
+        column: { ...step.params.column },
+        format: step.params.format,
+        ...(step.params.newColumn === undefined ? {} : { newColumn: step.params.newColumn })
+      }
+    };
+  }
   return {
     id: step.id,
     kind: "renameColumn",
@@ -3677,6 +3892,7 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "renameColumn" &&
     step.kind !== "cloneColumn" &&
     step.kind !== "castColumn" &&
+    step.kind !== "formula" &&
     step.kind !== "textLength" &&
     step.kind !== "findReplace" &&
     step.kind !== "stripText" &&
@@ -3688,6 +3904,7 @@ function copyRetainedStep(step: RetainedTransformStep): RetainedTransformStep {
     step.kind !== "roundNumber" &&
     step.kind !== "floorNumber" &&
     step.kind !== "ceilNumber" &&
+    step.kind !== "formatDatetime" &&
     step.kind !== "groupBy" &&
     step.kind !== "dropColumns" &&
     step.kind !== "selectColumns"
@@ -3771,12 +3988,14 @@ function inspectionDiff(
   const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
   const numericRoundingInPlace = isRNumericRoundingStep(step) && isRNumericRoundingInPlace(step);
   const minMaxScaleInPlace = step.kind === "minMaxScale" && isRMinMaxScaleInPlace(step);
+  const formatDatetimeInPlace = step.kind === "formatDatetime" && isRFormatDatetimeInPlace(step);
   const changedInPlace =
     step.kind === "castColumn" ||
     step.kind === "fillMissingValues" ||
     textTransformInPlace ||
     numericRoundingInPlace ||
-    minMaxScaleInPlace;
+    minMaxScaleInPlace ||
+    formatDatetimeInPlace;
   if (!changedInPlace) {
     return {
       addedRows: 0,
@@ -3906,24 +4125,30 @@ function assertMutationDiff(
   const textTransformInPlace = isRTextTransformStep(step) && isRTextTransformInPlace(step);
   const numericRoundingInPlace = isRNumericRoundingStep(step) && isRNumericRoundingInPlace(step);
   const minMaxScaleInPlace = step.kind === "minMaxScale" && isRMinMaxScaleInPlace(step);
+  const formatDatetimeInPlace = step.kind === "formatDatetime" && isRFormatDatetimeInPlace(step);
   const changedInPlace =
     textTransformInPlace ||
     numericRoundingInPlace ||
     minMaxScaleInPlace ||
+    formatDatetimeInPlace ||
     step.kind === "fillMissingValues" ||
     step.kind === "castColumn";
   const expectedAdded =
     step.kind === "cloneColumn"
       ? [step.params.newName]
-      : step.kind === "textLength"
+      : step.kind === "formula"
         ? [step.params.newColumn]
-        : isRTextTransformStep(step) && !textTransformInPlace
-          ? [step.params.newColumn as string]
-          : isRNumericRoundingStep(step) && !numericRoundingInPlace
+        : step.kind === "textLength"
+          ? [step.params.newColumn]
+          : isRTextTransformStep(step) && !textTransformInPlace
             ? [step.params.newColumn as string]
-            : step.kind === "minMaxScale" && !minMaxScaleInPlace
+            : isRNumericRoundingStep(step) && !numericRoundingInPlace
               ? [step.params.newColumn as string]
-              : [];
+              : step.kind === "minMaxScale" && !minMaxScaleInPlace
+                ? [step.params.newColumn as string]
+                : step.kind === "formatDatetime" && !formatDatetimeInPlace
+                  ? [step.params.newColumn as string]
+                  : [];
   const stepMatches =
     step.kind === "selectColumns"
       ? isDeepStrictEqual(
@@ -3937,15 +4162,20 @@ function assertMutationDiff(
           ) && expectedRemoved.length === step.params.columns.length
         : step.kind === "cloneColumn"
           ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-          : step.kind === "textLength"
+          : step.kind === "formula"
             ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-            : isRTextTransformStep(step) && !textTransformInPlace
+            : step.kind === "textLength"
               ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-              : isRNumericRoundingStep(step) && !numericRoundingInPlace
+              : isRTextTransformStep(step) && !textTransformInPlace
                 ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-                : step.kind === "minMaxScale" && !minMaxScaleInPlace
+                : isRNumericRoundingStep(step) && !numericRoundingInPlace
                   ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
-                  : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
+                  : step.kind === "minMaxScale" && !minMaxScaleInPlace
+                    ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) && expectedRemoved.length === 0
+                    : step.kind === "formatDatetime" && !formatDatetimeInPlace
+                      ? isDeepStrictEqual(outputIds, [...inputIds, `c:step:${step.id}:0`]) &&
+                        expectedRemoved.length === 0
+                      : isDeepStrictEqual(outputIds, inputIds) && expectedRemoved.length === 0;
   const projectedPosition = changedInPlace ? outputPage.page.columnIds.indexOf(step.params.column.id) : -1;
   const changedInput = changedInPlace
     ? inputSchema.find((column) => column.id === step.params.column.id && column.name === step.params.column.name)

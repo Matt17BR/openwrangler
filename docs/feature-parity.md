@@ -131,8 +131,9 @@ labeled, deterministic 100,000-row sample when an R view is larger. A non-empty 
 returns exact matching counts without a separate dataset-size limit; searches exceeding 10,000 distinct matches or
 16 MiB of matching key text fail recoverably and ask for a narrower term. Editing mode supports Filter Rows, Sort Rows,
 Drop Missing Rows, Fill Missing Values,
-Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase,
-Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling, and Group and aggregate. They follow the
+Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Convert type, Formula, Text Length,
+Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Min-max scale, Round, Floor, Ceiling,
+Format Datetime, and Group and aggregate. They follow the
 same draft, code preview, apply, discard, inspection, edit-latest, and undo flow as the released Python engines. A
 viewing filter or sort can be copied into a cleaning draft. Filters keep the typed distinction between `NA` and
 `NaN`; sorts keep their compound priority, and both keep stable source-row identities through history and diffs.
@@ -150,8 +151,13 @@ Find and replace supports literal text and regular expressions. Strip text remov
 both ends, or the default whitespace when no set is supplied. Split text uses a literal delimiter, adds a new column,
 and returns `NA` when the requested part is missing. Convert type replaces one column under the same identity and
 supports string, integer, float, boolean, date, and datetime targets. Failed parses become `NA`. It rejects active data-table
-keys and conversions that would lose units or `integer64` precision. Generated R can be copied, saved as a `.R`
-script, or inserted into the notebook or R document that opened the dataframe. Local R notebook and R document
+keys and conversions that would lose units or `integer64` precision. Formula appends a numeric column from one exact
+input and either a finite scalar or a second exact numeric input. Addition, subtraction, multiplication, and modulo
+preserve `integer64` when exact; division, power, and mixed `integer64`/double input widen to double. All operators
+propagate `NA`; existing `NaN` and infinities follow R arithmetic, while newly introduced overflow or non-finite
+output is rejected. Format Datetime replaces an exact `Date`/`POSIXct` input or appends text through a bounded format,
+using the declared time zone or UTC when none is declared and protecting active data-table keys. Generated R can be
+copied, saved as a `.R` script, or inserted into the notebook or R document that opened the dataframe. Local R notebook and R document
 sessions opened in Editing mode can export the committed cleaning result as CSV. Parquet export is also available when
 `nanoparquet` 0.5.1 or newer is installed in the selected R environment; a session opened before installation must be
 reopened so its capabilities can be refreshed.
@@ -211,8 +217,8 @@ base, tibble, `data.table`, and supported `collapse` objects. Native R and cross
 operations, plus class and key behavior for tibbles and data tables. They also cover row identity, compound
 sort priority, typed filtering, mixed plans, ordered selection, type conversion, Unicode character counts, native R
 text casing and replacement, `NA` preservation, stable retained and derived identities, duplicate names,
-non-syntactic names, and executable generated R. The installed VS Code run opens the Min-max scale, Round, Floor, and Ceiling forms and
-checks positive and negative fractional results in the visible grid.
+non-syntactic names, and executable generated R. The installed VS Code run opens the Formula, Min-max scale, Round,
+Floor, Ceiling, and Format Datetime forms; it checks exact numeric and date-text results in the visible grid.
 The packaged R run also inserts the current Rename code as one `r` cell without changing any existing cell. A
 1,205-row notebook export applies that Rename, keeps an active filter and two sort keys, and saves all committed rows
 through the public command. The installed VS Code journey checks the renamed CSV, unchanged notebook and view state,
@@ -264,8 +270,8 @@ in packaged Linux VS Code and Cursor.
 | Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                              | Preview release |
 | Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser, real-R contracts, and prior focused VS Code run; candidate gate now also requires Cursor                                     | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                                | Preview release |
-| R cleaning operations and generated code      | 22 operations                   | Partial | Native runtime and generated-code tests cover all 22; the VS Code journey covers the full catalog and Cursor the representative path | Preview release |
-| Copy or save generated R                      | 22 operations                   | Partial | Rename uses packaged save; all 22 generate executable code                                                                           | Preview release |
+| R cleaning operations and generated code      | 24 operations                   | Partial | Native runtime and generated-code tests cover all 24; the VS Code journey covers the full catalog and Cursor the representative path | Preview release |
+| Copy or save generated R                      | 24 operations                   | Partial | Rename uses packaged save; all 24 generate executable code                                                                           | Preview release |
 | Insert generated R into its IRkernel notebook | 1.99 preview                    | Partial | Shared exact-document helper and packaged VS Code run                                                                                | Preview release |
 | Insert generated R into its source `.R` file  | 1.99 preview                    | Partial | Exact-document helper and packaged rerun                                                                                             | Preview release |
 | Insert generated R into `.Rmd` and `.qmd`     | 1.99 preview                    | Partial | Exact-document tests and prior packaged VS Code run; candidate gate now also requires Cursor                                         | Preview release |

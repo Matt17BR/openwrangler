@@ -895,6 +895,28 @@ test("native R tooling pins Quarto to an internal revealed preview", async () =>
   assert.match(tooling, /get<boolean>\("render\.previewReveal"\),\s*true/u);
 });
 
+test("long generated R programs reveal operation text through the complete CodeMirror document", async () => {
+  const source = await readFile(resolve("src/test/extensionHost/index.ts"), "utf8");
+  for (const functionName of [
+    "previewReleasedRTextLength",
+    "previewReleasedRCast",
+    "previewReleasedRClone",
+    "previewReleasedRSelect",
+    "previewReleasedRDrop",
+    "previewReleasedRRename"
+  ]) {
+    const start = source.indexOf(`async function ${functionName}(`);
+    assert.notEqual(start, -1, `Missing ${functionName}.`);
+    const nextAsync = source.indexOf("\nasync function ", start + 1);
+    const nextSync = source.indexOf("\nfunction ", start + 1);
+    const end = Math.min(...[nextAsync, nextSync].filter((position) => position >= 0));
+    const implementation = source.slice(start, end);
+    assert.match(implementation, /waitForCodePreview\(workbench, undefined, "R"\)/u, functionName);
+    assert.match(implementation, /revealCodePreviewText\(codePreview,/u, functionName);
+    assert.doesNotMatch(implementation, /waitForCodePreview\(workbench, (?!undefined)[^,]+, "R"\)/u, functionName);
+  }
+});
+
 test("focused literate acceptance owns and probes its exact private Python kernel", async () => {
   const source = await readFile(resolve("scripts/run-packaged-editor-tests.mjs"), "utf8");
   const rSetup = source.indexOf("rAcceptanceEnvironment = await prepareJupyterAcceptanceREnvironment(");

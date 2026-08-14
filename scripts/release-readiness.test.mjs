@@ -817,7 +817,7 @@ test("rejects structural and semantic drift in the stable Native R matrix", () =
   }
 
   for (const mutated of [
-    stableRParity().replace("All 28 catalog operations", "All 22 catalog operations"),
+    stableRParity().replace("All 28 catalog operations", "All 24 catalog operations"),
     stableRParity().replace("collapse::qDF()", "collapse frame"),
     stableRParity().replace("collapse::qTBL()", "collapse frame"),
     stableRParity().replace("collapse::qDT()", "collapse frame")

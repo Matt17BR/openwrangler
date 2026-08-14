@@ -902,7 +902,7 @@ describe("native R kernel protocol", () => {
       payload: { step: { kind: string; params: Record<string, unknown> } };
     };
     invalidStep.payload.step.kind = "formula";
-    expect(() => encodeRKernelRequest(invalidStep as unknown as RKernelRequest)).toThrow("unsupported operation");
+    expect(() => encodeRKernelRequest(invalidStep as unknown as RKernelRequest)).toThrow("invalid fields");
     invalidStep.payload.step.kind = "renameColumn";
     invalidStep.payload.step.params.extra = true;
     expect(() => encodeRKernelRequest(invalidStep as unknown as RKernelRequest)).toThrow("invalid fields");
@@ -1792,6 +1792,109 @@ describe("native R kernel protocol", () => {
     const missingColumn = structuredClone(steps[1]) as unknown as { params: Record<string, unknown> };
     delete missingColumn.params.column;
     expectRejected(missingColumn, "invalid fields");
+  });
+
+  it("strictly validates native R Formula and Format Datetime payloads", () => {
+    const formulaWithScalar = {
+      id: "formula-scalar",
+      kind: "formula",
+      params: {
+        leftColumn: { id: "r:c:0", name: "value" },
+        operator: "multiply",
+        value: 2.5,
+        newColumn: "scaled value"
+      }
+    } as const;
+    const formulaWithColumn = {
+      id: "formula-column",
+      kind: "formula",
+      params: {
+        leftColumn: { id: "r:c:0", name: "value" },
+        operator: "subtract",
+        rightColumn: { id: "r:c:1", name: "baseline" },
+        newColumn: "difference"
+      }
+    } as const;
+    const formatInPlace = {
+      id: "format-in-place",
+      kind: "formatDatetime",
+      params: { column: { id: "r:c:2", name: "recorded at" }, format: "%Y-%m-%d" }
+    } as const;
+    const formatAppended = {
+      id: "format-appended",
+      kind: "formatDatetime",
+      params: {
+        column: { id: "r:c:2", name: "recorded at" },
+        format: "%Y-%m-%d %H:%M:%S",
+        newColumn: "recorded label"
+      }
+    } as const;
+
+    for (const step of [formulaWithScalar, formulaWithColumn, formatInPlace, formatAppended]) {
+      const request: Extract<RKernelRequest, { kind: "previewStep" }> = {
+        transportVersion: R_KERNEL_TRANSPORT_VERSION,
+        requestId: previewRequestId,
+        kind: "previewStep",
+        payload: { sessionId, revision: 0, step, page: pageWindow() }
+      };
+      expect(JSON.parse(encodeRKernelRequest(request))).toEqual(request);
+    }
+
+    const expectRejected = (step: unknown, message: string) => {
+      expect(() =>
+        encodeRKernelRequest({
+          transportVersion: R_KERNEL_TRANSPORT_VERSION,
+          requestId: previewRequestId,
+          kind: "previewStep",
+          payload: { sessionId, revision: 0, step, page: pageWindow() }
+        } as RKernelRequest)
+      ).toThrow(message);
+    };
+
+    expectRejected({ ...formulaWithScalar, params: { ...formulaWithScalar.params, extra: true } }, "invalid fields");
+    expectRejected(
+      { ...formulaWithScalar, params: { ...formulaWithScalar.params, operator: "quotient" } },
+      "unsupported operator"
+    );
+    expectRejected(
+      {
+        ...formulaWithScalar,
+        params: {
+          ...formulaWithScalar.params,
+          rightColumn: formulaWithColumn.params.rightColumn
+        }
+      },
+      "exactly one right column or numeric value"
+    );
+    const formulaWithoutOperand = structuredClone(formulaWithScalar) as unknown as {
+      params: Record<string, unknown>;
+    };
+    delete formulaWithoutOperand.params.value;
+    expectRejected(formulaWithoutOperand, "exactly one right column or numeric value");
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, "2"]) {
+      expectRejected(
+        { ...formulaWithScalar, params: { ...formulaWithScalar.params, value } },
+        "formula value must be finite"
+      );
+    }
+    expectRejected(
+      { ...formulaWithScalar, params: { ...formulaWithScalar.params, newColumn: "" } },
+      "request.payload.step.params.newColumn"
+    );
+    expectRejected({ ...formatInPlace, params: { ...formatInPlace.params, extra: true } }, "invalid fields");
+    const formatWithoutPattern = structuredClone(formatInPlace) as unknown as {
+      params: Record<string, unknown>;
+    };
+    delete formatWithoutPattern.params.format;
+    expectRejected(formatWithoutPattern, "invalid fields");
+    expectRejected(
+      { ...formatInPlace, params: { ...formatInPlace.params, format: "" } },
+      "request.payload.step.params.format"
+    );
+    expectRejected(
+      { ...formatAppended, params: { ...formatAppended.params, newColumn: "" } },
+      "request.payload.step.params.newColumn"
+    );
   });
 
   it("strictly validates native R Cast requests and type-changing cell diffs", () => {

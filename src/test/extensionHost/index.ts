@@ -306,6 +306,7 @@ const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
   "renameColumn",
   "cloneColumn",
   "castColumn",
+  "formula",
   "textLength",
   "findReplace",
   "stripText",
@@ -317,6 +318,7 @@ const RELEASED_R_SUPPORTED_OPERATIONS = Object.freeze([
   "roundNumber",
   "floorNumber",
   "ceilNumber",
+  "formatDatetime",
   "groupBy"
 ]);
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
@@ -1687,6 +1689,7 @@ function writeReleasedRNotebook(notebookPath: string, phase: "jupyter-r" | "jupy
     "for (column_index in seq_len(20L)) {",
     "  orders_frame[[sprintf('extra_%02d', column_index)]] <- sprintf('value-%02d-%04d', column_index, seq_len(row_count))",
     "}",
+    "orders_frame$extra_19 <- as.Date('2026-01-01') + (seq_len(row_count) - 1L)",
     "orders_frame$extra_20[1L] <- NA_character_",
     "orders_frame$fractional_score[603L] <- NA_real_",
     "row.names(orders_frame) <- sprintf('case-%04d', seq_len(row_count))",
@@ -1950,6 +1953,9 @@ function releasedRNotebookCleanedCsvRow(row: number): string {
     fractionalScore,
     ...Array.from({ length: 20 }, (_, index) => {
       const column = index + 1;
+      if (column === 19) {
+        return new Date(Date.UTC(2026, 0, row)).toISOString().slice(0, 10);
+      }
       if (row === 1 && column === 20) return "";
       return `"value-${String(column).padStart(2, "0")}-${String(row).padStart(4, "0")}"`;
     })
@@ -6227,7 +6233,10 @@ async function exerciseReleasedRFillMissingJourney(
     .getByText("No value changes in this block", { exact: true })
     .waitFor({ state: "visible", timeout: 10_000 });
 
-  await review.getByRole("button", { name: "Apply step", exact: true }).click();
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -7701,6 +7710,9 @@ async function exerciseReleasedREditingJourney(
   });
 
   if (phase === "jupyter-r") {
+    await exerciseReleasedRFormulaJourney(testing, workbench, sessionId);
+    await exerciseReleasedRFormatDatetimeJourney(testing, workbench, sessionId);
+
     recordAcceptanceProgress(`${phase}:editing:min-max-scale-preview-apply-undo`);
     const minMaxBase = testing.activeSession();
     assert.ok(minMaxBase, "The restored R session must remain available for Min-max scale.");
@@ -8209,6 +8221,295 @@ async function exerciseReleasedREditingJourney(
   }
 }
 
+async function exerciseReleasedRFormulaJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  recordAcceptanceProgress("jupyter-r:editing:formula-preview-apply-undo");
+  const base = testing.activeSession();
+  assert.ok(base, "The restored R session must remain available for Formula.");
+  assert.equal(base.metadata.steps.length, 0);
+  assert.equal(base.metadata.draftStep, undefined);
+  const score = base.metadata.schema.find((column) => column.name === "score");
+  assert.ok(score, "The packaged R Formula journey requires the score column.");
+
+  const picker = await openReleasedROperationPicker(testing, workbench, sessionId);
+  const dialog = picker.dialog;
+  const catalog = dialog.getByRole("navigation", { name: "Operation catalog" });
+  const choices = catalog.locator("button.operationChoice");
+  assert.equal(
+    await choices.count(),
+    RELEASED_R_SUPPORTED_OPERATIONS.length,
+    "The packaged R picker must expose exactly its advertised operation catalog."
+  );
+  for (const expected of [/^Formula column\b/u, /^Format datetime\b/u]) {
+    assert.equal(await catalog.getByRole("button", { name: expected }).count(), 1);
+  }
+  for (const unsupported of [
+    /^One-hot encode\b/u,
+    /^Multi-label binarize\b/u,
+    /^Transform by example\b/u,
+    /^Custom code\b/u
+  ]) {
+    assert.equal(await catalog.getByRole("button", { name: unsupported }).count(), 0);
+  }
+  await dialog.getByPlaceholder("Search operations").fill("formula");
+  await dialog.getByRole("button", { name: /^Formula column\b/u }).click();
+  await dialog.getByLabel("Left column", { exact: true }).selectOption(score.id);
+  await dialog.getByLabel("Operator", { exact: true }).selectOption("add");
+  await dialog.getByLabel("Numeric value", { exact: true }).fill("2");
+  await dialog.getByLabel("New column", { exact: true }).fill("score_plus_two");
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "formula" &&
+        draft.params.leftColumn.id === score.id &&
+        draft.params.operator === "add" &&
+        draft.params.value === 2 &&
+        draft.params.newColumn === "score_plus_two" &&
+        active.metadata.schema.at(-1)?.id === `c:step:${draft.id}:0`
+      );
+    },
+    30_000,
+    "previewing native R Formula through its visible form"
+  );
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "formula");
+  const output = preview.metadata.schema.at(-1);
+  assert.ok(output, "The R Formula preview must append its derived output.");
+  assert.equal(output.name, "score_plus_two");
+  assert.equal(output.type, "float");
+  assert.equal(output.rawType, "double");
+  assert.equal(output.nullable, score.nullable);
+  assertReleasedRFormulaGeneratedCode(preview.code ?? "", "score", "score_plus_two", "add", 2);
+  const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  const visibleCode = await revealCodePreviewText(codePreview, ".ow_formula_values");
+  assertReleasedRFormulaGeneratedCode(visibleCode, "score", "score_plus_two", "add", 2);
+  const previewPage = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: "jupyter-r-formula-preview-page",
+    offset: 0,
+    limit: 2,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: output.position,
+    columnLimit: 1
+  });
+  assert.equal(previewPage.kind, "page");
+  if (previewPage.kind !== "page") throw new Error("The packaged R Formula preview did not return its page.");
+  assert.deepEqual(previewPage.page.columnIds, [output.id]);
+  assert.deepEqual(
+    previewPage.page.rows.map((row) => row.values[0]?.raw),
+    [3, 4]
+  );
+  await requireFreshExactSessionPanelHydration(testing, sessionId, "The R Formula preview must reach its renderer.");
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Formula preview");
+  const review = app.getByRole("region", { name: "Draft review" });
+  await review.getByText("Formula column", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  const outputSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await outputSearch.fill(output.name);
+  await app
+    .getByRole("option", { name: /^score_plus_two,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await outputSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === output.id,
+    10_000,
+    "revealing the visible R Formula output"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Formula preview");
+  await waitForLocatorText(
+    app.locator(`td[data-grid-row="0"][data-grid-column="${output.position}"]`),
+    (text) => text.trim() === "3",
+    10_000,
+    "the visible R Formula value"
+  );
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        active.metadata.steps[0]?.kind === "formula" &&
+        active.metadata.schema.at(-1)?.id === output.id
+      );
+    },
+    30_000,
+    "applying native R Formula"
+  );
+  const applied = testing.activeSession();
+  assert.ok(applied, "The applied R Formula must retain its session.");
+  assertReleasedRFormulaGeneratedCode(applied.code ?? "", "score", "score_plus_two", "add", 2);
+  await requireFreshExactSessionPanelHydration(testing, sessionId, "The applied R Formula must reach its renderer.");
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Formula session");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        !active.metadata.schema.some((column) => column.id === output.id) &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing native R Formula"
+  );
+}
+
+async function exerciseReleasedRFormatDatetimeJourney(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string
+): Promise<void> {
+  recordAcceptanceProgress("jupyter-r:editing:format-datetime-preview-apply-undo");
+  const base = testing.activeSession();
+  assert.ok(base, "The restored R session must remain available for Format datetime.");
+  assert.equal(base.metadata.steps.length, 0);
+  assert.equal(base.metadata.draftStep, undefined);
+  const date = base.metadata.schema.find((column) => column.name === "extra_19");
+  assert.ok(date, "The packaged R Format datetime journey requires its Date column.");
+  assert.equal(date.type, "date");
+  assert.equal(date.rawType, "Date");
+
+  const picker = await openReleasedROperationPicker(testing, workbench, sessionId);
+  const dialog = picker.dialog;
+  await dialog.getByPlaceholder("Search operations").fill("format datetime");
+  await dialog.getByRole("button", { name: /^Format datetime\b/u }).click();
+  await dialog.getByLabel("Date or datetime column", { exact: true }).selectOption(date.id);
+  await dialog.getByLabel("strftime format", { exact: true }).fill("%d/%m/%Y");
+  await dialog.getByLabel("Output column (blank replaces in place)", { exact: true }).fill("formatted_date");
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      const draft = active?.metadata.draftStep;
+      return (
+        active?.sessionId === sessionId &&
+        draft?.kind === "formatDatetime" &&
+        draft.params.column.id === date.id &&
+        draft.params.format === "%d/%m/%Y" &&
+        draft.params.newColumn === "formatted_date" &&
+        active.metadata.schema.at(-1)?.id === `c:step:${draft.id}:0`
+      );
+    },
+    30_000,
+    "previewing native R Format datetime through its visible form"
+  );
+  const preview = testing.activeSession();
+  assert.ok(preview?.metadata.draftStep?.kind === "formatDatetime");
+  const output = preview.metadata.schema.at(-1);
+  assert.ok(output, "The R Format datetime preview must append its text output.");
+  assert.equal(output.type, "string");
+  assert.equal(output.rawType, "character");
+  assert.equal(output.name, "formatted_date");
+  assert.equal(output.nullable, date.nullable);
+  assertReleasedRFormatDatetimeGeneratedCode(preview.code ?? "", "extra_19", "formatted_date", "%d/%m/%Y");
+  const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  const visibleCode = await revealCodePreviewText(codePreview, ".ow_datetime_values");
+  assertReleasedRFormatDatetimeGeneratedCode(visibleCode, "extra_19", "formatted_date", "%d/%m/%Y");
+  const previewPage = await testing.request({
+    kind: "getPage",
+    sessionId,
+    revision: preview.metadata.revision,
+    viewRequestId: "jupyter-r-format-datetime-preview-page",
+    offset: 0,
+    limit: 2,
+    filterModel: preview.viewState.filterModel,
+    columnOffset: output.position,
+    columnLimit: 1
+  });
+  assert.equal(previewPage.kind, "page");
+  if (previewPage.kind !== "page") {
+    throw new Error("The packaged R Format datetime preview did not return its page.");
+  }
+  assert.deepEqual(previewPage.page.columnIds, [output.id]);
+  assert.deepEqual(
+    previewPage.page.rows.map((row) => row.values[0]?.display),
+    ["01/01/2026", "02/01/2026"]
+  );
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The R Format datetime preview must reach its renderer."
+  );
+  let app = await releasedRSessionApp(workbench, testing, sessionId, "the visible R Format datetime preview");
+  const review = app.getByRole("region", { name: "Draft review" });
+  await review.getByText("Format datetime", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  const outputSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await outputSearch.fill(output.name);
+  await app
+    .getByRole("option", { name: /^formatted_date,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await outputSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === output.id,
+    10_000,
+    "revealing the visible R Format datetime output"
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the selected R Format datetime preview");
+  await waitForLocatorText(
+    app.locator(`td[data-grid-row="0"][data-grid-column="${output.position}"]`),
+    (text) => text.trim() === "01/01/2026",
+    10_000,
+    "the visible R Format datetime value"
+  );
+  await app
+    .getByRole("region", { name: "Draft review" })
+    .getByRole("button", { name: "Apply step", exact: true })
+    .click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        active.metadata.steps[0]?.kind === "formatDatetime" &&
+        active.metadata.schema.at(-1)?.id === output.id
+      );
+    },
+    30_000,
+    "applying native R Format datetime"
+  );
+  const applied = testing.activeSession();
+  assert.ok(applied, "The applied R Format datetime must retain its session.");
+  assertReleasedRFormatDatetimeGeneratedCode(applied.code ?? "", "extra_19", "formatted_date", "%d/%m/%Y");
+  await requireFreshExactSessionPanelHydration(
+    testing,
+    sessionId,
+    "The applied R Format datetime must reach its renderer."
+  );
+  app = await releasedRSessionApp(workbench, testing, sessionId, "the applied R Format datetime session");
+  await app.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === sessionId &&
+        active.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        !active.metadata.schema.some((column) => column.id === output.id) &&
+        active.metadata.schema.some((column) => column.id === date.id && column.rawType === "Date") &&
+        (active.code ?? "") === ""
+      );
+    },
+    30_000,
+    "undoing native R Format datetime"
+  );
+}
+
 async function exerciseReleasedRGroupByJourney(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
   recordAcceptanceProgress("jupyter-r:editing:group-by-preview-apply-undo");
   const groupBase = testing.activeSession();
@@ -8451,9 +8752,27 @@ async function previewReleasedRDropDuplicates(testing: TestApi, workbench: Page,
   return draft.id;
 }
 
+function assertReleasedRGeneratedSourceBoundary(code: string, variableName = "orders_frame"): void {
+  assert.match(code, /^base::evalq\(\{/u);
+  assert.ok(code.includes(".ow_generated_result <- base::evalq({"));
+  assert.ok(
+    code.includes(`base::get(${JSON.stringify(variableName)}, envir = .ow_source_environment, inherits = FALSE)`),
+    `Generated R code must read ${JSON.stringify(variableName)} from the exact caller environment.`
+  );
+  assert.ok(code.includes("base::list(.ow_caller_environment = base::environment())"));
+  assert.ok(code.includes("base::list(.ow_source_environment = .ow_caller_environment)"));
+  assert.ok(
+    code.includes(
+      "base::assign(.ow_publication_name, .ow_generated_result, envir = .ow_caller_environment, inherits = FALSE)"
+    )
+  );
+  assert.ok(code.includes("parent = base::baseenv()"));
+  assert.doesNotMatch(code, /open_wrangler_result <- base::evalq/u);
+  assert.doesNotMatch(code, /parent\.env\(environment\(\)\)/u);
+}
+
 function assertReleasedRRowGeneratedCode(code: string, kind: "sortRows" | "filterRows"): void {
-  assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes('get("orders_frame", envir = parent.env(environment()), inherits = FALSE)'));
+  assertReleasedRGeneratedSourceBoundary(code);
   assert.ok(code.includes(kind === "sortRows" ? "# Sort rows" : "# Filter rows"));
   assert.ok(code.includes(".ow_rows"));
   assert.ok(code.includes(".ow_sort_values"));
@@ -8462,8 +8781,7 @@ function assertReleasedRRowGeneratedCode(code: string, kind: "sortRows" | "filte
 }
 
 function assertReleasedRRowReductionGeneratedCode(code: string, kind: "dropMissingRows" | "dropDuplicates"): void {
-  assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes('get("orders_frame", envir = parent.env(environment()), inherits = FALSE)'));
+  assertReleasedRGeneratedSourceBoundary(code);
   assert.ok(code.includes(kind === "dropMissingRows" ? "# Drop missing rows" : "# Drop duplicates"));
   assert.ok(code.includes(".ow_rows"));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
@@ -8514,8 +8832,13 @@ async function previewReleasedRTextLength(
   );
   const stepId = active.metadata.draftStep.id;
   assertReleasedRTextLengthGeneratedCode(active.code ?? "", sourceName, newColumn, variableName);
-  const codePreview = await waitForCodePreview(workbench, newColumn, "R");
-  assertReleasedRTextLengthGeneratedCode(await codePreview.innerText(), sourceName, newColumn, variableName);
+  const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  assertReleasedRTextLengthGeneratedCode(
+    await revealCodePreviewText(codePreview, newColumn),
+    sourceName,
+    newColumn,
+    variableName
+  );
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -8759,12 +9082,8 @@ async function previewReleasedRCast(
   );
   const stepId = active.metadata.draftStep.id;
   assertReleasedRCastGeneratedCode(active.code ?? "", sourceName, dtype, variableName);
-  // CodeMirror virtualizes long documents. The cast helper is visible near the
-  // start of the editor, while the column-specific lines can be below the DOM
-  // viewport. The complete generated program is checked against host state
-  // above; this assertion proves that the R editor received the cast program.
-  const codePreview = await waitForCodePreview(workbench, ".ow_cast_kind", "R");
-  assert.match(await codePreview.innerText(), /\.ow_cast_kind/u);
+  const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  assert.match(await revealCodePreviewText(codePreview, ".ow_cast_kind"), /\.ow_cast_kind/u);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -8836,8 +9155,13 @@ async function previewReleasedRClone(
   const stepId = active.metadata.draftStep.id;
   if (replacement) assert.equal(stepId, replacement.replaceStepId);
   assertReleasedRCloneGeneratedCode(active.code ?? "", sourceName, newName, variableName);
-  const codePreview = await waitForCodePreview(workbench, newName, "R");
-  assertReleasedRCloneGeneratedCode(await codePreview.innerText(), sourceName, newName, variableName);
+  const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  assertReleasedRCloneGeneratedCode(
+    await revealCodePreviewText(codePreview, newName),
+    sourceName,
+    newName,
+    variableName
+  );
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -8886,8 +9210,13 @@ async function previewReleasedRSelect(
   assert.ok(active?.metadata.draftStep?.kind === "selectColumns", "The native R selection must retain its draft.");
   const stepId = active.metadata.draftStep.id;
   assertReleasedRSelectGeneratedCode(active.code ?? "", selectedNames, variableName);
-  const codePreview = await waitForCodePreview(workbench, selectedNames[0] ?? ".ow_select_positions", "R");
-  assertReleasedRSelectGeneratedCode(await codePreview.innerText(), selectedNames, variableName);
+  const expectedCode = selectedNames[0] ?? ".ow_select_positions";
+  const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  assertReleasedRSelectGeneratedCode(
+    await revealCodePreviewText(codePreview, expectedCode),
+    selectedNames,
+    variableName
+  );
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -8933,8 +9262,8 @@ async function previewReleasedRDrop(
   assert.ok(active?.metadata.draftStep?.kind === "dropColumns", "The native R drop preview must retain its draft.");
   const stepId = active.metadata.draftStep.id;
   assertReleasedRDropGeneratedCode(active.code ?? "", sourceName, variableName);
-  const codePreview = await waitForCodePreview(workbench, sourceName, "R");
-  assertReleasedRDropGeneratedCode(await codePreview.innerText(), sourceName, variableName);
+  const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  assertReleasedRDropGeneratedCode(await revealCodePreviewText(codePreview, sourceName), sourceName, variableName);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -9004,8 +9333,8 @@ async function previewReleasedRRename(
   const stepId = active.metadata.draftStep.id;
   if (replacement) assert.equal(stepId, replacement.replaceStepId);
   assertReleasedRGeneratedCode(active.code ?? "", newName, variableName);
-  const codePreview = await waitForCodePreview(workbench, newName, "R");
-  assertReleasedRGeneratedCode(await codePreview.innerText(), newName, variableName);
+  const codePreview = await waitForCodePreview(workbench, undefined, "R");
+  assertReleasedRGeneratedCode(await revealCodePreviewText(codePreview, newName), newName, variableName);
   await requireFreshExactSessionPanelHydration(
     testing,
     sessionId,
@@ -9018,18 +9347,49 @@ async function previewReleasedRRename(
 }
 
 function assertReleasedRGeneratedCode(code: string, newName: string, variableName = "orders_frame"): void {
-  assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(
-    code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`),
-    `Generated R code must read ${JSON.stringify(variableName)} from the environment that runs the script.`
-  );
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
   assert.ok(code.includes(JSON.stringify(newName)), `Generated R code must contain ${JSON.stringify(newName)}.`);
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
 }
 
+function assertReleasedRFormulaGeneratedCode(
+  code: string,
+  sourceName: string,
+  newName: string,
+  operator: "add" | "subtract" | "multiply" | "divide" | "modulo" | "power",
+  value: number,
+  variableName = "orders_frame"
+): void {
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
+  assert.ok(code.includes(".ow_formula_left_position"));
+  assert.ok(code.includes(".ow_formula_values"));
+  assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.ok(code.includes(JSON.stringify(newName)));
+  assert.ok(code.includes(String(value)));
+  const symbol = { add: "+", subtract: "-", multiply: "*", divide: "/", modulo: "%%", power: "^" }[operator];
+  assert.ok(code.includes(`.ow_formula_left ${symbol} .ow_formula_right`));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
+function assertReleasedRFormatDatetimeGeneratedCode(
+  code: string,
+  sourceName: string,
+  newName: string,
+  format: string,
+  variableName = "orders_frame"
+): void {
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
+  assert.ok(code.includes(".ow_datetime_position"));
+  assert.ok(code.includes(".ow_datetime_values"));
+  assert.ok(code.includes("base::format"));
+  assert.ok(code.includes(JSON.stringify(sourceName)));
+  assert.ok(code.includes(JSON.stringify(newName)));
+  assert.ok(code.includes(JSON.stringify(format)));
+  assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
+}
+
 function assertReleasedRDropGeneratedCode(code: string, sourceName: string, variableName = "orders_frame"): void {
-  assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
   assert.ok(code.includes(".ow_drop_positions"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
@@ -9041,8 +9401,7 @@ function assertReleasedRTextLengthGeneratedCode(
   newColumn: string,
   variableName = "orders_frame"
 ): void {
-  assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
   assert.ok(code.includes(".ow_text_length_position"));
   assert.ok(code.includes("nchar("));
   assert.ok(code.includes(JSON.stringify(sourceName)));
@@ -9070,8 +9429,7 @@ function assertReleasedRFindReplaceCodeSurface(
   regex: boolean,
   variableName = "orders_frame"
 ): void {
-  assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
   assert.ok(code.includes(".ow_text_position"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.ok(code.includes(`.ow_text_find <- ${JSON.stringify(find)}`));
@@ -9086,8 +9444,7 @@ function assertReleasedRCastGeneratedCode(
   dtype: string,
   variableName = "orders_frame"
 ): void {
-  assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
   assert.ok(code.includes(".ow_cast_position"));
   assert.ok(code.includes(".ow_cast_values"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
@@ -9101,8 +9458,7 @@ function assertReleasedRCloneGeneratedCode(
   newName: string,
   variableName = "orders_frame"
 ): void {
-  assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
   assert.ok(code.includes(".ow_clone_position"));
   assert.ok(code.includes(JSON.stringify(sourceName)));
   assert.ok(code.includes(JSON.stringify(newName)));
@@ -9114,8 +9470,7 @@ function assertReleasedRSelectGeneratedCode(
   selectedNames: readonly string[],
   variableName = "orders_frame"
 ): void {
-  assert.match(code, /open_wrangler_result <- local\(\{/u);
-  assert.ok(code.includes(`get(${JSON.stringify(variableName)}, envir = parent.env(environment()), inherits = FALSE)`));
+  assertReleasedRGeneratedSourceBoundary(code, variableName);
   assert.ok(code.includes(".ow_select_positions"));
   for (const name of selectedNames) assert.ok(code.includes(JSON.stringify(name)));
   assert.doesNotMatch(code, /\b(?:pandas|polars|python)\b/iu);
@@ -9283,7 +9638,7 @@ async function captureReleasedRNotebookGroupByDraft(
     assert.equal(await testing.synchronizePanel(sessionId), true);
 
     await vscode.commands.executeCommand("openWrangler.codePreview.focus");
-    const codePreview = await waitForCodePreview(workbench, "open_wrangler_result <- local", "R");
+    const codePreview = await waitForCodePreview(workbench, ".ow_generated_result <- base::evalq", "R");
     const generatedCode = active.code ?? "";
     assert.match(generatedCode, /\.ow_group_by\b/u);
     assert.match(generatedCode, /total_revenue/u);

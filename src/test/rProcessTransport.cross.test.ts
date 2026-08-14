@@ -523,9 +523,20 @@ not_a_frame <- matrix(1:4, nrow = 2L)
         opened.page.schema
       );
       expect(preview.page.page.rows.map((row) => row.values[1]?.raw)).toEqual(["alpha", "beta", "gamma"]);
-      // Generated code is for insertion into the user's ordinary R execution
-      // context; the private worker environment is never leaked into it.
-      expect(preview.code).toContain("parent.env(environment())");
+      // Generated code captures only the exact caller environment needed to
+      // read the source, then runs its implementation below baseenv so caller
+      // operators, methods, and helper bindings cannot intercept the plan.
+      expect(preview.code).toMatch(/^base::evalq\(\{/u);
+      expect(preview.code).toContain(".ow_generated_result <- base::evalq({");
+      expect(preview.code).toContain('base::get("plain_frame", envir = .ow_source_environment, inherits = FALSE)');
+      expect(preview.code).toContain("base::list(.ow_caller_environment = base::environment())");
+      expect(preview.code).toContain("base::list(.ow_source_environment = .ow_caller_environment)");
+      expect(preview.code).toContain(
+        "base::assign(.ow_publication_name, .ow_generated_result, envir = .ow_caller_environment, inherits = FALSE)"
+      );
+      expect(preview.code).toContain("parent = base::baseenv()");
+      expect(preview.code).not.toContain("open_wrangler_result <- base::evalq");
+      expect(preview.code).not.toContain("parent.env(environment())");
       const applied = await transport.applyDraft(sessionId, 1, pageWindow());
       expect(applied).toMatchObject({ action: "apply", revision: 2 });
 

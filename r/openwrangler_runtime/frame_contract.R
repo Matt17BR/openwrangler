@@ -24,6 +24,9 @@ openwrangler_r_frame_contract <- local({
   maximum_sort_cache_bytes <- 32L * 1024L * 1024L
   maximum_factor_levels <- 100000L
   maximum_text_bytes <- 8192L
+  maximum_operation_output_bytes <- 64L * 1024L * 1024L
+  maximum_operation_output_chunk_rows <- 1024L
+  character_vector_slot_bytes <- 8L
   default_strip_characters <- paste0(
     " \t\n\r\v\f",
     "\u001c\u001d\u001e\u001f",
@@ -43,6 +46,237 @@ openwrangler_r_frame_contract <- local({
   cell_fixed_bytes <- 96L
   summary_fixed_bytes <- 1024L
   minimum_nanoparquet_version <- "0.5.1"
+
+  storage_length <- function(value) {
+    length(unclass(value))
+  }
+
+  integer64_formula_bindings <- function() {
+    if (!requireNamespace("bit64", quietly = TRUE)) {
+      abort("missing-package", "bit64 is required for integer64 Formula")
+    }
+    namespace <- asNamespace("bit64")
+    binding_names <- c(
+      as_integer = "C_as_integer64_integer",
+      as_double = "C_as_double_integer64",
+      as_character = "C_as_character_integer64",
+      is_na = "C_isna_integer64",
+      add = "C_plus_integer64",
+      subtract = "C_minus_integer64",
+      multiply = "C_times_integer64_integer64",
+      modulo = "C_mod_integer64"
+    )
+    parameter_counts <- c(
+      as_integer = 2L,
+      as_double = 2L,
+      as_character = 2L,
+      is_na = 2L,
+      add = 3L,
+      subtract = 3L,
+      multiply = 3L,
+      modulo = 3L
+    )
+    namespace_dlls <- getNamespaceInfo(namespace, "DLLs")
+    namespace_routines <- getNamespaceInfo(namespace, "nativeRoutines")
+    if (
+      !is.list(namespace_dlls) || length(namespace_dlls) != 1L ||
+        !is.list(namespace_routines) || length(namespace_routines) != 1L
+    ) {
+      abort("runtime-error", "bit64 has invalid integer64 Formula native registration metadata")
+    }
+    dll <- namespace_dlls[[1L]]
+    routine_map <- namespace_routines[[1L]]
+    dll_fields <- unclass(dll)
+    if (
+      !inherits(dll, "DLLInfo") || !identical(.subset2(dll_fields, "name"), "bit64") ||
+        !identical(.subset2(dll_fields, "dynamicLookup"), FALSE) || !identical(.subset2(dll_fields, "forceSymbols"), TRUE) ||
+        !is.character(routine_map) || is.null(names(routine_map))
+    ) {
+      abort("runtime-error", "bit64 has invalid integer64 Formula native registration metadata")
+    }
+    all_native_binding_names <- names(routine_map)
+    registrations <- lapply(names(binding_names), function(key) {
+      binding_name <- binding_names[[key]]
+      native_name <- sub("^C_", "", binding_name)
+      if (
+        !exists(binding_name, envir = namespace, inherits = FALSE) ||
+          bindingIsActive(binding_name, namespace) ||
+          !bindingIsLocked(binding_name, namespace)
+      ) {
+        abort("runtime-error", "bit64 has unavailable or mutable integer64 Formula primitives")
+      }
+      registration <- get(binding_name, envir = namespace, inherits = FALSE)
+      canonical_address <- tryCatch(
+        getNativeSymbolInfo(native_name, PACKAGE = .subset2(dll_fields, "info"), withRegistrationInfo = FALSE),
+        error = function(error) NULL
+      )
+      if (
+        !identical(.subset2(routine_map, binding_name), native_name) ||
+          !identical(class(registration), c("CallRoutine", "NativeSymbolInfo")) ||
+          !identical(attr(registration, "names", exact = TRUE), c("name", "address", "dll", "numParameters")) ||
+          !identical(.subset2(unclass(registration), "name"), native_name) ||
+          !identical(.subset2(unclass(registration), "numParameters"), parameter_counts[[key]]) ||
+          !inherits(.subset2(unclass(registration), "address"), "RegisteredNativeSymbol") ||
+          !identical(.subset2(unclass(registration), "dll"), dll) ||
+          is.null(canonical_address) ||
+          !identical(class(canonical_address), c("CallRoutine", "NativeSymbolInfo")) ||
+          !identical(.subset2(unclass(canonical_address), "name"), native_name) ||
+          !identical(.subset2(unclass(canonical_address), "numParameters"), parameter_counts[[key]]) ||
+          !identical(.subset2(unclass(canonical_address), "dll"), dll) ||
+          !inherits(.subset2(unclass(canonical_address), "address"), "NativeSymbol")
+      ) {
+        abort("runtime-error", "bit64 has invalid integer64 Formula primitives")
+      }
+      for (other_binding_name in all_native_binding_names) {
+        if (
+          identical(other_binding_name, binding_name) ||
+            !exists(other_binding_name, envir = namespace, inherits = FALSE) ||
+            bindingIsActive(other_binding_name, namespace)
+        ) {
+          next
+        }
+        other_registration <- get(other_binding_name, envir = namespace, inherits = FALSE)
+        if (
+          is.list(other_registration) &&
+            !is.null(.subset2(unclass(other_registration), "address")) &&
+            identical(.subset2(unclass(registration), "address"), .subset2(unclass(other_registration), "address"))
+        ) {
+          abort("runtime-error", "bit64 has replaced integer64 Formula primitive addresses")
+        }
+      }
+      canonical_address
+    })
+    names(registrations) <- names(binding_names)
+    registrations
+  }
+
+  integer64_from_integer <- function(values, bindings) {
+    result <- .Call(bindings$as_integer, values, double(storage_length(values)))
+    value_names <- attr(values, "names", exact = TRUE)
+    attributes(result) <- if (is.null(value_names)) {
+      list(class = "integer64")
+    } else {
+      list(class = "integer64", names = value_names)
+    }
+    result
+  }
+
+  integer64_binary <- function(operator, left, right, bindings) {
+    left <- if (inherits(left, "integer64")) left else integer64_from_integer(left, bindings)
+    right <- if (inherits(right, "integer64")) right else integer64_from_integer(right, bindings)
+    left_length <- storage_length(left)
+    right_length <- storage_length(right)
+    output_length <- if (left_length == 0L || right_length == 0L) 0L else max(left_length, right_length)
+    result <- .Call(bindings[[operator]], left, right, double(output_length))
+    output_names <- if (left_length == output_length && !is.null(attr(left, "names", exact = TRUE))) {
+      attr(left, "names", exact = TRUE)
+    } else if (right_length == output_length && !is.null(attr(right, "names", exact = TRUE))) {
+      attr(right, "names", exact = TRUE)
+    } else {
+      NULL
+    }
+    attributes(result) <- if (is.null(output_names)) {
+      list(class = "integer64")
+    } else {
+      list(class = "integer64", names = output_names)
+    }
+    result
+  }
+
+  integer64_as_double <- function(values, bindings) {
+    result <- .Call(bindings$as_double, values, double(storage_length(values)))
+    value_names <- attr(values, "names", exact = TRUE)
+    if (!is.null(value_names)) attr(result, "names") <- value_names
+    result
+  }
+
+  integer64_as_character <- function(values, bindings = NULL) {
+    if (is.null(bindings)) bindings <- ensure_integer64_bindings()
+    .Call(bindings$as_character, values, rep.int(NA_character_, storage_length(values)))
+  }
+
+  integer64_subset <- function(values, indices) {
+    storage <- unclass(values)
+    subset <- storage[indices]
+    attributes(subset) <- list(class = "integer64")
+    subset
+  }
+
+  integer64_missing <- function(bindings) {
+    integer64_from_integer(NA_integer_, bindings)
+  }
+
+  integer64_force_missing <- function(values, missing, bindings) {
+    storage <- unclass(values)
+    storage[missing] <- unclass(integer64_missing(bindings))[[1L]]
+    value_names <- attr(values, "names", exact = TRUE)
+    attributes(storage) <- if (is.null(value_names)) {
+      list(class = "integer64")
+    } else {
+      list(class = "integer64", names = value_names)
+    }
+    storage
+  }
+
+  ensure_integer64_bindings <- function() {
+    bindings <- integer64_formula_bindings()
+    if (storage_length(integer64_missing(bindings)) != 1L) {
+      abort("runtime-error", "bit64 has an invalid integer64 missing value")
+    }
+    bindings
+  }
+
+  integer64_missing_mask <- function(values, bindings = NULL) {
+    if (is.null(bindings)) bindings <- integer64_formula_bindings()
+    .Call(bindings$is_na, values, logical(storage_length(values)))
+  }
+
+  data_table_alloccol_binding <- function() {
+    if (!requireNamespace("data.table", quietly = TRUE)) {
+      abort("missing-package", "data.table is required")
+    }
+    namespace <- asNamespace("data.table")
+    binding_name <- "Calloccolwrapper"
+    native_name <- "Calloccolwrapper"
+    namespace_dlls <- getNamespaceInfo(namespace, "DLLs")
+    namespace_routines <- getNamespaceInfo(namespace, "nativeRoutines")
+    if (
+      !is.list(namespace_dlls) || length(namespace_dlls) != 1L ||
+        !is.list(namespace_routines) || length(namespace_routines) != 1L ||
+        !exists(binding_name, envir = namespace, inherits = FALSE) ||
+        bindingIsActive(binding_name, namespace) ||
+        !bindingIsLocked(binding_name, namespace)
+    ) {
+      abort("runtime-error", "data.table has unavailable or mutable append primitives")
+    }
+    dll <- namespace_dlls[[1L]]
+    routine_map <- namespace_routines[[1L]]
+    binding <- get(binding_name, envir = namespace, inherits = FALSE)
+    dll_fields <- unclass(dll)
+    canonical <- tryCatch(
+      getNativeSymbolInfo(native_name, PACKAGE = .subset2(dll_fields, "info"), withRegistrationInfo = FALSE),
+      error = function(error) NULL
+    )
+    if (
+      !inherits(dll, "DLLInfo") || !identical(.subset2(dll_fields, "name"), "data_table") ||
+        !identical(.subset2(dll_fields, "dynamicLookup"), FALSE) ||
+        !is.character(routine_map) || !identical(.subset2(routine_map, binding_name), native_name) ||
+        !identical(class(binding), c("CallRoutine", "NativeSymbolInfo")) ||
+        !identical(attr(binding, "names", exact = TRUE), c("name", "address", "dll", "numParameters")) ||
+        !identical(.subset2(unclass(binding), "name"), native_name) || !identical(.subset2(unclass(binding), "numParameters"), -1L) ||
+        !identical(.subset2(unclass(binding), "dll"), dll) || !inherits(.subset2(unclass(binding), "address"), "RegisteredNativeSymbol") ||
+        is.null(canonical) || !identical(.subset2(unclass(canonical), "name"), native_name) ||
+        !identical(.subset2(unclass(canonical), "numParameters"), -1L) || !identical(.subset2(unclass(canonical), "dll"), dll) ||
+        !inherits(.subset2(unclass(canonical), "address"), "NativeSymbol")
+    ) {
+      abort("runtime-error", "data.table has invalid append primitives")
+    }
+    canonical
+  }
+
+  repair_data_table_self_reference <- function(value) {
+    .Call(data_table_alloccol_binding(), value, 1024L, FALSE)
+  }
 
   abort <- function(code, message) {
     condition <- structure(
@@ -177,7 +411,7 @@ openwrangler_r_frame_contract <- local({
         !is.character(column_names) ||
           is.object(column_names) ||
           !is.null(attributes(column_names)) ||
-          length(column_names) != length(column)
+          length(column_names) != storage_length(column)
       ) {
         abort("unsupported-column-attributes", sprintf("%s has a malformed names attribute", label))
       }
@@ -275,10 +509,11 @@ openwrangler_r_frame_contract <- local({
 
   display_date_values <- function(values, label) {
     displays <- tryCatch(
-      format(values, format = "%Y-%m-%d"),
+      base::format.Date(values, format = "%Y-%m-%d"),
       error = function(error) NULL
     )
-    invalid <- if (!is.character(displays) || length(displays) != length(values)) {
+    value_count <- storage_length(values)
+    invalid <- if (!is.character(displays) || length(displays) != value_count) {
       1L
     } else {
       which(is.na(displays) | !grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", displays))
@@ -288,7 +523,7 @@ openwrangler_r_frame_contract <- local({
         "unsupported-cell",
         sprintf(
           "%s is outside the supported ISO date range",
-          indexed_value_label(label, invalid[[1L]], length(values))
+          indexed_value_label(label, invalid[[1L]], value_count)
         )
       )
     }
@@ -299,11 +534,17 @@ openwrangler_r_frame_contract <- local({
     display_timezone <- timezone
     if (is.null(display_timezone) || identical(display_timezone, "")) display_timezone <- "UTC"
     displays <- tryCatch(
-      format(values, tz = display_timezone, format = "%Y-%m-%dT%H:%M:%OS6", usetz = FALSE),
+      base::format.POSIXct(
+        values,
+        tz = display_timezone,
+        format = "%Y-%m-%dT%H:%M:%OS6",
+        usetz = FALSE
+      ),
       error = function(error) NULL
     )
-    if (!is.character(displays) || length(displays) != length(values) || anyNA(displays)) {
-      invalid <- if (is.character(displays) && length(displays) == length(values) && anyNA(displays)) {
+    value_count <- storage_length(values)
+    if (!is.character(displays) || length(displays) != value_count || anyNA(displays)) {
+      invalid <- if (is.character(displays) && length(displays) == value_count && anyNA(displays)) {
         which(is.na(displays))[[1L]]
       } else {
         1L
@@ -312,12 +553,12 @@ openwrangler_r_frame_contract <- local({
         "unsupported-cell",
         sprintf(
           "%s is outside the supported datetime range",
-          indexed_value_label(label, invalid, length(values))
+          indexed_value_label(label, invalid, value_count)
         )
       )
     }
     vapply(seq_along(displays), function(index) {
-      bounded_utf8(displays[[index]], indexed_value_label(label, index, length(values)))
+      bounded_utf8(displays[[index]], indexed_value_label(label, index, value_count))
     }, character(1L), USE.NAMES = FALSE)
   }
 
@@ -371,6 +612,7 @@ openwrangler_r_frame_contract <- local({
     }
 
     if (inherits(column, "integer64")) {
+      ensure_integer64_bindings()
       assert_attributes(column, "class", label)
       return(common("integer64", "double", "integer64"))
     }
@@ -478,13 +720,32 @@ openwrangler_r_frame_contract <- local({
     )
   }
 
-  encode_value <- function(column, semantics, index, label, budget) {
+  column_has_missing <- function(column, semantics) {
+    kind <- semantics$kind
+    if (kind == "integer64") {
+      return(any(integer64_missing_mask(column, ensure_integer64_bindings())))
+    }
+    if (kind %in% c("factor", "date", "datetime", "difftime")) {
+      return(anyNA(unclass(column)))
+    }
+    anyNA(column)
+  }
+
+  encode_value <- function(column, semantics, index, label, budget, integer64_bindings = NULL) {
     spend_payload_budget(budget, cell_fixed_bytes, label)
-    value <- unname(column[index])
     kind <- semantics$kind
 
+    if (kind == "integer64") {
+      if (is.null(integer64_bindings)) integer64_bindings <- ensure_integer64_bindings()
+      value <- integer64_subset(column, index)
+      if (integer64_missing_mask(value, integer64_bindings)[[1L]]) return(cell_missing())
+      exact <- integer64_as_character(value, integer64_bindings)[[1L]]
+      spend_json_string(budget, exact, label, copies = 2L)
+      return(ordinary_cell("integer", exact, exact))
+    }
+
     if (kind %in% c("date", "datetime", "difftime")) {
-      numeric_value <- as.double(value)
+      numeric_value <- unclass(column)[[index]]
       if (is.nan(numeric_value)) {
         abort("unsupported-cell", sprintf("%s is a classed NaN", label))
       }
@@ -495,20 +756,34 @@ openwrangler_r_frame_contract <- local({
       if (kind == "date" && numeric_value != floor(numeric_value)) {
         abort("unsupported-cell", sprintf("%s is a fractional Date", label))
       }
+      value <- if (kind == "date") {
+        structure(numeric_value, class = "Date")
+      } else if (kind == "datetime") {
+        timezone <- semantics$timezone
+        attributes(numeric_value) <- if (is.null(timezone)) {
+          list(class = c("POSIXct", "POSIXt"))
+        } else {
+          list(class = c("POSIXct", "POSIXt"), tzone = timezone)
+        }
+        numeric_value
+      } else {
+        structure(numeric_value, class = "difftime", units = semantics$units)
+      }
+    } else {
+      value <- unname(column[index])
     }
     if (kind == "double" && is.nan(value)) return(cell_nan())
-    if (is.na(value)) return(cell_missing())
+    # Temporal missingness was already decided from the unclassed scalar
+    # above. Rechecking the reconstructed Date/POSIXct/difftime object through
+    # is.na() would reopen caller-registered S3 dispatch while materializing a
+    # preview page.
+    if (!(kind %in% c("date", "datetime", "difftime")) && is.na(value)) return(cell_missing())
     if (kind == "double" && is.infinite(value)) return(cell_infinity(value))
 
     if (kind == "logical") {
       return(ordinary_cell("boolean", isTRUE(value), if (isTRUE(value)) "TRUE" else "FALSE"))
     }
     if (kind == "integer") {
-      exact <- as.character(value)
-      spend_json_string(budget, exact, label, copies = 2L)
-      return(ordinary_cell("integer", exact, exact))
-    }
-    if (kind == "integer64") {
       exact <- as.character(value)
       spend_json_string(budget, exact, label, copies = 2L)
       return(ordinary_cell("integer", exact, exact))
@@ -547,7 +822,7 @@ openwrangler_r_frame_contract <- local({
       return(ordinary_cell("datetime", exact, display))
     }
     if (kind == "difftime") {
-      exact <- exact_double(as.double(value, units = semantics$units))
+      exact <- exact_double(numeric_value)
       display <- paste(exact, semantics$units)
       spend_json_string(budget, exact, label)
       spend_json_string(budget, display, label)
@@ -590,6 +865,49 @@ openwrangler_r_frame_contract <- local({
       return(normalized)
     }
     value
+  }
+
+  validate_frame_structure <- function(value) {
+    row_names <- tryCatch(.row_names_info(value, type = 0L), error = function(error) error)
+    if (inherits(row_names, "error") || (!is.integer(row_names) && !is.character(row_names))) {
+      abort("unsupported-frame", "the dataframe has malformed row names")
+    }
+    row_names <- if (is.character(row_names)) {
+      vapply(seq_along(row_names), function(index) .subset2(row_names, index), character(1L), USE.NAMES = FALSE)
+    } else {
+      vapply(seq_along(row_names), function(index) .subset2(row_names, index), integer(1L), USE.NAMES = FALSE)
+    }
+    compact <- is.integer(row_names) && length(row_names) == 2L && is.na(row_names[[1L]])
+    if (compact) {
+      if (is.na(row_names[[2L]]) || row_names[[2L]] == 0L) {
+        abort("unsupported-frame", "the dataframe has malformed row names")
+      }
+      row_count <- abs(as.double(row_names[[2L]]))
+    } else {
+      row_count <- as.double(length(row_names))
+      if (anyNA(row_names) || anyDuplicated(row_names)) {
+        abort("unsupported-frame", "the dataframe has malformed row names")
+      }
+    }
+    if (!is.finite(row_count) || row_count != floor(row_count) || row_count > maximum_rows) {
+      abort("unsupported-frame", "the dataframe has malformed row names")
+    }
+    columns <- unclass(value)
+    if (!is.list(columns) || length(columns) != storage_length(value)) {
+      abort("unsupported-frame", "the dataframe has a malformed column payload")
+    }
+    for (index in seq_along(columns)) {
+      # Matrix/array columns are rejected by the column contract below. Their
+      # vector length includes every cell, so leave that established diagnostic
+      # intact while rejecting malformed ordinary columns here.
+      if (is.null(dim(columns[[index]])) && storage_length(columns[[index]]) != row_count) {
+        abort(
+          "unsupported-frame",
+          sprintf("dataframe column %d does not match the row count", index)
+        )
+      }
+    }
+    invisible(row_count)
   }
 
   isolated_snapshot <- function(value, flavor) {
@@ -1156,10 +1474,10 @@ openwrangler_r_frame_contract <- local({
     if (identical(operator, "isNotNaN")) return(!missing$nan)
 
     present <- !missing$null & !missing$nan
-    keys <- rep("", length(column))
+    keys <- rep("", storage_length(column))
     present_indices <- which(present)
     keys[present_indices] <- profile_value_keys(column, semantics, present_indices)
-    result <- rep(FALSE, length(column))
+    result <- rep(FALSE, storage_length(column))
     if (length(present_indices) == 0L) return(result)
     if (operator %in% c("contains", "startsWith", "endsWith")) {
       values <- if (semantics$kind == "factor") as.character(column[present_indices]) else column[present_indices]
@@ -1296,7 +1614,7 @@ openwrangler_r_frame_contract <- local({
     if (!identical(validated, semantics)) source_changed()
     kind <- semantics$kind
     if (kind %in% c("date", "datetime", "difftime")) {
-      values <- as.double(column)
+      values <- unclass(column)
       if (any(is.nan(values))) {
         abort("unsupported-cell", sprintf("%s contains a classed NaN", label))
       }
@@ -1315,15 +1633,29 @@ openwrangler_r_frame_contract <- local({
       nan <- is.nan(column)
       return(list(null = is.na(column) & !nan, nan = nan))
     }
-    list(null = is.na(column), nan = rep(FALSE, length(column)))
+    if (identical(semantics$kind, "integer64")) {
+      return(list(
+        null = integer64_missing_mask(column, ensure_integer64_bindings()),
+        nan = rep(FALSE, storage_length(column))
+      ))
+    }
+    if (semantics$kind %in% c("date", "datetime", "difftime")) {
+      values <- unclass(column)
+      return(list(null = is.na(values), nan = rep(FALSE, length(values))))
+    }
+    list(null = is.na(column), nan = rep(FALSE, storage_length(column)))
   }
 
   profile_value_keys <- function(column, semantics, indices) {
     if (length(indices) == 0L) return(character())
     kind <- semantics$kind
+    if (kind == "integer64") {
+      bindings <- ensure_integer64_bindings()
+      return(integer64_as_character(integer64_subset(column, indices), bindings))
+    }
     values <- column[indices]
     if (kind == "logical") return(ifelse(values, "TRUE", "FALSE"))
-    if (kind %in% c("integer", "integer64")) return(as.character(values))
+    if (kind == "integer") return(as.character(values))
     if (kind == "double") {
       return(vapply(values, canonical_double_key, character(1L)))
     }
@@ -1493,8 +1825,11 @@ openwrangler_r_frame_contract <- local({
   }
 
   numeric_profile_values <- function(column, semantics, present_indices) {
+    if (semantics$kind == "integer64") {
+      bindings <- ensure_integer64_bindings()
+      return(suppressWarnings(integer64_as_double(integer64_subset(column, present_indices), bindings)))
+    }
     values <- column[present_indices]
-    if (semantics$kind == "integer64") return(suppressWarnings(as.double(values)))
     if (semantics$kind == "difftime") return(as.double(values, units = semantics$units))
     as.double(values)
   }
@@ -1510,13 +1845,18 @@ openwrangler_r_frame_contract <- local({
   }
 
   exact_profile_integer_cell <- function(column, semantics, index, budget, label) {
-    exact_profile_integer_text_cell(as.character(unname(column[index])), budget, label)
+    exact <- if (identical(semantics$kind, "integer64")) {
+      integer64_as_character(integer64_subset(column, index), ensure_integer64_bindings())[[1L]]
+    } else {
+      as.character(unname(column[index]))
+    }
+    exact_profile_integer_text_cell(exact, budget, label)
   }
 
   exact_integer_extrema <- function(column, semantics, present_indices, budget, label) {
     if (length(present_indices) == 0L || !semantics$kind %in% c("integer", "integer64")) return(list())
     if (semantics$kind == "integer64") {
-      values <- column[present_indices]
+      values <- integer64_subset(column, present_indices)
       ascending <- order_integer64(values, FALSE)
       minimum_index <- present_indices[[ascending[[1L]]]]
       maximum_index <- present_indices[[ascending[[length(ascending)]]]]
@@ -1635,7 +1975,7 @@ openwrangler_r_frame_contract <- local({
       column = descriptor$name,
       type = descriptor$type,
       rawType = descriptor$rawType,
-      totalCount = length(column),
+      totalCount = storage_length(column),
       nullCount = as.integer(sum(missing$null)),
       nanCount = as.integer(sum(missing$nan)),
       distinctCount = counts$distinctCount,
@@ -1667,7 +2007,7 @@ openwrangler_r_frame_contract <- local({
   }
 
   order_integer64 <- function(values, decreasing) {
-    text <- as.character(values)
+    text <- integer64_as_character(values, ensure_integer64_bindings())
     negative <- startsWith(text, "-")
     digits <- ifelse(negative, substring(text, 2L), text)
     negative_positions <- which(negative)
@@ -2045,16 +2385,16 @@ openwrangler_r_frame_contract <- local({
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
+    row_count <- as.integer(validate_frame_structure(value))
     value <- normalize_supported_frame(value)
     flavor <- frame_flavor(value)
     assert_frame_attributes(value, flavor)
-    row_count <- nrow(value)
-    column_count <- ncol(value)
+    column_count <- storage_length(value)
     whole_number(row_count, "row count", maximum_rows)
     whole_number(column_count, "column count", maximum_columns)
     metadata_budget <- new_payload_budget()
     spend_payload_budget(metadata_budget, metadata_base_bytes, "R frame metadata")
-    column_names <- names(value)
+    column_names <- attr(value, "names", exact = TRUE)
     if (!is.character(column_names) || length(column_names) != column_count) {
       abort("invalid-schema", "the dataframe does not have one name per column")
     }
@@ -2080,7 +2420,7 @@ openwrangler_r_frame_contract <- local({
         TRUE
       } else {
         add_metric(metrics, "nullableScans")
-        anyNA(value[[index]])
+        column_has_missing(value[[index]], semantics)
       }
       list(
         id = sprintf("r:c:%d", index - 1L),
@@ -2138,10 +2478,13 @@ openwrangler_r_frame_contract <- local({
     source_positions = NULL,
     source_row_positions = NULL,
     output_ids = NULL,
+    formula_positions = NULL,
+    formula_right_source_positions = NULL,
     text_length_positions = NULL,
     text_transform_positions = NULL,
     numeric_transform_positions = NULL,
     min_max_scale_positions = NULL,
+    datetime_format_positions = NULL,
     fill_missing_positions = NULL,
     fallback_fill_positions = NULL,
     cast_positions = NULL,
@@ -2150,6 +2493,7 @@ openwrangler_r_frame_contract <- local({
     if (!is.data.frame(value)) {
       abort("unsupported-frame", "the value is not an R dataframe")
     }
+    validate_frame_structure(value)
     if (!is.null(nullability_source)) validate_capture(nullability_source)
     if (
       is.null(nullability_source) &&
@@ -2157,10 +2501,13 @@ openwrangler_r_frame_contract <- local({
           !is.null(source_positions) ||
             !is.null(source_row_positions) ||
             !is.null(output_ids) ||
+            !is.null(formula_positions) ||
+            !is.null(formula_right_source_positions) ||
             !is.null(text_length_positions) ||
             !is.null(text_transform_positions) ||
             !is.null(numeric_transform_positions) ||
             !is.null(min_max_scale_positions) ||
+            !is.null(datetime_format_positions) ||
             !is.null(fill_missing_positions) ||
             !is.null(fallback_fill_positions) ||
             !is.null(cast_positions) ||
@@ -2171,6 +2518,12 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(output_ids) && is.null(source_positions)) {
       abort("internal-error", "explicit R output IDs require a source-column mapping")
+    }
+    if (!is.null(formula_positions) && (is.null(source_positions) || is.null(output_ids))) {
+      abort("internal-error", "R formula outputs require explicit source mappings and identities")
+    }
+    if (!is.null(formula_right_source_positions) && is.null(formula_positions)) {
+      abort("internal-error", "R formula right operands require formula output positions")
     }
     if (!is.null(text_length_positions) && (is.null(source_positions) || is.null(output_ids))) {
       abort("internal-error", "R text-length outputs require explicit source mappings and identities")
@@ -2183,6 +2536,9 @@ openwrangler_r_frame_contract <- local({
     }
     if (!is.null(min_max_scale_positions) && is.null(source_positions)) {
       abort("internal-error", "R min-max scale outputs require explicit source mappings")
+    }
+    if (!is.null(datetime_format_positions) && is.null(source_positions)) {
+      abort("internal-error", "R datetime-format outputs require explicit source mappings")
     }
     if (!is.null(fill_missing_positions) && is.null(source_positions)) {
       abort("internal-error", "R fill-missing outputs require explicit source mappings")
@@ -2278,6 +2634,38 @@ openwrangler_r_frame_contract <- local({
         abort("internal-error", "a derived R frame has an invalid source-column mapping")
       }
       source_positions <- as.integer(source_positions)
+      if (is.null(formula_positions)) {
+        formula_positions <- integer()
+      } else {
+        if (
+          !is.numeric(formula_positions) ||
+            anyNA(formula_positions) ||
+            any(!is.finite(formula_positions)) ||
+            any(formula_positions != floor(formula_positions)) ||
+            any(formula_positions < 1L) ||
+            any(formula_positions > length(output_schema)) ||
+            anyDuplicated(formula_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid formula output positions")
+        }
+        formula_positions <- as.integer(formula_positions)
+      }
+      if (is.null(formula_right_source_positions)) {
+        formula_right_source_positions <- rep.int(0L, length(formula_positions))
+      } else {
+        if (
+          !is.numeric(formula_right_source_positions) ||
+            anyNA(formula_right_source_positions) ||
+            any(!is.finite(formula_right_source_positions)) ||
+            any(formula_right_source_positions != floor(formula_right_source_positions)) ||
+            length(formula_right_source_positions) != length(formula_positions) ||
+            any(formula_right_source_positions < 0L) ||
+            any(formula_right_source_positions > length(source_schema))
+        ) {
+          abort("internal-error", "a derived R frame has invalid formula right-operand mappings")
+        }
+        formula_right_source_positions <- as.integer(formula_right_source_positions)
+      }
       if (is.null(text_length_positions)) {
         text_length_positions <- integer()
       } else {
@@ -2342,6 +2730,22 @@ openwrangler_r_frame_contract <- local({
         }
         min_max_scale_positions <- as.integer(min_max_scale_positions)
       }
+      if (is.null(datetime_format_positions)) {
+        datetime_format_positions <- integer()
+      } else {
+        if (
+          !is.numeric(datetime_format_positions) ||
+            anyNA(datetime_format_positions) ||
+            any(!is.finite(datetime_format_positions)) ||
+            any(datetime_format_positions != floor(datetime_format_positions)) ||
+            any(datetime_format_positions < 1L) ||
+            any(datetime_format_positions > length(output_schema)) ||
+            anyDuplicated(datetime_format_positions)
+        ) {
+          abort("internal-error", "a derived R frame has invalid datetime-format output positions")
+        }
+        datetime_format_positions <- as.integer(datetime_format_positions)
+      }
       if (is.null(cast_positions)) {
         cast_positions <- integer()
         cast_dtypes <- character()
@@ -2396,10 +2800,12 @@ openwrangler_r_frame_contract <- local({
         fallback_fill_positions <- as.integer(fallback_fill_positions)
       }
       transformed_positions <- c(
+        formula_positions,
         text_length_positions,
         text_transform_positions,
         numeric_transform_positions,
         min_max_scale_positions,
+        datetime_format_positions,
         fill_missing_positions,
         fallback_fill_positions,
         cast_positions
@@ -2462,7 +2868,80 @@ openwrangler_r_frame_contract <- local({
       for (index in seq_along(output_schema)) {
         source_column <- source_schema[[source_positions[[index]]]]
         output_column <- output_schema[[index]]
-        if (index %in% text_length_positions) {
+        if (index %in% formula_positions) {
+          formula_index <- match(index, formula_positions)
+          formula_right_position <- formula_right_source_positions[[formula_index]]
+          formula_right_column <- if (formula_right_position == 0L) {
+            NULL
+          } else {
+            source_schema[[formula_right_position]]
+          }
+          source_frame <- read_capture_frame(nullability_source)
+          left_values <- source_frame[[source_positions[[index]]]]
+          right_values <- if (formula_right_position == 0L) NULL else source_frame[[formula_right_position]]
+          output_values <- snapshot[[index]]
+          output_nan <- if (inherits(output_values, "integer64")) {
+            rep.int(FALSE, storage_length(output_values))
+          } else {
+            is.nan(output_values)
+          }
+          output_infinite <- if (inherits(output_values, "integer64")) {
+            rep.int(FALSE, storage_length(output_values))
+          } else {
+            is.infinite(output_values)
+          }
+          input_nan <- if (inherits(left_values, "integer64")) {
+            rep.int(FALSE, storage_length(left_values))
+          } else {
+            is.nan(left_values)
+          }
+          input_infinite <- if (inherits(left_values, "integer64")) {
+            rep.int(FALSE, storage_length(left_values))
+          } else {
+            is.infinite(left_values)
+          }
+          input_missing <- if (inherits(left_values, "integer64")) {
+            integer64_missing_mask(left_values)
+          } else {
+            is.na(left_values) & !input_nan
+          }
+          if (!is.null(right_values)) {
+            right_nan <- if (inherits(right_values, "integer64")) {
+              rep.int(FALSE, storage_length(right_values))
+            } else {
+              is.nan(right_values)
+            }
+            right_infinite <- if (inherits(right_values, "integer64")) {
+              rep.int(FALSE, storage_length(right_values))
+            } else {
+              is.infinite(right_values)
+            }
+            input_nan <- input_nan | right_nan
+            input_infinite <- input_infinite | right_infinite
+            input_missing <- input_missing | if (inherits(right_values, "integer64")) {
+              integer64_missing_mask(right_values)
+            } else {
+              is.na(right_values) & !right_nan
+            }
+          }
+          output_missing <- if (inherits(output_values, "integer64")) {
+            integer64_missing_mask(output_values)
+          } else {
+            is.na(output_values) & !output_nan
+          }
+          if (
+            !source_column$semantics$kind %in% c("integer", "double", "integer64") ||
+              (!is.null(formula_right_column) &&
+                !formula_right_column$semantics$kind %in% c("integer", "double", "integer64")) ||
+              !output_column$semantics$kind %in% c("integer", "double", "integer64") ||
+              identical(output_ids[[index]], mapped_source_ids[[index]]) ||
+              any(output_nan & !input_nan) ||
+              any(output_infinite & !input_infinite) ||
+              any(output_missing & !input_missing)
+          ) {
+            abort("internal-error", "a derived R frame has an invalid formula output")
+          }
+        } else if (index %in% text_length_positions) {
           if (
             !source_column$semantics$kind %in% c("character", "factor") ||
               !identical(output_column$semantics$kind, "integer") ||
@@ -2495,6 +2974,13 @@ openwrangler_r_frame_contract <- local({
               !identical(output_column$semantics$kind, "double")
           ) {
             abort("internal-error", "a derived R frame has an invalid min-max scale output")
+          }
+        } else if (index %in% datetime_format_positions) {
+          if (
+            !source_column$semantics$kind %in% c("date", "datetime") ||
+              !identical(output_column$semantics$kind, "character")
+          ) {
+            abort("internal-error", "a derived R frame has an invalid datetime-format output")
           }
         } else if (index %in% cast_positions) {
           cast_index <- match(index, cast_positions)
@@ -2557,18 +3043,26 @@ openwrangler_r_frame_contract <- local({
           }
         }
         inspected$descriptor$schema[[index]]$id <- output_ids[[index]]
-        inspected$descriptor$schema[[index]]$nullable <- if (index %in% fill_missing_positions) {
+        inspected$descriptor$schema[[index]]$nullable <- if (index %in% formula_positions) {
+          formula_index <- match(index, formula_positions)
+          formula_right_position <- formula_right_source_positions[[formula_index]]
+          isTRUE(source_nullable[[index]]) ||
+            (formula_right_position != 0L && isTRUE(source_schema[[formula_right_position]]$nullable)) ||
+            column_has_missing(snapshot[[index]], output_column$semantics)
+        } else if (index %in% fill_missing_positions) {
           FALSE
         } else if (index %in% fallback_fill_positions) {
-          anyNA(snapshot[[index]])
+          column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% cast_positions) {
-          isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
+          isTRUE(source_nullable[[index]]) || column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% text_transform_positions) {
-          isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
+          isTRUE(source_nullable[[index]]) || column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% numeric_transform_positions) {
-          isTRUE(source_nullable[[index]]) || anyNA(snapshot[[index]])
+          isTRUE(source_nullable[[index]]) || column_has_missing(snapshot[[index]], output_column$semantics)
         } else if (index %in% min_max_scale_positions) {
           TRUE
+        } else if (index %in% datetime_format_positions) {
+          isTRUE(source_nullable[[index]]) || column_has_missing(snapshot[[index]], output_column$semantics)
         } else {
           source_nullable[[index]]
         }
@@ -2734,7 +3228,7 @@ openwrangler_r_frame_contract <- local({
     if (is_private_column_name(old_name) || is_private_column_name(new_name)) {
       abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
     }
-    if (any(names(value) == new_name)) {
+    if (any(attr(value, "names", exact = TRUE) == new_name)) {
       abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
     }
     if (column_count >= maximum_columns) {
@@ -2745,9 +3239,9 @@ openwrangler_r_frame_contract <- local({
     if (identical(inspected$flavor, "r.data.table")) {
       data.table::set(result, j = new_name, value = result[[position]])
     } else {
-      original_names <- names(result)
-      result[[length(result) + 1L]] <- result[[position]]
-      names(result) <- c(original_names, new_name)
+      original_names <- attr(result, "names", exact = TRUE)
+      result[[storage_length(result) + 1L]] <- result[[position]]
+      attr(result, "names") <- c(original_names, new_name)
     }
     result
   }
@@ -2761,6 +3255,267 @@ openwrangler_r_frame_contract <- local({
     )
     resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
     clone_column_at(value, resolved$position, resolved$name, new_name)
+  }
+
+  formula_column_at <- function(
+    value,
+    left_position,
+    left_name,
+    operator,
+    new_name,
+    right_position = NULL,
+    right_name = NULL,
+    right_value = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    left_position <- whole_number(left_position, "left column position", column_count)
+    if (left_position < 1L || left_position > column_count) {
+      abort("stale-column", "the formula left-column position no longer matches the R dataframe")
+    }
+    left_position <- as.integer(left_position)
+    left_name <- bounded_utf8(left_name, "left_name", maximum_name_bytes)
+    left_column <- inspected$descriptor$schema[[left_position]]
+    if (!identical(left_column$name, left_name)) {
+      abort("stale-column", "the formula left-column name no longer matches the R dataframe")
+    }
+    if (is_private_column_name(left_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (!left_column$semantics$kind %in% c("integer", "double", "integer64")) {
+      abort("invalid-view-query", "formula requires numeric R columns")
+    }
+
+    operator <- bounded_utf8(operator, "operator", maximum_name_bytes)
+    if (!operator %in% c("add", "subtract", "multiply", "divide", "modulo", "power")) {
+      abort("invalid-view-query", "formula.operator is not supported")
+    }
+    new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+    if (identical(new_name, "")) {
+      abort("invalid-column-name", "new_name must not be empty")
+    }
+    if (is_private_column_name(new_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    if (any(attr(value, "names", exact = TRUE) == new_name)) {
+      abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
+    }
+    if (column_count >= maximum_columns) {
+      abort("invalid-view-query", "formula exceeds the supported R column limit")
+    }
+
+    has_right_column <- !is.null(right_position) || !is.null(right_name)
+    has_right_value <- !is.null(right_value)
+    if (has_right_column == has_right_value) {
+      abort("invalid-view-query", "formula requires exactly one of a right column or numeric value")
+    }
+
+    right_column <- NULL
+    if (has_right_column) {
+      if (is.null(right_position) || is.null(right_name)) {
+        abort("invalid-view-query", "formula right-column position and name must be provided together")
+      }
+      right_position <- whole_number(right_position, "right column position", column_count)
+      if (right_position < 1L || right_position > column_count) {
+        abort("stale-column", "the formula right-column position no longer matches the R dataframe")
+      }
+      right_position <- as.integer(right_position)
+      right_name <- bounded_utf8(right_name, "right_name", maximum_name_bytes)
+      right_column <- inspected$descriptor$schema[[right_position]]
+      if (!identical(right_column$name, right_name)) {
+        abort("stale-column", "the formula right-column name no longer matches the R dataframe")
+      }
+      if (is_private_column_name(right_name)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+      if (!right_column$semantics$kind %in% c("integer", "double", "integer64")) {
+        abort("invalid-view-query", "formula requires numeric R columns")
+      }
+    } else if (
+      !is.numeric(right_value) ||
+        is.object(right_value) ||
+        length(right_value) != 1L ||
+        is.na(right_value) ||
+        !is.finite(right_value)
+    ) {
+      abort("invalid-view-query", "formula numeric value must be one finite scalar")
+    }
+
+    result <- isolated_snapshot(value, inspected$flavor)
+    left_values <- result[[left_position]]
+    right_values <- if (has_right_column) result[[right_position]] else right_value
+    left_length <- storage_length(left_values)
+    left_nan <- if (inherits(left_values, "integer64")) rep.int(FALSE, left_length) else is.nan(left_values)
+    left_infinite <- if (inherits(left_values, "integer64")) {
+      rep.int(FALSE, left_length)
+    } else {
+      is.infinite(left_values)
+    }
+    integer64_bindings <- if (identical(left_column$semantics$kind, "integer64") ||
+      (!is.null(right_column) && identical(right_column$semantics$kind, "integer64"))) {
+      ensure_integer64_bindings()
+    } else {
+      NULL
+    }
+    left_missing <- if (inherits(left_values, "integer64")) {
+      integer64_missing_mask(left_values, integer64_bindings)
+    } else {
+      is.na(left_values) & !left_nan
+    }
+    right_nan <- if (!has_right_column || inherits(right_values, "integer64")) {
+      rep.int(FALSE, left_length)
+    } else {
+      is.nan(right_values)
+    }
+    right_infinite <- if (!has_right_column || inherits(right_values, "integer64")) {
+      rep.int(FALSE, left_length)
+    } else {
+      is.infinite(right_values)
+    }
+    right_missing <- if (has_right_column) {
+      if (inherits(right_values, "integer64")) {
+        integer64_missing_mask(right_values, integer64_bindings)
+      } else {
+        is.na(right_values) & !right_nan
+      }
+    } else {
+      rep.int(FALSE, left_length)
+    }
+    left_kind <- left_column$semantics$kind
+    right_kind <- if (has_right_column) {
+      right_column$semantics$kind
+    } else if (is.integer(right_value)) {
+      "integer"
+    } else {
+      "double"
+    }
+    has_integer64 <- identical(left_kind, "integer64") || identical(right_kind, "integer64")
+    has_double <- identical(left_kind, "double") || identical(right_kind, "double")
+    force_double <- operator %in% c("divide", "power") || (has_integer64 && has_double)
+    if (force_double) {
+      if (identical(left_kind, "integer64")) {
+        left_values <- suppressWarnings(integer64_as_double(left_values, integer64_bindings))
+      }
+      if (identical(right_kind, "integer64")) {
+        right_values <- suppressWarnings(integer64_as_double(right_values, integer64_bindings))
+      }
+    }
+
+    transformed <- tryCatch(
+      withCallingHandlers(
+        if (has_integer64 && !force_double) {
+          integer64_binary(operator, left_values, right_values, integer64_bindings)
+        } else switch(
+          operator,
+          add = left_values + right_values,
+          subtract = left_values - right_values,
+          multiply = left_values * right_values,
+          divide = left_values / right_values,
+          modulo = left_values %% right_values,
+          power = left_values ^ right_values
+        ),
+        warning = function(warning) invokeRestart("muffleWarning")
+      ),
+      error = function(error) {
+        abort("invalid-view-query", "formula could not apply the requested numeric operation")
+      }
+    )
+    input_missing <- left_missing | right_missing
+    if (any(input_missing)) {
+      if (inherits(transformed, "integer64")) {
+        transformed <- integer64_force_missing(transformed, input_missing, integer64_bindings)
+      } else if (is.integer(transformed)) {
+        transformed[input_missing] <- NA_integer_
+      } else {
+        transformed[input_missing] <- NA_real_
+      }
+    }
+    if (
+      storage_length(transformed) != inspected$descriptor$shape$rows ||
+        !(is.integer(transformed) || is.double(transformed) || inherits(transformed, "integer64"))
+    ) {
+      abort("internal-error", "formula returned an invalid R numeric result")
+    }
+    output_nan <- if (inherits(transformed, "integer64")) {
+      rep.int(FALSE, storage_length(transformed))
+    } else {
+      is.nan(transformed)
+    }
+    output_infinite <- if (inherits(transformed, "integer64")) {
+      rep.int(FALSE, storage_length(transformed))
+    } else {
+      is.infinite(transformed)
+    }
+    output_missing <- if (inherits(transformed, "integer64")) {
+      integer64_missing_mask(transformed, integer64_bindings)
+    } else {
+      is.na(transformed) & !output_nan
+    }
+    if (
+      any(output_nan & !(left_nan | right_nan)) ||
+        any(output_infinite & !(left_infinite | right_infinite)) ||
+        any(output_missing & !(left_missing | right_missing))
+    ) {
+      abort("operation-output-too-large", "formula produced a non-finite or overflowing numeric result")
+    }
+
+    transformed_names <- attr(transformed, "names", exact = TRUE)
+    if (identical(inspected$flavor, "r.data.table")) {
+      result_classes <- class(result)
+      class(result) <- NULL
+      result_names <- attr(result, "names", exact = TRUE)
+      result[[storage_length(result) + 1L]] <- transformed
+      attr(result, "names") <- c(result_names, new_name)
+      if (!is.null(transformed_names)) attr(result[[storage_length(result)]], "names") <- transformed_names
+      class(result) <- result_classes
+      result <- repair_data_table_self_reference(result)
+    } else {
+      result_classes <- class(result)
+      class(result) <- NULL
+      original_names <- attr(result, "names", exact = TRUE)
+      result[[storage_length(result) + 1L]] <- transformed
+      attr(result, "names") <- c(original_names, new_name)
+      if (!is.null(transformed_names)) attr(result[[storage_length(result)]], "names") <- transformed_names
+      class(result) <- result_classes
+    }
+    result
+  }
+
+  formula_column <- function(
+    value,
+    left_column_reference,
+    operator,
+    new_name,
+    right_column_reference = NULL,
+    right_value = NULL
+  ) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    left <- resolve_column_reference(left_column_reference, inspected$descriptor, "left_column_reference")
+    right <- if (is.null(right_column_reference)) {
+      NULL
+    } else {
+      resolve_column_reference(right_column_reference, inspected$descriptor, "right_column_reference")
+    }
+    formula_column_at(
+      value,
+      left$position,
+      left$name,
+      operator,
+      new_name,
+      if (is.null(right)) NULL else right$position,
+      if (is.null(right)) NULL else right$name,
+      right_value
+    )
   }
 
   text_length_column_at <- function(value, position, old_name, new_name) {
@@ -2872,7 +3627,7 @@ openwrangler_r_frame_contract <- local({
       }
       in_place <- identical(new_name, old_name)
     }
-    if (!in_place && any(names(value) == new_name)) {
+    if (!in_place && any(attr(value, "names", exact = TRUE) == new_name)) {
       abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
     }
     if (!in_place && column_count >= maximum_columns) {
@@ -3452,6 +4207,200 @@ openwrangler_r_frame_contract <- local({
 
   ceil_number_column_at <- function(value, position, old_name, new_name = NULL) {
     transform_numeric_column_at(value, position, old_name, "ceilNumber", 0, new_name)
+  }
+
+  format_datetime_column_at <- function(value, position, old_name, format, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    column_count <- inspected$descriptor$shape$columns
+    position <- whole_number(position, "column position", column_count)
+    if (position < 1L || position > column_count) {
+      abort("stale-column", "the formatDatetime column position no longer matches the R dataframe")
+    }
+    position <- as.integer(position)
+    old_name <- bounded_utf8(old_name, "old_name", maximum_name_bytes)
+    source_column <- inspected$descriptor$schema[[position]]
+    if (!identical(source_column$name, old_name)) {
+      abort("stale-column", "the formatDatetime column name no longer matches the R dataframe")
+    }
+    if (!source_column$semantics$kind %in% c("date", "datetime")) {
+      abort("invalid-view-query", "formatDatetime requires a Date or POSIXct R column")
+    }
+    if (is_private_column_name(old_name)) {
+      abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+    }
+    format <- bounded_utf8(format, "format")
+    if (identical(format, "")) {
+      abort("invalid-view-query", "formatDatetime.format must be a non-empty string")
+    }
+
+    if (!is.null(new_name)) {
+      new_name <- bounded_utf8(new_name, "new_name", maximum_name_bytes)
+      if (identical(new_name, "")) abort("invalid-column-name", "new_name must not be empty")
+      if (is_private_column_name(new_name)) {
+        abort("reserved-column-name", "Open Wrangler's private row-identity prefix is reserved")
+      }
+    }
+    in_place <- is.null(new_name) || identical(new_name, old_name)
+    if (!in_place && any(attr(value, "names", exact = TRUE) == new_name)) {
+      abort("column-name-collision", sprintf("new_name collides with an existing column: %s", new_name))
+    }
+    if (!in_place && column_count >= maximum_columns) {
+      abort("invalid-view-query", "formatDatetime exceeds the supported R column limit")
+    }
+    if (
+      in_place &&
+        identical(inspected$flavor, "r.data.table") &&
+        old_name %in% (data.table::key(value) %||% character())
+    ) {
+      abort(
+        "invalid-view-query",
+        "formatDatetime cannot replace a data.table key column; choose a new output column"
+      )
+    }
+
+    row_count <- inspected$descriptor$shape$rows
+    output_bytes <- as.double(row_count) * character_vector_slot_bytes
+    if (!is.finite(output_bytes) || output_bytes > maximum_operation_output_bytes) {
+      abort(
+        "operation-output-too-large",
+        sprintf(
+          "formatDatetime exceeds the %d-byte aggregate output budget",
+          maximum_operation_output_bytes
+        )
+      )
+    }
+    result <- isolated_snapshot(value, inspected$flavor)
+    source_values <- result[[position]]
+    source_storage <- unclass(source_values)
+    transformed <- rep.int(NA_character_, row_count)
+    start <- 1L
+    while (start <= row_count) {
+      end <- min(row_count, start + maximum_operation_output_chunk_rows - 1L)
+      positions <- seq.int(start, end)
+      numeric_chunk <- source_storage[positions]
+      source_chunk <- if (identical(source_column$semantics$kind, "date")) {
+        structure(numeric_chunk, class = "Date")
+      } else {
+        timezone <- source_column$semantics$timezone
+        attributes(numeric_chunk) <- if (is.null(timezone)) {
+          list(class = c("POSIXct", "POSIXt"))
+        } else {
+          list(class = c("POSIXct", "POSIXt"), tzone = timezone)
+        }
+        numeric_chunk
+      }
+      if (any(is.nan(numeric_chunk)) || any(!is.na(numeric_chunk) & !is.finite(numeric_chunk))) {
+        abort("unsupported-cell", "formatDatetime cannot format a non-finite Date or POSIXct value")
+      }
+      present <- !is.na(numeric_chunk)
+      if (
+        identical(source_column$semantics$kind, "date") &&
+          any(present & numeric_chunk != floor(numeric_chunk))
+      ) {
+        abort("unsupported-cell", "formatDatetime cannot format a fractional Date")
+      }
+      if (any(present)) {
+        present_numeric <- numeric_chunk[present]
+        present_source <- if (identical(source_column$semantics$kind, "date")) {
+          structure(present_numeric, class = "Date")
+        } else {
+          timezone <- source_column$semantics$timezone
+          attributes(present_numeric) <- if (is.null(timezone)) {
+            list(class = c("POSIXct", "POSIXt"))
+          } else {
+            list(class = c("POSIXct", "POSIXt"), tzone = timezone)
+          }
+          present_numeric
+        }
+        if (identical(source_column$semantics$kind, "date")) {
+          invisible(display_date_values(present_source, "formatDatetime source"))
+        } else {
+          invisible(
+            display_datetime_values(
+              present_source,
+              source_column$semantics$timezone,
+              "formatDatetime source"
+            )
+          )
+        }
+      }
+      transformed_chunk <- tryCatch(
+        if (identical(source_column$semantics$kind, "date")) {
+          base::format.Date(source_chunk, format = format)
+        } else {
+          timezone <- source_column$semantics$timezone
+          if (is.null(timezone) || identical(timezone, "")) timezone <- "UTC"
+          base::format.POSIXct(source_chunk, format = format, tz = timezone, usetz = FALSE)
+        },
+        error = function(error) {
+          abort("invalid-view-query", "formatDatetime could not apply the requested strftime format")
+        }
+      )
+      if (!is.character(transformed_chunk) || length(transformed_chunk) != storage_length(source_chunk)) {
+        abort("internal-error", "formatDatetime returned an invalid R text result")
+      }
+      transformed_chunk <- vapply(seq_along(transformed_chunk), function(index) {
+        if (is.na(numeric_chunk[[index]])) return(NA_character_)
+        if (is.na(transformed_chunk[[index]])) {
+          abort("invalid-view-query", "formatDatetime returned a missing result for a present datetime")
+        }
+        bounded_operation_output(transformed_chunk[[index]], "Format datetime")
+      }, character(1L), USE.NAMES = FALSE)
+      chunk_text_bytes <- sum(as.double(nchar(
+        transformed_chunk[!is.na(transformed_chunk)],
+        type = "bytes"
+      )))
+      next_output_bytes <- output_bytes + chunk_text_bytes
+      if (!is.finite(next_output_bytes) || next_output_bytes > maximum_operation_output_bytes) {
+        abort(
+          "operation-output-too-large",
+          sprintf(
+            "formatDatetime exceeds the %d-byte aggregate output budget",
+            maximum_operation_output_bytes
+          )
+        )
+      }
+      output_bytes <- next_output_bytes
+      transformed[positions] <- transformed_chunk
+      start <- end + 1L
+    }
+
+    if (in_place) {
+      if (identical(inspected$flavor, "r.data.table")) {
+        data.table::set(result, j = position, value = transformed)
+      } else {
+        result[[position]] <- transformed
+      }
+    } else if (identical(inspected$flavor, "r.data.table")) {
+      result_classes <- class(result)
+      class(result) <- NULL
+      result_names <- attr(result, "names", exact = TRUE)
+      result[[storage_length(result) + 1L]] <- transformed
+      attr(result, "names") <- c(result_names, new_name)
+      class(result) <- result_classes
+      result <- repair_data_table_self_reference(result)
+    } else {
+      original_names <- attr(result, "names", exact = TRUE)
+      result[[storage_length(result) + 1L]] <- transformed
+      attr(result, "names") <- c(original_names, new_name)
+    }
+    result
+  }
+
+  format_datetime_column <- function(value, column_reference, format, new_name = NULL) {
+    inspected <- inspect_frame(
+      value,
+      conservative_nullable = TRUE,
+      validate_values = FALSE,
+      metrics = new_capture_metrics()
+    )
+    resolved <- resolve_column_reference(column_reference, inspected$descriptor, "column_reference")
+    format_datetime_column_at(value, resolved$position, resolved$name, format, new_name)
   }
 
   integer64_fill_value <- function(text, label) {
@@ -5788,6 +6737,15 @@ openwrangler_r_frame_contract <- local({
     }
     selected_schema <- descriptor$schema[column_positions]
     column_ids <- vapply(selected_schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    page_integer64_bindings <- if (any(vapply(
+      selected_schema,
+      function(column) identical(column$semantics$kind, "integer64"),
+      logical(1L)
+    ))) {
+      ensure_integer64_bindings()
+    } else {
+      NULL
+    }
     page_budget <- new_payload_budget(capture$metadataBytes)
     spend_payload_budget(page_budget, page_base_bytes, "R frame page")
     for (index in seq_along(column_ids)) {
@@ -5812,7 +6770,8 @@ openwrangler_r_frame_contract <- local({
           descriptor$schema[[source_column]]$semantics,
           source_row,
           sprintf("cell[%d,%d]", source_row, source_column),
-          page_budget
+          page_budget,
+          page_integer64_bindings
         )
       })
       row <- list(
@@ -6015,7 +6974,7 @@ openwrangler_r_frame_contract <- local({
       missing <- profile_missing_masks(column, semantics)
       present_indices <- which(!missing$null & !missing$nan)
       if (length(present_indices) == 0L) {
-        return(finish(json_array(list()), FALSE, if (sampled) length(column) else NULL))
+        return(finish(json_array(list()), FALSE, if (sampled) storage_length(column) else NULL))
       }
       keys <- profile_value_keys(column, semantics, present_indices)
       first <- !duplicated(keys)
@@ -6051,7 +7010,7 @@ openwrangler_r_frame_contract <- local({
         )
       )
     })
-    finish(json_array(values), length(priority) > limit, if (sampled) length(column) else NULL)
+    finish(json_array(values), length(priority) > limit, if (sampled) storage_length(column) else NULL)
   }
 
   materialize_page <- function(
@@ -6157,6 +7116,8 @@ openwrangler_r_frame_contract <- local({
     rename_column_at = rename_column_at,
     clone_column = clone_column,
     clone_column_at = clone_column_at,
+    formula_column = formula_column,
+    formula_column_at = formula_column_at,
     text_length_column = text_length_column,
     text_length_column_at = text_length_column_at,
     lower_text_column = lower_text_column,
@@ -6175,6 +7136,8 @@ openwrangler_r_frame_contract <- local({
     round_number_column_at = round_number_column_at,
     floor_number_column_at = floor_number_column_at,
     ceil_number_column_at = ceil_number_column_at,
+    format_datetime_column = format_datetime_column,
+    format_datetime_column_at = format_datetime_column_at,
     fill_missing_column = fill_missing_column,
     fill_missing_column_at = fill_missing_column_at,
     fill_missing_from_fallback_columns_at = fill_missing_from_fallback_columns_at,

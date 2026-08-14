@@ -52,6 +52,51 @@ base_frame <- data.frame(
   check.names = FALSE
 )
 
+for (malformed_row_names in list(
+  rep("duplicate", nrow(base_frame)),
+  c(paste0("row-", seq_len(nrow(base_frame) - 1L)), NA_character_)
+)) {
+  malformed <- base_frame
+  attr(malformed, "row.names") <- malformed_row_names
+  before <- serialize(malformed, NULL, version = 3L)
+  assert_error(openwrangler_r_frame_contract$capture_frame(malformed), "unsupported-frame")
+  assert_identical(
+    serialize(malformed, NULL, version = 3L),
+    before,
+    "rejecting malformed row names changed the source frame"
+  )
+}
+
+unequal_columns <- structure(
+  list(valid = 1:2, short = 1L),
+  names = c("valid", "short"),
+  class = "data.frame",
+  row.names = c("row-a", "row-b")
+)
+unequal_columns_before <- serialize(unequal_columns, NULL, version = 3L)
+assert_error(openwrangler_r_frame_contract$capture_frame(unequal_columns), "unsupported-frame")
+assert_identical(
+  serialize(unequal_columns, NULL, version = 3L),
+  unequal_columns_before,
+  "rejecting unequal dataframe columns changed the source frame"
+)
+
+explicit_integer_rows <- data.frame(value = 1:2, row.names = 1:2)
+explicit_integer_capture <- openwrangler_r_frame_contract$capture_frame(explicit_integer_rows)
+assert_identical(
+  explicit_integer_capture$descriptor$frameSemantics$rowNames,
+  "explicit",
+  "valid explicit integer row names were rejected"
+)
+
+explicit_empty_row <- data.frame(value = 1L, row.names = "")
+explicit_empty_capture <- openwrangler_r_frame_contract$capture_frame(explicit_empty_row)
+assert_identical(
+  explicit_empty_capture$descriptor$shape$rows,
+  1L,
+  "a valid explicit empty row name was rejected"
+)
+
 base_capture <- openwrangler_r_frame_contract$capture_frame(base_frame)
 base_page <- openwrangler_r_frame_contract$materialize_page(
   base_capture,
@@ -81,6 +126,64 @@ assert_identical(base_page$page$rows[[2L]]$values[[2L]]$kind, "null", "NA was no
 assert_identical(base_page$page$rows[[3L]]$values[[3L]]$kind, "infinity", "infinity was not typed")
 assert_identical(base_page$page$rows[[3L]]$values[[3L]]$sign, 1L, "infinity sign changed")
 assert_true(jsonlite::validate(openwrangler_r_frame_contract$encode_page(base_capture, row_limit = 3L)), "JSON is invalid")
+
+date_page_s3_script <- tempfile(fileext = ".R")
+writeLines(c(
+  "local({",
+  "  source(commandArgs(trailingOnly = TRUE)[[1L]], local = FALSE)",
+  "  calls <- 0L",
+  "  registerS3method(\"is.na\", \"Date\", function(x) { calls <<- calls + 1L; base::is.na(base::unclass(x)) }, envir = .GlobalEnv)",
+  "  source_frame <- data.frame(day = as.Date(c(\"2026-01-01\", NA)), check.names = FALSE)",
+  "  source_before <- serialize(source_frame, NULL, version = 3L)",
+  "  capture <- openwrangler_r_frame_contract$capture_frame(source_frame)",
+  "  page <- openwrangler_r_frame_contract$materialize_page(capture, row_offset = 0L, row_limit = 2L, column_offset = 0L, column_limit = 1L)",
+  "  if (!identical(calls, 0L)) stop(\"Date page encoding dispatched to a caller is.na.Date method\", call. = FALSE)",
+  "  if (!identical(page$page$rows[[1L]]$values[[1L]]$display, \"2026-01-01\") || !identical(page$page$rows[[2L]]$values[[1L]]$kind, \"null\")) stop(\"Date page encoding changed under S3 isolation\", call. = FALSE)",
+  "  if (!identical(serialize(source_frame, NULL, version = 3L), source_before)) stop(\"Date page encoding mutated its source\", call. = FALSE)",
+  "})"
+), date_page_s3_script, useBytes = TRUE)
+date_page_s3_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c("--vanilla", date_page_s3_script, normalizePath("r/openwrangler_runtime/frame_contract.R")),
+  stdout = TRUE,
+  stderr = TRUE
+)
+date_page_s3_status <- attr(date_page_s3_output, "status", exact = TRUE)
+if (!is.null(date_page_s3_status) && date_page_s3_status != 0L) {
+  stop(paste(c("Date page S3-isolation child failed", date_page_s3_output), collapse = "\n"), call. = FALSE)
+}
+unlink(date_page_s3_script)
+
+integer64_capture_s3_script <- tempfile(fileext = ".R")
+writeLines(c(
+  "local({",
+  "  source(commandArgs(trailingOnly = TRUE)[[1L]], local = FALSE)",
+  "  requireNamespace(\"bit64\", quietly = TRUE)",
+  "  source_frame <- data.frame(value = bit64::as.integer64(c(4, 5)), check.names = FALSE)",
+  "  source_before <- serialize(source_frame, NULL, version = 3L)",
+  "  source_capture <- openwrangler_r_frame_contract$capture_frame(source_frame)",
+  "  registerS3method(\"length\", \"integer64\", function(x) stop(\"length.integer64 was dispatched\", call. = FALSE), envir = .GlobalEnv)",
+  "  registerS3method(\"anyNA\", \"integer64\", function(x, recursive = FALSE) stop(\"anyNA.integer64 was dispatched\", call. = FALSE), envir = .GlobalEnv)",
+  "  result <- openwrangler_r_frame_contract$formula_column_at(source_frame, 1L, \"value\", \"add\", \"sum\", right_value = 1L)",
+  "  capture <- openwrangler_r_frame_contract$capture_frame(result, nullability_source = source_capture, source_positions = c(1L, 1L), output_ids = c(\"r:c:0\", \"c:step:f:0\"), formula_positions = 2L)",
+  "  page <- openwrangler_r_frame_contract$materialize_page(capture, row_offset = 0L, row_limit = 2L, column_offset = 0L, column_limit = 2L)",
+  "  if (!identical(capture$descriptor$schema[[2L]]$nullable, FALSE)) stop(\"integer64 Formula nullability changed under S3 isolation\", call. = FALSE)",
+  "  raw <- vapply(page$page$rows, function(row) row$values[[2L]]$raw, character(1L))",
+  "  if (!identical(raw, c(\"5\", \"6\"))) stop(\"integer64 Formula page changed under S3 isolation\", call. = FALSE)",
+  "  if (!identical(serialize(source_frame, NULL, version = 3L), source_before)) stop(\"integer64 Formula capture mutated its source\", call. = FALSE)",
+  "})"
+), integer64_capture_s3_script, useBytes = TRUE)
+integer64_capture_s3_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c("--vanilla", integer64_capture_s3_script, normalizePath("r/openwrangler_runtime/frame_contract.R")),
+  stdout = TRUE,
+  stderr = TRUE
+)
+integer64_capture_s3_status <- attr(integer64_capture_s3_output, "status", exact = TRUE)
+if (!is.null(integer64_capture_s3_status) && integer64_capture_s3_status != 0L) {
+  stop(paste(c("integer64 Formula capture S3-isolation child failed", integer64_capture_s3_output), collapse = "\n"), call. = FALSE)
+}
+unlink(integer64_capture_s3_script)
 
 assert_true(
   !openwrangler_r_frame_contract$nanoparquet_version_supported(NULL) &&
@@ -761,6 +864,522 @@ assert_error(
   "exceeds 2048 UTF-8 bytes"
 )
 assert_identical(clone_frame, clone_before, "a failed clone mutated its source")
+
+formula_frame <- data.frame(
+  duplicate = c(1L, 2L, 3L),
+  duplicate = c(10L, NA_integer_, 4L),
+  `non syntactic` = c(2, 0, -1),
+  label = c("a", "b", "c"),
+  check.names = FALSE,
+  row.names = c("formula-a", "formula-b", "formula-c")
+)
+formula_before <- unserialize(serialize(formula_frame, NULL, version = 3L))
+formula_capture <- openwrangler_r_frame_contract$capture_frame(formula_frame)
+formula_result <- openwrangler_r_frame_contract$formula_column(
+  formula_frame,
+  list(id = "r:c:0", name = "duplicate"),
+  "add",
+  "duplicate sum",
+  right_column_reference = list(id = "r:c:1", name = "duplicate")
+)
+formula_generated_equivalent <- openwrangler_r_frame_contract$formula_column_at(
+  formula_frame,
+  1L,
+  "duplicate",
+  "add",
+  "duplicate sum",
+  right_position = 2L,
+  right_name = "duplicate"
+)
+assert_identical(
+  formula_result,
+  formula_generated_equivalent,
+  "formula stable-reference and bound-position execution diverged"
+)
+assert_identical(
+  formula_result$`duplicate sum`,
+  c(11L, NA_integer_, 7L),
+  "formula did not bind duplicate column names by exact source position"
+)
+assert_identical(row.names(formula_result), row.names(formula_frame), "formula changed explicit row names")
+formula_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  formula_result,
+  nullability_source = formula_capture,
+  source_positions = c(seq_along(formula_frame), 1L),
+  output_ids = c(
+    vapply(formula_capture$descriptor$schema, `[[`, character(1L), "id"),
+    "c:step:formula-contract:0"
+  ),
+  formula_positions = 5L,
+  formula_right_source_positions = 2L
+)
+assert_identical(
+  formula_result_capture$descriptor$schema[[5L]]$id,
+  "c:step:formula-contract:0",
+  "formula lost its derived stable identity"
+)
+assert_identical(formula_result_capture$descriptor$schema[[5L]]$rawType, "integer", "formula changed integer output type")
+assert_identical(formula_result_capture$descriptor$schema[[5L]]$nullable, TRUE, "formula hid a missing result")
+assert_identical(formula_frame, formula_before, "formula mutated its source data.frame")
+formula_result$`duplicate sum`[[1L]] <- 999L
+assert_identical(formula_frame, formula_before, "a formula result shared storage with its source")
+
+formula_conservative_source <- data.frame(left = 1:2, right = 10:11, check.names = FALSE)
+formula_conservative_live <- openwrangler_r_frame_contract$capture_live_frame(
+  function() formula_conservative_source
+)
+formula_conservative_result <- openwrangler_r_frame_contract$formula_column_at(
+  formula_conservative_source,
+  1L,
+  "left",
+  "add",
+  "sum",
+  right_position = 2L,
+  right_name = "right"
+)
+formula_conservative_capture <- openwrangler_r_frame_contract$capture_frame(
+  formula_conservative_result,
+  nullability_source = formula_conservative_live,
+  source_positions = c(1L, 2L, 1L),
+  output_ids = c("r:c:0", "r:c:1", "c:step:formula-nullability:0"),
+  formula_positions = 3L,
+  formula_right_source_positions = 2L
+)
+assert_identical(
+  formula_conservative_capture$descriptor$schema[[3L]]$nullable,
+  TRUE,
+  "formula lost the conservative nullability of its right operand"
+)
+
+formula_operator_cases <- list(
+  add = c(3L, 4L, 5L),
+  subtract = c(-1L, 0L, 1L),
+  multiply = c(2L, 4L, 6L),
+  divide = c(0.5, 1, 1.5),
+  modulo = c(1L, 0L, 1L),
+  power = c(1, 4, 9)
+)
+for (operator in names(formula_operator_cases)) {
+  result <- openwrangler_r_frame_contract$formula_column_at(
+    data.frame(value = 1:3, check.names = FALSE),
+    1L,
+    "value",
+    operator,
+    "result",
+    right_value = 2L
+  )
+  assert_identical(
+    result$result,
+    formula_operator_cases[[operator]],
+    sprintf("formula changed R %s semantics", operator)
+  )
+}
+
+formula_nonfinite_source <- data.frame(value = c(NaN, Inf, -Inf, 1), check.names = FALSE)
+formula_nonfinite_capture <- openwrangler_r_frame_contract$capture_frame(formula_nonfinite_source)
+formula_nonfinite_result <- openwrangler_r_frame_contract$formula_column_at(
+  formula_nonfinite_source,
+  1L,
+  "value",
+  "add",
+  "shifted",
+  right_value = 1
+)
+assert_identical(
+  formula_nonfinite_result$shifted,
+  c(NaN, Inf, -Inf, 2),
+  "formula did not preserve source NaN and infinity values"
+)
+formula_nonfinite_result_capture <- openwrangler_r_frame_contract$capture_frame(
+  formula_nonfinite_result,
+  nullability_source = formula_nonfinite_capture,
+  source_positions = c(1L, 1L),
+  output_ids = c("r:c:0", "c:step:formula-nonfinite:0"),
+  formula_positions = 2L
+)
+assert_identical(
+  formula_nonfinite_result_capture$descriptor$schema[[2L]]$nullable,
+  TRUE,
+  "formula lost the source NaN nullability contract"
+)
+
+formula_flavors <- list(
+  data.frame(value = c(1, 2), marker = c("a", "b")),
+  tibble::tibble(value = c(1, 2), marker = c("a", "b")),
+  collapse::qDF(data.frame(value = c(1, 2), marker = c("a", "b"))),
+  collapse::qTBL(data.frame(value = c(1, 2), marker = c("a", "b"))),
+  collapse::qDT(data.frame(value = c(1, 2), marker = c("a", "b")))
+)
+for (source in formula_flavors) {
+  source_before <- if (inherits(source, "data.table")) data.table::copy(source) else unserialize(serialize(source, NULL, version = 3L))
+  result <- openwrangler_r_frame_contract$formula_column_at(
+    source,
+    1L,
+    "value",
+    "multiply",
+    "scaled",
+    right_value = 2L
+  )
+  assert_identical(class(result), class(source), "formula changed the R dataframe flavor")
+  assert_identical(result$scaled, c(2, 4), "formula changed a flavor-specific numeric result")
+  assert_identical(result$marker, source$marker, "formula changed flavor-specific row order")
+  assert_identical(source, source_before, "formula mutated a flavor-specific source")
+}
+
+formula_table <- data.table::data.table(`primary key` = c(2L, 1L), value = c(20L, 10L), check.names = FALSE)
+data.table::setkeyv(formula_table, "primary key")
+formula_table_before <- data.table::copy(formula_table)
+formula_table_result <- openwrangler_r_frame_contract$formula_column_at(
+  formula_table,
+  2L,
+  "value",
+  "divide",
+  "ratio",
+  right_position = 1L,
+  right_name = "primary key"
+)
+assert_identical(data.table::key(formula_table_result), "primary key", "formula changed a retained data.table key")
+assert_identical(formula_table_result$ratio, c(10, 10), "formula changed keyed data.table arithmetic")
+assert_identical(formula_table, formula_table_before, "formula mutated its keyed data.table source")
+
+wide_formula <- data.frame(
+  value = bit64::as.integer64(c("9007199254740993", NA, "9223372036854775806")),
+  check.names = FALSE
+)
+wide_formula_result <- openwrangler_r_frame_contract$formula_column_at(
+  wide_formula,
+  1L,
+  "value",
+  "add",
+  "incremented",
+  right_value = 1L
+)
+assert_identical(
+  wide_formula_result$incremented,
+  bit64::as.integer64(c("9007199254740994", NA, "9223372036854775807")),
+  "formula lost exact integer64 arithmetic"
+)
+named_wide_formula <- wide_formula
+class(named_wide_formula) <- NULL
+attr(named_wide_formula$value, "names") <- c("wide-a", "wide-b", "wide-c")
+class(named_wide_formula) <- "data.frame"
+named_wide_result <- openwrangler_r_frame_contract$formula_column_at(
+  named_wide_formula,
+  1L,
+  "value",
+  "add",
+  "named sum",
+  right_value = 1L
+)
+assert_identical(
+  attr(named_wide_result$`named sum`, "names", exact = TRUE),
+  c("wide-a", "wide-b", "wide-c"),
+  "formula did not preserve aligned integer64 names"
+)
+named_division_result <- openwrangler_r_frame_contract$formula_column_at(
+  named_wide_formula,
+  1L,
+  "value",
+  "divide",
+  "named division",
+  right_value = 2L
+)
+assert_identical(
+  attr(named_division_result$`named division`, "names", exact = TRUE),
+  c("wide-a", "wide-b", "wide-c"),
+  "integer64 division did not preserve aligned names"
+)
+named_power_source <- data.frame(value = bit64::as.integer64(c("2", "3", NA)), check.names = FALSE)
+class(named_power_source) <- NULL
+attr(named_power_source$value, "names") <- c("power-a", "power-b", "power-c")
+class(named_power_source) <- "data.frame"
+named_power_result <- openwrangler_r_frame_contract$formula_column_at(
+  named_power_source,
+  1L,
+  "value",
+  "power",
+  "named power",
+  right_value = 2L
+)
+assert_identical(unname(named_power_result$`named power`), c(4, 9, NA_real_), "integer64 power changed values")
+assert_identical(
+  attr(named_power_result$`named power`, "names", exact = TRUE),
+  c("power-a", "power-b", "power-c"),
+  "integer64 power did not preserve aligned names"
+)
+named_mixed_result <- openwrangler_r_frame_contract$formula_column_at(
+  named_power_source,
+  1L,
+  "value",
+  "add",
+  "named mixed",
+  right_value = 0.5
+)
+assert_identical(unname(named_mixed_result$`named mixed`), c(2.5, 3.5, NA_real_), "mixed-double Formula changed values")
+assert_identical(
+  attr(named_mixed_result$`named mixed`, "names", exact = TRUE),
+  c("power-a", "power-b", "power-c"),
+  "mixed-double Formula did not preserve aligned names"
+)
+
+bit64_native_substitution_script <- tempfile(fileext = ".R")
+writeLines(c(
+  "local({",
+  "  source(commandArgs(trailingOnly = TRUE)[[1L]], local = FALSE)",
+  "  requireNamespace(\"bit64\", quietly = TRUE)",
+  "  namespace <- asNamespace(\"bit64\")",
+  "  source_frame <- data.frame(value = bit64::as.integer64(c(4, NA)))",
+  "  replace_locked <- function(target, replacement) { unlockBinding(target, namespace); assign(target, get(replacement, envir = namespace, inherits = FALSE), envir = namespace); lockBinding(target, namespace) }",
+  "  original_plus <- get(\"C_plus_integer64\", envir = namespace, inherits = FALSE)",
+  "  unlockBinding(\"C_plus_integer64\", namespace); assign(\"C_plus_integer64\", get(\"C_minus_integer64\", envir = namespace, inherits = FALSE), envir = namespace); lockBinding(\"C_plus_integer64\", namespace)",
+  "  on.exit({ unlockBinding(\"C_plus_integer64\", namespace); assign(\"C_plus_integer64\", original_plus, envir = namespace); lockBinding(\"C_plus_integer64\", namespace) }, add = TRUE)",
+  "  failed <- inherits(try(openwrangler_r_frame_contract$formula_column_at(source_frame, 1L, \"value\", \"add\", \"sum\", right_value = 1L), silent = TRUE), \"try-error\")",
+  "  if (!failed) stop(\"live Formula accepted a substituted bit64 addition primitive\", call. = FALSE)",
+  "  unlockBinding(\"C_plus_integer64\", namespace); assign(\"C_plus_integer64\", original_plus, envir = namespace); lockBinding(\"C_plus_integer64\", namespace)",
+  "  original_character <- get(\"C_as_character_integer64\", envir = namespace, inherits = FALSE)",
+  "  unlockBinding(\"C_as_character_integer64\", namespace); assign(\"C_as_character_integer64\", get(\"C_as_bitstring_integer64\", envir = namespace, inherits = FALSE), envir = namespace); lockBinding(\"C_as_character_integer64\", namespace)",
+  "  on.exit({ unlockBinding(\"C_as_character_integer64\", namespace); assign(\"C_as_character_integer64\", original_character, envir = namespace); lockBinding(\"C_as_character_integer64\", namespace) }, add = TRUE)",
+  "  failed <- inherits(try({ capture <- openwrangler_r_frame_contract$capture_frame(source_frame); openwrangler_r_frame_contract$materialize_page(capture, row_offset = 0L, row_limit = 2L, column_offset = 0L, column_limit = 1L) }, silent = TRUE), \"try-error\")",
+  "  if (!failed) stop(\"page materialization accepted a substituted bit64 character primitive\", call. = FALSE)",
+  "})"
+), bit64_native_substitution_script, useBytes = TRUE)
+bit64_native_substitution_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c("--vanilla", bit64_native_substitution_script, normalizePath("r/openwrangler_runtime/frame_contract.R")),
+  stdout = TRUE,
+  stderr = TRUE
+)
+bit64_native_substitution_status <- attr(bit64_native_substitution_output, "status", exact = TRUE)
+if (!is.null(bit64_native_substitution_status) && bit64_native_substitution_status != 0L) {
+  stop(paste(c("bit64 native substitution child failed", bit64_native_substitution_output), collapse = "\n"), call. = FALSE)
+}
+unlink(bit64_native_substitution_script)
+
+formula_s3_ops <- c("+", "-", "*", "%%", "/", "^", "[<-")
+formula_s3_methods <- list(
+  ops = setNames(lapply(formula_s3_ops, getS3method, class = "integer64"), formula_s3_ops),
+  as_double = getS3method("as.double", "integer64"),
+  is_na = getS3method("is.na", "integer64")
+)
+on.exit({
+  for (generic in formula_s3_ops) {
+    registerS3method(generic, "integer64", formula_s3_methods$ops[[generic]], envir = .GlobalEnv)
+  }
+  registerS3method("as.double", "integer64", formula_s3_methods$as_double, envir = .GlobalEnv)
+  registerS3method("is.na", "integer64", formula_s3_methods$is_na, envir = .GlobalEnv)
+}, add = TRUE)
+for (generic in formula_s3_ops) {
+  registerS3method(
+    generic,
+    "integer64",
+    function(...) stop("poisoned registered integer64 operation", call. = FALSE),
+    envir = .GlobalEnv
+  )
+}
+registerS3method(
+  "as.double",
+  "integer64",
+  function(x, ...) stop("poisoned registered integer64 conversion", call. = FALSE),
+  envir = .GlobalEnv
+)
+registerS3method(
+  "is.na",
+  "integer64",
+  function(x) rep.int(FALSE, length(x)),
+  envir = .GlobalEnv
+)
+formula_poisoned_character <- get("as.character.integer64", envir = asNamespace("bit64"), inherits = FALSE)
+formula_poisoned_add <- openwrangler_r_frame_contract$formula_column_at(
+  wide_formula,
+  1L,
+  "value",
+  "add",
+  "poison-proof sum",
+  right_value = 1L
+)
+assert_identical(
+  unname(formula_poisoned_character(formula_poisoned_add$`poison-proof sum`)),
+  c("9007199254740994", NA_character_, "9223372036854775807"),
+  "formula used poisoned registered integer64 addition or missingness"
+)
+formula_poisoned_double <- openwrangler_r_frame_contract$formula_column_at(
+  data.frame(value = bit64::as.integer64(c("4", NA))),
+  1L,
+  "value",
+  "divide",
+  "poison-proof division",
+  right_value = 2L
+)
+assert_identical(
+  formula_poisoned_double$`poison-proof division`,
+  c(2, NA_real_),
+  "formula used poisoned registered integer64 conversion"
+)
+for (generic in formula_s3_ops) {
+  registerS3method(generic, "integer64", formula_s3_methods$ops[[generic]], envir = .GlobalEnv)
+}
+registerS3method("as.double", "integer64", formula_s3_methods$as_double, envir = .GlobalEnv)
+registerS3method("is.na", "integer64", formula_s3_methods$is_na, envir = .GlobalEnv)
+
+formula_cold_rds <- tempfile(fileext = ".rds")
+formula_cold_script <- tempfile(fileext = ".R")
+saveRDS(named_wide_formula, formula_cold_rds, version = 3L)
+writeLines(c(
+  "local({",
+  "  arguments <- commandArgs(trailingOnly = TRUE)",
+  "  if (isNamespaceLoaded(\"bit64\")) stop(\"bit64 was already loaded in the cold Formula child\", call. = FALSE)",
+  "  source(arguments[[2L]], local = FALSE)",
+  "  source_frame <- readRDS(arguments[[1L]])",
+  "  if (isNamespaceLoaded(\"bit64\")) stop(\"readRDS unexpectedly loaded bit64 before cold page capture\", call. = FALSE)",
+  "  capture <- openwrangler_r_frame_contract$capture_frame(source_frame)",
+  "  page <- openwrangler_r_frame_contract$materialize_page(capture, row_offset = 0L, row_limit = 3L, column_offset = 0L, column_limit = 1L)",
+  "  if (!identical(page$page$rows[[1L]]$values[[1L]]$raw, \"9007199254740993\") || !identical(page$page$rows[[2L]]$values[[1L]]$kind, \"null\")) stop(\"cold integer64 page materialization lost exact typed values\", call. = FALSE)",
+  "  generics <- c(\"+\", \"-\", \"*\", \"%%\", \"/\", \"^\", \"[<-\")",
+  "  methods <- setNames(lapply(generics, getS3method, class = \"integer64\"), generics)",
+  "  conversion <- getS3method(\"as.double\", \"integer64\")",
+  "  missingness <- getS3method(\"is.na\", \"integer64\")",
+  "  on.exit({ for (generic in generics) registerS3method(generic, \"integer64\", methods[[generic]], envir = .GlobalEnv); registerS3method(\"as.double\", \"integer64\", conversion, envir = .GlobalEnv); registerS3method(\"is.na\", \"integer64\", missingness, envir = .GlobalEnv) }, add = TRUE)",
+  "  for (generic in generics) registerS3method(generic, \"integer64\", function(...) stop(\"poisoned integer64 S3 method\", call. = FALSE), envir = .GlobalEnv)",
+  "  registerS3method(\"as.double\", \"integer64\", function(...) stop(\"poisoned integer64 conversion\", call. = FALSE), envir = .GlobalEnv)",
+  "  registerS3method(\"is.na\", \"integer64\", function(x) rep.int(FALSE, length(x)), envir = .GlobalEnv)",
+  "  exact <- openwrangler_r_frame_contract$formula_column_at(source_frame, 1L, \"value\", \"add\", \"exact\", right_value = 1L)",
+  "  safe_character <- get(\"as.character.integer64\", envir = asNamespace(\"bit64\"), inherits = FALSE)",
+  "  if (!identical(unname(safe_character(exact$exact)), c(\"9007199254740994\", NA_character_, \"9223372036854775807\")) || !identical(attr(exact$exact, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\"))) stop(\"cold Formula used poisoned integer64 arithmetic or lost names\", call. = FALSE)",
+  "  widened <- openwrangler_r_frame_contract$formula_column_at(source_frame, 1L, \"value\", \"divide\", \"widened\", right_value = 2L)",
+  "  if (!identical(unname(widened$widened), c(4503599627370496, NA_real_, 4611686018427387904)) || !identical(attr(widened$widened, \"names\", exact = TRUE), c(\"wide-a\", \"wide-b\", \"wide-c\"))) stop(\"cold Formula used poisoned integer64 conversion or lost names\", call. = FALSE)",
+  "})"
+), formula_cold_script, useBytes = TRUE)
+formula_cold_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c("--vanilla", formula_cold_script, formula_cold_rds, normalizePath("r/openwrangler_runtime/frame_contract.R")),
+  stdout = TRUE,
+  stderr = TRUE
+)
+formula_cold_status <- attr(formula_cold_output, "status", exact = TRUE)
+if (!is.null(formula_cold_status) && formula_cold_status != 0L) {
+  stop(paste(c("cold integer64 Formula child failed", formula_cold_output), collapse = "\n"), call. = FALSE)
+}
+unlink(c(formula_cold_script, formula_cold_rds))
+
+formula_missing_power <- openwrangler_r_frame_contract$formula_column_at(
+  data.frame(left = c(NA_real_, 1, NaN, Inf), right = c(0, NA_real_, 0, 0)),
+  1L,
+  "left",
+  "power",
+  "missing power",
+  right_position = 2L,
+  right_name = "right"
+)
+assert_identical(
+  formula_missing_power$`missing power`,
+  c(NA_real_, NA_real_, 1, 1),
+  "formula changed missing, NaN, or infinity power semantics"
+)
+assert_error(
+  openwrangler_r_frame_contract$formula_column_at(
+    data.frame(value = bit64::as.integer64("9223372036854775807")),
+    1L,
+    "value",
+    "add",
+    "overflow",
+    right_value = 1L
+  ),
+  "operation-output-too-large"
+)
+
+for (case in list(
+  list(frame = data.frame(value = 1), operator = "divide", operand = 0),
+  list(frame = data.frame(value = 1e308), operator = "power", operand = 2),
+  list(frame = data.frame(value = .Machine$integer.max), operator = "add", operand = 1L),
+  list(frame = data.frame(value = -1), operator = "power", operand = 0.5)
+)) {
+  assert_error(
+    openwrangler_r_frame_contract$formula_column_at(
+      case$frame,
+      1L,
+      "value",
+      case$operator,
+      "invalid result",
+      right_value = case$operand
+    ),
+    "operation-output-too-large"
+  )
+}
+assert_error(
+  openwrangler_r_frame_contract$formula_column_at(
+    data.frame(value = 1), 1L, "value", "add", "result", right_value = Inf
+  ),
+  "finite scalar"
+)
+assert_error(
+  openwrangler_r_frame_contract$formula_column_at(
+    data.frame(value = 1), 1L, "value", "add", "result"
+  ),
+  "exactly one"
+)
+assert_error(
+  openwrangler_r_frame_contract$formula_column_at(
+    data.frame(value = 1, other = 2),
+    1L,
+    "value",
+    "add",
+    "result",
+    right_position = 2L,
+    right_name = "other",
+    right_value = 1
+  ),
+  "exactly one"
+)
+assert_error(
+  openwrangler_r_frame_contract$formula_column_at(
+    data.frame(value = "1"), 1L, "value", "add", "result", right_value = 1
+  ),
+  "numeric R columns"
+)
+assert_error(
+  openwrangler_r_frame_contract$formula_column_at(
+    formula_frame, 1L, "duplicate", "add", "label", right_value = 1
+  ),
+  "column-name-collision"
+)
+assert_error(
+  openwrangler_r_frame_contract$formula_column_at(
+    formula_frame,
+    1L,
+    "duplicate",
+    "add",
+    "__OPEN_WRANGLER_INTERNAL_ROW_ID_formula",
+    right_value = 1
+  ),
+  "reserved-column-name"
+)
+formula_limit_frame <- structure(
+  setNames(rep(list(1L), 2048L), paste0("column ", seq_len(2048L))),
+  row.names = 1L,
+  class = "data.frame"
+)
+assert_error(
+  openwrangler_r_frame_contract$formula_column_at(
+    formula_limit_frame, 1L, "column 1", "add", "overflow column", right_value = 1L
+  ),
+  "column limit"
+)
+invalid_formula_capture <- formula_result
+invalid_formula_capture[[5L]] <- c(Inf, 1, 2)
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    invalid_formula_capture,
+    nullability_source = formula_capture,
+    source_positions = c(seq_along(formula_frame), 1L),
+    output_ids = c(
+      vapply(formula_capture$descriptor$schema, `[[`, character(1L), "id"),
+      "c:step:invalid-formula:0"
+    ),
+    formula_positions = 5L,
+    formula_right_source_positions = 2L
+  ),
+  "invalid formula output"
+)
 
 text_length_frame <- data.frame(
   duplicate = c("caf\u00e9", "\U0001F642", NA_character_),
@@ -1676,6 +2295,390 @@ assert_error(
     numeric_transform_positions = 5L
   ),
   "invalid numeric-transform output"
+)
+
+datetime_frame <- data.frame(
+  duplicate = as.Date(c("2026-01-02", NA, "2026-07-04")),
+  duplicate = as.POSIXct(
+    c("2026-01-02 03:04:05", NA, "2026-07-04 15:06:07"),
+    tz = "Europe/Berlin"
+  ),
+  marker = c("winter", "missing", "summer"),
+  check.names = FALSE,
+  row.names = c("datetime-a", "datetime-b", "datetime-c")
+)
+datetime_before <- unserialize(serialize(datetime_frame, NULL, version = 3L))
+datetime_capture <- openwrangler_r_frame_contract$capture_frame(datetime_frame)
+formatted_date <- openwrangler_r_frame_contract$format_datetime_column(
+  datetime_frame,
+  list(id = "r:c:0", name = "duplicate"),
+  "%Y/%m/%d",
+  "formatted date"
+)
+formatted_date_bound <- openwrangler_r_frame_contract$format_datetime_column_at(
+  datetime_frame,
+  1L,
+  "duplicate",
+  "%Y/%m/%d",
+  "formatted date"
+)
+assert_identical(
+  formatted_date,
+  formatted_date_bound,
+  "formatDatetime stable-reference and bound-position execution diverged"
+)
+assert_identical(
+  formatted_date$`formatted date`,
+  c("2026/01/02", NA_character_, "2026/07/04"),
+  "formatDatetime changed Date formatting or missing values"
+)
+assert_identical(row.names(formatted_date), row.names(datetime_frame), "formatDatetime changed explicit row names")
+formatted_date_capture <- openwrangler_r_frame_contract$capture_frame(
+  formatted_date,
+  nullability_source = datetime_capture,
+  source_positions = c(1L, 2L, 3L, 1L),
+  output_ids = c("r:c:0", "r:c:1", "r:c:2", "c:step:format-date-contract:0"),
+  datetime_format_positions = 4L
+)
+assert_identical(
+  formatted_date_capture$descriptor$schema[[4L]]$id,
+  "c:step:format-date-contract:0",
+  "formatDatetime lost its derived stable identity"
+)
+assert_identical(
+  formatted_date_capture$descriptor$schema[[4L]]$rawType,
+  "character",
+  "formatDatetime published the wrong output type"
+)
+assert_identical(
+  formatted_date_capture$descriptor$schema[[4L]]$nullable,
+  TRUE,
+  "formatDatetime hid a missing output"
+)
+
+formatted_instant <- openwrangler_r_frame_contract$format_datetime_column_at(
+  datetime_frame,
+  2L,
+  "duplicate",
+  "%Y-%m-%d %H:%M:%S %z"
+)
+assert_identical(
+  formatted_instant[[2L]],
+  c("2026-01-02 03:04:05 +0100", NA_character_, "2026-07-04 15:06:07 +0200"),
+  "formatDatetime did not honor the POSIXct column timezone"
+)
+timezone_free_instant <- as.POSIXct("2026-01-02 03:04:05", tz = "UTC")
+attr(timezone_free_instant, "tzone") <- NULL
+timezone_free_result <- openwrangler_r_frame_contract$format_datetime_column_at(
+  data.frame(instant = timezone_free_instant),
+  1L,
+  "instant",
+  "%Y-%m-%d %H:%M:%S %z"
+)
+assert_identical(
+  timezone_free_result$instant,
+  "2026-01-02 03:04:05 +0000",
+  "formatDatetime did not use UTC for POSIXct without a declared timezone"
+)
+formatted_instant_capture <- openwrangler_r_frame_contract$capture_frame(
+  formatted_instant,
+  nullability_source = datetime_capture,
+  source_positions = 1:3,
+  output_ids = c("r:c:0", "r:c:1", "r:c:2"),
+  datetime_format_positions = 2L
+)
+assert_identical(
+  formatted_instant_capture$descriptor$schema[[2L]]$id,
+  "r:c:1",
+  "in-place formatDatetime changed stable identity"
+)
+assert_identical(
+  formatted_instant_capture$descriptor$schema[[2L]]$rawType,
+  "character",
+  "in-place formatDatetime retained datetime metadata"
+)
+assert_identical(datetime_frame, datetime_before, "formatDatetime mutated its source data.frame")
+formatted_date$`formatted date`[[1L]] <- "changed"
+assert_identical(datetime_frame, datetime_before, "a formatDatetime result shared storage with its source")
+
+assert_datetime_format_isolated_from_global_methods <- function() {
+  method_names <- c("format.Date", "format.POSIXct")
+  existing_methods <- lapply(method_names, function(name) {
+    if (exists(name, envir = .GlobalEnv, inherits = FALSE)) {
+      list(exists = TRUE, value = get(name, envir = .GlobalEnv, inherits = FALSE))
+    } else {
+      list(exists = FALSE, value = NULL)
+    }
+  })
+  on.exit({
+    for (index in seq_along(method_names)) {
+      name <- method_names[[index]]
+      existing <- existing_methods[[index]]
+      if (isTRUE(existing$exists)) {
+        assign(name, existing$value, envir = .GlobalEnv)
+      } else if (exists(name, envir = .GlobalEnv, inherits = FALSE)) {
+        rm(list = name, envir = .GlobalEnv)
+      }
+    }
+  }, add = TRUE)
+
+  calls <- new.env(parent = emptyenv())
+  calls$date <- 0L
+  calls$datetime <- 0L
+  assign(
+    "format.Date",
+    function(x, format = "", ...) {
+      calls$date <- calls$date + 1L
+      rep.int(if (identical(format, "%Y-%m-%d")) "2026-01-01" else "HIJACKED-DATE", length(x))
+    },
+    envir = .GlobalEnv
+  )
+  assign(
+    "format.POSIXct",
+    function(x, format = "", ...) {
+      calls$datetime <- calls$datetime + 1L
+      rep.int(
+        if (identical(format, "%Y-%m-%dT%H:%M:%OS6")) {
+          "2026-01-01T00:00:00.000000"
+        } else {
+          "HIJACKED-DATETIME"
+        },
+        length(x)
+      )
+    },
+    envir = .GlobalEnv
+  )
+
+  source <- data.frame(
+    day = as.Date(c("2026-01-01", NA)),
+    instant = as.POSIXct(c("2026-01-01 02:03:04", NA), tz = "UTC"),
+    check.names = FALSE
+  )
+  source_before <- serialize(source, NULL, version = 3L)
+  date_result <- openwrangler_r_frame_contract$format_datetime_column_at(
+    source,
+    1L,
+    "day",
+    "%Y%m%d",
+    "date text"
+  )
+  datetime_result <- openwrangler_r_frame_contract$format_datetime_column_at(
+    source,
+    2L,
+    "instant",
+    "%Y%m%d-%H%M%S",
+    "datetime text"
+  )
+
+  assert_identical(
+    date_result$`date text`,
+    c("20260101", NA_character_),
+    "formatDatetime used a caller format.Date override"
+  )
+  assert_identical(
+    datetime_result$`datetime text`,
+    c("20260101-020304", NA_character_),
+    "formatDatetime used a caller format.POSIXct override"
+  )
+  assert_identical(calls$date, 0L, "formatDatetime dispatched to a caller format.Date override")
+  assert_identical(calls$datetime, 0L, "formatDatetime dispatched to a caller format.POSIXct override")
+  assert_identical(
+    serialize(source, NULL, version = 3L),
+    source_before,
+    "caller-isolated formatDatetime mutated its source"
+  )
+}
+assert_datetime_format_isolated_from_global_methods()
+
+datetime_output_budget <- 64L * 1024L * 1024L
+datetime_output_slot_bytes <- 8L
+datetime_output_format <- paste(rep("%Y%m%d", 127L), collapse = "")
+datetime_output_text_bytes <- nchar(
+  format(as.Date("2026-01-01"), format = datetime_output_format),
+  type = "bytes"
+)
+datetime_output_boundary_rows <- 65536L
+assert_identical(
+  datetime_output_boundary_rows * (datetime_output_slot_bytes + datetime_output_text_bytes),
+  datetime_output_budget,
+  "the exact Format Datetime aggregate-output boundary fixture changed"
+)
+datetime_output_boundary_source <- data.frame(
+  day = rep(as.Date("2026-01-01"), datetime_output_boundary_rows),
+  check.names = FALSE
+)
+datetime_output_boundary_result <- openwrangler_r_frame_contract$format_datetime_column_at(
+  datetime_output_boundary_source,
+  1L,
+  "day",
+  datetime_output_format,
+  "formatted"
+)
+assert_identical(
+  length(datetime_output_boundary_result$formatted),
+  datetime_output_boundary_rows,
+  "formatDatetime rejected the exact 64 MiB aggregate-output boundary"
+)
+assert_identical(
+  nchar(datetime_output_boundary_result$formatted[[datetime_output_boundary_rows]], type = "bytes"),
+  datetime_output_text_bytes,
+  "formatDatetime truncated an output at the aggregate boundary"
+)
+rm(datetime_output_boundary_result, datetime_output_boundary_source)
+datetime_output_oversize_source <- data.frame(
+  day = rep(as.Date("2026-01-01"), datetime_output_boundary_rows + 1L),
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    datetime_output_oversize_source,
+    1L,
+    "day",
+    datetime_output_format,
+    "formatted"
+  ),
+  "operation-output-too-large"
+)
+rm(datetime_output_oversize_source)
+
+datetime_flavors <- list(
+  data.frame(when = as.Date(c("2026-01-01", "2026-01-02")), marker = c("a", "b")),
+  tibble::tibble(when = as.Date(c("2026-01-01", "2026-01-02")), marker = c("a", "b")),
+  collapse::qDF(data.frame(when = as.Date(c("2026-01-01", "2026-01-02")), marker = c("a", "b"))),
+  collapse::qTBL(data.frame(when = as.Date(c("2026-01-01", "2026-01-02")), marker = c("a", "b"))),
+  collapse::qDT(data.frame(when = as.Date(c("2026-01-01", "2026-01-02")), marker = c("a", "b")))
+)
+for (source in datetime_flavors) {
+  source_before <- if (inherits(source, "data.table")) data.table::copy(source) else unserialize(serialize(source, NULL, version = 3L))
+  result <- openwrangler_r_frame_contract$format_datetime_column_at(
+    source,
+    1L,
+    "when",
+    "%Y%m%d",
+    "day key"
+  )
+  assert_identical(class(result), class(source), "formatDatetime changed the R dataframe flavor")
+  assert_identical(result$`day key`, c("20260101", "20260102"), "formatDatetime changed a flavor result")
+  assert_identical(result$marker, source$marker, "formatDatetime changed flavor-specific row order")
+  assert_identical(source, source_before, "formatDatetime mutated a flavor-specific source")
+}
+
+datetime_table <- data.table::data.table(
+  `primary key` = as.Date(c("2026-01-02", "2026-01-01")),
+  instant = as.POSIXct(c("2026-01-02 12:00:00", "2026-01-01 12:00:00"), tz = "UTC"),
+  check.names = FALSE
+)
+data.table::setkeyv(datetime_table, "primary key")
+datetime_table_before <- data.table::copy(datetime_table)
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    datetime_table, 1L, "primary key", "%Y%m%d"
+  ),
+  "choose a new output column"
+)
+datetime_table_derived <- openwrangler_r_frame_contract$format_datetime_column_at(
+  datetime_table,
+  1L,
+  "primary key",
+  "%Y%m%d",
+  "formatted key"
+)
+datetime_table_in_place <- openwrangler_r_frame_contract$format_datetime_column_at(
+  datetime_table,
+  2L,
+  "instant",
+  "%H:%M"
+)
+assert_identical(data.table::key(datetime_table_derived), "primary key", "derived formatDatetime lost a data.table key")
+assert_identical(data.table::key(datetime_table_in_place), "primary key", "formatDatetime changed an unaffected data.table key")
+assert_identical(datetime_table, datetime_table_before, "formatDatetime mutated its keyed data.table source")
+
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    data.frame(value = 1), 1L, "value", "%Y"
+  ),
+  "Date or POSIXct"
+)
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    data.frame(value = as.Date("2026-01-01")), 1L, "value", ""
+  ),
+  "non-empty string"
+)
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    datetime_frame, 1L, "duplicate", "%Y", "marker"
+  ),
+  "column-name-collision"
+)
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    datetime_frame,
+    1L,
+    "duplicate",
+    "%Y",
+    "__OPEN_WRANGLER_INTERNAL_ROW_ID_datetime"
+  ),
+  "reserved-column-name"
+)
+datetime_limit_frame <- formula_limit_frame
+datetime_limit_frame[[1L]] <- as.Date("2026-01-01")
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    datetime_limit_frame, 1L, "column 1", "%Y", "overflow column"
+  ),
+  "column limit"
+)
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    data.frame(value = as.Date("2026-01-01")),
+    1L,
+    "value",
+    strrep("%Y", 2050L),
+    "oversized"
+  ),
+  "could not apply"
+)
+nonfinite_datetime <- data.frame(
+  value = structure(Inf, class = c("POSIXct", "POSIXt"), tzone = "UTC"),
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    nonfinite_datetime, 1L, "value", "%Y"
+  ),
+  "non-finite"
+)
+fractional_datetime_date <- data.frame(
+  value = structure(c(0, 0.5), class = "Date"),
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    fractional_datetime_date, 1L, "value", "%Y-%m-%d", "formatted"
+  ),
+  "fractional Date"
+)
+out_of_range_datetime_date <- data.frame(
+  value = structure(c(0, 1e7), class = "Date"),
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$format_datetime_column_at(
+    out_of_range_datetime_date, 1L, "value", "%Y-%m-%d", "formatted"
+  ),
+  "supported ISO date range"
+)
+invalid_datetime_capture <- datetime_frame
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(
+    invalid_datetime_capture,
+    nullability_source = datetime_capture,
+    source_positions = 1:3,
+    output_ids = c("r:c:0", "r:c:1", "r:c:2"),
+    datetime_format_positions = 2L
+  ),
+  "invalid datetime-format output"
 )
 
 fill_frame <- data.frame(

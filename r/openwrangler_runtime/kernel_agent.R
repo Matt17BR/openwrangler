@@ -1,12 +1,16 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 10L
+  transport_version <- 11L
   maximum_identifier_bytes <- 128L
+  maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
   maximum_step_id_bytes <- 1024L
   maximum_error_bytes <- 4096L
   maximum_response_bytes <- 17L * 1024L * 1024L
   maximum_generated_code_bytes <- 4L * 1024L * 1024L
   maximum_export_chunk_bytes <- 1L * 1024L * 1024L
+  maximum_operation_output_bytes <- 64L * 1024L * 1024L
+  maximum_operation_output_chunk_rows <- 1024L
+  character_vector_slot_bytes <- 8L
   maximum_fill_directional_gap <- 1000000L
   maximum_revision <- .Machine$integer.max
   default_strip_characters <- paste0(
@@ -847,6 +851,70 @@ openwrangler_r_kernel_agent <- local({
         )
       ))
     }
+    if (identical(kind, "formula")) {
+      params <- exact_record(
+        step$params,
+        c("leftColumn", "operator", "newColumn"),
+        "request.payload.step.params",
+        optional_fields = c("rightColumn", "value")
+      )
+      has_right_column <- "rightColumn" %in% names(params)
+      has_value <- "value" %in% names(params)
+      if (identical(has_right_column, has_value)) {
+        abort("invalid_request", "request.payload.step.params requires exactly one rightColumn or value")
+      }
+      operator <- bounded_text(params$operator, "request.payload.step.params.operator", 16L)
+      if (!operator %in% c("add", "subtract", "multiply", "divide", "modulo", "power")) {
+        abort("invalid_request", "request.payload.step.params.operator is unsupported")
+      }
+      new_column <- bounded_text(
+        params$newColumn,
+        "request.payload.step.params.newColumn",
+        maximum_variable_name_bytes
+      )
+      if (identical(new_column, "")) {
+        abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+      }
+      value_operand <- NULL
+      right_column <- NULL
+      if (has_right_column) {
+        right_column <- decode_column_reference(
+          params$rightColumn,
+          "request.payload.step.params.rightColumn",
+          limits$columnIdBytes
+        )
+      } else {
+        value_operand <- params$value
+        if (
+          length(value_operand) != 1L ||
+            !is.numeric(value_operand) ||
+            is.na(value_operand) ||
+            !is.finite(value_operand)
+        ) {
+          abort("invalid_request", "request.payload.step.params.value must be finite")
+        }
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(
+          leftColumn = decode_column_reference(
+            params$leftColumn,
+            "request.payload.step.params.leftColumn",
+            limits$columnIdBytes
+          ),
+          operator = operator,
+          newColumn = new_column,
+          rightColumn = right_column,
+          value = value_operand
+        ),
+        outputId = bounded_text(
+          paste0("c:step:", step_id, ":0"),
+          "the derived R formula column identity",
+          limits$columnIdBytes
+        )
+      ))
+    }
     if (kind %in% c("lowerText", "upperText", "capitalizeText")) {
       params <- exact_record(
         step$params,
@@ -1079,6 +1147,49 @@ openwrangler_r_kernel_agent <- local({
         }
       ))
     }
+    if (identical(kind, "formatDatetime")) {
+      params <- exact_record(
+        step$params,
+        c("column", "format"),
+        "request.payload.step.params",
+        optional_fields = "newColumn"
+      )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      format <- bounded_text(params$format, "request.payload.step.params.format", 8192L)
+      if (identical(format, "")) {
+        abort("invalid_request", "request.payload.step.params.format may not be empty")
+      }
+      new_column <- NULL
+      if ("newColumn" %in% names(params)) {
+        new_column <- bounded_text(
+          params$newColumn,
+          "request.payload.step.params.newColumn",
+          maximum_variable_name_bytes
+        )
+        if (identical(new_column, "")) {
+          abort("invalid_request", "request.payload.step.params.newColumn may not be empty")
+        }
+      }
+      in_place <- is.null(new_column) || identical(new_column, column$name)
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(column = column, format = format, newColumn = new_column),
+        outputId = if (in_place) {
+          column$id
+        } else {
+          bounded_text(
+            paste0("c:step:", step_id, ":0"),
+            "the derived R formatted-datetime column identity",
+            limits$columnIdBytes
+          )
+        }
+      ))
+    }
     if (identical(kind, "castColumn")) {
       params <- exact_record(step$params, c("column", "dtype"), "request.payload.step.params")
       column <- decode_column_reference(
@@ -1207,6 +1318,7 @@ openwrangler_r_kernel_agent <- local({
       "cloneColumn",
       "dropColumns",
       "selectColumns",
+      "formula",
       "textLength",
       "lowerText",
       "upperText",
@@ -1218,6 +1330,7 @@ openwrangler_r_kernel_agent <- local({
       "roundNumber",
       "floorNumber",
       "ceilNumber",
+      "formatDatetime",
       "fillMissingValues",
       "castColumn"
     )) {
@@ -1260,6 +1373,82 @@ openwrangler_r_kernel_agent <- local({
       oldName = step$params$column$name,
       newName = step$params$newName,
       outputId = step$outputId
+    )
+  }
+
+  bind_formula_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    resolve_operand <- function(reference, label) {
+      matches <- which(vapply(schema, function(column) identical(column$id, reference$id), logical(1L)))
+      if (
+        length(matches) != 1L ||
+          !identical(schema[[matches[[1L]]]]$name, reference$name)
+      ) {
+        abort("stale_column", sprintf("The %s formula column no longer matches the active R dataframe", label), TRUE)
+      }
+      position <- as.integer(matches[[1L]])
+      column <- schema[[position]]
+      if (!column$semantics$kind %in% c("integer", "double", "integer64")) {
+        abort("invalid_request", "Formula requires an R integer, double, or integer64 column", TRUE)
+      }
+      list(position = position, name = column$name, id = column$id, semanticKind = column$semantics$kind)
+    }
+    left <- resolve_operand(step$params$leftColumn, "left")
+    right <- if (is.null(step$params$rightColumn)) NULL else resolve_operand(step$params$rightColumn, "right")
+    names <- vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    if (step$params$newColumn %in% names || step$outputId %in% ids) {
+      abort("invalid_request", "The Formula output column already exists", TRUE)
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      left = left,
+      right = right,
+      value = step$params$value,
+      operator = step$params$operator,
+      newName = step$params$newColumn,
+      outputId = step$outputId
+    )
+  }
+
+  bind_datetime_format_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    matches <- which(vapply(schema, function(column) identical(column$id, step$params$column$id), logical(1L)))
+    if (
+      length(matches) != 1L ||
+        !identical(schema[[matches[[1L]]]]$name, step$params$column$name)
+    ) {
+      abort("stale_column", "The datetime-format column no longer matches the active R dataframe", TRUE)
+    }
+    position <- as.integer(matches[[1L]])
+    column <- schema[[position]]
+    if (!column$semantics$kind %in% c("date", "datetime")) {
+      abort("invalid_request", "Format Datetime requires an R Date or POSIXct column", TRUE)
+    }
+    in_place <- is.null(step$params$newColumn) || identical(step$params$newColumn, column$name)
+    key_column_ids <- capture$descriptor$frameSemantics$keyColumnIds
+    if (is.null(key_column_ids)) key_column_ids <- character()
+    if (in_place && column$id %in% key_column_ids) {
+      abort("invalid_request", "Format Datetime cannot replace a data.table key column", TRUE)
+    }
+    new_name <- if (in_place) column$name else step$params$newColumn
+    names <- vapply(schema, `[[`, character(1L), "name", USE.NAMES = FALSE)
+    ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    if (!in_place && (new_name %in% names || step$outputId %in% ids)) {
+      abort("invalid_request", "The Format Datetime output column already exists", TRUE)
+    }
+    list(
+      id = step$id,
+      kind = step$kind,
+      position = position,
+      oldName = column$name,
+      newName = new_name,
+      inPlace = in_place,
+      outputId = step$outputId,
+      semanticKind = column$semantics$kind,
+      timezone = column$semantics$timezone,
+      format = step$params$format
     )
   }
 
@@ -1904,6 +2093,35 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
+    if (identical(step$kind, "formula")) {
+      bound <- bind_formula_step(capture, step)
+      result <- frame_contract$formula_column_at(
+        source,
+        bound$left$position,
+        bound$left$name,
+        bound$operator,
+        bound$newName,
+        if (is.null(bound$right)) NULL else bound$right$position,
+        if (is.null(bound$right)) NULL else bound$right$name,
+        bound$value
+      )
+      source_positions <- c(seq_along(capture$descriptor$schema), bound$left$position)
+      output_ids <- c(
+        vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+        bound$outputId
+      )
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = source_positions,
+          output_ids = output_ids,
+          formula_positions = length(output_ids),
+          formula_right_source_positions = if (is.null(bound$right)) 0L else bound$right$position
+        ),
+        bound = bound
+      ))
+    }
     if (identical(step$kind, "textLength")) {
       bound <- bind_text_length_step(capture, step)
       result <- frame_contract$text_length_column_at(source, bound$position, bound$oldName, bound$newName)
@@ -2030,6 +2248,38 @@ openwrangler_r_kernel_agent <- local({
           output_ids = output_ids,
           numeric_transform_positions = if (identical(step$kind, "minMaxScale")) NULL else transform_position,
           min_max_scale_positions = if (identical(step$kind, "minMaxScale")) transform_position else NULL
+        ),
+        bound = bound
+      ))
+    }
+    if (identical(step$kind, "formatDatetime")) {
+      bound <- bind_datetime_format_step(capture, step)
+      result <- frame_contract$format_datetime_column_at(
+        source,
+        bound$position,
+        bound$oldName,
+        bound$format,
+        if (isTRUE(bound$inPlace)) NULL else bound$newName
+      )
+      if (isTRUE(bound$inPlace)) {
+        source_positions <- seq_along(capture$descriptor$schema)
+        output_ids <- vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+        transform_position <- bound$position
+      } else {
+        source_positions <- c(seq_along(capture$descriptor$schema), bound$position)
+        output_ids <- c(
+          vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+          bound$outputId
+        )
+        transform_position <- length(output_ids)
+      }
+      return(list(
+        capture = frame_contract$capture_frame(
+          result,
+          nullability_source = capture,
+          source_positions = source_positions,
+          output_ids = output_ids,
+          datetime_format_positions = transform_position
         ),
         bound = bound
       ))
@@ -2169,6 +2419,14 @@ openwrangler_r_kernel_agent <- local({
     encodeString(value, quote = "\"", justify = "none", na.encode = FALSE)
   }
 
+  r_number <- function(value) {
+    if (is.integer(value)) return(sprintf("%dL", value))
+    sprintf(
+      "as.double(%s)",
+      r_string(format(value, digits = 17L, scientific = TRUE, trim = TRUE, decimal.mark = "."))
+    )
+  }
+
   r_character_vector <- function(values) {
     if (length(values) == 0L) return("character()")
     sprintf(
@@ -2198,6 +2456,46 @@ openwrangler_r_kernel_agent <- local({
     sprintf(
       "  if (!(%s)) stop(\"Open Wrangler column type is stale\", call. = FALSE)",
       condition
+    )
+  }
+
+  exact_formula_datetime_type_guard <- function(variable, specification) {
+    semantic_kind <- specification$semanticKind
+    if (is.null(semantic_kind)) semantic_kind <- specification$semanticsKind
+    expected <- switch(
+      semantic_kind,
+      integer = list(type = "integer", classes = "integer", attributes = character()),
+      double = list(type = "double", classes = "numeric", attributes = character()),
+      integer64 = list(type = "double", classes = "integer64", attributes = "class"),
+      date = list(type = "double", classes = "Date", attributes = "class"),
+      datetime = list(type = "double", classes = c("POSIXct", "POSIXt"), attributes = NULL),
+      abort("runtime_error", "Generated R code received an unsupported Formula or Format Datetime type")
+    )
+    c(
+      sprintf(
+        "  if (!identical(typeof(%s), %s) || !identical(class(%s), %s)) stop(\"Open Wrangler column type is stale\", call. = FALSE)",
+        variable,
+        r_string(expected$type),
+        variable,
+        r_character_vector(expected$classes)
+      ),
+      sprintf("  .ow_exact_attributes <- attributes(%s)", variable),
+      "  .ow_exact_attribute_names <- if (is.null(names(.ow_exact_attributes))) character() else names(.ow_exact_attributes)",
+      "  if (anyNA(.ow_exact_attribute_names) || any(.ow_exact_attribute_names == \"\") || anyDuplicated(.ow_exact_attribute_names)) stop(\"Open Wrangler column attributes are stale\", call. = FALSE)",
+      sprintf(
+        "  if (\"names\" %%in%% .ow_exact_attribute_names) { .ow_exact_column_names <- attr(%s, \"names\", exact = TRUE); if (!is.character(.ow_exact_column_names) || is.object(.ow_exact_column_names) || !is.null(attributes(.ow_exact_column_names)) || length(.ow_exact_column_names) != .ow_storage_length(%s)) stop(\"Open Wrangler column attributes are stale\", call. = FALSE) }",
+        variable,
+        variable
+      ),
+      "  .ow_exact_attribute_names <- sort(setdiff(.ow_exact_attribute_names, \"names\"))",
+      if (identical(semantic_kind, "datetime")) {
+        "  if (!identical(.ow_exact_attribute_names, \"class\") && !identical(.ow_exact_attribute_names, c(\"class\", \"tzone\"))) stop(\"Open Wrangler column attributes are stale\", call. = FALSE)"
+      } else {
+        sprintf(
+          "  if (!identical(.ow_exact_attribute_names, %s)) stop(\"Open Wrangler column attributes are stale\", call. = FALSE)",
+          r_character_vector(sort(expected$attributes))
+        )
+      }
     )
   }
 
@@ -3303,22 +3601,229 @@ openwrangler_r_kernel_agent <- local({
     sprintf("list(%s)", paste(fields, collapse = ", "))
   }
 
-  compile_plan <- function(variable_name, bound_plan, maximum_columns, maximum_factor_levels) {
+  compile_plan <- function(
+    variable_name,
+    bound_plan,
+    maximum_columns,
+    maximum_factor_levels,
+    maximum_text_bytes,
+    maximum_payload_bytes,
+    maximum_name_bytes
+  ) {
     if (length(bound_plan) == 0L) return("")
+    result_name <- if (identical(variable_name, "open_wrangler_result")) {
+      "open_wrangler_result_2"
+    } else {
+      "open_wrangler_result"
+    }
     lines <- c(
-      "open_wrangler_result <- local({",
+      "base::evalq({",
+      sprintf("  .ow_publication_name <- %s", r_string(result_name)),
+      "  if (base::exists(.ow_publication_name, envir = .ow_caller_environment, inherits = FALSE) && base::bindingIsActive(.ow_publication_name, .ow_caller_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
+      "  .ow_generated_result <- base::evalq({",
       sprintf(
-        "  .ow_source <- get(%s, envir = parent.env(environment()), inherits = FALSE)",
+        "  if (!base::exists(%s, envir = .ow_source_environment, inherits = FALSE)) base::stop(\"Open Wrangler source variable is unavailable\", call. = FALSE)",
         r_string(variable_name)
       ),
-      "  if (!is.data.frame(.ow_source)) stop(\"Open Wrangler expected an R dataframe\", call. = FALSE)",
+      sprintf(
+        "  if (base::bindingIsActive(%s, .ow_source_environment)) base::stop(\"Open Wrangler generated R does not accept an active source binding\", call. = FALSE)",
+        r_string(variable_name)
+      ),
+      sprintf(
+        "  .ow_source <- base::get(%s, envir = .ow_source_environment, inherits = FALSE)",
+        r_string(variable_name)
+      ),
+      sprintf(
+        "  if (base::exists(%1$s, envir = .ow_source_environment, inherits = FALSE) && base::bindingIsActive(%1$s, .ow_source_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
+        r_string(result_name)
+      ),
+      "  base::rm(.ow_source_environment)",
+      "  if (!base::is.data.frame(.ow_source)) base::stop(\"Open Wrangler expected an R dataframe\", call. = FALSE)",
+      "  .ow_storage_length <- function(.ow_value) base::length(base::unclass(.ow_value))",
+      "  .ow_source_classes <- base::class(.ow_source)",
+      "  .ow_source_is_readr <- base::identical(.ow_source_classes, c(\"spec_tbl_df\", \"tbl_df\", \"tbl\", \"data.frame\"))",
+      "  .ow_source_flavor <- if (base::identical(.ow_source_classes, \"data.frame\")) {",
+      "    \"r.data.frame\"",
+      "  } else if (base::identical(.ow_source_classes, c(\"tbl_df\", \"tbl\", \"data.frame\")) || .ow_source_is_readr) {",
+      "    \"r.tibble\"",
+      "  } else if (base::identical(.ow_source_classes, c(\"data.table\", \"data.frame\"))) {",
+      "    \"r.data.table\"",
+      "  } else {",
+      "    base::stop(\"Open Wrangler generated R supports only a base data.frame, tibble, or data.table without subclasses\", call. = FALSE)",
+      "  }",
+      sprintf(
+        "  .ow_source_column_count <- .ow_storage_length(.ow_source); if (.ow_source_column_count < 1L || .ow_source_column_count > %dL) base::stop(\"Open Wrangler generated R requires between 1 and %d source columns\", call. = FALSE)",
+        maximum_columns,
+        maximum_columns
+      ),
+      "  .ow_source_attribute_names <- base::names(base::attributes(.ow_source))",
+      "  if (base::is.null(.ow_source_attribute_names)) .ow_source_attribute_names <- base::character()",
+      "  if (base::anyNA(.ow_source_attribute_names) || base::any(.ow_source_attribute_names == \"\") || base::anyDuplicated(.ow_source_attribute_names)) base::stop(\"Open Wrangler generated R received malformed dataframe attribute names\", call. = FALSE)",
+      "  .ow_allowed_source_attributes <- c(\"names\", \"row.names\", \"class\")",
+      "  if (.ow_source_is_readr) .ow_allowed_source_attributes <- c(.ow_allowed_source_attributes, \"spec\", \"problems\")",
+      "  if (base::identical(.ow_source_flavor, \"r.data.table\")) .ow_allowed_source_attributes <- c(.ow_allowed_source_attributes, \".internal.selfref\", \"sorted\")",
+      "  .ow_unsupported_source_attributes <- base::setdiff(.ow_source_attribute_names, .ow_allowed_source_attributes)",
+      "  if (base::length(.ow_unsupported_source_attributes) != 0L) base::stop(base::sprintf(\"Open Wrangler generated R received unsupported dataframe attributes: %s\", base::paste(.ow_unsupported_source_attributes, collapse = \", \")), call. = FALSE)",
+      "  .ow_source_names <- base::attr(.ow_source, \"names\", exact = TRUE)",
+      "  if (!base::is.character(.ow_source_names) || base::length(.ow_source_names) != .ow_source_column_count) base::stop(\"Open Wrangler generated R requires one name per source column\", call. = FALSE)",
+      "  .ow_source_names <- base::vapply(base::seq_along(.ow_source_names), function(.ow_name_index) base::.subset2(.ow_source_names, .ow_name_index), character(1L), USE.NAMES = FALSE)",
+      "  for (.ow_source_name_index in base::seq_along(.ow_source_names)) {",
+      "    .ow_source_name <- .ow_source_names[[.ow_source_name_index]]",
+      "    if (base::length(.ow_source_name) != 1L || base::is.na(.ow_source_name) || base::identical(base::Encoding(.ow_source_name), \"bytes\")) base::stop(\"Open Wrangler generated R requires non-missing UTF-8 source column names\", call. = FALSE)",
+      "    .ow_source_name_encoding <- if (base::identical(base::Encoding(.ow_source_name), \"latin1\")) \"latin1\" else \"UTF-8\"",
+      "    .ow_source_name_utf8 <- base::iconv(.ow_source_name, from = .ow_source_name_encoding, to = \"UTF-8\", sub = NA_character_)",
+      sprintf(
+        "    if (base::is.na(.ow_source_name_utf8) || base::nchar(.ow_source_name_utf8, type = \"bytes\") > %dL) base::stop(\"Open Wrangler generated R received an invalid or oversized source column name\", call. = FALSE)",
+        maximum_name_bytes
+      ),
+      "  }",
+      "  if (base::identical(.ow_source_flavor, \"r.data.table\")) {",
+      "    .ow_source_self_reference <- base::attr(.ow_source, \".internal.selfref\", exact = TRUE)",
+      "    if (!base::is.null(.ow_source_self_reference) && !base::identical(base::typeof(.ow_source_self_reference), \"externalptr\")) base::stop(\"Open Wrangler generated R received an invalid data.table self-reference\", call. = FALSE)",
+      "    .ow_source_key <- base::attr(.ow_source, \"sorted\", exact = TRUE)",
+      "    if (!base::is.null(.ow_source_key) && (!base::is.character(.ow_source_key) || base::anyNA(.ow_source_key) || base::any(.ow_source_key == \"\") || base::anyDuplicated(.ow_source_key))) base::stop(\"Open Wrangler generated R received invalid data.table key metadata\", call. = FALSE)",
+      "    if (base::length(.ow_source_key) != 0L && base::any(base::vapply(.ow_source_key, function(.ow_key_name) base::sum(.ow_source_names == .ow_key_name) != 1L, logical(1L)))) base::stop(\"Open Wrangler generated R received a data.table key that does not identify exactly one column\", call. = FALSE)",
+      "  }",
+      "  .ow_source_row_names <- base::tryCatch(base::.row_names_info(.ow_source, type = 0L), error = function(.ow_error) .ow_error)",
+      "  if (base::inherits(.ow_source_row_names, \"error\") || (!base::is.integer(.ow_source_row_names) && !base::is.character(.ow_source_row_names))) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
+      "  .ow_source_row_names <- if (base::is.character(.ow_source_row_names)) base::vapply(base::seq_along(.ow_source_row_names), function(.ow_row_name_index) base::.subset2(.ow_source_row_names, .ow_row_name_index), character(1L), USE.NAMES = FALSE) else base::vapply(base::seq_along(.ow_source_row_names), function(.ow_row_name_index) base::.subset2(.ow_source_row_names, .ow_row_name_index), integer(1L), USE.NAMES = FALSE)",
+      "  .ow_compact_row_names <- base::is.integer(.ow_source_row_names) && base::length(.ow_source_row_names) == 2L && base::is.na(.ow_source_row_names[[1L]])",
+      "  if (.ow_compact_row_names) {",
+      "    if (base::is.na(.ow_source_row_names[[2L]]) || .ow_source_row_names[[2L]] == 0L) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
+      "    .ow_source_row_count <- base::abs(base::as.double(.ow_source_row_names[[2L]]))",
+      "    if (!base::is.finite(.ow_source_row_count) || .ow_source_row_count != base::floor(.ow_source_row_count) || .ow_source_row_count > .Machine$integer.max) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
+      "  } else {",
+      "    .ow_source_row_count <- base::as.double(base::length(.ow_source_row_names))",
+      "    if (!base::is.finite(.ow_source_row_count) || .ow_source_row_count > .Machine$integer.max) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
+      "    if (base::anyNA(.ow_source_row_names) || base::anyDuplicated(.ow_source_row_names)) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
+      "  }",
+      "  .ow_source_columns <- base::unclass(.ow_source)",
+      "  if (!base::is.list(.ow_source_columns) || base::length(.ow_source_columns) != .ow_source_column_count) base::stop(\"Open Wrangler generated R received a malformed dataframe payload\", call. = FALSE)",
+      "  .ow_source_metadata_bytes <- 1024 + base::as.double(.ow_source_column_count) * 512",
+      "  .ow_validate_source_column <- function(.ow_column, .ow_column_index) {",
+      "    .ow_column_label <- base::sprintf(\"source column %d\", .ow_column_index)",
+      "    .ow_column_length <- .ow_storage_length(.ow_column)",
+      "    if (.ow_column_length != .ow_source_row_count) base::stop(base::sprintf(\"Open Wrangler generated R received a source column whose length does not match its row count: %s\", .ow_column_label), call. = FALSE)",
+      "    .ow_column_attributes <- base::attributes(.ow_column)",
+      "    .ow_column_attribute_names <- base::names(.ow_column_attributes)",
+      "    if (base::is.null(.ow_column_attribute_names)) .ow_column_attribute_names <- base::character()",
+      "    if (base::anyNA(.ow_column_attribute_names) || base::any(.ow_column_attribute_names == \"\") || base::anyDuplicated(.ow_column_attribute_names)) base::stop(base::sprintf(\"Open Wrangler generated R received malformed attributes on %s\", .ow_column_label), call. = FALSE)",
+      "    if (\"names\" %in% .ow_column_attribute_names) {",
+      "      .ow_column_names <- base::attr(.ow_column, \"names\", exact = TRUE)",
+      "      if (!base::is.character(.ow_column_names) || base::is.object(.ow_column_names) || !base::is.null(base::attributes(.ow_column_names)) || base::length(.ow_column_names) != .ow_column_length) base::stop(base::sprintf(\"Open Wrangler generated R received malformed names on %s\", .ow_column_label), call. = FALSE)",
+      "      .ow_column_attribute_names <- base::setdiff(.ow_column_attribute_names, \"names\")",
+      "    }",
+      "    .ow_column_type <- base::typeof(.ow_column)",
+      "    .ow_column_classes <- base::class(.ow_column)",
+      "    .ow_allowed_column_attributes <- base::character()",
+      "    if (base::identical(.ow_column_type, \"logical\") && base::identical(.ow_column_classes, \"logical\")) {",
+      "      .ow_column_kind <- \"logical\"",
+      "    } else if (base::identical(.ow_column_type, \"integer\") && base::identical(.ow_column_classes, \"integer\")) {",
+      "      .ow_column_kind <- \"integer\"",
+      "    } else if (base::identical(.ow_column_type, \"double\") && base::identical(.ow_column_classes, \"numeric\")) {",
+      "      .ow_column_kind <- \"double\"",
+      "    } else if (base::identical(.ow_column_type, \"character\") && base::identical(.ow_column_classes, \"character\")) {",
+      "      .ow_column_kind <- \"character\"",
+      "    } else if (base::identical(.ow_column_type, \"double\") && base::identical(.ow_column_classes, \"integer64\")) {",
+      "      .ow_column_kind <- \"integer64\"; .ow_allowed_column_attributes <- \"class\"",
+      "    } else if (base::identical(.ow_column_type, \"double\") && base::identical(.ow_column_classes, \"Date\")) {",
+      "      .ow_column_kind <- \"date\"; .ow_allowed_column_attributes <- \"class\"",
+      "    } else if (base::identical(.ow_column_type, \"double\") && base::identical(.ow_column_classes, c(\"POSIXct\", \"POSIXt\"))) {",
+      "      .ow_column_kind <- \"datetime\"; .ow_allowed_column_attributes <- c(\"class\", \"tzone\")",
+      "    } else if (base::identical(.ow_column_type, \"double\") && base::identical(.ow_column_classes, \"difftime\")) {",
+      "      .ow_column_kind <- \"difftime\"; .ow_allowed_column_attributes <- c(\"class\", \"units\")",
+      "    } else if (base::identical(.ow_column_type, \"integer\") && (base::identical(.ow_column_classes, \"factor\") || base::identical(.ow_column_classes, c(\"ordered\", \"factor\")))) {",
+      "      .ow_column_kind <- \"factor\"; .ow_allowed_column_attributes <- c(\"class\", \"levels\")",
+      "    } else {",
+      "      base::stop(base::sprintf(\"Open Wrangler generated R received an unsupported type or class on %s\", .ow_column_label), call. = FALSE)",
+      "    }",
+      "    .ow_unsupported_column_attributes <- base::setdiff(.ow_column_attribute_names, .ow_allowed_column_attributes)",
+      "    if (base::length(.ow_unsupported_column_attributes) != 0L) base::stop(base::sprintf(\"Open Wrangler generated R received unsupported attributes on %s: %s\", .ow_column_label, base::paste(.ow_unsupported_column_attributes, collapse = \", \")), call. = FALSE)",
+      "    if (base::identical(.ow_column_kind, \"datetime\") && \"tzone\" %in% .ow_column_attribute_names) {",
+      "      .ow_column_timezone <- base::attr(.ow_column, \"tzone\", exact = TRUE)",
+      "      if (!base::is.character(.ow_column_timezone) || base::length(.ow_column_timezone) != 1L || base::is.na(.ow_column_timezone) || base::identical(base::Encoding(.ow_column_timezone), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler generated R received an unsupported timezone on %s\", .ow_column_label), call. = FALSE)",
+      "      .ow_column_timezone_from <- if (base::identical(base::Encoding(.ow_column_timezone), \"latin1\")) \"latin1\" else \"UTF-8\"",
+      "      .ow_column_timezone_utf8 <- base::iconv(.ow_column_timezone, from = .ow_column_timezone_from, to = \"UTF-8\", sub = NA_character_)",
+      sprintf(
+        "      if (base::is.na(.ow_column_timezone_utf8) || base::nchar(.ow_column_timezone_utf8, type = \"bytes\") > %dL) base::stop(base::sprintf(\"Open Wrangler generated R received an unsupported timezone on %%s\", .ow_column_label), call. = FALSE)",
+        maximum_name_bytes
+      ),
+      "    }",
+      "    if (base::identical(.ow_column_kind, \"difftime\")) {",
+      "      .ow_column_units <- base::attr(.ow_column, \"units\", exact = TRUE)",
+      "      if (!base::is.character(.ow_column_units) || base::length(.ow_column_units) != 1L || base::is.na(.ow_column_units) || !.ow_column_units %in% c(\"secs\", \"mins\", \"hours\", \"days\", \"weeks\")) base::stop(base::sprintf(\"Open Wrangler generated R received unsupported duration units on %s\", .ow_column_label), call. = FALSE)",
+      "    }",
+      "    if (base::identical(.ow_column_kind, \"factor\")) {",
+      "      .ow_column_levels <- base::attr(.ow_column, \"levels\", exact = TRUE)",
+      sprintf(
+        "      if (!base::is.character(.ow_column_levels) || base::length(.ow_column_levels) > %dL || base::anyNA(.ow_column_levels) || base::anyDuplicated(.ow_column_levels)) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor levels on %%s\", .ow_column_label), call. = FALSE)",
+        maximum_factor_levels
+      ),
+      "      for (.ow_level_index in base::seq_along(.ow_column_levels)) {",
+      "        .ow_level <- .ow_column_levels[[.ow_level_index]]",
+      "        if (base::identical(base::Encoding(.ow_level), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor levels on %s\", .ow_column_label), call. = FALSE)",
+      "        .ow_level_from <- if (base::identical(base::Encoding(.ow_level), \"latin1\")) \"latin1\" else \"UTF-8\"",
+      "        .ow_level_utf8 <- base::iconv(.ow_level, from = .ow_level_from, to = \"UTF-8\", sub = NA_character_)",
+      sprintf(
+        "        if (base::is.na(.ow_level_utf8) || base::nchar(.ow_level_utf8, type = \"bytes\") > %dL) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor levels on %%s\", .ow_column_label), call. = FALSE)",
+        maximum_text_bytes
+      ),
+      "        .ow_level_raw <- base::as.integer(base::charToRaw(.ow_level_utf8))",
+      "        .ow_level_html_slash <- base::logical(base::length(.ow_level_raw))",
+      "        if (base::length(.ow_level_raw) > 1L) .ow_level_html_slash[-1L] <- .ow_level_raw[-1L] == 47L & .ow_level_raw[-base::length(.ow_level_raw)] == 60L",
+      "        .ow_level_json_bytes <- base::sum(base::ifelse(.ow_level_raw %in% c(8L, 9L, 10L, 12L, 13L, 34L, 92L) | .ow_level_html_slash, 2, base::ifelse(.ow_level_raw < 32L, 6, 1))) + 3",
+      "        .ow_next_source_metadata_bytes <- .ow_source_metadata_bytes + base::as.double(.ow_level_json_bytes)",
+      sprintf(
+        "        if (!base::is.finite(.ow_next_source_metadata_bytes) || .ow_next_source_metadata_bytes > %dL) base::stop(\"Open Wrangler generated R received factor metadata above the %d-byte payload budget\", call. = FALSE)",
+        maximum_payload_bytes,
+        maximum_payload_bytes
+      ),
+      "        .ow_source_metadata_bytes <<- .ow_next_source_metadata_bytes",
+      "      }",
+      "      .ow_factor_codes <- base::unclass(.ow_column)",
+      "      if (base::any(!base::is.na(.ow_factor_codes) & (.ow_factor_codes < 1L | .ow_factor_codes > base::length(.ow_column_levels)))) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor codes on %s\", .ow_column_label), call. = FALSE)",
+      "    }",
+      "    base::invisible(NULL)",
+      "  }",
+      "  for (.ow_source_column_index in base::seq_len(.ow_source_column_count)) .ow_validate_source_column(.ow_source_columns[[.ow_source_column_index]], .ow_source_column_index)",
       "  .ow_result <- if (inherits(.ow_source, \"data.table\")) {",
       "    if (!requireNamespace(\"data.table\", quietly = TRUE)) stop(\"data.table is required\", call. = FALSE)",
       "    data.table::copy(.ow_source)",
       "  } else {",
       "    unserialize(serialize(.ow_source, NULL, version = 3L))",
+      "  }",
+      "  if (identical(class(.ow_result), c(\"spec_tbl_df\", \"tbl_df\", \"tbl\", \"data.frame\"))) {",
+      "    attr(.ow_result, \"spec\") <- NULL",
+      "    attr(.ow_result, \"problems\") <- NULL",
+      "    class(.ow_result) <- c(\"tbl_df\", \"tbl\", \"data.frame\")",
       "  }"
     )
+    if (
+      any(vapply(
+        bound_plan,
+        function(step) identical(step$kind, "formula") || (identical(step$kind, "formatDatetime") && !isTRUE(step$inPlace)),
+        logical(1L)
+      ))
+    ) {
+      lines <- c(
+        lines,
+        "  .ow_data_table_alloccol <- NULL",
+        "  if (base::identical(.ow_source_flavor, \"r.data.table\")) {",
+        "    .ow_data_table_namespace <- base::asNamespace(\"data.table\")",
+        "    .ow_data_table_namespace_dlls <- base::getNamespaceInfo(.ow_data_table_namespace, \"DLLs\")",
+        "    .ow_data_table_namespace_routines <- base::getNamespaceInfo(.ow_data_table_namespace, \"nativeRoutines\")",
+        "    if (!base::is.list(.ow_data_table_namespace_dlls) || base::length(.ow_data_table_namespace_dlls) != 1L || !base::is.list(.ow_data_table_namespace_routines) || base::length(.ow_data_table_namespace_routines) != 1L || !base::exists(\"Calloccolwrapper\", envir = .ow_data_table_namespace, inherits = FALSE) || base::bindingIsActive(\"Calloccolwrapper\", .ow_data_table_namespace) || !base::bindingIsLocked(\"Calloccolwrapper\", .ow_data_table_namespace)) base::stop(\"data.table has unavailable or mutable append primitives\", call. = FALSE)",
+        "    .ow_data_table_dll <- .ow_data_table_namespace_dlls[[1L]]",
+        "    .ow_data_table_routine_map <- .ow_data_table_namespace_routines[[1L]]",
+        "    .ow_data_table_binding <- base::get(\"Calloccolwrapper\", envir = .ow_data_table_namespace, inherits = FALSE)",
+        "    .ow_data_table_dll_fields <- base::unclass(.ow_data_table_dll)",
+        "    .ow_data_table_alloccol <- base::tryCatch(base::getNativeSymbolInfo(\"Calloccolwrapper\", PACKAGE = base::.subset2(.ow_data_table_dll_fields, \"info\"), withRegistrationInfo = FALSE), error = function(.ow_error) NULL)",
+        "    .ow_data_table_binding_fields <- base::unclass(.ow_data_table_binding)",
+        "    .ow_data_table_alloccol_fields <- if (base::is.null(.ow_data_table_alloccol)) NULL else base::unclass(.ow_data_table_alloccol)",
+        "    if (!base::inherits(.ow_data_table_dll, \"DLLInfo\") || !base::identical(base::.subset2(.ow_data_table_dll_fields, \"name\"), \"data_table\") || !base::identical(base::.subset2(.ow_data_table_dll_fields, \"dynamicLookup\"), FALSE) || !base::is.character(.ow_data_table_routine_map) || !base::identical(base::.subset2(.ow_data_table_routine_map, \"Calloccolwrapper\"), \"Calloccolwrapper\") || !base::identical(base::class(.ow_data_table_binding), c(\"CallRoutine\", \"NativeSymbolInfo\")) || !base::identical(base::attr(.ow_data_table_binding, \"names\", exact = TRUE), c(\"name\", \"address\", \"dll\", \"numParameters\")) || !base::identical(base::.subset2(.ow_data_table_binding_fields, \"name\"), \"Calloccolwrapper\") || !base::identical(base::.subset2(.ow_data_table_binding_fields, \"numParameters\"), -1L) || !base::identical(base::.subset2(.ow_data_table_binding_fields, \"dll\"), .ow_data_table_dll) || !base::inherits(base::.subset2(.ow_data_table_binding_fields, \"address\"), \"RegisteredNativeSymbol\") || base::is.null(.ow_data_table_alloccol) || !base::identical(base::.subset2(.ow_data_table_alloccol_fields, \"name\"), \"Calloccolwrapper\") || !base::identical(base::.subset2(.ow_data_table_alloccol_fields, \"numParameters\"), -1L) || !base::identical(base::.subset2(.ow_data_table_alloccol_fields, \"dll\"), .ow_data_table_dll) || !base::inherits(base::.subset2(.ow_data_table_alloccol_fields, \"address\"), \"NativeSymbol\")) base::stop(\"data.table has invalid append primitives\", call. = FALSE)",
+        "  }"
+      )
+    }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "castColumn"), logical(1L)))) {
       lines <- c(lines, cast_code_helper_lines())
     }
@@ -3337,6 +3842,57 @@ openwrangler_r_kernel_agent <- local({
     }
     if (any(vapply(bound_plan, function(step) identical(step$kind, "minMaxScale"), logical(1L)))) {
       lines <- c(lines, min_max_scale_code_helper_lines())
+    }
+    if (any(vapply(
+      bound_plan,
+      function(step) {
+        if (!identical(step$kind, "formula")) return(FALSE)
+        identical(step$left$semanticKind, "integer64") ||
+          (!is.null(step$right) && identical(step$right$semanticKind, "integer64"))
+      },
+      logical(1L)
+    ))) {
+      lines <- c(
+        lines,
+        "  if (!base::requireNamespace(\"bit64\", quietly = TRUE)) base::stop(\"bit64 is required for integer64 Formula\", call. = FALSE)",
+        "  .ow_integer64_namespace <- base::asNamespace(\"bit64\")",
+        "  .ow_integer64_namespace_dlls <- base::getNamespaceInfo(.ow_integer64_namespace, \"DLLs\")",
+        "  .ow_integer64_namespace_routines <- base::getNamespaceInfo(.ow_integer64_namespace, \"nativeRoutines\")",
+        "  if (!base::is.list(.ow_integer64_namespace_dlls) || base::length(.ow_integer64_namespace_dlls) != 1L || !base::is.list(.ow_integer64_namespace_routines) || base::length(.ow_integer64_namespace_routines) != 1L) base::stop(\"bit64 has invalid integer64 Formula native registration metadata\", call. = FALSE)",
+        "  .ow_integer64_dll <- .ow_integer64_namespace_dlls[[1L]]",
+        "  .ow_integer64_routine_map <- .ow_integer64_namespace_routines[[1L]]",
+        "  .ow_integer64_dll_fields <- base::unclass(.ow_integer64_dll)",
+        "  if (!base::inherits(.ow_integer64_dll, \"DLLInfo\") || !base::identical(base::.subset2(.ow_integer64_dll_fields, \"name\"), \"bit64\") || !base::identical(base::.subset2(.ow_integer64_dll_fields, \"dynamicLookup\"), FALSE) || !base::identical(base::.subset2(.ow_integer64_dll_fields, \"forceSymbols\"), TRUE) || !base::is.character(.ow_integer64_routine_map) || base::is.null(base::names(.ow_integer64_routine_map))) base::stop(\"bit64 has invalid integer64 Formula native registration metadata\", call. = FALSE)",
+        "  .ow_integer64_all_binding_names <- base::names(.ow_integer64_routine_map)",
+        "  .ow_integer64_binding <- function(.ow_binding_name, .ow_native_name, .ow_parameters) {",
+        "    if (!base::exists(.ow_binding_name, envir = .ow_integer64_namespace, inherits = FALSE) || base::bindingIsActive(.ow_binding_name, .ow_integer64_namespace) || !base::bindingIsLocked(.ow_binding_name, .ow_integer64_namespace)) base::stop(\"bit64 has unavailable or mutable integer64 Formula primitives\", call. = FALSE)",
+        "    .ow_primitive <- base::get(.ow_binding_name, envir = .ow_integer64_namespace, inherits = FALSE)",
+        "    .ow_canonical <- base::tryCatch(base::getNativeSymbolInfo(.ow_native_name, PACKAGE = base::.subset2(.ow_integer64_dll_fields, \"info\"), withRegistrationInfo = FALSE), error = function(.ow_error) NULL)",
+        "    .ow_primitive_fields <- base::unclass(.ow_primitive)",
+        "    .ow_canonical_fields <- if (base::is.null(.ow_canonical)) NULL else base::unclass(.ow_canonical)",
+        "    if (!base::identical(base::.subset2(.ow_integer64_routine_map, .ow_binding_name), .ow_native_name) || !base::identical(base::class(.ow_primitive), c(\"CallRoutine\", \"NativeSymbolInfo\")) || !base::identical(base::attr(.ow_primitive, \"names\", exact = TRUE), c(\"name\", \"address\", \"dll\", \"numParameters\")) || !base::identical(base::.subset2(.ow_primitive_fields, \"name\"), .ow_native_name) || !base::identical(base::.subset2(.ow_primitive_fields, \"numParameters\"), .ow_parameters) || !base::inherits(base::.subset2(.ow_primitive_fields, \"address\"), \"RegisteredNativeSymbol\") || !base::identical(base::.subset2(.ow_primitive_fields, \"dll\"), .ow_integer64_dll) || base::is.null(.ow_canonical) || !base::identical(base::class(.ow_canonical), c(\"CallRoutine\", \"NativeSymbolInfo\")) || !base::identical(base::.subset2(.ow_canonical_fields, \"name\"), .ow_native_name) || !base::identical(base::.subset2(.ow_canonical_fields, \"numParameters\"), .ow_parameters) || !base::identical(base::.subset2(.ow_canonical_fields, \"dll\"), .ow_integer64_dll) || !base::inherits(base::.subset2(.ow_canonical_fields, \"address\"), \"NativeSymbol\")) base::stop(\"bit64 has invalid integer64 Formula primitives\", call. = FALSE)",
+        "    for (.ow_other_binding_name in .ow_integer64_all_binding_names) {",
+        "      if (base::identical(.ow_other_binding_name, .ow_binding_name) || !base::exists(.ow_other_binding_name, envir = .ow_integer64_namespace, inherits = FALSE) || base::bindingIsActive(.ow_other_binding_name, .ow_integer64_namespace)) next",
+        "      .ow_other_primitive <- base::get(.ow_other_binding_name, envir = .ow_integer64_namespace, inherits = FALSE)",
+        "      if (base::is.list(.ow_other_primitive)) { .ow_other_fields <- base::unclass(.ow_other_primitive); if (!base::is.null(base::.subset2(.ow_other_fields, \"address\")) && base::identical(base::.subset2(.ow_primitive_fields, \"address\"), base::.subset2(.ow_other_fields, \"address\"))) base::stop(\"bit64 has replaced integer64 Formula primitive addresses\", call. = FALSE) }",
+        "    }",
+        "    .ow_canonical",
+        "  }",
+        "  .ow_integer64_as_integer <- .ow_integer64_binding(\"C_as_integer64_integer\", \"as_integer64_integer\", 2L)",
+        "  .ow_integer64_as_double <- .ow_integer64_binding(\"C_as_double_integer64\", \"as_double_integer64\", 2L)",
+        "  .ow_integer64_as_character <- .ow_integer64_binding(\"C_as_character_integer64\", \"as_character_integer64\", 2L)",
+        "  .ow_integer64_is_na <- .ow_integer64_binding(\"C_isna_integer64\", \"isna_integer64\", 2L)",
+        "  .ow_integer64_add <- .ow_integer64_binding(\"C_plus_integer64\", \"plus_integer64\", 3L)",
+        "  .ow_integer64_subtract <- .ow_integer64_binding(\"C_minus_integer64\", \"minus_integer64\", 3L)",
+        "  .ow_integer64_multiply <- .ow_integer64_binding(\"C_times_integer64_integer64\", \"times_integer64_integer64\", 3L)",
+        "  .ow_integer64_modulo <- .ow_integer64_binding(\"C_mod_integer64\", \"mod_integer64\", 3L)",
+        "  .ow_integer64_from_integer <- function(.ow_values) { .ow_output <- base::.Call(.ow_integer64_as_integer, .ow_values, base::double(.ow_storage_length(.ow_values))); .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); base::attributes(.ow_output) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_output }",
+        "  .ow_integer64_to_double <- function(.ow_values) { .ow_output <- base::.Call(.ow_integer64_as_double, .ow_values, base::double(.ow_storage_length(.ow_values))); .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); if (!base::is.null(.ow_names)) base::attr(.ow_output, \"names\") <- .ow_names; .ow_output }",
+        "  .ow_integer64_missing_mask <- function(.ow_values) base::.Call(.ow_integer64_is_na, .ow_values, base::logical(.ow_storage_length(.ow_values)))",
+        "  .ow_integer64_binary <- function(.ow_primitive, .ow_left, .ow_right) { if (!base::inherits(.ow_left, \"integer64\")) .ow_left <- .ow_integer64_from_integer(.ow_left); if (!base::inherits(.ow_right, \"integer64\")) .ow_right <- .ow_integer64_from_integer(.ow_right); .ow_left_length <- .ow_storage_length(.ow_left); .ow_right_length <- .ow_storage_length(.ow_right); .ow_length <- if (.ow_left_length == 0L || .ow_right_length == 0L) 0L else base::max(.ow_left_length, .ow_right_length); .ow_output <- base::.Call(.ow_primitive, .ow_left, .ow_right, base::double(.ow_length)); .ow_names <- if (.ow_left_length == .ow_length && !base::is.null(base::attr(.ow_left, \"names\", exact = TRUE))) base::attr(.ow_left, \"names\", exact = TRUE) else if (.ow_right_length == .ow_length && !base::is.null(base::attr(.ow_right, \"names\", exact = TRUE))) base::attr(.ow_right, \"names\", exact = TRUE) else NULL; base::attributes(.ow_output) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_output }",
+        "  .ow_integer64_missing <- .ow_integer64_from_integer(NA_integer_)",
+        "  .ow_integer64_force_missing <- function(.ow_values, .ow_missing) { .ow_storage <- base::unclass(.ow_values); .ow_storage[.ow_missing] <- base::unclass(.ow_integer64_missing)[[1L]]; .ow_names <- base::attr(.ow_values, \"names\", exact = TRUE); base::attributes(.ow_storage) <- if (base::is.null(.ow_names)) base::list(class = \"integer64\") else base::list(class = \"integer64\", names = .ow_names); .ow_storage }"
+      )
     }
     for (step in bound_plan) {
       if (identical(step$kind, "sortRows")) {
@@ -3408,6 +3964,146 @@ openwrangler_r_kernel_agent <- local({
           "    .ow_clone_existing_names <- names(.ow_result)",
           "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_result[[.ow_clone_position]]",
           "    names(.ow_result) <- c(.ow_clone_existing_names, .ow_clone_name)",
+          "  }"
+        )
+      } else if (identical(step$kind, "formula")) {
+        symbol <- switch(
+          step$operator,
+          add = "+",
+          subtract = "-",
+          multiply = "*",
+          divide = "/",
+          modulo = "%%",
+          power = "^"
+        )
+        right_kind <- if (is.null(step$right)) {
+          if (is.integer(step$value)) "integer" else "double"
+        } else {
+          step$right$semanticKind
+        }
+        force_double <-
+          step$operator %in% c("divide", "power") ||
+            (
+              (identical(step$left$semanticKind, "integer64") || identical(right_kind, "integer64")) &&
+                (identical(step$left$semanticKind, "double") || identical(right_kind, "double"))
+            )
+        has_integer64 <-
+          identical(step$left$semanticKind, "integer64") || identical(right_kind, "integer64")
+        lines <- c(
+          lines,
+          sprintf("  .ow_formula_left_position <- %dL", step$left$position),
+          sprintf("  .ow_formula_left_name <- %s", r_string(step$left$name)),
+          sprintf("  .ow_formula_name <- %s", r_string(step$newName)),
+          "  .ow_formula_frame_names <- attr(.ow_result, \"names\", exact = TRUE)",
+          "  if (.ow_storage_length(.ow_result) < .ow_formula_left_position || !identical(.ow_formula_frame_names[[.ow_formula_left_position]], .ow_formula_left_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  .ow_formula_left <- .ow_result[[.ow_formula_left_position]]",
+          row_type_guard(".ow_formula_left", list(semanticsKind = step$left$semanticKind)),
+          exact_formula_datetime_type_guard(".ow_formula_left", step$left),
+          if (identical(step$left$semanticKind, "integer64")) {
+            "  .ow_formula_left_nan <- rep.int(FALSE, .ow_storage_length(.ow_formula_left))"
+          } else {
+            "  .ow_formula_left_nan <- is.nan(.ow_formula_left)"
+          },
+          if (identical(step$left$semanticKind, "integer64")) {
+            "  .ow_formula_left_infinite <- rep.int(FALSE, .ow_storage_length(.ow_formula_left))"
+          } else {
+            "  .ow_formula_left_infinite <- is.infinite(.ow_formula_left)"
+          },
+          if (identical(step$left$semanticKind, "integer64")) {
+            "  .ow_formula_left_missing <- .ow_integer64_missing_mask(.ow_formula_left)"
+          } else {
+            "  .ow_formula_left_missing <- is.na(.ow_formula_left) & !.ow_formula_left_nan"
+          }
+        )
+        if (is.null(step$right)) {
+          lines <- c(
+            lines,
+            sprintf("  .ow_formula_right <- %s", r_number(step$value)),
+            "  .ow_formula_right_nan <- rep.int(FALSE, .ow_storage_length(.ow_formula_left))",
+            "  .ow_formula_right_infinite <- rep.int(FALSE, .ow_storage_length(.ow_formula_left))",
+            "  .ow_formula_right_missing <- rep.int(FALSE, .ow_storage_length(.ow_formula_left))"
+          )
+        } else {
+          lines <- c(
+            lines,
+            sprintf("  .ow_formula_right_position <- %dL", step$right$position),
+            sprintf("  .ow_formula_right_name <- %s", r_string(step$right$name)),
+            "  if (.ow_storage_length(.ow_result) < .ow_formula_right_position || !identical(.ow_formula_frame_names[[.ow_formula_right_position]], .ow_formula_right_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+            "  .ow_formula_right <- .ow_result[[.ow_formula_right_position]]",
+            row_type_guard(".ow_formula_right", list(semanticsKind = step$right$semanticKind)),
+            exact_formula_datetime_type_guard(".ow_formula_right", step$right),
+            if (identical(step$right$semanticKind, "integer64")) {
+              "  .ow_formula_right_nan <- rep.int(FALSE, .ow_storage_length(.ow_formula_right))"
+            } else {
+              "  .ow_formula_right_nan <- is.nan(.ow_formula_right)"
+            },
+            if (identical(step$right$semanticKind, "integer64")) {
+              "  .ow_formula_right_infinite <- rep.int(FALSE, .ow_storage_length(.ow_formula_right))"
+            } else {
+              "  .ow_formula_right_infinite <- is.infinite(.ow_formula_right)"
+            },
+            if (identical(step$right$semanticKind, "integer64")) {
+              "  .ow_formula_right_missing <- .ow_integer64_missing_mask(.ow_formula_right)"
+            } else {
+              "  .ow_formula_right_missing <- is.na(.ow_formula_right) & !.ow_formula_right_nan"
+            }
+          )
+        }
+        if (force_double) {
+          if (identical(step$left$semanticKind, "integer64")) {
+            lines <- c(lines, "  .ow_formula_left <- suppressWarnings(.ow_integer64_to_double(.ow_formula_left))")
+          }
+          if (identical(right_kind, "integer64")) {
+            lines <- c(lines, "  .ow_formula_right <- suppressWarnings(.ow_integer64_to_double(.ow_formula_right))")
+          }
+        }
+        formula_expression <- if (has_integer64 && !force_double) {
+          sprintf(".ow_integer64_binary(.ow_integer64_%s, .ow_formula_left, .ow_formula_right)", step$operator)
+        } else {
+          sprintf(".ow_formula_left %s .ow_formula_right", symbol)
+        }
+        lines <- c(
+          lines,
+          sprintf(
+            "  .ow_formula_values <- withCallingHandlers(%s, warning = function(.ow_warning) invokeRestart(\"muffleWarning\"))",
+            formula_expression
+          ),
+          "  .ow_formula_input_missing <- .ow_formula_left_missing | .ow_formula_right_missing",
+          "  if (any(.ow_formula_input_missing)) {",
+          "    if (inherits(.ow_formula_values, \"integer64\")) .ow_formula_values <- .ow_integer64_force_missing(.ow_formula_values, .ow_formula_input_missing) else if (is.integer(.ow_formula_values)) .ow_formula_values[.ow_formula_input_missing] <- NA_integer_ else .ow_formula_values[.ow_formula_input_missing] <- NA_real_",
+          "  }",
+          "  if (.ow_storage_length(.ow_formula_values) != .ow_source_row_count || !(is.integer(.ow_formula_values) || is.double(.ow_formula_values) || inherits(.ow_formula_values, \"integer64\"))) stop(\"Open Wrangler Formula returned an invalid numeric result\", call. = FALSE)",
+          "  .ow_formula_nan <- if (inherits(.ow_formula_values, \"integer64\")) rep.int(FALSE, .ow_storage_length(.ow_formula_values)) else is.nan(.ow_formula_values)",
+          "  .ow_formula_infinite <- if (inherits(.ow_formula_values, \"integer64\")) rep.int(FALSE, .ow_storage_length(.ow_formula_values)) else is.infinite(.ow_formula_values)",
+          if (has_integer64 && !force_double) {
+            "  .ow_formula_missing <- .ow_integer64_missing_mask(.ow_formula_values)"
+          } else {
+            "  .ow_formula_missing <- is.na(.ow_formula_values) & !.ow_formula_nan"
+          },
+          "  if (any(.ow_formula_nan & !(.ow_formula_left_nan | .ow_formula_right_nan)) || any(.ow_formula_infinite & !(.ow_formula_left_infinite | .ow_formula_right_infinite)) || any(.ow_formula_missing & !(.ow_formula_left_missing | .ow_formula_right_missing))) stop(\"Open Wrangler Formula produced a non-finite or overflowing numeric result\", call. = FALSE)",
+          "  if (.ow_formula_name == \"\" || any(.ow_formula_frame_names == .ow_formula_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+          sprintf(
+            "  if (.ow_storage_length(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
+            maximum_columns
+          ),
+          "  .ow_formula_value_names <- attr(.ow_formula_values, \"names\", exact = TRUE)",
+          "  if (inherits(.ow_result, \"data.table\")) {",
+          "    .ow_formula_frame_classes <- class(.ow_result)",
+          "    class(.ow_result) <- NULL",
+          "    .ow_formula_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
+          "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_formula_values",
+          "    attr(.ow_result, \"names\") <- c(.ow_formula_existing_names, .ow_formula_name)",
+          "    if (!is.null(.ow_formula_value_names)) attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_formula_value_names",
+          "    class(.ow_result) <- .ow_formula_frame_classes",
+          "    .ow_result <- base::.Call(.ow_data_table_alloccol, .ow_result, 1024L, FALSE)",
+          "  } else {",
+          "    .ow_formula_frame_classes <- class(.ow_result)",
+          "    class(.ow_result) <- NULL",
+          "    .ow_formula_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
+          "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_formula_values",
+          "    attr(.ow_result, \"names\") <- c(.ow_formula_existing_names, .ow_formula_name)",
+          "    if (!is.null(.ow_formula_value_names)) attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_formula_value_names",
+          "    class(.ow_result) <- .ow_formula_frame_classes",
           "  }"
         )
       } else if (identical(step$kind, "textLength")) {
@@ -3754,6 +4450,131 @@ openwrangler_r_kernel_agent <- local({
             "  }"
           )
         }
+      } else if (identical(step$kind, "formatDatetime")) {
+        lines <- c(
+          lines,
+          sprintf("  .ow_datetime_position <- %dL", step$position),
+          sprintf("  .ow_datetime_source_name <- %s", r_string(step$oldName)),
+          sprintf("  .ow_datetime_name <- %s", r_string(step$newName)),
+          sprintf("  .ow_datetime_format <- %s", r_string(step$format)),
+          "  .ow_datetime_frame_names <- attr(.ow_result, \"names\", exact = TRUE)",
+          "  if (.ow_storage_length(.ow_result) < .ow_datetime_position || !identical(.ow_datetime_frame_names[[.ow_datetime_position]], .ow_datetime_source_name)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
+          "  .ow_datetime_source <- .ow_result[[.ow_datetime_position]]",
+          row_type_guard(".ow_datetime_source", list(semanticsKind = step$semanticKind)),
+          exact_formula_datetime_type_guard(".ow_datetime_source", step),
+          "  .ow_datetime_source_count <- .ow_storage_length(.ow_datetime_source)",
+          sprintf(
+            "  .ow_datetime_output_bytes <- as.double(.ow_datetime_source_count) * %dL",
+            character_vector_slot_bytes
+          ),
+          sprintf(
+            "  if (!is.finite(.ow_datetime_output_bytes) || .ow_datetime_output_bytes > %dL) stop(\"Open Wrangler Format Datetime exceeds the %d-byte aggregate output budget\", call. = FALSE)",
+            maximum_operation_output_bytes,
+            maximum_operation_output_bytes
+          ),
+          if (identical(step$semanticKind, "datetime")) {
+            c(
+              "  .ow_datetime_timezone <- attr(.ow_datetime_source, \"tzone\", exact = TRUE)",
+              "  if (is.null(.ow_datetime_timezone) || identical(.ow_datetime_timezone, \"\")) .ow_datetime_timezone <- \"UTC\"",
+              "  if (!is.character(.ow_datetime_timezone) || length(.ow_datetime_timezone) != 1L || is.na(.ow_datetime_timezone) || identical(Encoding(.ow_datetime_timezone), \"bytes\")) stop(\"Open Wrangler received an unsupported POSIXct timezone\", call. = FALSE)",
+              "  .ow_datetime_timezone_encoding <- Encoding(.ow_datetime_timezone)",
+              "  .ow_datetime_timezone_from <- if (identical(.ow_datetime_timezone_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+              "  .ow_datetime_timezone <- iconv(.ow_datetime_timezone, from = .ow_datetime_timezone_from, to = \"UTF-8\", sub = NA_character_)",
+              sprintf(
+                "  if (is.na(.ow_datetime_timezone) || nchar(.ow_datetime_timezone, type = \"bytes\") > %dL) stop(\"Open Wrangler received an unsupported POSIXct timezone\", call. = FALSE)",
+                maximum_name_bytes
+              )
+            )
+          } else {
+            character()
+          },
+          "  .ow_datetime_source_storage <- unclass(.ow_datetime_source)",
+          "  .ow_datetime_values <- rep.int(NA_character_, .ow_datetime_source_count)",
+          "  .ow_datetime_start <- 1L",
+          "  while (.ow_datetime_start <= .ow_datetime_source_count) {",
+          sprintf(
+            "    .ow_datetime_end <- min(.ow_datetime_source_count, .ow_datetime_start + %dL - 1L)",
+            maximum_operation_output_chunk_rows
+          ),
+          "    .ow_datetime_positions <- seq.int(.ow_datetime_start, .ow_datetime_end)",
+          "    .ow_datetime_chunk_count <- length(.ow_datetime_positions)",
+          "    .ow_datetime_chunk_numeric <- .ow_datetime_source_storage[.ow_datetime_positions]",
+          if (identical(step$semanticKind, "date")) {
+            "    .ow_datetime_chunk_source <- structure(.ow_datetime_chunk_numeric, class = \"Date\")"
+          } else {
+            "    .ow_datetime_chunk_source <- structure(.ow_datetime_chunk_numeric, class = c(\"POSIXct\", \"POSIXt\"), tzone = .ow_datetime_timezone)"
+          },
+          "    if (any(is.nan(.ow_datetime_chunk_numeric)) || any(!is.na(.ow_datetime_chunk_numeric) & !is.finite(.ow_datetime_chunk_numeric))) stop(\"Open Wrangler Format Datetime cannot format a non-finite value\", call. = FALSE)",
+          "    .ow_datetime_chunk_present <- !is.na(.ow_datetime_chunk_numeric)",
+          if (identical(step$semanticKind, "date")) {
+            c(
+              "    if (any(.ow_datetime_chunk_present & .ow_datetime_chunk_numeric != floor(.ow_datetime_chunk_numeric))) stop(\"Open Wrangler Format Datetime cannot format a fractional Date\", call. = FALSE)",
+              "    .ow_datetime_contract_display <- tryCatch(base::format.Date(.ow_datetime_chunk_source, format = \"%Y-%m-%d\"), error = function(.ow_error) NULL)",
+              "    if (!is.character(.ow_datetime_contract_display) || length(.ow_datetime_contract_display) != .ow_datetime_chunk_count || any(.ow_datetime_chunk_present & (is.na(.ow_datetime_contract_display) | !grepl(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\", .ow_datetime_contract_display)))) stop(\"Open Wrangler Format Datetime received a Date outside the supported range\", call. = FALSE)"
+            )
+          } else {
+            c(
+              "    .ow_datetime_contract_display <- tryCatch(base::format.POSIXct(.ow_datetime_chunk_source, tz = .ow_datetime_timezone, format = \"%Y-%m-%dT%H:%M:%OS6\", usetz = FALSE), error = function(.ow_error) NULL)",
+              "    if (!is.character(.ow_datetime_contract_display) || length(.ow_datetime_contract_display) != .ow_datetime_chunk_count || any(.ow_datetime_chunk_present & is.na(.ow_datetime_contract_display))) stop(\"Open Wrangler Format Datetime received a POSIXct value outside the supported range\", call. = FALSE)"
+            )
+          },
+          if (identical(step$semanticKind, "date")) {
+            "    .ow_datetime_chunk_values <- base::format.Date(.ow_datetime_chunk_source, format = .ow_datetime_format)"
+          } else {
+            "    .ow_datetime_chunk_values <- base::format.POSIXct(.ow_datetime_chunk_source, format = .ow_datetime_format, tz = .ow_datetime_timezone, usetz = FALSE)"
+          },
+          "    if (!is.character(.ow_datetime_chunk_values) || length(.ow_datetime_chunk_values) != .ow_datetime_chunk_count) stop(\"Open Wrangler Format Datetime returned an invalid text result\", call. = FALSE)",
+          "    .ow_datetime_chunk_values <- vapply(seq_along(.ow_datetime_chunk_values), function(.ow_index) {",
+          "      if (is.na(.ow_datetime_chunk_numeric[[.ow_index]])) return(NA_character_)",
+          "      .ow_value <- .ow_datetime_chunk_values[[.ow_index]]",
+          "      if (!is.character(.ow_value) || length(.ow_value) != 1L || is.na(.ow_value) || identical(Encoding(.ow_value), \"bytes\")) stop(\"Open Wrangler Format Datetime returned invalid text\", call. = FALSE)",
+          "      .ow_encoding <- Encoding(.ow_value)",
+          "      .ow_from <- if (identical(.ow_encoding, \"latin1\")) \"latin1\" else \"UTF-8\"",
+          "      .ow_utf8 <- iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_)",
+          "      if (is.na(.ow_utf8) || nchar(.ow_utf8, type = \"bytes\") > 8192L) stop(\"Open Wrangler Format Datetime produced invalid or oversized text\", call. = FALSE)",
+          "      .ow_utf8",
+          "    }, character(1L), USE.NAMES = FALSE)",
+          "    .ow_datetime_chunk_bytes <- sum(as.double(nchar(.ow_datetime_chunk_values[!is.na(.ow_datetime_chunk_values)], type = \"bytes\")))",
+          "    .ow_datetime_next_output_bytes <- .ow_datetime_output_bytes + .ow_datetime_chunk_bytes",
+          sprintf(
+            "    if (!is.finite(.ow_datetime_next_output_bytes) || .ow_datetime_next_output_bytes > %dL) stop(\"Open Wrangler Format Datetime exceeds the %d-byte aggregate output budget\", call. = FALSE)",
+            maximum_operation_output_bytes,
+            maximum_operation_output_bytes
+          ),
+          "    .ow_datetime_output_bytes <- .ow_datetime_next_output_bytes",
+          "    .ow_datetime_values[.ow_datetime_positions] <- .ow_datetime_chunk_values",
+          "    .ow_datetime_start <- .ow_datetime_end + 1L",
+          "  }"
+        )
+        if (isTRUE(step$inPlace)) {
+          lines <- c(
+            lines,
+            "  if (inherits(.ow_result, \"data.table\") && !is.null(data.table::key(.ow_result)) && .ow_datetime_source_name %in% data.table::key(.ow_result)) stop(\"Open Wrangler Format Datetime cannot replace a data.table key column; choose a new output column\", call. = FALSE)",
+            "  if (inherits(.ow_result, \"data.table\")) data.table::set(.ow_result, j = .ow_datetime_position, value = .ow_datetime_values) else .ow_result[[.ow_datetime_position]] <- .ow_datetime_values"
+          )
+        } else {
+          lines <- c(
+            lines,
+            "  if (.ow_datetime_name == \"\" || any(.ow_datetime_frame_names == .ow_datetime_name)) stop(\"Open Wrangler column name already exists\", call. = FALSE)",
+            sprintf(
+              "  if (.ow_storage_length(.ow_result) >= %dL) stop(\"Open Wrangler column limit reached\", call. = FALSE)",
+              maximum_columns
+            ),
+            "  if (inherits(.ow_result, \"data.table\")) {",
+            "    .ow_datetime_frame_classes <- class(.ow_result)",
+            "    class(.ow_result) <- NULL",
+            "    .ow_datetime_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
+            "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_datetime_values",
+            "    attr(.ow_result, \"names\") <- c(.ow_datetime_existing_names, .ow_datetime_name)",
+            "    class(.ow_result) <- .ow_datetime_frame_classes",
+            "    .ow_result <- base::.Call(.ow_data_table_alloccol, .ow_result, 1024L, FALSE)",
+            "  } else {",
+            "    .ow_datetime_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
+            "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_datetime_values",
+            "    attr(.ow_result, \"names\") <- c(.ow_datetime_existing_names, .ow_datetime_name)",
+            "  }"
+          )
+        }
       } else if (identical(step$kind, "fillMissingValues")) {
         fallback_fill <- identical(step$replacement$kind, "fallbackColumns")
         directional_fill <- identical(step$replacement$kind, "directional")
@@ -3931,7 +4752,23 @@ openwrangler_r_kernel_agent <- local({
         abort("runtime_error", "The R cleaning plan contains an unsupported operation")
       }
     }
-    code <- paste(c(lines, "  .ow_result", "})", ""), collapse = "\n")
+    code <- paste(c(
+      lines,
+      "  .ow_result",
+      "  }, envir = base::list2env(",
+      "    base::list(.ow_source_environment = .ow_caller_environment),",
+      "    parent = base::baseenv()",
+      "  ))",
+      "  if (base::exists(.ow_publication_name, envir = .ow_caller_environment, inherits = FALSE) && base::bindingIsActive(.ow_publication_name, .ow_caller_environment)) base::stop(\"Open Wrangler generated R does not accept an active result binding\", call. = FALSE)",
+      "  base::assign(.ow_publication_name, .ow_generated_result, envir = .ow_caller_environment, inherits = FALSE)",
+      "  if (base::bindingIsActive(.ow_publication_name, .ow_caller_environment) || !base::identical(base::get(.ow_publication_name, envir = .ow_caller_environment, inherits = FALSE), .ow_generated_result)) base::stop(\"Open Wrangler generated R could not verify its result binding\", call. = FALSE)",
+      "  base::invisible(.ow_generated_result)",
+      "}, envir = base::list2env(",
+      "  base::list(.ow_caller_environment = base::environment()),",
+      "  parent = base::baseenv()",
+      "))",
+      ""
+    ), collapse = "\n")
     if (nchar(code, type = "bytes") > maximum_generated_code_bytes) {
       abort("runtime_error", "The generated R cleaning code is too large")
     }
@@ -3950,7 +4787,7 @@ openwrangler_r_kernel_agent <- local({
     added_columns <- if (identical(bound$kind, "groupBy")) {
       vapply(bound$aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
     } else if (
-      bound$kind %in% c("cloneColumn", "textLength") ||
+      bound$kind %in% c("cloneColumn", "formula", "textLength") ||
         (
           bound$kind %in% c(
             "lowerText",
@@ -3962,7 +4799,8 @@ openwrangler_r_kernel_agent <- local({
             "minMaxScale",
             "roundNumber",
             "floorNumber",
-            "ceilNumber"
+            "ceilNumber",
+            "formatDatetime"
           ) &&
             !isTRUE(bound$inPlace)
         )
@@ -4033,6 +4871,7 @@ openwrangler_r_kernel_agent <- local({
         "roundNumber",
         "floorNumber",
         "ceilNumber",
+        "formatDatetime",
         "fillMissingValues",
         "castColumn"
       ) &&
@@ -4130,7 +4969,10 @@ openwrangler_r_kernel_agent <- local({
         session$variableName,
         session$boundPlan,
         frame_contract$limits$columns,
-        frame_contract$limits$factorLevels
+        frame_contract$limits$factorLevels,
+        frame_contract$limits$textBytes,
+        frame_contract$limits$payloadBytes,
+        frame_contract$limits$nameBytes
       )
     )
   }
@@ -4144,6 +4986,7 @@ openwrangler_r_kernel_agent <- local({
       "rename_column",
       "rename_column_at",
       "clone_column_at",
+      "formula_column_at",
       "text_length_column_at",
       "lower_text_column_at",
       "upper_text_column_at",
@@ -4155,6 +4998,7 @@ openwrangler_r_kernel_agent <- local({
       "round_number_column_at",
       "floor_number_column_at",
       "ceil_number_column_at",
+      "format_datetime_column_at",
       "fill_missing_column_at",
       "fill_missing_from_fallback_columns_at",
       "fill_missing_directional_at",
@@ -4526,7 +5370,10 @@ openwrangler_r_kernel_agent <- local({
             candidate$variableName,
             candidate_bound_plan,
             frame_contract$limits$columns,
-            frame_contract$limits$factorLevels
+            frame_contract$limits$factorLevels,
+            frame_contract$limits$textBytes,
+            frame_contract$limits$payloadBytes,
+            frame_contract$limits$nameBytes
           )
         )
         if (identical(applied$bound$kind, "fillMissingValues")) {
@@ -4577,7 +5424,10 @@ openwrangler_r_kernel_agent <- local({
               session$variableName,
               utils::head(session$boundPlan, step_index),
               frame_contract$limits$columns,
-              frame_contract$limits$factorLevels
+              frame_contract$limits$factorLevels,
+              frame_contract$limits$textBytes,
+              frame_contract$limits$payloadBytes,
+              frame_contract$limits$nameBytes
             )
           ))
         }
