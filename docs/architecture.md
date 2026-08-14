@@ -360,12 +360,21 @@ and the profile drawer still loads the selected column or dataset on request. Th
 checks a column's count, distinct values, minimum, and maximum, then checks dataset-wide missing values and duplicate
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
-frame, and final session cleanup. The ordinary packaged VS Code journey covers the R editing catalog except the two
-categorical operations, including the visible forms for Find and replace, Formula, Uppercase, Min-max scale, Round,
-Floor, Ceiling, Format Datetime, and Group and aggregate. Ordinary Cursor runs the representative editing profile. A
-separate fresh exact-candidate phase runs the exact One-hot encode and Multi-label binarize forms, boundary values,
-generated calls, preview, apply, and undo in both VS Code and Cursor. Across the packaged journeys, the base-data-frame
-sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is applied and undone.
+frame, and final session cleanup. Local packaged acceptance assigns disjoint targeted operations to fresh core, value,
+and categorical editing profiles. Every local invocation retains an exact complete 26-operation capability assertion,
+including the nested interactive-terminal and literate-document journeys. Core's targeted slice owns Filter Rows,
+Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone
+Column, Convert type, Formula, Text Length, and Group and aggregate. The `value-operations` targeted slice owns exactly
+Find and replace, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
+and Split text. The
+`categorical-operations` targeted slice owns exactly the One-hot encode and Multi-label binarize forms, boundary
+values, generated calls, preview, apply, and undo in both VS Code and Cursor. These invocations are not otherwise
+exclusive: all three retain the shared representative Rename, native-frame, and kernel-restart/reopen scaffold, while
+comprehensive core adds broader lifecycle coverage. Categorical Undo uses one authoritative one-shot dispatch receipt
+and waits up to 75 seconds for that queued mutation to complete; crossing the dispatch boundary can never trigger a
+retry. The remote R Docker journey retains its independent `lowerText` (Lowercase) check. Across the packaged
+journeys, the base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo;
+Convert type is applied and undone.
 Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection, and undo. The run
 checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed data tables additionally
 cover editable open plus Rename and Drop preview/discard. The direct R suites cover all supported operations, plus
@@ -521,7 +530,7 @@ The data grid is a custom readonly editor because opening and cleaning a source 
 
 The extension host keeps runtime language, dataframe flavor, and generated-code dialect as separate TypeScript values. It derives them only from the backend confirmed in an active session: Pandas, Polars, and DuckDB use their own Python dialect descriptors, the three R dataframe flavors share `r.base`, and viewing-only PySpark has no generated-code dialect. Code Preview receives this identity in its exact-key private host message and publishes it as deterministic root data attributes. Python code uses the Python parser; R code is currently plain text and is labeled **R**. The identity is not part of protocol v2, saved notebook MIME, session persistence, or the Python runtime contract.
 
-The default `onDraft` Code Preview behavior reveals the bottom panel for only the first acknowledged draft in a session. Later drafts update the registered provider in place; they do not focus or reopen a panel the user closed. `always` reveals once when each session first synchronizes, while `never` performs no automatic reveal. Automatic reveal invokes the native Code Preview focus command with `preserveFocus: true` only after the exact renderer marker is acknowledged. The panel therefore opens without transferring keyboard focus away from the dataframe editor, invalidating its hydration marker, assigning new webview HTML, or creating a second synchronization cycle. In a multi-column viewing sort, the grid exposes `aria-sort` only on the priority-one header as required by the ARIA grid model; each secondary sort remains explicit through its accessible label, clear action, and visible priority indicator.
+The default `onDraft` Code Preview behavior reveals the bottom panel for only the first acknowledged draft in a session. Later drafts update the registered provider in place; they do not focus or reopen a panel the user closed. `always` reveals once when each session first synchronizes, while `never` performs no automatic reveal. Automatic reveal invokes the native Code Preview focus command with `preserveFocus: true` only after the exact renderer marker is acknowledged. The panel therefore opens without transferring keyboard focus away from the dataframe editor, invalidating its hydration marker, assigning new webview HTML, or creating a second synchronization cycle. Packaged generated-R acceptance pins one bounded exact code receipt to the current CodeMirror renderer generation. It may reacquire only after proving that generation was replaced, then revalidates the replacement before any measurement. Revealing an operation line changes only the exact `.cm-scroller` scroll position and succeeds only after two stable, fully visible measurements from the same renderer/document/scroller generation; bounded diagnostics report geometry and generation state without retaining generated code. In a multi-column viewing sort, the grid exposes `aria-sort` only on the priority-one header as required by the ARIA grid model; each secondary sort remains explicit through its accessible label, clear action, and visible priority indicator.
 
 Renderer synchronization requests are coalesced but drained before the host releases their single runner, including a request that arrives after the runner's final loop check. This guarantees that a committed mutation cannot lose its authoritative replay.
 

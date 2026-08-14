@@ -34,7 +34,7 @@ const R_CONTRACT_EXTRA_PACKAGES = [
   "any::nanoparquet"
 ].join("\n");
 const PREPARE_XVFB_COMMAND_SHA256 = "96528481625ac66c09687cf7e47bcfc6a3cb657828919be1ca8a1bfa4f4b29b3";
-const JUPYTER_STEPS_SHA256 = "1b59f1632fe313c4d8b90645a5481c3cc557377f0287c97088dbd3c9453c8e7b";
+const JUPYTER_STEPS_SHA256 = "79cec05ba9f583f913ca2bde401a106d48ccb4c274195fed2ac250fd043d0e1f";
 
 function record(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -310,6 +310,9 @@ const JUPYTER_STEP_TOPOLOGY = [
   ["id", "canonical_r_jupyter"],
   ["id", "packaged_editor_r"],
   ["name", "Upload local R-Jupyter failure diagnostics"],
+  ["id", "canonical_r_values"],
+  ["id", "packaged_editor_r_values"],
+  ["name", "Upload value R-Jupyter failure diagnostics"],
   ["id", "canonical_r_categorical"],
   ["id", "packaged_editor_r_categorical"],
   ["name", "Upload categorical R-Jupyter failure diagnostics"],
@@ -697,6 +700,28 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     "jupyter",
     workflow.jobs.jupyter,
     {
+      id: "packaged_editor_r_values",
+      verifierId: "canonical_r_values",
+      condition: "${{ matrix.phase == 'r-local' }}",
+      run: "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_values.outputs.candidate_path }}",
+      env: {
+        OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+        OPEN_WRANGLER_PACKAGED_R_JOURNEY: "value-operations",
+        OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+        OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+        OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+        OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+        OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+        OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+        VSCODE_TEST_VERSION: "stable"
+      }
+    },
+    problems
+  );
+  inspectPackagedRunner(
+    "jupyter",
+    workflow.jobs.jupyter,
+    {
       id: "packaged_editor_r_categorical",
       verifierId: "canonical_r_categorical",
       condition: "${{ matrix.phase == 'r-local' }}",
@@ -782,6 +807,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   );
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor", problems);
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r", problems);
+  inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r_values", problems);
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r_categorical", problems);
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r_interactive", problems);
   inspectXvfb("jupyter", workflow.jobs.jupyter, "prepare_xvfb", "packaged_editor_r_literate", problems);
@@ -793,6 +819,16 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       name: "Upload local R-Jupyter failure diagnostics",
       runnerId: "packaged_editor_r",
       artifactName: "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}"
+    },
+    problems
+  );
+  inspectFailureDiagnosticUpload(
+    "jupyter",
+    workflow.jobs.jupyter,
+    {
+      name: "Upload value R-Jupyter failure diagnostics",
+      runnerId: "packaged_editor_r_values",
+      artifactName: "${{ inputs.channel }}-release-r-jupyter-values-${{ runner.os }}-${{ github.run_attempt }}"
     },
     problems
   );
@@ -834,6 +870,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       afterUploadName: "Upload R Markdown and Quarto failure diagnostics",
       runnerIds: [
         "packaged_editor_r",
+        "packaged_editor_r_values",
         "packaged_editor_r_categorical",
         "packaged_editor_r_interactive",
         "packaged_editor_r_literate"
@@ -856,6 +893,8 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   const ordinaryRUpload = jupyterStepList.findIndex(
     (step) => step?.name === "Upload local R-Jupyter failure diagnostics"
   );
+  const valueVerifier = jupyterStepList.findIndex((step) => step?.id === "canonical_r_values");
+  const valueUpload = jupyterStepList.findIndex((step) => step?.name === "Upload value R-Jupyter failure diagnostics");
   const categoricalVerifier = jupyterStepList.findIndex((step) => step?.id === "canonical_r_categorical");
   const categoricalUpload = jupyterStepList.findIndex(
     (step) => step?.name === "Upload categorical R-Jupyter failure diagnostics"
@@ -871,7 +910,9 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   const localFailure = jupyterStepList.findIndex((step) => step?.name === "Fail after local R acceptance diagnostics");
   if (
     ordinaryRUpload < 0 ||
-    categoricalVerifier <= ordinaryRUpload ||
+    valueVerifier <= ordinaryRUpload ||
+    valueUpload <= valueVerifier ||
+    categoricalVerifier <= valueUpload ||
     categoricalUpload <= categoricalVerifier ||
     interactiveVerifier <= categoricalUpload ||
     interactiveUpload <= interactiveVerifier ||
@@ -880,7 +921,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     localFailure !== literateUpload + 1
   ) {
     problems.push(
-      "jupyter must finish ordinary, categorical, interactive, and literate R acceptance before its exact failure fan-in."
+      "jupyter must finish ordinary, value, categorical, interactive, and literate R acceptance before its exact failure fan-in."
     );
   }
 

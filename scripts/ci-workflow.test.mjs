@@ -134,6 +134,64 @@ function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
 }
 
+function assertStandaloneReleasedJupyterRTriples(workflow) {
+  const steps = workflow?.jobs?.vscode?.steps;
+  assert.ok(Array.isArray(steps), "Standalone Released-Jupyter acceptance must retain its Linux job steps.");
+  const triples = [
+    {
+      verifier: {
+        id: "canonical_r_jupyter",
+        name: "Reverify the VSIX for core R operations",
+        run: "npm run verify:vsix -- openwrangler.vsix"
+      },
+      runnerId: "packaged_editor_r",
+      uploadName: "Upload packaged-editor R failure diagnostics"
+    },
+    {
+      verifier: {
+        id: "canonical_r_values",
+        name: "Reverify the VSIX for value R operations",
+        run: "npm run verify:vsix -- openwrangler.vsix"
+      },
+      runnerId: "packaged_editor_r_values",
+      uploadName: "Upload value R-Jupyter failure diagnostics"
+    },
+    {
+      verifier: {
+        id: "canonical_r_categorical",
+        name: "Reverify the VSIX for categorical R operations",
+        run: "npm run verify:vsix -- openwrangler.vsix"
+      },
+      runnerId: "packaged_editor_r_categorical",
+      uploadName: "Upload categorical R-Jupyter failure diagnostics"
+    },
+    {
+      verifier: {
+        id: "canonical_r_interactive",
+        name: "Reverify the VSIX for the active R terminal",
+        run: "npm run verify:vsix -- openwrangler.vsix"
+      },
+      runnerId: "packaged_editor_r_interactive",
+      uploadName: "Upload active R terminal failure diagnostics"
+    }
+  ];
+
+  for (const { verifier, runnerId, uploadName } of triples) {
+    const verifierIndices = steps.flatMap((step, index) => (step?.id === verifier.id ? [index] : []));
+    const runnerIndices = steps.flatMap((step, index) => (step?.id === runnerId ? [index] : []));
+    const uploadIndices = steps.flatMap((step, index) => (step?.name === uploadName ? [index] : []));
+    assert.equal(verifierIndices.length, 1, `Expected exactly one ${verifier.id} verifier.`);
+    assert.equal(runnerIndices.length, 1, `Expected exactly one ${runnerId} runner.`);
+    assert.equal(uploadIndices.length, 1, `Expected exactly one ${uploadName} upload.`);
+    const verifierIndex = verifierIndices[0];
+    const runnerIndex = runnerIndices[0];
+    const uploadIndex = uploadIndices[0];
+    assert.deepEqual(steps[verifierIndex], verifier, `${verifier.id} must stay an exact fresh canonical verifier.`);
+    assert.equal(runnerIndex, verifierIndex + 1, `${runnerId} must immediately follow ${verifier.id}.`);
+    assert.equal(uploadIndex, runnerIndex + 1, `${uploadName} must immediately follow ${runnerId}.`);
+  }
+}
+
 function nodeTestFiles(command, group) {
   const segments = normalizedCommand(command)?.split(" && ") ?? [];
   const parts = segments[0]?.split(" ") ?? [];
@@ -1047,6 +1105,36 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     ),
     true
   );
+  const valueRVerifier = releasedJupyter?.steps?.find((step) => step?.id === "canonical_r_values");
+  const valueR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_values");
+  assert.equal(valueRVerifier?.if, "${{ matrix.phase == 'r-local' }}");
+  assert.equal(valueR?.if, "${{ matrix.phase == 'r-local' }}");
+  assert.equal(valueR?.["continue-on-error"], true);
+  assert.equal(
+    valueR?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_values.outputs.candidate_path }}"
+  );
+  assert.deepEqual(valueR?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "value-operations",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  const valueRDiagnostics = releasedJupyter?.steps?.find(
+    (step) => step?.name === "Upload value R-Jupyter failure diagnostics"
+  );
+  assert.equal(
+    valueRDiagnostics?.with?.name,
+    "${{ inputs.channel }}-release-r-jupyter-values-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(valueRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_values.outputs.evidence_path }}");
+  assert.equal(releasedJupyter?.steps?.indexOf(valueR), releasedJupyter?.steps?.indexOf(valueRVerifier) + 1);
+  assert.equal(releasedJupyter?.steps?.indexOf(valueRDiagnostics), releasedJupyter?.steps?.indexOf(valueR) + 1);
   const categoricalR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_categorical");
   assert.equal(categoricalR?.if, "${{ matrix.phase == 'r-local' }}");
   assert.equal(categoricalR?.["continue-on-error"], true);
@@ -1117,7 +1205,7 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
   });
   assert.equal(
     releasedJupyter?.steps?.find((step) => step?.name === "Fail after local R acceptance diagnostics")?.if,
-    "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}"
+    "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}"
   );
   const literateRDiagnostics = releasedJupyter?.steps?.find(
     (step) => step?.name === "Upload R Markdown and Quarto failure diagnostics"
@@ -2416,6 +2504,7 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
   assert.equal(job?.name, "Released Jupyter in VS Code and Cursor");
   assert.equal(job?.if, "${{ inputs.target == 'linux-all' }}");
   assert.equal(job?.["timeout-minutes"], 90);
+  assertStandaloneReleasedJupyterRTriples(workflow);
   const linuxPackageCommand = "npm run clean && npm run build && npm run package:prepared -- --out openwrangler.vsix";
   const linuxPackageIndex = job?.steps?.findIndex((step) => step?.run === linuxPackageCommand) ?? -1;
   const linuxVerifyIndex =
@@ -2476,7 +2565,13 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
   );
   assert.equal(diagnostics?.with?.path, "${{ steps.packaged_editor.outputs.evidence_path }}");
 
+  const coreRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_jupyter");
   const packagedR = job?.steps?.find((step) => step?.id === "packaged_editor_r");
+  assert.deepEqual(coreRVerifier, {
+    id: "canonical_r_jupyter",
+    name: "Reverify the VSIX for core R operations",
+    run: "npm run verify:vsix -- openwrangler.vsix"
+  });
   assert.equal(packagedR?.name, "Test released R Jupyter in packaged VS Code and Cursor");
   assert.equal(packagedR?.["continue-on-error"], true);
   assert.equal(
@@ -2503,8 +2598,15 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     "released-jupyter-r-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
   );
   assert.equal(rDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
+  const coreRVerifierIndex = job?.steps?.indexOf(coreRVerifier) ?? -1;
   const packagedRIndex = job?.steps?.indexOf(packagedR) ?? -1;
   const rDiagnosticsIndex = job?.steps?.indexOf(rDiagnostics) ?? -1;
+  const valueRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_values");
+  const valueRRunner = job?.steps?.find((step) => step?.id === "packaged_editor_r_values");
+  const valueRDiagnostics = job?.steps?.find((step) => step?.name === "Upload value R-Jupyter failure diagnostics");
+  const valueRVerifierIndex = job?.steps?.indexOf(valueRVerifier) ?? -1;
+  const valueRRunnerIndex = job?.steps?.indexOf(valueRRunner) ?? -1;
+  const valueRDiagnosticsIndex = job?.steps?.indexOf(valueRDiagnostics) ?? -1;
   const categoricalRVerifier = job?.steps?.find((step) => step?.id === "canonical_r_categorical");
   const categoricalRRunner = job?.steps?.find((step) => step?.id === "packaged_editor_r_categorical");
   const categoricalRDiagnostics = job?.steps?.find(
@@ -2514,12 +2616,46 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
   const categoricalRRunnerIndex = job?.steps?.indexOf(categoricalRRunner) ?? -1;
   const categoricalRDiagnosticsIndex = job?.steps?.indexOf(categoricalRDiagnostics) ?? -1;
   assert.equal(
+    valueRVerifier?.run,
+    "npm run verify:vsix -- openwrangler.vsix",
+    "Focused value acceptance must freshly reverify the packaged VSIX."
+  );
+  assert.equal(packagedRIndex, coreRVerifierIndex + 1);
+  assert.equal(rDiagnosticsIndex, packagedRIndex + 1);
+  assert.equal(valueRVerifierIndex, rDiagnosticsIndex + 1);
+  assert.equal(valueRRunnerIndex, valueRVerifierIndex + 1);
+  assert.equal(valueRDiagnosticsIndex, valueRRunnerIndex + 1);
+  assert.equal(valueRRunner?.["continue-on-error"], true);
+  assert.equal(
+    valueRRunner?.run,
+    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix"
+  );
+  assert.deepEqual(valueRRunner?.env, {
+    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
+    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "value-operations",
+    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
+    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
+    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
+    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
+    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
+    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
+    VSCODE_TEST_VERSION: "stable"
+  });
+  assert.equal(
+    valueRDiagnostics?.if,
+    "${{ always() && steps.packaged_editor_r_values.outcome == 'failure' && steps.packaged_editor_r_values.outputs.evidence_ready == 'true' }}"
+  );
+  assert.equal(
+    valueRDiagnostics?.with?.name,
+    "released-jupyter-r-values-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}"
+  );
+  assert.equal(valueRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_values.outputs.evidence_path }}");
+  assert.equal(
     categoricalRVerifier?.run,
     "npm run verify:vsix -- openwrangler.vsix",
     "Focused categorical acceptance must freshly reverify the packaged VSIX."
   );
-  assert.equal(rDiagnosticsIndex, packagedRIndex + 1);
-  assert.equal(categoricalRVerifierIndex, rDiagnosticsIndex + 1);
+  assert.equal(categoricalRVerifierIndex, valueRDiagnosticsIndex + 1);
   assert.equal(categoricalRRunnerIndex, categoricalRVerifierIndex + 1);
   assert.equal(categoricalRDiagnosticsIndex, categoricalRRunnerIndex + 1);
   assert.equal(categoricalRRunner?.["continue-on-error"], true);
@@ -2594,15 +2730,15 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
   const localRFailure = job?.steps?.find((step) => step?.name === "Fail after local R acceptance diagnostics");
   assert.equal(
     localRFailure?.if,
-    "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure') }}"
+    "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure') }}"
   );
   assert.equal(localRFailure?.run, "exit 1");
   assert.equal(job?.steps?.indexOf(localRFailure), (job?.steps?.indexOf(interactiveDiagnostics) ?? -2) + 1);
-  assert.equal(
-    job?.steps?.filter((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@"))
-      .length,
-    4
-  );
+  const linuxDiagnosticArtifactNames = job?.steps
+    ?.filter((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/upload-artifact@"))
+    .map((step) => step?.with?.name);
+  assert.equal(linuxDiagnosticArtifactNames?.length, 5);
+  assert.equal(new Set(linuxDiagnosticArtifactNames).size, linuxDiagnosticArtifactNames?.length);
 
   const macosR = workflow?.jobs?.["macos-r"];
   assert.equal(macosR?.name, "Released R Jupyter in macOS VS Code");
@@ -2678,4 +2814,31 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     "released-jupyter-r-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}"
   );
   assert.equal(windowsDiagnostics?.with?.path, "${{ steps.packaged_editor_r.outputs.evidence_path }}");
+});
+
+test("standalone released-Jupyter rejects a missing or interposed core R verifier", () => {
+  const source = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
+
+  const missingVerifier = parseYaml(source);
+  const missingSteps = missingVerifier.jobs.vscode.steps;
+  missingSteps.splice(
+    missingSteps.findIndex((step) => step?.id === "canonical_r_jupyter"),
+    1
+  );
+  assert.throws(
+    () => assertStandaloneReleasedJupyterRTriples(missingVerifier),
+    /exactly one canonical_r_jupyter verifier/u
+  );
+
+  const interposedStep = parseYaml(source);
+  const interposedSteps = interposedStep.jobs.vscode.steps;
+  interposedSteps.splice(
+    interposedSteps.findIndex((step) => step?.id === "packaged_editor_r"),
+    0,
+    { run: "echo interposed" }
+  );
+  assert.throws(
+    () => assertStandaloneReleasedJupyterRTriples(interposedStep),
+    /packaged_editor_r must immediately follow canonical_r_jupyter/u
+  );
 });

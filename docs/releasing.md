@@ -79,27 +79,38 @@ The preview workflow uses the separate preview form below; neither channel inven
 
 Every Open Wrangler 2 release candidate runs the R 4.5.2 contract tests. The preview and stable workflows then
 install their canonical VSIX in VS Code and Cursor and run the R notebook journey. Linux and macOS VS Code run the
-comprehensive notebook profile without repeating the two categorical encoders; Windows and Cursor run the
-representative notebook profile within the same hard deadline. A separately verified Linux invocation runs that
-representative lifecycle plus the exact One-hot encode and Multi-label binarize visible-form, boundary-value,
-generated-call, preview, apply, and undo journeys in both VS Code and Cursor. macOS retains plain `.R` in the ordinary
-invocation, and Windows skips direct R documents. The candidate is verified again before fresh packaged VS Code and
-Cursor phases cover the active R terminal, then verified once more before fresh phases cover plain `.R`, `.Rmd`,
-`.qmd`, native Quarto preview, and Python Quarto.
+core profile; Windows and Cursor run the representative core profile within the same hard deadline. Core owns Filter
+Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns, Select Columns,
+Clone Column, Convert type, Formula, Text Length, and Group and aggregate as its targeted operation slice. A fresh
+`value-operations` invocation owns exactly Find and replace, Format Datetime, Min-max scale, Round, Floor, Ceiling,
+Capitalize, Lowercase, Uppercase, Strip text, and Split text as its targeted slice. A fresh
+`categorical-operations` invocation owns exactly the One-hot encode and Multi-label binarize visible-form,
+boundary-value, generated-call, preview, apply, and undo journeys as its targeted slice. Their complete invocations
+are not exclusive: all three retain the shared representative Rename, native-frame, and kernel-restart/reopen
+scaffold, with comprehensive core expanding that lifecycle coverage. Every local invocation still reaches an exact
+assertion of all 26 supported operation capabilities through its owned journey, including the nested interactive and
+literate paths. macOS retains plain `.R` in the core invocation, and Windows skips direct R documents. The candidate
+is verified again before fresh packaged VS Code and Cursor phases cover the active R terminal, then verified once more
+before fresh phases cover plain `.R`, `.Rmd`, `.qmd`, native Quarto preview, and Python Quarto.
 Direct R/runtime/webview suites retain the complete R operation and document matrix. The candidate workflow runs
 Python, local R, and remote R Jupyter acceptance as separate non-cancelling matrix jobs, and all three download and
-verify the same candidate VSIX. The local ordinary, focused categorical, focused interactive, focused literate, and
-remote R invocations retain distinct sealed failure diagnostics. Each local upload immediately follows its owning
-runner; one final local-R failure fan-in evaluates all four runner outcomes only after the literate upload. Only the focused
+verify the same candidate VSIX. The local core, focused value, focused categorical, focused interactive, focused
+literate, and remote R invocations retain distinct sealed failure diagnostics. Each local upload immediately follows
+its owning runner; one exact local-R failure fan-in evaluates all five raw runner outcomes only after the literate
+upload. Only the focused
 `literate-documents` invocation creates a private core Python compatibility environment under its verified temporary
 root, pins Jupyter Client 8.9.1 alongside the reviewed runtime versions, registers that exact interpreter in the
 R-owned Jupyter data directory, and directly proves one start/execute/shutdown cycle before launching VS Code. The
 probe and bounded cleanup remain in the runner-owned process tree or Windows Job, and the editor receives that same
 interpreter. This closes the unreviewed hosted-IPykernel 7.x drift observed in the failed gate without claiming that
-version caused the stall; it does not add a retry or relax either deadline.
+version caused the stall; it does not add a retry or relax either deadline. The categorical Undo assertion dispatches
+once, keeps that authoritative receipt, and gives the queued mutation 75 seconds to complete; it never retries after
+the dispatch boundary. Generated-R acceptance reacquires Code Preview only when it proves the prior renderer
+generation was replaced, reads one exact bounded code receipt, changes only the exact CodeMirror scroller, and
+requires two stable same-generation visibility measurements with bounded diagnostics.
 
-Only the focused interactive and literate selectors acquire the four pinned R/Quarto tooling artifacts. The ordinary,
-focused categorical, and remote-only selectors do not prepare or install them. Acquisition may retry only when the initial `fetch` promise rejects
+Only the focused interactive and literate selectors acquire the four pinned R/Quarto tooling artifacts. Core, focused
+value, focused categorical, and remote-only selectors do not prepare or install them. Acquisition may retry only when the initial `fetch` promise rejects
 before producing a response. Each artifact gets at most three total attempts, separated by cancellable fixed 2-second
 and 4-second waits, all within its original aggregate 10-minute download budget. A synchronous fetch-start failure,
 any non-success HTTP response (including 429 or 5xx), a missing or failing body, byte-count or SHA-256 mismatch,
@@ -141,7 +152,7 @@ The VSIX may contain production extension bundles, webview assets, the Python an
 
 `.github/workflows/released-jupyter.yml` runs only when manually dispatched. Each selected lane makes a clean production build, packages it with `package:prepared`, verifies the VSIX, and runs the focused Python or R editor journey without repeating the full source suite. Pull requests rely on unit, renderer, and extension-host coverage; preview and stable release candidates run their own checks against the exact candidate VSIX. All editor processes use isolated profiles and an invisible test display.
 
-The workflow keeps the Python and R fixtures separate. The Python fixture runs the remote journey in VS Code and installs Pandas, Polars, DuckDB, IPykernel, and Jupyter Server from `scripts/remote-jupyter/requirements.txt`. The R fixture uses Rocker R 4.5.2, the dated Ubuntu snapshot and P3M repositories recorded in `docs/testing.md`, and fixed versions of IRkernel, jsonlite, rlang, tibble, data.table, collapse, and nanoparquet. `Dockerfile.r.base` owns the snapshot-pinned operating-system and hash-locked Jupyter foundation; `Dockerfile.r` consumes that exact owned image, installs the pinned R packages and kernelspec, adds the server helpers, and produces the final fixture image. The existing third stage launches the container and proves readiness. All three stages have independent 300-second hard and 180-second inactivity budgets, and their exact engine, image, and owner receipts remain an opaque in-process handoff. Linux runs ordinary local R notebooks in VS Code and Cursor, follows them with separate fresh categorical and active-terminal VS Code/Cursor invocations, and runs remote R notebooks in VS Code. Each of those three local runners owns an immediate diagnostic upload before one aggregate local failure step. The macOS and Windows release cells install R 4.5.2 with the pinned setup action, resolve the hosted `Rscript`, and run the same ordinary local `r-jupyter` journey in packaged VS Code against the freshly verified VSIX. macOS includes the local plain `.R` subjourney; Windows skips direct documents. Release-candidate acceptance, rather than this manual workflow, additionally owns the separate Linux VS Code and Cursor plain `.R`, `.Rmd`, `.qmd`, and Python Quarto invocation. Local Windows file menus are hidden, while remote-resource and Command Palette entry points remain available because static client keys cannot identify the extension-host platform. The runtime guard is authoritative; remote R-document execution is experimental and is not part of the release matrix.
+The workflow keeps the Python and R fixtures separate. The Python fixture runs the remote journey in VS Code and installs Pandas, Polars, DuckDB, IPykernel, and Jupyter Server from `scripts/remote-jupyter/requirements.txt`. The R fixture uses Rocker R 4.5.2, the dated Ubuntu snapshot and P3M repositories recorded in `docs/testing.md`, and fixed versions of IRkernel, jsonlite, rlang, tibble, data.table, collapse, and nanoparquet. `Dockerfile.r.base` owns the snapshot-pinned operating-system and hash-locked Jupyter foundation; `Dockerfile.r` consumes that exact owned image, installs the pinned R packages and kernelspec, adds the server helpers, and produces the final fixture image. The existing third stage launches the container and proves readiness. All three stages have independent 300-second hard and 180-second inactivity budgets, and their exact engine, image, and owner receipts remain an opaque in-process handoff. Linux runs separately reverified local R core, value, categorical, and active-terminal VS Code/Cursor invocations in that order and runs remote R notebooks in VS Code. Each of those four local runners owns an immediate sealed diagnostic upload before one exact four-way raw-outcome failure fan-in. The remote R Docker journey keeps its existing `lowerText` (Lowercase) operation check independently of the local value partition. The macOS and Windows release cells install R 4.5.2 with the pinned setup action, resolve the hosted `Rscript`, and run the same core local `r-jupyter` journey in packaged VS Code against the freshly verified VSIX. macOS includes the local plain `.R` subjourney; Windows skips direct documents. Release-candidate acceptance, rather than this manual workflow, additionally owns the separate Linux VS Code and Cursor plain `.R`, `.Rmd`, `.qmd`, and Python Quarto invocation. Local Windows file menus are hidden, while remote-resource and Command Palette entry points remain available because static client keys cannot identify the extension-host platform. The runtime guard is authoritative; remote R-document execution is experimental and is not part of the release matrix.
 
 Both remote fixtures are unprivileged, read-only containers with no host mounts and one loopback port. Their credentials are generated inside the runner and are never workflow secrets or environment values. Cleanup revalidates the exact Docker engine and removes resources in reverse acquisition order: container, runtime image, then the R base image when present. Every removal must be provable or the run publishes no evidence path and leaves the private root in place for investigation. The fixture locks are excluded from the VSIX but remain release inputs: `npm run audit:remote-jupyter` scans both complete locks without advisory suppressions, and `npm run lock:remote-jupyter:check` must reproduce their committed bytes with the exact tool, target, and cutoff documented in `docs/testing.md`.
 
@@ -254,14 +265,20 @@ version, changelog, release notes, and required release metadata.
 
 For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR artifact and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. A failed candidate is recorded and is not automatically retried.
 
-`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Five outer lanes run macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. The Jupyter lane expands into Python, local R, and remote R jobs. The local R cell runs separately verified ordinary, categorical, active-terminal, and literate editor invocations in that order. Every runner has a fresh deadline and a distinct immediate diagnostic upload; one aggregate failure step runs after the literate upload so an earlier editor failure does not suppress later local evidence. The remote R cell avoids hosted R and local editor tooling and starts the existing five-phase Docker journey immediately after common package setup and artifact verification. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH depends only on the package and starts alongside those lanes; publication still depends directly on the package, complete matrix, and Remote SSH results. The overlap saves about three minutes on successful release wall time without removing evidence. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
+`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Five outer lanes run macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. The Jupyter lane expands into Python, local R, and remote R jobs. The local R cell runs separately verified core, value, categorical, active-terminal, and literate editor invocations in that order. Every runner starts from a fresh exact candidate/profile, has a fresh deadline, and owns a distinct immediate sealed diagnostic upload; one exact five-way raw-outcome failure step runs after the literate upload so an earlier editor failure does not suppress later local evidence. The remote R cell avoids hosted R and local editor tooling and starts the existing five-phase Docker journey immediately after common package setup and artifact verification. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH depends only on the package and starts alongside those lanes; publication still depends directly on the package, complete matrix, and Remote SSH results. The overlap saves about three minutes on successful release wall time without removing evidence. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
 
 The local R cell provisions its contract packages through the same pinned dependency action and exact configuration as the
 pull-request R matrix. The action reconciles the resolved lock and may restore a compatible versioned cache created by
 an earlier candidate dispatch on `main`. GitHub's pull-request merge-ref cache is not available to the release
 dispatch, so the first matching `main` dispatch performs a valid cold install. The cache is neither immutable package
-pinning nor supply-chain evidence. The R contract, ordinary packaged-editor journey, all three focused artifact
-revalidations, the categorical, active-terminal, and R Markdown/Quarto journeys remain required release evidence.
+pinning nor supply-chain evidence. The R contract, core packaged-editor journey, all four focused artifact
+revalidations, and the value, categorical, active-terminal, and R Markdown/Quarto journeys remain required release
+evidence.
+
+Preview release run #72 produced no publication: local R core reached the unchanged 300-second hard deadline at
+numeric Round, Cursor's Multi-label Undo acceptance lost its bounded wait, and macOS failed the Drop Columns Code Preview
+generation/diagnostic bound. That attempt cannot be rerun or promoted as evidence. Candidate macOS remains
+authoritative, and publication requires one new fresh Preview attempt from the remediated exact protected `main` head.
 
 The outer candidate matrix and its inner Jupyter matrix keep fail-fast cancellation disabled. Once a cell reports a
 failure, sibling editor, Docker, performance, and Remote SSH owners may finish their bounded work and cleanup rather

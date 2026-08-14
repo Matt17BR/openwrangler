@@ -64,8 +64,8 @@ The release tier adds the expensive product checks that no longer run on every p
 - packaged VS Code on macOS and Windows;
 - packaged Cursor on macOS and Windows;
 - released Jupyter in separate Python, local R, and remote R jobs: local and remote Python kernels in VS Code, local R
-  in VS Code and Cursor, remote R in VS Code, and fresh focused Linux VS Code and Cursor invocations for categorical
-  operations, the active R terminal, and R Markdown/Quarto;
+  in VS Code and Cursor, remote R in VS Code, and fresh focused Linux VS Code and Cursor invocations for value and
+  categorical operations, the active R terminal, and R Markdown/Quarto;
 - Remote SSH;
 - installed performance in pinned VS Code and Cursor;
 - the complete source, platform, package, accessibility, and security checks.
@@ -78,14 +78,25 @@ still requires the package, every matrix lane, and Remote SSH. If a matrix lane 
 job may finish anyway so its editor and namespace cleanup are not interrupted; the failed candidate still cannot
 publish.
 
-The Python, local R, and remote R Jupyter jobs start together and verify the same candidate VSIX. The local R job runs
-separately verified ordinary, categorical, active-terminal, and literate journeys in that order, with one fresh
-process per editor. Every local runner owns a distinct immediate failure-evidence upload, and one aggregate failure
-step runs only after the literate upload so an earlier failure cannot suppress later local journeys. The remote R job
-runs only the packaged VS Code Docker journey; it does not install hosted R, local R packages, local kernel
-environments, or native R/Quarto tooling. Both the outer candidate matrix and the inner Jupyter matrix keep sibling
-cancellation disabled, so one failure cannot interrupt another cell's editor or Docker cleanup. Every native editor
-phase retains its own 300-second hard deadline and 180-second inactivity deadline without automatic retry.
+The Python, local R, and remote R Jupyter jobs start together and verify the same candidate VSIX. The candidate local R
+job runs core, `value-operations`, `categorical-operations`, `interactive-terminal`, and `literate-documents` in that
+order. Each invocation starts from a fresh exact candidate and isolated profile. The core, value, and categorical
+editing profiles assign only their targeted slices; those three notebook invocations also retain the shared
+representative Rename, native-frame, and kernel-restart/reopen scaffold. Every local invocation still reaches an exact
+complete 26-operation capability assertion through its owned journey, including the nested interactive and literate
+paths. Every local runner owns a distinct immediate sealed failure-evidence upload. One exact five-way raw-outcome
+fan-in runs only after the literate upload, so an earlier failure cannot suppress later local journeys or be hidden by
+their outcomes. The manual Released Jupyter workflow uses the corresponding core, value, categorical, and terminal
+sequence with an exact four-way fan-in. The remote R job runs only the packaged VS Code Docker journey and retains its
+`lowerText` (Lowercase) operation check; it does not install hosted R, local R packages, local kernel environments, or
+native R/Quarto tooling. Both the outer candidate matrix and the inner Jupyter matrix keep sibling cancellation
+disabled, so one failure cannot interrupt another cell's editor or Docker cleanup. Every native editor phase retains
+its own 300-second hard deadline and 180-second inactivity deadline without automatic retry.
+
+Preview release run #72 reached the ordinary local-R 300-second deadline at numeric Round, lost Cursor's bounded
+Multi-label Undo wait, and failed macOS Drop Columns Code Preview generation/diagnostics. Publication was skipped. Those
+observations require a new exact-candidate Preview attempt; rerunning or reinterpreting that failed run cannot satisfy
+the authoritative macOS or local-R gates.
 
 The release local R cell uses the same commit-pinned dependency action, explicit package set, and resolved-lock/binary-package
 policy as the pull-request contract matrix. GitHub scopes pull-request caches to their merge refs, so a release

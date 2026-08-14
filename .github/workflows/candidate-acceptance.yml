@@ -640,6 +640,39 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - id: canonical_r_values
+        name: Reverify the candidate for value R operations
+        if: ${{ matrix.phase == 'r-local' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_values
+        name: Test value R operations in fresh packaged editor phases
+        if: ${{ matrix.phase == 'r-local' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_values.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: value-operations
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload value R-Jupyter failure diagnostics
+        if: ${{ always() && steps.packaged_editor_r_values.outcome == 'failure' && steps.packaged_editor_r_values.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-values-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_values.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
       - id: canonical_r_categorical
         name: Reverify the candidate for categorical R operations
         if: ${{ matrix.phase == 'r-local' }}
@@ -740,7 +773,7 @@ jobs:
           compression-level: 9
           include-hidden-files: false
       - name: Fail after local R acceptance diagnostics
-        if: ${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}
+        if: ${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}
         run: exit 1
       - id: canonical_r_remote
         name: Reverify the candidate for remote R Jupyter

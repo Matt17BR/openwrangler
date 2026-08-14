@@ -48,6 +48,7 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
   });
   for (const [selector, literateDocuments, nativeEditorTooling] of [
     ["categorical-operations", false, false],
+    ["value-operations", false, false],
     ["interactive-terminal", false, true],
     ["literate-documents", true, true]
   ]) {
@@ -101,6 +102,7 @@ test("R journey selection keeps combined diagnostics by default and isolates rem
     [{ requestedEditors: ["vscode", "other"] }, /explicit, duplicate-free/u],
     [{ selector: "literate-documents", remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ selector: "categorical-operations", remoteJupyterEnabled: true }, /cannot be combined/u],
+    [{ selector: "value-operations", remoteJupyterEnabled: true }, /cannot be combined/u],
     [{ remoteJupyterEnabled: true, requestedEditors: ["cursor"] }, /requires VS Code/u],
     [{ selector: "remote-r-jupyter", requestedEditors: ["vscode"] }, /requires real remote/u],
     [

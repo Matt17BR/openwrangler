@@ -116,6 +116,9 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - id: canonical_r_jupyter
+        name: Reverify the VSIX for core R operations
+        run: npm run verify:vsix -- openwrangler.vsix
       - id: packaged_editor_r
         name: Test released R Jupyter in packaged VS Code and Cursor
         continue-on-error: true
@@ -135,6 +138,33 @@ jobs:
         with:
           name: released-jupyter-r-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}
           path: ${{ steps.packaged_editor_r.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - id: canonical_r_values
+        name: Reverify the VSIX for value R operations
+        run: npm run verify:vsix -- openwrangler.vsix
+      - id: packaged_editor_r_values
+        name: Test value R operations in fresh packaged VS Code and Cursor phases
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: value-operations
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload value R-Jupyter failure diagnostics
+        if: ${{ always() && steps.packaged_editor_r_values.outcome == 'failure' && steps.packaged_editor_r_values.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: released-jupyter-r-values-diagnostics-editors-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_values.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
@@ -194,7 +224,7 @@ jobs:
           compression-level: 9
           include-hidden-files: false
       - name: Fail after local R acceptance diagnostics
-        if: ${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure') }}
+        if: ${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure') }}
         run: exit 1
 
   macos-r:
