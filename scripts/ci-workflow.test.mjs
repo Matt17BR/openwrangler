@@ -1133,6 +1133,7 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
       .map((step) => [step.id, step.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY]),
     [
       ["packaged_editor_r_core", "core-operations"],
+      ["packaged_editor_r_restart", "kernel-restart"],
       ["packaged_editor_r_interactive", "interactive-terminal"],
       ["packaged_editor_r_literate", "literate-documents"],
       ["packaged_editor_r_values", "value-operations"],
@@ -1148,6 +1149,8 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
   }
   assert.equal(rLocal.steps.at(-1).name, "Require successful local R shard outcomes");
   assert.equal(rLocal.steps.at(-1).if, "${{ always() }}");
+  assert.equal(rLocal.steps.at(-1).env.RESTART_OUTCOME, "${{ steps.packaged_editor_r_restart.outcome }}");
+  assert.match(rLocal.steps.at(-1).run, /test "\$RESTART_OUTCOME" = "success"/u);
 
   assert.deepEqual(acceptance.jobs.acceptance.needs, [
     "contract",
@@ -2498,6 +2501,11 @@ test("standalone released-Jupyter acceptance is manual-only and self-packages", 
     OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
     VSCODE_TEST_VERSION: "stable"
   });
+  assert.equal(
+    Object.hasOwn(packagedR?.env ?? {}, "OPEN_WRANGLER_PACKAGED_R_JOURNEY"),
+    false,
+    "The manual default route must retain comprehensive core and restart coverage."
+  );
   const rDiagnostics = job?.steps?.find((step) => step?.name === "Upload packaged-editor R failure diagnostics");
   assert.equal(
     rDiagnostics?.if,

@@ -12,10 +12,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   numeric Round, Cursor lost the bounded Multi-label Undo acceptance wait, and macOS failed the Drop Columns Code Preview
   generation/diagnostic bound. Preview and stable release callers now invoke the shared candidate workflow once without
   a caller matrix. That workflow fans out fixed acceptance jobs, runs the R contract as an independent sibling, and
-  balances local R across two matrix shards: lifecycle runs `core-operations`, `interactive-terminal`, then
-  `literate-documents`; editing runs `value-operations`, then `categorical-operations`. Setup is shared only within a shard. Every
-  phase still freshly verifies the exact candidate, starts a fresh VS Code-and-Cursor invocation with private roots,
-  and immediately uploads its own sealed failure evidence before the shard's deferred raw-outcome failure. One
+  balances local R across two matrix shards: lifecycle runs `core-operations`, `kernel-restart`,
+  `interactive-terminal`, then `literate-documents`; editing runs `value-operations`, then
+  `categorical-operations`. Setup is shared only within a shard. Every phase, including the dedicated restart phase,
+  still freshly verifies the exact candidate, starts a fresh VS Code-and-Cursor invocation with private roots, and
+  immediately uploads its own sealed failure evidence before the shard's deferred raw-outcome failure. One
   output-free fan-in requires literal success from every acceptance job, and publication separately requires package,
   candidate, and Remote SSH success. The manual Released Jupyter workflow remains its existing non-authoritative serial
   diagnostic path. All editor phases retain their 300-second hard and 180-second inactivity deadlines and are never
@@ -26,9 +27,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   and replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip
   text, and Split text. This is a 12/12/2 targeted split with the focused categorical slice owning exactly One-hot
   encode and Multi-label binarize. All
-  three invocations also retain the shared representative Rename, native-frame, and kernel-restart/reopen scaffold,
-  with comprehensive core expanding that lifecycle coverage. The remote R journey continues to exercise `lowerText`
-  (Lowercase).
+  three invocations also retain the shared representative Rename and native-frame scaffold, with comprehensive core
+  expanding that lifecycle coverage. On Linux, explicit candidate core omits the embedded kernel restart because the
+  dedicated VS Code-and-Cursor `kernel-restart` phase owns restart/reopen acceptance with a fresh phase budget. The
+  explicit macOS and Windows core invocations retain their existing embedded restart, while the focused value and
+  categorical selectors continue to omit it. Default/unset core selection, including the manual Released Jupyter
+  workflow, and the remote R journey retain embedded restart coverage. This changes scheduling without reducing
+  restart coverage on any platform. The remote R journey also continues to exercise `lowerText` (Lowercase).
 - Preview release run [#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383) from protected `main`
   commit `c7e1635` also published nothing. macOS artifact `9223912246` proved that the Drop Columns reveal's bare
   `label` substring selected a generic 384-character `.ow_label` helper whose wrapped 210.0157-pixel line exceeded the
@@ -38,10 +43,17 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   6m34s total. The follow-up reveal now selects the one complete `.ow_drop_names` assignment by exact logical-line
   equality with receipt-only failures, and Formula moves from core into the clean-state-checked value slice. The
   redesigned topology retains the complete 12/12/2 operation coverage while removing unrelated local-R phases from one
-  serial critical path. Based on run #73's roughly 33-minute release and 31-minute local-R lane, the static projection is
-  about 21–22 minutes from release start and about 15 minutes for the parallel R shards, with Windows/Python expected to
-  become the next bottleneck; this is not hosted-run proof. Neither failed result is reinterpreted or retried, and a
-  fresh exact-candidate Preview attempt remains required.
+  serial critical path. Neither failed result is reinterpreted or retried.
+- Preview release [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) from protected `main`
+  commit `b521f52` measured the redesign at 21m57s versus run #73's 33m15s, a 34% wall-time reduction. Its slower
+  local-R shard finished in 15m19s versus the former 31m15s serial lane, a 51% reduction, while total runner use rose
+  from 119.75 to 130.78 minutes, or 9.2%. macOS became the measured bottleneck at 19m54s. Every raw candidate lane
+  except lifecycle core passed; core reached `restart:start` but its outer process crossed the unchanged 300-second
+  hard deadline. The publication job was skipped, so no `v1.99.6` tag, release, or registry package was created. The
+  follow-up extracts Linux restart/reopen into the dedicated lifecycle phase described above while leaving the
+  existing macOS and Windows core restart journey in place, preserving the 180-second inactivity deadline and
+  no-retry rule while giving Linux restart a fresh 300-second phase budget. That remediation and its effect on the next
+  critical path have not yet passed a hosted candidate run.
 - Cursor's categorical Undo check now uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation
   completion bound, with no post-dispatch retry. Drop Columns Code Preview acceptance reacquires only a provably replaced
   renderer generation, reads one exact bounded code receipt, selects one unique complete logical line, scrolls only

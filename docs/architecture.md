@@ -369,8 +369,13 @@ replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capital
 and Split text. The
 `categorical-operations` targeted slice owns exactly the One-hot encode and Multi-label binarize forms, boundary
 values, generated calls, preview, apply, and undo in both VS Code and Cursor. These invocations are not otherwise
-exclusive: all three retain the shared representative Rename, native-frame, and kernel-restart/reopen scaffold, while
-comprehensive core adds broader lifecycle coverage. Categorical Undo uses one authoritative one-shot dispatch receipt
+exclusive: all three retain the shared representative Rename and native-frame scaffold, while comprehensive core adds
+broader lifecycle coverage. In candidate acceptance, explicit Linux core omits its embedded restart/reopen journey
+because a separately verified Linux VS Code-and-Cursor `kernel-restart` phase owns it. Explicit macOS and Windows core
+retain their existing embedded journey, while the focused value and categorical selectors continue to omit it.
+Default/unset core and the remote R journey retain restart coverage. The routing changes scheduling without reducing
+restart coverage on any platform. Categorical Undo uses one
+authoritative one-shot dispatch receipt
 and waits up to 75 seconds for that queued mutation to complete; crossing the dispatch boundary can never trigger a
 retry. The remote R Docker journey retains its independent `lowerText` (Lowercase) check. Across the packaged
 journeys, the base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo;
@@ -571,23 +576,33 @@ After dispatch, generated-code insertion observes the exact original document fo
 Preview and stable releases produce one canonical candidate and call the shared candidate-acceptance workflow once
 through a non-matrix job. The reusable workflow, rather than either caller, owns the fixed parallel job graph. The R
 4.5.2 contract is an independent sibling, and local R uses exactly two non-cancelling shard cells: lifecycle executes
-`core-operations`, `interactive-terminal`, then `literate-documents`; editing executes `value-operations`, then
-`categorical-operations`. This partitions scheduling, not coverage: targeted ownership remains 12 core, 12 value, and two
-categorical operations, with the shared representative lifecycle scaffold and complete capability assertions intact.
+`core-operations`, `kernel-restart`, `interactive-terminal`, then `literate-documents`; editing executes
+`value-operations`, then `categorical-operations`. This partitions scheduling, not coverage: targeted ownership remains
+12 core, 12 value, and two categorical operations, with the shared representative lifecycle scaffold and complete
+capability assertions intact.
 
-Each local-R shard performs dependency and editor setup once. Every phase nevertheless crosses a fresh trust boundary:
-it reverifies the exact candidate, launches fresh VS Code and Cursor processes with their own private roots, and is
-followed immediately by its sealed failure-evidence upload. The shard reports failure only after all of its raw phase
-outcomes and uploads have had a chance to complete. All editor phases retain independent 300-second hard and
-180-second changed-checkpoint inactivity deadlines and are never automatically retried.
+Each local-R shard performs dependency and editor setup once. Every phase, including `kernel-restart`, nevertheless
+crosses a fresh trust boundary: it reverifies the exact candidate, launches fresh VS Code and Cursor processes with
+their own private roots, and is followed immediately by its sealed failure-evidence upload. The shard reports failure
+only after all of its raw phase outcomes and uploads have had a chance to complete. All editor phases retain
+independent 300-second hard and 180-second changed-checkpoint inactivity deadlines and are never automatically retried.
 
 The shared workflow exports no acceptance result that a caller could reinterpret. Its terminal fan-in evaluates the
 literal result of every internal job and succeeds only when all are `success`. Publication separately depends on
-literal success from package production, the single candidate-workflow call, and Remote SSH. The manually dispatched
-Released Jupyter workflow is a serial, non-authoritative diagnostic and is intentionally not part of that release
-proof. Based on Preview run #73, the parallel graph is expected to move the wall time from roughly 33 minutes overall
-and 31 minutes for local R to roughly 21–22 minutes from release start and about 15 minutes for the R shards, with
-Windows/Python likely next on the critical path. This is a topology estimate until a fresh hosted Preview proves it.
+literal success from package production, the single candidate-workflow call, and Remote SSH. Explicit Linux core
+skips embedded restart coverage because the dedicated Linux VS Code-and-Cursor phase owns it; explicit macOS and
+Windows core retain their existing embedded restart, while focused value and categorical selectors remain
+restart-free. Default/unset manual core and the remote R journey also retain restart coverage. No platform loses
+restart coverage. The manually dispatched Released Jupyter workflow therefore remains a serial,
+backward-compatible, non-authoritative diagnostic and is intentionally not part of that release proof.
+
+Preview [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) measured the two-shard redesign at
+21m57s overall versus run #73's 33m15s (34% lower), with the slower R shard at 15m19s versus 31m15s (51% lower).
+Runner use increased from 119.75 to 130.78 minutes (9.2%), and macOS became the observed bottleneck at 19m54s. Every
+raw lane except lifecycle core passed; core reached `restart:start` and crossed its unchanged 300-second outer
+deadline. Publication was skipped, so no `v1.99.6` was created. Moving restart into its own fresh phase is intended to
+remove that elapsed-budget collision without changing the 300-second hard limit, 180-second inactivity limit, or
+no-retry rule. Run #74 does not prove the remediation or its next hosted critical path.
 
 ## Persistence and identity
 

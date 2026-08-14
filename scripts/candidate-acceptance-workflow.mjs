@@ -564,6 +564,14 @@ export function inspectCandidateAcceptanceWorkflow(source) {
       artifactSuffix: "local"
     }),
     localSpecification({
+      id: "packaged_editor_r_restart",
+      verifierId: "canonical_r_restart",
+      journey: "kernel-restart",
+      shard: "lifecycle",
+      uploadName: "Upload R kernel restart failure diagnostics",
+      artifactSuffix: "restart"
+    }),
+    localSpecification({
       id: "packaged_editor_r_interactive",
       verifierId: "canonical_r_interactive",
       journey: "interactive-terminal",
@@ -609,6 +617,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
   if (
     !sameArray(localOrder, [
       "packaged_editor_r_core",
+      "packaged_editor_r_restart",
       "packaged_editor_r_interactive",
       "packaged_editor_r_literate",
       "packaged_editor_r_values",
@@ -626,6 +635,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     !exactKeys(verdict?.env, [
       "SHARD",
       "CORE_OUTCOME",
+      "RESTART_OUTCOME",
       "INTERACTIVE_OUTCOME",
       "LITERATE_OUTCOME",
       "VALUES_OUTCOME",
@@ -633,6 +643,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     ]) ||
     verdict.env.SHARD !== "${{ matrix.shard }}" ||
     verdict.env.CORE_OUTCOME !== "${{ steps.packaged_editor_r_core.outcome }}" ||
+    verdict.env.RESTART_OUTCOME !== "${{ steps.packaged_editor_r_restart.outcome }}" ||
     verdict.env.INTERACTIVE_OUTCOME !== "${{ steps.packaged_editor_r_interactive.outcome }}" ||
     verdict.env.LITERATE_OUTCOME !== "${{ steps.packaged_editor_r_literate.outcome }}" ||
     verdict.env.VALUES_OUTCOME !== "${{ steps.packaged_editor_r_values.outcome }}" ||
@@ -640,6 +651,7 @@ export function inspectCandidateAcceptanceWorkflow(source) {
     !includesAll(verdictRun, [
       'case "$SHARD" in lifecycle)',
       'test "$CORE_OUTCOME" = "success"',
+      'test "$RESTART_OUTCOME" = "success"',
       'test "$INTERACTIVE_OUTCOME" = "success"',
       'test "$LITERATE_OUTCOME" = "success"',
       'editing) test "$VALUES_OUTCOME" = "success"',

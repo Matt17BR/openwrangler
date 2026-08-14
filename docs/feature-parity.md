@@ -214,8 +214,12 @@ Text Length, and Group and aggregate. The focused value targeted slice owns exac
 Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 focused categorical targeted slice owns exactly One-hot encode and Multi-label binarize and checks their exact
 indicator values, generated calls, previews, apply, and undo in both VS Code and Cursor. The three invocations also
-share a representative Rename, native-frame, and kernel-restart/reopen scaffold; comprehensive core expands that
-lifecycle coverage, so selector ownership is not a claim that the whole invocation is exclusive. Categorical Undo
+share a representative Rename and native-frame scaffold; comprehensive core expands that lifecycle coverage, so
+selector ownership is not a claim that the whole invocation is exclusive. Explicit Linux core skips its embedded
+restart/reopen journey because a dedicated Linux VS Code-and-Cursor `kernel-restart` phase owns it. Explicit macOS and
+Windows core retain their existing embedded journey, while focused value and categorical selectors continue to skip
+it. Default/unset core and the remote R journey retain restart coverage. This routing does not reduce restart coverage
+on any platform. Categorical Undo
 uses one authoritative one-shot dispatch receipt and a 75-second queued-mutation completion bound without a
 post-boundary retry. The remote R Docker journey independently retains `lowerText` (Lowercase). Across the local
 slices, base-frame coverage includes preview, apply, inspection, discard, latest-step editing, and undo; Convert type
@@ -261,17 +265,21 @@ Before a 2.0 tag can be published, both release workflows must pass the local `r
 on hosted macOS and Windows. The freshly verified candidate VSIX is used directly; these jobs do not rebuild it or
 substitute a smaller R smoke test. The same candidate must also pass the separately verified focused value,
 categorical, active-terminal, and literate journeys in packaged Linux VS Code and Cursor. Candidate acceptance now
-keeps that complete evidence in two parallel local-R shards: lifecycle runs `core-operations`, `interactive-terminal`,
-and `literate-documents`, while editing runs `value-operations` and `categorical-operations`. Every phase still gets a fresh exact-candidate
-verification, fresh VS Code-and-Cursor private roots, and its own immediate sealed failure upload; exact 12/12/2
-targeted ownership and all deadlines remain unchanged. Preview release runs #72 and
-[#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383) are not such evidence. Run #72 failed ordinary
-local R, categorical Cursor, and macOS; run #73's macOS Drop reveal selected a generic wrapped helper, while its Linux
-core reached correlated completion only about half a second before the outer 300-second deadline and did not settle in
-time to start Cursor. Neither run published. A new fresh Preview attempt against the exact logical-line and balanced
-12/12/2 remediation remains required, with macOS authoritative. The projected reduction from roughly 33/31 minutes
-for run #73's release/local-R lane to about 21–22 minutes from release start and about 15 minutes for the R shards is a
-design estimate, not parity evidence or hosted proof.
+keeps that complete evidence in two parallel local-R shards: lifecycle runs `core-operations`, `kernel-restart`,
+`interactive-terminal`, and `literate-documents`, while editing runs `value-operations` and
+`categorical-operations`. Every phase, including restart, gets a fresh exact-candidate verification, fresh VS
+Code-and-Cursor private roots, and its own immediate sealed failure upload; exact 12/12/2 targeted ownership and the
+300-second hard, 180-second inactivity, and no-retry contracts remain unchanged. Preview release runs #72,
+[#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383), and
+[#74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) are not all-green release evidence. Run #72
+failed ordinary local R, categorical Cursor, and macOS; run #73's macOS Drop reveal selected a generic wrapped helper,
+while its Linux core reached correlated completion only about half a second before the outer 300-second deadline and
+did not settle in time to start Cursor. Run #74 measured the redesigned graph at 21m57s instead of 33m15s (34% lower)
+and its slower R shard at 15m19s instead of 31m15s (51% lower), while runner use increased from 119.75 to 130.78
+minutes (9.2%) and macOS became the observed 19m54s bottleneck. However, lifecycle core crossed its unchanged outer
+deadline after reaching `restart:start`; every other raw outcome was green, but the fan-in failed and publication was
+skipped, so no `v1.99.6` was created. The dedicated restart phase addresses that elapsed-budget collision, but has not
+yet passed in hosted candidate acceptance and does not make run #74 parity or release evidence.
 
 | Surface                                       | Availability                    | Status  | Current checks                                                                                                            | Release check   |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------- | --------------- |

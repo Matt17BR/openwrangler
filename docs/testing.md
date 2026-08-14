@@ -241,15 +241,19 @@ The heavyweight pull-request `Remote SSH acceptance` job is opt-in: a ready full
 
 Preview and stable candidates invoke the shared candidate workflow once from a non-matrix caller. Fixed Python,
 remote-R, R-contract, platform, and performance jobs run beside a two-cell local-R shard matrix. Lifecycle runs
-`core-operations`, `interactive-terminal`, then `literate-documents`; editing runs `value-operations`, then
-`categorical-operations`. Each shard sets up dependencies and editors once, but every phase freshly verifies the same
-candidate VSIX and starts new VS Code and Cursor invocations with private roots. Each local runner immediately uploads
-its own sealed failure evidence, and the shard checks every raw result only after all assigned runners and uploads have
-finished. The remote R job uses only VS Code and the five-phase Docker fixture, retains its independent `lowerText`
-(Lowercase) operation check, and skips hosted R, local kernel preparation, Cursor, and native R/Quarto tooling. The R
-contract is a separate sibling rather than part of either local editor shard. A reported failure identifies its owner
-without cancelling sibling cleanup. Every native phase keeps the 300-second hard and 180-second inactivity deadlines
-and is never retried.
+`core-operations`, `kernel-restart`, `interactive-terminal`, then `literate-documents`; editing runs
+`value-operations`, then `categorical-operations`. Each shard sets up dependencies and editors once, but every phase
+freshly verifies the same candidate VSIX and starts new VS Code and Cursor invocations with private roots. Each local
+runner immediately uploads its own sealed failure evidence, and the shard checks every raw result only after all
+assigned runners and uploads have finished. Explicit Linux core skips embedded restart coverage, which the dedicated
+Linux VS Code-and-Cursor restart phase owns under the same 300-second hard, 180-second inactivity, and no-retry policy.
+Explicit macOS and Windows core retain their existing embedded restart; focused value and categorical selectors remain
+restart-free. Default/unset manual core and the remote R journey retain restart coverage, so no platform loses it. The
+remote R job uses only VS Code and the five-phase Docker fixture, retains that restart journey and its independent
+`lowerText` (Lowercase) operation check, and skips hosted R, local kernel preparation, Cursor, and native R/Quarto
+tooling. The R contract is a separate sibling rather than part of either local editor shard. A reported failure
+identifies its owner without cancelling sibling cleanup. Every native phase keeps the 300-second hard and 180-second
+inactivity deadlines and is never retried.
 
 The manual stable workflow is the final exact-artifact gate, not another pull-request matrix. With `publish: false`,
 it packages once from the exact protected `main` commit, uploads one VSIX/checksum/provenance set, and runs every
@@ -640,7 +644,7 @@ After a forced renderer synchronization, editor interaction binds to the host-ac
 
 In Cursor's remote-kernel phase, the harness restores the captured notebook once if focus moved before waiting for the Variables row action. It does not reopen the Variables view or repeat the action. Timeout output includes only bounded loading state and element counts; it excludes webview URLs and table text.
 
-For affected pull requests, the released-Jupyter CI job downloads and revalidates the same checksum-bound VSIX produced by `canonical-vsix`; it never rebuilds the extension. Documentation-only, package-only, and draft pull requests require that conditional job to be skipped. The draft aggregate still fails deliberately; every ready full-matrix pull request requires the job to succeed through the fail-closed `validate` aggregate. Protected-branch pushes run only `Fast feedback`, so neither this job nor the aggregate runs after merge. The standalone Released Jupyter workflow is manual and self-packages its selected source because it has no caller artifact; its local-R core, value, categorical, and terminal runners remain serial with fresh verification, immediate upload adjacency, and an exact four-way raw-outcome fan-in. It is diagnostic rather than authoritative release evidence. Preview and stable release workflows instead call the shared candidate workflow exactly once without a caller matrix. That workflow owns fixed Python, remote-R, R-contract, platform, and performance jobs plus the two local-R shard cells. Lifecycle runs `core-operations`, `interactive-terminal`, and `literate-documents` in that order; editing runs `value-operations` then `categorical-operations`. Every candidate editor invocation repeats artifact verification immediately before it starts, uses a fresh private invocation root, and is followed by only its own sealed failure-evidence upload. Each shard's exact failure check is deferred until every assigned phase has run. The remote R job retains the common Node and absolute hosted Python setup needed by the packaged harness, but performs no hosted pip install or local R setup before the existing VS Code Docker journey; its independent Lowercase check remains unchanged. Each native phase keeps the 300-second hard deadline and 180-second inactivity deadline enforced by the packaged-editor harness, and no phase is retried. Each local-R shard uses the pinned dependency action and explicit hard-dependency set once. A candidate dispatch may restore only a compatible cache created by an earlier dispatch on `main`; pull-request merge-ref caches do not cross that boundary, so the first matching `main` dispatch performs the normal install. The R contract remains a separate parallel job. Cold dependency installation has a separate 20-minute setup-only bound so a source fallback cannot consume an unbounded orchestration process; this does not raise the editor-phase or inactivity deadlines, and no installed library is reused after cleanup.
+For affected pull requests, the released-Jupyter CI job downloads and revalidates the same checksum-bound VSIX produced by `canonical-vsix`; it never rebuilds the extension. Documentation-only, package-only, and draft pull requests require that conditional job to be skipped. The draft aggregate still fails deliberately; every ready full-matrix pull request requires the job to succeed through the fail-closed `validate` aggregate. Protected-branch pushes run only `Fast feedback`, so neither this job nor the aggregate runs after merge. The standalone Released Jupyter workflow is manual and self-packages its selected source because it has no caller artifact; its local-R default core, value, categorical, and terminal runners remain serial with fresh verification, immediate upload adjacency, and an exact four-way raw-outcome fan-in. Default/unset core retains its embedded restart journey. It is diagnostic rather than authoritative release evidence. Preview and stable release workflows instead call the shared candidate workflow exactly once without a caller matrix. That workflow owns fixed Python, remote-R, R-contract, platform, and performance jobs plus the two local-R shard cells. Lifecycle runs `core-operations`, `kernel-restart`, `interactive-terminal`, and `literate-documents` in that order; editing runs `value-operations` then `categorical-operations`. Every candidate editor invocation repeats artifact verification immediately before it starts, uses a fresh private invocation root, and is followed by only its own sealed failure-evidence upload. Each shard's exact failure check is deferred until every assigned phase has run. Explicit Linux core omits embedded restart coverage because the dedicated Linux VS Code-and-Cursor phase owns it. Explicit macOS and Windows core retain their existing embedded restart; focused value and categorical selectors remain restart-free. Default/unset manual core and the remote R journey retain restart coverage, so no platform loses coverage. The remote R job retains the common Node and absolute hosted Python setup needed by the packaged harness, but performs no hosted pip install or local R setup before the existing VS Code Docker journey; its independent Lowercase check remains unchanged. Each native phase keeps the 300-second hard deadline and 180-second inactivity deadline enforced by the packaged-editor harness, and no phase is retried. Each local-R shard uses the pinned dependency action and explicit hard-dependency set once. A candidate dispatch may restore only a compatible cache created by an earlier dispatch on `main`; pull-request merge-ref caches do not cross that boundary, so the first matching `main` dispatch performs the normal install. The R contract remains a separate parallel job. Cold dependency installation has a separate 20-minute setup-only bound so a source fallback cannot consume an unbounded orchestration process; this does not raise the editor-phase or inactivity deadlines, and no installed library is reused after cleanup.
 
 The packaged Classic and Connect PySpark fixtures arm class-level `toPandas`, `toArrow`, `mapInPandas`, and
 `mapInArrow` traps before Open Wrangler launches. Any accidental dataframe conversion must therefore fail inside
@@ -797,8 +801,11 @@ Drop Duplicates, Rename Column, Drop Columns, Select Columns, Clone Column, Conv
 aggregate. The `value-operations` targeted slice owns exactly Find and replace, Formula, Format Datetime, Min-max
 scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 `categorical-operations` targeted slice owns exactly One-hot encode and Multi-label binarize. All three invocations
-retain the shared representative Rename lifecycle, native tibble Rename, keyed-data-table Drop, frame picker, and
-kernel restart/reopen scaffold; comprehensive core adds its broader lifecycle and native-frame checks. The focused
+retain the shared representative Rename lifecycle, native tibble Rename, keyed-data-table Drop, and frame picker;
+comprehensive core adds its broader lifecycle and native-frame checks. Explicit Linux core omits the embedded kernel
+restart/reopen journey because the dedicated Linux VS Code-and-Cursor `kernel-restart` phase owns it. Explicit macOS
+and Windows core retain their existing embedded journey; focused value and categorical selectors continue to omit it.
+Default/unset core and the remote R journey retain restart coverage, so there is no per-platform reduction. The focused
 targeted journeys assert boundary values, stable output IDs, complete generated-R source specification, preview,
 apply, and undo in VS Code and Cursor.
 Categorical Undo keeps one authoritative one-shot dispatch receipt and waits up to 75 seconds for the queued
@@ -991,13 +998,14 @@ diagnostic run is dispatched; its Linux, macOS, and Windows targets do not cance
 for the packaged VS Code and local IRkernel notebook plus Open Wrangler's direct plain `.R` journey. Use it while
 diagnosing macOS-only R failures;
 the default `linux-all` lane keeps the broader VS Code, Cursor, Python, active R terminal, and remote-Jupyter
-coverage. Its local R sequence freshly verifies the built VSIX, runs the core invocation and its immediate diagnostic
-upload, reverifies and runs the separate value invocation with its immediate upload, reverifies and runs categorical
-with its immediate upload, then reverifies and runs active-terminal with its immediate upload. One exact four-way
-raw-outcome local-R failure fan-in follows all four, so an earlier failure cannot suppress or be overwritten by later
-evidence; only the active-terminal invocation installs the pinned R and Quarto tooling. This manually dispatched
-Released Jupyter path remains serial and non-authoritative. Release-candidate acceptance instead uses the fixed
-two-shard topology described below and adds its separately verified literate-document phase there.
+coverage. Its local R sequence freshly verifies the built VSIX, runs the default/unset core invocation and its immediate
+diagnostic upload, reverifies and runs the separate value invocation with its immediate upload, reverifies and runs
+categorical with its immediate upload, then reverifies and runs active-terminal with its immediate upload. Default
+core retains its embedded kernel restart/reopen coverage. One exact four-way raw-outcome local-R failure fan-in follows
+all four, so an earlier failure cannot suppress or be overwritten by later evidence; only the active-terminal
+invocation installs the pinned R and Quarto tooling. This manually dispatched Released Jupyter path remains serial,
+backward-compatible, and non-authoritative. Release-candidate acceptance instead uses the fixed two-shard topology
+described below and adds separately verified kernel-restart and literate-document phases there.
 
 Preview release run #72 published nothing. Its local R core hit the unchanged 300-second hard deadline at numeric
 Round, Cursor's categorical phase lost the bounded Multi-label Undo wait, and macOS failed the Drop Columns Code Preview
@@ -1015,6 +1023,14 @@ regressions therefore require the Drop reveal's unique complete `.ow_drop_names`
 failures, exact DOM-line equality, and Formula's value-owned start/complete plus restored-clean-state checkpoints. No
 deadline, coverage assertion, or retry is relaxed; the candidate workflow edges are deliberately redesigned, and run
 #73 cannot be promoted as evidence.
+
+Preview release [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) from protected `main`
+commit `b521f52` measured the two-shard redesign at 21m57s versus run #73's 33m15s (34% lower). Its slower local-R
+shard took 15m19s versus the former 31m15s serial lane (51% lower), while runner use rose from 119.75 to 130.78 minutes
+(9.2%). macOS was the measured bottleneck at 19m54s. Every raw outcome except lifecycle core passed; core reached
+`restart:start` before its outer process crossed the unchanged 300-second hard deadline. The fan-in failed,
+publication was skipped, and no `v1.99.6` was created. The dedicated restart phase below is a follow-up to that
+elapsed-budget collision; it has no hosted success evidence yet and does not reinterpret #74.
 
 ```bash
 npm run build:test-extension &&
@@ -1038,35 +1054,40 @@ OPEN_WRANGLER_TEST_RSCRIPT=/absolute/path/to/Rscript \
 npm run test:packaged-editors -- /absolute/path/to/openwrangler.vsix
 ```
 
-For a focused local rerun, add `OPEN_WRANGLER_PACKAGED_R_JOURNEY=value-operations`,
+For a focused local rerun, add `OPEN_WRANGLER_PACKAGED_R_JOURNEY=kernel-restart`,
+`OPEN_WRANGLER_PACKAGED_R_JOURNEY=value-operations`,
 `OPEN_WRANGLER_PACKAGED_R_JOURNEY=categorical-operations`,
 `OPEN_WRANGLER_PACKAGED_R_JOURNEY=interactive-terminal`, or
 `OPEN_WRANGLER_PACKAGED_R_JOURNEY=literate-documents` to the `r-jupyter` command and keep
-`OPEN_WRANGLER_REAL_REMOTE_JUPYTER=0`. With explicit `core-operations`, the candidate gate assigns five fresh phases to
-two parallel local-R shard cells. Lifecycle runs `core-operations`, `interactive-terminal`, then
-`literate-documents`; editing runs `value-operations`, then `categorical-operations`. Each shard performs dependency/editor setup once, but every phase
-freshly verifies the exact candidate, starts a fresh VS Code-and-Cursor runner with private roots, and immediately
-publishes any sealed failure evidence before its shard-local deferred raw-outcome check. The manual Released Jupyter
-gate remains its existing serial core, value, categorical, interactive-terminal diagnostic path. Core checks exactly
+`OPEN_WRANGLER_REAL_REMOTE_JUPYTER=0`. With explicit `core-operations`, the candidate gate assigns six fresh phases to
+two parallel local-R shard cells. Lifecycle runs `core-operations`, `kernel-restart`, `interactive-terminal`, then
+`literate-documents`; editing runs `value-operations`, then `categorical-operations`. Each shard performs
+dependency/editor setup once, but every phase freshly verifies the exact candidate, starts a fresh VS Code-and-Cursor
+runner with private roots, and immediately publishes any sealed failure evidence before its shard-local deferred
+raw-outcome check. The manual Released Jupyter gate remains its existing serial default-core, value, categorical,
+interactive-terminal diagnostic path; its default/unset core keeps the embedded restart journey. Core checks exactly
 Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns, Select
 Columns, Clone Column, Convert type, Text Length, and Group and aggregate. The value selector checks exactly Find and
 replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text,
 and Split text. The categorical selector checks exact One-hot encode and Multi-label binarize preview, apply,
 generated code, and one-shot undo behavior without native R/Quarto editor tooling. This is exact 12 core/12 value/2
-categorical targeted ownership. Core, value, and categorical each require all 26 advertised
-operation capabilities before their targeted work and retain the shared representative Rename/native-frame/restart
-scaffold. The interactive and literate selectors reach the same exact capability assertion through their nested
-integration journeys. Interactive checks active R terminal discovery, replacement, editing, CSV and Parquet export
-through the real Save-dialog flow, and cleanup. Literate checks the packaged R Markdown document action and Quarto
+categorical targeted ownership. Core, value, and categorical each require all 26 advertised operation capabilities
+before their targeted work and retain the shared representative Rename/native-frame scaffold. On Linux, explicit core
+skips embedded restart coverage because `kernel-restart` owns restart/reopen in both editors under its fresh phase
+budget; focused value and categorical selectors continue to skip it. Explicit macOS and Windows core retain their
+existing embedded restart. Default/unset core and the remote R journey also retain restart coverage, so the split does
+not reduce coverage on any platform. The interactive and literate selectors reach the same exact capability assertion
+through their nested integration journeys. Interactive checks active R terminal discovery, replacement, editing, CSV
+and Parquet export through the real Save-dialog flow, and cleanup. Literate checks the packaged R Markdown document action and Quarto
 title actions, native Quarto preview, dataframe opening, editing, code insertion, the Python/Jupyter Quarto path, and
-cleanup in every requested editor; the candidate gate requests both VS Code and Cursor. All four focused selectors
+cleanup in every requested editor; the candidate gate requests both VS Code and Cursor. All five focused selectors
 still verify the VSIX, editor, and R packages; only the interactive and literate selectors install and verify the
 pinned native R and Quarto extensions. On Linux, the literate selector begins with the plain `.R` journey that formerly
 ran in the core notebook phase. A separate runner-only selector,
 `OPEN_WRANGLER_PACKAGED_R_JOURNEY=remote-r-jupyter`, requires Linux, exactly VS Code, and
 `OPEN_WRANGLER_REAL_REMOTE_JUPYTER=1`. It runs only the five existing remote R Docker phases and does not prepare
 hosted R, a local R or Python kernel environment, Cursor, or native R/Quarto tooling. It retains the remote
-`lowerText` (Lowercase) operation even though the local value selector owns that check locally. The four local selectors cannot
+`lowerText` (Lowercase) operation even though the local value selector owns that check locally. The five focused local selectors cannot
 be combined with remote Jupyter. To refresh the complete R media set, run screenshot mode once without a selector for notebook images
 and once with `OPEN_WRANGLER_PACKAGED_R_JOURNEY=literate-documents` for the Quarto picker.
 
@@ -1188,12 +1209,16 @@ Preview-workflow contract tests parse behavior rather than pinning the complete 
 manual protected-main dispatch, default `publish: false`, one package producer and canonical triple, one complete
 Linux full-suite owner, and exactly one non-matrix caller of the shared candidate workflow. That reusable workflow owns
 fixed parallel platform, performance, Python, remote-R, R-contract, and local-R jobs. Local R is exactly two
-non-cancelling shard matrix cells: lifecycle orders `core-operations` before `interactive-terminal` before
-`literate-documents`, while editing orders `value-operations` before `categorical-operations`. Tests require setup once per shard,
-then for every phase a fresh exact-candidate verifier, a fresh VS Code-and-Cursor invocation/private-root owner, an
-immediate sealed diagnostic upload, and a shard-local deferred check of every raw outcome. They reject a phase moved
-to the wrong shard, altered 12/12/2 ownership, missing coverage, timeout or retry relaxation, unknown shard, or an
-early failure edge that can suppress later evidence. The R contract must remain an independent parallel sibling.
+non-cancelling shard matrix cells: lifecycle orders `core-operations` before `kernel-restart` before
+`interactive-terminal` before `literate-documents`, while editing orders `value-operations` before
+`categorical-operations`. Tests require setup once per shard, then for every phase a fresh exact-candidate verifier, a
+fresh VS Code-and-Cursor invocation/private-root owner, an immediate sealed diagnostic upload, and a shard-local
+deferred check of every raw outcome. They require explicit Linux core to skip embedded restart coverage, the dedicated
+Linux restart selector to own it, explicit macOS and Windows core to retain their existing embedded journey, focused
+value and categorical selectors to remain restart-free, and default/unset manual core plus remote R to retain restart
+coverage. They reject a per-platform coverage reduction, a phase moved to the wrong shard, altered 12/12/2 ownership,
+missing coverage, timeout or retry relaxation, unknown shard, or an early failure edge that can suppress later
+evidence. The R contract must remain an independent parallel sibling.
 
 Remote SSH runs from only the package dependency alongside candidate acceptance. The shared workflow's output-free
 fan-in must run after all internal jobs and require literal `success` from each; publication must explicitly require
@@ -1203,9 +1228,12 @@ that could substitute for literal job results, missing jobs, and removal of any 
 prove that validation-only jobs cannot gain an environment, secret route, write permission, tag push, registry call,
 or rebuild. The shared-workflow tests reject unbound artifacts, missing diagnostic failure steps, and changes that
 disable required editor/runtime checks. The manual Released Jupyter workflow remains its existing non-authoritative
-serial diagnostic and is tested against that truthful contract rather than the candidate fan-out. The graph's estimate
-from run #73's roughly 33-minute release/31-minute local-R lane is about 21–22 minutes from release start and about 15
-minutes for the R shards, with Windows/Python next; no contract test or static inspection claims hosted timing proof.
+serial diagnostic and is tested against that truthful contract rather than the candidate fan-out. Preview run #74
+measured the prior two-shard graph at 21m57s overall versus #73's 33m15s (34% lower), and 15m19s for its slower R shard
+versus 31m15s (51% lower); runner use rose from 119.75 to 130.78 minutes (9.2%), and macOS was the 19m54s bottleneck.
+Its lifecycle core nevertheless exceeded the unchanged outer deadline after `restart:start`, so publication was
+skipped and no `v1.99.6` was created. Contract tests establish only topology and policy: they do not claim that the
+dedicated restart remediation has passed hosted acceptance or predict the next critical path.
 Separate contracts require stable, preview, and reusable Open
 VSX public mutation owners to use the same non-cancelling `queue: max` publication group; the Open VSX call must be
 explicit for both channels and must select `--pre-release` only from verified public release metadata. These tests do

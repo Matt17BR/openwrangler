@@ -87,22 +87,28 @@ publish.
 
 Python, remote R, the R 4.5.2 contract, and the two local-R shard cells are independent siblings. Every artifact
 consumer verifies the same candidate VSIX; the R contract instead tests the exact source commit. The lifecycle shard
-runs `core-operations`, then `interactive-terminal`, then `literate-documents`; the editing shard runs
-`value-operations`, then `categorical-operations`. Dependency and editor setup happens once per shard, but every phase
-immediately reverifies the exact candidate and starts a fresh VS Code-and-Cursor runner with new private runtime,
-profile, result, progress, and log roots. Each runner is followed immediately by its own sealed
+runs `core-operations`, then `kernel-restart`, then `interactive-terminal`, then `literate-documents`; the editing
+shard runs `value-operations`, then `categorical-operations`. Dependency and editor setup happens once per shard, but
+every phase immediately reverifies the exact candidate and starts a fresh VS Code-and-Cursor runner with new private
+runtime, profile, result, progress, and log roots. Each runner is followed immediately by its own sealed
 failure-evidence upload. A deferred shard-local raw-outcome check runs only after every phase assigned to that shard, so
 an early failure cannot suppress later evidence or be overwritten by it. Core and value own 12 targeted operations
-each, categorical owns two, and the shared representative Rename, native-frame, kernel-restart/reopen, and exact
-26-capability checks remain intact.
+each, categorical owns two, and their representative Rename, native-frame, and exact 26-capability checks remain
+intact. The dedicated restart phase owns Linux candidate kernel restart/reopen coverage under its own fresh phase
+budget; the macOS and Windows candidate core invocations retain their existing embedded coverage.
 
-The remote R sibling runs only the packaged VS Code Docker journey and retains its `lowerText` (Lowercase) operation
-check; it does not install hosted R, local R packages, local kernel environments, or native R/Quarto tooling. Internal
+The remote R sibling runs only the packaged VS Code Docker journey and retains its embedded restart/reopen journey and
+`lowerText` (Lowercase) operation check; it does not install hosted R, local R packages, local kernel environments, or
+native R/Quarto tooling. Internal
 jobs and both shard matrix cells keep sibling cancellation disabled, so one failure cannot interrupt another owner's
 editor or Docker cleanup. Every native editor phase retains its own 300-second hard deadline and 180-second inactivity
-deadline without automatic retry. The manually dispatched Released Jupyter workflow remains an intentionally separate,
+deadline without automatic retry. Explicit Linux core skips the embedded restart journey because `kernel-restart`
+owns it in fresh Linux VS Code and Cursor processes. Explicit macOS and Windows core retain their embedded restart;
+focused value and categorical selectors continue to skip it. Default/unset core retains that embedded journey, so the
+manually dispatched Released Jupyter workflow remains an intentionally separate, backward-compatible,
 non-authoritative diagnostic: its existing local-R core, value, categorical, and terminal phases are serial and use
-their existing exact four-way fan-in. It does not model or substitute for candidate acceptance.
+their existing exact four-way fan-in. This routing removes only duplicate Linux scheduling and does not reduce
+per-platform restart coverage. The manual workflow does not model or substitute for candidate acceptance.
 
 Preview release run #72 reached the ordinary local-R 300-second deadline at numeric Round, lost Cursor's bounded
 Multi-label Undo wait, and failed macOS Drop Columns Code Preview generation/diagnostics. Publication was skipped. Those
@@ -117,11 +123,20 @@ unique exact logical-line selection and a balanced 12/12/2 core/value/categorica
 topology is redesigned into the two parallel local-R shards above; the 300-second hard deadline, 180-second inactivity
 deadline, coverage, and no-retry rule remain unchanged. Run #73 is not release evidence.
 
-Run #73 took roughly 33 minutes from release start and its serial local-R lane failed after about 31 minutes. Using the
-observed phase durations and ordinary hosted setup costs, the redesigned graph projects roughly 21–22 minutes from
-release start and about 15 minutes for the two R shards, after which Windows and Python are expected to be the next
-critical-path candidates. Those are design estimates, not hosted proof; only a fresh exact-candidate Preview run can
-establish the new wall time and release evidence.
+Preview release [run #74](https://github.com/Matt17BR/openwrangler/actions/runs/31826709129) measured the redesigned
+graph at 21m57s from release start versus run #73's 33m15s, a 34% reduction. The slower local-R shard took 15m19s
+versus the former 31m15s serial lane, a 51% reduction. Total runner use increased from 119.75 to 130.78 minutes, or
+9.2%. macOS was the measured bottleneck at 19m54s. Every raw
+candidate lane except lifecycle core passed; core reached `restart:start` and then crossed the unchanged 300-second
+outer deadline. Publication was skipped and no `v1.99.6` was created.
+
+The dedicated `kernel-restart` phase is the next remediation: it removes restart/reopen only from explicit Linux core
+and gives that journey its own verifier, private VS Code/Cursor run, sealed upload, 300-second hard deadline, and
+180-second inactivity deadline before the lifecycle shard's deferred raw fan-in. Focused value and categorical
+selectors remain restart-free, while explicit macOS and Windows core, default/unset core, and remote R retain their
+existing restart coverage. It adds no retry or per-platform coverage reduction. Run #74 proves the prior topology's
+measured wall-time reduction, not that this remediation passes or what its next hosted critical path will be; macOS
+remains only the last observed bottleneck until a fresh candidate establishes otherwise.
 
 Each release local-R shard uses the same commit-pinned dependency action, explicit package set, and
 resolved-lock/binary-package policy as the pull-request contract matrix. GitHub scopes pull-request caches to their
