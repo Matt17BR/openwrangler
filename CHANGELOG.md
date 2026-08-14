@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.99.6] - 2026-08-14
+
 ### Changed
 
 - Open Wrangler now recovers a visible editor whose renderer disappears after **Change Import Options** even when
