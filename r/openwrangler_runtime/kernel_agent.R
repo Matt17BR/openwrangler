@@ -1,5 +1,5 @@
 openwrangler_r_kernel_agent <- local({
-  transport_version <- 11L
+  transport_version <- 12L
   maximum_identifier_bytes <- 128L
   maximum_name_bytes <- 1024L
   maximum_variable_name_bytes <- 1024L
@@ -11,6 +11,8 @@ openwrangler_r_kernel_agent <- local({
   maximum_operation_output_bytes <- 64L * 1024L * 1024L
   maximum_operation_output_chunk_rows <- 1024L
   character_vector_slot_bytes <- 8L
+  metadata_base_bytes <- 1024L
+  column_fixed_bytes <- 512L
   maximum_fill_directional_gap <- 1000000L
   maximum_revision <- .Machine$integer.max
   default_strip_characters <- paste0(
@@ -21,6 +23,8 @@ openwrangler_r_kernel_agent <- local({
     "\u2028\u2029\u202f\u205f\u3000"
   )
   identifier_pattern <- "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+
+  anyDuplicated <- function(value) base::anyDuplicated.default(value)
 
   abort <- function(code, message, recoverable = FALSE) {
     condition <- structure(
@@ -851,6 +855,97 @@ openwrangler_r_kernel_agent <- local({
         )
       ))
     }
+    if (identical(kind, "oneHotEncode")) {
+      params <- exact_record(
+        step$params,
+        "columns",
+        "request.payload.step.params",
+        optional_fields = c("prefixSeparator", "dropOriginal")
+      )
+      columns <- params$columns
+      if (
+        !is.list(columns) ||
+          is.object(columns) ||
+          !is.null(names(columns)) ||
+          length(columns) == 0L ||
+          length(columns) > limits$columns
+      ) {
+        abort("invalid_request", "request.payload.step.params.columns must be a bounded non-empty array")
+      }
+      columns <- lapply(seq_along(columns), function(index) {
+        decode_column_reference(
+          columns[[index]],
+          sprintf("request.payload.step.params.columns[%d]", index),
+          limits$columnIdBytes
+        )
+      })
+      column_ids <- vapply(columns, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      if (anyDuplicated(column_ids)) {
+        abort("invalid_request", "request.payload.step.params.columns contains a repeated column identity")
+      }
+      prefix_separator <- if ("prefixSeparator" %in% names(params)) {
+        bounded_text(
+          params$prefixSeparator,
+          "request.payload.step.params.prefixSeparator",
+          limits$textBytes
+        )
+      } else {
+        "_"
+      }
+      drop_original <- if ("dropOriginal" %in% names(params)) params$dropOriginal else TRUE
+      if (!is.logical(drop_original) || length(drop_original) != 1L || is.na(drop_original)) {
+        abort("invalid_request", "request.payload.step.params.dropOriginal must be true or false")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(
+          columns = columns,
+          prefixSeparator = prefix_separator,
+          dropOriginal = drop_original
+        )
+      ))
+    }
+    if (identical(kind, "multiLabelBinarize")) {
+      params <- exact_record(
+        step$params,
+        c("column", "delimiter"),
+        "request.payload.step.params",
+        optional_fields = c("prefix", "dropOriginal")
+      )
+      column <- decode_column_reference(
+        params$column,
+        "request.payload.step.params.column",
+        limits$columnIdBytes
+      )
+      delimiter <- bounded_text(
+        params$delimiter,
+        "request.payload.step.params.delimiter",
+        limits$textBytes
+      )
+      if (identical(delimiter, "")) {
+        abort("invalid_request", "request.payload.step.params.delimiter must be a non-empty string")
+      }
+      prefix <- if ("prefix" %in% names(params)) {
+        bounded_text(params$prefix, "request.payload.step.params.prefix", limits$textBytes)
+      } else {
+        paste0(column$name, "_")
+      }
+      drop_original <- if ("dropOriginal" %in% names(params)) params$dropOriginal else FALSE
+      if (!is.logical(drop_original) || length(drop_original) != 1L || is.na(drop_original)) {
+        abort("invalid_request", "request.payload.step.params.dropOriginal must be true or false")
+      }
+      return(list(
+        id = step_id,
+        kind = kind,
+        params = list(
+          column = column,
+          delimiter = delimiter,
+          prefix = prefix,
+          dropOriginal = drop_original
+        )
+      ))
+    }
     if (identical(kind, "formula")) {
       params <- exact_record(
         step$params,
@@ -1320,6 +1415,8 @@ openwrangler_r_kernel_agent <- local({
       "selectColumns",
       "formula",
       "textLength",
+      "oneHotEncode",
+      "multiLabelBinarize",
       "lowerText",
       "upperText",
       "capitalizeText",
@@ -1469,6 +1566,61 @@ openwrangler_r_kernel_agent <- local({
       newName = step$params$newColumn,
       outputId = step$outputId
     )
+  }
+
+  bind_categorical_step <- function(capture, step) {
+    schema <- capture$descriptor$schema
+    schema_ids <- vapply(schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+    references <- if (identical(step$kind, "oneHotEncode")) {
+      step$params$columns
+    } else {
+      list(step$params$column)
+    }
+    columns <- lapply(seq_along(references), function(index) {
+      reference <- references[[index]]
+      matches <- which(schema_ids == reference$id)
+      if (length(matches) != 1L || !identical(schema[[matches[[1L]]]]$name, reference$name)) {
+        abort("stale_column", "A categorical column reference no longer matches the active R dataframe", TRUE)
+      }
+      position <- as.integer(matches[[1L]])
+      column <- schema[[position]]
+      if (
+        identical(step$kind, "multiLabelBinarize") &&
+          !column$semantics$kind %in% c("character", "factor")
+      ) {
+        abort("invalid_request", "Multi-label binarization requires an R character or factor column", TRUE)
+      }
+      list(
+        id = column$id,
+        position = position,
+        name = column$name,
+        semanticsKind = column$semantics$kind,
+        storageMode = column$semantics$storageMode,
+        classes = column$semantics$classes,
+        timezone = column$semantics$timezone,
+        units = column$semantics$units
+      )
+    })
+    bound <- list(
+      id = step$id,
+      kind = step$kind,
+      columns = columns,
+      dropOriginal = isTRUE(step$params$dropOriginal),
+      generatedNames = character(),
+      removedNames = if (isTRUE(step$params$dropOriginal)) {
+        selected_positions <- vapply(columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
+        vapply(columns[base::order(selected_positions)], `[[`, character(1L), "name", USE.NAMES = FALSE)
+      } else {
+        character()
+      }
+    )
+    if (identical(step$kind, "oneHotEncode")) {
+      bound$prefixSeparator <- step$params$prefixSeparator
+    } else {
+      bound$delimiter <- step$params$delimiter
+      bound$prefix <- step$params$prefix
+    }
+    bound
   }
 
   bind_text_transform_step <- function(capture, step) {
@@ -2141,6 +2293,90 @@ openwrangler_r_kernel_agent <- local({
         bound = bound
       ))
     }
+    if (step$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
+      bound <- bind_categorical_step(capture, step)
+      result <- if (identical(step$kind, "oneHotEncode")) {
+        frame_contract$one_hot_encode_columns_at(
+          source,
+          vapply(bound$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE),
+          vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE),
+          bound$prefixSeparator,
+          bound$dropOriginal
+        )
+      } else {
+        frame_contract$multi_label_binarize_column_at(
+          source,
+          bound$columns[[1L]]$position,
+          bound$columns[[1L]]$name,
+          bound$delimiter,
+          bound$prefix,
+          bound$dropOriginal
+        )
+      }
+      if (
+        !is.environment(result) ||
+          !inherits(result, "openwrangler_r_categorical_result") ||
+          !is.data.frame(result$value) ||
+          length(unclass(result$value)) == 0L ||
+          !is.numeric(result$sourcePositions) ||
+          anyNA(result$sourcePositions) ||
+          any(!is.finite(result$sourcePositions)) ||
+          any(result$sourcePositions != floor(result$sourcePositions)) ||
+          length(result$sourcePositions) != length(unclass(result$value)) ||
+          any(result$sourcePositions < 1L) ||
+          any(result$sourcePositions > length(capture$descriptor$schema)) ||
+          !is.numeric(result$categoricalPositions) ||
+          anyNA(result$categoricalPositions) ||
+          any(!is.finite(result$categoricalPositions)) ||
+          any(result$categoricalPositions != floor(result$categoricalPositions)) ||
+          any(result$categoricalPositions < 1L) ||
+          any(result$categoricalPositions > length(result$sourcePositions)) ||
+          anyDuplicated(result$categoricalPositions) ||
+          !is.character(result$generatedNames) ||
+          anyNA(result$generatedNames) ||
+          length(result$generatedNames) != length(result$categoricalPositions)
+      ) {
+        abort("runtime_error", "The R categorical transform returned invalid output metadata")
+      }
+      if (length(result$categoricalPositions) == 0L || length(result$generatedNames) == 0L) {
+        abort("invalid_request", "R categorical encoding must generate at least one column")
+      }
+      categorical_positions <- as.integer(result$categoricalPositions)
+      source_positions <- as.integer(result$sourcePositions)
+      generated_names <- vapply(seq_along(result$generatedNames), function(index) {
+        bounded_text(
+          result$generatedNames[[index]],
+          sprintf("the generated R categorical column name %d", index),
+          frame_contract$limits$nameBytes
+        )
+      }, character(1L), USE.NAMES = FALSE)
+      if (
+        any(generated_names == "") ||
+          anyDuplicated(generated_names) ||
+          !identical(attr(result$value, "names", exact = TRUE)[categorical_positions], generated_names)
+      ) {
+        abort("runtime_error", "The R categorical transform returned inconsistent output names")
+      }
+      source_ids <- vapply(capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE)
+      output_ids <- source_ids[source_positions]
+      if (length(categorical_positions) > 0L) {
+        output_ids[categorical_positions] <- vapply(seq_along(categorical_positions), function(index) {
+          bounded_text(
+            paste0("c:step:", step$id, ":", index - 1L),
+            sprintf("the derived R categorical column identity %d", index),
+            frame_contract$limits$columnIdBytes
+          )
+        }, character(1L), USE.NAMES = FALSE)
+      }
+      bound$generatedNames <- generated_names
+      bound$sourcePositions <- source_positions
+      bound$categoricalPositions <- categorical_positions
+      bound$outputIds <- output_ids
+      return(list(
+        capture = frame_contract$capture_categorical_result(result, capture, output_ids),
+        bound = bound
+      ))
+    }
     if (step$kind %in% c("lowerText", "upperText", "capitalizeText", "stripText", "splitText", "findReplace")) {
       bound <- bind_text_transform_step(capture, step)
       new_name <- if (isTRUE(bound$inPlace)) NULL else bound$newName
@@ -2481,13 +2717,13 @@ openwrangler_r_kernel_agent <- local({
       ),
       sprintf("  .ow_exact_attributes <- attributes(%s)", variable),
       "  .ow_exact_attribute_names <- if (is.null(names(.ow_exact_attributes))) character() else names(.ow_exact_attributes)",
-      "  if (anyNA(.ow_exact_attribute_names) || any(.ow_exact_attribute_names == \"\") || anyDuplicated(.ow_exact_attribute_names)) stop(\"Open Wrangler column attributes are stale\", call. = FALSE)",
+      "  if (anyNA(.ow_exact_attribute_names) || any(.ow_exact_attribute_names == \"\") || base::anyDuplicated.default(.ow_exact_attribute_names)) stop(\"Open Wrangler column attributes are stale\", call. = FALSE)",
       sprintf(
         "  if (\"names\" %%in%% .ow_exact_attribute_names) { .ow_exact_column_names <- attr(%s, \"names\", exact = TRUE); if (!is.character(.ow_exact_column_names) || is.object(.ow_exact_column_names) || !is.null(attributes(.ow_exact_column_names)) || length(.ow_exact_column_names) != .ow_storage_length(%s)) stop(\"Open Wrangler column attributes are stale\", call. = FALSE) }",
         variable,
         variable
       ),
-      "  .ow_exact_attribute_names <- sort(setdiff(.ow_exact_attribute_names, \"names\"))",
+      "  .ow_exact_attribute_names <- base::sort.int(.ow_exact_attribute_names[.ow_exact_attribute_names != \"names\"], method = \"radix\")",
       if (identical(semantic_kind, "datetime")) {
         "  if (!identical(.ow_exact_attribute_names, \"class\") && !identical(.ow_exact_attribute_names, c(\"class\", \"tzone\"))) stop(\"Open Wrangler column attributes are stale\", call. = FALSE)"
       } else {
@@ -3059,7 +3295,7 @@ openwrangler_r_kernel_agent <- local({
       "    if (!is.null(.ow_max_gap) && (length(.ow_max_gap) != 1L || !is.numeric(.ow_max_gap) || is.na(.ow_max_gap) || !is.finite(.ow_max_gap) || .ow_max_gap < 1 || .ow_max_gap > 1000000 || .ow_max_gap != floor(.ow_max_gap))) stop(\"Open Wrangler received an invalid maximum gap\", call. = FALSE)",
       "    .ow_coordinate_values <- as.double(.ow_coordinate)",
       "    if (anyNA(.ow_coordinate_values) || any(!is.finite(.ow_coordinate_values))) stop(\"Every interpolation coordinate must be present and finite\", call. = FALSE)",
-      "    if (anyDuplicated(.ow_coordinate_values)) stop(\"Interpolation coordinates must be unique\", call. = FALSE)",
+      "    if (base::anyDuplicated.default(.ow_coordinate_values)) stop(\"Interpolation coordinates must be unique\", call. = FALSE)",
       "    .ow_rows <- order(.ow_coordinate_values, method = \"radix\")",
       "    .ow_result_values <- .ow_values",
       "    .ow_ordered_values <- .ow_result_values[.ow_rows]",
@@ -3337,6 +3573,506 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  generated_categorical_encode <- function(
+    .ow_frame,
+    .ow_kind,
+    .ow_specs,
+    .ow_prefix_separator,
+    .ow_delimiter,
+    .ow_prefix,
+    .ow_drop_original,
+    .ow_maximum_columns,
+    .ow_maximum_name_bytes,
+    .ow_maximum_text_bytes,
+    .ow_maximum_payload_bytes,
+    .ow_maximum_output_bytes,
+    .ow_character_vector_slot_bytes,
+    .ow_metadata_base_bytes,
+    .ow_column_fixed_bytes,
+    .ow_input_ids,
+    .ow_step_id
+  ) {
+    .ow_utf8_order <- function(.ow_values) {
+      if (length(.ow_values) == 0L) return(integer())
+      .ow_keys <- vapply(.ow_values, function(.ow_value) {
+        paste(sprintf("%02x", as.integer(charToRaw(.ow_value))), collapse = "")
+      }, character(1L), USE.NAMES = FALSE)
+      order(.ow_keys, seq_along(.ow_keys), method = "radix")
+    }
+    .ow_utf8 <- function(.ow_values) {
+      vapply(seq_len(base::length(base::unclass(.ow_values))), function(.ow_index) {
+        .ow_value <- base::.subset2(.ow_values, .ow_index)
+        if (is.na(.ow_value)) return(NA_character_)
+        if (identical(Encoding(.ow_value), "bytes")) {
+          stop("Open Wrangler categorical encoding requires valid UTF-8 text", call. = FALSE)
+        }
+        .ow_from <- if (identical(Encoding(.ow_value), "latin1")) "latin1" else "UTF-8"
+        .ow_converted <- iconv(.ow_value, from = .ow_from, to = "UTF-8", sub = NA_character_)
+        if (is.na(.ow_converted) || nchar(.ow_converted, type = "bytes") > .ow_maximum_text_bytes) {
+          stop("Open Wrangler categorical encoding requires bounded valid UTF-8 text", call. = FALSE)
+        }
+        .ow_converted
+      }, character(1L), USE.NAMES = FALSE)
+    }
+    .ow_semantic_scalar <- function(.ow_value) {
+      if (base::is.null(.ow_value)) return(NULL)
+      if (
+        !base::is.character(.ow_value) ||
+          base::length(base::unclass(.ow_value)) != 1L
+      ) {
+        base::stop("Open Wrangler categorical column type or semantics is stale", call. = FALSE)
+      }
+      .ow_scalar <- base::.subset2(.ow_value, 1L)
+      if (base::is.na(.ow_scalar) || base::identical(base::Encoding(.ow_scalar), "bytes")) {
+        base::stop("Open Wrangler categorical column type or semantics is stale", call. = FALSE)
+      }
+      .ow_from <- if (base::identical(base::Encoding(.ow_scalar), "latin1")) "latin1" else "UTF-8"
+      .ow_scalar <- base::iconv(.ow_scalar, from = .ow_from, to = "UTF-8", sub = NA_character_)
+      if (
+        base::is.na(.ow_scalar) ||
+          base::nchar(.ow_scalar, type = "bytes") > .ow_maximum_name_bytes
+      ) {
+        base::stop("Open Wrangler categorical column type or semantics is stale", call. = FALSE)
+      }
+      .ow_scalar
+    }
+    .ow_json_string_bytes <- function(.ow_value) {
+      .ow_value <- .ow_utf8(.ow_value)
+      .ow_bytes <- as.integer(charToRaw(.ow_value))
+      .ow_html_slash <- logical(length(.ow_bytes))
+      if (length(.ow_bytes) > 1L) {
+        .ow_html_slash[-1L] <- .ow_bytes[-1L] == 47L & .ow_bytes[-length(.ow_bytes)] == 60L
+      }
+      as.double(sum(ifelse(
+        .ow_bytes %in% c(8L, 9L, 10L, 12L, 13L, 34L, 92L) | .ow_html_slash,
+        2L,
+        ifelse(.ow_bytes < 32L, 6L, 1L)
+      )) + 2L)
+    }
+    .ow_guard_result_metadata <- function(.ow_generated_names, .ow_retained_positions) {
+      .ow_output_count <- length(.ow_retained_positions) + length(.ow_generated_names)
+      if (length(.ow_input_ids) != length(.ow_names)) {
+        stop("Open Wrangler categorical encoding received inconsistent input identities", call. = FALSE)
+      }
+      .ow_retained_output_ids <- .ow_input_ids[.ow_retained_positions]
+      .ow_generated_output_ids <- if (length(.ow_generated_names) == 0L) {
+        character()
+      } else {
+        paste0("c:step:", .ow_step_id, ":", seq_along(.ow_generated_names) - 1L)
+      }
+      .ow_output_ids <- c(.ow_retained_output_ids, .ow_generated_output_ids)
+      .ow_output_names <- c(.ow_names[.ow_retained_positions], .ow_generated_names)
+      .ow_metadata_bytes <- as.double(.ow_metadata_base_bytes) +
+        as.double(.ow_output_count) * .ow_column_fixed_bytes
+      .ow_spend_metadata <- function(.ow_bytes) {
+        .ow_next <- .ow_metadata_bytes + as.double(.ow_bytes)
+        if (!is.finite(.ow_next) || .ow_next > .ow_maximum_payload_bytes) {
+          stop("Open Wrangler categorical encoding metadata is too large", call. = FALSE)
+        }
+        .ow_metadata_bytes <<- .ow_next
+        invisible(NULL)
+      }
+      for (.ow_name in .ow_output_names) .ow_spend_metadata(.ow_json_string_bytes(.ow_name))
+      .ow_generated_id_bytes <- 0
+      .ow_output_id_bytes <- 0
+      for (.ow_output_position in seq_len(.ow_output_count)) {
+        .ow_generated_id_bytes <- .ow_generated_id_bytes +
+          .ow_json_string_bytes(sprintf("r:c:%d", .ow_output_position - 1L))
+        .ow_output_id_bytes <- .ow_output_id_bytes +
+          .ow_json_string_bytes(base::.subset2(.ow_output_ids, .ow_output_position))
+      }
+      if (.ow_output_id_bytes > .ow_generated_id_bytes) {
+        .ow_spend_metadata(.ow_output_id_bytes - .ow_generated_id_bytes)
+      }
+      for (.ow_position in .ow_retained_positions) {
+        .ow_column <- base::.subset2(.ow_frame, .ow_position)
+        .ow_column_classes <- attr(.ow_column, "class", exact = TRUE)
+        if (is.null(.ow_column_classes)) {
+          .ow_column_classes <- switch(
+            typeof(.ow_column),
+            logical = "logical",
+            integer = "integer",
+            double = "numeric",
+            character = "character",
+            stop("Open Wrangler categorical encoding received an unsupported retained column", call. = FALSE)
+          )
+        }
+        for (.ow_class in .ow_column_classes) {
+          .ow_spend_metadata(.ow_json_string_bytes(.ow_class) + 1L)
+        }
+        if ("factor" %in% .ow_column_classes) {
+          .ow_levels <- attr(.ow_column, "levels", exact = TRUE)
+          for (.ow_level in .ow_levels) {
+            .ow_spend_metadata(.ow_json_string_bytes(.ow_level) + 1L)
+          }
+        }
+        .ow_timezone <- .ow_semantic_scalar(attr(.ow_column, "tzone", exact = TRUE))
+        if (!is.null(.ow_timezone)) {
+          .ow_spend_metadata(.ow_json_string_bytes(.ow_timezone))
+        }
+        .ow_units <- .ow_semantic_scalar(attr(.ow_column, "units", exact = TRUE))
+        if (!is.null(.ow_units)) {
+          .ow_spend_metadata(.ow_json_string_bytes(.ow_units))
+        }
+      }
+      for (.ow_generated_index in seq_along(.ow_generated_names)) {
+        .ow_spend_metadata(.ow_json_string_bytes("integer") + 1L)
+      }
+      .ow_frame_classes <- attr(.ow_frame, "class", exact = TRUE)
+      for (.ow_class in .ow_frame_classes) {
+        .ow_spend_metadata(.ow_json_string_bytes(.ow_class) + 1L)
+      }
+      if (inherits(.ow_frame, "data.table")) {
+        .ow_source_key <- attr(.ow_frame, "sorted", exact = TRUE)
+        .ow_source_key <- if (is.null(.ow_source_key)) {
+          character()
+        } else {
+          vapply(
+            seq_len(base::length(base::unclass(.ow_source_key))),
+            function(.ow_key_index) base::.subset2(.ow_source_key, .ow_key_index),
+            character(1L),
+            USE.NAMES = FALSE
+          )
+        }
+        .ow_retained_names <- .ow_names[.ow_retained_positions]
+        .ow_retained_key_count <- 0L
+        for (.ow_key_name in .ow_source_key) {
+          if (!.ow_key_name %in% .ow_retained_names) break
+          .ow_retained_key_count <- .ow_retained_key_count + 1L
+        }
+        if (.ow_retained_key_count != 0L) {
+          .ow_generated_key_bytes <- 0
+          .ow_output_key_bytes <- 0
+          for (.ow_key_index in seq_len(.ow_retained_key_count)) {
+            .ow_key_position <- match(base::.subset2(.ow_source_key, .ow_key_index), .ow_retained_names)
+            .ow_generated_key_bytes <- .ow_generated_key_bytes +
+              .ow_json_string_bytes(sprintf("r:c:%d", .ow_key_position - 1L))
+            .ow_output_key_bytes <- .ow_output_key_bytes +
+              .ow_json_string_bytes(base::.subset2(.ow_output_ids, .ow_key_position))
+          }
+          .ow_spend_metadata(
+            .ow_retained_key_count + max(.ow_generated_key_bytes, .ow_output_key_bytes)
+          )
+        }
+      }
+      .ow_output_ids
+    }
+    .ow_text <- function(.ow_column, .ow_spec) {
+      if (
+        !base::identical(base::typeof(.ow_column), .ow_spec$storageMode) ||
+          !base::identical(base::class(.ow_column), .ow_spec$classes) ||
+          !base::identical(.ow_semantic_scalar(base::attr(.ow_column, "tzone", exact = TRUE)), .ow_semantic_scalar(.ow_spec$timezone)) ||
+          !base::identical(.ow_semantic_scalar(base::attr(.ow_column, "units", exact = TRUE)), .ow_semantic_scalar(.ow_spec$units))
+      ) {
+        base::stop("Open Wrangler categorical column type or semantics is stale", call. = FALSE)
+      }
+      .ow_storage <- unclass(.ow_column)
+      attributes(.ow_storage) <- NULL
+      .ow_missing <- is.na(.ow_storage)
+      if (identical(.ow_spec$kind, "integer64")) {
+        .ow_missing <- .Call(
+          .ow_integer64_is_na,
+          .ow_column,
+          logical(.ow_storage_length(.ow_column))
+        )
+        .ow_values <- .Call(
+          .ow_integer64_as_character,
+          .ow_column,
+          rep.int(NA_character_, .ow_storage_length(.ow_column))
+        )
+        return(list(storage = .ow_values, missing = .ow_missing, labels = .ow_values))
+      }
+      if (identical(.ow_spec$kind, "factor")) {
+        .ow_levels <- .ow_utf8(attr(.ow_column, "levels", exact = TRUE))
+        .ow_values <- rep.int(NA_character_, length(.ow_storage))
+        .ow_present <- which(!.ow_missing)
+        if (length(.ow_present) != 0L) .ow_values[.ow_present] <- .ow_levels[.ow_storage[.ow_present]]
+        return(list(storage = .ow_storage, missing = .ow_missing, labels = .ow_values))
+      }
+      if (.ow_spec$kind %in% c("date", "datetime", "difftime")) {
+        if (any(is.nan(.ow_storage)) || any(!.ow_missing & !is.finite(.ow_storage))) {
+          stop("Open Wrangler categorical encoding received a non-finite classed scalar", call. = FALSE)
+        }
+        if (identical(.ow_spec$kind, "date") && any(!.ow_missing & .ow_storage != floor(.ow_storage))) {
+          stop("Open Wrangler categorical encoding received a fractional Date", call. = FALSE)
+        }
+      }
+      .ow_labels <- if (identical(.ow_spec$kind, "character")) {
+        .ow_utf8(.ow_storage)
+      } else if (identical(.ow_spec$kind, "logical")) {
+        ifelse(.ow_storage, "TRUE", "FALSE")
+      } else if (identical(.ow_spec$kind, "integer")) {
+        sprintf("%d", .ow_storage)
+      } else if (identical(.ow_spec$kind, "double")) {
+        vapply(.ow_storage, function(.ow_value) {
+          base::format.default(.ow_value, digits = 15L, trim = TRUE, scientific = FALSE, decimal.mark = ".")
+        }, character(1L), USE.NAMES = FALSE)
+      } else if (identical(.ow_spec$kind, "date")) {
+        .ow_displays <- tryCatch(
+          base::format.Date(structure(.ow_storage, class = "Date"), format = "%Y-%m-%d"),
+          error = function(.ow_error) NULL
+        )
+        .ow_invalid <- if (!is.character(.ow_displays) || length(.ow_displays) != length(.ow_storage)) {
+          TRUE
+        } else {
+          any(!.ow_missing & (is.na(.ow_displays) | !grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", .ow_displays)))
+        }
+        if (.ow_invalid) stop("Open Wrangler categorical encoding received a Date outside the supported ISO range", call. = FALSE)
+        .ow_displays
+      } else if (identical(.ow_spec$kind, "datetime")) {
+        .ow_attributes <- if (is.null(.ow_spec$timezone)) {
+          list(class = c("POSIXct", "POSIXt"))
+        } else {
+          list(class = c("POSIXct", "POSIXt"), tzone = .ow_spec$timezone)
+        }
+        .ow_values <- .ow_storage
+        attributes(.ow_values) <- .ow_attributes
+        .ow_timezone <- .ow_spec$timezone
+        if (is.null(.ow_timezone) || identical(.ow_timezone, "")) .ow_timezone <- "UTC"
+        .ow_displays <- tryCatch(
+          base::format.POSIXct(
+            .ow_values,
+            tz = .ow_timezone,
+            format = "%Y-%m-%dT%H:%M:%OS6",
+            usetz = FALSE
+          ),
+          error = function(.ow_error) NULL
+        )
+        .ow_invalid <- !is.character(.ow_displays) ||
+          length(.ow_displays) != length(.ow_storage) ||
+          any(!.ow_missing & is.na(.ow_displays))
+        if (.ow_invalid) stop("Open Wrangler categorical encoding received a datetime outside the supported range", call. = FALSE)
+        .ow_utf8(.ow_displays)
+      } else if (identical(.ow_spec$kind, "difftime")) {
+        paste(vapply(.ow_storage, function(.ow_value) sprintf("%.17g", as.double(.ow_value)), character(1L)), .ow_spec$units)
+      } else {
+        stop("Open Wrangler one-hot encoding received an unsupported R scalar kind", call. = FALSE)
+      }
+      list(storage = .ow_storage, missing = .ow_missing, labels = .ow_labels)
+    }
+    .ow_names <- attr(.ow_frame, "names", exact = TRUE)
+    if (
+      length(.ow_input_ids) != length(.ow_names) ||
+        anyNA(.ow_input_ids) ||
+        base::anyDuplicated.default(.ow_input_ids)
+    ) {
+      stop("Open Wrangler categorical encoding received inconsistent input identities", call. = FALSE)
+    }
+    .ow_specs <- lapply(.ow_specs, function(.ow_spec) {
+      .ow_matches <- which(.ow_input_ids == .ow_spec$id)
+      if (
+        length(.ow_matches) != 1L ||
+          !identical(base::.subset2(.ow_names, base::.subset2(.ow_matches, 1L)), .ow_spec$name)
+      ) {
+        stop("Open Wrangler column reference is stale", call. = FALSE)
+      }
+      .ow_spec$position <- as.integer(base::.subset2(.ow_matches, 1L))
+      .ow_column <- base::.subset2(.ow_frame, .ow_spec$position)
+      if (
+        !base::identical(base::typeof(.ow_column), .ow_spec$storageMode) ||
+          !base::identical(base::class(.ow_column), .ow_spec$classes) ||
+          !base::identical(.ow_semantic_scalar(base::attr(.ow_column, "tzone", exact = TRUE)), .ow_semantic_scalar(.ow_spec$timezone)) ||
+          !base::identical(.ow_semantic_scalar(base::attr(.ow_column, "units", exact = TRUE)), .ow_semantic_scalar(.ow_spec$units))
+      ) {
+        base::stop("Open Wrangler categorical column type or semantics is stale", call. = FALSE)
+      }
+      .ow_spec
+    })
+    .ow_selected_positions <- vapply(.ow_specs, `[[`, integer(1L), "position")
+    .ow_retained_positions <- if (.ow_drop_original) {
+      .ow_all_positions <- seq_along(.ow_names)
+      .ow_all_positions[is.na(match(.ow_all_positions, .ow_selected_positions))]
+    } else {
+      seq_along(.ow_names)
+    }
+    .ow_maximum_generated <- .ow_maximum_columns - length(.ow_retained_positions)
+    .ow_row_count <- as.double(.ow_storage_length(base::.subset2(.ow_frame, 1L)))
+    .ow_guard_generated_count <- function(.ow_count) {
+      if (.ow_count > .ow_maximum_generated) {
+        stop("Open Wrangler categorical encoding output is too large", call. = FALSE)
+      }
+      invisible(NULL)
+    }
+    .ow_generated <- list()
+    if (identical(.ow_kind, "oneHotEncode")) {
+      for (.ow_spec_index in seq_along(.ow_specs)) {
+        .ow_spec <- .ow_specs[[.ow_spec_index]]
+        if (length(.ow_names) < .ow_spec$position || !identical(base::.subset2(.ow_names, .ow_spec$position), .ow_spec$name)) {
+          stop("Open Wrangler column reference is stale", call. = FALSE)
+        }
+        .ow_domain <- .ow_text(base::.subset2(.ow_frame, .ow_spec$position), .ow_spec)
+        .ow_present <- which(!.ow_domain$missing)
+        .ow_categories <- base::unique.default(.ow_domain$storage[.ow_present])
+        .ow_labels <- vapply(.ow_categories, function(.ow_category) {
+          .ow_match <- base::.subset2(which(!.ow_domain$missing & .ow_domain$storage == .ow_category), 1L)
+          base::.subset2(.ow_domain$labels, .ow_match)
+        }, character(1L), USE.NAMES = FALSE)
+        .ow_keep <- .ow_labels != ""
+        .ow_categories <- .ow_categories[.ow_keep]
+        .ow_labels <- .ow_labels[.ow_keep]
+        for (.ow_category_index in seq_along(.ow_categories)) {
+          .ow_guard_generated_count(length(.ow_generated) + 1L)
+          .ow_generated[[length(.ow_generated) + 1L]] <- list(
+            name = paste0(.ow_spec$name, .ow_prefix_separator, base::.subset2(.ow_labels, .ow_category_index)),
+            domain = .ow_domain,
+            category = base::.subset2(.ow_categories, .ow_category_index)
+          )
+        }
+      }
+    } else {
+      .ow_spec <- .ow_specs[[1L]]
+      if (length(.ow_names) < .ow_spec$position || !identical(base::.subset2(.ow_names, .ow_spec$position), .ow_spec$name)) {
+        stop("Open Wrangler column reference is stale", call. = FALSE)
+      }
+      if (!.ow_spec$kind %in% c("character", "factor")) {
+        stop("Multi-label binarization requires an R character or factor column", call. = FALSE)
+      }
+      .ow_values <- .ow_text(base::.subset2(.ow_frame, .ow_spec$position), .ow_spec)$labels
+      .ow_operation_bytes <- .ow_row_count * .ow_character_vector_slot_bytes
+      if (!is.finite(.ow_operation_bytes) || .ow_operation_bytes > .ow_maximum_output_bytes) {
+        stop("Open Wrangler categorical encoding output is too large", call. = FALSE)
+      }
+      .ow_tokens <- vector("list", length(.ow_values))
+      .ow_labels <- character()
+      for (.ow_row_index in seq_along(.ow_values)) {
+        .ow_value <- base::.subset2(.ow_values, .ow_row_index)
+        if (is.na(.ow_value) || identical(.ow_value, "")) next
+        .ow_parts <- base::.subset2(strsplit(.ow_value, .ow_delimiter, fixed = TRUE, useBytes = FALSE), 1L)
+        .ow_parts <- base::unique.default(.ow_parts[.ow_parts != ""])
+        if (length(.ow_parts) != 0L) {
+          .ow_parts <- .ow_utf8(.ow_parts)
+          for (.ow_part in .ow_parts) {
+            .ow_next_bytes <- .ow_operation_bytes + nchar(.ow_part, type = "bytes") + .ow_character_vector_slot_bytes
+            if (!is.finite(.ow_next_bytes) || .ow_next_bytes > .ow_maximum_output_bytes) {
+              stop("Open Wrangler categorical encoding output is too large", call. = FALSE)
+            }
+            .ow_operation_bytes <- .ow_next_bytes
+          }
+        }
+        .ow_tokens[[.ow_row_index]] <- .ow_parts
+        .ow_unseen <- .ow_parts[is.na(match(.ow_parts, .ow_labels))]
+        if (length(.ow_unseen) != 0L) .ow_labels <- c(.ow_labels, .ow_unseen)
+        .ow_guard_generated_count(length(.ow_labels))
+      }
+      for (.ow_label in .ow_labels) {
+        .ow_generated[[length(.ow_generated) + 1L]] <- list(
+          name = paste0(.ow_prefix, .ow_label),
+          label = .ow_label
+        )
+      }
+    }
+    .ow_generated_names <- vapply(.ow_generated, `[[`, character(1L), "name")
+    if (length(.ow_generated) != 0L) {
+      .ow_order <- .ow_utf8_order(.ow_generated_names)
+      .ow_generated <- .ow_generated[.ow_order]
+      .ow_generated_names <- .ow_generated_names[.ow_order]
+    }
+    if (length(.ow_generated_names) == 0L) {
+      stop("Open Wrangler categorical encoding must generate at least one column", call. = FALSE)
+    }
+    .ow_retained_names <- .ow_names[.ow_retained_positions]
+    .ow_folded_names <- chartr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz", .ow_generated_names)
+    if (any(startsWith(.ow_folded_names, "__open_wrangler_internal_row_id_"))) {
+      stop("Categorical encoding would create Open Wrangler's reserved private row-identity column", call. = FALSE)
+    }
+    .ow_collisions <- base::unique.default(c(
+      .ow_generated_names[base::duplicated.default(.ow_generated_names)],
+      .ow_generated_names[.ow_generated_names %in% .ow_retained_names]
+    ))
+    if (length(.ow_collisions) != 0L) {
+      .ow_collisions <- .ow_collisions[.ow_utf8_order(.ow_collisions)]
+      stop(sprintf("Categorical encoding would create duplicate column names: %s", paste(.ow_collisions, collapse = ", ")), call. = FALSE)
+    }
+    if (any(.ow_generated_names == "") || any(nchar(.ow_generated_names, type = "bytes") > .ow_maximum_name_bytes)) {
+      stop("Categorical encoding would create an invalid or oversized column name", call. = FALSE)
+    }
+    .ow_output_count <- length(.ow_retained_positions) + length(.ow_generated)
+    if (.ow_output_count == 0L) stop("Open Wrangler categorical encoding must keep or generate at least one column", call. = FALSE)
+    if (.ow_output_count > .ow_maximum_columns) stop("Open Wrangler categorical encoding exceeds the column limit", call. = FALSE)
+    .ow_result_output_ids <- .ow_guard_result_metadata(.ow_generated_names, .ow_retained_positions)
+    .ow_indicator_bytes <- .ow_row_count * length(.ow_generated) * 4
+    .ow_total_output_bytes <- if (identical(.ow_kind, "multiLabelBinarize")) {
+      .ow_operation_bytes + .ow_indicator_bytes
+    } else {
+      .ow_indicator_bytes
+    }
+    if (!is.finite(.ow_total_output_bytes) || .ow_total_output_bytes > .ow_maximum_output_bytes) {
+      stop("Open Wrangler categorical encoding output is too large", call. = FALSE)
+    }
+    if (identical(.ow_kind, "oneHotEncode")) {
+      for (.ow_generated_index in seq_along(.ow_generated)) {
+        .ow_item <- .ow_generated[[.ow_generated_index]]
+        .ow_matches <- !.ow_item$domain$missing & .ow_item$domain$storage == .ow_item$category
+        .ow_matches[is.na(.ow_matches)] <- FALSE
+        .ow_generated[[.ow_generated_index]]$values <- as.integer(.ow_matches)
+      }
+    } else {
+      for (.ow_generated_index in seq_along(.ow_generated)) {
+        .ow_label <- .ow_generated[[.ow_generated_index]]$label
+        .ow_generated[[.ow_generated_index]]$values <- as.integer(vapply(.ow_tokens, function(.ow_row_tokens) {
+          length(.ow_row_tokens) != 0L && .ow_label %in% .ow_row_tokens
+        }, logical(1L), USE.NAMES = FALSE))
+      }
+    }
+    .ow_result <- .ow_frame
+    .ow_all_positions <- seq_along(.ow_names)
+    .ow_dropped <- .ow_all_positions[is.na(match(.ow_all_positions, .ow_retained_positions))]
+    if (inherits(.ow_result, "data.table")) {
+      .ow_data_table_classes <- class(.ow_result)
+      .ow_source_key <- attr(.ow_result, "sorted", exact = TRUE)
+      .ow_source_key <- if (is.null(.ow_source_key)) {
+        character()
+      } else {
+        vapply(
+          seq_len(base::length(base::unclass(.ow_source_key))),
+          function(.ow_key_index) base::.subset2(.ow_source_key, .ow_key_index),
+          character(1L),
+          USE.NAMES = FALSE
+        )
+      }
+      class(.ow_result) <- NULL
+      for (.ow_position in base::sort.int(.ow_dropped, decreasing = TRUE)) .ow_result[[.ow_position]] <- NULL
+      .ow_retained_names <- attr(.ow_result, "names", exact = TRUE)
+      for (.ow_item in .ow_generated) {
+        .ow_existing_names <- attr(.ow_result, "names", exact = TRUE)
+        .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_item$values
+        attr(.ow_result, "names") <- c(.ow_existing_names, .ow_item$name)
+      }
+      class(.ow_result) <- .ow_data_table_classes
+      .ow_retained_key_count <- 0L
+      for (.ow_key_name in .ow_source_key) {
+        if (!.ow_key_name %in% .ow_retained_names) break
+        .ow_retained_key_count <- .ow_retained_key_count + 1L
+      }
+      if (.ow_retained_key_count == 0L) {
+        attr(.ow_result, "sorted") <- NULL
+      } else {
+        attr(.ow_result, "sorted") <- vapply(
+          seq_len(.ow_retained_key_count),
+          function(.ow_key_index) base::.subset2(.ow_source_key, .ow_key_index),
+          character(1L),
+          USE.NAMES = FALSE
+        )
+      }
+      .ow_result <- base::.Call(.ow_data_table_alloccol, .ow_result, 1024L, FALSE)
+    } else {
+      .ow_result_classes <- class(.ow_result)
+      class(.ow_result) <- NULL
+      for (.ow_position in base::sort.int(.ow_dropped, decreasing = TRUE)) .ow_result[[.ow_position]] <- NULL
+      for (.ow_item in .ow_generated) {
+        .ow_existing_names <- attr(.ow_result, "names", exact = TRUE)
+        .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_item$values
+        attr(.ow_result, "names") <- c(.ow_existing_names, .ow_item$name)
+      }
+      class(.ow_result) <- .ow_result_classes
+    }
+    list(value = .ow_result, outputIds = .ow_result_output_ids)
+  }
+
+  categorical_code_helper_lines <- function() {
+    c("  .ow_categorical_encode <-", paste0("  ", deparse(generated_categorical_encode, width.cutoff = 500L)))
+  }
+
   generated_group_by <- function(.ow_frame, .ow_key_specs, .ow_aggregation_specs) {
     .ow_normalize_integer <- function(.ow_value) {
       .ow_value <- as.character(.ow_value)
@@ -3601,6 +4337,28 @@ openwrangler_r_kernel_agent <- local({
     sprintf("list(%s)", paste(fields, collapse = ", "))
   }
 
+  r_categorical_spec <- function(specification) {
+    fields <- c(
+      sprintf("id = %s", r_string(specification$id)),
+      sprintf("name = %s", r_string(specification$name)),
+      sprintf("position = %dL", specification$position),
+      sprintf("kind = %s", r_string(specification$semanticsKind)),
+      sprintf("storageMode = %s", r_string(specification$storageMode)),
+      sprintf("classes = %s", r_character_vector(specification$classes))
+    )
+    if (!is.null(specification$timezone)) {
+      fields <- c(fields, sprintf("timezone = %s", r_string(specification$timezone)))
+    } else {
+      fields <- c(fields, "timezone = NULL")
+    }
+    if (!is.null(specification$units)) {
+      fields <- c(fields, sprintf("units = %s", r_string(specification$units)))
+    } else {
+      fields <- c(fields, "units = NULL")
+    }
+    sprintf("list(%s)", paste(fields, collapse = ", "))
+  }
+
   compile_plan <- function(
     variable_name,
     bound_plan,
@@ -3658,17 +4416,17 @@ openwrangler_r_kernel_agent <- local({
       ),
       "  .ow_source_attribute_names <- base::names(base::attributes(.ow_source))",
       "  if (base::is.null(.ow_source_attribute_names)) .ow_source_attribute_names <- base::character()",
-      "  if (base::anyNA(.ow_source_attribute_names) || base::any(.ow_source_attribute_names == \"\") || base::anyDuplicated(.ow_source_attribute_names)) base::stop(\"Open Wrangler generated R received malformed dataframe attribute names\", call. = FALSE)",
+      "  if (base::anyNA(.ow_source_attribute_names) || base::any(.ow_source_attribute_names == \"\") || base::anyDuplicated.default(.ow_source_attribute_names)) base::stop(\"Open Wrangler generated R received malformed dataframe attribute names\", call. = FALSE)",
       "  .ow_allowed_source_attributes <- c(\"names\", \"row.names\", \"class\")",
       "  if (.ow_source_is_readr) .ow_allowed_source_attributes <- c(.ow_allowed_source_attributes, \"spec\", \"problems\")",
       "  if (base::identical(.ow_source_flavor, \"r.data.table\")) .ow_allowed_source_attributes <- c(.ow_allowed_source_attributes, \".internal.selfref\", \"sorted\")",
-      "  .ow_unsupported_source_attributes <- base::setdiff(.ow_source_attribute_names, .ow_allowed_source_attributes)",
+      "  .ow_unsupported_source_attributes <- .ow_source_attribute_names[base::is.na(base::match(.ow_source_attribute_names, .ow_allowed_source_attributes))]",
       "  if (base::length(.ow_unsupported_source_attributes) != 0L) base::stop(base::sprintf(\"Open Wrangler generated R received unsupported dataframe attributes: %s\", base::paste(.ow_unsupported_source_attributes, collapse = \", \")), call. = FALSE)",
       "  .ow_source_names <- base::attr(.ow_source, \"names\", exact = TRUE)",
       "  if (!base::is.character(.ow_source_names) || base::length(.ow_source_names) != .ow_source_column_count) base::stop(\"Open Wrangler generated R requires one name per source column\", call. = FALSE)",
-      "  .ow_source_names <- base::vapply(base::seq_along(.ow_source_names), function(.ow_name_index) base::.subset2(.ow_source_names, .ow_name_index), character(1L), USE.NAMES = FALSE)",
+      "  .ow_source_names <- base::vapply(base::seq_len(base::length(base::unclass(.ow_source_names))), function(.ow_name_index) base::.subset2(.ow_source_names, .ow_name_index), character(1L), USE.NAMES = FALSE)",
       "  for (.ow_source_name_index in base::seq_along(.ow_source_names)) {",
-      "    .ow_source_name <- .ow_source_names[[.ow_source_name_index]]",
+      "    .ow_source_name <- base::.subset2(.ow_source_names, .ow_source_name_index)",
       "    if (base::length(.ow_source_name) != 1L || base::is.na(.ow_source_name) || base::identical(base::Encoding(.ow_source_name), \"bytes\")) base::stop(\"Open Wrangler generated R requires non-missing UTF-8 source column names\", call. = FALSE)",
       "    .ow_source_name_encoding <- if (base::identical(base::Encoding(.ow_source_name), \"latin1\")) \"latin1\" else \"UTF-8\"",
       "    .ow_source_name_utf8 <- base::iconv(.ow_source_name, from = .ow_source_name_encoding, to = \"UTF-8\", sub = NA_character_)",
@@ -3681,25 +4439,36 @@ openwrangler_r_kernel_agent <- local({
       "    .ow_source_self_reference <- base::attr(.ow_source, \".internal.selfref\", exact = TRUE)",
       "    if (!base::is.null(.ow_source_self_reference) && !base::identical(base::typeof(.ow_source_self_reference), \"externalptr\")) base::stop(\"Open Wrangler generated R received an invalid data.table self-reference\", call. = FALSE)",
       "    .ow_source_key <- base::attr(.ow_source, \"sorted\", exact = TRUE)",
-      "    if (!base::is.null(.ow_source_key) && (!base::is.character(.ow_source_key) || base::anyNA(.ow_source_key) || base::any(.ow_source_key == \"\") || base::anyDuplicated(.ow_source_key))) base::stop(\"Open Wrangler generated R received invalid data.table key metadata\", call. = FALSE)",
+      "    if (!base::is.null(.ow_source_key)) {",
+      "      if (!base::is.character(.ow_source_key)) base::stop(\"Open Wrangler generated R received invalid data.table key metadata\", call. = FALSE)",
+      "      .ow_source_key <- base::vapply(base::seq_len(base::length(base::unclass(.ow_source_key))), function(.ow_key_index) base::.subset2(.ow_source_key, .ow_key_index), character(1L), USE.NAMES = FALSE)",
+      "      if (base::anyNA(.ow_source_key) || base::any(.ow_source_key == \"\") || base::anyDuplicated.default(.ow_source_key)) base::stop(\"Open Wrangler generated R received invalid data.table key metadata\", call. = FALSE)",
+      "    }",
       "    if (base::length(.ow_source_key) != 0L && base::any(base::vapply(.ow_source_key, function(.ow_key_name) base::sum(.ow_source_names == .ow_key_name) != 1L, logical(1L)))) base::stop(\"Open Wrangler generated R received a data.table key that does not identify exactly one column\", call. = FALSE)",
       "  }",
       "  .ow_source_row_names <- base::tryCatch(base::.row_names_info(.ow_source, type = 0L), error = function(.ow_error) .ow_error)",
       "  if (base::inherits(.ow_source_row_names, \"error\") || (!base::is.integer(.ow_source_row_names) && !base::is.character(.ow_source_row_names))) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
-      "  .ow_source_row_names <- if (base::is.character(.ow_source_row_names)) base::vapply(base::seq_along(.ow_source_row_names), function(.ow_row_name_index) base::.subset2(.ow_source_row_names, .ow_row_name_index), character(1L), USE.NAMES = FALSE) else base::vapply(base::seq_along(.ow_source_row_names), function(.ow_row_name_index) base::.subset2(.ow_source_row_names, .ow_row_name_index), integer(1L), USE.NAMES = FALSE)",
-      "  .ow_compact_row_names <- base::is.integer(.ow_source_row_names) && base::length(.ow_source_row_names) == 2L && base::is.na(.ow_source_row_names[[1L]])",
+      "  .ow_source_row_names <- if (base::is.character(.ow_source_row_names)) base::vapply(base::seq_len(base::length(base::unclass(.ow_source_row_names))), function(.ow_row_name_index) base::.subset2(.ow_source_row_names, .ow_row_name_index), character(1L), USE.NAMES = FALSE) else base::vapply(base::seq_len(base::length(base::unclass(.ow_source_row_names))), function(.ow_row_name_index) base::.subset2(.ow_source_row_names, .ow_row_name_index), integer(1L), USE.NAMES = FALSE)",
+      "  .ow_compact_row_names <- base::is.integer(.ow_source_row_names) && base::length(.ow_source_row_names) == 2L && base::is.na(base::.subset2(.ow_source_row_names, 1L))",
       "  if (.ow_compact_row_names) {",
-      "    if (base::is.na(.ow_source_row_names[[2L]]) || .ow_source_row_names[[2L]] == 0L) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
-      "    .ow_source_row_count <- base::abs(base::as.double(.ow_source_row_names[[2L]]))",
+      "    if (base::is.na(base::.subset2(.ow_source_row_names, 2L)) || base::.subset2(.ow_source_row_names, 2L) == 0L) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
+      "    .ow_source_row_count <- base::abs(base::as.double(base::.subset2(.ow_source_row_names, 2L)))",
       "    if (!base::is.finite(.ow_source_row_count) || .ow_source_row_count != base::floor(.ow_source_row_count) || .ow_source_row_count > .Machine$integer.max) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
       "  } else {",
       "    .ow_source_row_count <- base::as.double(base::length(.ow_source_row_names))",
       "    if (!base::is.finite(.ow_source_row_count) || .ow_source_row_count > .Machine$integer.max) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
-      "    if (base::anyNA(.ow_source_row_names) || base::anyDuplicated(.ow_source_row_names)) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
+      "    if (base::anyNA(.ow_source_row_names) || base::anyDuplicated.default(.ow_source_row_names)) base::stop(\"Open Wrangler generated R received malformed row names\", call. = FALSE)",
       "  }",
       "  .ow_source_columns <- base::unclass(.ow_source)",
       "  if (!base::is.list(.ow_source_columns) || base::length(.ow_source_columns) != .ow_source_column_count) base::stop(\"Open Wrangler generated R received a malformed dataframe payload\", call. = FALSE)",
       "  .ow_source_metadata_bytes <- 1024 + base::as.double(.ow_source_column_count) * 512",
+      "  .ow_metadata_json_bytes <- function(.ow_value) { .ow_from <- if (base::identical(base::Encoding(.ow_value), \"latin1\")) \"latin1\" else \"UTF-8\"; .ow_utf8 <- base::iconv(.ow_value, from = .ow_from, to = \"UTF-8\", sub = NA_character_); if (base::is.na(.ow_utf8)) base::stop(\"Open Wrangler generated R received invalid metadata text\", call. = FALSE); .ow_raw <- base::as.integer(base::charToRaw(.ow_utf8)); .ow_html_slash <- base::logical(base::length(.ow_raw)); if (base::length(.ow_raw) > 1L) .ow_html_slash[-1L] <- .ow_raw[-1L] == 47L & .ow_raw[-base::length(.ow_raw)] == 60L; base::as.double(base::sum(base::ifelse(.ow_raw %in% c(8L, 9L, 10L, 12L, 13L, 34L, 92L) | .ow_html_slash, 2L, base::ifelse(.ow_raw < 32L, 6L, 1L))) + 2L) }",
+      sprintf(
+        "  .ow_spend_source_metadata <- function(.ow_bytes, .ow_label) { .ow_next <- .ow_source_metadata_bytes + base::as.double(.ow_bytes); if (!base::is.finite(.ow_next) || .ow_next > %dL) base::stop(base::sprintf(\"Open Wrangler generated R received %%s above the %d-byte payload budget\", .ow_label), call. = FALSE); .ow_source_metadata_bytes <<- .ow_next; base::invisible(NULL) }",
+        maximum_payload_bytes,
+        maximum_payload_bytes
+      ),
+      "  for (.ow_source_name in .ow_source_names) .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_source_name), \"source column-name metadata\")",
       "  .ow_validate_source_column <- function(.ow_column, .ow_column_index) {",
       "    .ow_column_label <- base::sprintf(\"source column %d\", .ow_column_index)",
       "    .ow_column_length <- .ow_storage_length(.ow_column)",
@@ -3707,11 +4476,11 @@ openwrangler_r_kernel_agent <- local({
       "    .ow_column_attributes <- base::attributes(.ow_column)",
       "    .ow_column_attribute_names <- base::names(.ow_column_attributes)",
       "    if (base::is.null(.ow_column_attribute_names)) .ow_column_attribute_names <- base::character()",
-      "    if (base::anyNA(.ow_column_attribute_names) || base::any(.ow_column_attribute_names == \"\") || base::anyDuplicated(.ow_column_attribute_names)) base::stop(base::sprintf(\"Open Wrangler generated R received malformed attributes on %s\", .ow_column_label), call. = FALSE)",
+      "    if (base::anyNA(.ow_column_attribute_names) || base::any(.ow_column_attribute_names == \"\") || base::anyDuplicated.default(.ow_column_attribute_names)) base::stop(base::sprintf(\"Open Wrangler generated R received malformed attributes on %s\", .ow_column_label), call. = FALSE)",
       "    if (\"names\" %in% .ow_column_attribute_names) {",
       "      .ow_column_names <- base::attr(.ow_column, \"names\", exact = TRUE)",
       "      if (!base::is.character(.ow_column_names) || base::is.object(.ow_column_names) || !base::is.null(base::attributes(.ow_column_names)) || base::length(.ow_column_names) != .ow_column_length) base::stop(base::sprintf(\"Open Wrangler generated R received malformed names on %s\", .ow_column_label), call. = FALSE)",
-      "      .ow_column_attribute_names <- base::setdiff(.ow_column_attribute_names, \"names\")",
+      "      .ow_column_attribute_names <- .ow_column_attribute_names[.ow_column_attribute_names != \"names\"]",
       "    }",
       "    .ow_column_type <- base::typeof(.ow_column)",
       "    .ow_column_classes <- base::class(.ow_column)",
@@ -3737,31 +4506,38 @@ openwrangler_r_kernel_agent <- local({
       "    } else {",
       "      base::stop(base::sprintf(\"Open Wrangler generated R received an unsupported type or class on %s\", .ow_column_label), call. = FALSE)",
       "    }",
-      "    .ow_unsupported_column_attributes <- base::setdiff(.ow_column_attribute_names, .ow_allowed_column_attributes)",
+      "    .ow_unsupported_column_attributes <- .ow_column_attribute_names[base::is.na(base::match(.ow_column_attribute_names, .ow_allowed_column_attributes))]",
       "    if (base::length(.ow_unsupported_column_attributes) != 0L) base::stop(base::sprintf(\"Open Wrangler generated R received unsupported attributes on %s: %s\", .ow_column_label, base::paste(.ow_unsupported_column_attributes, collapse = \", \")), call. = FALSE)",
+      "    for (.ow_column_class in .ow_column_classes) .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_column_class) + 1L, \"source column-class metadata\")",
       "    if (base::identical(.ow_column_kind, \"datetime\") && \"tzone\" %in% .ow_column_attribute_names) {",
       "      .ow_column_timezone <- base::attr(.ow_column, \"tzone\", exact = TRUE)",
-      "      if (!base::is.character(.ow_column_timezone) || base::length(.ow_column_timezone) != 1L || base::is.na(.ow_column_timezone) || base::identical(base::Encoding(.ow_column_timezone), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler generated R received an unsupported timezone on %s\", .ow_column_label), call. = FALSE)",
-      "      .ow_column_timezone_from <- if (base::identical(base::Encoding(.ow_column_timezone), \"latin1\")) \"latin1\" else \"UTF-8\"",
-      "      .ow_column_timezone_utf8 <- base::iconv(.ow_column_timezone, from = .ow_column_timezone_from, to = \"UTF-8\", sub = NA_character_)",
+      "      if (!base::is.character(.ow_column_timezone) || base::length(base::unclass(.ow_column_timezone)) != 1L) base::stop(base::sprintf(\"Open Wrangler generated R received an unsupported timezone on %s\", .ow_column_label), call. = FALSE)",
+      "      .ow_column_timezone_scalar <- base::.subset2(.ow_column_timezone, 1L)",
+      "      if (base::is.na(.ow_column_timezone_scalar) || base::identical(base::Encoding(.ow_column_timezone_scalar), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler generated R received an unsupported timezone on %s\", .ow_column_label), call. = FALSE)",
+      "      .ow_column_timezone_from <- if (base::identical(base::Encoding(.ow_column_timezone_scalar), \"latin1\")) \"latin1\" else \"UTF-8\"",
+      "      .ow_column_timezone_utf8 <- base::iconv(.ow_column_timezone_scalar, from = .ow_column_timezone_from, to = \"UTF-8\", sub = NA_character_)",
       sprintf(
         "      if (base::is.na(.ow_column_timezone_utf8) || base::nchar(.ow_column_timezone_utf8, type = \"bytes\") > %dL) base::stop(base::sprintf(\"Open Wrangler generated R received an unsupported timezone on %%s\", .ow_column_label), call. = FALSE)",
         maximum_name_bytes
       ),
+      "      .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_column_timezone_utf8), \"source timezone metadata\")",
       "    }",
       "    if (base::identical(.ow_column_kind, \"difftime\")) {",
       "      .ow_column_units <- base::attr(.ow_column, \"units\", exact = TRUE)",
-      "      if (!base::is.character(.ow_column_units) || base::length(.ow_column_units) != 1L || base::is.na(.ow_column_units) || !.ow_column_units %in% c(\"secs\", \"mins\", \"hours\", \"days\", \"weeks\")) base::stop(base::sprintf(\"Open Wrangler generated R received unsupported duration units on %s\", .ow_column_label), call. = FALSE)",
+      "      if (!base::is.character(.ow_column_units) || base::length(base::unclass(.ow_column_units)) != 1L) base::stop(base::sprintf(\"Open Wrangler generated R received unsupported duration units on %s\", .ow_column_label), call. = FALSE)",
+      "      .ow_column_units_scalar <- base::.subset2(.ow_column_units, 1L)",
+      "      if (base::is.na(.ow_column_units_scalar) || !.ow_column_units_scalar %in% c(\"secs\", \"mins\", \"hours\", \"days\", \"weeks\")) base::stop(base::sprintf(\"Open Wrangler generated R received unsupported duration units on %s\", .ow_column_label), call. = FALSE)",
+      "      .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_column_units_scalar), \"source duration-units metadata\")",
       "    }",
       "    if (base::identical(.ow_column_kind, \"factor\")) {",
       "      .ow_column_levels <- base::attr(.ow_column, \"levels\", exact = TRUE)",
       sprintf(
-        "      if (!base::is.character(.ow_column_levels) || base::length(.ow_column_levels) > %dL || base::anyNA(.ow_column_levels) || base::anyDuplicated(.ow_column_levels)) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor levels on %%s\", .ow_column_label), call. = FALSE)",
+        "      if (!base::is.character(.ow_column_levels) || base::length(base::unclass(.ow_column_levels)) > %dL || base::anyDuplicated.default(.ow_column_levels)) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor levels on %%s\", .ow_column_label), call. = FALSE)",
         maximum_factor_levels
       ),
-      "      for (.ow_level_index in base::seq_along(.ow_column_levels)) {",
-      "        .ow_level <- .ow_column_levels[[.ow_level_index]]",
-      "        if (base::identical(base::Encoding(.ow_level), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor levels on %s\", .ow_column_label), call. = FALSE)",
+      "      for (.ow_level_index in base::seq_len(base::length(base::unclass(.ow_column_levels)))) {",
+      "        .ow_level <- base::.subset2(.ow_column_levels, .ow_level_index)",
+      "        if (base::is.na(.ow_level) || base::identical(base::Encoding(.ow_level), \"bytes\")) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor levels on %s\", .ow_column_label), call. = FALSE)",
       "        .ow_level_from <- if (base::identical(base::Encoding(.ow_level), \"latin1\")) \"latin1\" else \"UTF-8\"",
       "        .ow_level_utf8 <- base::iconv(.ow_level, from = .ow_level_from, to = \"UTF-8\", sub = NA_character_)",
       sprintf(
@@ -3781,11 +4557,14 @@ openwrangler_r_kernel_agent <- local({
       "        .ow_source_metadata_bytes <<- .ow_next_source_metadata_bytes",
       "      }",
       "      .ow_factor_codes <- base::unclass(.ow_column)",
-      "      if (base::any(!base::is.na(.ow_factor_codes) & (.ow_factor_codes < 1L | .ow_factor_codes > base::length(.ow_column_levels)))) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor codes on %s\", .ow_column_label), call. = FALSE)",
+      "      if (base::any(!base::is.na(.ow_factor_codes) & (.ow_factor_codes < 1L | .ow_factor_codes > base::length(base::unclass(.ow_column_levels))))) base::stop(base::sprintf(\"Open Wrangler generated R received invalid factor codes on %s\", .ow_column_label), call. = FALSE)",
       "    }",
       "    base::invisible(NULL)",
       "  }",
-      "  for (.ow_source_column_index in base::seq_len(.ow_source_column_count)) .ow_validate_source_column(.ow_source_columns[[.ow_source_column_index]], .ow_source_column_index)",
+      "  for (.ow_source_column_index in base::seq_len(.ow_source_column_count)) .ow_validate_source_column(base::.subset2(.ow_source_columns, .ow_source_column_index), .ow_source_column_index)",
+      "  .ow_source_metadata_classes <- if (.ow_source_is_readr) c(\"tbl_df\", \"tbl\", \"data.frame\") else .ow_source_classes",
+      "  for (.ow_source_frame_class in .ow_source_metadata_classes) .ow_spend_source_metadata(.ow_metadata_json_bytes(.ow_source_frame_class) + 1L, \"source dataframe-class metadata\")",
+      "  if (base::identical(.ow_source_flavor, \"r.data.table\") && base::length(.ow_source_key) != 0L) { for (.ow_source_key_name in .ow_source_key) { .ow_source_key_position <- base::match(.ow_source_key_name, .ow_source_names); .ow_spend_source_metadata(.ow_metadata_json_bytes(base::sprintf(\"r:c:%d\", .ow_source_key_position - 1L)) + 1L, \"source data.table key metadata\") } }",
       "  .ow_result <- if (inherits(.ow_source, \"data.table\")) {",
       "    if (!requireNamespace(\"data.table\", quietly = TRUE)) stop(\"data.table is required\", call. = FALSE)",
       "    data.table::copy(.ow_source)",
@@ -3796,12 +4575,17 @@ openwrangler_r_kernel_agent <- local({
       "    attr(.ow_result, \"spec\") <- NULL",
       "    attr(.ow_result, \"problems\") <- NULL",
       "    class(.ow_result) <- c(\"tbl_df\", \"tbl\", \"data.frame\")",
-      "  }"
+      "  }",
+      "  .ow_result_ids <- base::sprintf(\"r:c:%d\", base::seq_len(.ow_source_column_count) - 1L)"
     )
     if (
       any(vapply(
         bound_plan,
-        function(step) identical(step$kind, "formula") || (identical(step$kind, "formatDatetime") && !isTRUE(step$inPlace)),
+        function(step) {
+          identical(step$kind, "formula") ||
+            (identical(step$kind, "formatDatetime") && !isTRUE(step$inPlace)) ||
+            step$kind %in% c("oneHotEncode", "multiLabelBinarize")
+        },
         logical(1L)
       ))
     ) {
@@ -3835,6 +4619,13 @@ openwrangler_r_kernel_agent <- local({
     }
     if (any(vapply(
       bound_plan,
+      function(step) step$kind %in% c("oneHotEncode", "multiLabelBinarize"),
+      logical(1L)
+    ))) {
+      lines <- c(lines, categorical_code_helper_lines())
+    }
+    if (any(vapply(
+      bound_plan,
       function(step) identical(step$kind, "roundNumber") && identical(step$semanticKind, "integer64"),
       logical(1L)
     ))) {
@@ -3846,6 +4637,13 @@ openwrangler_r_kernel_agent <- local({
     if (any(vapply(
       bound_plan,
       function(step) {
+        if (step$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
+          return(any(vapply(
+            step$columns,
+            function(column) identical(column$semanticsKind, "integer64"),
+            logical(1L)
+          )))
+        }
         if (!identical(step$kind, "formula")) return(FALSE)
         identical(step$left$semanticKind, "integer64") ||
           (!is.null(step$right) && identical(step$right$semanticKind, "integer64"))
@@ -3922,7 +4720,12 @@ openwrangler_r_kernel_agent <- local({
           lines,
           guard_lines,
           sprintf("  .ow_result <- .ow_group_by(.ow_result, list(%s),", paste(key_specs, collapse = ", ")),
-          sprintf("    list(%s))", paste(aggregation_specs, collapse = ", "))
+          sprintf("    list(%s))", paste(aggregation_specs, collapse = ", ")),
+          sprintf(
+            "  .ow_result_ids <- c(.ow_result_ids[c(%s)], %s)",
+            paste(vapply(step$keys, function(key) sprintf("%dL", key$position), character(1L)), collapse = ", "),
+            r_character_vector(vapply(step$aggregations, `[[`, character(1L), "outputId", USE.NAMES = FALSE))
+          )
         )
       } else if (identical(step$kind, "renameColumn")) {
         lines <- c(
@@ -3964,7 +4767,8 @@ openwrangler_r_kernel_agent <- local({
           "    .ow_clone_existing_names <- names(.ow_result)",
           "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_result[[.ow_clone_position]]",
           "    names(.ow_result) <- c(.ow_clone_existing_names, .ow_clone_name)",
-          "  }"
+          "  }",
+          sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
         )
       } else if (identical(step$kind, "formula")) {
         symbol <- switch(
@@ -4104,7 +4908,8 @@ openwrangler_r_kernel_agent <- local({
           "    attr(.ow_result, \"names\") <- c(.ow_formula_existing_names, .ow_formula_name)",
           "    if (!is.null(.ow_formula_value_names)) attr(.ow_result[[.ow_storage_length(.ow_result)]], \"names\") <- .ow_formula_value_names",
           "    class(.ow_result) <- .ow_formula_frame_classes",
-          "  }"
+          "  }",
+          sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
         )
       } else if (identical(step$kind, "textLength")) {
         lines <- c(
@@ -4126,7 +4931,37 @@ openwrangler_r_kernel_agent <- local({
           "    .ow_text_length_existing_names <- names(.ow_result)",
           "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_text_lengths",
           "    names(.ow_result) <- c(.ow_text_length_existing_names, .ow_text_length_name)",
-          "  }"
+          "  }",
+          sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
+        )
+      } else if (step$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
+        specifications <- paste(
+          vapply(step$columns, r_categorical_spec, character(1L), USE.NAMES = FALSE),
+          collapse = ", "
+        )
+        lines <- c(
+          lines,
+          sprintf(
+            "  .ow_categorical_result <- .ow_categorical_encode(.ow_result, %s, list(%s), %s, %s, %s, %s, %dL, %dL, %dL, %dL, %s, %dL, %dL, %dL, .ow_result_ids, %s)",
+            r_string(step$kind),
+            specifications,
+            if (identical(step$kind, "oneHotEncode")) r_string(step$prefixSeparator) else "NULL",
+            if (identical(step$kind, "multiLabelBinarize")) r_string(step$delimiter) else "NULL",
+            if (identical(step$kind, "multiLabelBinarize")) r_string(step$prefix) else "NULL",
+            if (isTRUE(step$dropOriginal)) "TRUE" else "FALSE",
+            maximum_columns,
+            maximum_name_bytes,
+            maximum_text_bytes,
+            maximum_payload_bytes,
+            r_number(maximum_operation_output_bytes),
+            character_vector_slot_bytes,
+            metadata_base_bytes,
+            column_fixed_bytes,
+            r_string(step$id)
+          ),
+          "  .ow_result <- base::.subset2(.ow_categorical_result, \"value\")",
+          "  .ow_result_ids <- base::.subset2(.ow_categorical_result, \"outputIds\")",
+          "  base::rm(.ow_categorical_result)"
         )
       } else if (step$kind %in% c(
         "lowerText",
@@ -4384,7 +5219,8 @@ openwrangler_r_kernel_agent <- local({
             "    .ow_text_existing_names <- names(.ow_result)",
             "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_text_values",
             "    names(.ow_result) <- c(.ow_text_existing_names, .ow_text_name)",
-            "  }"
+            "  }",
+            sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
           )
         }
       } else if (step$kind %in% c("minMaxScale", "roundNumber", "floorNumber", "ceilNumber")) {
@@ -4447,7 +5283,8 @@ openwrangler_r_kernel_agent <- local({
             "    .ow_numeric_existing_names <- names(.ow_result)",
             "    .ow_result[[ncol(.ow_result) + 1L]] <- .ow_numeric_values",
             "    names(.ow_result) <- c(.ow_numeric_existing_names, .ow_numeric_name)",
-            "  }"
+            "  }",
+            sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
           )
         }
       } else if (identical(step$kind, "formatDatetime")) {
@@ -4572,7 +5409,8 @@ openwrangler_r_kernel_agent <- local({
             "    .ow_datetime_existing_names <- attr(.ow_result, \"names\", exact = TRUE)",
             "    .ow_result[[.ow_storage_length(.ow_result) + 1L]] <- .ow_datetime_values",
             "    attr(.ow_result, \"names\") <- c(.ow_datetime_existing_names, .ow_datetime_name)",
-            "  }"
+            "  }",
+            sprintf("  .ow_result_ids <- c(.ow_result_ids, %s)", r_string(step$outputId))
           )
         }
       } else if (identical(step$kind, "fillMissingValues")) {
@@ -4723,13 +5561,15 @@ openwrangler_r_kernel_agent <- local({
           sprintf("  .ow_drop_positions <- c(%s)", position_code),
           sprintf("  .ow_drop_names <- c(%s)", name_code),
           "  if (any(.ow_drop_positions > ncol(.ow_result)) || !identical(names(.ow_result)[.ow_drop_positions], .ow_drop_names)) stop(\"Open Wrangler column reference is stale\", call. = FALSE)",
-          "  .ow_keep_positions <- setdiff(seq_len(ncol(.ow_result)), .ow_drop_positions)",
+          "  .ow_all_positions <- seq_len(ncol(.ow_result))",
+          "  .ow_keep_positions <- .ow_all_positions[is.na(match(.ow_all_positions, .ow_drop_positions))]",
           "  if (length(.ow_keep_positions) == 0L) stop(\"Open Wrangler must keep at least one column\", call. = FALSE)",
           "  if (inherits(.ow_result, \"data.table\")) {",
           "    .ow_result <- .ow_result[, .ow_keep_positions, with = FALSE]",
           "  } else {",
-          "    for (.ow_position in sort(.ow_drop_positions, decreasing = TRUE)) .ow_result[[.ow_position]] <- NULL",
-          "  }"
+          "    for (.ow_position in base::sort.int(.ow_drop_positions, decreasing = TRUE, method = \"radix\")) .ow_result[[.ow_position]] <- NULL",
+          "  }",
+          "  .ow_result_ids <- .ow_result_ids[.ow_keep_positions]"
         )
       } else if (identical(step$kind, "selectColumns")) {
         positions <- vapply(step$columns, `[[`, integer(1L), "position", USE.NAMES = FALSE)
@@ -4746,7 +5586,8 @@ openwrangler_r_kernel_agent <- local({
           "  } else {",
           "    .ow_result <- .ow_result[.ow_select_positions]",
           "    names(.ow_result) <- .ow_select_names",
-          "  }"
+          "  }",
+          "  .ow_result_ids <- .ow_result_ids[.ow_select_positions]"
         )
       } else {
         abort("runtime_error", "The R cleaning plan contains an unsupported operation")
@@ -4786,6 +5627,8 @@ openwrangler_r_kernel_agent <- local({
   ) {
     added_columns <- if (identical(bound$kind, "groupBy")) {
       vapply(bound$aggregations, `[[`, character(1L), "alias", USE.NAMES = FALSE)
+    } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
+      bound$generatedNames
     } else if (
       bound$kind %in% c("cloneColumn", "formula", "textLength") ||
         (
@@ -4810,6 +5653,8 @@ openwrangler_r_kernel_agent <- local({
       character()
     }
     removed_columns <- if (identical(bound$kind, "groupBy")) {
+      bound$removedNames
+    } else if (bound$kind %in% c("oneHotEncode", "multiLabelBinarize")) {
       bound$removedNames
     } else if (identical(bound$kind, "dropColumns")) {
       vapply(bound$columns, `[[`, character(1L), "name", USE.NAMES = FALSE)
@@ -4931,19 +5776,87 @@ openwrangler_r_kernel_agent <- local({
     )
   }
 
+  ascii_json_scalar <- function(value) {
+    if (is.na(value)) return("null")
+    if (identical(Encoding(value), "bytes")) {
+      abort("runtime_error", "The R kernel response contains invalid text")
+    }
+    source_encoding <- if (identical(Encoding(value), "latin1")) "latin1" else "UTF-8"
+    converted <- suppressWarnings(iconv(value, from = source_encoding, to = "UTF-8", sub = NA_character_))
+    if (length(converted) != 1L || is.na(converted)) {
+      abort("runtime_error", "The R kernel response contains invalid text")
+    }
+    bytes <- as.integer(charToRaw(converted))
+    if (
+      length(bytes) == 0L ||
+        all(bytes >= 32L & bytes <= 126L & bytes != 34L & bytes != 92L)
+    ) {
+      return(paste0("\"", converted, "\""))
+    }
+    codepoints <- utf8ToInt(converted)
+    if (anyNA(codepoints) || any(codepoints < 0L) || any(codepoints > 1114111L)) {
+      abort("runtime_error", "The R kernel response contains invalid text")
+    }
+    escaped <- vapply(codepoints, function(codepoint) {
+      if (codepoint == 34L) return("\\\"")
+      if (codepoint == 92L) return("\\\\")
+      if (codepoint == 8L) return("\\b")
+      if (codepoint == 9L) return("\\t")
+      if (codepoint == 10L) return("\\n")
+      if (codepoint == 12L) return("\\f")
+      if (codepoint == 13L) return("\\r")
+      if (codepoint >= 32L && codepoint <= 126L) return(intToUtf8(codepoint))
+      if (codepoint <= 65535L) return(sprintf("\\u%04X", codepoint))
+      scalar <- codepoint - 65536L
+      paste0(
+        sprintf("\\u%04X", 55296L + scalar %/% 1024L),
+        sprintf("\\u%04X", 56320L + scalar %% 1024L)
+      )
+    }, character(1L), USE.NAMES = FALSE)
+    paste0("\"", paste0(escaped, collapse = ""), "\"")
+  }
+
+  ascii_json_character <- function(value) {
+    fragments <- vapply(seq_len(base::length(base::unclass(value))), function(index) {
+      ascii_json_scalar(base::.subset2(value, index))
+    }, character(1L), USE.NAMES = FALSE)
+    fragment <- if (base::length(base::unclass(value)) == 1L && !inherits(value, "AsIs")) {
+      base::.subset2(fragments, 1L)
+    } else {
+      paste0("[", paste0(fragments, collapse = ","), "]")
+    }
+    structure(fragment, class = "json")
+  }
+
+  ascii_json_response <- function(value) {
+    if (is.character(value)) return(ascii_json_character(value))
+    if (!is.list(value)) return(value)
+    value_attributes <- attributes(value)
+    result <- lapply(seq_len(base::length(base::unclass(value))), function(index) {
+      ascii_json_response(base::.subset2(value, index))
+    })
+    attributes(result) <- value_attributes
+    result
+  }
+
   encode_response <- function(response) {
     encoded <- jsonlite::toJSON(
-      response,
+      ascii_json_response(response),
       auto_unbox = TRUE,
       digits = NA,
       na = "null",
       null = "null",
-      pretty = FALSE
+      pretty = FALSE,
+      json_verbatim = TRUE
     )
     if (nchar(encoded, type = "bytes") > maximum_response_bytes) {
       abort("runtime_error", "The R kernel response is too large")
     }
-    enc2utf8(as.character(encoded))
+    encoded <- as.character(encoded)
+    if (any(as.integer(charToRaw(encoded)) > 127L)) {
+      abort("runtime_error", "The R kernel response could not be encoded as ASCII JSON")
+    }
+    encoded
   }
 
   preflight_response <- function(response) {
@@ -4980,6 +5893,7 @@ openwrangler_r_kernel_agent <- local({
   new_agent <- function(frame_contract, source_environment = .GlobalEnv, export_root = NULL) {
     required_functions <- c(
       "capture_frame",
+      "capture_categorical_result",
       "capture_group_result",
       "capture_live_frame",
       "isolate_capture",
@@ -4988,6 +5902,8 @@ openwrangler_r_kernel_agent <- local({
       "clone_column_at",
       "formula_column_at",
       "text_length_column_at",
+      "one_hot_encode_columns_at",
+      "multi_label_binarize_column_at",
       "lower_text_column_at",
       "upper_text_column_at",
       "capitalize_text_column_at",

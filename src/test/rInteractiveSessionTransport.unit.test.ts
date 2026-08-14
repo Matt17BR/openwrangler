@@ -258,7 +258,7 @@ describe("interactive R session transport", () => {
         const response =
           request.kind === "closeDataExport" || request.kind === "closeSession"
             ? JSON.stringify({
-                transportVersion: 11,
+                transportVersion: 12,
                 requestId: request.requestId,
                 kind: "error",
                 code: "runtime_error",
@@ -1166,7 +1166,7 @@ function exportTransportResponse(
   if (request.kind === "exportData") {
     expect(request.payload).toMatchObject({ sessionId, revision: 0, exportId, format });
     return JSON.stringify({
-      transportVersion: 11,
+      transportVersion: 12,
       requestId: request.requestId,
       kind: "dataExported",
       sessionId,
@@ -1188,7 +1188,7 @@ function exportTransportResponse(
         : Buffer.alloc(R_KERNEL_EXPORT_CHUNK_BYTES, 0x61);
     expect(data.byteLength).toBeLessThanOrEqual(limit);
     return JSON.stringify({
-      transportVersion: 11,
+      transportVersion: 12,
       requestId: request.requestId,
       kind: "dataExportChunk",
       sessionId,
@@ -1202,7 +1202,7 @@ function exportTransportResponse(
   if (request.kind === "closeDataExport") {
     expect(request.payload).toMatchObject({ sessionId, revision: 0, exportId });
     return JSON.stringify({
-      transportVersion: 11,
+      transportVersion: 12,
       requestId: request.requestId,
       kind: "dataExportClosed",
       sessionId,
@@ -1219,7 +1219,7 @@ function interactiveResponse(request: { requestId: string; kind: string }): stri
   }
   if (request.kind === "closeSession") {
     const sessionId = (request as { payload?: { sessionId?: string } }).payload?.sessionId;
-    return JSON.stringify({ transportVersion: 11, requestId: request.requestId, kind: "closed", sessionId });
+    return JSON.stringify({ transportVersion: 12, requestId: request.requestId, kind: "closed", sessionId });
   }
   return JSON.stringify({
     protocolVersion: 1,
@@ -1236,7 +1236,7 @@ function pageWindow() {
 
 function openResponse(requestId: string, sessionId: string, includeFormats = true): string {
   return JSON.stringify({
-    transportVersion: 11,
+    transportVersion: 12,
     requestId,
     kind: "page",
     sessionId,

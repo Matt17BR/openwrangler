@@ -1430,7 +1430,7 @@ test("extension-host R acceptance routes the remote kernel and does not probe a 
   );
 });
 
-test("default R profiles end after notebook coverage while Cursor and Windows stay representative", async () => {
+test("default R profiles stay plain-only while Cursor adds focused categorical coverage", async () => {
   const source = await readFile(new URL("../src/test/extensionHost/index.ts", import.meta.url), "utf8");
   const profileStart = source.indexOf("type ReleasedRAcceptanceCoverageProfile =");
   const journeyStart = source.indexOf("async function exerciseReleasedRJupyterExtension(", profileStart);
@@ -1441,16 +1441,20 @@ test("default R profiles end after notebook coverage while Cursor and Windows st
 
   assert.match(
     profiles,
-    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "all-operations"[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
+    /RELEASED_R_COMPREHENSIVE_COVERAGE[\s\S]*name: "comprehensive"[\s\S]*gridPaging: "all-blocks"[\s\S]*editing: "all-operations"[\s\S]*focusedCategoricalEditing: false[\s\S]*openCollapseSessions: true[\s\S]*openNativeFramesInViewingMode: true[\s\S]*nativeFrameEditing: "rename-and-drop"/u
   );
   assert.match(
     profiles,
-    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
+    /RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*name: "representative"[\s\S]*gridPaging: "single-round-trip"[\s\S]*editing: "rename-lifecycle"[\s\S]*focusedCategoricalEditing: false[\s\S]*openCollapseSessions: false[\s\S]*openNativeFramesInViewingMode: false[\s\S]*nativeFrameEditing: "one-operation-per-flavor"/u
+  );
+  assert.match(
+    profiles,
+    /RELEASED_R_CURSOR_REPRESENTATIVE_COVERAGE[\s\S]*\.\.\.RELEASED_R_REPRESENTATIVE_COVERAGE[\s\S]*focusedCategoricalEditing: true/u
   );
   assert.doesNotMatch(profiles, /documents:/u, "The default R coverage profiles must be structurally plain-only.");
   assert.match(
     profiles,
-    /process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\s*\|\|\s*process\.platform === "win32"\s*\? RELEASED_R_REPRESENTATIVE_COVERAGE\s*:\s*RELEASED_R_COMPREHENSIVE_COVERAGE/u
+    /if \(process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\) return RELEASED_R_CURSOR_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
   );
   assert.doesNotMatch(
     journey,
@@ -1461,6 +1465,10 @@ test("default R profiles end after notebook coverage while Cursor and Windows st
   assert.match(
     journey,
     /if \(coverage\.editing === "all-operations"\)[\s\S]*exerciseReleasedREditingJourney\([\s\S]*else \{[\s\S]*exerciseReleasedRRepresentativeEditingJourney\(/u
+  );
+  assert.match(
+    journey,
+    /exerciseReleasedRRepresentativeEditingJourney\(testing, workbench, base\.sessionId, phase\);[\s\S]*if \(phase === "jupyter-r" && coverage\.focusedCategoricalEditing\) \{[\s\S]*exerciseReleasedROneHotJourney\(testing, workbench, base\.sessionId\);[\s\S]*exerciseReleasedRMultiLabelJourney\(testing, workbench, base\.sessionId\);/u
   );
   assert.doesNotMatch(journey, /coverage\.documents|exerciseReleasedRLiterateDocumentJourneys/u);
   assert.match(journey, /if \(coverage\.openCollapseSessions\)/u);

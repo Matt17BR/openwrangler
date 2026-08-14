@@ -6034,6 +6034,67 @@ assert_error(
   "factor-levels-too-large"
 )
 
+timezone_free_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(
+  instant = structure(numeric(), class = c("POSIXct", "POSIXt"))
+))
+timezone_utc_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(
+  instant = structure(numeric(), class = c("POSIXct", "POSIXt"), tzone = "UTC")
+))
+assert_identical(
+  timezone_utc_capture$metadataBytes - timezone_free_capture$metadataBytes,
+  5,
+  "capture metadata did not charge the quoted canonical timezone"
+)
+units_secs_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(
+  elapsed = as.difftime(numeric(), units = "secs")
+))
+units_hours_capture <- openwrangler_r_frame_contract$capture_frame(data.frame(
+  elapsed = as.difftime(numeric(), units = "hours")
+))
+assert_identical(
+  units_hours_capture$metadataBytes - units_secs_capture$metadataBytes,
+  1,
+  "capture metadata did not charge the canonical difftime units"
+)
+
+# At this exact boundary the fixed frame/column/field allowance is 2,109
+# bytes. Each factor level contributes its quoted JSON bytes plus one array
+# item byte, while the scalar timezone contributes only its quoted JSON bytes.
+metadata_boundary_fixed_bytes <- 2109L
+metadata_boundary_full_count <- 2046L
+metadata_boundary_tail_bytes <- as.integer(
+  openwrangler_r_frame_contract$limits$payloadBytes -
+    metadata_boundary_fixed_bytes -
+    metadata_boundary_full_count * (openwrangler_r_frame_contract$limits$textBytes + 3L) -
+    3L
+)
+assert_identical(metadata_boundary_tail_bytes, 8134L, "the exact metadata boundary fixture changed")
+metadata_boundary_levels <- c(
+  paste0(
+    sprintf("%04d", seq_len(metadata_boundary_full_count)),
+    strrep("x", openwrangler_r_frame_contract$limits$textBytes - 4L)
+  ),
+  paste0("tail", strrep("y", metadata_boundary_tail_bytes - 4L))
+)
+metadata_boundary_frame <- data.frame(
+  factor = factor(character(), levels = metadata_boundary_levels),
+  instant = structure(numeric(), class = c("POSIXct", "POSIXt"), tzone = "Z"),
+  check.names = FALSE
+)
+metadata_boundary_capture <- openwrangler_r_frame_contract$capture_frame(metadata_boundary_frame)
+assert_identical(
+  metadata_boundary_capture$metadataBytes,
+  as.double(openwrangler_r_frame_contract$limits$payloadBytes),
+  "capture rejected or undercharged the exact metadata payload boundary"
+)
+rm(metadata_boundary_capture)
+attr(metadata_boundary_frame$instant, "tzone") <- "ZZ"
+assert_error(
+  openwrangler_r_frame_contract$capture_frame(metadata_boundary_frame),
+  "payload-too-large"
+)
+rm(metadata_boundary_frame, metadata_boundary_levels)
+
 maximum_text <- paste(rep("x", openwrangler_r_frame_contract$limits$textBytes), collapse = "")
 payload_frame <- as.data.frame(
   setNames(rep(list(rep(maximum_text, 9L)), 256L), sprintf("column_%d", seq_len(256L))),
@@ -6138,5 +6199,571 @@ assert_identical(class(mean_table_result), class(mean_table), "R mean fill chang
 assert_identical(data.table::key(mean_table_result), "id", "R mean fill changed the data.table key")
 assert_identical(mean_table_result$value, c(1, 3, 5), "R mean fill changed the data.table result")
 assert_identical(mean_table, mean_table_before, "R mean fill mutated its source data.table")
+
+# Dynamic categorical operations remain native while publishing enough exact
+# mapping metadata for the kernel to assign stable derived identities.
+categorical_scalar_frame <- data.frame(
+  flag = c(TRUE, FALSE, NA, TRUE, FALSE),
+  whole = c(2L, 1L, NA_integer_, -3L, 2L),
+  number = c(1.5, NaN, NA_real_, Inf, -Inf),
+  text = c("β", "", NA_character_, "alpha", "β"),
+  category = factor(
+    c("used", "", NA, "used", "other"),
+    levels = c("unused", "used", "", "other")
+  ),
+  day = as.Date(c("2024-01-02", "2024-01-03", NA, "2024-01-02", "2024-01-03")),
+  instant = as.POSIXct(
+    c("2024-01-02 03:04:05", "2024-01-03 04:05:06", NA, "2024-01-02 03:04:05", NA),
+    tz = "UTC"
+  ),
+  elapsed = as.difftime(c(1, NA, 2, 1, 2), units = "hours"),
+  wide = bit64::as.integer64(c("9007199254740993", "-2", NA, "9007199254740993", "-2")),
+  check.names = FALSE,
+  row.names = paste0("categorical-", seq_len(5L))
+)
+categorical_scalar_before <- unserialize(serialize(categorical_scalar_frame, NULL, version = 3L))
+categorical_scalar_result <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  categorical_scalar_frame,
+  seq_len(ncol(categorical_scalar_frame)),
+  names(categorical_scalar_frame),
+  prefix_separator = "_",
+  drop_original = FALSE
+)
+expected_scalar_generated <- c(
+  "category_other",
+  "category_used",
+  "day_2024-01-02",
+  "day_2024-01-03",
+  "elapsed_1 hours",
+  "elapsed_2 hours",
+  "flag_FALSE",
+  "flag_TRUE",
+  "instant_2024-01-02T03:04:05.000000",
+  "instant_2024-01-03T04:05:06.000000",
+  "number_-Inf",
+  "number_1.5",
+  "number_Inf",
+  "text_alpha",
+  "text_β",
+  "whole_-3",
+  "whole_1",
+  "whole_2",
+  "wide_-2",
+  "wide_9007199254740993"
+)
+assert_true(is.environment(categorical_scalar_result), "oneHotEncode did not return a structured result")
+assert_true(environmentIsLocked(categorical_scalar_result), "oneHotEncode result metadata was not locked")
+assert_identical(
+  class(categorical_scalar_result),
+  "openwrangler_r_categorical_result",
+  "oneHotEncode returned the wrong result class"
+)
+assert_identical(
+  categorical_scalar_result$generatedNames,
+  expected_scalar_generated,
+  "oneHotEncode did not use canonical R display labels and global output-name order"
+)
+assert_identical(
+  names(categorical_scalar_result$value),
+  c(names(categorical_scalar_frame), expected_scalar_generated),
+  "oneHotEncode inserted generated columns in the wrong order"
+)
+assert_identical(
+  categorical_scalar_result$categoricalPositions,
+  seq.int(ncol(categorical_scalar_frame) + 1L, ncol(categorical_scalar_result$value)),
+  "oneHotEncode published invalid categorical output positions"
+)
+assert_identical(
+  categorical_scalar_result$sourcePositions[seq_len(ncol(categorical_scalar_frame))],
+  seq_len(ncol(categorical_scalar_frame)),
+  "oneHotEncode changed retained source mappings"
+)
+assert_true(
+  !any(grepl("unused|NaN|NA|text_$|category_$", categorical_scalar_result$generatedNames)),
+  "oneHotEncode emitted an unused, missing, NaN, or blank category"
+)
+assert_identical(categorical_scalar_result$value$flag_TRUE, c(1L, 0L, 0L, 1L, 0L), "logical one-hot values changed")
+assert_identical(categorical_scalar_result$value$number_Inf, c(0L, 0L, 0L, 1L, 0L), "infinite one-hot values changed")
+assert_identical(categorical_scalar_result$value$text_β, c(1L, 0L, 0L, 0L, 1L), "UTF-8 one-hot values changed")
+assert_identical(categorical_scalar_result$value$category_used, c(1L, 0L, 0L, 1L, 0L), "factor one-hot values changed")
+assert_identical(
+  categorical_scalar_result$value[["wide_-2"]],
+  c(0L, 1L, 0L, 0L, 1L),
+  "integer64 one-hot values changed"
+)
+assert_identical(
+  row.names(categorical_scalar_result$value),
+  row.names(categorical_scalar_frame),
+  "oneHotEncode changed explicit row names"
+)
+assert_identical(
+  categorical_scalar_frame,
+  categorical_scalar_before,
+  "oneHotEncode mutated its source scalar frame"
+)
+
+categorical_scalar_capture <- openwrangler_r_frame_contract$capture_frame(categorical_scalar_frame)
+categorical_scalar_ids <- c(
+  vapply(categorical_scalar_capture$descriptor$schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  sprintf("c:step:categorical:%d", seq_along(expected_scalar_generated) - 1L)
+)
+categorical_output_capture <- openwrangler_r_frame_contract$capture_categorical_result(
+  categorical_scalar_result,
+  categorical_scalar_capture,
+  categorical_scalar_ids
+)
+categorical_output_schema <- categorical_output_capture$descriptor$schema
+assert_identical(
+  vapply(categorical_output_schema, `[[`, character(1L), "id", USE.NAMES = FALSE),
+  categorical_scalar_ids,
+  "categorical capture lost stable explicit output identities"
+)
+assert_true(
+  all(vapply(
+    categorical_output_schema[categorical_scalar_result$categoricalPositions],
+    function(column) identical(column$rawType, "integer") && identical(column$type, "integer") && !column$nullable,
+    logical(1L)
+  )),
+  "categorical capture did not publish non-nullable integer outputs"
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_categorical_result(
+    categorical_scalar_result,
+    categorical_scalar_capture,
+    categorical_scalar_ids[-length(categorical_scalar_ids)]
+  ),
+  "invalid explicit output identities"
+)
+invalid_categorical_ids <- categorical_scalar_ids
+invalid_categorical_ids[[ncol(categorical_scalar_frame) + 1L]] <- categorical_scalar_ids[[1L]]
+assert_error(
+  openwrangler_r_frame_contract$capture_categorical_result(
+    categorical_scalar_result,
+    categorical_scalar_capture,
+    invalid_categorical_ids
+  ),
+  "invalid explicit output identities"
+)
+
+categorical_base <- data.frame(
+  id = c(2L, 1L, 3L, 4L),
+  group = factor(c("β", "a", NA, ""), levels = c("unused", "a", "β", "")),
+  tags = c("red|blue", "blue", NA_character_, ""),
+  check.names = FALSE,
+  row.names = paste0("flavor-", seq_len(4L))
+)
+categorical_table <- data.table::as.data.table(categorical_base)
+data.table::setkey(categorical_table, id)
+categorical_qdt <- collapse::qDT(categorical_base)
+data.table::setkey(categorical_qdt, id)
+categorical_flavors <- list(
+  list(label = "base data.frame", value = categorical_base),
+  list(label = "tibble", value = tibble::as_tibble(categorical_base, .name_repair = "minimal")),
+  list(label = "data.table", value = categorical_table),
+  list(label = "collapse qDF", value = collapse::qDF(categorical_base)),
+  list(label = "collapse qTBL", value = collapse::qTBL(categorical_base)),
+  list(label = "collapse qDT", value = categorical_qdt)
+)
+for (case in categorical_flavors) {
+  source <- case$value
+  source_before <- if (inherits(source, "data.table")) {
+    data.table::copy(source)
+  } else {
+    unserialize(serialize(source, NULL, version = 3L))
+  }
+  hot <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    source,
+    2L,
+    "group",
+    drop_original = TRUE
+  )
+  assert_identical(class(hot$value), class(source), sprintf("%s oneHotEncode changed frame flavor", case$label))
+  assert_identical(
+    names(hot$value),
+    c("id", "tags", "group_a", "group_β"),
+    sprintf("%s oneHotEncode changed its native output schema", case$label)
+  )
+  assert_identical(hot$value$group_a, as.integer(source$group == "a") |> replace(is.na(source$group), 0L), sprintf("%s oneHotEncode changed values", case$label))
+  if (inherits(source, "data.table")) {
+    assert_identical(data.table::key(hot$value), "id", sprintf("%s oneHotEncode lost a retained key", case$label))
+  }
+
+  labels <- openwrangler_r_frame_contract$multi_label_binarize_column_at(
+    source,
+    3L,
+    "tags",
+    "|",
+    prefix = "tag_",
+    drop_original = TRUE
+  )
+  assert_identical(class(labels$value), class(source), sprintf("%s multi-label changed frame flavor", case$label))
+  assert_identical(
+    names(labels$value),
+    c("id", "group", "tag_blue", "tag_red"),
+    sprintf("%s multi-label changed its native output schema", case$label)
+  )
+  assert_identical(labels$value$tag_blue, c(1L, 1L, 0L, 0L), sprintf("%s multi-label changed values", case$label))
+  if (inherits(source, "data.table")) {
+    assert_identical(data.table::key(labels$value), "id", sprintf("%s multi-label lost a retained key", case$label))
+  }
+  assert_true(identical(source, source_before), sprintf("%s categorical operation mutated its source", case$label))
+}
+
+keyed_categorical <- data.table::data.table(id = c(1L, 1L, 2L), group = c("b", "a", "a"), value = 1:3)
+data.table::setkey(keyed_categorical, id, group)
+keyed_categorical_before <- data.table::copy(keyed_categorical)
+keyed_group_hot <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  keyed_categorical,
+  2L,
+  "group",
+  drop_original = TRUE
+)
+assert_identical(data.table::key(keyed_group_hot$value), "id", "dropping a secondary key lost the retained key prefix")
+keyed_id_hot <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  keyed_categorical,
+  1L,
+  "id",
+  drop_original = TRUE
+)
+assert_identical(data.table::key(keyed_id_hot$value), NULL, "dropping the leading key retained an invalid key")
+assert_identical(keyed_categorical, keyed_categorical_before, "categorical key handling mutated its source data.table")
+
+literal_labels_frame <- data.frame(
+  tags = c("red| blue ", "|red||β|", "red|red", NA_character_, ""),
+  keep = seq_len(5L),
+  check.names = FALSE
+)
+literal_labels_before <- unserialize(serialize(literal_labels_frame, NULL, version = 3L))
+literal_labels <- openwrangler_r_frame_contract$multi_label_binarize_column_at(
+  literal_labels_frame,
+  1L,
+  "tags",
+  "|",
+  prefix = "",
+  drop_original = FALSE
+)
+assert_identical(
+  literal_labels$generatedNames,
+  c(" blue ", "red", "β"),
+  "multi-label did not preserve token whitespace or global name order"
+)
+assert_identical(literal_labels$value[[3L]], c(1L, 0L, 0L, 0L, 0L), "multi-label trimmed a literal token")
+assert_identical(literal_labels$value$red, c(1L, 1L, 1L, 0L, 0L), "multi-label changed duplicate-token membership")
+assert_identical(literal_labels$value$β, c(0L, 1L, 0L, 0L, 0L), "multi-label changed UTF-8 membership")
+assert_identical(literal_labels_frame, literal_labels_before, "multi-label mutated its source")
+
+default_prefix_labels <- openwrangler_r_frame_contract$multi_label_binarize_column_at(
+  literal_labels_frame,
+  1L,
+  "tags",
+  "|"
+)
+assert_true(
+  all(startsWith(default_prefix_labels$generatedNames, "tags_")),
+  "multi-label did not apply the default source-name prefix"
+)
+exact_delimiter <- openwrangler_r_frame_contract$multi_label_binarize_column_at(
+  data.frame(tags = c("a||b|c", "b|c||a"), check.names = FALSE),
+  1L,
+  "tags",
+  "||",
+  prefix = ""
+)
+assert_identical(exact_delimiter$generatedNames, c("a", "b|c"), "multi-label did not split on the exact literal delimiter")
+assert_identical(exact_delimiter$value$a, c(1L, 1L), "multi-label changed exact-delimiter membership")
+factor_labels <- openwrangler_r_frame_contract$multi_label_binarize_column_at(
+  data.frame(tags = factor(c("red|β", NA, ""), levels = c("unused", "red|β", ""))),
+  1L,
+  "tags",
+  "|",
+  prefix = "tag_"
+)
+assert_identical(factor_labels$generatedNames, c("tag_red", "tag_β"), "factor multi-label emitted unused or blank levels")
+assert_error(
+  openwrangler_r_frame_contract$multi_label_binarize_column_at(
+    data.frame(tags = 1:2),
+    1L,
+    "tags",
+    "|"
+  ),
+  "requires a character or factor"
+)
+
+empty_category_source <- data.frame(tags = c("", NA_character_), keep = 1:2, check.names = FALSE)
+for (drop_original in c(FALSE, TRUE)) {
+  assert_error(
+    openwrangler_r_frame_contract$multi_label_binarize_column_at(
+      empty_category_source,
+      1L,
+      "tags",
+      "|",
+      drop_original = drop_original
+    ),
+    "must produce at least one indicator column"
+  )
+}
+
+zero_row_flavors <- list(
+  data.frame(group = factor(character(), levels = c("unused", "")), keep = integer()),
+  tibble::tibble(group = factor(character(), levels = c("unused", "")), keep = integer()),
+  data.table::data.table(group = factor(character(), levels = c("unused", "")), keep = integer())
+)
+for (source in zero_row_flavors) {
+  for (drop_original in c(FALSE, TRUE)) {
+    assert_error(
+      openwrangler_r_frame_contract$one_hot_encode_columns_at(
+        source,
+        1L,
+        "group",
+        drop_original = drop_original
+      ),
+      "must produce at least one indicator column"
+    )
+  }
+}
+
+selected_all_empty_flavors <- list(
+  data.frame(group = factor(character(), levels = c("unused", ""))),
+  tibble::tibble(group = factor(character(), levels = c("unused", ""))),
+  data.table::data.table(group = factor(character(), levels = c("unused", "")))
+)
+for (source in selected_all_empty_flavors) {
+  assert_error(
+    openwrangler_r_frame_contract$one_hot_encode_columns_at(source, 1L, "group", drop_original = TRUE),
+    "must produce at least one indicator column"
+  )
+}
+
+positive_empty_base <- data.frame(
+  group = factor(c(NA, ""), levels = c("unused", "")),
+  keep = 1:2,
+  row.names = c("a", "b")
+)
+for (drop_original in c(FALSE, TRUE)) {
+  assert_error(
+    openwrangler_r_frame_contract$one_hot_encode_columns_at(
+      positive_empty_base,
+      1L,
+      "group",
+      drop_original = drop_original
+    ),
+    "must produce at least one indicator column"
+  )
+}
+assert_error(
+  openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    data.table::data.table(group = factor(c(NA, ""), levels = c("unused", ""))),
+    1L,
+    "group",
+    drop_original = TRUE
+  ),
+  "must produce at least one indicator column"
+)
+
+assert_error(
+  openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    data.frame(group = "a", group_a = 7L, check.names = FALSE),
+    1L,
+    "group",
+    drop_original = FALSE
+  ),
+  "duplicate column names: group_a"
+)
+duplicate_category_names <- data.frame(first = "a", second = "a", check.names = FALSE)
+names(duplicate_category_names) <- c("duplicate", "duplicate")
+assert_error(
+  openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    duplicate_category_names,
+    c(1L, 2L),
+    c("duplicate", "duplicate"),
+    drop_original = TRUE
+  ),
+  "duplicate column names: duplicate_a"
+)
+assert_error(
+  openwrangler_r_frame_contract$multi_label_binarize_column_at(
+    data.frame(tags = "open_wrangler_internal_row_id_forged"),
+    1L,
+    "tags",
+    "|",
+    prefix = "__"
+  ),
+  "reserved private row-identity"
+)
+assert_error(
+  openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    setNames(data.frame(value = "a"), strrep("x", openwrangler_r_frame_contract$limits$nameBytes)),
+    1L,
+    strrep("x", openwrangler_r_frame_contract$limits$nameBytes)
+  ),
+  "exceeds 1024 UTF-8 bytes"
+)
+assert_error(
+  openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    data.frame(value = paste(rep("x", openwrangler_r_frame_contract$limits$textBytes + 1L), collapse = "")),
+    1L,
+    "value"
+  ),
+  "exceeds 8192 UTF-8 bytes"
+)
+assert_error(
+  openwrangler_r_frame_contract$multi_label_binarize_column_at(
+    data.frame(value = "a"),
+    1L,
+    "value",
+    paste(rep("x", openwrangler_r_frame_contract$limits$textBytes + 1L), collapse = "")
+  ),
+  "exceeds 8192 UTF-8 bytes"
+)
+
+wide_categorical_names <- c("group", sprintf("retained_%04d", 2:2048))
+wide_categorical <- as.data.frame(
+  setNames(c(list(c("a", "b")), replicate(2047L, c(1L, 2L), simplify = FALSE)), wide_categorical_names),
+  optional = TRUE,
+  check.names = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    wide_categorical,
+    1L,
+    "group",
+    drop_original = TRUE
+  ),
+  "may produce at most 2048 R columns"
+)
+large_category_count <- openwrangler_r_frame_contract$limits$columns
+large_category_rows <- 8193L
+large_categories <- sprintf("c%04d", seq_len(large_category_count))
+large_category_source <- data.frame(
+  group = factor(
+    rep(large_categories, length.out = large_category_rows),
+    levels = large_categories
+  )
+)
+assert_error(
+  openwrangler_r_frame_contract$one_hot_encode_columns_at(
+    large_category_source,
+    1L,
+    "group",
+    drop_original = TRUE
+  ),
+  "operation output budget"
+)
+
+forged_table <- data.table::data.table(group = c("a", "b"), keep = 1:2)
+forged_capture <- openwrangler_r_frame_contract$capture_frame(forged_table)
+forged_result <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  forged_table,
+  1L,
+  "group",
+  drop_original = FALSE
+)
+forged_ids <- c("r:c:0", "r:c:1", "c:step:forge:0", "c:step:forge:1")
+data.table::set(forged_result$value, j = "group_a", value = c(2L, 0L))
+assert_error(
+  openwrangler_r_frame_contract$capture_categorical_result(forged_result, forged_capture, forged_ids),
+  "invalid categorical output"
+)
+other_source_capture <- openwrangler_r_frame_contract$capture_frame(
+  data.frame(group = c("a", "b"), keep = c(1.5, 2.5))
+)
+mismatched_result <- openwrangler_r_frame_contract$one_hot_encode_columns_at(
+  data.frame(group = c("a", "b"), keep = 1:2),
+  1L,
+  "group",
+  drop_original = FALSE
+)
+assert_error(
+  openwrangler_r_frame_contract$capture_categorical_result(mismatched_result, other_source_capture, forged_ids),
+  "does not match its source capture"
+)
+
+categorical_s3_script <- tempfile(fileext = ".R")
+writeLines(c(
+  "source(commandArgs(trailingOnly = TRUE)[[1L]], local = FALSE)",
+  "invisible(compiler::enableJIT(0L))",
+  "invisible(loadNamespace('data.table'))",
+  "source_frame <- data.frame(",
+  "  group = factor(c('a', NA, 'β'), levels = c('unused', 'a', 'β')),",
+  "  tags = factor(c('red|β', NA, ''), levels = c('unused', 'red|β', '')),",
+  "  day = as.Date(c('2024-01-02', NA, '2024-01-03')),",
+  "  number = c(1.5, 2.5, 1.5),",
+  "  instant = as.POSIXct(c('2024-01-02 03:04:05', NA, '2024-01-03 04:05:06'), tz = 'UTC'),",
+  "  elapsed = as.difftime(c(1, NA, 2), units = 'hours'),",
+  "  check.names = FALSE",
+  ")",
+  "attr(source_frame$group, 'levels') <- structure(attr(source_frame$group, 'levels', exact = TRUE), class = 'AsIs')",
+  "attr(source_frame$tags, 'levels') <- structure(attr(source_frame$tags, 'levels', exact = TRUE), class = 'AsIs')",
+  "attr(source_frame$instant, 'tzone') <- structure(attr(source_frame$instant, 'tzone', exact = TRUE), class = 'AsIs')",
+  "attr(source_frame$elapsed, 'units') <- structure(attr(source_frame$elapsed, 'units', exact = TRUE), class = 'AsIs')",
+  "source_before <- serialize(source_frame, NULL, version = 3L)",
+  "metadata_calls <- 0L",
+  "poison_metadata <- function(generic) function(...) { metadata_calls <<- metadata_calls + 1L; calls <- sys.calls(); caller <- paste(deparse(.subset2(calls, length(calls) - 1L)), collapse = ' '); stop(sprintf('caller %s.AsIs metadata dispatch from %s', generic, caller), call. = FALSE) }",
+  "registerS3method('[[', 'AsIs', poison_metadata('[['), envir = .GlobalEnv)",
+  "registerS3method('[', 'AsIs', poison_metadata('['), envir = .GlobalEnv)",
+  "registerS3method('length', 'AsIs', poison_metadata('length'), envir = .GlobalEnv)",
+  "registerS3method('anyNA', 'AsIs', poison_metadata('anyNA'), envir = .GlobalEnv)",
+  "registerS3method('is.na', 'AsIs', poison_metadata('is.na'), envir = .GlobalEnv)",
+  "registerS3method('Ops', 'AsIs', poison_metadata('Ops'), envir = .GlobalEnv)",
+  "`[.factor` <- function(...) stop('caller factor subset dispatch', call. = FALSE)",
+  "levels.factor <- function(...) stop('caller factor levels dispatch', call. = FALSE)",
+  "as.character.factor <- function(...) stop('caller factor character dispatch', call. = FALSE)",
+  "format.Date <- function(...) stop('caller Date format dispatch', call. = FALSE)",
+  "format.POSIXct <- function(...) stop('caller POSIXct format dispatch', call. = FALSE)",
+  "`[.data.frame` <- function(...) stop('caller data.frame subset dispatch', call. = FALSE)",
+  "registerS3method('format', 'numeric', function(...) stop('caller format.numeric dispatch', call. = FALSE), envir = .GlobalEnv)",
+  "registerS3method('unique', 'numeric', function(...) stop('caller unique.numeric dispatch', call. = FALSE), envir = .GlobalEnv)",
+  "registerS3method('unique', 'character', function(...) stop('caller unique.character dispatch', call. = FALSE), envir = .GlobalEnv)",
+  "registerS3method('duplicated', 'character', function(...) stop('caller duplicated.character dispatch', call. = FALSE), envir = .GlobalEnv)",
+  "registerS3method('anyDuplicated', 'character', function(...) stop('caller anyDuplicated.character dispatch', call. = FALSE), envir = .GlobalEnv)",
+  "registerS3method('anyDuplicated', 'integer', function(...) stop('caller anyDuplicated.integer dispatch', call. = FALSE), envir = .GlobalEnv)",
+  "registerS3method('sort', 'character', function(...) stop('caller sort.character dispatch', call. = FALSE), envir = .GlobalEnv)",
+  "source_capture <- openwrangler_r_frame_contract$capture_frame(source_frame)",
+  "live_capture <- openwrangler_r_frame_contract$capture_live_frame(function() source_frame)",
+  "if (!identical(live_capture$descriptor$shape, list(rows = 3L, columns = 6L))) stop('unexpected live capture shape', call. = FALSE)",
+  "hot <- openwrangler_r_frame_contract$one_hot_encode_columns_at(source_frame, c(1L, 3L, 4L), c('group', 'day', 'number'), drop_original = FALSE)",
+  "labels <- openwrangler_r_frame_contract$multi_label_binarize_column_at(source_frame, 2L, 'tags', '|', prefix = 'tag_')",
+  "hot_ids <- c(paste0('r:c:', 0:5), paste0('c:step:s3:', 0:5))",
+  "invisible(openwrangler_r_frame_contract$capture_categorical_result(hot, source_capture, hot_ids))",
+  "if (!identical(hot$generatedNames, c('day_2024-01-02', 'day_2024-01-03', 'group_a', 'group_β', 'number_1.5', 'number_2.5'))) stop('unexpected hot output', call. = FALSE)",
+  "if (!identical(hot$value$group_a, c(1L, 0L, 0L)) || !identical(hot$value$group_β, c(0L, 0L, 1L))) stop('unexpected hot indicator values', call. = FALSE)",
+  "if (!identical(labels$generatedNames, c('tag_red', 'tag_β'))) stop('unexpected label output', call. = FALSE)",
+  "if (!identical(labels$value$tag_red, c(1L, 0L, 0L)) || !identical(labels$value$tag_β, c(1L, 0L, 0L))) stop('unexpected label indicator values', call. = FALSE)",
+  "if (!identical(serialize(source_frame, NULL, version = 3L), source_before)) stop('source mutated', call. = FALSE)",
+  "table_source <- data.table::data.table(id = c(2L, 1L), group = c('b', 'a'), tags = c('red|β', 'red'))",
+  "data.table::setkey(table_source, id)",
+  "table_key <- attr(table_source, 'sorted', exact = TRUE)",
+  "data.table::setattr(table_key, 'class', 'AsIs')",
+  "if (!identical(data.table:::selfrefok(table_source), 1L)) stop('classed-key fixture has an invalid source self-reference', call. = FALSE)",
+  "table_before <- serialize(table_source, NULL, version = 3L)",
+  "poison_names <- function(...) stop('caller data.table names dispatch', call. = FALSE)",
+  "registerS3method('names', 'data.table', poison_names, envir = .GlobalEnv)",
+  "table_capture <- openwrangler_r_frame_contract$capture_frame(table_source)",
+  "if (!identical(unclass(table_capture$descriptor$frameSemantics$keyColumnIds), 'r:c:0')) stop('unexpected table capture key', call. = FALSE)",
+  "table_hot <- openwrangler_r_frame_contract$one_hot_encode_columns_at(table_source, 2L, 'group', drop_original = FALSE)",
+  "table_labels <- openwrangler_r_frame_contract$multi_label_binarize_column_at(table_source, 3L, 'tags', '|', prefix = 'tag_', drop_original = FALSE)",
+  "if (!identical(attr(table_hot$value, 'names', exact = TRUE), c('id', 'group', 'tags', 'group_a', 'group_b'))) stop('unexpected table hot output', call. = FALSE)",
+  "if (!identical(attr(table_labels$value, 'names', exact = TRUE), c('id', 'group', 'tags', 'tag_red', 'tag_β'))) stop('unexpected table label output', call. = FALSE)",
+  "if (!identical(table_hot$value$group_a, c(1L, 0L)) || !identical(table_hot$value$group_b, c(0L, 1L))) stop('unexpected table hot values', call. = FALSE)",
+  "if (!identical(table_labels$value$tag_red, c(1L, 1L)) || !identical(table_labels$value$tag_β, c(0L, 1L))) stop('unexpected table label values', call. = FALSE)",
+  "if (!identical(attr(table_hot$value, 'sorted', exact = TRUE), 'id') || !identical(attr(table_labels$value, 'sorted', exact = TRUE), 'id')) stop('categorical output did not canonicalize its retained key', call. = FALSE)",
+  "withCallingHandlers(data.table::set(table_hot$value, j = 4L, value = c(1L, 1L)), warning = function(warning) stop(warning))",
+  "withCallingHandlers(data.table::set(table_labels$value, j = 4L, value = c(1L, 1L)), warning = function(warning) stop(warning))",
+  "if (typeof(attr(table_hot$value, '.internal.selfref', exact = TRUE)) != 'externalptr') stop('hot self-reference invalid', call. = FALSE)",
+  "if (typeof(attr(table_labels$value, '.internal.selfref', exact = TRUE)) != 'externalptr') stop('label self-reference invalid', call. = FALSE)",
+  "if (!identical(serialize(table_source, NULL, version = 3L), table_before)) stop('data.table source bytes changed', call. = FALSE)",
+  "if (!identical(metadata_calls, 0L)) stop('caller AsIs metadata method was dispatched', call. = FALSE)"
+), categorical_s3_script, useBytes = TRUE)
+categorical_s3_output <- system2(
+  file.path(R.home("bin"), "Rscript"),
+  c("--vanilla", categorical_s3_script, normalizePath("r/openwrangler_runtime/frame_contract.R")),
+  stdout = TRUE,
+  stderr = TRUE
+)
+categorical_s3_status <- attr(categorical_s3_output, "status", exact = TRUE)
+if (!is.null(categorical_s3_status) && categorical_s3_status != 0L) {
+  stop(paste(c("categorical S3-isolation child failed", categorical_s3_output), collapse = "\n"), call. = FALSE)
+}
+unlink(categorical_s3_script)
 
 message("R frame contract tests passed")

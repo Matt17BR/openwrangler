@@ -196,7 +196,7 @@ host protocol; the Python runtime never reads those messages.
 `r/openwrangler_runtime/kernel_agent.R` owns native R sessions. The host creates a UUID before an open,
 and the agent records the named object's shape, schema, and source binding. Later page, filter, sort, profile, dataset
 statistics, and column-value requests read through that binding and reject structural changes. These messages have a
-separate versioned schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
+separate private transport-v12 schema; both R and TypeScript reject extra fields, bad ranges, repeated column identities, stale
 request IDs, and oversized responses. The runtime sources are base64-embedded in the kernel bootstrap, so a remote
 IRkernel does not need access to the extension filesystem.
 
@@ -255,6 +255,17 @@ Round, Floor, and Ceiling accept ordinary integer, double, and `integer64` colum
 outputs are R doubles. `integer64` outputs stay exact integers. The operations keep `NA`, `NaN`, `Inf`, and `-Inf`,
 and Round follows R's ties-to-even rule. An in-place change to an active `data.table` key is rejected; writing to a
 new output column is allowed and leaves the key alone.
+One-hot encode binds one or more exact scalar columns and derives categories from observed non-missing values. `NA`,
+`NaN`, blank text, and unused factor levels do not create outputs. Multi-label binarize accepts one exact character,
+factor, or ordered-factor column, splits each present value on the literal non-empty delimiter without trimming, and
+ignores blank tokens. An omitted multi-label prefix derives from the selected column name; an explicit empty prefix
+is retained. Both operations append globally UTF-8-ordered, collision-free base-integer 0/1 columns and can retain or
+drop their selected inputs. The R kernel returns this value-dependent schema with stable generated identities, while
+the host independently validates the retained lineage, generated names, types, order, viewing-query reconciliation,
+and exact diff before publishing the draft. A dynamically empty encoder always fails, independently of whether its
+input columns would otherwise remain; immutable zero-column sources are a separate source capability. Aggregate
+categorical output is bounded before publication. Live and generated execution preserve the exact supported frame
+family, source object, retained `data.table` key, and a valid data-table self-reference.
 Format Datetime accepts an exact `Date` or `POSIXct` column and a non-empty bounded R format string. It can replace
 the source column or append a new character column. POSIXct formatting uses the column's declared time zone and
 uses UTC when none is declared. Every formatted UTF-8 value remains bounded, and replacing an active `data.table`
@@ -324,13 +335,14 @@ be installed in the environment that owns the session: the selected IRkernel, th
 the `Rscript` used for an Open Wrangler-managed document. Notebook, active-terminal, and R-document commands enable
 native filters, ordered sorts, value search and selection, and column and dataset profiles. Editing
 mode currently exposes Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column,
-Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format Datetime, and Group and
-aggregate. Other operations are not supported in R yet.
+Drop Columns, Select Columns, Clone Column, Convert type, Text Length, One-hot encode, Multi-label binarize, Lowercase,
+Uppercase, Find and replace, Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format
+Datetime, and Group and aggregate. Transform by example and Custom code are not supported in R yet.
 Executable generated R evaluates its implementation in a fresh environment whose parent is `baseenv()`, while an
 explicit private binding identifies only the caller environment from which the exact source variable is copied.
-The shared source preflight and the Formula and Format Datetime implementation helpers avoid caller-defined operator,
-S3-method, and helper-name lookup; this is not a blanket claim for every older generated operation. Generated code rejects an
+The shared source preflight and the Formula, Format Datetime, and categorical implementation helpers avoid
+caller-defined operator, S3-method, and helper-name lookup; this is not a blanket claim for every older generated
+operation. Generated code rejects an
 active output binding before source evaluation, after a delayed source promise settles, and again immediately before
 publication. It normally publishes `open_wrangler_result`; when that is the source variable, it preserves the source
 and publishes `open_wrangler_result_2`. Live capture rejects malformed
@@ -349,9 +361,9 @@ checks a column's count, distinct values, minimum, and maximum, then checks data
 rows. The native contract passes on R 4.4 and 4.5. The local packaged run passes in VS Code and Cursor with R 4.5.2.
 The hosted gate also passes against a containerized IRkernel in VS Code, including kernel restart, reopening the
 frame, and final session cleanup. The packaged VS Code journey covers the full R catalog, including the visible forms
-for Find and replace, Formula, Uppercase, Min-max scale, Round, Floor, Ceiling, Format Datetime, and Group and
-aggregate. Cursor runs the
-representative editing profile. The
+for Find and replace, Formula, Uppercase, One-hot encode, Multi-label binarize, Min-max scale, Round, Floor, Ceiling,
+Format Datetime, and Group and aggregate. Cursor runs the representative editing profile and separately repeats the
+exact One-hot encode and Multi-label binarize forms, boundary values, generated calls, preview, apply, and undo. The
 base-data-frame sequence covers preview, apply, inspection, discard, latest-step editing, and undo; Convert type is
 applied and undone. Drop Missing Rows and Drop Duplicates each cover preview, apply, returning from step inspection,
 and undo. The run checks generated R and verifies that every notebook object stays unchanged. Tibbles and keyed

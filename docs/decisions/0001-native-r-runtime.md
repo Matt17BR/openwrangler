@@ -107,9 +107,9 @@ limit. It fails recoverably after 10,000 distinct matches or 16 MiB of matching 
 term. These memory bounds do not imply that IRkernel can interrupt work already dispatched to the user's kernel.
 
 Editing currently supports Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename
-Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace,
-Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format Datetime, and Group and
-aggregate. The first draft takes
+Column, Drop Columns, Select Columns, Clone Column, Convert type, Text Length, One-hot encode, Multi-label binarize,
+Lowercase, Uppercase, Find and replace, Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor,
+Ceiling, Format Datetime, and Group and aggregate. The first draft takes
 an isolated original: base data frames and tibbles use R serialization, while data tables use `data.table::copy()`.
 The runtime keeps committed and draft results separate, resolves every target by stable ID and captured name, and
 advances the session revision for preview, apply, discard, latest-step replacement, and undo. Applied-step inspection
@@ -212,11 +212,12 @@ Quarto and R Markdown may be advertised only after their owned-document journey 
   code stay native to the selected language and dataframe flavor.
 - R viewing includes pages, compound filters, ordered sorts, value search and selection, and profiles. Editing mode
   currently adds Filter Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop
-  Columns, Select Columns, Clone Column, Convert type, Text Length, Lowercase, Uppercase, Find and replace, Capitalize,
-  Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling, Format Datetime, and Group and aggregate with
-  generated R code. Generated plans run in a fresh `baseenv()`-parented implementation environment and revalidate the
-  supported source-frame shape before copying it. Formula and Format Datetime additionally avoid caller-defined
-  operator or S3-method lookup while validating and executing their emitted helpers.
+  Columns, Select Columns, Clone Column, Convert type, Text Length, One-hot encode, Multi-label binarize, Lowercase,
+  Uppercase, Find and replace, Capitalize, Strip text, Split text, Formula, Min-max scale, Round, Floor, Ceiling,
+  Format Datetime, and Group and aggregate with generated R code. Generated plans run in a fresh
+  `baseenv()`-parented implementation environment and revalidate the
+  supported source-frame shape before copying it. Formula, Format Datetime, and the categorical encoders additionally
+  avoid caller-defined operator or S3-method lookup while validating and executing their emitted helpers.
   Result publication rejects active bindings before and after source evaluation and immediately before assignment; a
   source already named `open_wrangler_result` is preserved and its cleaned result uses `open_wrangler_result_2`.
   Generated R can be
