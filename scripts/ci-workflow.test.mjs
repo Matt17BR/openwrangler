@@ -1048,207 +1048,117 @@ test("native packaged-editor and released-Jupyter journeys stay at the release b
     assert.equal(ci?.jobs?.[jobId], undefined, `${jobId} must not run on every pull request.`);
   }
 
-  const expectedMatrix = [
-    { name: "macOS platform", lane: "platform", os: "macos-latest", python: "3.12" },
-    { name: "Windows platform", lane: "platform", os: "windows-latest", python: "3.14" },
-    { name: "Linux acceptance", lane: "linux", os: "ubuntu-24.04", python: "3.12" },
-    { name: "Installed performance", lane: "performance", os: "ubuntu-24.04", python: "3.12" },
-    { name: "Released Jupyter", lane: "jupyter", os: "ubuntu-24.04", python: "3.12" }
-  ];
   for (const relativePath of [".github/workflows/release.yml", ".github/workflows/stable-release.yml"]) {
     const workflow = parseYaml(readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8"));
     const candidate = workflow?.jobs?.["candidate-acceptance"];
-    assert.equal(candidate?.uses, "./.github/workflows/candidate-acceptance.yml");
-    assert.equal(candidate?.strategy?.["fail-fast"], false);
-    assert.deepEqual(candidate?.strategy?.matrix?.include, expectedMatrix);
+    assert.deepEqual(candidate, {
+      name: "Candidate acceptance",
+      needs: "package",
+      uses: "./.github/workflows/candidate-acceptance.yml",
+      permissions: { contents: "read" },
+      with: {
+        artifact_id: "${{ needs.package.outputs.artifact-id }}",
+        channel: relativePath.endsWith("/release.yml") ? "preview" : "stable",
+        expected_sha: "${{ github.sha }}",
+        release_tag: "${{ inputs.release_tag }}"
+      }
+    });
   }
 
   const acceptance = parseYaml(
     readFileSync(new URL("../.github/workflows/candidate-acceptance.yml", import.meta.url), "utf8")
   );
-  const platform = acceptance?.jobs?.platform;
-  assert.equal(
-    platform?.steps?.some(
-      (step) => step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode" && step?.id === "packaged_editor"
-    ),
-    true
-  );
-  assert.equal(
-    platform?.steps?.some(
-      (step) => step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "cursor" && step?.id === "cursor_smoke"
-    ),
-    true
-  );
-  assert.deepEqual(platform?.steps?.find((step) => step?.uses === SETUP_R_ACTION)?.with, {
-    "r-version": "4.5.2",
-    "use-public-rspm": true
-  });
-  const releasedJupyter = acceptance?.jobs?.jupyter;
-  assert.deepEqual(releasedJupyter?.strategy, {
+  assert.deepEqual(Object.keys(acceptance.on.workflow_call.inputs), [
+    "artifact_id",
+    "channel",
+    "expected_sha",
+    "release_tag"
+  ]);
+  assert.equal(acceptance.on.workflow_call.outputs, undefined);
+  assert.deepEqual(Object.keys(acceptance.jobs), [
+    "contract",
+    "platform",
+    "linux",
+    "performance",
+    "jupyter",
+    "r_contract",
+    "r_local",
+    "acceptance"
+  ]);
+
+  const platform = acceptance.jobs.platform;
+  assert.deepEqual(platform.strategy, {
     "fail-fast": false,
-    matrix: { phase: ["python", "r-local", "r-remote"] }
+    "max-parallel": 2,
+    matrix: {
+      include: [
+        { os: "macos-latest", python: "3.12" },
+        { os: "windows-latest", python: "3.14" }
+      ]
+    }
   });
-  const rContract = releasedJupyter?.steps?.find((step) => step?.run === "npm run test:r-contract");
-  assert.equal(rContract?.if, "${{ matrix.phase == 'r-local' }}");
+  assert.equal(platform["runs-on"], "${{ matrix.os }}");
+
+  const releasedJupyter = acceptance.jobs.jupyter;
+  assert.deepEqual(releasedJupyter.strategy, {
+    "fail-fast": false,
+    "max-parallel": 2,
+    matrix: { phase: ["python", "r-remote"] }
+  });
   assert.equal(
-    releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor")?.if,
-    "${{ matrix.phase == 'python' }}"
+    releasedJupyter.steps.some((step) => step.run === "npm run test:r-contract"),
+    false
   );
   assert.equal(
-    releasedJupyter?.steps?.some(
-      (step) =>
-        step?.id === "packaged_editor_r" &&
-        step?.if === "${{ matrix.phase == 'r-local' }}" &&
-        step?.env?.OPEN_WRANGLER_PACKAGED_MODE === "r-jupyter" &&
-        step?.env?.OPEN_WRANGLER_PACKAGED_EDITORS === "vscode,cursor" &&
-        step?.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "0"
-    ),
+    releasedJupyter.steps.find((step) => step.id === "packaged_editor_r_remote")?.env?.OPEN_WRANGLER_PACKAGED_R_JOURNEY,
+    "remote-r-jupyter"
+  );
+
+  const rContract = acceptance.jobs.r_contract;
+  const rLocal = acceptance.jobs.r_local;
+  assert.equal(rContract.needs, "contract");
+  assert.equal(rLocal.needs, "contract");
+  assert.equal(
+    rContract.steps.some((step) => step.run === "npm run test:r-contract"),
     true
   );
-  const valueRVerifier = releasedJupyter?.steps?.find((step) => step?.id === "canonical_r_values");
-  const valueR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_values");
-  assert.equal(valueRVerifier?.if, "${{ matrix.phase == 'r-local' }}");
-  assert.equal(valueR?.if, "${{ matrix.phase == 'r-local' }}");
-  assert.equal(valueR?.["continue-on-error"], true);
-  assert.equal(
-    valueR?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_values.outputs.candidate_path }}"
-  );
-  assert.deepEqual(valueR?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "value-operations",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
+  assert.deepEqual(rLocal.strategy, {
+    "fail-fast": false,
+    "max-parallel": 2,
+    matrix: { shard: ["lifecycle", "editing"] }
   });
-  const valueRDiagnostics = releasedJupyter?.steps?.find(
-    (step) => step?.name === "Upload value R-Jupyter failure diagnostics"
-  );
-  assert.equal(
-    valueRDiagnostics?.with?.name,
-    "${{ inputs.channel }}-release-r-jupyter-values-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(valueRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_values.outputs.evidence_path }}");
-  assert.equal(releasedJupyter?.steps?.indexOf(valueR), releasedJupyter?.steps?.indexOf(valueRVerifier) + 1);
-  assert.equal(releasedJupyter?.steps?.indexOf(valueRDiagnostics), releasedJupyter?.steps?.indexOf(valueR) + 1);
-  const categoricalR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_categorical");
-  assert.equal(categoricalR?.if, "${{ matrix.phase == 'r-local' }}");
-  assert.equal(categoricalR?.["continue-on-error"], true);
-  assert.equal(
-    categoricalR?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_categorical.outputs.candidate_path }}"
-  );
-  assert.deepEqual(categoricalR?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "categorical-operations",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  const categoricalRDiagnostics = releasedJupyter?.steps?.find(
-    (step) => step?.name === "Upload categorical R-Jupyter failure diagnostics"
-  );
-  assert.equal(
-    categoricalRDiagnostics?.with?.name,
-    "${{ inputs.channel }}-release-r-jupyter-categorical-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(categoricalRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_categorical.outputs.evidence_path }}");
-  const interactiveR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_interactive");
-  assert.equal(interactiveR?.if, "${{ matrix.phase == 'r-local' }}");
-  assert.equal(
-    interactiveR?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_interactive.outputs.candidate_path }}"
-  );
-  assert.deepEqual(interactiveR?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "interactive-terminal",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  const interactiveRDiagnostics = releasedJupyter?.steps?.find(
-    (step) => step?.name === "Upload active R terminal failure diagnostics"
-  );
-  assert.equal(
-    interactiveRDiagnostics?.with?.name,
-    "${{ inputs.channel }}-release-r-jupyter-interactive-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(interactiveRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_interactive.outputs.evidence_path }}");
-  const literateR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_literate");
-  assert.equal(literateR?.if, "${{ matrix.phase == 'r-local' }}");
-  assert.equal(
-    literateR?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_literate.outputs.candidate_path }}"
-  );
-  assert.deepEqual(literateR?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "literate-documents",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode,cursor",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0",
-    OPEN_WRANGLER_TEST_RSCRIPT: "${{ steps.rscript.outputs.executable }}",
-    VSCODE_TEST_VERSION: "stable"
-  });
-  assert.equal(
-    releasedJupyter?.steps?.find((step) => step?.name === "Fail after local R acceptance diagnostics")?.if,
-    "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}"
-  );
-  const literateRDiagnostics = releasedJupyter?.steps?.find(
-    (step) => step?.name === "Upload R Markdown and Quarto failure diagnostics"
-  );
-  assert.equal(
-    literateRDiagnostics?.with?.name,
-    "${{ inputs.channel }}-release-r-jupyter-literate-${{ runner.os }}-${{ github.run_attempt }}"
-  );
-  assert.equal(literateRDiagnostics?.with?.path, "${{ steps.packaged_editor_r_literate.outputs.evidence_path }}");
-  assert.equal(
-    literateRDiagnostics?.if,
-    "${{ always() && steps.packaged_editor_r_literate.outcome == 'failure' && steps.packaged_editor_r_literate.outputs.evidence_ready == 'true' }}"
-  );
   assert.deepEqual(
-    {
-      ifNoFilesFound: literateRDiagnostics?.with?.["if-no-files-found"],
-      retentionDays: literateRDiagnostics?.with?.["retention-days"],
-      compressionLevel: literateRDiagnostics?.with?.["compression-level"],
-      includeHiddenFiles: literateRDiagnostics?.with?.["include-hidden-files"]
-    },
-    {
-      ifNoFilesFound: "error",
-      retentionDays: 7,
-      compressionLevel: 9,
-      includeHiddenFiles: false
-    }
+    rLocal.steps
+      .filter((step) => step.id?.startsWith("packaged_editor_r_"))
+      .map((step) => [step.id, step.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY]),
+    [
+      ["packaged_editor_r_core", "core-operations"],
+      ["packaged_editor_r_interactive", "interactive-terminal"],
+      ["packaged_editor_r_literate", "literate-documents"],
+      ["packaged_editor_r_values", "value-operations"],
+      ["packaged_editor_r_categorical", "categorical-operations"]
+    ]
   );
-  const remoteR = releasedJupyter?.steps?.find((step) => step?.id === "packaged_editor_r_remote");
-  assert.equal(remoteR?.if, "${{ matrix.phase == 'r-remote' }}");
-  assert.equal(
-    remoteR?.run,
-    "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_remote.outputs.candidate_path }}"
-  );
-  assert.deepEqual(remoteR?.env, {
-    OPEN_WRANGLER_PACKAGED_MODE: "r-jupyter",
-    OPEN_WRANGLER_PACKAGED_R_JOURNEY: "remote-r-jupyter",
-    OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
-    OPEN_WRANGLER_EDITOR_DISPLAY: "xvfb",
-    OPEN_WRANGLER_XVFB_EXECUTABLE: "${{ steps.prepare_xvfb.outputs.executable }}",
-    OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1",
-    OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1",
-    VSCODE_TEST_VERSION: "stable"
-  });
+  for (const runner of rLocal.steps.filter((step) => step.id?.startsWith("packaged_editor_r_"))) {
+    assert.equal(runner["continue-on-error"], true);
+    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, "vscode,cursor");
+    const index = rLocal.steps.indexOf(runner);
+    assert.match(rLocal.steps[index - 1].id, /^canonical_r_/u);
+    assert.equal(rLocal.steps[index + 1].uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
+  }
+  assert.equal(rLocal.steps.at(-1).name, "Require successful local R shard outcomes");
+  assert.equal(rLocal.steps.at(-1).if, "${{ always() }}");
+
+  assert.deepEqual(acceptance.jobs.acceptance.needs, [
+    "contract",
+    "platform",
+    "linux",
+    "performance",
+    "jupyter",
+    "r_contract",
+    "r_local"
+  ]);
+  assert.equal(acceptance.jobs.acceptance.if, "${{ always() }}");
 });
 
 test("PR CI gates expensive work behind bounded preflight lanes without removing checks", () => {

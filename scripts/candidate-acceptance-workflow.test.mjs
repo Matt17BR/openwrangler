@@ -2,607 +2,272 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
-import { inspectCandidateAcceptanceWorkflow } from "./candidate-acceptance-workflow.mjs";
-import { inspectDeferredDiagnosticFailures } from "./release-diagnostic-order.mjs";
+import { inspectCandidateAcceptanceWorkflow, inspectCandidateCaller } from "./candidate-acceptance-workflow.mjs";
 
 const source = readFileSync(new URL("../.github/workflows/candidate-acceptance.yml", import.meta.url), "utf8");
-const findRDependencies = (workflow) =>
-  workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r-dependencies@"));
 
-test("candidate acceptance shares one fail-closed artifact contract across release channels", () => {
-  assert.deepEqual(inspectCandidateAcceptanceWorkflow(source), []);
-
-  const mutate = (change) => {
-    const workflow = parseYaml(source);
-    change(workflow);
-    return dumpYaml(workflow);
-  };
-  const cases = [
-    (workflow) => {
-      workflow.permissions.contents = "write";
-    },
-    (workflow) => {
-      workflow.jobs.contract.steps[0].run = workflow.jobs.contract.steps[0].run.replace(
-        "jupyter:ubuntu-24.04:3.12",
-        "jupyter:ubuntu-24.04:3.13"
-      );
-    },
-    (workflow) => {
-      const step = workflow.jobs.contract.steps[0];
-      step.env.RUNNER_OS = step.env.CANDIDATE_RUNNER_OS;
-      delete step.env.CANDIDATE_RUNNER_OS;
-      step.run = step.run.replaceAll("CANDIDATE_RUNNER_OS", "RUNNER_OS");
-    },
-    (workflow) => {
-      workflow.jobs.platform["timeout-minutes"] = 240;
-    },
-    (workflow) => {
-      workflow.jobs.linux.steps.find((step) => String(step.uses ?? "").startsWith("actions/checkout@")).with.ref =
-        "main";
-    },
-    (workflow) => {
-      workflow.jobs.performance.steps.find((step) =>
-        String(step.uses ?? "").startsWith("actions/download-artifact@")
-      ).with["artifact-ids"] = "openwrangler-release";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.id === "canonical").env.EXPECTED_SHA = "${{ github.sha }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.strategy["fail-fast"] = true;
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.strategy.matrix.phase = ["python"];
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.container = "rocker/r-ver:4.5.2";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).if =
-        "${{ matrix.phase == 'python' }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).uses =
-        "r-lib/actions/setup-r@0000000000000000000000000000000000000000";
-    },
-    (workflow) => {
-      findRDependencies(workflow).uses = "r-lib/actions/setup-r-dependencies@0000000000000000000000000000000000000000";
-    },
-    (workflow) => {
-      findRDependencies(workflow).with.packages = "any::jsonlite";
-    },
-    (workflow) => {
-      findRDependencies(workflow).with["extra-packages"] = findRDependencies(workflow).with["extra-packages"].replace(
-        "any::nanoparquet",
-        "any::arrow"
-      );
-    },
-    (workflow) => {
-      findRDependencies(workflow).with.dependencies = '"all"';
-    },
-    (workflow) => {
-      findRDependencies(workflow).with.cache = false;
-    },
-    (workflow) => {
-      findRDependencies(workflow).with["cache-version"] = "native-r-contract-v2";
-    },
-    (workflow) => {
-      findRDependencies(workflow).with["install-pandoc"] = true;
-    },
-    (workflow) => {
-      findRDependencies(workflow).with["install-quarto"] = true;
-    },
-    (workflow) => {
-      findRDependencies(workflow).if = "${{ matrix.phase == 'python' }}";
-    },
-    (workflow) => {
-      workflow.jobs.platform.steps.push(structuredClone(findRDependencies(workflow)));
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.run === "npm run test:r-contract").env.RSCRIPT = "Rscript";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.push({
-        name: "Legacy R package installer",
-        if: "${{ matrix.phase == 'r' }}",
-        run: "Rscript --vanilla -e 'utils::install.packages (\"jsonlite\")'"
-      });
-    },
-    (workflow) => {
-      workflow.jobs.platform.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).uses =
-        "r-lib/actions/setup-r@v2";
-    },
-    (workflow) => {
-      workflow.jobs.linux.steps.find((step) => step.run === "npm run test:coverage").run =
-        "npm run test:coverage:partial";
-    },
-    (workflow) => {
-      workflow.jobs.performance.steps.find((step) => step.id === "installed_performance").env.PREVIEW_FLAG = "";
-    },
-    (workflow) => {
-      for (const step of workflow.jobs.jupyter.steps.filter(
-        (candidate) => candidate.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER === "1"
-      )) {
-        step.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "0";
-      }
-    },
-    (workflow) => {
-      workflow.jobs.platform.steps.find((step) => step.id === "packaged_editor")["continue-on-error"] = false;
-    },
-    (workflow) => {
-      const steps = workflow.jobs.platform.steps;
-      steps.splice(
-        steps.findIndex((step) => step.name === "Fail after VS Code diagnostics"),
-        1
-      );
-    },
-    (workflow) => {
-      const steps = workflow.jobs.platform.steps;
-      steps.splice(
-        steps.findIndex((step) => step.id === "canonical_r_jupyter_platform"),
-        1
-      );
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      steps.splice(
-        steps.findIndex((step) => step.id === "packaged_editor"),
-        0,
-        { run: "echo interposed" }
-      );
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      const preparation = steps.splice(
-        steps.findIndex((step) => step.id === "prepare_xvfb"),
-        1
-      )[0];
-      steps.splice(steps.findIndex((step) => step.id === "packaged_editor_r") + 1, 0, preparation);
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.id === "prepare_xvfb").run +=
-        '\nrequire("node:child_process").execFileSync("sudo", ["apt-get", "install", "r-base"]);';
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.run === "npm ci").if = "${{ matrix.phase == 'r-remote' }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.run === "npm run verify:vsix -- canonical-release/openwrangler.vsix"
-      ).if = "${{ matrix.phase != 'r-remote' }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.id === "packaged_editor").env.OPEN_WRANGLER_PACKAGED_EDITORS =
-        "vscode";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_values"
-      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "categorical-operations";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_values"
-      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_values"
-      ).env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER = "1";
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      steps.splice(
-        steps.findIndex((step) => step.id === "canonical_r_values"),
-        1
-      );
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      steps.splice(
-        steps.findIndex((step) => step.id === "packaged_editor_r_values"),
-        0,
-        { run: "echo interposed" }
-      );
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.id === "packaged_editor_r_values").run =
-        "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_categorical.outputs.candidate_path }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_categorical"
-      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "interactive-terminal";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_categorical"
-      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode";
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      steps.splice(
-        steps.findIndex((step) => step.id === "canonical_r_categorical"),
-        1
-      );
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      steps.splice(
-        steps.findIndex((step) => step.id === "packaged_editor_r_categorical"),
-        0,
-        {
-          run: "echo interposed"
-        }
-      );
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_interactive"
-      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "literate-documents";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_interactive"
-      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_literate"
-      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "interactive-terminal";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_literate"
-      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_remote"
-      ).env.OPEN_WRANGLER_PACKAGED_R_JOURNEY = "literate-documents";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_remote"
-      ).env.OPEN_WRANGLER_PACKAGED_EDITORS = "vscode,cursor";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.id === "packaged_editor_r_remote"
-      ).env.OPEN_WRANGLER_TEST_RSCRIPT = "${{ steps.rscript.outputs.executable }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.run === 'python -m pip install -e "python[dev]"').if = undefined;
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.push(
-        structuredClone(
-          workflow.jobs.jupyter.steps.find((step) => step.run === 'python -m pip install -e "python[dev]"')
-        )
-      );
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.push(
-        structuredClone(
-          workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@"))
-        )
-      );
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.push({ run: "python -m pip install --upgrade setuptools" });
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.push({ if: "${{ matrix.phase == 'r-remote' }}", run: "sudo apt-get install r-base" });
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.splice(18, 0, {
-        if: "${{ matrix.phase == 'r-remote' }}",
-        run: "python -m venv .remote-host"
-      });
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.splice(31, 0, {
-        if: "${{ matrix.phase == 'r-remote' }}",
-        run: "Rscript --version"
-      });
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.unshift(
-        structuredClone(workflow.jobs.jupyter.steps.find((step) => step.id === "canonical_r_remote"))
-      );
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.id === "canonical_r_remote").id = "";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => String(step.uses ?? "").startsWith("r-lib/actions/setup-r@")).if =
-        "${{ matrix.phase != 'python' }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.name === "Upload active R terminal failure diagnostics"
-      ).with.name = "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.name === "Upload value R-Jupyter failure diagnostics").with.name =
-        "${{ inputs.channel }}-release-r-jupyter-value-${{ runner.os }}-${{ github.run_attempt }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.name === "Upload value R-Jupyter failure diagnostics").with.path =
-        "${{ steps.packaged_editor_r_categorical.outputs.evidence_path }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.name === "Upload categorical R-Jupyter failure diagnostics"
-      ).with.name = "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}";
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      const upload = steps.splice(
-        steps.findIndex((step) => step.name === "Upload categorical R-Jupyter failure diagnostics"),
-        1
-      )[0];
-      steps.splice(steps.findIndex((step) => step.id === "canonical_r_interactive") + 1, 0, upload);
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.name === "Upload R Markdown and Quarto failure diagnostics"
-      ).with.name = "preview-release-r-jupyter";
-    },
-    (workflow) => {
-      const upload = workflow.jobs.jupyter.steps.find(
-        (step) => step.name === "Upload R Markdown and Quarto failure diagnostics"
-      );
-      upload.if = "${{ always() && steps.packaged_editor_r_literate.outcome == 'failure' }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.name === "Upload R Markdown and Quarto failure diagnostics").with[
-        "if-no-files-found"
-      ] = "warn";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.name === "Upload R Markdown and Quarto failure diagnostics").with[
-        "include-hidden-files"
-      ] = true;
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find(
-        (step) => step.name === "Upload remote R-Jupyter failure diagnostics"
-      ).with.name = "${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}";
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      steps.splice(
-        steps.findIndex((step) => step.name === "Fail after remote R-Jupyter diagnostics"),
-        1
-      );
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
-        "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
-        "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
-        "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure' || steps.packaged_editor_r_remote.outcome == 'failure') }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
-        "${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}";
-    },
-    (workflow) => {
-      workflow.jobs.jupyter.steps.find((step) => step.name === "Fail after local R acceptance diagnostics").if =
-        "${{ steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure' }}";
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      const failure = steps.splice(
-        steps.findIndex((step) => step.name === "Fail after local R acceptance diagnostics"),
-        1
-      )[0];
-      steps.splice(
-        steps.findIndex((step) => step.id === "canonical_r_literate"),
-        0,
-        failure
-      );
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_values");
-      const focused = steps.splice(focusedStart, 3);
-      const categoricalStart = steps.findIndex((step) => step.id === "canonical_r_categorical");
-      steps.splice(categoricalStart + 3, 0, ...focused);
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_values");
-      const focused = steps.slice(focusedStart, focusedStart + 3).map((step) => structuredClone(step));
-      const categoricalStart = steps.findIndex((step) => step.id === "canonical_r_categorical");
-      steps.splice(categoricalStart, 0, ...focused);
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_interactive");
-      const focused = steps.splice(focusedStart, 3);
-      const ordinaryStart = steps.findIndex((step) => step.id === "canonical_r_jupyter");
-      steps.splice(ordinaryStart, 0, ...focused);
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_literate");
-      const focused = steps.splice(focusedStart, 3);
-      const ordinaryStart = steps.findIndex((step) => step.id === "canonical_r_jupyter");
-      steps.splice(ordinaryStart, 0, ...focused);
-    },
-    (workflow) => {
-      const steps = workflow.jobs.jupyter.steps;
-      const focusedStart = steps.findIndex((step) => step.id === "canonical_r_categorical");
-      const focused = steps.splice(focusedStart, 3);
-      const interactiveStart = steps.findIndex((step) => step.id === "canonical_r_interactive");
-      steps.splice(interactiveStart + 3, 0, ...focused);
-    },
-    (workflow) => {
-      workflow.jobs.linux.steps.find((step) => step.id === "packaged_cursor").env.OPEN_WRANGLER_XVFB_EXECUTABLE =
-        "Xvfb";
-    }
-  ];
-  for (const [index, change] of cases.entries()) {
-    assert.notDeepEqual(
-      inspectCandidateAcceptanceWorkflow(mutate(change)),
-      [],
-      `candidate mutation ${index + 1} must fail closed`
-    );
-  }
-});
-
-const syntheticUploadAction = "actions/upload-artifact@frozen";
-
-function syntheticDeferredWorkflow() {
-  const runnerIds = ["ordinary", "values", "categorical", "interactive", "literate"];
-  const steps = runnerIds.flatMap((runnerId) => [
-    { id: runnerId, "continue-on-error": true, run: `run ${runnerId}` },
-    {
-      if: `\${{ always() && steps.${runnerId}.outcome == 'failure' && steps.${runnerId}.outputs.evidence_ready == 'true' }}`,
-      uses: syntheticUploadAction,
-      with: { path: `\${{ steps.${runnerId}.outputs.evidence_path }}` }
-    }
-  ]);
-  steps.push({
-    if: `\${{ always() && (${runnerIds.map((runnerId) => `steps.${runnerId}.outcome == 'failure'`).join(" || ")}) }}`,
-    run: "exit 1"
-  });
-  return { jobs: { release: { steps } } };
+function workflow() {
+  return structuredClone(parseYaml(source));
 }
 
-test("deferred diagnostic fan-in rejects every incomplete or ambiguous aggregate", () => {
-  assert.deepEqual(inspectDeferredDiagnosticFailures(syntheticDeferredWorkflow(), syntheticUploadAction), []);
+function inspectMutation(mutate) {
+  const document = workflow();
+  mutate(document);
+  return inspectCandidateAcceptanceWorkflow(dumpYaml(document, { lineWidth: 120 }));
+}
 
-  const cases = [
-    ["missing", (steps) => steps.pop()],
-    [
-      "missing member",
-      (steps) => {
-        steps.at(-1).if =
-          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.outcome == 'failure') }}";
-      }
-    ],
-    [
-      "extra member",
-      (steps) => {
-        steps.at(-1).if =
-          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.outcome == 'failure' || steps.literate.outcome == 'failure' || steps.remote.outcome == 'failure') }}";
-      }
-    ],
-    [
-      "duplicate member",
-      (steps) => {
-        steps.at(-1).if =
-          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.literate.outcome == 'failure') }}";
-      }
-    ],
-    [
-      "reordered members",
-      (steps) => {
-        steps.at(-1).if =
-          "${{ always() && (steps.values.outcome == 'failure' || steps.ordinary.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.outcome == 'failure' || steps.literate.outcome == 'failure') }}";
-      }
-    ],
-    [
-      "malformed member",
-      (steps) => {
-        steps.at(-1).if =
-          "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.result == 'failure' || steps.interactive.outcome == 'failure' || steps.literate.outcome == 'failure') }}";
-      }
-    ],
-    [
-      "extra malformed aggregate",
-      (steps) => {
-        steps.push({
-          if: "${{ always() && (steps.ordinary.outcome == 'failure' || steps.values.outcome == 'failure' || steps.categorical.outcome == 'failure' || steps.interactive.outcome == 'failure' || steps.literate.result == 'failure') }}",
-          run: "exit 1"
-        });
-      }
-    ],
-    [
-      "premature aggregate",
-      (steps) => {
-        const aggregate = steps.pop();
-        steps.splice(4, 0, aggregate);
-      }
-    ],
-    [
-      "aggregate without deferred runners",
-      (steps) => {
-        for (const step of steps) delete step["continue-on-error"];
-      }
-    ],
-    [
-      "unguarded continue-on-error",
-      (steps) => {
-        steps.unshift({ id: "unguarded", "continue-on-error": true, run: "run unguarded" });
-      }
-    ]
-  ];
+function expectRejected(mutate, pattern) {
+  const problems = inspectMutation(mutate);
+  assert.ok(problems.length > 0, "The mutated workflow must be rejected.");
+  if (pattern !== undefined) assert.match(problems.join("\n"), pattern);
+}
 
-  for (const [label, mutate] of cases) {
-    const workflow = syntheticDeferredWorkflow();
-    mutate(workflow.jobs.release.steps);
-    assert.notDeepEqual(
-      inspectDeferredDiagnosticFailures(workflow, syntheticUploadAction),
-      [],
-      `${label} must fail closed`
+function step(job, predicate) {
+  return job.steps.find(predicate);
+}
+
+test("accepts the fixed parallel candidate acceptance topology", () => {
+  assert.deepEqual(inspectCandidateAcceptanceWorkflow(source), []);
+});
+
+test("rejects invalid or oversized workflow text", () => {
+  assert.match(inspectCandidateAcceptanceWorkflow("not: [yaml")[0], /valid YAML/u);
+  assert.match(inspectCandidateAcceptanceWorkflow("x".repeat(2 * 1024 * 1024 + 1))[0], /bounded YAML/u);
+});
+
+test("requires exactly four inputs, no outputs, and eight fixed jobs", () => {
+  expectRejected((value) => {
+    value.on.workflow_call.outputs = { accepted: { value: "true" } };
+  }, /four required inputs, no outputs/u);
+  expectRejected((value) => {
+    value.on.workflow_call.inputs.lane = { required: true, type: "string" };
+  }, /four required inputs/u);
+  expectRejected((value) => {
+    delete value.jobs.acceptance;
+  }, /eight fixed jobs/u);
+});
+
+test("input contract rejects malformed artifact IDs, SHAs, and channels before fan-out", () => {
+  expectRejected((value) => {
+    value.jobs.contract.steps[0].run = "true";
+  }, /fail closed/u);
+  expectRejected((value) => {
+    value.jobs.contract.steps[0].env.EXTRA = "unsafe";
+  }, /fail closed/u);
+});
+
+test("platform owns the exact two-cell macOS and Windows matrix", () => {
+  expectRejected((value) => {
+    value.jobs.platform.strategy["fail-fast"] = true;
+  }, /macOS and Windows matrix/u);
+  expectRejected((value) => {
+    value.jobs.platform.strategy["max-parallel"] = 1;
+  }, /macOS and Windows matrix/u);
+  expectRejected((value) => {
+    value.jobs.platform.strategy.matrix.include[1].python = "3.12";
+  }, /macOS and Windows matrix/u);
+  expectRejected((value) => {
+    value.jobs.platform["runs-on"] = "ubuntu-24.04";
+  }, /fixed runner|macOS and Windows/u);
+});
+
+test("linux and performance remain fixed parallel siblings", () => {
+  expectRejected((value) => {
+    value.jobs.linux.needs = ["contract", "platform"];
+  }, /fixed runner and direct dependency/u);
+  expectRejected((value) => {
+    value.jobs.performance["runs-on"] = "${{ inputs.runner_os }}";
+  }, /fixed runner and direct dependency/u);
+  expectRejected((value) => {
+    step(value.jobs.linux, (entry) => entry.run === "npm run test:coverage").run = "true";
+  }, /source, webview, coverage/u);
+});
+
+test("jupyter contains only independent Python and remote-R cells", () => {
+  expectRejected((value) => {
+    value.jobs.jupyter.strategy.matrix.phase = ["python", "r-local", "r-remote"];
+  }, /only independent Python and remote-R/u);
+  expectRejected((value) => {
+    value.jobs.jupyter.strategy["fail-fast"] = true;
+  }, /only independent Python and remote-R/u);
+  expectRejected((value) => {
+    value.jobs.jupyter.steps.push({ run: "npm run test:r-contract" });
+  }, /local R belongs to its shards/u);
+});
+
+test("r_contract and r_local depend only on contract and run as siblings", () => {
+  expectRejected((value) => {
+    value.jobs.r_contract.needs = "jupyter";
+  }, /fixed runner|artifact-independent sibling/u);
+  expectRejected((value) => {
+    value.jobs.r_local.needs = ["contract", "r_contract"];
+  }, /fixed runner|beside r_contract/u);
+  expectRejected((value) => {
+    value.jobs.r_contract.steps.push({
+      uses: "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+    });
+  }, /artifact-independent sibling/u);
+});
+
+test("r_contract owns the exact hosted R dependency contract once", () => {
+  expectRejected((value) => {
+    step(value.jobs.r_contract, (entry) => entry.uses?.startsWith("r-lib/actions/setup-r-dependencies@")).with[
+      "extra-packages"
+    ] += "\nany::IRkernel";
+  }, /exact hosted R 4\.5\.2 package contract/u);
+  expectRejected((value) => {
+    step(value.jobs.r_contract, (entry) => entry.run === "npm run test:r-contract").env.RSCRIPT = "Rscript";
+  }, /native contract once/u);
+  expectRejected((value) => {
+    value.jobs.r_contract.steps.push({ run: 'Rscript -e "install.packages("jsonlite")"' });
+  }, /exact hosted R/u);
+});
+
+test("r_local uses exactly two balanced, non-cancelling shards", () => {
+  expectRejected((value) => {
+    value.jobs.r_local.strategy.matrix.shard = ["core", "value", "categorical", "interactive", "literate"];
+  }, /two non-cancelling balanced shards/u);
+  expectRejected((value) => {
+    value.jobs.r_local.strategy["fail-fast"] = true;
+  }, /two non-cancelling balanced shards/u);
+  expectRejected((value) => {
+    value.jobs.r_local.strategy["max-parallel"] = 1;
+  }, /two non-cancelling balanced shards/u);
+});
+
+test("core uses the explicit selector and all local phases keep VS Code then Cursor in one runner", () => {
+  for (const [id, journey] of [
+    ["packaged_editor_r_core", "core-operations"],
+    ["packaged_editor_r_interactive", "interactive-terminal"],
+    ["packaged_editor_r_literate", "literate-documents"],
+    ["packaged_editor_r_values", "value-operations"],
+    ["packaged_editor_r_categorical", "categorical-operations"]
+  ]) {
+    const value = workflow();
+    const runner = step(value.jobs.r_local, (entry) => entry.id === id);
+    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_R_JOURNEY, journey);
+    assert.equal(runner.env.OPEN_WRANGLER_PACKAGED_EDITORS, "vscode,cursor");
+  }
+  expectRejected((value) => {
+    step(value.jobs.r_local, (entry) => entry.id === "packaged_editor_r_core").env.OPEN_WRANGLER_PACKAGED_R_JOURNEY =
+      "value-operations";
+  }, /verifier.*packaged phase.*upload/u);
+});
+
+test("every local phase has an adjacent verifier and immediate exact failure upload", () => {
+  expectRejected((value) => {
+    const steps = value.jobs.r_local.steps;
+    const runner = steps.findIndex((entry) => entry.id === "packaged_editor_r_interactive");
+    steps.splice(runner, 0, { run: "true" });
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    const upload = step(value.jobs.r_local, (entry) => entry.name === "Upload value R-Jupyter failure diagnostics");
+    upload.with.path = "tmp/**";
+  }, /verifier.*packaged phase.*upload/u);
+  expectRejected((value) => {
+    const upload = step(
+      value.jobs.r_local,
+      (entry) => entry.name === "Upload categorical R-Jupyter failure diagnostics"
     );
-  }
+    upload.if = "${{ always() }}";
+  }, /verifier.*packaged phase.*upload/u);
 });
 
-test("candidate local R diagnostics continue through all five ordered runner triples", () => {
-  const workflow = parseYaml(source);
-  const steps = workflow.jobs.jupyter.steps;
-  const triples = [
-    ["packaged_editor_r", "Upload local R-Jupyter failure diagnostics"],
-    ["packaged_editor_r_values", "Upload value R-Jupyter failure diagnostics"],
-    ["packaged_editor_r_categorical", "Upload categorical R-Jupyter failure diagnostics"],
-    ["packaged_editor_r_interactive", "Upload active R terminal failure diagnostics"],
-    ["packaged_editor_r_literate", "Upload R Markdown and Quarto failure diagnostics"]
-  ];
-  let previousUploadIndex = -1;
-  for (const [runnerId, uploadName] of triples) {
-    const runnerIndex = steps.findIndex((step) => step.id === runnerId);
-    const uploadIndex = steps.findIndex((step) => step.name === uploadName);
-    assert.ok(runnerIndex > previousUploadIndex, `${runnerId} must run after the preceding diagnostic upload.`);
-    assert.equal(steps[runnerIndex]?.["continue-on-error"], true);
-    assert.equal(uploadIndex, runnerIndex + 1);
-    assert.match(steps[uploadIndex]?.if ?? "", /^\$\{\{ always\(\)/u);
-    previousUploadIndex = uploadIndex;
-  }
-  assert.equal(
-    steps.findIndex((step) => step.name === "Fail after local R acceptance diagnostics"),
-    previousUploadIndex + 1
-  );
+test("local shard order is lifecycle then editing with one deferred raw-outcome verdict", () => {
+  expectRejected((value) => {
+    const steps = value.jobs.r_local.steps;
+    const valueIndex = steps.findIndex((entry) => entry.id === "packaged_editor_r_values");
+    const [runner] = steps.splice(valueIndex, 1);
+    steps.splice(
+      steps.findIndex((entry) => entry.id === "packaged_editor_r_interactive"),
+      0,
+      runner
+    );
+  }, /balanced shard order|verifier.*packaged phase/u);
+  expectRejected((value) => {
+    step(value.jobs.r_local, (entry) => entry.name === "Require successful local R shard outcomes").if =
+      "${{ success() }}";
+  }, /literal raw-outcome verdict/u);
+  expectRejected((value) => {
+    step(value.jobs.r_local, (entry) => entry.name === "Require successful local R shard outcomes").run =
+      'test "$CORE_OUTCOME" != "failure"';
+  }, /literal raw-outcome verdict/u);
 });
 
-test("legacy fixed-directory diagnostics remain valid with an immediate failure step", () => {
-  const workflow = {
+test("fan-in always needs every job and accepts only literal success", () => {
+  expectRejected((value) => {
+    value.jobs.acceptance.needs.pop();
+  }, /always fan in every direct job/u);
+  expectRejected((value) => {
+    value.jobs.acceptance.if = "${{ success() }}";
+  }, /always fan in every direct job/u);
+  expectRejected((value) => {
+    value.jobs.acceptance.steps[0].run = 'test "$PLATFORM_RESULT" != "failure"';
+  }, /literal success result/u);
+});
+
+test("all action references remain immutable and diagnostics channel-scoped", () => {
+  expectRejected((value) => {
+    value.jobs.r_local.steps.find((entry) => entry.uses?.startsWith("actions/download-artifact@")).uses =
+      "actions/download-artifact@v8";
+  }, /pinned to one full commit/u);
+  expectRejected((value) => {
+    step(value.jobs.r_local, (entry) => entry.name === "Upload local R-Jupyter failure diagnostics").with.name =
+      "local-r-failure";
+  }, /namespaced by the requested release channel/u);
+});
+
+test("all artifact consumers use the numeric ID and never rebuild", () => {
+  expectRejected((value) => {
+    value.jobs.r_local.steps.find((entry) => entry.uses?.startsWith("actions/download-artifact@")).with[
+      "artifact-ids"
+    ] = "openwrangler-preview-release";
+  }, /numeric caller-bound canonical artifact/u);
+  expectRejected((value) => {
+    value.jobs.jupyter.steps.push({ run: "npm run package" });
+  }, /never rebuild/u);
+});
+
+test("private-display jobs retain the validated Xvfb preparation", () => {
+  expectRejected((value) => {
+    step(value.jobs.r_local, (entry) => entry.id === "prepare_xvfb").run = "console.log('/usr/bin/Xvfb')";
+  }, /prepare one pinned private Xvfb/u);
+});
+
+test("single-call caller contract rejects matrices, extra inputs, outputs, and wrong channels", () => {
+  const caller = {
     jobs: {
-      visual: {
-        steps: [
-          { id: "screenshots", "continue-on-error": true, run: "capture screenshots" },
-          {
-            if: "${{ always() && steps.screenshots.outcome == 'failure' }}",
-            uses: syntheticUploadAction,
-            with: { path: "tmp/webview-acceptance" }
-          },
-          {
-            if: "${{ always() && steps.screenshots.outcome == 'failure' }}",
-            run: "exit 1"
-          }
-        ]
+      "candidate-acceptance": {
+        name: "Candidate acceptance",
+        needs: "package",
+        uses: "./.github/workflows/candidate-acceptance.yml",
+        permissions: { contents: "read" },
+        with: {
+          artifact_id: "${{ needs.package.outputs.artifact-id }}",
+          channel: "preview",
+          expected_sha: "${{ github.sha }}",
+          release_tag: "${{ inputs.release_tag }}"
+        }
       }
     }
   };
-
-  assert.deepEqual(inspectDeferredDiagnosticFailures(workflow, syntheticUploadAction), []);
+  assert.deepEqual(inspectCandidateCaller(caller, "preview"), []);
+  for (const mutate of [
+    (value) => {
+      value.jobs["candidate-acceptance"].strategy = { matrix: { lane: ["linux"] } };
+    },
+    (value) => {
+      value.jobs["candidate-acceptance"].with.lane = "linux";
+    },
+    (value) => {
+      value.jobs["candidate-acceptance"].outputs = { accepted: "true" };
+    },
+    (value) => {
+      value.jobs["candidate-acceptance"].with.channel = "stable";
+    }
+  ]) {
+    const value = structuredClone(caller);
+    mutate(value);
+    assert.match(inspectCandidateCaller(value, "preview").join("\n"), /one read-only call/u);
+  }
 });

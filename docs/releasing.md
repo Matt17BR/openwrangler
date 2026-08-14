@@ -81,8 +81,8 @@ Every Open Wrangler 2 release candidate runs the R 4.5.2 contract tests. The pre
 install their canonical VSIX in VS Code and Cursor and run the R notebook journey. Linux and macOS VS Code run the
 core profile; Windows and Cursor run the representative core profile within the same hard deadline. Core owns Filter
 Rows, Sort Rows, Drop Missing Rows, Fill Missing Values, Drop Duplicates, Rename Column, Drop Columns, Select Columns,
-Clone Column, Convert type, Formula, Text Length, and Group and aggregate as its targeted operation slice. A fresh
-`value-operations` invocation owns exactly Find and replace, Format Datetime, Min-max scale, Round, Floor, Ceiling,
+Clone Column, Convert type, Text Length, and Group and aggregate as its targeted operation slice. A fresh
+`value-operations` invocation owns exactly Find and replace, Formula, Format Datetime, Min-max scale, Round, Floor, Ceiling,
 Capitalize, Lowercase, Uppercase, Strip text, and Split text as its targeted slice. A fresh
 `categorical-operations` invocation owns exactly the One-hot encode and Multi-label binarize visible-form,
 boundary-value, generated-call, preview, apply, and undo journeys as its targeted slice. Their complete invocations
@@ -92,12 +92,16 @@ assertion of all 26 supported operation capabilities through its owned journey, 
 literate paths. macOS retains plain `.R` in the core invocation, and Windows skips direct R documents. The candidate
 is verified again before fresh packaged VS Code and Cursor phases cover the active R terminal, then verified once more
 before fresh phases cover plain `.R`, `.Rmd`, `.qmd`, native Quarto preview, and Python Quarto.
-Direct R/runtime/webview suites retain the complete R operation and document matrix. The candidate workflow runs
-Python, local R, and remote R Jupyter acceptance as separate non-cancelling matrix jobs, and all three download and
-verify the same candidate VSIX. The local core, focused value, focused categorical, focused interactive, focused
-literate, and remote R invocations retain distinct sealed failure diagnostics. Each local upload immediately follows
-its owning runner; one exact local-R failure fan-in evaluates all five raw runner outcomes only after the literate
-upload. Only the focused
+Direct R/runtime/webview suites retain the complete R operation and document matrix. Preview and stable release
+workflows each invoke the shared candidate workflow through one non-matrix caller. The reusable workflow owns fixed
+parallel Python, remote-R, R-contract, platform, performance, and local-R jobs, and all candidate consumers download
+and verify the same VSIX. Local R is a two-cell non-cancelling shard matrix: lifecycle runs `core-operations`,
+`interactive-terminal`, then `literate-documents`; editing runs `value-operations`, then `categorical-operations`.
+Setup is shared only within a shard. Every phase freshly verifies the exact candidate immediately before a
+fresh VS Code-and-Cursor invocation with private roots, then immediately exposes only its distinct sealed failure
+diagnostic. Each shard defers its raw-outcome failure until all assigned phase uploads have run. One output-free
+acceptance fan-in requires literal success of every internal job; publication separately requires literal package,
+candidate-acceptance, and Remote SSH success. Only the focused
 `literate-documents` invocation creates a private core Python compatibility environment under its verified temporary
 root, pins Jupyter Client 8.9.1 alongside the reviewed runtime versions, registers that exact interpreter in the
 R-owned Jupyter data directory, and directly proves one start/execute/shutdown cycle before launching VS Code. The
@@ -106,8 +110,17 @@ interpreter. This closes the unreviewed hosted-IPykernel 7.x drift observed in t
 version caused the stall; it does not add a retry or relax either deadline. The categorical Undo assertion dispatches
 once, keeps that authoritative receipt, and gives the queued mutation 75 seconds to complete; it never retries after
 the dispatch boundary. Generated-R acceptance reacquires Code Preview only when it proves the prior renderer
-generation was replaced, reads one exact bounded code receipt, changes only the exact CodeMirror scroller, and
-requires two stable same-generation visibility measurements with bounded diagnostics.
+generation was replaced, reads one exact bounded code receipt, selects one unique complete logical line with
+receipt-only diagnostics, changes only the exact CodeMirror scroller, and requires two stable same-generation
+visibility measurements with bounded diagnostics.
+
+The redesign preserves the exact 12 core, 12 value, and two categorical targeted operations plus the shared lifecycle
+scaffold and complete 26-capability assertions. It also preserves each editor phase's 300-second hard deadline,
+180-second changed-checkpoint inactivity deadline, and no-retry rule. Based on Preview run #73's roughly 33-minute
+release and 31-minute serial local-R lane, the graph projects roughly 21–22 minutes from release start and about 15
+minutes for the R shards, with Windows/Python expected to become the next bottleneck. That estimate is not hosted
+proof; a fresh exact-candidate Preview run remains required. The manual `.github/workflows/released-jupyter.yml` path
+remains its existing serial, non-authoritative diagnostic workflow and is not a substitute for this fan-out.
 
 Only the focused interactive and literate selectors acquire the four pinned R/Quarto tooling artifacts. Core, focused
 value, focused categorical, and remote-only selectors do not prepare or install them. Acquisition may retry only when the initial `fetch` promise rejects
@@ -249,7 +262,7 @@ run the fixed release and media contract inventory, and perform JavaScript/TypeS
 platform and Python CodeQL names are preserved by carrier cells. At least one registered release production or test
 path is mandatory; exact adjunct release documents may accompany it, while any unlisted, shared-dependency,
 classifier, or mixed product path fails closed to full CI. This pull-request optimization does not weaken or replace
-the complete exact-artifact release-candidate matrix.
+complete exact-artifact release-candidate acceptance.
 The shared candidate-acceptance workflow itself also forces full CI until its inspector pins an exact per-job step
 inventory. The preview and stable release workflows also force full CI while their publication-permissioned jobs lack
 exact step inventories. Their parsers and candidate-boundary tests still execute in the focused lane.
@@ -265,34 +278,46 @@ version, changelog, release notes, and required release metadata.
 
 For an intentional release-candidate pull request, apply the `acceptance:remote-ssh` label before the next pushed commit. The resulting opt-in job reuses the canonical PR artifact and runs the pinned official VS Code/Remote SSH stack once inside private Linux namespaces; ordinary pull requests do not pay its download or runtime cost. A failed candidate is recorded and is not automatically retried.
 
-`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Five outer lanes run macOS, Windows, Linux, installed-performance, and Jupyter acceptance against that artifact ID. The Jupyter lane expands into Python, local R, and remote R jobs. The local R cell runs separately verified core, value, categorical, active-terminal, and literate editor invocations in that order. Every runner starts from a fresh exact candidate/profile, has a fresh deadline, and owns a distinct immediate sealed diagnostic upload; one exact five-way raw-outcome failure step runs after the literate upload so an earlier editor failure does not suppress later local evidence. The remote R cell avoids hosted R and local editor tooling and starts the existing five-phase Docker journey immediately after common package setup and artifact verification. Linux owns the complete source/full-suite commands; the other cells keep their real-editor checks without rerunning the full Python or TypeScript corpus. Remote SSH depends only on the package and starts alongside those lanes; publication still depends directly on the package, complete matrix, and Remote SSH results. The overlap saves about three minutes on successful release wall time without removing evidence. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
+`npm run docs:check` semantically parses both release callers and their shared candidate workflow. A manual dispatch from the exact protected `main` commit builds the preview VSIX once, validates `--preview-only` metadata, and authors one immutable VSIX/checksum/provenance triple. Exactly one non-matrix caller invokes the reusable candidate workflow. That workflow owns fixed internal macOS, Windows, Linux, installed-performance, Python, remote-R, R-contract, and local-R jobs against the artifact ID. The local-R matrix contains exactly two non-cancelling shards. Lifecycle runs separately verified `core-operations`, `interactive-terminal`, and `literate-documents` invocations in that order; editing runs separately verified `value-operations` then `categorical-operations`. Every runner starts from a freshly verified exact candidate and new VS Code/Cursor private roots, has a fresh deadline, and owns a distinct immediate sealed diagnostic upload. Each shard checks all raw outcomes only after its assigned uploads, so an earlier editor failure does not suppress later local evidence. The remote-R job avoids hosted R and local editor tooling and starts the existing five-phase Docker journey immediately after common package setup and artifact verification. Linux owns the complete source/full-suite commands; the other jobs keep their real-editor checks without rerunning the full Python or TypeScript corpus. An output-free internal fan-in requires literal success of every candidate job. Remote SSH depends only on the package and starts alongside candidate acceptance; publication depends directly on package, the candidate call, and Remote SSH. External actions are commit-pinned, validation jobs remain read-only and outside protected environments, and no consumer may rebuild or repackage the candidate.
 
-The local R cell provisions its contract packages through the same pinned dependency action and exact configuration as the
-pull-request R matrix. The action reconciles the resolved lock and may restore a compatible versioned cache created by
-an earlier candidate dispatch on `main`. GitHub's pull-request merge-ref cache is not available to the release
+Each local-R shard provisions its packages once through the same pinned dependency action and exact configuration as
+the pull-request R matrix. The action reconciles the resolved lock and may restore a compatible versioned cache created
+by an earlier candidate dispatch on `main`. GitHub's pull-request merge-ref cache is not available to the release
 dispatch, so the first matching `main` dispatch performs a valid cold install. The cache is neither immutable package
-pinning nor supply-chain evidence. The R contract, core packaged-editor journey, all four focused artifact
-revalidations, and the value, categorical, active-terminal, and R Markdown/Quarto journeys remain required release
-evidence.
+pinning nor supply-chain evidence. The R contract runs as its own parallel sibling. Core packaged-editor acceptance,
+all four focused artifact revalidations, and the value, categorical, active-terminal, and R Markdown/Quarto journeys
+remain required release evidence.
 
 Preview release run #72 produced no publication: local R core reached the unchanged 300-second hard deadline at
 numeric Round, Cursor's Multi-label Undo acceptance lost its bounded wait, and macOS failed the Drop Columns Code Preview
 generation/diagnostic bound. That attempt cannot be rerun or promoted as evidence. Candidate macOS remains
 authoritative, and publication requires one new fresh Preview attempt from the remediated exact protected `main` head.
 
-The outer candidate matrix and its inner Jupyter matrix keep fail-fast cancellation disabled. Once a cell reports a
-failure, sibling editor, Docker, performance, and Remote SSH owners may finish their bounded work and cleanup rather
-than being interrupted. This can spend additional runner time on a failed candidate, but every failed result still
-blocks publication. Diagnostic-producing commands upload available sealed evidence immediately before their explicit
-failure step.
+Preview release [run #73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383) from protected `main`
+commit `c7e1635` also produced no publication. macOS artifact `9223912246` reached
+`jupyter-r:editing:drop-code-preview:reveal-start`; the bare `label` substring chose a generic 384-character
+`.ow_label` helper whose wrapped height was 210.0157 CSS pixels inside the exact 183-pixel scroller. The pinned code
+receipt and renderer generation had not changed. Linux core artifact `9223997830` reached its correlated `{ok:true}`
+and `jupyter-r:complete` at about 299.5 seconds, but the outer process missed the unchanged 300-second settlement
+deadline and therefore never started Cursor core. The independent value phase passed VS Code and Cursor in 6m34s
+total. The next candidate selects the unique complete `.ow_drop_names` assignment by exact logical-line equality and
+moves the self-contained Formula journey into value, producing a 12/12/2 targeted split. Its workflow topology changes
+to the fixed parallel graph and two local-R shards above; deadlines, coverage, and retry policy do not change. Run #73
+remains failed, non-authoritative release evidence.
+
+The internal fixed jobs and two-cell local-R shard matrix keep sibling cancellation disabled. Once a cell reports a
+failure, sibling editor, Docker, performance, R-contract, and Remote SSH owners may finish their bounded work and
+cleanup rather than being interrupted. This can spend additional runner time on a failed candidate, but every failed
+result still blocks the output-free acceptance fan-in and publication. Diagnostic-producing commands upload available
+sealed evidence immediately; the owning shard's explicit failure step runs only after all of that shard's phases.
 
 A `publish: false` run proves source binding, package integrity, and the complete acceptance topology only. It does not enter the `publishing` environment, receive registry secrets or `contents: write`, push a tag, call a registry, or trigger the Marketplace pipeline. Its run-scoped artifact is not promoted by a later dispatch; an explicitly authorized `publish: true` run repeats acceptance and promotes only the exact artifact created and tested in that same run. Consequently a rehearsal does **not** prove protected-environment approval, secret availability, GitHub publication API behavior, the global publication queue under live contention, Azure workload federation, or registry propagation.
 
 The stable workflow is manual and defaults to validation-only. It accepts only the exact current protected `main`
 commit. Packaging may preflight an absent tag or one that already resolves to that commit; publication accepts only
 an absent or exact lightweight tag. One job builds the VSIX and uploads `openwrangler.vsix`, its lowercase SHA-256,
-and stable provenance JSON. The shared five-lane matrix and Remote SSH consume that canonical set in parallel after
-packaging. The package, matrix, and Remote SSH jobs must all pass before promotion.
+and stable provenance JSON. One non-matrix shared-candidate call and Remote SSH consume that canonical set in parallel
+after packaging. The package, candidate call, and Remote SSH jobs must all pass before promotion.
 
 `publish: true` makes the final job eligible for the branch-and-tag-restricted `publishing` environment. That job
 alone receives `contents: write`, downloads the artifact ID again, and revalidates it before each publisher. Both
@@ -359,7 +384,7 @@ run builds and tests one canonical set, then creates the lightweight tag and Git
 The tag event starts the Marketplace pipeline. Do not create stable tags manually; the stable workflow creates the
 tag and GitHub Release together at the accepted `main` commit.
 
-Preview candidates run macOS/Python 3.12 and Windows/Python 3.14 native acceptance beside, not before, the complete Linux owner. Cross-platform jobs keep environment smoke, extension-host, packaged VS Code and Cursor platform coverage, plus one local R/IRkernel journey in packaged VS Code, without rerunning the complete Python or R contract suites. Linux owns source checks, script contracts, visual/accessibility, instrumented coverage, dependency audits, runtime benchmark, and full packaged VS Code/Cursor journeys exactly once. Installed performance, released/remote Jupyter, and Remote SSH remain independent parallel consumers of the same canonical triple. Remote SSH is not optional: the final publication fan-in still requires its success together with the package and complete candidate matrix.
+Preview candidates run macOS/Python 3.12 and Windows/Python 3.14 native acceptance beside, not before, the complete Linux owner. Cross-platform jobs keep environment smoke, extension-host, packaged VS Code and Cursor platform coverage, plus one local R/IRkernel journey in packaged VS Code, without rerunning the complete Python or R contract suites. Linux owns source checks, script contracts, visual/accessibility, instrumented coverage, dependency audits, runtime benchmark, and full packaged VS Code/Cursor journeys exactly once. Installed performance and released/remote Jupyter are fixed internal siblings in the single shared candidate call; Remote SSH remains an independent parallel consumer of the same canonical triple. Remote SSH is not optional: the final publication fan-in still requires its success together with the package and the complete candidate call.
 
 The shared candidate validator binds the requested runner label to its own input variable. Do not use a `RUNNER_*`
 name for that value: GitHub reserves those variables for host metadata and ignores attempts to override them.

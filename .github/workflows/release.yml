@@ -113,32 +113,8 @@ jobs:
           include-hidden-files: false
 
   candidate-acceptance:
-    name: Candidate acceptance (${{ matrix.name }})
+    name: Candidate acceptance
     needs: package
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS platform
-            lane: platform
-            os: macos-latest
-            python: "3.12"
-          - name: Windows platform
-            lane: platform
-            os: windows-latest
-            python: "3.14"
-          - name: Linux acceptance
-            lane: linux
-            os: ubuntu-24.04
-            python: "3.12"
-          - name: Installed performance
-            lane: performance
-            os: ubuntu-24.04
-            python: "3.12"
-          - name: Released Jupyter
-            lane: jupyter
-            os: ubuntu-24.04
-            python: "3.12"
     uses: ./.github/workflows/candidate-acceptance.yml
     permissions:
       contents: read
@@ -146,10 +122,7 @@ jobs:
       artifact_id: ${{ needs.package.outputs.artifact-id }}
       channel: preview
       expected_sha: ${{ github.sha }}
-      lane: ${{ matrix.lane }}
-      python_version: ${{ matrix.python }}
       release_tag: ${{ inputs.release_tag }}
-      runner_os: ${{ matrix.os }}
   remote-ssh:
     name: Remote SSH acceptance
     needs: package
@@ -275,7 +248,7 @@ jobs:
   release:
     name: Publish GitHub preview and registries
     needs: [package, candidate-acceptance, remote-ssh]
-    if: ${{ inputs.publish == true }}
+    if: ${{ !cancelled() && inputs.publish == true && needs.package.result == 'success' && needs.candidate-acceptance.result == 'success' && needs.remote-ssh.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 105
     environment: publishing

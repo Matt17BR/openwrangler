@@ -1,8 +1,10 @@
 export const REMOTE_R_JUPYTER_SELECTOR = "remote-r-jupyter";
+export const CORE_R_JUPYTER_SELECTOR = "core-operations";
 export const CATEGORICAL_R_JUPYTER_SELECTOR = "categorical-operations";
 export const VALUE_R_JUPYTER_SELECTOR = "value-operations";
 
 const R_JUPYTER_SELECTORS = new Set([
+  CORE_R_JUPYTER_SELECTOR,
   CATEGORICAL_R_JUPYTER_SELECTOR,
   VALUE_R_JUPYTER_SELECTOR,
   "interactive-terminal",
@@ -19,7 +21,7 @@ export function resolvePackagedRJourneySelection({
 }) {
   if (selector !== undefined && !R_JUPYTER_SELECTORS.has(selector)) {
     throw new Error(
-      'OPEN_WRANGLER_PACKAGED_R_JOURNEY must be unset, "categorical-operations", "value-operations", "interactive-terminal", "literate-documents", or "remote-r-jupyter".'
+      'OPEN_WRANGLER_PACKAGED_R_JOURNEY must be unset, "core-operations", "categorical-operations", "value-operations", "interactive-terminal", "literate-documents", or "remote-r-jupyter".'
     );
   }
   if (selector !== undefined && acceptanceMode !== "r-jupyter") {

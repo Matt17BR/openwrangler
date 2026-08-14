@@ -63,45 +63,71 @@ The release tier adds the expensive product checks that no longer run on every p
 
 - packaged VS Code on macOS and Windows;
 - packaged Cursor on macOS and Windows;
-- released Jupyter in separate Python, local R, and remote R jobs: local and remote Python kernels in VS Code, local R
-  in VS Code and Cursor, remote R in VS Code, and fresh focused Linux VS Code and Cursor invocations for value and
-  categorical operations, the active R terminal, and R Markdown/Quarto;
+- released Jupyter in fixed parallel Python, local-R-shard, and remote-R jobs: local and remote Python kernels in VS
+  Code, local R in VS Code and Cursor, remote R in VS Code, and fresh focused Linux VS Code and Cursor invocations for
+  value and categorical operations, the active R terminal, and R Markdown/Quarto;
+- the native R contract in its own parallel sibling job;
 - Remote SSH;
 - installed performance in pinned VS Code and Cursor;
 - the complete source, platform, package, accessibility, and security checks.
 
 A release cannot publish until every candidate job passes. GitHub, Open VSX, and the Visual Studio Marketplace receive the accepted VSIX; none of them rebuild it.
 
-Remote SSH starts from the packaged artifact alongside the candidate matrix instead of waiting behind it. That
+The preview or stable release workflow invokes the shared candidate workflow exactly once through one non-matrix
+caller. The reusable workflow owns its fixed internal parallel topology; callers cannot invent, omit, or duplicate a
+lane through matrix input. Its output-free acceptance fan-in runs after all internal jobs and requires every literal
+job result to be `success`. Publication independently and explicitly requires success from package production, that
+candidate acceptance call, and Remote SSH.
+
+Remote SSH starts from the packaged artifact alongside candidate acceptance instead of waiting behind it. That
 overlap removes about three minutes from a successful release's wall time without removing any evidence: publication
-still requires the package, every matrix lane, and Remote SSH. If a matrix lane fails, the already-running Remote SSH
+still requires the package, the shared candidate call, and Remote SSH. If candidate acceptance fails, the already-running Remote SSH
 job may finish anyway so its editor and namespace cleanup are not interrupted; the failed candidate still cannot
 publish.
 
-The Python, local R, and remote R Jupyter jobs start together and verify the same candidate VSIX. The candidate local R
-job runs core, `value-operations`, `categorical-operations`, `interactive-terminal`, and `literate-documents` in that
-order. Each invocation starts from a fresh exact candidate and isolated profile. The core, value, and categorical
-editing profiles assign only their targeted slices; those three notebook invocations also retain the shared
-representative Rename, native-frame, and kernel-restart/reopen scaffold. Every local invocation still reaches an exact
-complete 26-operation capability assertion through its owned journey, including the nested interactive and literate
-paths. Every local runner owns a distinct immediate sealed failure-evidence upload. One exact five-way raw-outcome
-fan-in runs only after the literate upload, so an earlier failure cannot suppress later local journeys or be hidden by
-their outcomes. The manual Released Jupyter workflow uses the corresponding core, value, categorical, and terminal
-sequence with an exact four-way fan-in. The remote R job runs only the packaged VS Code Docker journey and retains its
-`lowerText` (Lowercase) operation check; it does not install hosted R, local R packages, local kernel environments, or
-native R/Quarto tooling. Both the outer candidate matrix and the inner Jupyter matrix keep sibling cancellation
-disabled, so one failure cannot interrupt another cell's editor or Docker cleanup. Every native editor phase retains
-its own 300-second hard deadline and 180-second inactivity deadline without automatic retry.
+Python, remote R, the R 4.5.2 contract, and the two local-R shard cells are independent siblings. Every artifact
+consumer verifies the same candidate VSIX; the R contract instead tests the exact source commit. The lifecycle shard
+runs `core-operations`, then `interactive-terminal`, then `literate-documents`; the editing shard runs
+`value-operations`, then `categorical-operations`. Dependency and editor setup happens once per shard, but every phase
+immediately reverifies the exact candidate and starts a fresh VS Code-and-Cursor runner with new private runtime,
+profile, result, progress, and log roots. Each runner is followed immediately by its own sealed
+failure-evidence upload. A deferred shard-local raw-outcome check runs only after every phase assigned to that shard, so
+an early failure cannot suppress later evidence or be overwritten by it. Core and value own 12 targeted operations
+each, categorical owns two, and the shared representative Rename, native-frame, kernel-restart/reopen, and exact
+26-capability checks remain intact.
+
+The remote R sibling runs only the packaged VS Code Docker journey and retains its `lowerText` (Lowercase) operation
+check; it does not install hosted R, local R packages, local kernel environments, or native R/Quarto tooling. Internal
+jobs and both shard matrix cells keep sibling cancellation disabled, so one failure cannot interrupt another owner's
+editor or Docker cleanup. Every native editor phase retains its own 300-second hard deadline and 180-second inactivity
+deadline without automatic retry. The manually dispatched Released Jupyter workflow remains an intentionally separate,
+non-authoritative diagnostic: its existing local-R core, value, categorical, and terminal phases are serial and use
+their existing exact four-way fan-in. It does not model or substitute for candidate acceptance.
 
 Preview release run #72 reached the ordinary local-R 300-second deadline at numeric Round, lost Cursor's bounded
 Multi-label Undo wait, and failed macOS Drop Columns Code Preview generation/diagnostics. Publication was skipped. Those
 observations require a new exact-candidate Preview attempt; rerunning or reinterpreting that failed run cannot satisfy
 the authoritative macOS or local-R gates.
 
-The release local R cell uses the same commit-pinned dependency action, explicit package set, and resolved-lock/binary-package
-policy as the pull-request contract matrix. GitHub scopes pull-request caches to their merge refs, so a release
-dispatch cannot restore them. Later candidate dispatches may reuse a compatible cache created on `main`; the first
-matching `main` dispatch performs a valid cold install before the unchanged R contract and packaged-editor checks.
+Preview release [run #73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383) also published nothing.
+macOS selected a generic wrapped `.ow_label` helper instead of the complete Drop Columns source-binding line. Linux
+core reported correlated completion at about 299.5 seconds but missed outer 300-second process settlement before
+Cursor core could start; the independent value invocation passed both editors in 6m34s total. The follow-up uses
+unique exact logical-line selection and a balanced 12/12/2 core/value/categorical targeted split. The candidate
+topology is redesigned into the two parallel local-R shards above; the 300-second hard deadline, 180-second inactivity
+deadline, coverage, and no-retry rule remain unchanged. Run #73 is not release evidence.
+
+Run #73 took roughly 33 minutes from release start and its serial local-R lane failed after about 31 minutes. Using the
+observed phase durations and ordinary hosted setup costs, the redesigned graph projects roughly 21–22 minutes from
+release start and about 15 minutes for the two R shards, after which Windows and Python are expected to be the next
+critical-path candidates. Those are design estimates, not hosted proof; only a fresh exact-candidate Preview run can
+establish the new wall time and release evidence.
+
+Each release local-R shard uses the same commit-pinned dependency action, explicit package set, and
+resolved-lock/binary-package policy as the pull-request contract matrix. GitHub scopes pull-request caches to their
+merge refs, so a release dispatch cannot restore them. Later candidate dispatches may reuse a compatible cache created
+on `main`; the first matching `main` dispatch performs a valid cold install. The R contract is a separate parallel
+sibling rather than setup repeated inside either packaged-editor shard.
 
 Remote R fixture preparation also keeps those bounds local to the work being proved. `Dockerfile.r.base` builds the
 snapshot-pinned base, `Dockerfile.r` builds the R runtime from that exact owned image, and the existing

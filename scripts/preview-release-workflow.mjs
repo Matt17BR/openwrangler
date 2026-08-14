@@ -5,7 +5,7 @@ import {
   PUBLIC_MEDIA_CONTRACT_RUN,
   PUBLIC_MEDIA_PREFLIGHT_RUN
 } from "./open-vsx-promotion-workflow.mjs";
-import { inspectCandidateMatrixCaller } from "./candidate-acceptance-workflow.mjs";
+import { inspectCandidateCaller } from "./candidate-acceptance-workflow.mjs";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const EVENT_SHA = "${{ github.sha }}";
@@ -316,7 +316,7 @@ export function inspectPreviewReleaseWorkflow(source) {
   ) {
     problems.push("package must verify and upload only the canonical preview triple.");
   }
-  problems.push(...inspectCandidateMatrixCaller(workflow, "preview"));
+  problems.push(...inspectCandidateCaller(workflow, "preview"));
 
   const remote = workflow.jobs["remote-ssh"];
   if (
@@ -325,7 +325,7 @@ export function inspectPreviewReleaseWorkflow(source) {
     remote.environment !== undefined ||
     remote.concurrency !== undefined
   ) {
-    problems.push("remote-ssh must start from only the package artifact, in parallel with the candidate matrix.");
+    problems.push("remote-ssh must start from only the package artifact, in parallel with candidate acceptance.");
   }
   inspectCheckout(remote, "remote-ssh", problems);
   inspectCanonicalConsumer(remote, "remote-ssh", problems);
@@ -343,7 +343,8 @@ export function inspectPreviewReleaseWorkflow(source) {
     !Array.isArray(release.needs) ||
     release.needs.length !== releaseNeeds.length ||
     releaseNeeds.some((job) => !release.needs.includes(job)) ||
-    release.if !== "${{ inputs.publish == true }}" ||
+    release.if !==
+      "${{ !cancelled() && inputs.publish == true && needs.package.result == 'success' && needs.candidate-acceptance.result == 'success' && needs.remote-ssh.result == 'success' }}" ||
     release.environment !== "publishing" ||
     release["runs-on"] !== "ubuntu-24.04" ||
     release["timeout-minutes"] !== 105 ||
@@ -355,7 +356,7 @@ export function inspectPreviewReleaseWorkflow(source) {
     release.concurrency.queue !== "max"
   ) {
     problems.push(
-      "release must wait for the package, candidate matrix, and downstream Remote SSH before protected publication."
+      "release must require literal success from package, candidate acceptance, and Remote SSH before protected publication."
     );
   }
   inspectCheckout(release, "release", problems);

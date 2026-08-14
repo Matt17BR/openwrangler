@@ -210,7 +210,7 @@ The [product gallery](media-gallery.md#r-notebooks-and-documents-199-preview) sh
 workbench, Rename Column draft, and generated R inserted into the originating notebook. Candidate local acceptance
 uses fresh exact-candidate/profile core, value, and categorical phases, each of which first asserts all 26 supported
 editing capabilities. Core's targeted slice owns the five row operations, Rename, Drop, Select, Clone, Convert type,
-Formula, Text Length, and Group and aggregate. The focused value targeted slice owns exactly Find and replace, Format
+Text Length, and Group and aggregate. The focused value targeted slice owns exactly Find and replace, Formula, Format
 Datetime, Min-max scale, Round, Floor, Ceiling, Capitalize, Lowercase, Uppercase, Strip text, and Split text. The
 focused categorical targeted slice owns exactly One-hot encode and Multi-label binarize and checks their exact
 indicator values, generated calls, previews, apply, and undo in both VS Code and Cursor. The three invocations also
@@ -260,10 +260,18 @@ extension can own the complete spawned process tree. Other cleaning operations a
 Before a 2.0 tag can be published, both release workflows must pass the local `r-jupyter` journey in packaged VS Code
 on hosted macOS and Windows. The freshly verified candidate VSIX is used directly; these jobs do not rebuild it or
 substitute a smaller R smoke test. The same candidate must also pass the separately verified focused value,
-categorical, active-terminal, and literate journeys in packaged Linux VS Code and Cursor. Preview release run #72 is not such evidence:
-ordinary local R reached the 300-second deadline at numeric Round, Cursor lost the bounded Multi-label Undo wait, and
-macOS failed the Drop Columns Code Preview generation/diagnostic bound, so publication was skipped. A new fresh Preview attempt
-against the remediated exact candidate remains required, with macOS authoritative.
+categorical, active-terminal, and literate journeys in packaged Linux VS Code and Cursor. Candidate acceptance now
+keeps that complete evidence in two parallel local-R shards: lifecycle runs `core-operations`, `interactive-terminal`,
+and `literate-documents`, while editing runs `value-operations` and `categorical-operations`. Every phase still gets a fresh exact-candidate
+verification, fresh VS Code-and-Cursor private roots, and its own immediate sealed failure upload; exact 12/12/2
+targeted ownership and all deadlines remain unchanged. Preview release runs #72 and
+[#73](https://github.com/Matt17BR/openwrangler/actions/runs/31812029383) are not such evidence. Run #72 failed ordinary
+local R, categorical Cursor, and macOS; run #73's macOS Drop reveal selected a generic wrapped helper, while its Linux
+core reached correlated completion only about half a second before the outer 300-second deadline and did not settle in
+time to start Cursor. Neither run published. A new fresh Preview attempt against the exact logical-line and balanced
+12/12/2 remediation remains required, with macOS authoritative. The projected reduction from roughly 33/31 minutes
+for run #73's release/local-R lane to about 21–22 minutes from release start and about 15 minutes for the R shards is a
+design estimate, not parity evidence or hosted proof.
 
 | Surface                                       | Availability                    | Status  | Current checks                                                                                                            | Release check   |
 | --------------------------------------------- | ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------- | --------------- |
@@ -279,7 +287,7 @@ against the remediated exact candidate remains required, with macOS authoritativ
 | Owned `.R` source process                     | 1.99 preview                    | Partial | Real process contracts; local Linux VS Code/Cursor; local macOS VS Code                                                   | Preview release |
 | Owned `.Rmd` and `.qmd` cell process          | 1.99 preview                    | Partial | Parser, real-R contracts, and prior focused VS Code run; candidate gate now also requires Cursor                          | Preview release |
 | Notebook workbench                            | 1.99 preview                    | Partial | Packaged viewing/editing, screenshots, production axe                                                                     | Preview release |
-| R cleaning operations and generated code      | 26 operations                   | Partial | Native/runtime covers all 26; fresh 13/11/2 targeted slices retain a shared lifecycle scaffold                            | Preview release |
+| R cleaning operations and generated code      | 26 operations                   | Partial | Native/runtime covers all 26; fresh 12/12/2 targeted slices retain a shared lifecycle scaffold                            | Preview release |
 | Copy or save generated R                      | 26 operations                   | Partial | Rename uses packaged save; all 26 generate executable code                                                                | Preview release |
 | Insert generated R into its IRkernel notebook | 1.99 preview                    | Partial | Shared exact-document helper and packaged VS Code run                                                                     | Preview release |
 | Insert generated R into its source `.R` file  | 1.99 preview                    | Partial | Exact-document helper and packaged rerun                                                                                  | Preview release |

@@ -142,6 +142,12 @@ export interface CodePreviewDocumentReceipt {
   readonly sha256: string;
 }
 
+export interface CodePreviewLogicalLineSelection {
+  readonly position: number;
+  readonly documentReceipt: CodePreviewDocumentReceipt;
+  readonly lineReceipt: CodePreviewDocumentReceipt;
+}
+
 export interface CodePreviewDocumentCheck {
   readonly stage: string;
   readonly passed: boolean;
@@ -172,6 +178,47 @@ export function codePreviewReceiptDiagnostic(receipt: CodePreviewDocumentReceipt
     throw new Error("A Code Preview diagnostic requires one valid bounded document receipt.");
   }
   return JSON.stringify(receipt);
+}
+
+export function selectUniqueCodePreviewLogicalLine(
+  code: string,
+  expectedLine: string
+): CodePreviewLogicalLineSelection {
+  if (typeof code !== "string" || typeof expectedLine !== "string") {
+    throw new TypeError("Code Preview logical-line selection requires string inputs.");
+  }
+  const fail = (stage: "empty" | "multiline" | "missing" | "duplicate"): never => {
+    throw new Error(
+      `Code Preview logical-line selection failed: ${JSON.stringify({
+        stage,
+        documentReceipt: codePreviewDocumentReceipt(code),
+        lineReceipt: codePreviewDocumentReceipt(expectedLine)
+      })}.`
+    );
+  };
+  if (expectedLine.length === 0) fail("empty");
+  if (/[\r\n\u2028\u2029]/u.test(expectedLine)) fail("multiline");
+
+  let position = -1;
+  let matches = 0;
+  let lineStart = 0;
+  for (let cursor = 0; cursor <= code.length; cursor += 1) {
+    const character = code.charCodeAt(cursor);
+    if (cursor < code.length && character !== 10 && character !== 13) continue;
+    if (cursor - lineStart === expectedLine.length && code.startsWith(expectedLine, lineStart)) {
+      matches += 1;
+      if (matches === 1) position = lineStart;
+    }
+    if (character === 13 && code.charCodeAt(cursor + 1) === 10) cursor += 1;
+    lineStart = cursor + 1;
+  }
+  if (matches === 0) fail("missing");
+  if (matches !== 1) fail("duplicate");
+  return {
+    position,
+    documentReceipt: codePreviewDocumentReceipt(code),
+    lineReceipt: codePreviewDocumentReceipt(expectedLine)
+  };
 }
 
 export function assertCodePreviewDocumentChecks(code: string, checks: readonly CodePreviewDocumentCheck[]): void {

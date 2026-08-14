@@ -1,4 +1,4 @@
-name: Candidate acceptance lane
+name: Candidate acceptance
 
 on:
   workflow_call:
@@ -12,16 +12,7 @@ on:
       expected_sha:
         required: true
         type: string
-      lane:
-        required: true
-        type: string
-      python_version:
-        required: true
-        type: string
       release_tag:
-        required: true
-        type: string
-      runner_os:
         required: true
         type: string
 
@@ -30,19 +21,16 @@ permissions:
 
 jobs:
   contract:
-    name: Validate candidate lane inputs
+    name: Validate candidate inputs
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require one supported candidate lane
+      - name: Require one supported candidate invocation
         env:
           ARTIFACT_ID: ${{ inputs.artifact_id }}
           CHANNEL: ${{ inputs.channel }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
-          LANE: ${{ inputs.lane }}
-          PYTHON_VERSION: ${{ inputs.python_version }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-          CANDIDATE_RUNNER_OS: ${{ inputs.runner_os }}
         run: |
           set -euo pipefail
           case "$ARTIFACT_ID" in *[!0-9]*|"") exit 1 ;; esac
@@ -50,21 +38,21 @@ jobs:
           test "${#EXPECTED_SHA}" -eq 40
           test -n "$RELEASE_TAG"
           case "$CHANNEL" in preview|stable) ;; *) exit 1 ;; esac
-          case "$LANE:$CANDIDATE_RUNNER_OS:$PYTHON_VERSION" in
-            platform:macos-latest:3.12) ;;
-            platform:windows-latest:3.14) ;;
-            linux:ubuntu-24.04:3.12) ;;
-            performance:ubuntu-24.04:3.12) ;;
-            jupyter:ubuntu-24.04:3.12) ;;
-            *) exit 1 ;;
-          esac
 
   platform:
-    if: ${{ inputs.lane == 'platform' }}
-    name: Platform acceptance (${{ inputs.runner_os }})
+    name: Platform acceptance (${{ matrix.os }})
     needs: contract
-    runs-on: ${{ inputs.runner_os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - os: macos-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.14"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -77,7 +65,7 @@ jobs:
           cache: npm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: ${{ inputs.python_version }}
+          python-version: ${{ matrix.python }}
           cache: pip
       - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
@@ -186,6 +174,7 @@ jobs:
         run: node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter_platform.outputs.candidate_path }}
         env:
           OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: core-operations
           OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
           OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
@@ -206,10 +195,9 @@ jobs:
         run: exit 1
 
   linux:
-    if: ${{ inputs.lane == 'linux' }}
     name: Linux release acceptance
     needs: contract
-    runs-on: ${{ inputs.runner_os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -223,7 +211,7 @@ jobs:
           cache: npm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: ${{ inputs.python_version }}
+          python-version: "3.12"
           cache: pip
       - uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
         with:
@@ -370,10 +358,9 @@ jobs:
         run: exit 1
 
   performance:
-    if: ${{ inputs.lane == 'performance' }}
     name: Installed performance in pinned editors
     needs: contract
-    runs-on: ${{ inputs.runner_os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -387,7 +374,7 @@ jobs:
           cache: npm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: ${{ inputs.python_version }}
+          python-version: "3.12"
           cache: pip
       - run: npm ci
       - run: python -m pip install --upgrade pip
@@ -450,15 +437,15 @@ jobs:
           include-hidden-files: false
 
   jupyter:
-    if: ${{ inputs.lane == 'jupyter' }}
-    name: Released Jupyter acceptance (${{ matrix.phase == 'python' && 'Python' || matrix.phase == 'r-local' && 'R local' || 'R remote' }})
+    name: Released Jupyter acceptance (${{ matrix.phase == 'python' && 'Python' || 'R remote' }})
     needs: contract
-    runs-on: ${{ inputs.runner_os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
-        phase: [python, r-local, r-remote]
+        phase: [python, r-remote]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -471,65 +458,18 @@ jobs:
           cache: npm
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: ${{ inputs.python_version }}
+          python-version: "3.12"
           cache: pip
       - uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
         if: ${{ matrix.phase == 'python' }}
         with:
           distribution: temurin
           java-version: "17"
-      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        if: ${{ matrix.phase == 'r-local' }}
-        with:
-          r-version: "4.5.2"
-          use-public-rspm: true
-      - id: rscript
-        name: Locate hosted Rscript
-        if: ${{ matrix.phase == 'r-local' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          rscript="$(command -v Rscript)"
-          if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
-            echo "Rscript did not resolve to an absolute executable." >&2
-            exit 1
-          fi
-          r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
-          if [[ "$r_version" != "4.5.2" ]]; then
-            echo "Expected hosted R 4.5.2, got $r_version." >&2
-            exit 1
-          fi
-          printf 'executable=%s\n' "$rscript" >> "$GITHUB_OUTPUT"
-          printf 'version=%s\n' "$r_version" >> "$GITHUB_OUTPUT"
-          printf 'Hosted R: %s\n' "$r_version"
       - run: npm ci
-      - name: Resolve R contract packages
-        if: ${{ matrix.phase == 'r-local' }}
-        uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
-        with:
-          packages: ""
-          extra-packages: |-
-            any::jsonlite
-            any::tibble
-            any::readr
-            any::dplyr
-            any::data.table
-            any::bit64
-            any::collapse
-            any::nanoparquet
-          dependencies: '"hard"'
-          cache: true
-          cache-version: native-r-contract-v1
-          install-pandoc: false
-          install-quarto: false
-      - run: npm run test:r-contract
-        if: ${{ matrix.phase == 'r-local' }}
-        env:
-          RSCRIPT: ${{ steps.rscript.outputs.executable }}
       - run: python -m pip install --upgrade pip
-        if: ${{ matrix.phase != 'r-remote' }}
+        if: ${{ matrix.phase == 'python' }}
       - run: python -m pip install -e "python[dev]"
-        if: ${{ matrix.phase != 'r-remote' }}
+        if: ${{ matrix.phase == 'python' }}
       - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
         if: ${{ matrix.phase == 'python' }}
       - run: npm run lock:remote-jupyter:check
@@ -608,173 +548,6 @@ jobs:
       - name: Fail after released-Jupyter diagnostics
         if: ${{ always() && steps.packaged_editor.outcome == 'failure' }}
         run: exit 1
-      - id: canonical_r_jupyter
-        name: Reverify the candidate for local R Jupyter
-        if: ${{ matrix.phase == 'r-local' }}
-        env:
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - id: packaged_editor_r
-        name: Test local R Jupyter in the exact packaged VSIX
-        if: ${{ matrix.phase == 'r-local' }}
-        continue-on-error: true
-        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_jupyter.outputs.candidate_path }}
-        env:
-          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
-          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
-          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
-          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
-          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
-          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
-          VSCODE_TEST_VERSION: stable
-      - name: Upload local R-Jupyter failure diagnostics
-        if: ${{ always() && steps.packaged_editor_r.outcome == 'failure' && steps.packaged_editor_r.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor_r.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-      - id: canonical_r_values
-        name: Reverify the candidate for value R operations
-        if: ${{ matrix.phase == 'r-local' }}
-        env:
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - id: packaged_editor_r_values
-        name: Test value R operations in fresh packaged editor phases
-        if: ${{ matrix.phase == 'r-local' }}
-        continue-on-error: true
-        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_values.outputs.candidate_path }}
-        env:
-          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
-          OPEN_WRANGLER_PACKAGED_R_JOURNEY: value-operations
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
-          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
-          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
-          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
-          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
-          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
-          VSCODE_TEST_VERSION: stable
-      - name: Upload value R-Jupyter failure diagnostics
-        if: ${{ always() && steps.packaged_editor_r_values.outcome == 'failure' && steps.packaged_editor_r_values.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ inputs.channel }}-release-r-jupyter-values-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor_r_values.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-      - id: canonical_r_categorical
-        name: Reverify the candidate for categorical R operations
-        if: ${{ matrix.phase == 'r-local' }}
-        env:
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - id: packaged_editor_r_categorical
-        name: Test categorical R operations in fresh packaged editor phases
-        if: ${{ matrix.phase == 'r-local' }}
-        continue-on-error: true
-        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_categorical.outputs.candidate_path }}
-        env:
-          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
-          OPEN_WRANGLER_PACKAGED_R_JOURNEY: categorical-operations
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
-          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
-          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
-          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
-          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
-          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
-          VSCODE_TEST_VERSION: stable
-      - name: Upload categorical R-Jupyter failure diagnostics
-        if: ${{ always() && steps.packaged_editor_r_categorical.outcome == 'failure' && steps.packaged_editor_r_categorical.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ inputs.channel }}-release-r-jupyter-categorical-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor_r_categorical.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-      - id: canonical_r_interactive
-        name: Reverify the candidate for the active R terminal
-        if: ${{ matrix.phase == 'r-local' }}
-        env:
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - id: packaged_editor_r_interactive
-        name: Test the active R terminal in fresh packaged editor phases
-        if: ${{ matrix.phase == 'r-local' }}
-        continue-on-error: true
-        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_interactive.outputs.candidate_path }}
-        env:
-          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
-          OPEN_WRANGLER_PACKAGED_R_JOURNEY: interactive-terminal
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
-          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
-          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
-          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
-          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
-          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
-          VSCODE_TEST_VERSION: stable
-      - name: Upload active R terminal failure diagnostics
-        if: ${{ always() && steps.packaged_editor_r_interactive.outcome == 'failure' && steps.packaged_editor_r_interactive.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ inputs.channel }}-release-r-jupyter-interactive-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor_r_interactive.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-      - id: canonical_r_literate
-        name: Reverify the candidate for R Markdown and Quarto
-        if: ${{ matrix.phase == 'r-local' }}
-        env:
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: >-
-          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
-      - id: packaged_editor_r_literate
-        name: Test R Markdown and Quarto in fresh packaged editor phases
-        if: ${{ matrix.phase == 'r-local' }}
-        continue-on-error: true
-        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_literate.outputs.candidate_path }}
-        env:
-          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
-          OPEN_WRANGLER_PACKAGED_R_JOURNEY: literate-documents
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
-          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
-          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
-          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
-          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
-          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
-          VSCODE_TEST_VERSION: stable
-      - name: Upload R Markdown and Quarto failure diagnostics
-        if: ${{ always() && steps.packaged_editor_r_literate.outcome == 'failure' && steps.packaged_editor_r_literate.outputs.evidence_ready == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ inputs.channel }}-release-r-jupyter-literate-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor_r_literate.outputs.evidence_path }}
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 9
-          include-hidden-files: false
-      - name: Fail after local R acceptance diagnostics
-        if: ${{ always() && (steps.packaged_editor_r.outcome == 'failure' || steps.packaged_editor_r_values.outcome == 'failure' || steps.packaged_editor_r_categorical.outcome == 'failure' || steps.packaged_editor_r_interactive.outcome == 'failure' || steps.packaged_editor_r_literate.outcome == 'failure') }}
-        run: exit 1
       - id: canonical_r_remote
         name: Reverify the candidate for remote R Jupyter
         if: ${{ matrix.phase == 'r-remote' }}
@@ -810,3 +583,387 @@ jobs:
       - name: Fail after remote R-Jupyter diagnostics
         if: ${{ always() && steps.packaged_editor_r_remote.outcome == 'failure' }}
         run: exit 1
+
+  r_contract:
+    name: Native R contract
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: "4.5.2"
+          use-public-rspm: true
+      - id: rscript
+        name: Locate hosted Rscript
+        shell: bash
+        run: |
+          set -euo pipefail
+          rscript="$(command -v Rscript)"
+          if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
+            echo "Rscript did not resolve to an absolute executable." >&2
+            exit 1
+          fi
+          r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
+          if [[ "$r_version" != "4.5.2" ]]; then
+            echo "Expected hosted R 4.5.2, got $r_version." >&2
+            exit 1
+          fi
+          printf 'executable=%s\n' "$rscript" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$r_version" >> "$GITHUB_OUTPUT"
+          printf 'Hosted R: %s\n' "$r_version"
+      - run: npm ci
+      - name: Resolve R contract packages
+        uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          packages: ""
+          extra-packages: |-
+            any::jsonlite
+            any::tibble
+            any::readr
+            any::dplyr
+            any::data.table
+            any::bit64
+            any::collapse
+            any::nanoparquet
+          dependencies: '"hard"'
+          cache: true
+          cache-version: native-r-contract-v1
+          install-pandoc: false
+          install-quarto: false
+      - run: npm run test:r-contract
+        env:
+          RSCRIPT: ${{ steps.rscript.outputs.executable }}
+
+  r_local:
+    name: Local R acceptance (${{ matrix.shard }})
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [lifecycle, editing]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: "4.5.2"
+          use-public-rspm: true
+      - id: rscript
+        name: Locate hosted Rscript
+        shell: bash
+        run: |
+          set -euo pipefail
+          rscript="$(command -v Rscript)"
+          if [[ "$rscript" != /* || ! -x "$rscript" ]]; then
+            echo "Rscript did not resolve to an absolute executable." >&2
+            exit 1
+          fi
+          r_version="$(Rscript --vanilla -e 'cat(as.character(getRversion()))')"
+          if [[ "$r_version" != "4.5.2" ]]; then
+            echo "Expected hosted R 4.5.2, got $r_version." >&2
+            exit 1
+          fi
+          printf 'executable=%s\n' "$rscript" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$r_version" >> "$GITHUB_OUTPUT"
+          printf 'Hosted R: %s\n' "$r_version"
+      - run: npm ci
+      - name: Resolve local R packages
+        uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          packages: ""
+          extra-packages: |-
+            any::jsonlite
+            any::tibble
+            any::readr
+            any::dplyr
+            any::data.table
+            any::bit64
+            any::collapse
+            any::nanoparquet
+          dependencies: '"hard"'
+          cache: true
+          cache-version: native-r-contract-v1
+          install-pandoc: false
+          install-quarto: false
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: canonical-release
+          merge-multiple: true
+      - id: canonical
+        name: Verify the exact canonical candidate artifact
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
+      - run: npm run build:test-extension
+      - id: prepare_xvfb
+        name: Prepare pinned private Xvfb
+        shell: node {0}
+        run: |
+          const { execFileSync } = require("node:child_process");
+          const { X_OK } = require("node:constants");
+          const { accessSync, appendFileSync, lstatSync } = require("node:fs");
+          const { isAbsolute } = require("node:path");
+
+          const output = execFileSync(process.execPath, ["scripts/prepare-xvfb.mjs", "--print-path"], {
+            cwd: process.cwd(),
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "inherit"]
+          });
+          if (!/^[^\0\r\n]+\n?$/u.test(output)) {
+            throw new Error("The Xvfb preparer must print exactly one path.");
+          }
+          const executable = output.endsWith("\n") ? output.slice(0, -1) : output;
+          if (!isAbsolute(executable)) throw new Error("The prepared Xvfb path must be absolute.");
+          const stat = lstatSync(executable);
+          if (!stat.isFile() || stat.isSymbolicLink()) {
+            throw new Error("The prepared Xvfb path must be a regular, non-symlink file.");
+          }
+          accessSync(executable, X_OK);
+          appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
+      - id: r_local_setup
+        name: Confirm local R shard setup
+        run: "true"
+      - id: canonical_r_core
+        name: Reverify the candidate for core R operations
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.r_local_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_core
+        name: Test core R operations in fresh packaged editor phases
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_core.outcome == 'success' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_core.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: core-operations
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload local R-Jupyter failure diagnostics
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.packaged_editor_r_core.outcome == 'failure' && steps.packaged_editor_r_core.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-local-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_core.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - id: canonical_r_interactive
+        name: Reverify the candidate for the active R terminal
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.r_local_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_interactive
+        name: Test the active R terminal in fresh packaged editor phases
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_interactive.outcome == 'success' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_interactive.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: interactive-terminal
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload active R terminal failure diagnostics
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.packaged_editor_r_interactive.outcome == 'failure' && steps.packaged_editor_r_interactive.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-interactive-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_interactive.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - id: canonical_r_literate
+        name: Reverify the candidate for R Markdown and Quarto
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.r_local_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_literate
+        name: Test R Markdown and Quarto in fresh packaged editor phases
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.canonical_r_literate.outcome == 'success' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_literate.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: literate-documents
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload R Markdown and Quarto failure diagnostics
+        if: ${{ always() && matrix.shard == 'lifecycle' && steps.packaged_editor_r_literate.outcome == 'failure' && steps.packaged_editor_r_literate.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-literate-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_literate.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - id: canonical_r_values
+        name: Reverify the candidate for value R operations
+        if: ${{ always() && matrix.shard == 'editing' && steps.r_local_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_values
+        name: Test value R operations in fresh packaged editor phases
+        if: ${{ always() && matrix.shard == 'editing' && steps.canonical_r_values.outcome == 'success' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_values.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: value-operations
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload value R-Jupyter failure diagnostics
+        if: ${{ always() && matrix.shard == 'editing' && steps.packaged_editor_r_values.outcome == 'failure' && steps.packaged_editor_r_values.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-values-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_values.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - id: canonical_r_categorical
+        name: Reverify the candidate for categorical R operations
+        if: ${{ always() && matrix.shard == 'editing' && steps.r_local_setup.outcome == 'success' }}
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/verify-${{ inputs.channel == 'preview' && 'preview' || 'canonical' }}-release-artifact.mjs canonical-release
+      - id: packaged_editor_r_categorical
+        name: Test categorical R operations in fresh packaged editor phases
+        if: ${{ always() && matrix.shard == 'editing' && steps.canonical_r_categorical.outcome == 'success' }}
+        continue-on-error: true
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs ${{ steps.canonical_r_categorical.outputs.candidate_path }}
+        env:
+          OPEN_WRANGLER_PACKAGED_MODE: r-jupyter
+          OPEN_WRANGLER_PACKAGED_R_JOURNEY: categorical-operations
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"
+          OPEN_WRANGLER_TEST_RSCRIPT: ${{ steps.rscript.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload categorical R-Jupyter failure diagnostics
+        if: ${{ always() && matrix.shard == 'editing' && steps.packaged_editor_r_categorical.outcome == 'failure' && steps.packaged_editor_r_categorical.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.channel }}-release-r-jupyter-categorical-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor_r_categorical.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - name: Require successful local R shard outcomes
+        if: ${{ always() }}
+        env:
+          SHARD: ${{ matrix.shard }}
+          CORE_OUTCOME: ${{ steps.packaged_editor_r_core.outcome }}
+          INTERACTIVE_OUTCOME: ${{ steps.packaged_editor_r_interactive.outcome }}
+          LITERATE_OUTCOME: ${{ steps.packaged_editor_r_literate.outcome }}
+          VALUES_OUTCOME: ${{ steps.packaged_editor_r_values.outcome }}
+          CATEGORICAL_OUTCOME: ${{ steps.packaged_editor_r_categorical.outcome }}
+        run: |
+          set -euo pipefail
+          case "$SHARD" in
+            lifecycle)
+              test "$CORE_OUTCOME" = "success"
+              test "$INTERACTIVE_OUTCOME" = "success"
+              test "$LITERATE_OUTCOME" = "success"
+              ;;
+            editing)
+              test "$VALUES_OUTCOME" = "success"
+              test "$CATEGORICAL_OUTCOME" = "success"
+              ;;
+            *) exit 1 ;;
+          esac
+
+  acceptance:
+    name: Candidate acceptance
+    if: ${{ always() }}
+    needs: [contract, platform, linux, performance, jupyter, r_contract, r_local]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every candidate acceptance result
+        env:
+          CONTRACT_RESULT: ${{ needs.contract.result }}
+          PLATFORM_RESULT: ${{ needs.platform.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          PERFORMANCE_RESULT: ${{ needs.performance.result }}
+          JUPYTER_RESULT: ${{ needs.jupyter.result }}
+          R_CONTRACT_RESULT: ${{ needs.r_contract.result }}
+          R_LOCAL_RESULT: ${{ needs.r_local.result }}
+        run: |
+          set -euo pipefail
+          test "$CONTRACT_RESULT" = "success"
+          test "$PLATFORM_RESULT" = "success"
+          test "$LINUX_RESULT" = "success"
+          test "$PERFORMANCE_RESULT" = "success"
+          test "$JUPYTER_RESULT" = "success"
+          test "$R_CONTRACT_RESULT" = "success"
+          test "$R_LOCAL_RESULT" = "success"

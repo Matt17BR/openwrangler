@@ -1443,11 +1443,11 @@ test("default R profiles keep a truthful core catalog while focused selectors ow
 
   assert.match(
     preflight,
-    /testSelector === undefined \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "value-operations" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
+    /testSelector === undefined \|\|[\s\S]*testSelector === "core-operations" \|\|[\s\S]*testSelector === "categorical-operations" \|\|[\s\S]*testSelector === "value-operations" \|\|[\s\S]*testSelector === "interactive-terminal" \|\|[\s\S]*testSelector === "literate-documents"/u
   );
   assert.match(
     preflight,
-    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents"/u
+    /OPEN_WRANGLER_TEST_SELECTOR must be unset, "core-operations", "categorical-operations", "value-operations", "interactive-terminal", or "literate-documents"/u
   );
   assert.match(
     profiles,
@@ -1472,7 +1472,7 @@ test("default R profiles keep a truthful core catalog while focused selectors ow
   assert.doesNotMatch(profiles, /documents:/u, "The default R coverage profiles must be structurally plain-only.");
   assert.match(
     profiles,
-    /if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations"\) \{[\s\S]*return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "value-operations"\) \{[\s\S]*return RELEASED_R_VALUE_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_EDITOR === "cursor"\) return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE/u
+    /function releasedRCoreAcceptanceCoverageProfile\(\)[\s\S]*OPEN_WRANGLER_TEST_EDITOR === "cursor"[\s\S]*return RELEASED_R_REPRESENTATIVE_COVERAGE;[\s\S]*process\.platform === "win32" \? RELEASED_R_REPRESENTATIVE_COVERAGE : RELEASED_R_COMPREHENSIVE_COVERAGE;[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "categorical-operations"\) \{[\s\S]*return RELEASED_R_CATEGORICAL_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "value-operations"\) \{[\s\S]*return RELEASED_R_VALUE_OPERATIONS_COVERAGE;[\s\S]*\}[\s\S]*if \(process\.env\.OPEN_WRANGLER_TEST_SELECTOR === "core-operations"\) \{[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);[\s\S]*\}[\s\S]*return releasedRCoreAcceptanceCoverageProfile\(\);/u
   );
   assert.doesNotMatch(
     journey,
@@ -1559,6 +1559,7 @@ test("default R profiles keep a truthful core catalog while focused selectors ow
   const valueCheckpoints = source.slice(valueCheckpointStart, valueCheckpointEnd);
   const focusedValueOperations = [
     "find-replace",
+    "formula",
     "format-datetime",
     "min-max-scale",
     "round",
@@ -1575,15 +1576,96 @@ test("default R profiles keep a truthful core catalog while focused selectors ow
       (match) => match[1]
     ),
     focusedValueOperations,
-    "The focused value catalog must own exactly its eleven noncategorical value operations."
+    "The focused value catalog must own exactly its twelve noncategorical value operations."
   );
-  for (const checkpoint of ["entry", "strip-discard-restored", "split-discard-restored", "exit"]) {
-    assert.ok(source.includes(`assertReleasedRValueOperationsCleanState(testing, sessionId, "${checkpoint}")`));
+  for (const checkpoint of [
+    "entry",
+    "formula-undo-restored",
+    "strip-discard-restored",
+    "split-discard-restored",
+    "exit"
+  ]) {
+    assert.ok(
+      source.includes(`assertReleasedRValueOperationsCleanState(testing, workbench, sessionId, "${checkpoint}")`)
+    );
   }
-  for (const operation of ["ceiling", "capitalize", "strip", "split"]) {
+  const cleanStateStart = source.indexOf("async function assertReleasedRValueOperationsCleanState(");
+  const cleanStateEnd = source.indexOf("\nfunction recordReleasedRValueOperationCheckpoint(", cleanStateStart);
+  assert.ok(cleanStateStart >= 0 && cleanStateEnd > cleanStateStart);
+  const cleanState = source.slice(cleanStateStart, cleanStateEnd);
+  const rendererAllowlistStart = cleanState.indexOf("const requiresRendererSettlement =");
+  const rendererBranch = cleanState.indexOf("if (requiresRendererSettlement) {", rendererAllowlistStart);
+  const rendererAllowlist = cleanState.slice(rendererAllowlistStart, rendererBranch);
+  assert.deepEqual(
+    [...rendererAllowlist.matchAll(/checkpoint === "([^"]+)"/gu)].map((match) => match[1]),
+    ["entry", "formula-undo-restored"],
+    "Only UI-bound value checkpoints may require a synchronized renderer."
+  );
+  const rowIdCapture = cleanState.indexOf("const rowIdColumn = active.metadata.schema[0];", rendererBranch);
+  const restoredGrid = cleanState.indexOf("let app = await releasedRSessionApp(", rowIdCapture);
+  const visibleColumnSearch = cleanState.indexOf(
+    'await columnSearch.waitFor({ state: "visible", timeout: 10_000 });',
+    restoredGrid
+  );
+  const rowIdSelection = cleanState.indexOf('await columnSearch.press("Enter");', visibleColumnSearch);
+  const rowIdSelectionReceipt = cleanState.indexOf(
+    "current?.sessionId === sessionId && current.viewState.selectedColumnId === rowIdColumn.id",
+    rowIdSelection
+  );
+  const synchronizedRenderer = cleanState.indexOf("app = await releasedRSessionApp(", rowIdSelectionReceipt);
+  const restoredCell = cleanState.indexOf("const firstRestoredCell = app.locator", synchronizedRenderer);
+  const rendererBranchEnd = cleanState.indexOf("\n  await waitFor(\n    () => {\n      const scheduler", restoredCell);
+  const schedulerIdle = cleanState.indexOf("scheduler.activeForegroundOperation === false", restoredCell);
+  const directPage = cleanState.indexOf('kind: "getPage"', schedulerIdle);
+  assert.ok(
+    rendererAllowlistStart >= 0 &&
+      rendererBranch > rendererAllowlistStart &&
+      rowIdCapture > rendererBranch &&
+      restoredGrid > rowIdCapture &&
+      visibleColumnSearch > restoredGrid &&
+      rowIdSelection > visibleColumnSearch &&
+      rowIdSelectionReceipt > rowIdSelection &&
+      synchronizedRenderer > rowIdSelectionReceipt &&
+      restoredCell > synchronizedRenderer &&
+      rendererBranchEnd > restoredCell &&
+      schedulerIdle > restoredCell &&
+      directPage > schedulerIdle,
+    "The focused R clean-state proof must select row_id, reacquire its renderer, prove the restored cell, and settle the foreground lane before its direct page request."
+  );
+  const rendererCalls = [...cleanState.matchAll(/releasedRSessionApp\(/gu)].map((match) => match.index);
+  assert.equal(rendererCalls.length, 2, "The UI-bound clean-state proof must use exactly two renderer generations.");
+  assert.equal(
+    rendererCalls.every((index) => index > rendererBranch && index < rendererBranchEnd),
+    true,
+    "Coordinator-only clean-state checkpoints must never call or synchronize a renderer."
+  );
+  assert.equal(
+    (cleanState.match(/kind: "getPage"/gu) ?? []).length,
+    1,
+    "The focused R clean-state proof must issue its direct page request exactly once."
+  );
+  assert.match(
+    cleanState,
+    /code: page\.kind === "error" \? page\.code : null,[\s\S]*recoverable: page\.kind === "error" \? page\.recoverable : null,[\s\S]*viewRequestId:[\s\S]*messageReceipt: page\.kind === "error" \? codePreviewDocumentReceipt\(page\.message\) : null/u,
+    "A non-page clean-state response must expose only bounded protocol fields and a UTF-8/SHA-256 message receipt."
+  );
+  assert.doesNotMatch(
+    cleanState,
+    /(?:JSON\.stringify|String|`[^`]*\$\{)\(page\.message\)|\$\{page\.message\}/u,
+    "The focused R clean-state diagnostic must never render the raw response message."
+  );
+  for (const operation of ["formula", "ceiling", "capitalize", "strip", "split"]) {
     assert.ok(source.includes(`recordReleasedRValueOperationCheckpoint("${operation}", "start")`));
     assert.ok(source.includes(`recordReleasedRValueOperationCheckpoint("${operation}", "complete")`));
   }
+  assert.match(
+    comprehensive,
+    /phase === "jupyter-r" && editingCatalog === "value-operations"[\s\S]*recordReleasedRValueOperationCheckpoint\("formula", "start"\)[\s\S]*exerciseReleasedRFormulaJourney\(testing, workbench, sessionId\)[\s\S]*assertReleasedRValueOperationsCleanState\(testing, workbench, sessionId, "formula-undo-restored"\)[\s\S]*recordReleasedRValueOperationCheckpoint\("formula", "complete"\)/u
+  );
+  assert.doesNotMatch(
+    comprehensive,
+    /phase === "jupyter-r" && editingCatalog === "core-catalog"\) \{\s*await exerciseReleasedRFormulaJourney/u
+  );
   assert.match(
     grid,
     /if \(paging === "all-blocks"\)[\s\S]*else \{[\s\S]*"the representative second R block"[\s\S]*"the representative restored R block"/u

@@ -8,7 +8,7 @@ import {
   PUBLIC_MEDIA_CONTRACT_RUN,
   PUBLIC_MEDIA_PREFLIGHT_RUN
 } from "./open-vsx-promotion-workflow.mjs";
-import { inspectCandidateMatrixCaller } from "./candidate-acceptance-workflow.mjs";
+import { inspectCandidateCaller } from "./candidate-acceptance-workflow.mjs";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const EVENT_SHA = "${{ github.sha }}";
@@ -425,11 +425,11 @@ export function inspectStableReleaseWorkflow(source) {
     problems.push("package must expose the immutable artifact ID.");
   }
 
-  problems.push(...inspectCandidateMatrixCaller(workflow, "stable"));
+  problems.push(...inspectCandidateCaller(workflow, "stable"));
 
   const remoteDependency = workflow.jobs["remote-ssh"]?.needs;
   if (remoteDependency !== "package") {
-    problems.push("remote-ssh must start from only the package artifact, in parallel with the candidate matrix.");
+    problems.push("remote-ssh must start from only the package artifact, in parallel with candidate acceptance.");
   }
   inspectCheckout(workflow.jobs["remote-ssh"], "remote-ssh", problems);
   inspectDownloadAndVerification(
@@ -486,8 +486,13 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("release must wait for every exact-artifact consumer.");
   }
-  if (release.if !== "${{ inputs.publish == true }}") {
-    problems.push("release must run only after an explicit true publish input.");
+  if (
+    release.if !==
+    "${{ !cancelled() && inputs.publish == true && needs.package.result == 'success' && needs.candidate-acceptance.result == 'success' && needs.remote-ssh.result == 'success' }}"
+  ) {
+    problems.push(
+      "release must run only after explicit publication and literal success from every acceptance dependency."
+    );
   }
   if (release.environment !== "publishing") {
     problems.push("release must use the existing protected publishing environment.");
